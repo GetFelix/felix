@@ -2,6 +2,7 @@
 
 #[cfg(feature = "sim")]
 mod crash_points;
+mod formation;
 #[cfg(feature = "sim")]
 mod model;
 mod store;

@@ -19,6 +19,7 @@ mod forward;
 mod handshake;
 mod header;
 mod message;
+mod raft;
 mod replicate;
 
 pub use election::{
@@ -38,6 +39,7 @@ pub use header::{
     MAX_ENVELOPE_BYTES, MAX_INNER_BODY_BYTES, correlation_id_in,
 };
 pub use message::{InternalMessage, ShardRef};
+pub use raft::{RaftAnswer, RaftCall};
 pub use replicate::{
     GenerationStart, ProducerMark, RefusalReason, ReplicaLog, ReplicateBootstrap, ReplicateError,
     ReplicateOk, ReplicateRebuild, ReplicateRecords, batch_checksum,

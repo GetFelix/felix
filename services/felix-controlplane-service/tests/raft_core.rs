@@ -62,6 +62,41 @@ struct TestNode {
     server: tokio::task::JoinHandle<()>,
 }
 
+/// Peer routes a test holds on one member. A held route answers 503, as a
+/// member that cannot be reached for it would look.
+#[derive(Default)]
+struct Gate {
+    /// Vote requests: with every member's held, nobody can be elected.
+    votes: std::sync::atomic::AtomicBool,
+    /// Requests to record a forming member.
+    forming: std::sync::atomic::AtomicBool,
+}
+
+impl Gate {
+    fn holding_votes() -> Arc<Self> {
+        let gate = Arc::new(Self::default());
+        gate.votes.store(true, std::sync::atomic::Ordering::SeqCst);
+        gate
+    }
+
+    async fn check(
+        axum::extract::State(gate): axum::extract::State<Arc<Self>>,
+        request: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let path = request.uri().path();
+        let held = (path.ends_with("/vote") && gate.votes.load(SeqCst))
+            || (path.ends_with("/forming") && gate.forming.load(SeqCst));
+        if held {
+            return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        next.run(request).await
+    }
+}
+
 /// Election timings shrunk so a test failure is a failure, not a wait.
 fn settings(id: NodeId, dir: PathBuf) -> RaftSettings {
     let mut settings = RaftSettings::new(id, dir, peer_security());
@@ -71,6 +106,15 @@ fn settings(id: NodeId, dir: PathBuf) -> RaftSettings {
 }
 
 async fn start_node(dir: PathBuf, settings: RaftSettings, addr: Option<SocketAddr>) -> TestNode {
+    start_gated(dir, settings, addr, Arc::default()).await
+}
+
+async fn start_gated(
+    dir: PathBuf,
+    settings: RaftSettings,
+    addr: Option<SocketAddr>,
+    gate: Arc<Gate>,
+) -> TestNode {
     let app = Arc::new(KvApp::default());
     let handle = RaftHandle::start(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
         .await
@@ -92,7 +136,9 @@ async fn start_node(dir: PathBuf, settings: RaftSettings, addr: Option<SocketAdd
         }
     };
     let addr = listener.local_addr().expect("local addr");
-    let router = handle.rpc_router();
+    let router = handle
+        .rpc_router()
+        .layer(axum::middleware::from_fn_with_state(gate, Gate::check));
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
@@ -560,16 +606,27 @@ async fn empty_members_form_a_group_only_when_told_to() {
     }
 }
 
-/// An address nothing listens on, as a member that is down looks.
-async fn closed_addr() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
+/// An address nothing listens on, as a member that is down looks. The
+/// socket stays bound and never listens: a port given back could go to
+/// another test's member, which would answer as this group's.
+struct ClosedAddr {
+    addr: SocketAddr,
+    _bound: tokio::net::TcpSocket,
+}
+
+fn closed_addr() -> ClosedAddr {
+    let bound = tokio::net::TcpSocket::new_v4().expect("socket");
+    bound
+        .bind("127.0.0.1:0".parse().expect("addr"))
         .expect("bind");
-    listener.local_addr().expect("addr")
+    ClosedAddr {
+        addr: bound.local_addr().expect("addr"),
+        _bound: bound,
+    }
 }
 
 /// Something at a member's address that answers `standing` with `status`
-/// and `body`, whoever asks.
+/// and `body`, whoever asks, and records any forming member.
 async fn standing_stub(
     status: u16,
     body: &'static str,
@@ -578,15 +635,20 @@ async fn standing_stub(
         .await
         .expect("bind");
     let addr = listener.local_addr().expect("addr");
-    let router = axum::Router::new().route(
-        &felix_controlplane_service::raft::peer_route("standing"),
-        axum::routing::get(move || async move {
-            (
-                axum::http::StatusCode::from_u16(status).expect("status"),
-                body,
-            )
-        }),
-    );
+    let router = axum::Router::new()
+        .route(
+            &felix_controlplane_service::raft::peer_route("standing"),
+            axum::routing::get(move || async move {
+                (
+                    axum::http::StatusCode::from_u16(status).expect("status"),
+                    body,
+                )
+            }),
+        )
+        .route(
+            &felix_controlplane_service::raft::peer_route("forming"),
+            axum::routing::post(|| async { axum::http::StatusCode::NO_CONTENT }),
+        );
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
@@ -739,11 +801,13 @@ async fn first_boot_waits_for_every_peer() {
         tempfile::tempdir().expect("tempdir"),
         tempfile::tempdir().expect("tempdir"),
     ];
-    let second = closed_addr().await;
+    let closed = closed_addr();
+    let second = closed.addr;
     let (mut nodes, members, shutdown) = first_start_without_the_second(&dirs, None, second).await;
     assert_no_group_forms(&nodes, "one member is down").await;
 
     // The missing member answers, empty like the others.
+    drop(closed);
     let dir = tempfile::tempdir().expect("tempdir");
     let late = start_node(
         dir.path().into(),
@@ -845,6 +909,427 @@ async fn wiped_members_do_not_form_over_a_down_data_holder() {
     }
 }
 
+/// Three members that formed on a first start and cannot elect: every vote
+/// request is held. Each wrote its mark, each recorded the other two, and
+/// no log holds an entry past the initial membership. This is the window
+/// of #2374.
+async fn formed_and_leaderless(
+    dirs: &[tempfile::TempDir],
+) -> (
+    Vec<TestNode>,
+    Vec<Arc<Gate>>,
+    BTreeMap<NodeId, String>,
+    tokio_util::sync::CancellationToken,
+) {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let mut nodes = Vec::new();
+    let mut gates = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let dir: PathBuf = dir.path().into();
+        let gate = Gate::holding_votes();
+        let settings = settings((i + 1) as NodeId, dir.clone());
+        nodes.push(start_gated(dir, settings, None, Arc::clone(&gate)).await);
+        gates.push(gate);
+    }
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .map(|node| (node.handle.status().id, node.addr.to_string()))
+        .collect();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        node.handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
+            .expect("enter group");
+    }
+    wait_until(
+        "every member to initialize",
+        Duration::from_secs(10),
+        || {
+            nodes
+                .iter()
+                .all(|node| node.handle.status().voters == [1, 2, 3])
+        },
+    )
+    .await;
+    (nodes, gates, members, shutdown)
+}
+
+/// Stop `node` and start the same member on an empty volume at the same
+/// address, still told this is a first start.
+async fn wipe_and_restart(
+    node: TestNode,
+    dir: &tempfile::TempDir,
+    members: &BTreeMap<NodeId, String>,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> TestNode {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let (id, addr) = (node.handle.status().id, node.addr);
+    node.stop().await;
+    drop(node);
+    let dir: PathBuf = dir.path().into();
+    let wiped = start_node(dir.clone(), settings(id, dir), Some(addr)).await;
+    wiped
+        .handle
+        .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+        .await
+        .expect("enter group");
+    wiped
+}
+
+/// Whether `node` refuses a vote request the way a member withholding its
+/// vote does.
+async fn withholds_its_vote(node: &TestNode) -> bool {
+    let vote = if cfg!(felix_segment_store) {
+        serde_json::json!({"term": 0, "voted_for": 9, "committed": false})
+    } else {
+        serde_json::json!({"leader_id": {"term": 0, "node_id": 9}, "committed": false})
+    };
+    let response = peer_security()
+        .client(Duration::from_secs(5))
+        .expect("peer client")
+        .post(format!(
+            "http://{}{}",
+            node.addr,
+            felix_controlplane_service::raft::peer_route("vote")
+        ))
+        .json(&serde_json::json!({"vote": vote, "last_log_id": null}))
+        .send()
+        .await
+        .expect("send");
+    let status = response.status().as_u16();
+    let body = response.text().await.expect("body");
+    assert!(
+        status == 200 || (status == 503 && body.contains("withheld")),
+        "a vote request answered {status}: {body}"
+    );
+    status == 503
+}
+
+/// The members `node` says it recorded as having set out to form the group.
+async fn recorded_by(node: &TestNode) -> Vec<NodeId> {
+    let standing: serde_json::Value = peer_security()
+        .client(Duration::from_secs(5))
+        .expect("peer client")
+        .get(format!(
+            "http://{}{}",
+            node.addr,
+            felix_controlplane_service::raft::peer_route("standing")
+        ))
+        .send()
+        .await
+        .expect("send")
+        .json()
+        .await
+        .expect("standing");
+    serde_json::from_value(standing.get("formed").cloned().unwrap_or_default()).unwrap_or_default()
+}
+
+/// Many election timeouts later, `wiped` has not initialized, still
+/// withholds its vote, and nobody leads.
+async fn assert_stays_withheld(wiped: &[&TestNode], all: &[&TestNode]) {
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for node in wiped {
+        let status = node.handle.status();
+        assert!(
+            status.voters.is_empty(),
+            "wiped member {} formed the group again",
+            status.id
+        );
+        assert!(
+            withholds_its_vote(node).await,
+            "wiped member {} answers vote requests",
+            status.id
+        );
+    }
+    for node in all {
+        let status = node.handle.status();
+        assert_eq!(status.leader, None, "member {} found a leader", status.id);
+    }
+}
+
+/// #2374: a member loses its volume after the group formed and before any
+/// leader wrote an entry, with `new` still set. Every peer's log is empty,
+/// so it used to form again, having forgotten any vote it gave. Its peers
+/// recorded it before it first voted, so now it stays withheld.
+#[tokio::test]
+async fn a_member_wiped_before_the_first_entry_does_not_form_again() {
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let (mut nodes, _gates, members, shutdown) = formed_and_leaderless(&dirs).await;
+    for node in &nodes {
+        let others: Vec<NodeId> = (1..=3)
+            .filter(|id| *id != node.handle.status().id)
+            .collect();
+        assert_eq!(recorded_by(node).await, others);
+    }
+
+    // A waiver does not apply to a member that lost its volume.
+    let empty = tempfile::tempdir().expect("tempdir");
+    waive_the_second(empty.path())
+        .await
+        .expect("write the waiver");
+    let third = nodes.pop().expect("third");
+    let wiped = wipe_and_restart(third, &empty, &members, &shutdown).await;
+    assert_stays_withheld(&[&wiped], &[&nodes[0], &nodes[1], &wiped]).await;
+    assert!(
+        !empty.path().join("form-without").exists(),
+        "a member that lost its volume kept a waiver"
+    );
+
+    shutdown.cancel();
+    wiped.stop().await;
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
+/// The same wiped member is not stuck: once the others elect a leader it
+/// catches up with what that leader holds, and then votes again.
+#[tokio::test]
+async fn a_wiped_member_catches_up_once_a_leader_exists() {
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let (mut nodes, gates, members, shutdown) = formed_and_leaderless(&dirs).await;
+    let empty = tempfile::tempdir().expect("tempdir");
+    let third = nodes.pop().expect("third");
+    let wiped = wipe_and_restart(third, &empty, &members, &shutdown).await;
+    assert_stays_withheld(&[&wiped], &[&nodes[0], &nodes[1], &wiped]).await;
+
+    // The other two may elect now. They are a majority without the third.
+    for gate in &gates {
+        gate.votes.store(false, SeqCst);
+    }
+    let leader = leader_of(&[&nodes[0], &nodes[1]]).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    wait_until(
+        "the wiped member to catch up",
+        Duration::from_secs(15),
+        || wiped.app.get("k").is_some(),
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while withholds_its_vote(&wiped).await {
+        assert!(
+            Instant::now() < deadline,
+            "the wiped member never voted again"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    // Its vote counts: with the leader stopped, the other member and the
+    // wiped one are the majority.
+    let leader_id = leader.status().id;
+    let (stopped, kept): (Vec<&TestNode>, Vec<&TestNode>) = nodes
+        .iter()
+        .partition(|node| node.handle.status().id == leader_id);
+    stopped[0].stop().await;
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let wrote = match kept[0].handle.status().leader {
+            Some(id) if id != leader_id => kept[0].handle.write(set("k", "v2")).await.is_ok(),
+            _ => false,
+        };
+        if wrote {
+            break;
+        }
+        assert!(Instant::now() < deadline, "no write without the old leader");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    shutdown.cancel();
+    wiped.stop().await;
+    kept[0].stop().await;
+}
+
+/// The two-volume case of #2374: two members lose their volumes while the
+/// third, which formed with them, has an empty log. The wiped two are a
+/// majority and every log they can see is empty, but the third recorded
+/// them, so neither forms.
+#[tokio::test]
+async fn two_wiped_members_do_not_form_over_an_empty_third() {
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let (mut nodes, _gates, members, shutdown) = formed_and_leaderless(&dirs).await;
+    let empty = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let third = nodes.pop().expect("third");
+    let second = nodes.pop().expect("second");
+    let first = nodes.pop().expect("first");
+    let wiped = [
+        wipe_and_restart(first, &empty[0], &members, &shutdown).await,
+        wipe_and_restart(second, &empty[1], &members, &shutdown).await,
+    ];
+    assert_stays_withheld(&[&wiped[0], &wiped[1]], &[&wiped[0], &wiped[1], &third]).await;
+    shutdown.cancel();
+    for node in wiped.iter().chain([&third]) {
+        node.stop().await;
+    }
+}
+
+/// The record must not bring back the first-boot deadlock: members 1 and 2
+/// have formed and cannot elect, and member 3 starts late. They have
+/// initialized and recorded each other, but neither recorded member 3, so
+/// it forms with them.
+#[tokio::test]
+async fn a_late_first_boot_member_forms_against_formed_leaderless_peers() {
+    use felix_controlplane_service::raft::InitialClusterState;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    // Until member 3 starts, something at its address answers empty and
+    // records, and gives no vote.
+    let (third, third_stub) = standing_stub(200, "{}").await;
+    let mut nodes = Vec::new();
+    let mut gates = Vec::new();
+    for (i, dir) in dirs[..2].iter().enumerate() {
+        let dir: PathBuf = dir.path().into();
+        let gate = Gate::holding_votes();
+        let settings = settings((i + 1) as NodeId, dir.clone());
+        nodes.push(start_gated(dir, settings, None, Arc::clone(&gate)).await);
+        gates.push(gate);
+    }
+    let members = BTreeMap::from([
+        (1, nodes[0].addr.to_string()),
+        (2, nodes[1].addr.to_string()),
+        (3, third.to_string()),
+    ]);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        node.handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
+            .expect("enter group");
+    }
+    wait_until(
+        "the first two to initialize",
+        Duration::from_secs(10),
+        || {
+            nodes
+                .iter()
+                .all(|node| node.handle.status().voters == [1, 2, 3])
+        },
+    )
+    .await;
+    assert_eq!(recorded_by(&nodes[0]).await, [2]);
+    assert_eq!(recorded_by(&nodes[1]).await, [1]);
+
+    third_stub.abort();
+    let dir: PathBuf = dirs[2].path().into();
+    let late = start_node(dir.clone(), settings(3, dir), Some(third)).await;
+    late.handle
+        .enter_group(members, InitialClusterState::New, shutdown.clone())
+        .await
+        .expect("enter group");
+    wait_until("the late member to form", Duration::from_secs(10), || {
+        late.handle.status().voters == [1, 2, 3]
+    })
+    .await;
+    assert!(!withholds_its_vote(&late).await, "formed without its vote");
+
+    for gate in &gates {
+        gate.votes.store(false, SeqCst);
+    }
+    nodes.push(late);
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    wait_until("the write on every member", Duration::from_secs(10), || {
+        nodes.iter().all(|node| node.app.get("k").is_some())
+    })
+    .await;
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
+/// Record, then vote: while one peer has not recorded the forming member,
+/// it has not initialized and answers no vote request, although the other
+/// peer already holds the record.
+#[tokio::test]
+async fn no_vote_before_every_peer_records_the_member() {
+    use felix_controlplane_service::raft::InitialClusterState;
+    use std::sync::atomic::Ordering::SeqCst;
+
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let mut nodes = Vec::new();
+    let mut gates = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let dir: PathBuf = dir.path().into();
+        let gate = Arc::new(Gate::default());
+        let settings = settings((i + 1) as NodeId, dir.clone());
+        nodes.push(start_gated(dir, settings, None, Arc::clone(&gate)).await);
+        gates.push(gate);
+    }
+    gates[2].forming.store(true, SeqCst);
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .map(|node| (node.handle.status().id, node.addr.to_string()))
+        .collect();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let enter = |node: &TestNode| {
+        let handle = node.handle.clone();
+        let (members, shutdown) = (members.clone(), shutdown.clone());
+        async move {
+            handle
+                .enter_group(members, InitialClusterState::New, shutdown)
+                .await
+                .expect("enter group");
+        }
+    };
+    // Members 2 and 3 only answer for now; member 1 sets out to form.
+    enter(&nodes[0]).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while recorded_by(&nodes[1]).await != [1] {
+        assert!(
+            Instant::now() < deadline,
+            "member 2 never recorded member 1"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(recorded_by(&nodes[2]).await.is_empty());
+    assert!(
+        nodes[0].handle.status().voters.is_empty(),
+        "initialized before every peer recorded it"
+    );
+    assert!(
+        withholds_its_vote(&nodes[0]).await,
+        "votes before every peer recorded it"
+    );
+
+    gates[2].forming.store(false, SeqCst);
+    wait_until(
+        "member 1 to initialize once member 3 recorded it",
+        Duration::from_secs(10),
+        || nodes[0].handle.status().voters == [1, 2, 3],
+    )
+    .await;
+    assert_eq!(recorded_by(&nodes[2]).await, [1]);
+    enter(&nodes[1]).await;
+    enter(&nodes[2]).await;
+    let refs: Vec<&TestNode> = nodes.iter().collect();
+    let leader = leader_of(&refs).await;
+    leader.write(set("k", "v1")).await.expect("write");
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
 /// Only an answer that decodes as empty counts as empty. A member of
 /// another cluster (403) or a body that is not a standing blocks a first
 /// start like silence does.
@@ -882,8 +1367,8 @@ async fn form_without_forms_once_and_is_consumed() {
     }
     let waiver = dirs[0].path().join("form-without");
     let written = std::fs::read(&waiver).expect("read the waiver");
-    let (nodes, members, shutdown) =
-        first_start_without_the_second(&dirs, None, closed_addr().await).await;
+    let closed = closed_addr();
+    let (nodes, members, shutdown) = first_start_without_the_second(&dirs, None, closed.addr).await;
     let refs: Vec<&TestNode> = nodes.iter().collect();
     let leader = leader_of(&refs).await;
     leader.write(set("k", "v1")).await.expect("write");
@@ -1049,7 +1534,8 @@ async fn form_without_applies_after_a_blocked_first_start() {
         tempfile::tempdir().expect("tempdir"),
         tempfile::tempdir().expect("tempdir"),
     ];
-    let second = closed_addr().await;
+    let closed = closed_addr();
+    let second = closed.addr;
     let (nodes, _, shutdown) = first_start_without_the_second(&dirs, None, second).await;
     assert_no_group_forms(&nodes, "one member is down").await;
     shutdown.cancel();

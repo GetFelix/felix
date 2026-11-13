@@ -85,6 +85,7 @@ fn capability_rules(kind: Kind) -> (PeerCapabilities, PeerCapabilities) {
     match kind {
         Kind::ElectionKeptFence => (C::ELECTION.union(C::KEPT_SETS), none),
         Kind::ElectionFence | Kind::PreVote | Kind::PreVoteAnswer => (C::ELECTION, none),
+        Kind::Raft | Kind::RaftAnswer => (C::RAFT, none),
         // A stamped batch needs ELECTION, and the headered or writer-stamped
         // blocks inside add their own.
         Kind::SetStamped => (C::ELECTION, C::RECORD_HEADERS.union(C::WRITER_GENERATIONS)),

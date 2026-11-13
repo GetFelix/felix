@@ -53,11 +53,18 @@
 (* member starts this way, so no leader exists until members have formed.  *)
 (*                                                                         *)
 (* An answer shows the log and not the vote. A volume lost after a vote and*)
-(* before the first log entry meets only empty answers, and the member     *)
-(* forms again and votes a second time in the term it forgot (issue 2374,  *)
-(* FelixRaftPlacementFormEarlyWipe.cfg). EarlyWipes = FALSE keeps a wipe   *)
-(* until the group has committed an entry, which is the case the rule      *)
-(* covers.                                                                 *)
+(* before the first log entry meets only empty answers, so the answers     *)
+(* alone let the member form again and vote a second time in the term it   *)
+(* forgot (issue 2374). With FormRecord forming is three steps, each on    *)
+(* disk before the next. Intend: the answers allow forming and none names  *)
+(* this member, and it writes its own mark. Announce: another member       *)
+(* records that this one set out to form. Form: it votes once every member *)
+(* that answers holds the record. A wipe takes the mark and the records    *)
+(* the directory held. A member that is named and holds no mark lost a     *)
+(* volume that may have voted: it never forms, and votes again only by     *)
+(* catching up. A group that starts formed starts with every mark and      *)
+(* record written. EarlyWipes = FALSE keeps a wipe until the group has     *)
+(* committed an entry, which is all the answers alone cover.               *)
 (*                                                                         *)
 (* Under fsync on commit a crash or a power cut loses nothing a peer       *)
 (* counted, so an unclean restart is not a fault here. FelixRaft.tla has   *)
@@ -123,6 +130,10 @@
 (*                     answers and skips a member that does not answer,    *)
 (*                     which is what the metadata group did before issue   *)
 (*                     2371.                                               *)
+(*   FormRecord = FALSE  -- Forming only: no mark and no records, a member *)
+(*                     forms on the answers alone, which is what the       *)
+(*                     metadata group did before issue 2374                *)
+(*                     (FelixRaftPlacementFormEarlyWipeUnrecorded.cfg).    *)
 (*   WaiverExcusesAnswer -- a waived member's answer is skipped too.       *)
 (*   WaiverAnyNumber     -- a waiver may name a majority of the slots.     *)
 (*                                                                         *)
@@ -130,8 +141,9 @@
 (* is committed and for a learner that counts.                             *)
 (*                                                                         *)
 (* Abstracted: storage, snapshots, the fence, the lease. A message is one  *)
-(* atomic step between two brokers. A leader counts the answers it has,    *)
-(* whatever became of the copies that gave them.                           *)
+(* atomic step between two brokers, so a record is written or not asked    *)
+(* for. A leader counts the answers it has, whatever became of the copies  *)
+(* that gave them.                                                         *)
 (* The read-index round is one step that reads every broker's term at      *)
 (* once, which is stricter than a round of answers collected over time.    *)
 (***************************************************************************)
@@ -157,6 +169,7 @@ CONSTANTS
     DeleteOnTarget,
     PlaceDoomed,
     Forming,        \* a member whose vote is withheld may form from its peers' answers
+    FormRecord,     \* forming is mark, record, vote
     FirstBoot,      \* the group has not formed: every member starts with its vote withheld
     FormMajority,
     WaiverExcusesAnswer,
@@ -166,6 +179,7 @@ CONSTANTS
     EarlyWipes      \* a directory may be lost before the group has committed an entry
 
 ASSUME FirstBoot => Forming
+ASSUME FormRecord => Forming
 ASSUME Absent # {} => FirstBoot
 ASSUME Waived \subseteq InitBrokers /\ Absent \subseteq InitBrokers
 
@@ -181,6 +195,8 @@ VARIABLES
     committed,  \* history: the committed sequence, each entry with the term that committed it
     copy,       \* the copy id in the broker's directory
     hold,       \* 0: votes. 1: vote withheld. n + 2: withheld until index n is applied
+    mark,       \* the directory holds this member's own mark that it set out to form
+    rec,        \* the members this directory records as having set out to form
     target,     \* control plane: the member ids the group should have
     known,      \* control plane: the copy id each broker last reported
     past,       \* history: targets the control plane replaced
@@ -190,7 +206,7 @@ VARIABLES
 
 election == <<role, term, votedFor, granted, elected>>
 raft == <<log, commitIdx, match, committed>>
-ident == <<copy, hold>>
+ident == <<copy, hold, mark, rec>>
 plane == <<target, known, past, doomed>>
 vars == <<election, raft, ident, plane, delivered, used>>
 
@@ -256,13 +272,16 @@ Init ==
     /\ committed = <<>>
     /\ copy = [s \in Brokers |-> 0]
     /\ hold = [s \in Brokers |-> IF FirstBoot THEN 1 ELSE 0]
+    /\ mark = [s \in Brokers |-> FormRecord /\ ~FirstBoot /\ s \in InitBrokers]
+    /\ rec = [s \in Brokers |->
+                IF FormRecord /\ ~FirstBoot /\ s \in InitBrokers THEN InitBrokers \ {s} ELSE {}]
     /\ target = InitBrokers \X {0}
     /\ known = [s \in Brokers |-> 0]
     /\ past = {}
     /\ doomed = {}
     /\ delivered = {}
     /\ used = [writes |-> 0, calls |-> 0, targets |-> 0, wipes |-> 0, wiped |-> Nobody,
-               deleted |-> FALSE]
+               deleted |-> FALSE, early |-> FALSE]
 
 ----------------------------------------------------------------------------
 \* Raft.
@@ -506,13 +525,16 @@ Emptied(s) ==
     /\ Deposed({s})
     /\ copy' = [copy EXCEPT ![s] = IF Rotate THEN @ + 1 ELSE @]
     /\ hold' = [hold EXCEPT ![s] = IF Rotate \/ NoWithhold THEN 0 ELSE 1]
+    /\ mark' = [mark EXCEPT ![s] = FALSE]
+    /\ rec' = [rec EXCEPT ![s] = {}]
     /\ UNCHANGED <<elected, match, committed, delivered>>
 
 Wipe(s) ==
     /\ used.wipes < MaxWipes
     /\ EarlyWipes \/ committed # <<>>
     /\ Emptied(s)
-    /\ used' = [used EXCEPT !.wipes = @ + 1, !.wiped = s]
+    /\ used' = [used EXCEPT !.wipes = @ + 1, !.wiped = s,
+                             !.early = @ \/ (Forming /\ committed = <<>>)]
     /\ UNCHANGED plane
 
 Delete(s) ==
@@ -534,36 +556,74 @@ AskTarget(s, i) ==
     /\ s # i
     /\ Confirmed(i)
     /\ hold' = [hold EXCEPT ![s] = LastIdx(i) + 2]
-    /\ UNCHANGED <<election, raft, copy, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, mark, rec, plane, delivered, used>>
 
 \* The member votes again once it has applied that far.
 VoteAgain(s) ==
     /\ hold[s] >= 2
     /\ commitIdx[s] >= hold[s] - 2
     /\ hold' = [hold EXCEPT ![s] = 0]
-    /\ UNCHANGED <<election, raft, copy, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, mark, rec, plane, delivered, used>>
 
 \* First start. A is the set of members that answer, and it holds every
-\* waived member that is up. No answer may show a log entry. Every other
-\* member answers, bar those a waiver names, and the members that answer
-\* empty, this one included, are a majority. The member decided its own
-\* directory was empty before it asked and does not look again.
-Form(s, A) ==
-    LET empty == {t \in A : LastIdx(t) = 0} IN
-    /\ Forming
-    /\ hold[s] = 1
+\* waived member that is up. Every other member answers, bar those a
+\* waiver names.
+Asked(s, A) ==
     /\ A \subseteq (InitBrokers \ Absent) \ {s}
     /\ (Waived \ Absent) \ {s} \subseteq A
+    /\ FormMajority \/ (InitBrokers \ {s}) \ A \subseteq Waived
+
+\* The answers allow forming: none shows a log entry, and the members that
+\* answer empty, this one included, are a majority. The member decided its
+\* own directory was empty before it asked and does not look again.
+Standing(s, A) ==
+    LET empty == {t \in A : LastIdx(t) = 0} IN
+    /\ Asked(s, A)
     /\ \A t \in A \ empty : WaiverExcusesAnswer /\ t \in Waived
     /\ WaiverAnyNumber \/ Majority({s} \cup empty, InitBrokers)
-    /\ FormMajority \/ (InitBrokers \ {s}) \ A \subseteq Waived
+
+\* The member sets out to form and writes its mark. An answer that names
+\* it, when it holds no mark, means its directory once held the mark: it
+\* lost a volume that may have voted.
+Intend(s, A) ==
+    /\ FormRecord
+    /\ hold[s] = 1
+    /\ ~mark[s]
+    /\ Standing(s, A)
+    /\ \A t \in A : s \notin rec[t]
+    /\ mark' = [mark EXCEPT ![s] = TRUE]
+    /\ UNCHANGED <<election, raft, copy, hold, rec, plane, delivered, used>>
+
+\* Another member records it, whatever that member's own state.
+Announce(s, t) ==
+    /\ FormRecord
+    /\ s # t
+    /\ t \in InitBrokers
+    /\ hold[s] = 1
+    /\ mark[s]
+    /\ s \notin rec[t]
+    /\ rec' = [rec EXCEPT ![t] = @ \cup {s}]
+    /\ UNCHANGED <<election, raft, copy, hold, mark, plane, delivered, used>>
+
+\* The member votes. With FormRecord: once every member that answers holds
+\* the record. It does not read the answers again, which allows more than
+\* the metadata group does: the mark shows this directory has not been lost,
+\* and so has not voted, since it found the group empty. Without: on the
+\* answers alone.
+Form(s, A) ==
+    /\ Forming
+    /\ hold[s] = 1
+    /\ IF FormRecord
+         THEN mark[s] /\ Asked(s, A) /\ \A t \in A : s \in rec[t]
+         ELSE Standing(s, A)
     /\ hold' = [hold EXCEPT ![s] = 0]
-    /\ UNCHANGED <<election, raft, copy, plane, delivered, used>>
+    /\ UNCHANGED <<election, raft, copy, mark, rec, plane, delivered, used>>
 
 Up == Brokers \ Absent
 
 Next ==
-    \/ \E s \in Up : \E A \in SUBSET InitBrokers : Form(s, A)
+    \/ \E s \in Up : \E A \in SUBSET InitBrokers : Intend(s, A) \/ Form(s, A)
+    \/ \E s, t \in Up : Announce(s, t)
     \/ \E s \in Up :
         \/ Campaign(s) \/ BecomeLeader(s) \/ AdvanceCommit(s) \/ AppendRecord(s)
         \/ LeaveJoint(s) \/ StepDown(s)
@@ -588,6 +648,8 @@ TypeOK ==
         /\ commitIdx[s] <= LastIdx(s)
         /\ copy[s] \in 0..MaxCopy
         /\ hold[s] \in Nat
+        /\ mark[s] \in BOOLEAN
+        /\ rec[s] \subseteq InitBrokers \ {s}
         /\ known[s] <= copy[s]
     /\ target \subseteq Ids
     /\ doomed \subseteq Ids
@@ -672,6 +734,10 @@ NeverReseats == \A c \in FinalCfgs : \A m \in c.new : m[2] = 0
 
 \* A member that kept its id through a wipe votes again.
 NeverVotesAgain == ~(~Rotate /\ used.wiped # Nobody /\ hold[used.wiped] = 0)
+
+\* A member that lost its volume before the group committed anything votes
+\* again, and a write is acknowledged.
+NeverEarlyWipedVotesAgain == ~(used.early /\ hold[used.wiped] = 0 /\ Acked # {})
 
 \* A member that was wiped leads, under its old id or a new one.
 NeverWipedLeads == ~(used.wiped # Nobody /\ role[used.wiped] = "leader")

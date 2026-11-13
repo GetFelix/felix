@@ -236,13 +236,19 @@ impl Pace {
     }
 }
 
+/// Timer checks dropped on this broker because a group had not taken one by
+/// the next interval, across every group: a label per group would be a label
+/// per shard.
+pub(super) const DROPPED_TICKS_TOTAL: &str = "felix_broker_raft_dropped_ticks_total";
+
 /// Counts a timer check that was dropped before the group took it.
-struct Dropped<'a>(Option<&'a AtomicU64>);
+pub(super) struct Dropped<'a>(pub(super) Option<&'a AtomicU64>);
 
 impl Drop for Dropped<'_> {
     fn drop(&mut self) {
         if let Some(dropped) = self.0 {
             dropped.fetch_add(1, Ordering::Relaxed);
+            metrics::counter!(DROPPED_TICKS_TOTAL).increment(1);
         }
     }
 }

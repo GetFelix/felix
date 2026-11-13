@@ -1,0 +1,42 @@
+# libFuzzer targets for the Raft message decoders.
+#
+# These bytes come from peer brokers. A peer is authenticated, but that is not
+# the same as trusted with a count, so the properties are about refusing input
+# cleanly: decode or error, never panic, never reserve past what the bytes back.
+#
+# Excluded from the workspace on purpose: `cargo-fuzz` needs nightly and links
+# libFuzzer, neither of which belongs in the default `cargo build --workspace`.
+# The deterministic subset runs in `cargo test -p felix-replication --features raft`
+# as `src/raft/wire/tests.rs`.
+#
+#     cargo install cargo-fuzz
+#     cargo +nightly fuzz run raft_request -- -max_total_time=300
+#     cargo +nightly fuzz run raft_answer  -- -max_total_time=300
+[package]
+name = "felix-replication-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+felix-replication = { path = "..", features = ["fuzzing"] }
+
+[[bin]]
+name = "raft_request"
+path = "fuzz_targets/raft_request.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raft_answer"
+path = "fuzz_targets/raft_answer.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

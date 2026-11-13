@@ -63,6 +63,8 @@ jobs:
           - { target: ws_frames, dir: crates/server/felix-mqtt/fuzz }
           - { target: kafka_records, dir: crates/server/felix-kafka/fuzz }
           - { target: kafka_request, dir: crates/server/felix-kafka/fuzz }
+          - { target: raft_request, dir: crates/server/felix-replication/fuzz }
+          - { target: raft_answer, dir: crates/server/felix-replication/fuzz }
           - { target: segment_record, dir: crates/server/felix-storage/fuzz }
           - { target: segment_recovery, dir: crates/server/felix-storage/fuzz }
           - { target: sparse_index, dir: crates/server/felix-storage/fuzz }
