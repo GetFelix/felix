@@ -1123,7 +1123,7 @@ weights=(
   "FelixRaftLeaseRestart 6"
   "FelixRaftLeaseRestartRenews 5"
   "FelixRaftLeaseRestoreLed 12"
-  "FelixRaftLeaseRestoreNamed 25"
+  "FelixRaftLeaseRestoreNamed 38"
   "FelixRaftLeaseRestoreStepDown 6"
   "FelixRaftLeaseRestoreTransferStepDown 11"
   "FelixRaftLeaseStore 2"

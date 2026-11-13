@@ -410,9 +410,14 @@ SupportStands(v) ==
     /\ sup[v][l].epoch = fortEpoch[v]
     /\ sup[v][l].left # None
 
-\* openraft stores one vote, replaced by every append it accepts, so the vote
-\* a restarted broker has names the leader of its current term, not whom it
-\* voted for.
+\* The model exempts the leader of v's current term. openraft stores one vote,
+\* replaced by a grant, by adopting a higher vote and by an append, so it can
+\* name a candidate that never led (a leads t1, adopts c's t2 vote, restarts:
+\* its disk holds t2, c, uncommitted). The rule Felix implements, from the
+\* vote record alone: exempt c iff the stored vote is committed and names c;
+\* an uncommitted vote exempts nobody. A committed vote names the leader of
+\* its term, so that is a strict subset of what the model allows. The
+\* leader's own fast path is committed and naming itself.
 StoredLeader(v) == IF term[v] = 0 THEN {} ELSE elected[term[v]]
 
 \* openraft grants inside the window to the leader the voter follows, and to
