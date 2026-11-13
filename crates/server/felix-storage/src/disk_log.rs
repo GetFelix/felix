@@ -1241,6 +1241,8 @@ impl DiskLog {
             extensions_done: AtomicU64::new(0),
             #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "fault-injection"))]
+            fail_flush_past: AtomicU64::new(u64::MAX),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1401,6 +1403,13 @@ impl DiskLog {
     /// poisoned and leaves its marker. For tests, in this crate and outside.
     pub fn fail_next_flush(&self) {
         self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+
+    /// Fail the first flush that would make the record at `offset` durable,
+    /// as [`Self::fail_next_flush`] does. Flushes of earlier records, such
+    /// as one with nothing new to sync, pass.
+    pub fn fail_flush_past(&self, offset: Offset) {
+        self.inner.fail_flush_past.store(offset, Ordering::Release);
     }
 }
 
@@ -1969,6 +1978,10 @@ struct LogInner {
     /// Makes the next flush report a failed fsync after the real one ran.
     #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// Makes the first flush that covers this offset fail the same way.
+    /// `u64::MAX` when unset.
+    #[cfg(any(test, feature = "fault-injection"))]
+    fail_flush_past: AtomicU64,
     /// Makes the next truncation or reset fail to sync the durable mark.
     #[cfg(test)]
     fail_next_rewind_sync: std::sync::atomic::AtomicBool,

@@ -81,13 +81,19 @@ pub struct KeptCopy {
 impl CopyRoot {
     /// Open the root the gate passed. `mint` makes copy ids; a 0 it returns
     /// is asked again.
+    ///
+    /// Watches the root for poison ([`crate::run_state::watch_poison`]): if
+    /// a copy's poison marker cannot be written, the forgotten run record
+    /// still rotates the storage id, and every copy with it, on restart.
     pub fn open(
         root: impl Into<PathBuf>,
         passed: GatePassed,
         mint: impl Fn() -> u64 + Send + Sync + 'static,
     ) -> Self {
+        let root = root.into();
+        crate::run_state::watch_poison(passed.marks.root());
         Self {
-            root: root.into(),
+            root,
             marks: passed.marks,
             mint: Box::new(mint),
         }

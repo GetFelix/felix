@@ -88,7 +88,13 @@ impl LogInner {
         #[cfg(any(test, feature = "fault-injection"))]
         let injected = self
             .fail_next_flush
-            .swap(false, std::sync::atomic::Ordering::AcqRel);
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+            || self
+                .fail_flush_past
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |past| {
+                    (durable_upto > past).then_some(u64::MAX)
+                })
+                .is_ok();
         #[cfg(not(any(test, feature = "fault-injection")))]
         let injected = false;
         let injected_failure = move || {

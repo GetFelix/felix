@@ -314,16 +314,21 @@ opened, and the check runs before the log is opened, so the cut never
 happens under the old copy id. The kept directory still holds the marker
 and every byte the failed run wrote.
 
+One failed fsync rotates every copy on the broker. The first poisoned log
+in a process also makes the run record stop vouching for the boot, so on a
+restart the broker takes a new storage id, and every copy on its data root
+rotates as one minted under another storage id, not only the one whose
+flush failed. The marker's own rotation is what catches a copy reopened in
+the same process, or a restart where the run record write failed.
+
 ```mermaid
 flowchart TD
-    fail["fsync fails"] --> poisoned["log poisoned"]
-    poisoned --> marker{"marker written?"}
-    marker -- yes --> restart["broker restarts"]
-    restart --> rotate["marker found: new copy id, empty log, old directory kept"]
-    marker -- no --> record["run record stops vouching for the boot"]
-    record --> sid["next start takes a new storage id, which rotates every copy"]
-    rotate --> learner["rejoins as a learner, never votes under the old id"]
-    sid --> learner
+    fail["fsync fails"] --> poisoned["log poisoned: marker written, run record stops vouching for the boot"]
+    poisoned --> how{"how is the copy opened again?"}
+    how -- "broker restarts" --> sid["new storage id: every copy on the root rotates"]
+    how -- "same process, or the record write failed" --> marker["marker found: this copy rotates"]
+    sid --> learner["new copy id, empty log, old directory kept; rejoins as a learner, never votes under the old id"]
+    marker --> learner
 ```
 
 How the rule holds:
@@ -348,9 +353,10 @@ failed, so its write can fail too. No marker means no cut to the last
 sync, but an open still repairs a torn tail, and after a failed fsync the
 kernel may have dropped pages, which then read as one. Two cases:
 
-- **The broker restarts.** The first poisoned log in a process also makes
-  the run record stop vouching for the boot, so the next start takes a new
-  storage id and every copy in the root rotates. That record is written to
+- **The broker restarts.** The run record rotates every copy in the root,
+  as above. Opening a copy root registers its root for this
+  (`run_state::watch_poison`), so it does not depend on the caller. That
+  record is written to
   the same disk without a sync. If both writes are lost, nothing on disk
   says a flush failed and the copy keeps its id. For that copy it is the
   same as a power cut (issue #2423).

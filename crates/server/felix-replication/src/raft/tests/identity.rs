@@ -194,7 +194,6 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         .expect("status")
         .member;
     let log = logs.remove(failing).expect("log");
-    // Nothing left to flush, so the failure lands on the next append.
     let deadline = tokio::time::Instant::now() + PATIENCE;
     while log.durable_offset() < log.tail_offset().await.expect("tail") {
         assert!(
@@ -203,7 +202,9 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    log.fail_next_flush();
+    // Only the flush of the next record fails: an idle flush in between
+    // passes and leaves the failure armed.
+    log.fail_flush_past(log.tail_offset().await.expect("tail"));
     let acked = cluster.write(0, b"acked").await;
     let deadline = tokio::time::Instant::now() + PATIENCE;
     while !log.is_poisoned() {
