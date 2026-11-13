@@ -1463,18 +1463,23 @@ Nothing is written, on the heartbeat path or anywhere else, and no clock
 has to survive the restart. Dropping is enough, because a candidate asks
 again at its next timeout.
 
-Three members promised nobody, and are not held. One with no vote on disk
-has never taken a message. One whose stored vote is
+A member with no vote on disk has never taken a message, and is not held
+(below). Two more promised nobody, and stand at once, but they still grant
+no other candidate a vote until the hold ends. One whose stored vote is
 its own committed vote led when it stopped. Every message that names a
 later term saves that term's vote before it is answered, so this member
 took none, and no follower can have promised it anything it would now
 break. openraft has it stand for the next term as it starts
 (`enable_leader_restore`), and its followers grant the vote of the leader
-they follow. The third is a sole voter: a promise binds nobody else. The
+they follow. The second is a sole voter: a promise binds nobody else. The
 member's newest set must name it as the only voter, and the committed set
 must name no other. While a change down to one voter is not committed,
 the other voters still follow a leader, and the member is held. A learner
 beside a sole voter is held.
+The model lifts only the campaign side for these two (`HoldSkipped` in
+`Elect`). Its `MayGrant` has no such exemption: a restarted member grants
+only the leader its stored vote names, which for a member that led is
+itself.
 `FelixRaftLeaseRestoreLed.cfg` and `FelixRaftLeaseRestoreSingle.cfg`
 check both.
 
@@ -1523,8 +1528,8 @@ not rest the lease on that code staying as it is, so the hold applies to
 every member that may have promised.
 
 The cost: a leader restarted alone leads again within one vote round. A
-restarted follower cannot help elect anyone but the leader it followed
-for up to two seconds. When every member restarts together, the old
+restarted member cannot help elect anyone but the leader it followed
+(itself, for a member that led) for up to two seconds. When every member restarts together, the old
 leader stands as it starts. If a follower is already open it grants, and
 the group has its leader back within one vote round: 16 ms in the
 runtime's tests, against 2.1 to 3.2 s when the followers dropped the
@@ -1532,10 +1537,10 @@ request. If the leader opens first, its request finds nobody, and it asks
 again at its next election timeout: 1.3 to 2.1 s over five runs.
 
 **As built.** `Group::open` reads the vote from the log before openraft
-starts, and the voters once it has. Unless the vote is the member's own
-committed one or the member is the only voter, the member is not ticked
-until `election_max` has passed since the open, and answers no pre-vote
-request and no vote request but the one above. A request is dropped as
+starts, and the voters once it has. Until `election_max` has passed since the open, the
+member answers no pre-vote request and no vote request but the one above.
+Unless the vote is the member's own committed one or the member is the
+only voter, it is not ticked in that time either. A request is dropped as
 unreachable, so the candidate asks again. A held member that receives
 `TransferLeader` from the leader it follows stands, if it has taken an
 append from that leader since it started: openraft ignores the request
@@ -1548,7 +1553,8 @@ member of a group being formed.
 > `a_restarted_member_holds_its_vote_after_an_election_nobody_won`,
 > `a_restarted_member_is_not_ticked_while_it_holds_its_vote`,
 > `a_restarted_leader_leads_again_within_one_vote_round`,
-> `a_restarted_sole_voter_is_not_held`,
+> `a_restarted_sole_voter_stands_at_once`,
+> `a_restarted_leader_grants_no_other_candidate`,
 > `a_restarted_learner_beside_a_sole_voter_is_held`,
 > `a_restarted_member_alone_in_a_set_not_committed_is_held`,
 > `a_held_member_grants_the_leader_its_stored_vote_names`,
@@ -2296,10 +2302,10 @@ and the hybrid is what ships.
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. The publish path answers `Leader` writes at commit until it uses the lease (row 11, issue #2436). Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
+| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. The publish path answers `Leader` writes at commit until it uses the lease (row 11, issue #2436). Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. The lease is row 11. No membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced: built (`felix_storage::raft_copy`, `GroupRuntime::open_copy`), except the control plane's copy of the root sequence and the broker opening its groups through them. Not built yet: declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
-| 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait. Built: the vote hold with its exemptions, `admit_local_ack` and `await_ack`, the void, the transfer entry point, the suspend check and the config inequality ("Acknowledging a write"). Not built: the publish path calling it (issue #2436) | 4 | Behind the feature. Needs the model's lease configs first |
+| 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait. Built: the vote hold with its exemptions, `admit_local_ack` and `await_ack`, the void, the transfer entry point, the suspend check and the config inequality ("Acknowledging a write"). Not built: the publish path calling it (issue #2436) | 4 | Behind the feature. The model's lease configs passed (#2422) |
 | 6 (#2238) | Cache and counters in one group: state machine, compaction by each member's snapshot, conditional expiry delete, request ids on every write | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |
 | 8 (#2241) | Heartbeat coalescing: the `openraft-multi` pull request, then adopting the release that has it | 3 | Upstream change is additive. Felix adopts it by a version pin |

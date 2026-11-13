@@ -528,7 +528,8 @@ fn a_lease_that_can_outlast_a_followers_promise_is_refused() {
 /// **A restarted member takes no vote and no pre-vote for one election
 /// timeout when it may have promised a leader, and does not stand.** Here:
 /// followers' votes for their leader. The old leader promised nobody: it
-/// takes votes at once and stands for the next term as it starts.
+/// stands for the next term as it starts, but grants no other candidate
+/// until its hold ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
     let mut cluster = Cluster::new(true);
@@ -567,15 +568,50 @@ async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
             .is_some_and(|status| status.term == term + 1)
     };
     soon("the old leader did not stand", stood).await;
-    let answer = runtime.handle(to(&leader.broker, vote_request(term + 9, "x")));
-    assert!(answer.await.is_ok(), "the old leader held its vote");
+    for request in [vote_request, pre_vote_request] {
+        let answer = runtime.handle(to(&leader.broker, request(term + 9, "x")));
+        assert!(dropped(&answer.await), "the old leader granted another");
+    }
 
     tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
-    for broker in followers {
+    for broker in BROKERS {
         let runtime = cluster.runtime(broker);
         let answer = runtime.handle(to(broker, vote_request(term + 9, "x")));
         assert!(answer.await.is_ok(), "{broker} still takes no vote");
     }
+    cluster.stop().await;
+}
+
+/// **A restarted leader stands at once but grants no other candidate
+/// inside its hold.** `RestoreOwnLead` lifts only the campaign side: the
+/// model's `MayGrant` has a restarted member grant only the leader its
+/// stored vote names, which is itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_leader_grants_no_other_candidate() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let last = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, last).await;
+    let leader = cluster.elected(0).await;
+    let term = cluster.runtime(&leader.broker).status(&shard(0));
+    let term = term.expect("status").term;
+    let other = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker)
+        .expect("a follower");
+
+    restart(&mut cluster, &leader.broker).await;
+    let runtime = cluster.runtime(&leader.broker);
+    let member = runtime.group(&shard(0)).expect("group");
+    for request in [vote_request, pre_vote_request] {
+        let asked = runtime.handle(to(&leader.broker, request(term + 9, other)));
+        assert!(
+            dropped(&asked.await),
+            "the old leader took {other}'s request"
+        );
+    }
+    assert!(member.holds_votes(), "the hold ended before the requests");
+    assert_eq!(cluster.elected(0).await, leader);
     cluster.stop().await;
 }
 
@@ -602,10 +638,11 @@ async fn a_restarted_leader_leads_again_within_one_vote_round() {
     cluster.stop().await;
 }
 
-/// **A sole voter is not held**: its promise binds nobody else. It leads
-/// again as it starts, and after a vote for another it takes votes at once.
+/// **A sole voter stands at once**: its promise binds nobody else. It
+/// leads again as it starts. Like any restarted member it grants no
+/// candidate but the one its stored vote names inside its hold.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_restarted_sole_voter_is_not_held() {
+async fn a_restarted_sole_voter_stands_at_once() {
     let mut cluster = Cluster::new(true);
     cluster.open(0).await;
     let alone = BTreeSet::from([MemberId::new("a", 1)]);
@@ -648,9 +685,9 @@ async fn a_restarted_sole_voter_is_not_held() {
     for request in [vote_request, pre_vote_request] {
         let answer = cluster
             .runtime("a")
-            .handle(to("a", request(term + 9, "x")))
+            .handle(to("a", request(term + 9, "y")))
             .await;
-        assert!(answer.is_ok(), "a sole voter held its vote");
+        assert!(dropped(&answer), "a sole voter granted y inside its hold");
     }
     cluster.stop().await;
 }
@@ -816,39 +853,53 @@ async fn a_group_restarted_whole_has_its_leader_back_within_one_vote_round() {
 /// stored vote, so the old leader is let through no more.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_held_member_handed_the_leadership_stands_and_is_ticked() {
-    let mut led = Led::leased().await;
-    let target = led.followers().next().expect("a follower");
-    let started = tokio::time::Instant::now();
-    restart(&mut led.cluster, &target).await;
-    let runtime = led.cluster.runtime(&target);
-    let dropped_one = runtime.handle(to(&target, vote_request(led.term + 9, "x")));
+    // A hold of 8 s, so restart, catch-up, transfer, election and the first
+    // heartbeat tick fit inside it on a loaded machine.
+    let long = RuntimeConfig {
+        election_max: Duration::from_secs(8),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(long, true);
+    cluster.form(0).await;
+    let last = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, last).await;
+    let leader = cluster.elected(0).await;
+    let term = cluster.runtime(&leader.broker).status(&shard(0));
+    let term = term.expect("status").term;
+    let target = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker)
+        .expect("a follower");
+
+    restart(&mut cluster, target).await;
+    let runtime = cluster.runtime(target);
+    let member = runtime.group(&shard(0)).expect("group");
+    let dropped_one = runtime.handle(to(target, vote_request(term + 9, "x")));
     assert!(dropped(&dropped_one.await), "{target} is not held");
     // openraft hands over only to a target that has taken an append
     // since it started.
-    led.propose(1).await;
-    let last = led.status().last_index;
-    eventually(|| (runtime.status(&shard(0))?.last_index == last).then_some(())).await;
+    let last = cluster.write(0, b"again").await;
+    eventually(|| (runtime.status(&shard(0))?.last_index == Some(last)).then_some(())).await;
+    let status = runtime.status(&shard(0)).expect("status");
+    assert_eq!(status.ticks, 0, "{target} was ticked while it followed");
 
-    let handed = MemberId::new(&*target, 1);
-    let handed = led.engine.transfer(&shard(0), handed).await;
-    assert_eq!(handed, Some(led.term));
-    let next = led.term + 1;
-    let ticks = eventually(|| {
+    let engine = RaftEngine::new(cluster.runtime(&leader.broker));
+    let handed = engine.transfer(&shard(0), MemberId::new(target, 1)).await;
+    assert_eq!(handed, Some(term));
+    eventually(|| {
         let status = runtime.status(&shard(0))?;
-        (status.role == Role::Leader && status.term == next).then_some(status.ticks)
+        (status.role == Role::Leader && status.term == term + 1).then_some(())
     })
     .await;
-    assert_eq!(ticks, 0, "{target} was ticked before it led");
-    let old = &*led.leader.broker;
-    let asked = runtime.handle(to(&target, stands(led.term + 9, old)));
+    let asked = runtime.handle(to(target, stands(term + 9, &leader.broker)));
     assert!(dropped(&asked.await), "the old leader was let through");
     soon("the new leader was not ticked", || {
         runtime.status(&shard(0)).is_some_and(|now| now.ticks > 0)
     })
     .await;
-    // All of it inside the hold, or the test showed nothing.
-    assert!(started.elapsed() < timers().election_max);
-    led.cluster.stop().await;
+    // Read after the tick: the hold only ends, so it was on at the tick.
+    assert!(member.holds_votes(), "the hold ended before the first tick");
+    cluster.stop().await;
 }
 
 /// **The same for a vote that is not a leader's**: one granted to a

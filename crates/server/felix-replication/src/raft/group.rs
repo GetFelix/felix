@@ -38,8 +38,7 @@ pub(crate) struct Group {
     raft: Raft<ShardTypes, Machine>,
     pace: Arc<Pace>,
     lease: Arc<Lease>,
-    /// Empty for a member that had promised nobody when it started, and
-    /// for a sole voter.
+    /// Empty for a member that started with no vote on disk.
     hold: Hold,
     /// Carries this member's written position to its leader.
     transport: Arc<dyn RaftTransport>,
@@ -294,8 +293,12 @@ impl Pace {
 #[derive(Default)]
 struct Hold {
     /// On the runtime's clock: until then this member takes no vote or
-    /// pre-vote request, but for the one below, and is not ticked.
+    /// pre-vote request, but for the one below.
     until: u64,
+    /// Whether the member is ticked inside the hold, so it campaigns at
+    /// once: it promised nobody, or no other voter can have taken its
+    /// promise. It still grants nobody else until `until`.
+    campaigns: bool,
     /// The stored vote, if it was committed and nothing can have replaced
     /// it since. It names the leader this member followed, and that one
     /// candidate is let through once: the promise was made to it. A vote
@@ -366,16 +369,18 @@ impl Group {
         // again for one election timeout, and that promise was in memory.
         // It started after the last message it took, so waiting the
         // timeout out from here covers it. A member with no vote has
-        // promised nothing, and neither has one whose vote is its own
-        // committed one: it took no later leader's message, and openraft
-        // has it stand again as it starts.
+        // taken no message and is not held.
         //
         // The vote on disk, not openraft's: at a start openraft demotes
         // its own committed vote in memory.
         let stored = RaftLogReader::read_vote(&mut log.reader()).await?;
-        let promised = stored
+        // One whose vote is its own committed one took no later leader's
+        // message, so it promised nobody and may stand at once. It still
+        // grants nobody else inside the hold, as FelixRaftLease.tla's
+        // MayGrant has it.
+        let led = stored
             .as_ref()
-            .is_some_and(|vote| !(vote.is_committed() && vote.leader_id().node_id() == &member));
+            .is_some_and(|vote| vote.is_committed() && vote.leader_id().node_id() == &member);
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
@@ -399,7 +404,8 @@ impl Group {
         let raft = Raft::new(member.clone(), config, network, log, machine)
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
-        // A sole voter's promise binds nobody else. The newest set must
+        // A sole voter's promise binds nobody else, so it stands at once
+        // too. The newest set must
         // name this member alone, and the committed one no other voter:
         // while a change down to one voter is not committed, the others
         // still vote. The committed set is empty when the log holds only
@@ -413,12 +419,13 @@ impl Group {
             })
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
-        let hold = match promised && !sole_voter {
-            true => Hold {
+        let hold = match stored {
+            Some(vote) => Hold {
                 until: timers.now() + timers.election_max,
-                follows: parking_lot::Mutex::new(stored.filter(|vote| vote.is_committed())),
+                campaigns: led || sole_voter,
+                follows: parking_lot::Mutex::new(Some(vote).filter(|vote| vote.is_committed())),
             },
-            false => Hold::default(),
+            None => Hold::default(),
         };
         let stop = CancellationToken::new();
         let leadership = Arc::new(Leadership::new(Arc::clone(&id.shard), host));
@@ -475,9 +482,11 @@ impl Group {
         if self.stopped.load(Ordering::Relaxed) {
             return;
         }
-        // A member that takes no vote does not ask for one. One that was
-        // handed the leadership meanwhile still heartbeats.
-        if self.holds_votes() && !self.leads() {
+        // A member that takes no vote does not ask for one, unless it
+        // promised nobody. One handed the leadership meanwhile is ticked
+        // too: its first tick as leader comes once `Pace::wrote` or
+        // `Pace::unanswered` lowers `due` below the hold's end.
+        if self.holds_votes() && !self.hold.campaigns && !self.leads() {
             self.pace.due.store(self.hold.until, Ordering::Relaxed);
             return;
         }
@@ -496,7 +505,7 @@ impl Group {
     /// Whether this member started less than one election timeout ago with
     /// a vote on disk. See `docs/per-shard-raft.md`, "A restarted member
     /// grants no vote at first".
-    fn holds_votes(&self) -> bool {
+    pub(super) fn holds_votes(&self) -> bool {
         self.pace.timers.now() < self.hold.until
     }
 

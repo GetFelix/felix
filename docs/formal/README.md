@@ -798,7 +798,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold (issue #2307, `Group::open` and `Group::dispatch` in `raft/group.rs`) |
 | `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
 | `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
-| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
+| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for campaigning by a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process. As a voter it is still held | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
 | `FelixRaftLeaseReachRestoreLed.cfg` | a witness for `FelixRaftLeaseRestoreLed.cfg` | violate `NeverHoldSkipped`: a restarted broker leads inside its hold |
 | `FelixRaftLeaseRestoreAnyVote.cfg` | the same with the hold skipped for any stored vote | violate `LeaseExclusive`: a follower that answered the leader restarts, campaigns at once, and a voter outside the leader's window elects it |
 | `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (51 distinct states) |
@@ -3493,7 +3493,8 @@ committed. Such a member took no later leader's message, so it promised
 nobody, and its own lease died with the process; the other voters still keep
 their window and their hold. The model keeps that on disk as `led`, and
 `RestoreOwnLead` lets such a member, or the only voter, campaign without the
-hold. It campaigns in a new term rather than resuming the old one, which
+hold. It lifts only the campaign side: `MayGrant` still has the member grant
+no candidate but the one its stored vote names, itself, until the hold ends. It campaigns in a new term rather than resuming the old one, which
 gives it no more than a resumed leader has: no lease until a quorum answers
 again. `FelixRaftLeaseRestoreLed.cfg` passes with three terms and one write,
 and `FelixRaftLeaseReachRestoreLed.cfg` shows the skip is taken.
