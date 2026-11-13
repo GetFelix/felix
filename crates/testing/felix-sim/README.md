@@ -100,8 +100,10 @@ A seed fails when any check reports a problem, except a warning.
 `felix_sim::raft` (feature `raft`, on for this crate's tests) runs groups of the
 per-shard Raft engine without a broker service around them: three or five
 members, a fixed member set, simulated links, no control plane. It checks the
-client history, one leader per term, the read bound against what a majority
-has fsynced, and recovery after the heal. See "Raft groups" in
+client history, one leader per term, the read bound, acknowledgements and
+live deliveries against what a majority has fsynced, and recovery after the
+heal. A run that stalls fails with a finding, and each run prints a trace hash
+that a replay of the seed must match. See "Raft groups" in
 `docs/simulation.md`.
 
 ```bash

@@ -583,14 +583,24 @@ shard isolated.
 Clients publish through the engine on the member they believe leads, and
 sometimes on another member, which must refuse. Readers read a member's log up
 to its read bound, on any member. Every publish error is recorded as unknown.
+Every member's broker also has a live subscriber on each shard. Publishers
+exist only on the member that leads, so a subscriber sees what its member
+fans out while it leads.
 
 What a seed checks:
 
 - The history checker, over what the clients saw and a final read taken from
-  the leader after the writers stop.
+  the leader after the writers stop. Every list is checked as acknowledged by
+  a majority, whatever the stream's level, because a Raft shard acknowledges
+  at commit: an acknowledged write that is missing, or a read that saw
+  records the final log does not hold, fails the seed.
 - At most one member leads a term.
 - A member's read bound never goes back, and never passes what a majority of
   members has fsynced.
+- When a member acknowledges a write, the record is below that member's read
+  bound and a majority of members has fsynced it.
+- A record handed to a live subscriber is below its member's read bound at
+  that moment, comes in offset order, and is in the final log at its offset.
 - Within 30 seconds of the heal every shard has a leader that acknowledges a
   write, no member refuses a read, and every member serves the same records.
 
@@ -598,16 +608,35 @@ What a seed checks:
 0.8x to 1.2x. The engine reads no clock except its timers, so this is all that
 clock skew can do to it. Without the variable the timers agree.
 
-Two pinned seeds run with the workspace tests. The batch is ignored by default:
+Two pinned seeds run with the workspace tests. The batch is ignored by default.
+It runs every seed and lists the ones that failed:
 
 ```bash
 FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
   cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
 ```
 
-Not covered yet, because each needs a broker that serves a Raft shard: live
-subscribers across a failover, consumer groups, reads after a restart, and the
-whole-cluster history campaign in `history.yml`.
+A run that is still going after six minutes of virtual time ends with a
+`stalled` finding that names the step it was in, and the history recorded so
+far is still checked. A healthy seed takes a little over one minute of virtual
+time. A run that holds the thread for 15 minutes of real time ends the
+process and prints the seed.
+
+Each run prints a trace hash: one number over the faults, every operation,
+every delivery, the final reads and the findings. Built with
+`RUSTFLAGS="--cfg tokio_unstable"`, which seeds `select!`, a seed gives the
+same hash every time. This test runs each seed twice and shows the first event
+that differs:
+
+```bash
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=4 \
+  cargo test -p felix-sim --test raft_seeds -- --exact each_raft_seed_runs_the_same_twice --nocapture
+```
+
+Not covered yet, because each needs a broker that serves a Raft shard: a
+subscriber that follows a shard from one leader to the next, consumer groups,
+reads after a restart, and the whole-cluster history campaign in
+`history.yml`.
 
 ## The nightly sweep
 
