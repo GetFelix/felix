@@ -24,6 +24,7 @@
 mod codec;
 mod commit;
 mod deliver;
+mod draws;
 mod engine;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -43,6 +44,7 @@ mod wire;
 mod written;
 
 pub use deliver::RaftReads;
+pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};

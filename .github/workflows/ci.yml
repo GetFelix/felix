@@ -530,11 +530,11 @@ jobs:
         run: cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 
       # Groups of the per-shard Raft engine (docs/simulation.md, "Raft groups").
-      # The pinned seeds live here, not in the blocking suite, until a seed
-      # replays its run (#2449).
-      - name: Raft group pinned seeds
+      # The pinned seeds and the replay check need the flag this job builds
+      # with, so the workspace tests skip them.
+      - name: Raft group pinned seeds and replay
         if: ${{ !cancelled() }}
-        run: cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seed_1 raft_seed_2_with_skewed_timers --nocapture
+        run: cargo test -p felix-sim --test raft_seeds -- --nocapture
 
       - name: Raft group seeds
         if: ${{ !cancelled() }}

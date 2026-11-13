@@ -221,7 +221,7 @@ impl Registry {
     }
 
     fn publish(&self, slots: &Slots) {
-        let open = slots
+        let mut open: Vec<_> = slots
             .by_shard
             .values()
             .filter_map(|slot| match slot {
@@ -229,6 +229,8 @@ impl Registry {
                 Slot::Opening | Slot::Closing(_) => None,
             })
             .collect();
+        // A fixed tick order, so a simulation seed replays its run.
+        open.sort_by(|a, b| a.id.shard.cmp(&b.id.shard));
         self.ticked.store(Arc::new(open));
     }
 
