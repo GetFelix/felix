@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794600246568,
+  "lastUpdate": 1794600726797,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54912,6 +54912,58 @@ window.BENCHMARK_DATA = {
             "range": "132479.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1523972.12\nmean: 1469405.88\nstdev: 132479.50\ncv: 9.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "adeaa92a1e3b0e82de1f8ad2fa42bc4d763f49bd",
+          "message": "test(sim): groups of the per-shard Raft engine on virtual time (#2233) (#2439)\n\nTrack 4 PR 4g (#2233), test-only: felix_sim::raft simulates groups of the per-shard Raft engine on virtual time and checks their histories.\n\n- Three or five members, simulated link faults, a fixed member set, no restarts and no control plane; modes `off` and `clocks` (each member's timers scaled 0.8x to 1.2x).\n- Checks: the history checker over Quorum appends and reads; an ack or delivery only for a record a majority holds (same record, flushed past it); one leader per term and a read bound that never goes back or past the majority, sampled each second; recovery after the heal; live subscribers per member and shard; the final log as ground truth.\n- A seed fails unless it saw leader changes, deliveries, acks, reads and faults above stated floors; a stall ends the run with the phase or seed named.\n- Revert checks: read bound at the written position 8/8 seeds fail, ack before commit 8/8, commit wait without the term check and deposed exit 7/8.\n- Two pinned seeds run in the non-blocking sim-seeds job until runs replay exactly (#2449); Raft seeds as a nightly mode is #2450. Broker-level runs come with the routing work (#2448).\n\nSpec-Unaffected: test harness only",
+          "timestamp": "2026-11-13T11:52:21-08:00",
+          "tree_id": "3f428e022f74465380831494969ab3123599802f",
+          "url": "https://github.com/GetFelix/felix/commit/adeaa92a1e3b0e82de1f8ad2fa42bc4d763f49bd"
+        },
+        "date": 1794600726067,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 485466.9,
+            "range": "39024.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 485466.90\nmean: 499857.92\nstdev: 39024.29\ncv: 7.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 485466.9,
+            "range": "39024.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 485466.90\nmean: 499857.92\nstdev: 39024.29\ncv: 7.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122633.62,
+            "range": "7586.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122633.62\nmean: 119411.56\nstdev: 7586.69\ncv: 6.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1226336.24,
+            "range": "75866.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1226336.24\nmean: 1194115.58\nstdev: 75866.88\ncv: 6.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
