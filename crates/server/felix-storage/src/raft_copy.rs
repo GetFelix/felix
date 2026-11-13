@@ -12,8 +12,10 @@
 //!
 //! A root opens only through the gate ([`check`]): its sequence, which rises with
 //! every synced mark write, is compared with the run witness's and the
-//! control plane's copies, and a root that is behind gets a new storage id
-//! before any member opens.
+//! control plane's copies, and a root that is behind either, or behind the
+//! node's incarnation, gets a new storage id before any member opens. A root
+//! holding marks with no copy to compare against opens nothing until one
+//! arrives.
 //!
 //! The design is in `docs/per-shard-raft.md`, "Group and member identity",
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
@@ -26,7 +28,7 @@ mod marks;
 pub(crate) mod tests;
 
 pub use copy_file::CopyFile;
-pub use gate::{Behind, Gate, GatePassed, check};
+pub use gate::{Behind, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, kept_copies};
 pub use marks::{CopyMarks, MarkLog};
 

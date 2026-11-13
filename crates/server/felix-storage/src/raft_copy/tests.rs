@@ -44,7 +44,15 @@ impl Root {
     }
 
     pub(crate) fn gate(&self, control_plane: Option<u64>) -> Gate {
-        check(self.path(), Some(self.shm.path()), control_plane).expect("gate")
+        check(
+            self.path(),
+            Evidence {
+                witness_dir: Some(self.shm.path()),
+                control_plane,
+                restored: false,
+            },
+        )
+        .expect("gate")
     }
 
     /// The root as a start opens it, through a gate that must pass.
@@ -52,7 +60,19 @@ impl Root {
         match self.gate(None) {
             Gate::Passed(passed) => CopyRoot::open(self.path(), passed, minter()),
             Gate::Behind(behind) => panic!("the root is behind: {behind:?}"),
+            Gate::Unchecked(unchecked) => panic!("the root is unchecked: {unchecked:?}"),
         }
+    }
+
+    /// The witness records the root's sequence under its current storage
+    /// id, as a rotation through the gate does.
+    pub(crate) fn witness_current_id(&self) {
+        let id = storage_identity::load(self.path())
+            .expect("id")
+            .expect("an id");
+        MarkLog::open(self.path(), id, Some(self.shm.path().to_path_buf()))
+            .expect("marks")
+            .record_witness();
     }
 
     /// A machine restart: the run witness is gone.

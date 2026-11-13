@@ -232,3 +232,41 @@ async fn a_vote_is_synced_in_every_fsync_mode() {
         log.close().await.expect("close");
     }
 }
+
+/// A batched mark write that fails stops the mark log, so the batched
+/// mark can no longer follow the log. From then on the log takes no
+/// appends rather than run ahead of its mark without bound.
+#[tokio::test]
+async fn a_failed_batched_mark_fails_later_appends() {
+    let root = Root::new();
+    let copies = root.open();
+    let (_opened, mut log) = opened(
+        &root,
+        &copies,
+        LogMarkMode::Batched(std::time::Duration::from_millis(10)),
+    )
+    .await;
+    append(&mut log, &[normal(1, 0, "a")])
+        .await
+        .expect("append")
+        .await
+        .expect("flush");
+    copies.mark_log().fail_next_write();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut index = 1;
+    loop {
+        match append(&mut log, &[normal(1, index, "b")]).await {
+            Ok(flushed) => {
+                flushed.await.expect("flush");
+                index += 1;
+            }
+            Err(_) => break,
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "appends went on after the batched mark failed"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    assert!(copies.mark_log().failure().is_some());
+}

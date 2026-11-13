@@ -88,6 +88,7 @@ async fn a_copy_minted_under_another_storage_id_rotates() {
     };
     // The root lost its identity and got a new one.
     storage_identity::replace(root.path(), [3; 16]).expect("new id");
+    root.witness_current_id();
     let copies = root.open();
     let reopened = open_copy(&copies, &root.shard_dir()).await;
     let rotation = reopened.rotation.clone().expect("rotated");

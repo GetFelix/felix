@@ -233,3 +233,51 @@ async fn a_rewrite_keeps_the_live_marks_and_the_sequence() {
         .expect("log");
     assert_eq!(reopened.sequence(), sequence + 1);
 }
+
+/// The caller that takes a batch writes it for everyone in it. Dropping
+/// that caller's future part way answers nobody early, and the log can
+/// still write afterwards.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_writer_answers_nobody_before_the_sync() {
+    use futures_util::FutureExt;
+
+    let root = Root::new();
+    let log = open(&root);
+    for shard in ["a", "b"] {
+        log.fresh(Arc::from(shard), 1).await.expect("fresh");
+    }
+    let held = log.hold_writer().await;
+    let first = log.for_copy(Arc::from("a"), 1);
+    let mut cancelled = Box::pin(async move { first.vote(vote(2, "x#1", false)).await });
+    assert!((&mut cancelled).now_or_never().is_none(), "queued");
+    let second = log.for_copy(Arc::from("b"), 1);
+    let answered = tokio::spawn(async move { second.vote(vote(2, "y#1", false)).await });
+    while log.queued() < 2 {
+        tokio::task::yield_now().await;
+    }
+    let taken = log.writes_taken();
+    let stalled = log.stall_writes().await;
+    drop(held);
+    // The first caller takes both changes and stops before the file.
+    while log.writes_taken() == taken {
+        assert!((&mut cancelled).now_or_never().is_none(), "stalled");
+        tokio::task::yield_now().await;
+    }
+    drop(cancelled);
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(
+        !answered.is_finished(),
+        "a vote was answered before its mark was synced"
+    );
+    drop(stalled);
+    answered.await.expect("task").expect("vote");
+    assert_eq!(log.marks("b").expect("marks").vote, vote(2, "y#1", false));
+    log.for_copy(Arc::from("a"), 1)
+        .vote(vote(3, "x#1", false))
+        .await
+        .expect("a later write");
+    assert_eq!(
+        open(&root).marks("a").expect("marks").vote,
+        vote(3, "x#1", false)
+    );
+}

@@ -1,7 +1,7 @@
 //! Members opened as copies of their shard directories, through a root that
 //! passed the gate.
 
-use felix_storage::raft_copy::{CopyRoot, Gate, RotateReason, check};
+use felix_storage::raft_copy::{CopyRoot, Evidence, Gate, RotateReason, check};
 use felix_storage::storage_identity;
 use openraft::async_runtime::watch::WatchReceiver;
 
@@ -21,8 +21,8 @@ impl Roots {
             let root = dir.path().join(broker);
             std::fs::create_dir_all(&root).expect("root");
             storage_identity::load_or_create(&root, || [n as u8 + 1; 16]).expect("id");
-            let Gate::Passed(passed) = check(&root, None, None).expect("gate") else {
-                panic!("a new root is behind");
+            let Gate::Passed(passed) = check(&root, Evidence::default()).expect("gate") else {
+                panic!("a new root did not pass");
             };
             let next = std::sync::atomic::AtomicU64::new(100 * (n as u64 + 1));
             let copies = CopyRoot::open(&root, passed, move || {

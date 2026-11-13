@@ -42,10 +42,10 @@ async fn a_root_behind_the_witness_fails_the_gate_and_rotates() {
         .expect("an id");
     let behind = match root.gate(None) {
         Gate::Behind(behind) => behind,
-        Gate::Passed(_) => panic!("a root behind its witness passed"),
+        other => panic!("a root behind its witness was not behind: {other:?}"),
     };
     assert_eq!((behind.root, behind.witness), (3, Some(4)));
-    let passed = behind.rotate(root.path(), [9; 16]).expect("rotate");
+    let passed = behind.rotate([9; 16]).expect("rotate");
     let after = storage_identity::load(root.path())
         .expect("id")
         .expect("an id");
@@ -54,7 +54,7 @@ async fn a_root_behind_the_witness_fails_the_gate_and_rotates() {
     let copies = CopyRoot::open(root.path(), passed, minter());
     assert_eq!(copies.storage_id(), after);
     drop(copies);
-    // The witness names the old id now, so the rotated root passes.
+    // The rotation recorded the root's sequence under the new id.
     assert!(matches!(root.gate(None), Gate::Passed(_)));
 }
 
@@ -62,7 +62,14 @@ async fn a_root_behind_the_witness_fails_the_gate_and_rotates() {
 async fn a_root_behind_the_control_plane_fails_the_gate() {
     let root = Root::new();
     three_writes(&root).await;
-    let gate = check(root.path(), None, Some(4)).expect("gate");
+    let gate = check(
+        root.path(),
+        Evidence {
+            control_plane: Some(4),
+            ..Evidence::default()
+        },
+    )
+    .expect("gate");
     match gate {
         Gate::Behind(behind) => {
             assert_eq!(
@@ -70,7 +77,7 @@ async fn a_root_behind_the_control_plane_fails_the_gate() {
                 (3, None, Some(4))
             );
         }
-        Gate::Passed(_) => panic!("a root behind the control plane passed"),
+        other => panic!("a root behind the control plane was not behind: {other:?}"),
     }
 }
 
@@ -89,7 +96,8 @@ async fn a_root_ahead_of_its_copies_passes() {
     assert!(matches!(root.gate(Some(4)), Gate::Behind(_)));
 }
 
-/// A record under another storage id is from before a rotation.
+/// A record under another storage id is from before a rotation, so it is
+/// no copy of this root's sequence.
 #[tokio::test]
 async fn a_witness_of_another_storage_id_is_not_compared() {
     let root = Root::new();
@@ -100,12 +108,66 @@ async fn a_witness_of_another_storage_id_is_not_compared() {
         StorageId::from_bytes([7; 16]),
         100,
     );
-    assert!(matches!(root.gate(None), Gate::Passed(_)));
+    assert!(matches!(root.gate(None), Gate::Unchecked(_)));
+    assert!(matches!(root.gate(Some(3)), Gate::Passed(_)));
+}
+
+/// A VM snapshot put back and the machine rebooted: the witness is empty
+/// and the control plane has no sequence. The marks went back with the
+/// directories, so nothing at the root can show it; the root waits for
+/// evidence instead of opening its copies with rolled-back logs.
+#[tokio::test]
+async fn a_rebooted_root_with_marks_and_no_copy_of_its_sequence_is_unchecked() {
+    let root = Root::new();
+    three_writes(&root).await;
+    root.forget_witness();
+    match root.gate(None) {
+        Gate::Unchecked(unchecked) => assert_eq!(unchecked.root, 3),
+        other => panic!("a root nothing vouches for was not held: {other:?}"),
+    }
+    // The same on a host with no witness at all.
+    assert!(matches!(
+        check(root.path(), Evidence::default()).expect("gate"),
+        Gate::Unchecked(_)
+    ));
+    // A control-plane copy it is not behind lets it pass.
+    assert!(matches!(root.gate(Some(3)), Gate::Passed(_)));
+}
+
+/// A root with no marks has no copy that could vote with a rolled-back log.
+#[test]
+fn a_root_with_no_marks_passes_without_a_copy() {
+    let root = Root::new();
+    assert!(matches!(
+        check(root.path(), Evidence::default()).expect("gate"),
+        Gate::Passed(_)
+    ));
+}
+
+/// The incarnation verdict alone is enough: a root from before the node's
+/// last registration is behind even when its sequence matches.
+#[tokio::test]
+async fn a_root_behind_the_incarnation_is_behind() {
+    let root = Root::new();
+    three_writes(&root).await;
+    let gate = check(
+        root.path(),
+        Evidence {
+            witness_dir: Some(root.shm.path()),
+            control_plane: Some(3),
+            restored: true,
+        },
+    )
+    .expect("gate");
+    match gate {
+        Gate::Behind(behind) => assert!(behind.restored),
+        other => panic!("a root behind the incarnation was not behind: {other:?}"),
+    }
 }
 
 #[test]
 fn a_root_with_no_storage_id_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
-    let err = check(dir.path(), None, None).err().expect("no id");
+    let err = check(dir.path(), Evidence::default()).expect_err("no id");
     assert_eq!(err.kind(), io::ErrorKind::NotFound, "{err}");
 }

@@ -388,7 +388,9 @@ impl GroupRuntime {
     /// ([`Self::initialize`]) or to hear from a leader.
     ///
     /// Nothing here checks that the directory may still hold copy `copy`,
-    /// and no marks are kept. A shard opens through [`Self::open_copy`].
+    /// and no marks are kept, so it is for tests only. A shard opens
+    /// through [`Self::open_copy`].
+    #[cfg(any(test, feature = "testing"))]
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
         let reserved = self.reserve(&group)?;
         let member = MemberId::new(self.inner.broker.clone(), copy);

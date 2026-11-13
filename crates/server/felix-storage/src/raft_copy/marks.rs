@@ -67,9 +67,13 @@ struct Inner {
     /// Shards whose log mark is written in batches. Locked before `queue`.
     batched: parking_lot::Mutex<HashMap<Arc<str>, Source>>,
     batcher: AtomicBool,
+    /// Set once a write fails, for callers that cannot wait on the writer.
+    failed: parking_lot::Mutex<Option<Arc<str>>>,
     compact_floor: AtomicU64,
     #[cfg(test)]
     stall: tokio::sync::RwLock<()>,
+    #[cfg(test)]
+    fail_next: AtomicBool,
 }
 
 #[derive(Default)]
@@ -172,9 +176,12 @@ impl MarkLog {
                 }),
                 batched: parking_lot::Mutex::default(),
                 batcher: AtomicBool::new(false),
+                failed: parking_lot::Mutex::default(),
                 compact_floor: AtomicU64::new(COMPACT_FLOOR),
                 #[cfg(test)]
                 stall: tokio::sync::RwLock::default(),
+                #[cfg(test)]
+                fail_next: AtomicBool::new(false),
             }),
         })
     }
@@ -196,6 +203,30 @@ impl MarkLog {
 
     pub(crate) fn set_storage_id(&self, id: StorageId) {
         *self.inner.storage_id.lock() = id;
+    }
+
+    pub(crate) fn root(&self) -> &Path {
+        &self.inner.root
+    }
+
+    /// Tell the witness the root's sequence under its current storage id.
+    pub(crate) fn record_witness(&self) {
+        witness::record_sequence(
+            &self.inner.root,
+            self.inner.witness.as_deref(),
+            self.storage_id(),
+            self.sequence(),
+        );
+    }
+
+    /// Why the log stopped, once a write failed. Every later write fails
+    /// with it.
+    pub fn failure(&self) -> Option<io::Error> {
+        self.inner
+            .failed
+            .lock()
+            .as_deref()
+            .map(|why| io::Error::other(why.to_string()))
     }
 
     /// Marks for `shard` as copy `copy`.
@@ -260,7 +291,11 @@ impl MarkLog {
     }
 
     /// Run [`Self::mark_batched`] every `interval` until the log is
-    /// dropped. Started once per log; later calls do nothing.
+    /// dropped or a batch fails. Started once per log, so the first batched
+    /// shard's interval sets it for the whole root; later calls do nothing.
+    /// A failed batch stops the log, and from then on the batched shards'
+    /// appends fail too (see [`Self::failure`]), so no leader keeps acking
+    /// past a mark that stopped moving.
     pub(crate) fn start_batcher(&self, interval: Duration) {
         if self.inner.batcher.swap(true, Ordering::AcqRel) {
             return;
@@ -274,8 +309,10 @@ impl MarkLog {
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
-                if let Err(err) = (MarkLog { inner }).mark_batched().await {
+                let log = MarkLog { inner };
+                if let Err(err) = log.mark_batched().await {
                     tracing::error!(error = %err, "the batched log marks were not written");
+                    log.stop(err).await;
                     return;
                 }
             }
@@ -301,6 +338,12 @@ impl MarkLog {
     #[cfg(test)]
     pub(crate) async fn stall_writes(&self) -> impl Drop + '_ {
         self.inner.stall.write().await
+    }
+
+    /// Fail the next write as a failed fsync would.
+    #[cfg(test)]
+    pub(crate) fn fail_next_write(&self) {
+        self.inner.fail_next.store(true, Ordering::Relaxed);
     }
 
     /// How many writes have left the queue.
@@ -375,7 +418,19 @@ impl MarkLog {
     }
 
     /// Return once write `ticket` is synced, writing it if nobody has.
+    ///
+    /// The work runs in its own task. A caller that takes the batch answers
+    /// for everyone in it, so dropping its future part way would answer the
+    /// others before their write is synced and leave the writer without its
+    /// file.
     async fn wait(&self, ticket: u64) -> io::Result<()> {
+        let log = self.clone();
+        tokio::spawn(async move { log.take_and_write(ticket).await })
+            .await
+            .map_err(io::Error::other)?
+    }
+
+    async fn take_and_write(&self, ticket: u64) -> io::Result<()> {
         let inner = &self.inner;
         let mut writer = inner.writer.lock().await;
         if ticket < writer.taken {
@@ -441,6 +496,10 @@ impl MarkLog {
         let records: Vec<(&Arc<str>, &ShardMarks)> =
             order.iter().map(|shard| (shard, &changed[shard])).collect();
         let frame = encode_frame(sequence, &records).map_err(|err| self.fail(writer, err))?;
+        #[cfg(test)]
+        if inner.fail_next.swap(false, Ordering::Relaxed) {
+            return Err(self.fail(writer, io::Error::other("an injected fsync failure")));
+        }
         let file = writer
             .file
             .take()
@@ -526,7 +585,20 @@ impl MarkLog {
             self.inner.root.join(FILE_NAME).display()
         ));
         writer.failed = Some(Arc::clone(&message));
+        self.inner
+            .failed
+            .lock()
+            .get_or_insert_with(|| Arc::clone(&message));
         io::Error::new(err.kind(), message.to_string())
+    }
+
+    /// Stop every later write after `err`, if a failed write has not
+    /// already.
+    async fn stop(&self, err: io::Error) {
+        let mut writer = self.inner.writer.lock().await;
+        if writer.failed.is_none() {
+            let _ = self.fail(&mut writer, err);
+        }
     }
 }
 

@@ -189,16 +189,28 @@ disk, so a power cut cannot shorten what a peer counted.
 
 **The restore check.** A directory restored from a backup or a VM rollback
 keeps its copy id with an older log and an older vote. Raft cannot see
-that: the copy would vote under an id that already promised more. Today the
-control plane's incarnation check catches it (`restored` in `start_run`),
-and the run witness catches it when the broker starts from its saved view.
-Both stay, as a gate in front of Raft: a restarted broker starts no member
-until its data root has passed one of them. A root that fails rotates every
-copy id in it. A broker that can reach neither the control plane nor a
-witness starts no member until it can. Brokers that stayed up are not
-affected, so failover with the control plane down still works. What waits
-is the restarted broker's own vote. The check is once per broker start, not
-per shard.
+that: the copy would vote under an id that already promised more. A gate in
+front of Raft (`raft_copy::check`) judges the data root once per broker
+start, not per shard, from three pieces of evidence: the incarnation
+verdict (the control plane registered the node after the root last recorded
+a registration, `restored` in `start_run`), the run witness's copy of the
+root sequence, and the control plane's copy (both below). The gate has
+three outcomes:
+
+- **Behind** any of the three: the root gets a new storage id and every
+  copy id in it rotates.
+- **Unchecked:** the root holds marks but there is no copy of its sequence
+  to compare against, because the machine rebooted (the witness is gone)
+  and the control plane has none. No member opens until evidence arrives.
+  A hold acts on evidence, never on silence.
+- **Passed:** otherwise, including a root with no marks yet.
+
+The control plane's copy is not built yet (issue #2441). Until it lands, a
+broker whose machine rebooted holds once its root has marks, and so does
+every start on a host with no witness directory (anything but Linux with
+`/dev/shm`). Brokers that stayed up are not affected, so failover with the
+control plane down still works. What waits is the restarted broker's own
+vote.
 
 **The root sequence.** The incarnation and the run token change once per
 start. A root put back from a backup taken during the run it interrupts
@@ -305,13 +317,16 @@ one fsync. `CopyRoot::open_copy` judges a directory and rotates it: the old
 directory is renamed aside as `<dir>.kept-<copy id>`, which is the record a
 re-form reads, and a new directory gets a new copy id. A directory holding
 only a copy file has no records, so it is reused rather than kept. A `CopyRoot` opens
-only with the value the gate (`raft_copy::check`) returns, so no member
-opens on a root that was not checked. `GroupRuntime::open_copy` opens a
+only from a `GatePassed`, which the gate (`raft_copy::check`) returns for a
+root that passed, or `Behind::rotate` returns after giving the root a new
+storage id. An unchecked root yields none, so no member opens on it. `GroupRuntime::open_copy` opens a
 member that way. The log mark is exact by default (`LogMarkMode::Exact`,
 synced before the flush is reported to Raft) and can be batched
 (`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
-Not built yet: the control plane's copy of the root sequence, and the
-broker opening its Raft groups through all this.
+Not built yet (issue #2441): the control plane's copy of the root
+sequence, and the broker opening its Raft groups through all this. Until
+the first lands, a root with marks passes only on a witness record, so a
+rebooted host holds.
 
 ### Re-forming a group
 

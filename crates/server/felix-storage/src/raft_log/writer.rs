@@ -129,6 +129,13 @@ where
         I::IntoIter: OptionalSend,
     {
         let shared = &self.shared;
+        // A batched log mark that can no longer move would let the log run
+        // ahead of it without bound. Exact marks fail each flush instead.
+        if let Some(marking) = shared.marking.get().filter(|marking| !marking.exact)
+            && let Some(err) = marking.marks.mark_log().failure()
+        {
+            return Err(err);
+        }
         let log = &shared.log;
         let now = now_micros();
         // The log writes a batch into one segment whole, so the entries go
