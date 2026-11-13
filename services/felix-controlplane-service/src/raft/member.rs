@@ -6,7 +6,6 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result};
-use openraft::async_runtime::WatchReceiver;
 
 use super::join::Standing;
 use super::version::Versions;
@@ -128,7 +127,14 @@ impl RaftMember {
         let formed = self.state.formed().await?;
         let node = self.node();
         let last_log_index = match node {
-            Some(node) => node.raft.metrics().borrow_watched().last_log_index,
+            // The node's own state, not its metrics: those are empty until
+            // the node first publishes them, and a log would be missing
+            // from the answer.
+            Some(node) => node
+                .raft
+                .with_raft_state(|state| state.log_ids.last().map(|id| id.index))
+                .await
+                .map_err(|err| anyhow::anyhow!("raft node: {err}"))?,
             None => {
                 anyhow::ensure!(
                     !self.state.holds_state()?,
