@@ -861,10 +861,12 @@ one group.
 namespaces, streams, caches, consumer checkpoints, signing keys (so every
 issued token stops working) and shard assignments. The brokers' data does
 not carry over either, since the new group knows nothing of the old streams
-and caches. Wipe the brokers too. A broker started on its 0.7 data directory
-refuses to start: the directory holds data but names no group id, and the new
-group recorded its id on an empty catalog (see
-[A recreated control plane](#a-recreated-control-plane)).
+and caches. Wipe the brokers too. A broker with `FELIX_NODE_TOKEN` set
+refuses to start on its 0.7 data directory: the directory holds data but names
+no group id, and the new group recorded its id on an empty catalog (see
+[A recreated control plane](#a-recreated-control-plane)). A broker without a
+node token only logs a warning and starts on the old data, so do not rely on
+the refusal.
 
 **How to move a cluster to 0.8.**
 
@@ -873,8 +875,7 @@ group recorded its id on an empty catalog (see
 3. Start every control-plane member on 0.8 with an empty
    `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`, as for a
    new cluster.
-4. Start every broker on 0.8 with an empty data directory. A broker started
-   on its old one refuses to start.
+4. Start every broker on 0.8 with an empty data directory.
 5. Recreate tenants, namespaces, streams and caches, and issue new tokens.
 
 **Going back.** Stop everything and start 0.7 on the directories kept in
