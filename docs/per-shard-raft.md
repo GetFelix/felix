@@ -1386,7 +1386,7 @@ owned elsewhere (`docs/subscribe-routing.md`). A leader that is deposed
 ends its subscribers, and a subscribe that registers after the deposal is
 refused, so no subscription waits on a broker that receives no publishes.
 Serving a follower's subscribers from its log up to `read_bound` is not
-built.
+built (#2454).
 
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_raft_shard_is_subscribed_to_on_its_leader`;
@@ -1397,6 +1397,13 @@ built.
 > `services/felix-broker-service/src/serving/quic/handlers/publish/tests/ownership_gate.rs`,
 > `a_raft_shard_led_here_resolves_without_the_broker_lease`.
 
+A deposed leader ends its subscribers from a task. If the same broker leads
+again at once, the new term is not served until that task is done, so it
+never ends a subscriber of the new term.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_term_led_again_keeps_its_subscribers`.
+
 Conditional publishes, atomic commits, head trims and consumer-group
 operations on a Raft shard are refused by name before they reach the
 hybrid's fence (#2446).
@@ -1406,12 +1413,30 @@ hybrid's fence (#2446).
 > `services/felix-broker-service/src/serving/group_ops/tests.rs`,
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
-`FELIX_SHARD_ENGINE=raft` is still refused at startup. Publishes, routes,
-subscribes and a leader stopping are tested across three brokers in one
-process. Not yet done: the Kafka and MQTT write paths still reach the
-hybrid's fence on a Raft shard, where they are refused as not owned
-instead of by name, and the failover test does not read the acknowledged
-payloads back.
+A Kafka produce and an MQTT publish to a Raft shard are refused by name
+too, before anything is claimed. Both write with a producer's sequence, and
+every MQTT message carries headers. A Kafka client gets `INVALID_REQUEST`,
+which it does not retry; an MQTT client gets `PUBACK` 0x83 with the reason
+string `raft_stream`.
+
+> `services/felix-broker-service/src/serving/kafka/tests.rs`,
+> `a_produce_to_a_raft_shard_is_refused_for_good`;
+> `services/felix-broker-service/src/serving/mqtt/writes/tests.rs`,
+> `a_message_for_a_raft_shard_is_refused_by_name`.
+
+A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
+shards this way. Use it on a fresh cluster only, with the variable set on
+every broker: a shard that already holds data cannot change engines yet.
+Publishes, routes, subscribes and a leader stopping are tested across three
+brokers in one process, and the failover test reads every acknowledged
+payload back from the new leader. A cluster of separate broker processes on
+Raft is not tested yet.
+
+A forwarded publish that reaches a member that does not lead is answered
+with the leader, and the requester sends it there.
+
+> `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
+> `a_forward_to_a_member_that_does_not_lead_is_followed_to_the_leader`.
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs

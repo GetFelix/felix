@@ -1607,4 +1607,117 @@ mod on_raft {
         }
         EngineShards::shutdown(&*shards).await;
     }
+
+    use felix_replication::peer::pool::{PeerError, PeerRequester};
+    use felix_wire::internal::PeerCapabilities;
+
+    /// A trio's forwarding handlers, as the requester's network.
+    struct Handlers {
+        by_node: HashMap<String, ForwardingHandler>,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl PeerRequester for Handlers {
+        async fn request(
+            &self,
+            node_id: &str,
+            _addr: std::net::SocketAddr,
+            message: InternalMessage,
+        ) -> std::result::Result<InternalMessage, PeerError> {
+            self.asked.lock().expect("lock").push(node_id.to_string());
+            Ok(self.by_node[node_id].handle(message).await)
+        }
+
+        fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+            Some(PeerCapabilities::FORWARD_OFFSETS)
+        }
+
+        async fn capabilities(
+            &self,
+            _node_id: &str,
+            _addr: std::net::SocketAddr,
+        ) -> std::result::Result<PeerCapabilities, PeerError> {
+            Ok(PeerCapabilities::NONE)
+        }
+    }
+
+    /// **A forward sent to a member that does not lead is answered with the
+    /// leader, and the requester follows it there**, where the batch commits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_forward_to_a_member_that_does_not_lead_is_followed_to_the_leader() {
+        use crate::serving::forward::{ForwardKey, ForwardTarget, forward_publish};
+
+        let (_net, members, leader) = fixture::trio().await;
+        let orders = fixture::key(STREAM, 0);
+        let credentials = Credentials::new();
+        let by_node = members
+            .iter()
+            .map(|member| {
+                let (router, ingress) = fixture::routes(&member.shards);
+                let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+                engine.set_raft(Arc::clone(&member.shards));
+                let handler = ForwardingHandler::new(
+                    Arc::clone(&member.broker),
+                    engine,
+                    router,
+                    fixture::addr_of(member.name).expect("addr").to_string(),
+                    Duration::from_secs(10),
+                    Arc::clone(&credentials.auth),
+                );
+                (member.name.to_string(), handler)
+            })
+            .collect();
+        let handlers = Handlers {
+            by_node,
+            asked: std::sync::Mutex::default(),
+        };
+        let follower = &members[(leader + 1) % members.len()];
+        fixture::until("the follower knows who leads", || {
+            matches!(
+                EngineShards::dispatch(&*follower.shards, &orders, &fixture::addr_of),
+                Some(Dispatch::Forward { .. })
+            )
+        })
+        .await;
+        // A requester whose routes are behind: it still names the follower.
+        let stale = ForwardTarget {
+            node_id: follower.name.to_string(),
+            advertise_addr: fixture::addr_of(follower.name).expect("addr"),
+            generation: 0,
+            incarnation: 0,
+        };
+        let key = ForwardKey {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            stream: STREAM.to_string(),
+            shard: 0,
+        };
+
+        let offsets = forward_publish(
+            &handlers,
+            &stale,
+            &key,
+            AckMode::OnCommit,
+            &credentials.publisher(),
+            vec![Bytes::from_static(b"forwarded")],
+            None,
+            None,
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("forwarded")
+        .expect("offsets");
+
+        assert_eq!(
+            *handlers.asked.lock().expect("lock"),
+            [follower.name, members[leader].name]
+        );
+        let read = members[leader]
+            .broker
+            .read_durable(TENANT, NAMESPACE, STREAM, 0, offsets.0, 1 << 20)
+            .await
+            .expect("read");
+        assert_eq!(&read[0].payload[..], b"forwarded");
+        fixture::stop(&members).await;
+    }
 }

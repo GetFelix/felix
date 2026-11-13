@@ -59,8 +59,11 @@ impl RaftShards {
         let leading = Arc::new(Leading {
             broker: Arc::clone(&broker),
             terms: Arc::default(),
+            ending: Arc::default(),
             #[cfg(test)]
             stall: tokio::sync::watch::Sender::new(false),
+            #[cfg(test)]
+            stall_ends: tokio::sync::watch::Sender::new(false),
         });
         runtime.report_to(Arc::clone(&leading), Arc::clone(&leading));
         let shards = Arc::new(Self {
@@ -209,6 +212,11 @@ impl RaftShards {
     #[cfg(test)]
     pub(crate) fn stall_leading(&self, stalled: bool) {
         self.leading.stall.send_replace(stalled);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn stall_ends(&self, stalled: bool) {
+        self.leading.stall_ends.send_replace(stalled);
     }
 
     #[cfg(test)]
@@ -391,9 +399,16 @@ impl felix_broker::EngineLogs for RaftShards {
 struct Leading {
     broker: Arc<Broker>,
     terms: Arc<parking_lot::Mutex<HashMap<ShardKey, Lead>>>,
+    /// Deposed terms per shard whose subscribers are still to be ended. No
+    /// later term is served while one is left: its subscribers would be
+    /// ended with the deposed term's.
+    ending: Arc<parking_lot::Mutex<HashMap<ShardKey, usize>>>,
     /// While true, a new term's move to the committed tail does not start.
     #[cfg(test)]
     stall: tokio::sync::watch::Sender<bool>,
+    /// While true, a deposed term's subscribers are not ended.
+    #[cfg(test)]
+    stall_ends: tokio::sync::watch::Sender<bool>,
 }
 
 struct Lead {
@@ -443,9 +458,10 @@ impl WriteFence for Leading {
             }
             terms.insert(key.clone(), Lead { term, open: false });
         }
-        let (broker, terms, key) = (
+        let (broker, terms, ending, key) = (
             Arc::clone(&self.broker),
             Arc::clone(&self.terms),
+            Arc::clone(&self.ending),
             key.clone(),
         );
         // The term is served only once the stream is at the committed tail:
@@ -465,7 +481,7 @@ impl WriteFence for Leading {
                     let Some(lead) = terms.get_mut(&key).filter(|lead| lead.term == term) else {
                         return;
                     };
-                    if moved.is_ok() {
+                    if moved.is_ok() && !ending.lock().contains_key(&key) {
                         lead.open = true;
                         return;
                     }
@@ -482,16 +498,34 @@ impl WriteFence for Leading {
                 return;
             }
             terms.remove(key);
+            // Counted before a later term can be reported, so that term
+            // waits for this one's subscribers to be ended.
+            *self.ending.lock().entry(key.clone()).or_default() += 1;
         }
         // Live fanout comes from the leader's publishes, so a subscriber
         // left here would wait on a broker that gets none. Ended after the
         // term is gone: a reader registering from now on sees no local
         // route and is refused.
-        let (broker, key) = (Arc::clone(&self.broker), key.clone());
+        let (broker, ending, key) = (
+            Arc::clone(&self.broker),
+            Arc::clone(&self.ending),
+            key.clone(),
+        );
+        #[cfg(test)]
+        let mut stall = self.stall_ends.subscribe();
         tokio::spawn(async move {
+            #[cfg(test)]
+            let _ = stall.wait_for(|stalled| !stalled).await;
             broker
                 .end_subscriptions(&key.tenant_id, &key.namespace, &key.stream, key.shard, None)
                 .await;
+            let mut ending = ending.lock();
+            if let Some(left) = ending.get_mut(&key) {
+                *left -= 1;
+                if *left == 0 {
+                    ending.remove(&key);
+                }
+            }
         });
     }
 }

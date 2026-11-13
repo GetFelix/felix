@@ -263,6 +263,16 @@ pub(crate) fn engine(shards: &Arc<RaftShards>) -> crate::shards::routing::Stream
 /// Routes that ask `shards` first and know every broker's address, with a
 /// broker lease that was never granted: a Raft shard must not need it.
 pub(crate) fn ingress(shards: &Arc<RaftShards>) -> Arc<crate::shards::routing::IngressRouter> {
+    routes(shards).1
+}
+
+/// [`ingress`], with the router under it.
+pub(crate) fn routes(
+    shards: &Arc<RaftShards>,
+) -> (
+    Arc<felix_router::ShardRouter>,
+    Arc<crate::shards::routing::IngressRouter>,
+) {
     use felix_router::{NodeRef, RegionRouter, RoutingTable, ShardRouter};
     let router = Arc::new(ShardRouter::new(
         shards.local.clone(),
@@ -282,14 +292,14 @@ pub(crate) fn ingress(shards: &Arc<RaftShards>) -> Arc<crate::shards::routing::I
         })
         .collect();
     router.publish(RoutingTable::default(), &nodes);
-    let ingress = crate::shards::routing::IngressRouter::new(router, Arc::default());
+    let ingress = crate::shards::routing::IngressRouter::new(Arc::clone(&router), Arc::default());
     ingress
         .fence()
         .bind_lease(Arc::new(crate::cluster::lease::LeaseState::new(
             Duration::from_secs(10),
         )));
     ingress.set_engine_shards(Arc::clone(shards) as Arc<dyn EngineShards>);
-    Arc::new(ingress)
+    (router, Arc::new(ingress))
 }
 
 fn route(shards: &RaftShards, key: &ShardKey) -> Option<Dispatch> {
@@ -743,6 +753,14 @@ async fn a_stopped_leader_is_replaced_and_no_acked_record_is_lost() {
         delivered(&mut receiver).await,
         (after, bytes::Bytes::from_static(b"b1"))
     );
+    // Every acknowledged payload reads back from the new leader's log.
+    let read = members[next]
+        .broker
+        .read_durable("t1", "ns", "orders", 0, acked[0], 1 << 20)
+        .await
+        .expect("read");
+    let payloads: Vec<&[u8]> = read.iter().map(|record| &record.payload[..]).collect();
+    assert_eq!(payloads, [&b"a1"[..], b"a2", b"a3", b"b1"]);
     // The other survivor holds the acknowledged records and the new one.
     let other = &members[1 - next];
     until("the follower applies the new record", || {
@@ -787,5 +805,50 @@ async fn a_deposed_leader_lets_its_subscribers_go() {
         stopped_serving(Some(&ingress), &orders).is_some(),
         "a subscriber registered after the deposal was kept"
     );
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **A term led again straight after a deposal keeps its own subscribers.**
+/// The deposed term's subscribers are ended by a task; the next term is not
+/// served, so takes no subscriber, until that task is done.
+#[tokio::test]
+async fn a_term_led_again_keeps_its_subscribers() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("term");
+    let (mut old, _old_guard) = {
+        let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+        subscription.expect("subscribe").into_parts()
+    };
+
+    shards.stall_ends(true);
+    shards.leading.deposed(&orders, term);
+    shards.leading.opened(&orders, term + 1);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        shards.leading(&orders),
+        None,
+        "a term was served before the deposed term's subscribers were ended"
+    );
+
+    shards.stall_ends(false);
+    until("the next term is served", || {
+        shards.leading(&orders) == Some(term + 1)
+    })
+    .await;
+    let ended = tokio::time::timeout(Duration::from_secs(20), old.recv()).await;
+    assert!(ended.expect("ended in time").is_none());
+    let (mut new, _new_guard) = {
+        let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+        subscription.expect("subscribe").into_parts()
+    };
+    let kept = tokio::time::timeout(Duration::from_millis(300), new.recv()).await;
+    assert!(kept.is_err(), "the next term's subscriber was ended");
     EngineShards::shutdown(&*shards).await;
 }

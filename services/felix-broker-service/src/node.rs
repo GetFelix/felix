@@ -118,11 +118,9 @@ where
             durable_storage: durable_config.is_some(),
         }
         .missing();
-        // Its members are started below, but no publish reaches them yet.
-        anyhow::bail!(
-            "FELIX_SHARD_ENGINE=raft is refused: {}",
-            missing.unwrap_or("no build routes a shard to Raft yet")
-        );
+        if let Some(missing) = missing {
+            anyhow::bail!("FELIX_SHARD_ENGINE=raft is refused: {missing}");
+        }
     }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();

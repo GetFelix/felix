@@ -63,8 +63,9 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::TrimTimedOut { .. }
         | BrokerError::StateViewBusy
         | BrokerError::StateNotReadable(_)
-        | BrokerError::NotOnEngineStream { .. }
         | BrokerError::ReleaseInFlight => ResponseError::UnknownServerError,
+        // The same on every broker, so not to be retried.
+        BrokerError::NotOnEngineStream { .. } => ResponseError::InvalidRequest,
     }
 }
 
