@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794584425231,
+  "lastUpdate": 1794586173147,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54600,6 +54600,58 @@ window.BENCHMARK_DATA = {
             "range": "8265.98",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 802209.57\nmean: 803384.49\nstdev: 8265.98\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b59d38725fd52c968e93099d257c8daa86ff25aa",
+          "message": "deps: quinn-udp 0.5.16 in the Python and TypeScript SDK lockfiles (#2443)\n\n#2437 missed these two lockfiles, so cargo-deny still flags\nRUSTSEC-2026-0538 on main.\n\nSpec-Unaffected: lockfile-only dependency bump",
+          "timestamp": "2026-11-13T08:02:44-08:00",
+          "tree_id": "682a1d5f8cc92d07eb5b132501b2741a72657e23",
+          "url": "https://github.com/GetFelix/felix/commit/b59d38725fd52c968e93099d257c8daa86ff25aa"
+        },
+        "date": 1794586172322,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 666968.69,
+            "range": "19200.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 666968.69\nmean: 663450.72\nstdev: 19200.82\ncv: 2.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 666968.69,
+            "range": "19200.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 666968.69\nmean: 663450.72\nstdev: 19200.82\ncv: 2.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 151055.65,
+            "range": "4985.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 151055.65\nmean: 149223.84\nstdev: 4985.31\ncv: 3.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1510556.49,
+            "range": "49853.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1510556.49\nmean: 1492238.39\nstdev: 49853.11\ncv: 3.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
