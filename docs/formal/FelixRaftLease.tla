@@ -124,10 +124,15 @@
 (*   RoleSync = FALSE: Felix reads openraft's role and `last_quorum_acked` *)
 (*   from metrics, which arrive late (`Notice`). Its check runs on the     *)
 (*   term and age it last saw.                                             *)
+(*   StepDown: a leader learns of a higher term from a candidate that has  *)
+(*   not won (an append's answer) and adopts that vote, which is not       *)
+(*   committed: it grants the candidate at once, and campaigns itself      *)
+(*   `ElectionTimeoutMin` later. With the role read late Felix would still *)
+(*   pass, whatever the lease, so the node layer voids the lease for the   *)
+(*   term when any message names a higher one, before openraft sees it     *)
+(*   (VoidOnHigherTerm).                                                   *)
 (*   LeaderBypass: openraft grants a vote to the leader the voter follows  *)
-(*   inside the window (`from_leased_leader`). A leader that stepped down  *)
-(*   (`StepDown`) campaigns `ElectionTimeoutMin` later, so with a late     *)
-(*   role the lease must not outlast that: `Lease <= ElectionTimeoutMin`.  *)
+(*   inside the window (`from_leased_leader`).                             *)
 (*   Transfers: the leader stops heartbeats and sends `TransferLeader`.    *)
 (*   A follower that takes it clears its window, the target campaigns at   *)
 (*   once and its voters grant inside the window. A transfer that does not *)
@@ -161,9 +166,9 @@
 (*                             leader's own vote is demoted with none.     *)
 (*   DeliverUncommitted     -- the subscriber reads the leader's whole     *)
 (*                             log.                                        *)
-(*   LeaseOverMin           -- the config accepts a lease longer than      *)
-(*                             `ElectionTimeoutMin` while the role is read *)
-(*                             late.                                       *)
+(*   VoidOnHigherTerm = FALSE -- a leader that steps down on a higher term *)
+(*                             keeps its lease until Felix's view catches  *)
+(*                             up.                                         *)
 (*   TransferVoids = FALSE  -- a transfer does not void the lease.         *)
 (*   VoidBeforeSend = FALSE -- the void is its own step, any time after    *)
 (*                             the message left, as a metrics watch would  *)
@@ -198,7 +203,7 @@ CONSTANTS
     StoreLeases, SupportTime, MaxEpoch, MaxBeats, MaxStalls,
     SupportNotDurable, VoteWhileSupported, LeaseKeptAcrossRestart,
     ResupportWithdrawn, WithdrawEarly, StalledKeepsAsking,
-    ElectionTimeoutMin, RoleSync, LeaderBypass, MaxStepDowns, LeaseOverMin,
+    ElectionTimeoutMin, RoleSync, LeaderBypass, MaxStepDowns, VoidOnHigherTerm,
     MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends, SuspendCheck
 
 \* The follower's side of the inequality: how long its promise lasts.
@@ -209,9 +214,6 @@ ASSUME LeaseTooLong \/ Lease * DriftHi <= Promise * DriftLo
 ASSUME DriftBeyondBound \/ (DriftLo <= RateLo /\ RateHi <= DriftHi)
 ASSUME 1 <= RateLo /\ RateLo <= RateHi
 ASSUME ElectionTimeoutMin \in 0..ElectionTimeout
-\* A stepped-down leader campaigns `ElectionTimeoutMin` after it stepped
-\* down, on its own clock, and its followers grant it inside their window.
-ASSUME LeaseOverMin \/ RoleSync \/ Lease <= ElectionTimeoutMin
 
 VARIABLES
     term, votedFor, role, log, commit,
@@ -302,6 +304,9 @@ QAge(l) ==
 
 NoAuth == <<Nobody, 0>>
 Up(b) == ~suspended[b]
+
+\* The node layer saw a message naming a term above the one b leads.
+VoidOn(b, v) == IF VoidOnHigherTerm /\ role[b] = "leader" THEN term[b] ELSE v
 
 \* The term and age Felix's check reads.
 FelixTerm(l) ==
@@ -466,13 +471,15 @@ Elect(c, Q, nt) ==
     /\ leaderOf' = [b \in Servers |-> IF b \in Q THEN Nobody ELSE leaderOf[b]]
     /\ auth' = [b \in Servers |-> IF b \in Q THEN NoAuth ELSE auth[b]]
     \* A leader that votes has stepped down, and waits before it campaigns.
+    /\ voidTerm' = [b \in Servers |->
+                      IF b \in Q \ {c} THEN VoidOn(b, voidTerm[b]) ELSE voidTerm[b]]
     /\ downAge' = [b \in Servers |->
                      IF b = c THEN Old
                      ELSE IF LeaderBypass /\ b \in Q /\ role[b] = "leader" THEN 0
                      ELSE downAge[b]]
     /\ UNCHANGED <<log, commit, startAge, restarts, delivered, acked, staleAck, nextId,
                    epoch, sup, supAge, beatMsgs, beats, stalledAge>>
-    /\ UNCHANGED <<stepDowns, seenTerm, seenAge, xfer, voidTerm, xmsgs, transfers,
+    /\ UNCHANGED <<stepDowns, seenTerm, seenAge, xfer, xmsgs, transfers,
                    suspended, sinceWake, suspends>>
 
 \* Hand an append or heartbeat to the network. The stamp is taken here.
@@ -510,8 +517,9 @@ RecvApp(m) ==
                         term', role')
     /\ followed' = [followed EXCEPT ![f] = RestartRenewsFollowed]
     /\ leaderOf' = [leaderOf EXCEPT ![f] = IF LeaderBypass THEN m.from ELSE Nobody]
+    /\ voidTerm' = [voidTerm EXCEPT ![f] = VoidOn(f, @)]
     /\ UNCHANGED <<votedFor, startAge, restarts, histVars, storeVars>>
-    /\ UNCHANGED <<downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth, xmsgs,
+    /\ UNCHANGED <<downAge, stepDowns, seenTerm, seenAge, xfer, auth, xmsgs,
                    transfers, suspended, sinceWake, suspends>>
 
 RecvAck(m) ==
@@ -682,8 +690,9 @@ Notice(l) ==
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, xfer, voidTerm, auth, xmsgs, transfers,
                    suspended, sinceWake, suspends>>
 
-\* The leader learns of a higher term from a candidate that did not win,
-\* for example in an append's answer, and steps down.
+\* The leader learns of a higher term from a candidate that has not won, in
+\* an append's answer (openraft's `HigherVote`), and adopts that vote. It is
+\* not committed, so this broker now grants that candidate.
 StepDown(l) ==
     /\ ~StoreLeases /\ stepDowns < MaxStepDowns
     /\ role[l] = "leader" /\ Up(l)
@@ -692,10 +701,11 @@ StepDown(l) ==
     /\ ackAge' = [ackAge EXCEPT ![l] = NoAges]
     /\ match' = [match EXCEPT ![l] = NoMatch]
     /\ downAge' = [downAge EXCEPT ![l] = 0]
+    /\ voidTerm' = [voidTerm EXCEPT ![l] = VoidOn(l, @)]
     /\ msgs' = LiveMsgs(msgs, term, role')
     /\ UNCHANGED <<term, votedFor, followed, log, commit, heardAge, startAge, restarts,
                    histVars, storeVars>>
-    /\ UNCHANGED <<leaderOf, seenTerm, seenAge, xfer, voidTerm, auth, xmsgs, transfers,
+    /\ UNCHANGED <<leaderOf, seenTerm, seenAge, xfer, auth, xmsgs, transfers,
                    suspended, sinceWake, suspends>>
 
 \* `Group::transfer`: void the lease for the term, then send.

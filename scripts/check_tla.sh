@@ -658,7 +658,7 @@ expectations=(
   "FelixRaftLeaseStoreStall pass"
   "FelixRaftLeaseStoreWide pass"
   "FelixRaftLeaseRestartForgets violates LeaseExclusive"
-  "FelixRaftLeaseStepDownLong violates LeaseExclusive"
+  "FelixRaftLeaseStepDownNoVoid violates LeaseExclusive"
   "FelixRaftLeaseTransferKeepsLease violates LeaseExclusive"
   "FelixRaftLeaseTransferVoidLate violates LeaseExclusive"
   "FelixRaftLeaseSuspendUnchecked violates LeaseExclusive"

@@ -720,10 +720,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
 | `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
 | `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
-| `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with the role read late, one step-down without a transfer, openraft's grant to the leader a voter follows, `ElectionTimeoutMin` = lease = 2, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (STEPDOWN_STATES) |
-| `FelixRaftLeaseStepDownLong.cfg` | the same with `ElectionTimeoutMin` = 1, shorter than the lease | violate `LeaseExclusive` (issue #2249) |
-| `FelixRaftLeaseStepDownSync.cfg` | the same with the role read when the check runs | pass the same (STEPDOWNSYNC_STATES) |
-| `FelixRaftLeaseTransfer.cfg` | `FelixRaftLease.cfg` with the role read late and one transfer: heartbeats stop, followers that take it clear their window, the target campaigns at once, the transfer may expire; Felix voids the lease before the send | pass `LeaseExclusive`, `OneLeaderPerTerm` (TRANSFER_STATES) |
+| `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (STEPDOWN_STATES) |
+| `FelixRaftLeaseStepDownNoVoid.cfg` | the same with no void | violate `LeaseExclusive` (issue #2249) |
+| `FelixRaftLeaseStepDownSync.cfg` | the same with no void and the role read when the check runs | pass the same (12.6M distinct states, 17 min on 16 workers) |
+| `FelixRaftLeaseTransfer.cfg` | lease 1 against an election timeout of 2, the role read late and one transfer: heartbeats stop, followers that take it clear their window, the target campaigns at once, the transfer may expire; Felix voids the lease before the send | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.6M distinct states, 15 min on 16 workers) |
 | `FelixRaftLeaseTransferKeepsLease.cfg` | the same with no void | violate `LeaseExclusive` |
 | `FelixRaftLeaseTransferVoidLate.cfg` | the same with the void a separate later step | violate `LeaseExclusive` |
 | `FelixRaftLeaseSuspend.cfg` | `FelixRaftLease.cfg` with one suspend: the clock stops, the broker takes no step, and on waking it refuses for one lease | pass `LeaseExclusive`, `OneLeaderPerTerm` (SUSPEND_STATES) |
@@ -3002,15 +3002,17 @@ openraft's role and `last_quorum_acked` from metrics, which arrive late
 paths let a new leader be elected inside the old leader's window, and the
 model has each:
 
-- A leader that learns of a higher term steps down and campaigns
-  `ElectionTimeoutMin` later, and the followers it led grant it inside their
-  window (openraft's `from_leased_leader`). A third broker can then win with
-  one of those votes. With the role read late, the lease must be no longer
-  than `ElectionTimeoutMin`, measured on the same clock.
-  `FelixRaftLeaseStepDown.cfg` passes with the bound;
-  `FelixRaftLeaseStepDownLong.cfg` breaks it and fails;
-  `FelixRaftLeaseStepDownSync.cfg` breaks it with the role read when the
-  check runs and passes, the other fix.
+- A leader that takes an append's answer naming a candidate's higher term
+  adopts that vote (openraft's `HigherVote`). The vote is not committed, so
+  it grants the candidate at once, and the candidate wins with it while
+  Felix's late view of the old leader still passes, however short the lease.
+  Later the stepped-down leader campaigns and the followers it led grant it
+  inside their window (`from_leased_leader`). The node layer voids the lease
+  for the term as soon as any message for the group names a higher term,
+  before openraft sees it. `FelixRaftLeaseStepDown.cfg` passes with the void;
+  `FelixRaftLeaseStepDownNoVoid.cfg` fails without it;
+  `FelixRaftLeaseStepDownSync.cfg` passes without it when the role is read
+  when the check runs, the fix the design does not take.
 - A transfer stops heartbeats, clears the window of every follower that takes
   the `TransferLeader` message, and lets the target's voters grant inside it.
   A transfer that does not finish makes the leader step down and campaign.
