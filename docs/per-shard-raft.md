@@ -2,7 +2,9 @@
 
 This page is the design for track 4 of the one-engine plan (issue #2167):
 every shard runs one Raft group, through openraft, behind the engine
-interface. Nothing here is built yet. The decisions it rests on are in
+interface. The group runtime and its ticker are built ("Group runtime"
+below) and no shard runs on them. The rest is not built yet. The decisions
+it rests on are in
 [`replication-engine.md`](replication-engine.md), which this page calls "the
 engine page". Read its "Decisions" first. The protocol being replaced is in
 [`replication-design.md`](replication-design.md) and is called "the hybrid"
@@ -551,14 +553,29 @@ Rules for the ticker:
   message openraft accepted from the current leader, not from any
   heartbeat, so a stale leader's heartbeats cannot keep a follower
   unticked. A follower that keeps hearing its leader is not ticked at all. A group with no leader is due
-  every interval.
-- **Slower idle timers.** A leader that has proposed nothing for the idle
-  time is due at a longer idle heartbeat interval. That interval stays
-  well under the shortest election timeout, and the lease margin counts
-  it.
+  every interval. The ticker does not read every group's due time every
+  interval either: anything but a tick moves a due time at least one
+  heartbeat ahead, so a group found not due is left alone for that long.
+- **Slower idle timers.** Decided (issue #2167), and built. A leader that
+  has sent no entry for the idle time heartbeats at the idle interval, and
+  its followers wait longer before they may stand. Any entry brings the
+  short interval back. See "Idle groups" below.
 - **The interval adds to timeouts.** A timeout is noticed at the next tick,
   so the tick interval is added to election and heartbeat latency. The lease
-  margin (engine page, Decisions, 5) counts it.
+  margin (engine page, Decisions, 5) counts it. For the heartbeat that is
+  the whole interval: openraft sends one only once 200 ms have passed since
+  it handled the last, and the tick 200 ms later arrives a moment too
+  early. So a busy leader heartbeats every 250 ms, not every 200.
+- **A ticker that panics is started again.** With no ticker, no leader on
+  the broker heartbeats and no follower stands, and nothing else would
+  show it. The runtime catches the panic, logs it at error, adds one to
+  `felix_broker_raft_ticker_restarts_total` and to
+  `GroupRuntime::ticker_restarts()`, waits one heartbeat and starts the
+  ticker again. Restarting was chosen over failing the runtime: a restart
+  has every group ticked again well inside the election timeout, and
+  failing would stop every group on the broker for a bug that may be in
+  one. Any restart is a bug to look at, so the count is there for the
+  broker's health check to read when the runtime is wired in (#2233).
 
 Cost: 9 microseconds is a floor. It is the average over ticks every
 10 ms, four of five of which send nothing, while a due tick sends a
@@ -571,6 +588,185 @@ runs on it. See Questions, 15.
 
 Timer values are in Questions, 4. The hybrid suspects a leader after 5
 seconds, so Raft does not need 50 ms heartbeats to match its failover time.
+
+The first election of a group needs no tick. A member told its group's
+first members stands at once. If several members are told at the same
+moment their votes can split, and the next election waits for a timeout
+like any other.
+
+### Idle groups
+
+A group is idle when its leader has sent no entry for `idle_after` (5 s).
+An idle leader heartbeats every `idle_heartbeat` (2 s) instead of every
+250 ms (the 200 ms heartbeat, sent at the next tick). The cost is that a dead leader of an idle group is noticed later.
+A group that takes writes is unchanged.
+
+The rule that keeps a slow leader from being deposed by its own followers:
+a follower must never wait less than its leader's current heartbeat allows.
+Nothing is negotiated. Each side acts only on what it has seen:
+
+- Every append and heartbeat carries the longest the leader may now stay
+  silent, called the gap: 200 ms, or the idle interval once the group is
+  idle. It travels in Felix's envelope around the Raft message, not in
+  the message.
+- A follower that takes the message waits by that gap. At the short gap
+  the ticker leaves it alone for the shortest election timeout, as before.
+  At the idle gap it leaves it alone for three idle intervals, plus a
+  spread per member so the followers do not stand in the same tick. Two
+  lost heartbeats therefore start no election. openraft's own timeout
+  still applies on top, so the wait is the longer of the two.
+- A follower holds the gap it is told to its own idle interval. The value
+  comes from a peer, and no message may make a follower wait longer than
+  the timers it was configured with.
+- A leader goes on heartbeating at the short interval, naming the idle gap,
+  until every follower has answered a message that named it. Only then
+  does it slow down. Sending an entry voids those answers and makes the
+  next heartbeat due within 200 ms.
+- A follower that restarts has forgotten the gap and may stand as soon as
+  openraft lets it. So a message a follower does not take, because it was
+  lost, refused or rejected, voids that follower's answer too. The leader
+  is back at the short interval within one heartbeat and stays there until
+  the follower answers again.
+
+So a lost message can leave a leader fast or a follower patient, and
+never a slow leader with an impatient follower. A follower that has
+answered nothing for 5 s stops holding the leader at the short interval,
+so a broker that is down does not keep its groups' leaders fast. That is
+less than the 6 to 7 s an idle follower waits, and that is the safe side:
+a follower that still hears the leader was told the idle gap, so the 2 s
+heartbeats still reach it inside its wait even when all its answers are
+lost.
+
+One window is left open. A follower silent for 5 s since its last answer,
+which can be about 3 s of downtime, no longer holds the leader fast, so if
+it restarts and the first idle heartbeat to it is lost, it can stand
+before the next one. That costs an election in an idle group and no
+record.
+
+openraft has one heartbeat interval and one election timeout per group,
+fixed when the group starts, so none of this changes its configuration.
+The leader slows down because the ticker asks it for a timer check less
+often, and a follower waits longer because the ticker does not ask it at
+all until its wait is over. A follower in openraft 0.10 stands only when
+it has heard nothing for the leader lease (the longest election timeout,
+2 s) plus its own election timeout (1 to 2 s), so 3 to 4 s after the
+leader's last message whether the group is idle or not. At the default
+idle interval of 2 s the follower waits three intervals, 6 s plus its
+spread, so a dead leader of an idle group is noticed in 6 to 7 s.
+
+Pre-vote is off, as it is by default in openraft. A member cut off from
+its leader therefore raises the term when it stands. That is unchanged by
+idle groups and is a separate decision.
+
+### Many groups electing at once
+
+A vote is a small file per shard, written whole and renamed into place,
+and a vote at a new term also writes the shard's replica state. That is
+two to four fsyncs per vote, and each group does its own.
+
+On Linux that is fast enough. The runtime's test forms 40 groups at once on
+three brokers and has each take a write: every group is led within 2 s, at
+the first term that can elect. Sharing one flush of the device between the
+groups that vote in the same moment was tried and dropped. It was slower
+(2 to 6 s) and took more election rounds.
+
+On macOS the same test does not settle in 30 s, so it is skipped there
+(issue #2317). The time goes to creating and renaming the vote files, which
+wait behind the `F_FULLFSYNC` calls in flight, and sharing flushes did not
+help. Brokers run on Linux, so this affects development on a Mac only: form
+groups a few at a time there.
+
+## Group runtime
+
+The runtime is built, in `crates/server/felix-replication/src/raft.rs`,
+behind the `raft` cargo feature of `felix-replication`. No release enables
+the feature and nothing in the broker calls the runtime, so a shipping
+broker is unchanged.
+
+A `GroupRuntime` holds one broker's member of every group it is told to
+open:
+
+- `start(broker, timers, transport)` starts the runtime and its one ticker
+  task.
+- `open(group, copy, log)` starts a member on a shard's log. The log must
+  be a Raft log that fsyncs on commit. The member reads its vote, entries
+  and membership back from the log, so opening after a restart needs
+  nothing else.
+- `initialize(shard, members)` forms a new group from its first member
+  set. A member refuses a set that does not name it. Once a member has
+  voted or holds an entry the call does nothing.
+- `handle(request)` takes a Raft message from a peer. A message names the
+  group (shard and epoch) and the member (broker and copy id). The runtime
+  hands it on only if both match the member it holds. A message for an
+  older copy or another epoch is refused.
+- `close(shard)` stops one member and leaves its log to the caller. The
+  shard stays taken until the member has stopped, even if the caller stops
+  waiting: an `open` before that is refused as `Closing`, so two members
+  never run on one log. `shutdown()` stops the ticker and every member.
+  Neither writes anything: what a member acknowledged is already on disk.
+- `status(shard)` reports the member's role, term, leader, last index,
+  committed index, the last entry written and the last entry flushed, and
+  the ticks it was sent and the ticks dropped.
+- `log_positions(shard)` gives the written and flushed positions as they
+  change, to wait on. These are the two signals of "Two signals from one
+  append". The adapter moves `written` as soon as an append has handed its
+  entries to the log and `flushed` once they are fsynced, and a truncation
+  moves both back. The publish path that waits on them is #2233.
+
+Messages leave through a `RaftTransport`, one for all groups, so groups
+share connections. The runtime wraps it in an `openraft-multi`
+`GroupRouter`, which is the seam the upstream heartbeat coalescing wraps.
+The tests join three runtimes with a transport that calls `handle`
+directly. The transport over the broker's peer connections, and the
+capability a peer must offer before it is sent a Raft message, are not
+built yet (#2314).
+
+A leader's messages carry the gap described in "Idle groups", which is
+how idle groups slow down.
+
+What the runtime sets in openraft: the timers from Questions, 4;
+`enable_tick` off; no snapshot policy, since a shard's records leave by
+retention and never because a snapshot was taken; and `allow_log_reversion`
+off (Questions, 2). Every log is opened with `purge_within`, so a purge
+past the stored snapshot is refused.
+
+A snapshot must not cost a record either, and a shard group's snapshot
+holds none. Two settings keep that true until retention is designed:
+
+- `max_in_snapshot_log_to_keep` is the largest value there is. openraft's
+  default keeps only the last 1,000 entries under a snapshot and purges
+  the rest, which here would be records.
+- No member takes a snapshot from a peer. Installing one purges the log up
+  to it, so a member behind its leader would drop records it was never
+  sent. The member answers `NoSnapshots` and logs an error. A leader keeps
+  its whole log, so a member that is behind is sent the entries.
+
+Each group has a small state machine that keeps the last applied entry and
+the membership in memory. A shard's state is its log. A membership record's
+payload is JSON: a layout version, the voter sets (two during a joint
+change) and the learners, each member as its broker id and copy id.
+
+Two things are left for the pull request that puts stream shards on Raft
+(#2233):
+
+- An entry carries a record's payload and timestamp only. The publisher,
+  headers and marks come with adoption.
+- The state machine keeps nothing on disk, so a restarted member applies
+  its committed entries again, which reads them. That is fine for the
+  tests here and too slow for a real shard.
+
+Memory per member is measured by a test
+(`crates/server/felix-replication/tests/raft_memory.rs`): 120 idle members
+in one process, a third of them leaders, counting live heap bytes added on
+top of the open logs. It fails above 256 KB per member, and it fails
+today: see "The groups-per-broker gate" for the number and where it goes.
+Until the openraft pin carries databendlabs/openraft#2313 (issue #2312),
+the test is ignored in pull request CI and runs nightly instead, in the
+`raft-memory` job of `.github/workflows/nightly.yml`, which prints the
+number. Run it by hand with
+`cargo test -p felix-replication --features raft --test raft_memory -- --ignored`.
+`RAFT_MEMORY_TRACE=<bytes>` makes the test print the call sites of the live
+allocations of at least that size.
 
 ## Heartbeat coalescing
 
@@ -1149,14 +1345,51 @@ and wake"). `release-gate.md` still asks for every group asleep and no
 ticks to sleeping groups. Those two conditions go with the gate follow-up
 (issue #2298).
 
+Measured on the group runtime (Linux, release build, three runtimes in one
+process as three brokers, RF 3, real peers and no network, 1 s idle
+heartbeat): 1,500 members cost 2.1% to 2.3% of a core per broker and 2,000
+cost 2.8%, so the limit is still missed. A profile puts about nine tenths
+of that inside openraft: a heartbeat round wakes the leader's core task
+three times and each follower's once, and every wake rebuilds and
+republishes the member's metrics. Felix's ticker and message envelope are
+the other tenth. A 2 s idle heartbeat measures 1.2%, at the price of
+noticing a dead leader of an idle group later ("Idle groups"). The
+upstream asks are on issue #2215.
+
 10,000 members is a stress run. Its numbers go upstream and nothing passes
 or fails on it.
 
-Memory is the tight one, and the estimate below is a floor. From the
-0.10.0 measurement (180 KB per leader member, 145 KB per follower, idle,
-with empty logs), 5,000 members at one third leaders is about 780 MB. When
-one broker dies the survivors lead half of the groups each, which is about
-810 MB, before any payload held in flight for replication.
+Memory is the tight one, and it does not fit yet. The design assumed
+180 KB per leader member and 145 KB per follower. The runtime's memory test
+(Linux, release build, 120 idle members, a third leading) measures 436 KB
+of live heap per member, plus 1.4 MB per member that openraft reserves in
+two large buffers and does not touch while idle (#2335). At 436 KB, 5,000
+members are about 2.1 GB, twice the limit.
+
+The two numbers are not the same measure. The design's figures were
+resident memory, and the test counts allocated bytes. A channel block
+becomes resident as its slots are used, which takes about 32 messages, so
+on a broker that has run for a minute the allocated figure is the one to
+plan with. The same three-runtime run shows it: 1,500 members per broker
+are 245 MB resident per broker a minute after forming and 481 MB after
+17 idle minutes, still rising by about 15 MB a minute, against 16 MB for
+the same logs with no Raft member on them. Resident memory on real brokers, against the hybrid, is still to
+be measured (#2314).
+
+Almost none of it is Felix's: the runtime's own state is under 1 KB per
+member. Where the 436 KB goes:
+
+| Per member | What |
+| --- | --- |
+| 344 KB | The first block of three tokio channels openraft opens per member. A block is 32 slots and openraft's messages are 3.5 KB each |
+| 34 KB | 17 histograms openraft allocates whether or not its `runtime-stats` feature is on |
+| about 58 KB | Tasks, smaller channels, and the rest |
+
+The runtime already sets `log_stage_capacity` to 1, which removed another
+156 KB of statistics buffers per member (580 KB before). The three channel
+blocks need a change in openraft: smaller messages, or the large variants
+boxed. That is part of the upstream ask in #2335, and the gate cannot pass
+before it.
 
 So the memory row is measured twice: idle with three brokers, and with one
 broker killed while publishers write. The 1 GB limit applies to the second.
@@ -1178,7 +1411,7 @@ and the hybrid is what ships.
 | --- | --- | --- | --- |
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
-| 3 (#2231) | Group runtime: type config, member id, group registry, peer messages for Raft behind a negotiated capability, node ticker | track 2 adapter; openraft 0.10.1, which is not released (the lock has 0.9.25, see #2215) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
+| 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind a negotiated capability, follow in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
@@ -1628,14 +1861,18 @@ ones settled by the decisions of issue #2167 say so.
    request. The wrapper is safe either way, so this is about keeping one
    copy of the code.
 
-4. **Which timer values?** Recommended to start: tick 50 ms, heartbeat
-   200 ms, idle heartbeat 500 ms, election timeout 1 to 2 s. That is a
-   quarter of the default heartbeat traffic for a busy group and a tenth
-   for an idle one. A follower campaigns 1 to 2 s after its leader's last
-   message, which is ahead of the hybrid's 5 s suspicion. The failover
-   cells decide the final values. A shorter election timeout shortens the
-   lease, so the two are tuned together, and the idle heartbeat must leave
-   two misses inside the shortest election timeout. The liveness values
+4. **Which timer values?** Decided, and the runtime's defaults: tick 50 ms,
+   heartbeat 200 ms, idle heartbeat 2 s after 5 s without an entry,
+   election timeout 1 to 2 s. A busy leader's heartbeat goes out at the
+   next tick, every 250 ms ("One timer for every group"). That is a fifth
+   of the default heartbeat traffic for a busy group and a fortieth for an
+   idle one. A follower
+   stands 3 to 4 s after its leader's last message, because openraft adds
+   the leader lease (2 s) to the election timeout. That is ahead of the
+   hybrid's 5 s suspicion. The failover cells decide the final values. A
+   shorter election timeout shortens the lease, so the two are tuned
+   together. A follower of an idle leader waits three idle heartbeats, so
+   two can be lost ("Idle groups"). The liveness values
    are kept under "Deferred: sleep and wake".
 
 5. **Does 0.8 ship leases that survive sleep?** Moot for 0.8: sleep is
@@ -1729,6 +1966,8 @@ ones settled by the decisions of issue #2167 say so.
     tick only due groups with slower idle timers, and measure now on the
     group runtime with stub groups. By the estimate, 5,000 members at a
     500 ms idle heartbeat is about 3,300 ticks a second, or 3% of a core,
-    before the cost of sending and answering the heartbeats. Recommended
-    if the run misses: first a longer idle heartbeat and coalescing, then
-    a new budget for the cell, and sleep only after that.
+    before the cost of sending and answering the heartbeats. Measured: it
+    misses, at 2.8% for 2,000 members with a 1 s idle heartbeat ("The
+    groups-per-broker gate"). Recommended: first a longer idle heartbeat
+    and coalescing, then a new budget for the cell, and sleep only after
+    that.

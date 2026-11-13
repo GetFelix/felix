@@ -1505,7 +1505,7 @@ impl DiskLog {
     }
 
     /// The directory that holds the log's files.
-    pub(crate) fn dir(&self) -> &std::path::Path {
+    pub fn dir(&self) -> &std::path::Path {
         &self.inner.dir
     }
 

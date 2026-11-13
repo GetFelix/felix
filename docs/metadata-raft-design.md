@@ -1038,9 +1038,11 @@ today.
 
 ### openraft 0.9 to 0.10
 
-The workspace pins `openraft = "=0.10.0"`, and the control plane runs that
-pin. It moved first, still on redb and still with its leader id (a term and
-a node id), so the library change and the store change are separate steps.
+The workspace pins openraft 0.10 exactly, and the control plane runs that
+pin: today one commit just past 0.10.0, and `=0.10.1` once that is released
+([`replication-engine.md`](replication-engine.md), "openraft version"). It
+moved first, still on redb and still with its leader id (a term and a node
+id), so the library change and the store change are separate steps.
 
 A group is upgraded one member at a time: stop a member, start it on the new
 build, wait until it is ready, then do the next. A member can also go back
@@ -1316,8 +1318,10 @@ or earlier upgrades through 0.8.
   in openraft as an optional dependency.
 - The control plane turns the feature on, today only in a build with
   `--cfg felix_segment_store`. `felix-broker` never does.
-- openraft types stay inside `felix-storage::raft_log` and the control
-  plane's `src/raft/`. The store traits and handlers never see them.
+- openraft types stay inside `felix-storage::raft_log`, the per-shard
+  runtime in `felix-replication`'s `src/raft/` (behind that crate's own
+  `raft` feature) and the control plane's `src/raft/`. The store traits and
+  handlers never see them.
 - redb moves to the conversion tool's crate, then leaves the workspace.
 
 Cargo merges features across one build. The simulator and the cluster
@@ -1329,7 +1333,7 @@ the broker alone. The check is therefore per package, as a lint step:
   `cargo check -p felix-broker` passes on its own.
 - The same holds for the broker binary's package until per-shard Raft
   lands, which removes that line on purpose.
-- A script fails the lint if `openraft::` appears outside the two modules
+- A script fails the lint if `openraft::` appears outside the three modules
   above and their tests.
 
 All three are `scripts/check-openraft-containment.sh`, a step of
