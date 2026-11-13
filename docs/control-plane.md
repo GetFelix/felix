@@ -1034,7 +1034,9 @@ caller's value is ignored.
   assignment. A shard the export shows unassigned may have been assigned
   since on the live cluster. A stream or cache deleted and created again
   after the import has a new incarnation and starts records as usual. The
-  mark is carried in snapshots.
+  mark is carried in snapshots. Under Raft an import that marks needs
+  metadata level 31, so every member applies the same mark; one proposed
+  without it marks nothing.
 
 The record grows with every move for as long as the epoch lasts. No pruning
 rule exists yet, and any rule must be modelled first. Under Raft it is

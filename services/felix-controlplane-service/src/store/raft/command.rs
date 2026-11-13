@@ -386,6 +386,12 @@ pub enum MetaCommand {
         // command would otherwise pay its size.
         state: Box<crate::store::export::ExportedState>,
         overwrite: bool,
+        /// Level 31: mark every stream and cache restored so their shards
+        /// never start a record of the brokers placed in the epoch
+        /// (`ExportedState::forget_placed`). A field rather than the
+        /// applying member's own choice, so every member marks the same.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        mark_unplaced: bool,
     },
     /// Refresh-token writes.
     ///

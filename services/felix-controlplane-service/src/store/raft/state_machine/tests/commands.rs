@@ -174,6 +174,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
         .dispatch(MetaCommand::ImportState {
             state: Box::new(exported.clone()),
             overwrite: false,
+            mark_unplaced: false,
         })
         .await
         .expect("import into unused store");
@@ -227,6 +228,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
         .dispatch(MetaCommand::ImportState {
             state: Box::new(exported.clone()),
             overwrite: false,
+            mark_unplaced: false,
         })
         .await;
     assert!(matches!(refused, Err(MetaError::Conflict(_))));
@@ -236,6 +238,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
     used.dispatch(MetaCommand::ImportState {
         state: Box::new(exported),
         overwrite: true,
+        mark_unplaced: false,
     })
     .await
     .expect("overwrite import");
@@ -363,6 +366,7 @@ async fn an_import_forgets_the_brokers_placed_in_each_epoch() {
         .dispatch(MetaCommand::ImportState {
             state: Box::new(exported),
             overwrite: false,
+            mark_unplaced: false,
         })
         .await
         .expect("import");
@@ -414,6 +418,7 @@ async fn a_shard_first_assigned_after_an_import_starts_no_record() {
         .dispatch(MetaCommand::ImportState {
             state: Box::new(exported),
             overwrite: false,
+            mark_unplaced: true,
         })
         .await
         .expect("import");
