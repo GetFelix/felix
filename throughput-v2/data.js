@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794540750263,
+  "lastUpdate": 1794541059229,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53976,6 +53976,58 @@ window.BENCHMARK_DATA = {
             "range": "12647.34",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1566317.47\nmean: 1567599.90\nstdev: 12647.34\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f434a9ec182f6aa1fcc2128ed0aa1647c0b47134",
+          "message": "spec: the root sequence in FelixRaftIdentity (#2399)\n\nFor #2303: every vote and exact-mark append bumps the root sequence, so a same-run root restore is caught. NoSequence is the must-fail twin; Unheard and Young stay pinned as residuals (Questions 11 and 12).",
+          "timestamp": "2026-11-13T03:27:26Z",
+          "tree_id": "60b7df7e0727700af6e414465fbe995977df8239",
+          "url": "https://github.com/GetFelix/felix/commit/f434a9ec182f6aa1fcc2128ed0aa1647c0b47134"
+        },
+        "date": 1794541058641,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510336.57,
+            "range": "45458.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510336.57\nmean: 495615.25\nstdev: 45458.76\ncv: 9.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510336.57,
+            "range": "45458.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510336.57\nmean: 495615.25\nstdev: 45458.76\ncv: 9.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119714.57,
+            "range": "1749.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119714.57\nmean: 119643.15\nstdev: 1749.52\ncv: 1.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1197145.68,
+            "range": "17495.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1197145.68\nmean: 1196431.54\nstdev: 17495.19\ncv: 1.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
