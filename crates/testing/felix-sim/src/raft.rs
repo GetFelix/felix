@@ -203,8 +203,8 @@ pub fn run_seed(seed: u64, config: RaftSimConfig) -> RaftOutcome {
         format!(
             "raft seed {seed} ran past {limit:?} of real time: something holds the simulation \
              thread and never returns to the runtime. To run it again:\n    \
-             FELIX_SIM_SEED_START={seed} FELIX_SIM_SEEDS=1 cargo test -p felix-sim --test \
-             raft_seeds -- --ignored --exact raft_seeds --nocapture"
+             RUSTFLAGS=\"--cfg tokio_unstable\" FELIX_SIM_SEED_START={seed} FELIX_SIM_SEEDS=1 \
+             cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture"
         ),
     );
     let mut builder = tokio::runtime::Builder::new_current_thread();

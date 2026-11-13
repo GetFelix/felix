@@ -536,6 +536,12 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test -p felix-sim --test raft_seeds -- --nocapture
 
+      - name: Raft group replay with skewed timers
+        if: ${{ !cancelled() }}
+        env:
+          FELIX_SIM_CLOCKS: bounded
+        run: cargo test -p felix-sim --test raft_seeds -- --exact each_raft_seed_runs_the_same_twice --nocapture
+
       - name: Raft group seeds
         if: ${{ !cancelled() }}
         env:

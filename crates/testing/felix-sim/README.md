@@ -107,7 +107,7 @@ tokio_unstable`, a seed replays its run exactly, election timing included.
 See "Raft groups" in `docs/simulation.md`.
 
 ```bash
-FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
   cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
 ```
 
