@@ -311,7 +311,7 @@ fn an_entry_count_past_the_body_is_refused() {
     let mut forged = BytesMut::from(&bytes[..]);
     forged[at..at + 4].copy_from_slice(&u32::MAX.to_be_bytes());
     let refused = decode_request(forged.freeze()).expect_err("refused");
-    assert!(refused.to_string().contains("ends early"), "{refused}");
+    assert!(refused.to_string().contains("more than"), "{refused}");
 }
 
 #[test]

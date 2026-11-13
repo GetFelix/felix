@@ -592,7 +592,10 @@ fn take_str(buf: &mut Bytes, max: usize) -> io::Result<String> {
 fn take_count(buf: &mut Bytes, min: usize) -> io::Result<usize> {
     let count = take_u32(buf)? as usize;
     if count > buf.remaining() / min {
-        return Err(short());
+        return Err(invalid(format!(
+            "a count of {count}, more than the {} bytes left hold",
+            buf.remaining()
+        )));
     }
     Ok(count)
 }
