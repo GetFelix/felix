@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794597892535,
+  "lastUpdate": 1794598933010,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69564,6 +69564,72 @@ window.BENCHMARK_DATA = {
             "range": "948.55",
             "unit": "us",
             "extra": "trials: 5\nmedian: 780.00\nmean: 1231.60\nstdev: 948.55\ncv: 77.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6013a9383ab494b40b7b5267d96bf9b9e698ae9",
+          "message": "spec(reform): the offset floor is a log id, and a base no copy holds the floor for is cut to what a copy can vouch for (#2431)\n\nFelixRaftReform's offset floor is now a log id (epoch, term, index), and a re-form whose copies do not hold the floor's entry cuts its base only as far as needed.\n\n- A copy whose last log id has the floor's epoch and term, at or below the floor's index, keeps its whole log: log matching proves it committed. Any other copy is cut to its saved commit index. The base is the longest such log, padded with gaps.\n- Each copy saves its commit index durably, so a cut never goes below what it acknowledged as committed.\n- AckedSurvive allows a loss only when no live disk held the record, or every live disk that held it had it above what that disk vouches for. A new action property, LossNeedsLostDisk, checks the one-term case with no exception at all.\n- New configs: the CutToCommit twin (the old cut) violates AckedSurvive; TermsUnvouched pins the two-term residual; all 46 registered Reform configs reach their declared outcome.\n- EpochNotChecked passes because a new epoch starts with its commit at the base end and voters refuse an append below it; this rests on the re-form saving the base end before any append (#2419).\n- docs/per-shard-raft.md and docs/formal/README.md state the rule and the documented losses.\n\nCloses #2402.",
+          "timestamp": "2026-11-13T19:18:34Z",
+          "tree_id": "be26355ccf51493d971cdc324dce3c000a714705",
+          "url": "https://github.com/GetFelix/felix/commit/d6013a9383ab494b40b7b5267d96bf9b9e698ae9"
+        },
+        "date": 1794598922552,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 124,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 124.40\nstdev: 0.55\ncv: 0.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 170,
+            "range": "2.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 170.40\nstdev: 2.97\ncv: 1.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 420,
+            "range": "579.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 420.00\nmean: 588.20\nstdev: 579.29\ncv: 98.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 171,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 171.40\nstdev: 0.55\ncv: 0.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 347,
+            "range": "11.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 347.00\nmean: 341.60\nstdev: 11.67\ncv: 3.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 624,
+            "range": "596.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 624.00\nmean: 978.80\nstdev: 596.89\ncv: 60.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
