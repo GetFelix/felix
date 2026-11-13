@@ -152,11 +152,22 @@ impl Unstamped {
 /// and elected again while a write waited would otherwise append a stamp
 /// from below the tail of the leader in between.
 pub(crate) struct Stamper {
+    #[cfg(test)]
+    pub(crate) gate: Arc<Gate>,
     pub(crate) cache: Cache,
     pub(crate) leadership: Arc<Leadership>,
     pub(crate) clock: Clock,
     /// The last stamp issued. It never goes back, whatever term it was for.
     pub(crate) last: u64,
+}
+
+/// Where a test holds a stamped write back before openraft is handed it.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Gate {
+    pub(crate) shut: tokio::sync::Mutex<()>,
+    /// Drains stamped so far.
+    pub(crate) stamped: AtomicU64,
 }
 
 impl Stamper {
@@ -370,6 +381,11 @@ pub(crate) async fn run(
                 }
             },
         };
+        #[cfg(test)]
+        if let Some(stamper) = &stamper {
+            stamper.gate.stamped.fetch_add(1, Ordering::Relaxed);
+            drop(stamper.gate.shut.lock().await);
+        }
         calls.fetch_add(1, Ordering::Relaxed);
         let sent = alongside(write(&raft, commands, term), &mut answering, &stop).await;
         let Some(sent) = sent else {

@@ -256,3 +256,251 @@ async fn an_expired_key_is_deleted_with_no_reader() {
     eventually(|| group.cache().read().next_expiry().is_none().then_some(())).await;
     cluster.stop().await;
 }
+
+/// A clock of its own for each broker.
+fn clocks(cluster: &Cluster, at: u64) -> HashMap<&'static str, Arc<std::sync::atomic::AtomicU64>> {
+    let clock = |broker: &&'static str| {
+        let clock = Arc::new(std::sync::atomic::AtomicU64::new(at));
+        let read = Arc::clone(&clock);
+        cluster.runtime(broker).set_clock(Arc::new(move || {
+            read.load(std::sync::atomic::Ordering::Relaxed)
+        }));
+        (*broker, clock)
+    };
+    BROKERS.iter().map(clock).collect()
+}
+
+/// Nothing reaches `broker` and nothing is heard from it.
+fn cut_off(cluster: &Cluster, broker: &str) {
+    cluster.net.cut.lock().insert(broker.into());
+    cluster.net.muted.lock().insert(broker.into());
+}
+
+fn joined(cluster: &Cluster, broker: &str) {
+    cluster.net.cut.lock().remove(broker);
+    cluster.net.muted.lock().remove(broker);
+}
+
+/// A leader that wins an election stamps above what the leader before it
+/// wrote, though its own clock is far behind that leader's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_elected_leader_with_a_slow_clock_stamps_above_the_last_leaders_entries() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut cluster = Cluster::new(true);
+    let clocks = clocks(&cluster, 100);
+    cluster.form(N).await;
+    let (engine, first) = leading(&cluster).await;
+    clocks[&*first.member.broker].store(10_000, Relaxed);
+    engine
+        .cache_write(&shard(N), put("k", b"one", 1), 0, PATIENCE)
+        .await
+        .expect("write");
+    assert_eq!(first.cache().read().time(), 10_000);
+
+    cut_off(&cluster, &first.member.broker);
+    let (engine, second) = leading(&cluster).await;
+    assert_ne!(second.member, first.member);
+    let answer = engine
+        .cache_write(&shard(N), put("k", b"two", 2), 0, PATIENCE)
+        .await
+        .expect("write");
+    assert!(matches!(answer, Answer::Written { .. }));
+    assert!(second.cache().read().time() >= 10_000);
+    cluster.stop().await;
+}
+
+/// A write is stamped while its member leads, the member is deposed before
+/// openraft is handed the write, and it is elected again. The leader in
+/// between wrote a later stamp, so the write must not be appended now: it
+/// would land below that entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_stamped_before_a_deposal_is_not_written_after_a_re_election() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let mut cluster = Cluster::new(true);
+    let clocks = clocks(&cluster, 100);
+    cluster.form(N).await;
+    let (engine, first) = leading(&cluster).await;
+    let term = first.open_term().expect("open");
+
+    let gate = Arc::clone(&first.gate);
+    let shut = gate.shut.lock().await;
+    let stamped = gate.stamped.load(Relaxed);
+    let held = RaftEngine::new(cluster.runtime(&first.member.broker));
+    let held = tokio::spawn(async move {
+        held.cache_write(&shard(N), put("k", b"held", 1), 0, PATIENCE)
+            .await
+    });
+    eventually(|| (gate.stamped.load(Relaxed) > stamped).then_some(())).await;
+
+    cut_off(&cluster, &first.member.broker);
+    let (between, second) = leading(&cluster).await;
+    assert_ne!(second.member, first.member);
+    clocks[&*second.member.broker].store(10_000, Relaxed);
+    between
+        .cache_write(&shard(N), put("k", b"between", 2), 0, PATIENCE)
+        .await
+        .expect("write");
+    joined(&cluster, &first.member.broker);
+    agreed(&cluster).await;
+    let to = first.member.clone();
+    let transfer = second.raft().trigger().transfer_leader(to).await;
+    transfer.expect("transfer");
+    eventually(|| first.open_term().filter(|open| *open > term)).await;
+
+    drop(shut);
+    // Queued behind the held write, so it is answered after it.
+    engine
+        .cache_write(&shard(N), add("n", 1, 3), 0, PATIENCE)
+        .await
+        .expect("write");
+    assert!(held.await.expect("task").is_err());
+    {
+        let cache = first.cache().read();
+        assert_eq!(cache.answer(7, 1), None);
+        assert!(cache.time() >= 10_000);
+    }
+    cluster.stop().await;
+}
+
+/// A read does not look at the leader's state until the leader has applied
+/// what was committed when a majority confirmed it leads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (engine, group) = leading(&cluster).await;
+    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+
+    let held = Arc::clone(&group.apply_hold).lock_owned().await;
+    let second = Command {
+        timestamp_micros: 20,
+        payload: put("k", b"two", 2).encode(),
+        written: None,
+    };
+    let raft = group.raft().clone();
+    let writing = tokio::spawn(async move { raft.client_write(second).await.is_ok() });
+    // Committed by the followers; the leader cannot apply it yet.
+    eventually(|| (group.status().committed > Some(first)).then_some(())).await;
+    let key = shard(N);
+    let read = engine.cache_read(&key, "k", PATIENCE);
+    let read = tokio::time::timeout(Duration::from_millis(500), read).await;
+    assert!(read.is_err(), "the read did not wait: {read:?}");
+
+    drop(held);
+    assert!(writing.await.expect("task"));
+    let read = engine.cache_read(&shard(N), "k", PATIENCE).await;
+    let (value, _) = read.expect("read").expect("a value");
+    assert_eq!(&value[..], b"two");
+    cluster.stop().await;
+}
+
+/// The data of a snapshot is the state as of the entry the snapshot names,
+/// whatever is applied before it is built. With later entries in it, a
+/// member that restored it would apply them twice.
+#[tokio::test]
+async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
+    use openraft::entry::RaftEntry;
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+    let dir = tempdir().expect("dir");
+    let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
+    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
+    let (mut machine, _, cache) = opened.expect("open");
+    let cache = cache.expect("a cache group");
+    let entry = |index: u64, command: CacheCommand| {
+        let command = Command {
+            timestamp_micros: index * 10,
+            payload: command.encode(),
+            written: None,
+        };
+        let id = LogIdOf::<ShardTypes>::new(1.into(), index);
+        let entry = EntryOf::<ShardTypes>::new_normal(id, command);
+        futures::stream::iter([Ok((entry, None))])
+    };
+    machine
+        .apply(entry(1, put("k", b"one", 1)))
+        .await
+        .expect("apply");
+    let named = cache.read().snapshot();
+    let mut builder = machine.get_snapshot_builder().await;
+    machine
+        .apply(entry(2, put("k", b"two", 2)))
+        .await
+        .expect("apply");
+    let built = builder.build_snapshot().await.expect("build");
+    assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(1));
+    assert_eq!(Bytes::from(built.snapshot), named);
+}
+
+/// Entries a snapshot covers can leave the log, and no others. A member
+/// that restarts after that holds what the purged entries wrote.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_purge_stops_at_the_snapshot_and_a_restart_restores_it() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    write(&cluster, 10, put("k", b"one", 1)).await;
+    let mid = write(&cluster, 20, add("n", 5, 2)).await;
+    cluster.committed_everywhere(N, mid).await;
+    for broker in BROKERS {
+        cluster.snapshot(broker, N, mid).await;
+    }
+    let last = write(&cluster, 30, add("n", 2, 3)).await;
+    cluster.committed_everywhere(N, last).await;
+    let before = agreed(&cluster).await;
+    for broker in BROKERS {
+        let member = cluster.runtime(broker).group(&shard(N)).expect("group");
+        member
+            .raft()
+            .trigger()
+            .purge_log(last)
+            .await
+            .expect("purge");
+        let purged = eventually(|| cluster.purged(broker, N).filter(|purged| *purged >= mid));
+        assert_eq!(purged.await, mid);
+    }
+
+    cluster.stop().await;
+    cluster.start(true);
+    cluster.open(N).await;
+    cluster.elected(N).await;
+    for broker in BROKERS {
+        eventually(|| (state(&cluster, broker) == before).then_some(())).await;
+    }
+    cluster.stop().await;
+}
+
+/// A measurement, not a check: what one openraft call per cache entry
+/// costs next to one call for the whole drain. Run it alone with
+/// `--ignored --nocapture`; only the ratio means anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "prints a ratio and checks nothing"]
+async fn what_a_write_call_per_entry_costs() {
+    use futures::StreamExt;
+    const ROUNDS: u64 = 40;
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (_, group) = leading(&cluster).await;
+    let term = group.open_term().expect("open");
+    for entries in [1, 16, 256] {
+        let mut took = Vec::new();
+        for (mode, term) in [(0, Some(term)), (1, None)] {
+            let started = std::time::Instant::now();
+            for round in 0..ROUNDS {
+                let commands = (0..entries).map(|entry| Command {
+                    timestamp_micros: 10,
+                    payload: put("k", b"value", (mode * ROUNDS + round) * 1_000 + entry).encode(),
+                    written: None,
+                });
+                let commands = commands.collect();
+                let sent = super::super::propose::write(group.raft(), commands, term).await;
+                let results: Vec<_> = sent.expect("running").collect().await;
+                assert!(results.iter().all(|result| matches!(result, Ok(Ok(_)))));
+            }
+            took.push(started.elapsed().as_secs_f64());
+        }
+        let ratio = took[0] / took[1];
+        println!("{entries} entries a drain: a call per entry takes {ratio:.2}x one call");
+    }
+    cluster.stop().await;
+}

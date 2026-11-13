@@ -47,6 +47,9 @@ pub(crate) struct Machine {
     published: watch::Sender<Commits>,
     /// `None` in a stream shard's group.
     cache: Option<Cache>,
+    /// Held by a test to keep this member from applying.
+    #[cfg(test)]
+    pub(crate) hold: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Machine {
@@ -78,6 +81,8 @@ impl Machine {
             commits,
             published,
             cache: cache.clone(),
+            #[cfg(test)]
+            hold: Arc::default(),
         };
         Ok((machine, applied, cache))
     }
@@ -198,6 +203,8 @@ impl RaftStateMachine<ShardTypes> for Machine {
     where
         Strm: Stream<Item = io::Result<EntryResponder<ShardTypes>>> + Unpin + OptionalSend,
     {
+        #[cfg(test)]
+        let _held = Arc::clone(&self.hold).lock_owned().await;
         let mut applied = Ok(());
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {

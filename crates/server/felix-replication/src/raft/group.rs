@@ -42,6 +42,10 @@ pub(crate) struct Group {
     cache: Option<Cache>,
     /// What a cache shard's leader stamps entries and judges expiry by.
     clock: Clock,
+    #[cfg(test)]
+    pub(crate) gate: Arc<propose::Gate>,
+    #[cfg(test)]
+    pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -329,6 +333,8 @@ impl Group {
         log.purge_within(&snapshots)?;
         let positions = log.positions();
         let (machine, commits, cache) = Machine::open(snapshots, id.shard.kind).await?;
+        #[cfg(test)]
+        let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let network = Network {
             router: Router::new(transport, Arc::clone(&pace)),
@@ -356,6 +362,10 @@ impl Group {
             leadership,
             cache,
             clock,
+            #[cfg(test)]
+            gate: Arc::default(),
+            #[cfg(test)]
+            apply_hold,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -692,6 +702,8 @@ impl Group {
                     again: Duration::from_millis(timers.heartbeat),
                 },
                 self.cache.clone().map(|cache| Stamper {
+                    #[cfg(test)]
+                    gate: Arc::clone(&self.gate),
                     cache,
                     leadership: Arc::clone(&self.leadership),
                     clock: Arc::clone(&self.clock),
