@@ -8,7 +8,7 @@ use openraft::RaftTypeConfig;
 use openraft::entry::{Entry, EntryPayload, RaftEntry};
 use openraft::type_config::alias::CommittedLeaderIdOf;
 
-use super::{LogTypes, generation_of, invalid, log_id, term_of};
+use super::{LogTypes, WrittenToken, generation_of, invalid, log_id, term_of};
 use crate::log::{AppendRecord, LogRecord, Offset, RecordMark};
 
 /// How one user of the log stores what only it understands: its commands,
@@ -27,6 +27,15 @@ pub trait EntryCodec<C: RaftTypeConfig>: Send + Sync + 'static {
     /// a membership entry. Its `checksum` is 0 when the record comes from
     /// memory and not from a segment, so a command must not depend on it.
     fn decode_data(&self, record: LogRecord) -> io::Result<C::D>;
+
+    /// The token `data` carries, when its proposer waits to hear where it
+    /// was written. An append resolves it with the entry's index and term
+    /// once the entry is written, before the fsync. The token is the
+    /// proposer's own and lives in memory only: [`Self::encode_data`] must
+    /// leave it out, so a command read back or sent to a peer has none.
+    fn written_token(&self, _data: &C::D) -> Option<WrittenToken> {
+        None
+    }
 
     /// A membership as a [`RecordMark::Membership`] record's payload.
     fn encode_membership(&self, membership: &C::Membership) -> io::Result<Bytes>;

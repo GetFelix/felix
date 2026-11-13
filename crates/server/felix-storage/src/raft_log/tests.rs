@@ -12,6 +12,7 @@ mod snapshots;
 mod suite;
 mod tail;
 pub(crate) mod writes;
+mod written;
 
 use std::io;
 
