@@ -21,7 +21,7 @@ use super::machine::Machine;
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router,
 };
-use super::propose::{self, AckAt, Batch, Proposal};
+use super::propose::{self, AckAt, Batch, Proposal, Unacknowledged};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
@@ -596,7 +596,7 @@ impl Group {
     pub(crate) fn propose(
         &self,
         batch: Batch,
-    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let waiting = if self.stop.is_cancelled() {
             Err(propose::stopped())
         } else {
