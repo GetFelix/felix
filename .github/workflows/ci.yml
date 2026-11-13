@@ -405,7 +405,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The job takes 8 to 15 minutes on main. A seed run that holds its thread
+    # ends the process within ten minutes and names the seed
+    # (docs/simulation.md), so this limit is for a runner that stops
+    # answering: it holds the runner for 30 minutes, not most of an hour.
+    timeout-minutes: 30
     env:
       CARGO_TERM_COLOR: always
       FELIX_SIM_SEEDS: "20"
