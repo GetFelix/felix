@@ -101,7 +101,8 @@ impl Led {
         let group = self.cluster.runtime(broker).group(&shard(0));
         let core = group.expect("group").raft().clone();
         let committed = core.with_raft_state(|state| state.local_committed().map(|id| id.index));
-        let committed = committed.await.expect("the core answers");
+        let committed = tokio::time::timeout(PATIENCE, committed).await;
+        let committed = committed.expect("in time").expect("the core answers");
         committed.map_or(0, |index| index + 1)
     }
 

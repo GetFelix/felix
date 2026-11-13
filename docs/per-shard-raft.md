@@ -947,7 +947,10 @@ open:
   Neither writes anything: what a member acknowledged is already on disk.
 - `status(shard)` reports the member's role, term, leader, last index,
   committed index, the last entry written and the last entry flushed, and
-  the ticks it was sent and the ticks dropped.
+  the ticks it was sent and the ticks dropped. The committed index is the
+  last one openraft published and can trail the read bound for a moment
+  (see "Reads"). The written and flushed positions are read together, in
+  one look at the log's positions.
 - `log_positions(shard)` gives the written and flushed positions as they
   change, to wait on. These are the two signals of "Two signals from one
   append". The adapter moves `written` as soon as an append has handed its
@@ -1238,6 +1241,14 @@ bound too, from what it has applied.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `the_read_bound_never_passes_the_commit_index`.
+
+The commit index to compare the bound with is the one the Raft core holds.
+`status(shard).committed` is not: it comes from openraft's metrics, which
+the core publishes once per turn of its loop, after it has told its
+followers about the commit and handed the entries on to be applied. So a
+status read just after a bound can show a lower commit index, on the leader
+as well as on a follower. That is a late report, not a bound past the
+commit index.
 
 `confirm_read` is a read-index round (`Raft::get_read_log_id` with
 `ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
