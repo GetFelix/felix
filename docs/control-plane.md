@@ -1034,10 +1034,11 @@ caller's value is ignored.
   assignment. A shard the export shows unassigned may have been assigned
   since on the live cluster. A stream or cache deleted and created again
   after the import has a new incarnation and starts records as usual. The
-  mark is carried in snapshots. Under Raft the leader decides it from the
-  group's metadata level when the import enters the log: marked from level
-  31, unmarked below, whatever the proposer sent. Every member applies the
-  same mark.
+  mark is carried in snapshots. Under Raft the leader sets the mark when the
+  import enters the log, whatever the proposer sent, so every member applies
+  the same one. Below metadata level 31 an older member cannot read the mark,
+  so the leader refuses the import and asks the operator to finish the
+  control-plane upgrade first.
 
 The record grows with every move for as long as the epoch lasts. No pruning
 rule exists yet, and any rule must be modelled first. Under Raft it is

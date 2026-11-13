@@ -857,33 +857,39 @@ const REPLICA_REPORT_OP: &str = "record_replica_report";
 /// The import command, whose restore mark depends on the group's level.
 const IMPORT_STATE_OP: &str = "import_state";
 
-/// Set an import's `mark_unplaced` from the group's `level`, whatever the
-/// proposer sent: true from level 31, absent below it. An operator import
-/// arrives as raw JSON, and one that left the field out would otherwise
-/// mark nothing at a level where every member can.
-pub fn settle_for_level(command: &[u8], level: u16) -> Option<Vec<u8>> {
-    edit_command_json(command, |object| {
-        if object.get("op").and_then(serde_json::Value::as_str) != Some(IMPORT_STATE_OP) {
-            return false;
-        }
-        if level >= super::PLACED_LEVEL {
-            object.insert("mark_unplaced".to_string(), true.into());
-        } else {
-            object.remove("mark_unplaced");
-        }
+/// Settle an import for the group's `level`: marked from level 31,
+/// whatever the proposer sent, and refused below it with the error an
+/// applied command would answer. An operator import arrives as raw JSON, so
+/// one that left the field out would otherwise mark nothing. Below the level
+/// an old member cannot read the mark, and an import without it would let a
+/// later first assignment start a record that looks complete.
+pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
+    if !depends_on_level(command) {
+        return Ok(None);
+    }
+    if level < super::PLACED_LEVEL {
+        return Err(encode_result(&Err(MetaError::Conflict(format!(
+            "an import needs every control-plane member at metadata version {}, \
+             but the group is at {level}; {}",
+            super::PLACED_LEVEL,
+            crate::store::UPGRADE_HINT
+        )))));
+    }
+    Ok(edit_command_json(command, |object| {
+        object.insert("mark_unplaced".to_string(), true.into());
         true
-    })
+    }))
 }
 
 /// Whether `command` is an import, read without decoding the state it
-/// carries.
+/// carries. The op is decoded owned, so an escaped spelling still counts.
 pub fn depends_on_level(command: &[u8]) -> bool {
     #[derive(Deserialize)]
-    struct OpPeek<'a> {
-        #[serde(borrow)]
-        op: Option<&'a str>,
+    struct OpPeek {
+        op: Option<String>,
     }
-    serde_json::from_slice::<OpPeek>(command).is_ok_and(|peek| peek.op == Some(IMPORT_STATE_OP))
+    serde_json::from_slice::<OpPeek>(command)
+        .is_ok_and(|peek| peek.op.as_deref() == Some(IMPORT_STATE_OP))
 }
 
 /// Replace the proposer's clock reading in `command` with `now_millis`.

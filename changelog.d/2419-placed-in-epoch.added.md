@@ -4,3 +4,5 @@
   per-shard Raft re-form command can read every disk that may hold
   acknowledged records. Started by a shard's first assignment; under the Raft
   metadata store it needs every member at metadata level 31.
+  Restoring an export into a Raft metadata store now also needs level 31:
+  the leader refuses an import until every control-plane member is upgraded.

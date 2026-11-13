@@ -1629,12 +1629,13 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
     assert_eq!(restored.join_floor(), PLACED_LEVEL);
 }
 
-/// An import marks the streams and caches it restores only at level 31, so
-/// every member applies the same mark. The leader settles the field
-/// whatever the proposer sent: an import without it marks at level 31, and
-/// one with it marks nothing below.
+/// An import marks the streams and caches it restores, so every member
+/// applies the same mark. The leader refuses one below level 31, whatever the
+/// proposer sent: an old member cannot read the mark, and an unmarked import
+/// would let a later first assignment start a record that looks complete. At
+/// the level it marks even an import that left the field out.
 #[tokio::test]
-async fn an_import_marks_restored_streams_only_at_the_placed_level() {
+async fn an_import_is_refused_below_the_placed_level_and_marked_at_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, version) = store_with_member_at(dir.path(), PLACED_LEVEL - 1).await;
     store
@@ -1642,6 +1643,10 @@ async fn an_import_marks_restored_streams_only_at_the_placed_level() {
         .await
         .expect("stream");
     let exported = store.machine.store().export_state().await;
+    store
+        .create_stream(routed_stream("payments", Default::default()))
+        .await
+        .expect("stream after the export");
     let import = |mark_unplaced| MetaCommand::ImportState {
         state: Box::new(exported.clone()),
         overwrite: true,
@@ -1654,11 +1659,20 @@ async fn an_import_marks_restored_streams_only_at_the_placed_level() {
         "{refused:?}"
     );
     let marked = || async { store.machine.store().export_state().await.unplaced.len() };
+    let streams = || async { store.machine.store().export_state().await.streams.len() };
     // Raw bytes through the peer route skip the store's check; the leader
-    // still takes the mark off below the level.
+    // refuses them too, with or without the field, and appends nothing.
     let raw = |mark| crate::store::raft::command::encode_command(&import(mark));
-    store.handle.write(raw(true)).await.expect("raw import");
+    for mark in [true, false] {
+        let answer = store.handle.write(raw(mark)).await.expect("answered");
+        let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
+        assert!(
+            matches!(&result, Err(MetaError::Conflict(message)) if message.ends_with(crate::store::UPGRADE_HINT)),
+            "{result:?}"
+        );
+    }
     assert_eq!(marked().await, 0);
+    assert_eq!(streams().await, 2, "a refused import replaced the state");
 
     version.store(
         crate::store::raft::command::METADATA_VERSION,
@@ -1668,7 +1682,7 @@ async fn an_import_marks_restored_streams_only_at_the_placed_level() {
     while marked().await == 0 {
         // Without the field, as an operator's import arrives: the leader
         // sets it once every member has the level.
-        store.handle.write(raw(false)).await.expect("raw import");
+        let _ = store.handle.write(raw(false)).await.expect("raw import");
         assert!(
             std::time::Instant::now() < deadline,
             "not marked after every member reported the level"
@@ -1676,6 +1690,7 @@ async fn an_import_marks_restored_streams_only_at_the_placed_level() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert_eq!(marked().await, 1);
+    assert_eq!(streams().await, 1);
 }
 
 /// Under `joint_fence` a rename past a refusal's ballot skips generations, and
