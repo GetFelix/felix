@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794544555516,
+  "lastUpdate": 1794554246789,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54080,6 +54080,58 @@ window.BENCHMARK_DATA = {
             "range": "12604.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 983631.72\nmean: 984024.57\nstdev: 12604.35\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "376c343a09838e8a827b996c4029a8c87ab85a11",
+          "message": "test(wire): the internal fuzz target knows which kinds need which capability (#2412)\n\nThe internal_message fuzz target checks each kind against a table of the capabilities it must and may report, so the stamped replicate kinds (WRITER_GENERATIONS, plus ELECTION with a set generation) no longer trip the catch-all. A committed seed reproduces the old panic. Closes #2401.\n\nSpec-Unaffected: fuzz target and seed only.",
+          "timestamp": "2026-11-13T07:09:54Z",
+          "tree_id": "4e64721b5f5c164b036ce9fda53c64025ce9cdaa",
+          "url": "https://github.com/GetFelix/felix/commit/376c343a09838e8a827b996c4029a8c87ab85a11"
+        },
+        "date": 1794554246190,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 498653.04,
+            "range": "36092.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 498653.04\nmean: 502209.02\nstdev: 36092.28\ncv: 7.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 498653.04,
+            "range": "36092.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 498653.04\nmean: 502209.02\nstdev: 36092.28\ncv: 7.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120360.88,
+            "range": "762.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120360.88\nmean: 120185.90\nstdev: 762.81\ncv: 0.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1203608.75,
+            "range": "7628.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1203608.75\nmean: 1201858.96\nstdev: 7628.14\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
