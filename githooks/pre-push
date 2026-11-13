@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# FELIX_PRE_PUSH replaces the lint command, for example to run `task lint` on
+# a build machine against the tree being pushed. It must fail when lint fails.
+if [ -n "${FELIX_PRE_PUSH:-}" ]; then
+  exec bash -c "$FELIX_PRE_PUSH"
+fi
+
 if command -v task >/dev/null 2>&1; then
   task lint
 else
