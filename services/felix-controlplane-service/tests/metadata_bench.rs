@@ -688,10 +688,12 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
         let writer = Arc::clone(&group.members[0].store);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worst = Arc::new(AtomicU64::new(0));
+        let written = Arc::new(AtomicU64::new(0));
         let probe = Arc::clone(&group.members[0].probe);
         let background = tokio::spawn({
             let stop = Arc::clone(&stop);
             let worst = Arc::clone(&worst);
+            let written = Arc::clone(&written);
             async move {
                 let mut i = 0u64;
                 while !stop.load(Ordering::SeqCst) {
@@ -700,10 +702,18 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
                         .create_namespace(namespace(&format!("during-{i}"), 256))
                         .await;
                     worst.fetch_max(begun.elapsed().as_nanos() as u64, Ordering::SeqCst);
+                    written.fetch_add(1, Ordering::SeqCst);
                     i += 1;
                 }
             }
         });
+        // openraft builds nothing when nothing was applied since the last
+        // snapshot, so the idle one above must be behind a write first.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while written.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the writer never wrote");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
         let build_ms = build_once(&group.members[0]).await;
         // Let the snapshot reach the store before the stall is read.
         tokio::time::sleep(Duration::from_secs(2)).await;
