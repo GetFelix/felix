@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794609886830,
+  "lastUpdate": 1794610410635,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55120,6 +55120,58 @@ window.BENCHMARK_DATA = {
             "range": "10094.61",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 802400.52\nmean: 798624.85\nstdev: 10094.61\ncv: 1.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "569240cd16e23d2d7355bf4392f45aab44364324",
+          "message": "fix(replication): a Raft member's status reads its log positions in one borrow (#2447) (#2474)\n\n* test(replication): read-bound tests compare with the core's commit index, not the metrics watch (#2447)\n\nBoth tests read the read bound, then the commit index from openraft's\nmetrics. The core publishes metrics once per loop iteration, after it has\nhanded committed entries to the state machine, so the state machine can\napply them and move the bound before the metrics show them committed. The\ntests now ask the core for its commit index with with_raft_state, which\nis never behind what it handed out to apply.\n\nSpec-Unaffected: test-only; the read bound and apply rule are unchanged.\n\n* fix(replication): a Raft member's status reads its log positions in one borrow (#2447)\n\nGroup::status borrowed the positions watch twice in one expression, so the\nfirst read guard was still held when the second was taken. An append that\npublished its position in between queued as a writer: the second read then\nwaited behind the writer and the writer behind the first read. The caller\nand every later write of that member stopped for good. Two of 320 runs of\nthe Raft suite under load hung this way, in two different tests.\n\nThe read-bound failures in the same issue were the tests: they compared the\nbound with the commit index from openraft's metrics watch, which the core\npublishes after it has handed the entries on to be applied. The tests ask\nthe core (previous commit), and that question is now bounded. The status\nfield and docs/per-shard-raft.md say what the metrics value is.\n\nSpec-Unaffected: status is a read-only report; the read bound, apply and commit rules are unchanged.",
+          "timestamp": "2026-11-13T14:42:46-08:00",
+          "tree_id": "e61b75b20ec583444e3f6d85296a68ba57ebbdea",
+          "url": "https://github.com/GetFelix/felix/commit/569240cd16e23d2d7355bf4392f45aab44364324"
+        },
+        "date": 1794610409950,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356204.31,
+            "range": "3345.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356204.31\nmean: 356267.79\nstdev: 3345.26\ncv: 0.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356204.31,
+            "range": "3345.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356204.31\nmean: 356267.79\nstdev: 3345.26\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80922.77,
+            "range": "1121.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80922.77\nmean: 80747.84\nstdev: 1121.59\ncv: 1.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809227.67,
+            "range": "11215.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809227.67\nmean: 807478.43\nstdev: 11215.92\ncv: 1.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
