@@ -710,9 +710,9 @@ command that replays it, for example
 `FELIX_SIM_CLOCKS=bounded FELIX_SIM_SEED=412 task sim:raft-replay` for a Raft
 seed. A Raft seed's categories are `history`, `stalled`, `group` (any other
 group finding), `too-little` (it exercised too little to count) or `crash`.
-A real bug runs
-once more to say whether it repeats; a stall does not, because the run is
-exact and a stall takes minutes. The logs of failing seeds are in the
+
+A real bug runs once more to say whether it repeats; a stall does not,
+because the run is exact and a stall takes minutes. The logs of failing seeds are in the
 `sim-sweep-<mode>-<first seed>` artifacts.
 
 For the release gate, start the workflow by hand (Actions, "Simulation sweep
@@ -723,7 +723,7 @@ For the release gate, start the workflow by hand (Actions, "Simulation sweep
 | `first` | The first seed. | 1 |
 | `seeds` | How many seeds per mode. | 2000 |
 | `shards` | Jobs per mode, lowered to `seeds` when larger. | 50 |
-| `modes` | Modes from the table above (comma separated), `all` (`off`, `clocks`, `placement`, `power-loss`) or `disks` (`relaxed-power-loss`, `majority-cut`, `majority-cut-relaxed`, `wipe`). | `off` |
+| `modes` | Modes from the table above (comma separated), `all` (`off`, `clocks`, `placement`, `power-loss`) or `disks` (`relaxed-power-loss`, `majority-cut`, `majority-cut-relaxed`, `wipe`). Neither includes the Raft modes; name them. | `off` |
 | `parallel` | Jobs running at once, 1 to 20. | 4 |
 
 `modes` `all` with 2000 seeds is 200 jobs (the limit is 256), and a job takes at most 50 seeds. Repeated modes count once. Dispatched runs queue behind each other. The gate is no
