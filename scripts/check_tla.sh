@@ -587,6 +587,7 @@ expectations=(
   "FelixRaftPlacementFormTwoWipes pass"
   "FelixRaftPlacementFormAfterWipes pass"
   "FelixRaftPlacementFormMajority violates AckedHeldSurvive"
+  "FelixRaftPlacementFormAlias violates AckedHeldSurvive"
   "FelixRaftPlacementFormEarlyWipe pass"
   "FelixRaftPlacementFormEarlyWipeFirstBoot pass"
   "FelixRaftPlacementFormEarlyWipeTwo pass"

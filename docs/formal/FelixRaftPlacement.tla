@@ -130,6 +130,11 @@
 (*                     answers and skips a member that does not answer,    *)
 (*                     which is what the metadata group did before issue   *)
 (*                     2371.                                               *)
+(*   FormAlias      -- Forming only: an answer is counted for the address  *)
+(*                     it came from, not for the member that gave it. Two  *)
+(*                     addresses can reach one member, so a member that    *)
+(*                     does not answer is counted as empty on another      *)
+(*                     member's answer, or on the asking member's own.     *)
 (*   FormRecord = FALSE  -- Forming only: no mark and no records, a member *)
 (*                     forms on the answers alone, which is what the       *)
 (*                     metadata group did before issue 2374                *)
@@ -172,6 +177,7 @@ CONSTANTS
     FormRecord,     \* forming is mark, record, vote
     FirstBoot,      \* the group has not formed: every member starts with its vote withheld
     FormMajority,
+    FormAlias,
     WaiverExcusesAnswer,
     WaiverAnyNumber,
     Waived,         \* brokers a `form-without` waiver names: their silence does not block
@@ -567,11 +573,12 @@ VoteAgain(s) ==
 
 \* First start. A is the set of members that answer, and it holds every
 \* waived member that is up. Every other member answers, bar those a
-\* waiver names.
+\* waiver names. Each answer says which member gave it, so none stands in
+\* for a member that is silent (FormAlias drops that).
 Asked(s, A) ==
     /\ A \subseteq (InitBrokers \ Absent) \ {s}
     /\ (Waived \ Absent) \ {s} \subseteq A
-    /\ FormMajority \/ (InitBrokers \ {s}) \ A \subseteq Waived
+    /\ FormMajority \/ FormAlias \/ (InitBrokers \ {s}) \ A \subseteq Waived
 
 \* The answers allow forming: none shows a log entry, and the members that
 \* answer empty, this one included, are a majority. The member decided its
@@ -580,7 +587,7 @@ Standing(s, A) ==
     LET empty == {t \in A : LastIdx(t) = 0} IN
     /\ Asked(s, A)
     /\ \A t \in A \ empty : WaiverExcusesAnswer /\ t \in Waived
-    /\ WaiverAnyNumber \/ Majority({s} \cup empty, InitBrokers)
+    /\ WaiverAnyNumber \/ FormAlias \/ Majority({s} \cup empty, InitBrokers)
 
 \* The member sets out to form and writes its mark. An answer that names
 \* it, when it holds no mark, means its directory once held the mark: it

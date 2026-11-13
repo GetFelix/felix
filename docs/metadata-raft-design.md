@@ -312,7 +312,9 @@ A first boot acts on answers, never on silence:
   member's id, as `member`. An empty answer from another member than the one
   asked blocks a first boot, and the log says which member answered at which
   member's address. So does an empty answer with no `member` in it, which is
-  what a build that predates the field gives.
+  what a build that predates the field gives. The model loses an
+  acknowledged write when answers are counted by address
+  (`FelixRaftPlacementFormAlias.cfg`).
 - **The group exists when a log holds an entry at index 1 or above.** Every
   first-boot member writes the same membership at index 0 and may vote for
   itself before anyone leads, so neither says a group exists. An entry at

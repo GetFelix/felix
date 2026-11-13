@@ -655,6 +655,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementFormAfterWipes.cfg` | a group that exists, three terms, one write, one volume lost after the first commit: the wiped member takes the first-start step again and cannot form over a member that holds the log | pass the same checks (1.9M distinct states) |
 | `FelixRaftPlacementFormTwoWipes.cfg` | the same with two terms and two lost volumes: two wiped members do not form over a third that holds the log | pass `AckedHeldSurvive` only, since two lost volumes of three is past what the group survives (1.3M distinct states) |
 | `FelixRaftPlacementFormMajority.cfg` | the same where a majority of empty answers is enough and silence is skipped, the rule before #2371 | violate `AckedHeldSurvive` |
+| `FelixRaftPlacementFormAlias.cfg` | `FormAfterWipes` where an answer is counted for the address it came from, so two addresses that reach one member count it twice and a silent member reads as empty | violate `AckedHeldSurvive` |
 | `FelixRaftPlacementFormEarlyWipe.cfg` | a group that exists, two terms, one write, one volume lost at any time, also before the first commit (#2374): the other members hold a record that the wiped member set out to form, so it does not form again | pass the same checks as `Form` (105K distinct states) |
 | `FelixRaftPlacementFormEarlyWipeUnrecorded.cfg` | the same without the record (`FormRecord = FALSE`): every answer is empty, the member forms again and votes in a term it forgot | violate `AckedHeldSurvive` |
 | `FelixRaftPlacementFormEarlyWipeFirstBoot.cfg` | `FormEarlyWipe` from a first start, so the volume can be lost between a member's mark, the others' records and its first vote | pass the same checks (991K distinct states) |
@@ -2618,6 +2619,9 @@ Each knob drops one rule:
   whose vote is withheld.
 - `FormMajority`: an empty member forms on a majority of empty answers and
   skips a member that does not answer.
+- `FormAlias`: an answer is counted for the address it came from, not for
+  the member that gave it, so a member that does not answer can be counted
+  as empty.
 - `WaiverExcusesAnswer`: a waived member's answer is skipped like its silence.
 - `WaiverAnyNumber`: a waiver may name a majority of the slots.
 
@@ -2690,7 +2694,11 @@ member this way, so no leader exists until members have formed.
   (`FormMajority`, a majority of empty answers is enough and silence is
   skipped, as before #2371) and loses an acknowledged write: the wiped member
   forms with a member that never received the write while its holder is
-  silent.
+  silent. `FelixRaftPlacementFormAlias.cfg` keeps the rule and counts
+  answers by address (`FormAlias`): two addresses in the peer list reach one
+  member, the silent holder is counted as empty on that member's answer, and
+  the same write is lost. The metadata group has each answer carry the id of
+  the member that gave it and counts it for that member only.
 - `FelixRaftPlacementFormTwoWipes.cfg` loses two volumes. Two wiped members
   do not form over a third that holds the log. When all three are empty
   they do form, which is right for the log and wrong for a vote one of them
