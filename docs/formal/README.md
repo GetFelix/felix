@@ -2907,13 +2907,45 @@ covering the generation field and generation 0 on the followers, no
 majority ever acknowledges and the switch never happens
 (`FelixRaftSwitchDigestCoversGeneration.cfg`).
 
-Abstracted: storage is durable at once (`FelixRaft.tla` covers the
-adapter's fsync rules), a message is one atomic step, and the hybrid before
-the seal is the initial choice. The hybrid's rebuild and catch-up during
-the seal are left out, so a copy that lags or was wiped stays so until Raft
-brings it up. The promotion adds one voter in one step. Records below `S`
-are outside the check, as the design says. Cache shards, whose digest is
-over live state, are not modelled.
+The implementation design on issue #2242 adds the parts the seal has
+around it, each off unless a configuration turns it on:
+
+- A `Leader` write already inside the seal leader's fence (`InFlight`).
+  It takes an offset, and is acknowledged on the leader's disk while the
+  leader's lease holds. The record at `N` waits until it is answered or
+  failed.
+- Followers catching up to the seal leader during the seal (`Catchup`).
+- The control plane giving up a seal once the leader's lease has lapsed and
+  sealing again with the copy furthest ahead in a majority (`Failover`).
+- A seal leader that loses its unsynced tail to a power cut
+  (`MayUnsynced`). It gives up the seal.
+- A Raft member moving its purged id past `N` (`MaxPurges`).
+- A follower's record differing only in its producer tag (`MayDifferTag`),
+  and its dead-letter and group-cursor logs lacking the leader's state
+  (`MayDifferSide`).
+
+New checks: `HybridAcksInBase` (once the switch is recorded, every record
+the hybrid acknowledged from `S` up is in the base, by content, below `N`),
+`LeaderAcksInBase` (the same for `Leader` acknowledgements while the writer
+is the seal leader), `NoAckAfterHandOver` (no `Leader` acknowledgement once
+the shard is handed to another copy or to Raft), `SideComplete` (a Raft
+leader holds the side logs) and `NeverReadsBelowBase` (a recorded voter's
+purged id is at `N`). One knob each drops a rule: `ClaimBeforeQuiesce`,
+`LeaseAtEntryOnly`, `ResealSameGen`, `CopyFromAny`, `DigestSkipsTag`,
+`DigestSkipsSide`, `NoVoteFloor`, `ReopenOnTimeout`, `BallotIgnoresSeal`
+and `MarkFirst`.
+
+The model's term is the record's generation field. In the code a Raft term
+is one less (`raft_log`: generation = term + 1), so the base's term `G`
+here is Raft term `G - 1`, and the vote `Start` stores at `G` is the vote
+at Raft term `G - 1` that the design calls the floor.
+
+Abstracted: storage is durable at once except the seal leader's tail under
+`MayUnsynced` (`FelixRaft.tla` covers the adapter's fsync rules), a
+message is one atomic step, and the hybrid before the seal is the initial
+choice. Reseal and failover are one step each. The promotion adds one
+voter in one step. Records below `S` are outside the check, as the design
+says. Cache shards, whose digest is over live state, are not modelled yet.
 
 ### Raft leader leases
 
