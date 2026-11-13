@@ -733,14 +733,21 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
 | `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
 | `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
-| `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (STEPDOWN_STATES) |
+| `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (no violation in 45 min on 16 workers; the full run is a heavy job of its own) |
+| `FelixRaftLeaseStepDownWide.cfg` | the same with `ElectionTimeoutMin` = 1 below the lease of 2, two step-downs and one write; not registered, run by dispatch | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` |
+| `FelixRaftLeaseReachLeaseAfterVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with two terms | violate the witness `NeverLeaseAfterVoid`: a broker that voided a term passes the check in a later one |
 | `FelixRaftLeaseStepDownNoVoid.cfg` | the same with no void | violate `LeaseExclusive` (issue #2249) |
 | `FelixRaftLeaseStepDownSync.cfg` | the same with no void and the role read when the check runs | pass the same (12.6M distinct states, 17 min on 16 workers) |
 | `FelixRaftLeaseTransfer.cfg` | lease 1 against an election timeout of 2, the role read late and one transfer: heartbeats stop, followers that take it clear their window, the target campaigns at once, the transfer may expire; Felix voids the lease before the send | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.6M distinct states, 15 min on 16 workers) |
 | `FelixRaftLeaseTransferKeepsLease.cfg` | the same with no void | violate `LeaseExclusive` |
 | `FelixRaftLeaseTransferVoidLate.cfg` | the same with the void a separate later step | violate `LeaseExclusive` |
-| `FelixRaftLeaseSuspend.cfg` | `FelixRaftLease.cfg` with one suspend: the clock stops, the broker takes no step, and on waking it refuses for one lease | pass `LeaseExclusive`, `OneLeaderPerTerm` (SUSPEND_STATES) |
+| `FelixRaftLeaseTransferThreeTerms.cfg` | `FelixRaftLeaseTransfer.cfg` with three terms: a broker that voided term 1 is elected in term 2 and votes in term 3 | pass `LeaseExclusive`, `OneLeaderPerTerm` (no violation in 35 min on 16 workers; the full run is a heavy job of its own) |
+| `FelixRaftLeaseTransferVoidEquality.cfg` | the same with the void one term, overwritten by the next and compared by equality | violate `LeaseExclusive` |
+| `FelixRaftLeaseTransferWide.cfg` | the transfer at lease 2 against 4, `ElectionTimeoutMin` = 1, three terms and one write; not registered, run by dispatch | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` |
+| `FelixRaftLeaseSuspend.cfg` | `FelixRaftLease.cfg` with one suspend: the clock stops, the broker takes no step, and on waking it refuses for one lease | pass `LeaseExclusive`, `OneLeaderPerTerm` (no violation in 45 min on 16 workers; the full run is a heavy job of its own) |
 | `FelixRaftLeaseSuspendUnchecked.cfg` | the same with no wake check (also a VM pause) | violate `LeaseExclusive` |
+| `FelixRaftLeaseSuspendLateCheck.cfg` | the same with the jump seen by its own step after the wake, as a background watch would | violate `LeaseExclusive` |
+| `FelixRaftLeaseSuspendRoleLate.cfg` | the same with the role read late and one write; not registered, run by dispatch | pass the same, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` |
 | `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
 | `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
 | `FelixRaftLeaseFromAck.cfg` | the lease runs from when the answer came back, not from the hand-off | violate `LeaseExclusive` |
@@ -3081,25 +3088,63 @@ model has each:
   it grants the candidate at once, and the candidate wins with it while
   Felix's late view of the old leader still passes, however short the lease.
   Later the stepped-down leader campaigns and the followers it led grant it
-  inside their window (`from_leased_leader`). The node layer voids the lease
-  for the term as soon as any message for the group names a higher term,
-  before openraft sees it. `FelixRaftLeaseStepDown.cfg` passes with the void;
-  `FelixRaftLeaseStepDownNoVoid.cfg` fails without it;
+  inside their window (`from_leased_leader`). The node layer voids every
+  term below the one a message names, before openraft sees it.
+  `FelixRaftLeaseStepDown.cfg` passes with the void, and
+  `FelixRaftLeaseStepDownWide.cfg` passes with `ElectionTimeoutMin` below
+  the lease, so the void does the work, not a bound on the lease.
+  `FelixRaftLeaseStepDownNoVoid.cfg` fails without it.
   `FelixRaftLeaseStepDownSync.cfg` passes without it when the role is read
   when the check runs, the fix the design does not take.
 - A transfer stops heartbeats, clears the window of every follower that takes
   the `TransferLeader` message, and lets the target's voters grant inside it.
   A transfer that does not finish makes the leader step down and campaign.
   Felix voids its lease for the term before the message leaves.
+  openraft's target campaigns the moment it takes the message, so a target
+  that first follows a leader of a later term no longer campaigns for the
+  old transfer.
   `FelixRaftLeaseTransfer.cfg` passes; with no void
   (`FelixRaftLeaseTransferKeepsLease.cfg`) or the void as a later step
   (`FelixRaftLeaseTransferVoidLate.cfg`) it fails.
 - A suspended broker's monotonic clock stops while real time runs. Felix
-  compares it with boottime on waking and refuses local acks for one more
-  lease. `FelixRaftLeaseSuspend.cfg` passes; with no wake check
-  (`FelixRaftLeaseSuspendUnchecked.cfg`) it fails. That twin is also a VM
-  pause, which stops both clocks, and a platform with no clock that counts
-  suspended time: the design states both as assumptions.
+  compares it with boottime inside the check and refuses local acks for one
+  more lease. `FelixRaftLeaseSuspend.cfg` passes, and
+  `FelixRaftLeaseSuspendRoleLate.cfg` passes with the role read late. With
+  no wake check (`FelixRaftLeaseSuspendUnchecked.cfg`) it fails. That twin
+  is also a VM pause, which stops both clocks, and a platform with no clock
+  that counts suspended time: the design states both as assumptions. With
+  the jump seen by a background watch after the wake
+  (`FelixRaftLeaseSuspendLateCheck.cfg`) it fails too.
+
+The void only grows. A broker that voided term 1 for a transfer can be
+elected again in term 2 and then vote in term 3; a void kept as one term and
+compared by equality lets the vote's void of term 2 lift the transfer's void
+of term 1, and Felix's late view of term 1 passes beside the term 3 leader
+(`FelixRaftLeaseTransferVoidEquality.cfg`). `FelixRaftLeaseTransferThreeTerms.cfg`
+passes with the void kept as the highest term voided.
+
+Only messages openraft accepts raise the void: append and snapshot requests,
+answers naming a higher vote, and votes it grants, where the void is taken
+on the outgoing answer before it leaves. A vote request openraft refuses
+changes nothing in openraft, so no new leader can use it, and the model has
+no void for it. Voiding on it would let one partitioned candidate take local
+acks from a stable leader for the rest of its term. The cost of a void that
+does happen is the rest of that term:
+`FelixRaftLeaseReachLeaseAfterVoid.cfg` shows the same broker passing the
+check again once it is elected in a later term.
+
+For the implementation:
+
+- The void is one number per group, in memory, that only grows.
+  `admit_local_ack` (`raft/engine.rs`) refuses every term at or below it. A
+  restart starts with no lease, so it need not be kept.
+- The network adapter raises it before openraft sees the message, on the
+  messages above. `Group::transfer` raises it to its own term before the
+  send.
+- The wake check compares the monotonic clock with boottime inside
+  `admit_local_ack`, not in a background task.
+- The config refuses a lease unless
+  `lease * (1 + p) / (1 - p) <= election_timeout_max` (`raft/runtime.rs`).
 
 **Store-liveness leases (later design).** The group sends nothing of its own.
 Each pair of brokers exchanges liveness heartbeats. A broker gives a peer's

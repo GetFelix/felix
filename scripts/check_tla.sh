@@ -666,6 +666,7 @@ expectations=(
   "FelixRaftLeaseStepDown pass"
   "FelixRaftLeaseStepDownSync pass"
   "FelixRaftLeaseTransfer pass"
+  "FelixRaftLeaseTransferThreeTerms pass"
   "FelixRaftLeaseSuspend pass"
   "FelixRaftLeaseStore pass"
   "FelixRaftLeaseStoreStall pass"
@@ -674,6 +675,9 @@ expectations=(
   "FelixRaftLeaseStepDownNoVoid violates LeaseExclusive"
   "FelixRaftLeaseTransferKeepsLease violates LeaseExclusive"
   "FelixRaftLeaseTransferVoidLate violates LeaseExclusive"
+  "FelixRaftLeaseTransferVoidEquality violates LeaseExclusive"
+  "FelixRaftLeaseSuspendLateCheck violates LeaseExclusive"
+  "FelixRaftLeaseReachLeaseAfterVoid violates NeverLeaseAfterVoid"
   "FelixRaftLeaseSuspendUnchecked violates LeaseExclusive"
   "FelixRaftLeaseLong violates LeaseExclusive"
   "FelixRaftLeaseDrift violates LeaseExclusive"
@@ -835,8 +839,8 @@ fi
 # and Same1Gen2 run nightly. Same{0,1}Gen{2,3} without Same1Gen2, Apart{0,1}Gen3
 # did not finish in six hours, so nothing checks them yet. Same{0,1}StoodGen2
 # are split again (Stood{One,Several}{Dest,Other}) and not measured yet.
-# FelixRaftReformStaleMembership{Relaxed,Placed} and FelixRaftLeaseAckWide are
-# not registered: each is registered once a dispatch run gives its declared
+# FelixRaftReformStaleMembership{Relaxed,Placed}, FelixRaftLeaseAckWide and
+# FelixRaftLease{StepDownWide,TransferWide,SuspendRoleLate} are not registered: each is registered once a dispatch run gives its declared
 # outcome.
 # FelixRaftReformStaleMembershipFull is not registered either: it gives the
 # violation FelixRaftReformStaleMembershipTwoRotated pins, at ten times the cost.
@@ -1072,6 +1076,12 @@ weights=(
   "FelixRaftLeaseStore 2"
   "FelixRaftLeaseStoreStall 2"
   "FelixRaftLeaseStoreWide 36"
+  "FelixRaftLeaseStepDown 180"
+  "FelixRaftLeaseStepDownSync 40"
+  "FelixRaftLeaseSuspend 180"
+  "FelixRaftLeaseTransfer 40"
+  "FelixRaftLeaseTransferThreeTerms 150"
+  "FelixRaftLeaseTransferVoidEquality 25"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
 )

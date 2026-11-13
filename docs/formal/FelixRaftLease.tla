@@ -128,9 +128,15 @@
 (*   not won (an append's answer) and adopts that vote, which is not       *)
 (*   committed: it grants the candidate at once, and campaigns itself      *)
 (*   `ElectionTimeoutMin` later. With the role read late Felix would still *)
-(*   pass, whatever the lease, so the node layer voids the lease for the   *)
-(*   term when any message names a higher one, before openraft sees it     *)
-(*   (VoidOnHigherTerm).                                                   *)
+(*   pass, whatever the lease, so the node layer voids every term below    *)
+(*   the one a message names, before openraft sees it (VoidOnHigherTerm).  *)
+(*   Only messages openraft accepts void: an append or snapshot request,   *)
+(*   an answer naming a higher vote, a vote it grants (the void is taken   *)
+(*   on the outgoing answer, before it leaves). A vote request openraft    *)
+(*   refuses changes nothing in openraft, so it voids nothing here, and a  *)
+(*   partitioned candidate does not cost a stable leader its lease.        *)
+(*   The void only grows: Felix refuses every term up to it, for the life  *)
+(*   of the process. It is in memory; a restart starts with no lease.      *)
 (*   LeaderBypass: openraft grants a vote to the leader the voter follows  *)
 (*   inside the window (`from_leased_leader`).                             *)
 (*   Transfers: the leader stops heartbeats and sends `TransferLeader`.    *)
@@ -139,8 +145,23 @@
 (*   finish makes the leader step down and campaign (`TransferExpire`).    *)
 (*   Felix voids its lease for the term before the message leaves.         *)
 (*   Suspends: a broker's monotonic clock stops while real time runs, and  *)
-(*   it takes no step. On waking Felix sees the jump against boottime and  *)
-(*   refuses local acks until its clock has run one more lease.            *)
+(*   it takes no step. Felix compares the monotonic clock with boottime    *)
+(*   inside the check, so the first check after waking sees the jump, and  *)
+(*   it refuses local acks until its clock has run one more lease.         *)
+(*                                                                         *)
+(* For the implementation (issue 2249):                                    *)
+(*   - The void is one number per group, in memory, that only grows.       *)
+(*     `admit_local_ack` (raft/engine.rs) refuses any term at or below it.  *)
+(*   - The network adapter raises it before openraft sees the message: on  *)
+(*     inbound append and snapshot requests, on inbound answers naming a   *)
+(*     higher vote, and on outbound vote answers that grant.               *)
+(*   - `Group::transfer` raises it to its own term before the send.        *)
+(*   - The wake check compares the monotonic clock with boottime inside    *)
+(*     `admit_local_ack`, not in a background task.                        *)
+(*   - The config refuses a lease unless                                   *)
+(*     Lease * (1 + p) / (1 - p) <= election_timeout_max, p the drift      *)
+(*     bound (raft/runtime.rs). The model's `ElectionTimeout` is the       *)
+(*     follower's window, and the ASSUME below is that inequality.         *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -169,12 +190,17 @@
 (*   VoidOnHigherTerm = FALSE -- a leader that steps down on a higher term *)
 (*                             keeps its lease until Felix's view catches  *)
 (*                             up.                                         *)
+(*   VoidEquality           -- the void is one term, overwritten by the    *)
+(*                             next and compared by equality, so a later   *)
+(*                             void lifts an earlier one.                  *)
 (*   TransferVoids = FALSE  -- a transfer does not void the lease.         *)
 (*   VoidBeforeSend = FALSE -- the void is its own step, any time after    *)
 (*                             the message left, as a metrics watch would  *)
 (*                             do it.                                      *)
 (*   SuspendCheck = FALSE   -- no wake check: a VM pause, or a platform    *)
 (*                             with no clock that counts suspended time.   *)
+(*   WakeCheckLate          -- the jump is seen by its own step after the  *)
+(*                             wake, as a background watch would see it.   *)
 (*   SupportNotDurable      -- (Part 2) support and the recorded epoch are *)
 (*                             lost at a restart.                          *)
 (*   VoteWhileSupported     -- (Part 2) a vote is granted while support    *)
@@ -204,7 +230,8 @@ CONSTANTS
     SupportNotDurable, VoteWhileSupported, LeaseKeptAcrossRestart,
     ResupportWithdrawn, WithdrawEarly, StalledKeepsAsking,
     ElectionTimeoutMin, RoleSync, LeaderBypass, MaxStepDowns, VoidOnHigherTerm,
-    MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends, SuspendCheck
+    VoidEquality, MaxTransfers, TransferVoids, VoidBeforeSend, MaxSuspends,
+    SuspendCheck, WakeCheckLate
 
 \* The follower's side of the inequality: how long its promise lasts.
 Promise == IF StoreLeases THEN SupportTime ELSE ElectionTimeout
@@ -244,20 +271,21 @@ VARIABLES
     seenTerm,     \* Felix's view: the term it believes it leads, or 0
     seenAge,      \* Felix's view: age of `last_quorum_acked` as last seen
     xfer,         \* openraft: the term this broker started a transfer in, or 0
-    voidTerm,     \* Felix: the term whose lease a transfer voided, or 0
+    voidTerm,     \* Felix: every term up to this one is voided, or 0
     auth,         \* a transfer this broker campaigns for: <<leader, term>>
     xmsgs,        \* TransferLeader messages in flight
     transfers,
     suspended,
     sinceWake,    \* how long ago this broker woke, as Felix measures it
-    suspends
+    suspends,
+    woke          \* woken, and Felix has not yet seen the jump (WakeCheckLate)
 
 groupVars == <<term, votedFor, followed, role, log, commit, heardAge, startAge, ackAge,
               match>>
 storeVars == <<epoch, sup, fortEpoch, supAge, fortAck, beatMsgs, beats, stalledAge>>
 histVars  == <<delivered, acked, staleAck, elected, nextId>>
 xVars     == <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
-              xmsgs, transfers, suspended, sinceWake, suspends>>
+              xmsgs, transfers, suspended, sinceWake, suspends, woke>>
 vars == <<groupVars, msgs, restarts, histVars, storeVars, xVars>>
 
 None == -1
@@ -305,8 +333,17 @@ QAge(l) ==
 NoAuth == <<Nobody, 0>>
 Up(b) == ~suspended[b]
 
-\* The node layer saw a message naming a term above the one b leads.
-VoidOn(b, v) == IF VoidOnHigherTerm /\ role[b] = "leader" THEN term[b] ELSE v
+\* The void after b voids term t. It only grows: a later void never lifts an
+\* earlier one. VoidEquality keeps one term instead, compared by equality.
+VoidTo(b, t) ==
+    IF VoidEquality THEN t ELSE Max({voidTerm[b], t})
+\* The node layer takes a message naming term nt, which openraft accepts.
+VoidOn(b, nt) ==
+    IF ~VoidOnHigherTerm THEN voidTerm[b]
+    ELSE IF VoidEquality
+         THEN IF role[b] = "leader" /\ term[b] < nt THEN term[b] ELSE voidTerm[b]
+    ELSE VoidTo(b, nt - 1)
+Voided(b, t) == IF VoidEquality THEN voidTerm[b] = t ELSE t <= voidTerm[b]
 
 \* The term and age Felix's check reads.
 FelixTerm(l) ==
@@ -317,7 +354,7 @@ GroupLease(l) ==
     LET t == FelixTerm(l) IN
     /\ t # 0
     /\ FelixAge(l) < Lease
-    /\ voidTerm[l] # t
+    /\ ~Voided(l, t)
     /\ Up(l)
     /\ sinceWake[l] >= Lease
 
@@ -404,6 +441,7 @@ Init ==
     /\ suspended = [b \in Servers |-> FALSE]
     /\ sinceWake = NoAges
     /\ suspends = 0
+    /\ woke = [b \in Servers |-> FALSE]
 
 \* One tick of real time. Every age grows by the gain of the clock it is
 \* read on: a message's stamp is read on the leader's clock. A suspended
@@ -431,7 +469,7 @@ Tick ==
         /\ UNCHANGED <<term, votedFor, followed, role, log, commit, match, restarts,
                        histVars, epoch, fortEpoch, fortAck, beats>>
         /\ UNCHANGED <<leaderOf, stepDowns, seenTerm, xfer, voidTerm, auth, xmsgs,
-                       transfers, suspended, suspends>>
+                       transfers, suspended, suspends, woke>>
 
 Elect(c, Q, nt) ==
     /\ c \in Q /\ Majority(Q)
@@ -472,7 +510,7 @@ Elect(c, Q, nt) ==
     /\ auth' = [b \in Servers |-> IF b \in Q THEN NoAuth ELSE auth[b]]
     \* A leader that votes has stepped down, and waits before it campaigns.
     /\ voidTerm' = [b \in Servers |->
-                      IF b \in Q \ {c} THEN VoidOn(b, voidTerm[b]) ELSE voidTerm[b]]
+                      IF b \in Q \ {c} THEN VoidOn(b, nt) ELSE voidTerm[b]]
     /\ downAge' = [b \in Servers |->
                      IF b = c THEN Old
                      ELSE IF LeaderBypass /\ b \in Q /\ role[b] = "leader" THEN 0
@@ -480,7 +518,7 @@ Elect(c, Q, nt) ==
     /\ UNCHANGED <<log, commit, startAge, restarts, delivered, acked, staleAck, nextId,
                    epoch, sup, supAge, beatMsgs, beats, stalledAge>>
     /\ UNCHANGED <<stepDowns, seenTerm, seenAge, xfer, xmsgs, transfers,
-                   suspended, sinceWake, suspends>>
+                   suspended, sinceWake, suspends, woke>>
 
 \* Hand an append or heartbeat to the network. The stamp is taken here.
 Send(l, f) ==
@@ -517,10 +555,13 @@ RecvApp(m) ==
                         term', role')
     /\ followed' = [followed EXCEPT ![f] = RestartRenewsFollowed]
     /\ leaderOf' = [leaderOf EXCEPT ![f] = IF LeaderBypass THEN m.from ELSE Nobody]
-    /\ voidTerm' = [voidTerm EXCEPT ![f] = VoidOn(f, @)]
+    /\ voidTerm' = [voidTerm EXCEPT ![f] = VoidOn(f, m.term)]
+    \* openraft's target campaigns the moment it takes `TransferLeader`, so a
+    \* leader of a later term it follows first ends the transfer.
+    /\ auth' = [auth EXCEPT ![f] = IF m.term > @[2] THEN NoAuth ELSE @]
     /\ UNCHANGED <<votedFor, startAge, restarts, histVars, storeVars>>
-    /\ UNCHANGED <<downAge, stepDowns, seenTerm, seenAge, xfer, auth, xmsgs,
-                   transfers, suspended, sinceWake, suspends>>
+    /\ UNCHANGED <<downAge, stepDowns, seenTerm, seenAge, xfer, xmsgs,
+                   transfers, suspended, sinceWake, suspends, woke>>
 
 RecvAck(m) ==
     LET l == m.to
@@ -599,7 +640,8 @@ Restart(b) ==
     /\ auth' = [auth EXCEPT ![b] = NoAuth]
     /\ downAge' = [downAge EXCEPT ![b] = Old]
     /\ UNCHANGED <<term, votedFor, followed, log, commit, histVars, beats, stalledAge>>
-    /\ UNCHANGED <<leaderOf, stepDowns, xmsgs, transfers, suspended, sinceWake, suspends>>
+    /\ UNCHANGED <<leaderOf, stepDowns, xmsgs, transfers, suspended, sinceWake, suspends,
+                   woke>>
 
 (***************************************************************************)
 (* Part 2: liveness heartbeats between stores.                             *)
@@ -688,7 +730,7 @@ Notice(l) ==
     /\ seenAge' = [seenAge EXCEPT ![l] = a]
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, xfer, voidTerm, auth, xmsgs, transfers,
-                   suspended, sinceWake, suspends>>
+                   suspended, sinceWake, suspends, woke>>
 
 \* The leader learns of a higher term from a candidate that has not won, in
 \* an append's answer (openraft's `HigherVote`), and adopts that vote. It is
@@ -701,12 +743,12 @@ StepDown(l) ==
     /\ ackAge' = [ackAge EXCEPT ![l] = NoAges]
     /\ match' = [match EXCEPT ![l] = NoMatch]
     /\ downAge' = [downAge EXCEPT ![l] = 0]
-    /\ voidTerm' = [voidTerm EXCEPT ![l] = VoidOn(l, @)]
+    /\ voidTerm' = [voidTerm EXCEPT ![l] = VoidOn(l, term[l] + 1)]
     /\ msgs' = LiveMsgs(msgs, term, role')
     /\ UNCHANGED <<term, votedFor, followed, log, commit, heardAge, startAge, restarts,
                    histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, seenTerm, seenAge, xfer, auth, xmsgs, transfers,
-                   suspended, sinceWake, suspends>>
+                   suspended, sinceWake, suspends, woke>>
 
 \* `Group::transfer`: void the lease for the term, then send.
 Transfer(l, to) ==
@@ -716,21 +758,21 @@ Transfer(l, to) ==
     /\ transfers' = transfers + 1
     /\ xfer' = [xfer EXCEPT ![l] = term[l]]
     /\ voidTerm' = IF TransferVoids /\ VoidBeforeSend
-                   THEN [voidTerm EXCEPT ![l] = term[l]] ELSE voidTerm
+                   THEN [voidTerm EXCEPT ![l] = VoidTo(l, term[l])] ELSE voidTerm
     /\ xmsgs' = xmsgs \cup {[from |-> l, to |-> f, term |-> term[l], target |-> to,
                              log |-> log[l]] : f \in Others(l)}
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, auth, suspended,
-                   sinceWake, suspends>>
+                   sinceWake, suspends, woke>>
 
 \* The void as a separate step after the send (VoidBeforeSend = FALSE).
 VoidLate(l) ==
     /\ TransferVoids /\ ~VoidBeforeSend /\ Up(l)
-    /\ xfer[l] # 0 /\ voidTerm[l] # xfer[l]
-    /\ voidTerm' = [voidTerm EXCEPT ![l] = xfer[l]]
+    /\ xfer[l] # 0 /\ ~Voided(l, xfer[l])
+    /\ voidTerm' = [voidTerm EXCEPT ![l] = VoidTo(l, xfer[l])]
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, auth, xmsgs,
-                   transfers, suspended, sinceWake, suspends>>
+                   transfers, suspended, sinceWake, suspends, woke>>
 
 \* A member whose committed vote is the sender's clears its window; the
 \* target, if its log is up to date, campaigns for the transfer.
@@ -746,13 +788,13 @@ RecvXfer(m) ==
     /\ UNCHANGED <<term, votedFor, followed, role, log, commit, startAge, ackAge, match,
                    msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm,
-                   transfers, suspended, sinceWake, suspends>>
+                   transfers, suspended, sinceWake, suspends, woke>>
 
 DropXfer(m) ==
     /\ xmsgs' = xmsgs \ {m}
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
-                   transfers, suspended, sinceWake, suspends>>
+                   transfers, suspended, sinceWake, suspends, woke>>
 
 \* The target did not take over by the deadline: the leader steps down and
 \* campaigns at once. Allowed at any time, which only adds behaviours.
@@ -766,7 +808,7 @@ TransferExpire(l) ==
     /\ UNCHANGED <<term, votedFor, followed, log, commit, heardAge, startAge, restarts,
                    histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth, xmsgs,
-                   transfers, suspended, sinceWake, suspends>>
+                   transfers, suspended, sinceWake, suspends, woke>>
 
 Suspend(b) ==
     /\ suspends < MaxSuspends /\ Up(b)
@@ -774,16 +816,29 @@ Suspend(b) ==
     /\ suspended' = [suspended EXCEPT ![b] = TRUE]
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
-                   xmsgs, transfers, sinceWake>>
+                   xmsgs, transfers, sinceWake, woke>>
 
-\* Felix sees the boottime jump on waking and refuses for one lease.
+\* Felix compares the monotonic clock with boottime inside the check, so it
+\* sees the jump the moment the broker wakes, and refuses for one lease.
 Wake(b) ==
     /\ suspended[b]
     /\ suspended' = [suspended EXCEPT ![b] = FALSE]
-    /\ sinceWake' = IF SuspendCheck THEN [sinceWake EXCEPT ![b] = 0] ELSE sinceWake
+    /\ sinceWake' = IF SuspendCheck /\ ~WakeCheckLate
+                    THEN [sinceWake EXCEPT ![b] = 0] ELSE sinceWake
+    /\ woke' = [woke EXCEPT ![b] = SuspendCheck /\ WakeCheckLate]
     /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
     /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
                    xmsgs, transfers, suspends>>
+
+\* WakeCheckLate: the jump is seen by its own step, any time after the
+\* wake, as a background watch would see it.
+SeeWake(b) ==
+    /\ woke[b] /\ Up(b)
+    /\ woke' = [woke EXCEPT ![b] = FALSE]
+    /\ sinceWake' = [sinceWake EXCEPT ![b] = 0]
+    /\ UNCHANGED <<groupVars, msgs, restarts, histVars, storeVars>>
+    /\ UNCHANGED <<leaderOf, downAge, stepDowns, seenTerm, seenAge, xfer, voidTerm, auth,
+                   xmsgs, transfers, suspended, suspends>>
 
 Next ==
     \/ Tick
@@ -793,7 +848,7 @@ Next ==
     \/ \E m \in beatMsgs : DropBeat(m) \/ RecvReply(m)
     \/ \E b \in Servers : ClientWrite(b) \/ Deliver(b) \/ Restart(b) \/ Stall(b)
     \/ \E b \in Servers : Notice(b) \/ StepDown(b) \/ VoidLate(b) \/ TransferExpire(b)
-                          \/ Suspend(b) \/ Wake(b)
+                          \/ Suspend(b) \/ Wake(b) \/ SeeWake(b)
     \/ \E l, t \in Servers : Transfer(l, t)
     \/ \E m \in xmsgs : RecvXfer(m) \/ DropXfer(m)
 
@@ -843,6 +898,7 @@ TypeOK ==
     /\ suspended \in [Servers -> BOOLEAN]
     /\ sinceWake \in [Servers -> Ages]
     /\ suspends \in 0..MaxSuspends
+    /\ woke \in [Servers -> BOOLEAN]
 
 LeaseExclusive ==
     \A a, b \in Servers : a # b => ~(LeaseValid(a) /\ LeaseValid(b))
@@ -898,5 +954,9 @@ NeverFailoverAfterLease ==
         /\ acked[i] = "local"
         /\ \E p \in 1..Len(log[a]) : log[a][p][2] = i /\ log[a][p][1] < term[b]
         /\ LeaseValid(b)
+
+\* A broker that voided a term passes the lease check in a later one.
+NeverLeaseAfterVoid ==
+    \A b \in Servers : voidTerm[b] > 0 => ~LeaseValid(b)
 
 =============================================================================
