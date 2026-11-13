@@ -2296,9 +2296,8 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
 /// On a Raft log a write waits until [`COMMIT_PERSIST_INTERVAL`] has passed
 /// since the last one. Its commit index moves on almost every entry, and a
 /// write is a create, two fsyncs and a rename that the log's own fsyncs queue
-/// behind on the same disk: written back to back they cost a 3-member group
-/// about half its throughput and tripled its p99
-/// (`docs/metadata-raft-benchmark.md`).
+/// behind on the same disk (`docs/metadata-raft-benchmark.md`, "Saving the
+/// committed index").
 fn write_commit_behind(inner: &Arc<LogInner>) {
     if inner.commit_writer.swap(true, Ordering::AcqRel) {
         return;

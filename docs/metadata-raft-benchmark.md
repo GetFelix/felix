@@ -53,6 +53,23 @@ snapshot install that did not complete fails the cell. Both sides run the head
 commit's benchmark file, so a base that predates it still works as long as the
 store traits it uses have not changed.
 
+## Saving the committed index
+
+openraft tells the store its committed index on almost every entry. The
+segment store keeps it in the log's replica-state file, and a write of that
+file is a create, two fsyncs and a rename. Written after every advance, back
+to back, those writes sat in front of the log's own fsyncs on the same disk.
+`propose/m3/256B/p16 p99_ms` read about 8.5 ms against redb's 5.5 ms in six
+runs out of six, while its p50 was already lower (Actions run 43468194429).
+
+A Raft log now writes the committed index at most once a second
+(`COMMIT_PERSIST_INTERVAL`), off the write path. In the next run the same
+cell read 2.4 ms at p99 and 10390 entries a second, against redb's 8.9 ms
+and 5471 on that runner session (run 43486950653), and `replica_report
+p99_ms` read 2.7 against 13.9 ms. The cost is that after a crash the saved
+index may be up to a second behind, so a restarted member's replay floor is
+lower by that much ([metadata-raft-design.md](metadata-raft-design.md)).
+
 ## Snapshot build with a writer running
 
 On the segment store, `snapshot_build/1MiB build_ms` reads about 20% higher
