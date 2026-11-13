@@ -118,9 +118,13 @@ async fn pass(check: &EngineMatch<Fleet>) -> Vec<String> {
 /// known as `raft`.
 async fn settled(check: &EngineMatch<Fleet>, raft: bool) {
     pass(check).await;
-    while check.engines.lock().get("broker-b") != Some(&raft) {
+    for _ in 0..1000 {
+        if check.engines.lock().get("broker-b") == Some(&raft) {
+            return;
+        }
         tokio::task::yield_now().await;
     }
+    panic!("broker-b never said which engine it runs");
 }
 
 fn refusal(check: &EngineMatch<Fleet>, stream: &str) -> Option<String> {
@@ -193,13 +197,12 @@ async fn a_peer_reached_late_closes_the_shard_it_shares() {
             PeerCapabilities::RAFT
         };
         check.peers.0.lock().insert("broker-b".to_string(), theirs);
-        tokio::time::sleep(ASK_WITHIN).await;
-        while !check.asking.lock().is_empty() {
-            tokio::task::yield_now().await;
-        }
+        tokio::time::sleep(ASK_WITHIN + Duration::from_millis(1)).await;
         assert_eq!(pass(&check).await, ["orders", "scratch"]);
 
-        wake.notified().await;
+        tokio::time::timeout(Duration::from_secs(60), wake.notified())
+            .await
+            .expect("the answer runs a pass");
         assert_eq!(pass(&check).await, ["scratch"]);
         assert!(refusal(&check, "orders").is_some());
     }
