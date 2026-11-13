@@ -151,6 +151,23 @@ impl Broker {
         stream: &str,
         shard: u32,
     ) -> Result<bool> {
+        self.lead_from_tail_if(tenant_id, namespace, stream, shard, || true)
+            .await
+    }
+
+    /// [`Self::lead_from_tail`] for a caller whose hold on the shard can end
+    /// while this runs. `still_led` is asked once the stream is at the
+    /// tail, with delivery from an engine's log locked out; only if it says
+    /// yes is the stream marked as led, and true returned. A stream marked
+    /// after its term ended would deliver nothing to its subscribers.
+    pub async fn lead_from_tail_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        still_led: impl FnOnce() -> bool,
+    ) -> Result<bool> {
         let state = self
             .topics
             .read()
@@ -194,7 +211,7 @@ impl Broker {
             state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
         }
         // `lead_from` leaves a stream with held batches where it is.
-        let led = state.tail_seq() >= tail;
+        let led = state.tail_seq() >= tail && still_led();
         if led && state.engine_log {
             state.leads_engine_log.store(true, Ordering::Release);
         }

@@ -1325,11 +1325,10 @@ mod on_raft {
     }
 
     /// **A subscribe to a Raft shard is served on the group's leader, on its
-    /// term alone, and gets each committed record. On a follower it is
-    /// redirected to that leader.** A follower's broker fans nothing out
-    /// live, so a subscription registered there would deliver nothing.
+    /// term alone, and gets each committed record. A follower that knows the
+    /// leader serves it too, with the same records at the same offsets.**
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_raft_shard_is_subscribed_to_on_its_leader() -> Result<()> {
+    async fn a_raft_shard_is_subscribed_to_on_its_leader_and_followers() -> Result<()> {
         let (_net, members, leader) = fixture::trio().await;
         let orders = fixture::key("orders", 0);
         let term = members[leader].shards.leading(&orders).expect("term");
@@ -1428,17 +1427,116 @@ mod on_raft {
         assert!(server_task.await.context("server join")??);
 
         let follower = &members[(leader + 1) % 3];
-        let to_leader = Some(Message::NotLeader {
-            node_id: members[leader].name.to_string(),
-            addr: None,
-            generation: term,
-        });
         let ingress = fixture::ingress(&follower.shards);
-        fixture::until("the follower knows its leader", || {
-            redirected(&ingress) == to_leader
+        fixture::until("the follower serves the shard's readers", || {
+            redirected(&ingress).is_none()
         })
         .await;
+        let (mut receiver, _guard) = {
+            let subscription = follower.broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        let orders_key = fixture::key("orders", 0);
+        assert!(
+            crate::serving::quic::handlers::redirect::stopped_serving(Some(&ingress), &orders_key)
+                .is_none(),
+            "a follower's subscriber was let go"
+        );
+        let third = members[leader].publish(term, b"three").await;
+        let fourth = members[leader].publish(term, b"four").await;
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (third, Bytes::from_static(b"three"))
+        );
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (fourth, Bytes::from_static(b"four"))
+        );
         fixture::stop(&members).await;
         Ok(())
+    }
+
+    /// **A resume offset a follower's log has not reached is answered with a
+    /// redirect to the leader.** The offset came from a broker that is
+    /// ahead, so "in the future" would be wrong. The leader still says so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_follower_behind_a_resume_offset_redirects_to_its_leader() {
+        let (_net, members, leader) = fixture::trio().await;
+        let orders = fixture::key("orders", 0);
+        let term = members[leader].shards.leading(&orders).expect("term");
+        let follower = &members[(leader + 1) % 3];
+        let ingress = fixture::ingress(&follower.shards);
+        fixture::until("the follower serves the shard's readers", || {
+            redirected(&ingress).is_none()
+        })
+        .await;
+        let ahead = || felix_broker::BrokerError::CursorInFuture {
+            requested: 9,
+            tail: 2,
+        };
+        let refusal = |ingress: &crate::shards::routing::IngressRouter| {
+            subscribe_refusal(
+                ahead(),
+                Some(ingress),
+                "t1",
+                "ns",
+                "orders",
+                0,
+                felix_wire::FEATURE_REDIRECT,
+            )
+        };
+
+        assert_eq!(
+            refusal(&ingress),
+            Message::NotLeader {
+                node_id: members[leader].name.to_string(),
+                addr: None,
+                generation: term,
+            }
+        );
+        let on_leader = fixture::ingress(&members[leader].shards);
+        assert_eq!(refusal(&on_leader), subscribe_error_message(ahead()));
+        fixture::stop(&members).await;
+    }
+
+    /// **A member that knows no leader serves no reader.** Its commit index
+    /// has stopped, so a subscriber there would wait and be told nothing:
+    /// a new one is refused and those registered are ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_member_with_no_leader_serves_no_reader() {
+        use crate::shards::routing::EngineShards;
+
+        let (net, mut members, leader) = fixture::trio().await;
+        let follower = members.remove((leader + 1) % 3);
+        let ingress = fixture::ingress(&follower.shards);
+        fixture::until("the follower serves the shard's readers", || {
+            redirected(&ingress).is_none()
+        })
+        .await;
+        let (mut receiver, _guard) = {
+            let subscription = follower.broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+
+        // The rest of the group goes away: the follower is cut off.
+        for member in &members {
+            net.forget(member.name);
+        }
+        fixture::stop(&members).await;
+        fixture::until("the follower knows no leader", || {
+            redirected(&ingress).is_some()
+        })
+        .await;
+        follower
+            .shards
+            .take(&mut fixture::assignments([fixture::replicated()]))
+            .await;
+
+        let ended = tokio::time::timeout(Duration::from_secs(20), receiver.recv()).await;
+        assert!(
+            ended.expect("ended in time").is_none(),
+            "a cut-off member kept its subscriber"
+        );
+        EngineShards::shutdown(&*follower.shards).await;
     }
 }

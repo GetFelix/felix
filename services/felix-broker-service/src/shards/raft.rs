@@ -691,21 +691,28 @@ impl WriteFence for Leading {
             #[cfg(test)]
             let _ = stall.wait_for(|stalled| !stalled).await;
             loop {
-                let moved = broker
-                    .lead_from_tail(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-                    .await;
-                {
+                // The term opens in the same step that marks the stream as
+                // led. Marked after a deposal, the stream would stay marked
+                // on a follower and its subscribers would get nothing.
+                let open = || {
                     let mut terms = terms.lock();
-                    let Some(lead) = terms.get_mut(&key).filter(|lead| lead.term == term) else {
-                        return;
-                    };
-                    // `Ok(false)` moved nothing: the stream is not open on
-                    // the member's log yet, or the group cannot say what is
-                    // committed.
-                    if moved.is_ok_and(|at_tail| at_tail) && !ending.lock().contains_key(&key) {
-                        lead.open = true;
-                        return;
+                    match terms.get_mut(&key).filter(|lead| lead.term == term) {
+                        Some(lead) if !ending.lock().contains_key(&key) => {
+                            lead.open = true;
+                            true
+                        }
+                        _ => false,
                     }
+                };
+                // `Ok(false)` moved nothing: the stream is not open on the
+                // member's log yet, the group cannot say what is committed,
+                // or a deposed term's subscribers are still to be ended.
+                let opened = broker
+                    .lead_from_tail_if(&key.tenant_id, &key.namespace, &key.stream, key.shard, open)
+                    .await;
+                let gone = !terms.lock().get(&key).is_some_and(|lead| lead.term == term);
+                if gone || opened.is_ok_and(|opened| opened) {
+                    return;
                 }
                 tokio::time::sleep(LEAD_RETRY).await;
             }
