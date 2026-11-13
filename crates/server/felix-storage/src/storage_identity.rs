@@ -22,7 +22,7 @@ const VERSION: u16 = 1;
 pub(crate) const ENCODED_LEN: usize = 26;
 /// The file's name under the durable root. Not a directory, so shard
 /// discovery passes over it.
-pub(crate) const FILE_NAME: &str = "storage-id";
+pub const FILE_NAME: &str = "storage-id";
 
 /// A data directory's identity: 16 random bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

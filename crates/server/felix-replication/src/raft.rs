@@ -41,6 +41,7 @@ mod tests;
 mod ticker;
 mod types;
 mod wire;
+mod written;
 
 pub use deliver::RaftReads;
 pub use engine::RaftEngine;
