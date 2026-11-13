@@ -319,6 +319,21 @@ fn a_suspend_refuses_for_one_lease() {
     assert_eq!(wake.look(ms(1_800), ms(14_800), lease), Some(ms(0)));
 }
 
+/// **The clocks are read after openraft's answer.** A suspend that lands
+/// between the two is seen, not passed with an answer from before it.
+#[tokio::test]
+async fn a_suspend_while_openraft_answers_refuses() {
+    let lease = Lease::new(Duration::from_millis(1_500));
+    let answered = lease.admit(1, || {
+        lease.suspended_for(Duration::from_secs(5));
+        View {
+            leads: Some(1),
+            acked: Some(Duration::ZERO),
+        }
+    });
+    assert_eq!(answered, Err(lease::WOKE));
+}
+
 /// **The suspend is seen by the check itself**, not by a task that runs
 /// after it: the first check after the wake refuses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -358,9 +373,9 @@ fn a_lease_that_can_outlast_a_followers_promise_is_refused() {
 }
 
 /// **A restarted member takes no vote and no pre-vote for one election
-/// timeout, whatever vote it stored, and does not stand.** Here: a
-/// leader's own vote and its followers' votes for it. The old leader
-/// comes back in the term it led, not as a candidate for the next.
+/// timeout when it may have promised a leader, and does not stand.** Here:
+/// followers' votes for their leader. The old leader promised nobody: it
+/// takes votes at once and stands for the next term as it starts.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
     let mut cluster = Cluster::new(true);
@@ -368,11 +383,15 @@ async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
     let last = cluster.write(0, b"record").await;
     cluster.committed_everywhere(0, last).await;
     let term = cluster.statuses(0)[0].term;
+    let leader = cluster.elected(0).await;
     cluster.stop().await;
     cluster.start(false);
     cluster.open(0).await;
 
-    for broker in BROKERS {
+    let followers = BROKERS
+        .into_iter()
+        .filter(|broker| *broker != &*leader.broker);
+    for broker in followers.clone() {
         let runtime = cluster.runtime(broker);
         for request in [vote_request, pre_vote_request] {
             let dropped = runtime.handle(to(broker, request(term + 9, "x"))).await;
@@ -385,11 +404,93 @@ async fn a_restarted_member_holds_its_vote_after_a_leaders_term() {
         assert_eq!(status.term, term, "{broker} stood as it started");
         assert_ne!(status.role, Role::Candidate);
     }
+    let runtime = cluster.runtime(&leader.broker);
+    let stood = || {
+        runtime
+            .status(&shard(0))
+            .is_some_and(|status| status.term == term + 1)
+    };
+    soon("the old leader did not stand", stood).await;
+    let answer = runtime.handle(to(&leader.broker, vote_request(term + 9, "x")));
+    assert!(answer.await.is_ok(), "the old leader held its vote");
+
     tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
-    for broker in BROKERS {
+    for broker in followers {
         let runtime = cluster.runtime(broker);
         let answer = runtime.handle(to(broker, vote_request(term + 9, "x")));
         assert!(answer.await.is_ok(), "{broker} still takes no vote");
+    }
+    cluster.stop().await;
+}
+
+/// **A leader restarted alone is leader again within one vote round.** Its
+/// stored vote is its own committed one, so it promised nobody, and its
+/// followers grant the vote of the leader they follow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_leader_leads_again_within_one_vote_round() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let last = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, last).await;
+    let leader = cluster.elected(0).await;
+
+    let started = tokio::time::Instant::now();
+    restart(&mut cluster, &leader.broker).await;
+    let again = cluster.elected(0).await;
+    let took = started.elapsed();
+    assert_eq!(again, leader);
+    assert!(
+        took < timers().election_min,
+        "the leader took {took:?} to lead again"
+    );
+    cluster.stop().await;
+}
+
+/// **A sole voter is not held**: its promise binds nobody else. It leads
+/// again as it starts, and after a vote for another it takes votes at once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_sole_voter_is_not_held() {
+    let mut cluster = Cluster::new(true);
+    cluster.open(0).await;
+    let alone = BTreeSet::from([MemberId::new("a", 1)]);
+    let a = cluster.runtime("a");
+    a.initialize(&shard(0), alone).await.expect("initialize");
+    let leads = |cluster: &Cluster| {
+        let status = cluster.runtime("a").status(&shard(0))?;
+        (status.role == Role::Leader).then_some(status.term)
+    };
+    let term = eventually(|| leads(&cluster)).await;
+
+    let started = tokio::time::Instant::now();
+    restart(&mut cluster, "a").await;
+    eventually(|| leads(&cluster)).await;
+    let took = started.elapsed();
+    assert!(
+        took < timers().election_min,
+        "a took {took:?} to lead again"
+    );
+
+    // A later leader's heartbeat: the stored vote is not a's own.
+    let heartbeat = AppendEntriesRequest::<ShardTypes> {
+        vote: vote_of(term + 5, "x", true),
+        prev_log_id: None,
+        entries: Vec::new(),
+        leader_commit: None,
+    };
+    let taken = cluster
+        .runtime("a")
+        .handle(to("a", Request::Append(heartbeat)))
+        .await;
+    assert!(taken.is_ok());
+    let status = cluster.runtime("a").status(&shard(0)).expect("status");
+    assert_eq!(status.leader, Some(MemberId::new("x", 1)));
+    restart(&mut cluster, "a").await;
+    for request in [vote_request, pre_vote_request] {
+        let answer = cluster
+            .runtime("a")
+            .handle(to("a", request(term + 9, "x")))
+            .await;
+        assert!(answer.is_ok(), "a sole voter held its vote");
     }
     cluster.stop().await;
 }
@@ -452,13 +553,16 @@ async fn a_restarted_member_is_not_ticked_while_it_holds_its_vote() {
     cluster.form(0).await;
     let last = cluster.write(0, b"record").await;
     cluster.committed_everywhere(0, last).await;
+    let leader = cluster.elected(0).await;
     cluster.stop().await;
     cluster.start(true);
     cluster.open(0).await;
 
     tokio::time::sleep(timers().election_max / 2).await;
     for status in cluster.statuses(0) {
-        assert_eq!(status.ticks, 0, "{} was ticked", status.member);
+        if status.member != leader {
+            assert_eq!(status.ticks, 0, "{} was ticked", status.member);
+        }
     }
     cluster.elected(0).await;
     cluster.stop().await;

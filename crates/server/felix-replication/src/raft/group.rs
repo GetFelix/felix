@@ -11,6 +11,7 @@ use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::storage::RaftLogReader;
+use openraft::vote::RaftLeaderId;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -34,7 +35,7 @@ pub(crate) struct Group {
     lease: Arc<Lease>,
     /// On the runtime's clock: until then this member takes no vote or
     /// pre-vote request and is not ticked. Zero for a member that had
-    /// never voted when it started.
+    /// promised nobody when it started, and for a sole voter.
     hold_until: u64,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
@@ -313,13 +314,13 @@ impl Group {
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
         // It started after the last message it took, so waiting the
-        // timeout out from here covers it, whatever the vote was. A member
-        // with no vote has promised nothing.
-        let voted = RaftLogReader::read_vote(&mut log.reader()).await?.is_some();
-        let hold_until = match voted {
-            true => timers.now() + timers.election_max,
-            false => 0,
-        };
+        // timeout out from here covers it. A member with no vote has
+        // promised nothing, and neither has one whose vote is its own
+        // committed one: it took no later leader's message, and openraft
+        // has it stand again as it starts.
+        let promised = RaftLogReader::read_vote(&mut log.reader())
+            .await?
+            .is_some_and(|vote| !(vote.is_committed() && vote.leader_id().node_id() == &member));
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
@@ -334,6 +335,15 @@ impl Group {
         let raft = Raft::new(member.clone(), config, network, log, machine)
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
+        // A sole voter's promise binds nobody else.
+        let sole_voter = raft
+            .with_raft_state(|state| state.membership_state.effective().voter_ids().count() == 1)
+            .await
+            .map_err(|err| OpenError::Raft(err.to_string()))?;
+        let hold_until = match promised && !sole_voter {
+            true => timers.now() + timers.election_max,
+            false => 0,
+        };
         let stop = CancellationToken::new();
         let leadership = Arc::new(Leadership::new(Arc::clone(&id.shard), host));
         // Ends on `stop`, or when the group's core is gone.
@@ -671,7 +681,6 @@ impl Group {
     /// this member leads, before it returns that term. `None` if it leads
     /// none.
     pub(crate) async fn transfer_starting(&self) -> Option<u64> {
-        use openraft::vote::RaftLeaderId;
         // Asked of the core, in the queue a transfer request goes through.
         let leads = self.raft.with_raft_state(|state| {
             let leads = state.server_state == ServerState::Leader;
@@ -701,7 +710,6 @@ impl Group {
     pub(crate) fn admit_local_ack(&self, term: u64) -> Result<(), CommitError> {
         use openraft::Instant as _;
         use openraft::async_runtime::watch::WatchReceiver;
-        use openraft::vote::RaftLeaderId;
         let view = || {
             let metrics = self.raft.metrics();
             let metrics = metrics.borrow_watched();

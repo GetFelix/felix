@@ -47,6 +47,10 @@ pub(crate) struct Lease {
 /// What the lease knows of suspends. The monotonic clock stops while the
 /// host or VM is suspended and boottime does not, so openraft's instants
 /// look newer after a wake than they are.
+///
+/// Under the simulator boottime is virtual and the monotonic side is
+/// tokio's, so the two drift and the check may refuse for good. Raft groups
+/// do not run there yet.
 #[derive(Debug, Default)]
 pub(crate) struct Wake {
     /// How far boottime was ahead of the monotonic clock at the last jump.
@@ -112,13 +116,14 @@ impl Lease {
     /// Whether a write of `term` may be acknowledged on this log alone,
     /// given what openraft says when `view` is called.
     pub(crate) fn admit(&self, term: u64, view: impl FnOnce() -> View) -> Result<(), &'static str> {
-        // The clocks first, and both in this call: a jump seen by a
-        // background task would be seen after the checks it should stop.
+        // The clocks after openraft's answer, and both in this call. A
+        // suspend after a boottime read and before `view` would leave the
+        // answer's age short with nothing seen.
+        let view = view();
         let mono = Instant::now().saturating_duration_since(self.origin);
         let boot = self.boottime();
         let slept = self.wake.lock().look(mono, boot, self.length);
         let slept = slept.ok_or(WOKE)?;
-        let view = view();
         if view.leads != Some(term) {
             return Err(NOT_LEADING);
         }

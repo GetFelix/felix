@@ -1171,7 +1171,8 @@ again in a later term.
 **Suspend.** openraft measures `last_quorum_acked` on the monotonic clock,
 which stops while the host or VM is suspended. After a wake the last
 answer looks as new as it did before. The check therefore reads the
-monotonic clock and boottime together each time it runs. If boottime has
+monotonic clock and boottime together each time it runs, after it has
+read openraft's answer, so a suspend between the two is seen. If boottime has
 moved ahead by more than 10 ms since the last jump, the broker was
 suspended, and the check refuses until the monotonic clock has run one
 more lease. By then every answer from before the suspend is too old on
@@ -1179,6 +1180,10 @@ its own. A smaller jump is added to the answer's age. The comparison is
 inside the check and not in a background task, which would see the jump
 after the checks it has to stop. Boottime is `CLOCK_BOOTTIME`, on Linux
 only. Elsewhere no clock counts suspended time and a suspend is not seen.
+Under the simulator boottime is the simulator's clock while the
+monotonic side is tokio's, so the two drift apart and the check may
+refuse for good. Raft groups do not run under the simulator yet; when
+they do, both sides must read one clock.
 
 > `crates/server/felix-replication/src/raft/tests/lease.rs`: one test per
 > rule, each named for it. The model is `docs/formal/FelixRaftLease.tla`.
@@ -1197,36 +1202,47 @@ Nothing is written, on the heartbeat path or anywhere else, and no clock
 has to survive the restart. Dropping is enough, because a candidate asks
 again at its next timeout.
 
-A restarted member does not campaign early either. A held member is not
-ticked, so no timeout makes it stand. openraft would have a restarted
-leader stand for the next term as it starts (`enable_leader_restore`), and
-Felix turns that off: the old leader comes back as a follower in the term
-it led. openraft 0.10.0 also does part of the vote side. At start it renews the window
-for a full `election_timeout_max` when the stored vote is committed, which
-is the vote of a follower that took a leader's message
-(`Engine::startup`). A stored vote that is not committed gets no window.
-Felix does not rest the lease on which of the two a restart finds, or on
-that code staying as it is, so the hold applies to every member whatever
-vote it has stored.
+Two members promised nobody, and are not held. One whose stored vote is
+its own committed vote led when it stopped. Every message that names a
+later term saves that term's vote before it is answered, so this member
+took none, and no follower can have promised it anything it would now
+break. openraft has it stand for the next term as it starts
+(`enable_leader_restore`), and its followers grant the vote of the leader
+they follow. The other is a sole voter: a promise binds nobody else.
+This rule waits on the model: `docs/formal/FelixRaftLease.tla` holds
+every restarted member today, and the knob that lets a leader's own vote
+through is being added to it.
 
-The cost is that a restarted broker cannot help elect for up to two
-seconds, and a group whose members all restart together has no leader
-for that long plus one election timeout.
+A held member does not campaign early either. It is not ticked, so no
+timeout makes it stand. openraft 0.10.0 also does part of the vote side.
+At start it renews the window for a full `election_timeout_max` when the
+stored vote is committed and names another member, which is the vote of
+a follower that took a leader's message (`Engine::startup`). Felix does
+not rest the lease on that code staying as it is, so the hold applies to
+every member that may have promised.
+
+The cost: a leader restarted alone leads again within one vote round. A
+restarted follower cannot help elect for up to two seconds. When every
+member restarts together, the old leader stands at once, but its
+followers drop its request until their hold ends, so the group has no
+leader for about that long plus one election timeout.
 
 **As built.** `Group::open` reads the vote from the log before openraft
-starts. If there is one, the member answers no vote or pre-vote request
-and is not ticked until `election_max` has passed since the open. The
-request is dropped as unreachable, so the candidate asks again. A member
-that led when it stopped does not stand as it starts
-(`enable_leader_restore` is off). A member
-handed the leadership meanwhile is ticked, so it heartbeats. A member with
-no vote on disk has never taken a message, so it has promised nothing and
-is not held. That is every member of a group being formed.
+starts, and the voters once it has. Unless the vote is the member's own
+committed one or the member is the only voter, the member answers no
+vote or pre-vote request and is not ticked until `election_max` has
+passed since the open. The request is dropped as unreachable, so the
+candidate asks again. A member handed the leadership meanwhile is
+ticked, so it heartbeats. A member with no vote on disk has never taken
+a message, so it has promised nothing and is not held. That is every
+member of a group being formed.
 
 > `raft/tests/lease.rs`,
 > `a_restarted_member_holds_its_vote_after_a_leaders_term`,
-> `a_restarted_member_holds_its_vote_after_an_election_nobody_won` and
-> `a_restarted_member_is_not_ticked_while_it_holds_its_vote`.
+> `a_restarted_member_holds_its_vote_after_an_election_nobody_won`,
+> `a_restarted_member_is_not_ticked_while_it_holds_its_vote`,
+> `a_restarted_leader_leads_again_within_one_vote_round` and
+> `a_restarted_sole_voter_is_not_held`.
 
 ### Reads
 
