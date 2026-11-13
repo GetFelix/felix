@@ -698,8 +698,7 @@ impl Group {
         use openraft::async_runtime::watch::WatchReceiver;
         let metrics = self.raft.metrics();
         let metrics = metrics.borrow_watched();
-        let voters = metrics.membership_config.membership().voter_ids().collect();
-        voters
+        metrics.membership_config.membership().voter_ids().collect()
     }
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
