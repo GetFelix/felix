@@ -662,10 +662,16 @@ async fn fill(store: &Arc<RaftStore>, bytes: usize) {
 /// built it; the build's time in milliseconds.
 async fn build_once(member: &Member) -> f64 {
     let before = member.probe.snapshots.load(Ordering::SeqCst);
-    member.handle.trigger_snapshot().await.expect("snapshot");
     let deadline = Instant::now() + Duration::from_secs(120);
+    // openraft drops a trigger while the previous snapshot is still being
+    // stored (seconds for a large one on redb), so ask again until it builds.
+    let mut asked: Option<Instant> = None;
     while member.probe.snapshots.load(Ordering::SeqCst) == before {
         assert!(Instant::now() < deadline, "snapshot never built");
+        if asked.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+            member.handle.trigger_snapshot().await.expect("snapshot");
+            asked = Some(Instant::now());
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     member.probe.last_snapshot_nanos.load(Ordering::SeqCst) as f64 / 1e6
@@ -681,7 +687,8 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
         // The same build with nothing else running: separates the cost of
         // building from what the writer below does to it.
         let idle_ms = build_once(&group.members[0]).await;
-        // Stored before the next one is asked for.
+        // Mostly stored before the writer starts, so its stall is this
+        // cell's own.
         tokio::time::sleep(Duration::from_secs(2)).await;
 
         // A writer runs through the snapshot; its slowest write is the stall.
