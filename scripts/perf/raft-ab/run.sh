@@ -29,6 +29,7 @@
 #   SECS=60             ingest duration per cell
 #   PAYLOAD=1024 BATCH=16 PUBLISHERS=8 IN_FLIGHT=4 SHARDS=6 KEYS=$((SHARDS*8))
 #   FANOUT=4 FANOUT_TOTAL=200000
+#   ONLY_SIDE=hybrid|raft  run one engine only (a harness check, not an A/B)
 #   SLOT_WAIT_SECS=3600  how long to wait for the lanes' build jobs to free the slots
 #   QUIET_WAIT_SECS=300  after the slots are held, how long to wait for load < 2 and no java
 set -euo pipefail
@@ -226,6 +227,7 @@ else:
 printf 'round\tcell\tside\tloadgen_box\tstatus\n' > "$OUT/cells.tsv"
 for r in $(seq 1 "$ROUNDS"); do
   if [ $((r % 2)) = 1 ]; then sides="hybrid raft"; else sides="raft hybrid"; fi
+  [ -z "${ONLY_SIDE:-}" ] || sides=$ONLY_SIDE
   # The generator rotates over the boxes by round; both sides of a round use the same one.
   lg=${BOXES[$(( (r - 1) % ${#BOXES[@]} ))]}
   log "round $r: $sides, loadgen on felix-build-$lg"
