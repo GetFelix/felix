@@ -2,6 +2,7 @@
 //! all-commands script the themes share.
 mod commands;
 mod determinism;
+mod identity;
 mod retries;
 
 use std::collections::BTreeMap;
@@ -201,16 +202,19 @@ fn script() -> Vec<MetaCommand> {
                 namespace: namespace(t, ns),
             });
             commands.push(MetaCommand::CreateStream {
+                needs_identity: false,
                 names: false,
                 stream: stream(t, ns, "orders"),
                 incarnations: false,
             });
             commands.push(MetaCommand::CreateStream {
+                needs_identity: false,
                 names: false,
                 stream: stream(t, ns, "events"),
                 incarnations: false,
             });
             commands.push(MetaCommand::CreateCache {
+                needs_identity: false,
                 names: false,
                 cache: cache(t, ns, "primary"),
                 incarnations: false,

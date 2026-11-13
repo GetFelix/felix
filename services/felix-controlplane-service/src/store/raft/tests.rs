@@ -10,7 +10,20 @@ use super::*;
 use crate::raft::{AppStateMachine, RaftHandle, RaftSettings};
 use crate::store::StoreConfig;
 
+/// A formed single-member group with its identity in place, so stream and
+/// cache creates go through. Set on the applied state rather than through the
+/// log: a level-32 entry would hold back the older members many tests add.
 pub(super) async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
+    let store = unrecorded_store(dir).await;
+    store
+        .local()
+        .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
+        .await;
+    store
+}
+
+/// A formed single-member group with no identity recorded yet.
+async fn unrecorded_store(dir: &std::path::Path) -> Arc<RaftStore> {
     let inner = Arc::new(InMemoryStore::new(StoreConfig {
         changes_limit: 100,
         change_retention_max_rows: Some(1_000),
@@ -1642,7 +1655,9 @@ async fn an_import_is_refused_below_the_placed_level_and_marked_at_it() {
         .create_stream(routed_stream("orders", Default::default()))
         .await
         .expect("stream");
-    let exported = store.machine.store().export_state().await;
+    let mut exported = store.machine.store().export_state().await;
+    // An identity in the export needs level 32 on its own; this is about the mark.
+    exported.cluster_identity = None;
     store
         .create_stream(routed_stream("payments", Default::default()))
         .await
@@ -1691,6 +1706,60 @@ async fn an_import_is_refused_below_the_placed_level_and_marked_at_it() {
     }
     assert_eq!(marked().await, 1);
     assert_eq!(streams().await, 1);
+}
+
+/// An export that carries an identity needs level 32 on every member, so at
+/// level 31 the leader refuses its import, raw bytes included, rather than
+/// letting newer members adopt the identity while an older one refuses.
+#[tokio::test]
+async fn an_import_carrying_an_identity_waits_for_the_identity_level() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), PLACED_LEVEL).await;
+    let exported = store.machine.store().export_state().await;
+    let identity = exported.cluster_identity.clone().expect("identity");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await != PLACED_LEVEL {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let other = crate::store::identity::ClusterIdentity::generate("raft");
+    let mut state = exported.clone();
+    state.cluster_identity = Some(other.clone());
+    let import = MetaCommand::ImportState {
+        state: Box::new(state),
+        overwrite: true,
+        mark_unplaced: true,
+    };
+    let refused = store.propose(import.clone()).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    let raw = crate::store::raft::command::encode_command(&import);
+    let answer = store.handle.write(raw.clone()).await.expect("answered");
+    let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
+    assert!(
+        matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 32")),
+        "{result:?}"
+    );
+    assert_eq!(recorded(&store).await, identity);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while recorded(&store).await != other {
+        let _ = store.handle.write(raw.clone()).await.expect("raw import");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "not imported after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Under `joint_fence` a rename past a refusal's ballot skips generations, and
@@ -4027,7 +4096,8 @@ async fn a_mount_waits_for_every_member() {
         .create_stream(mounted("orders", "orders/"))
         .await
         .expect("mounted");
-    assert_eq!(store.machine.levels_used(), super::MOUNT_LEVEL);
+    // A create at 32 also carries the identity flag.
+    assert_eq!(store.machine.levels_used(), super::IDENTITY_LEVEL);
     let err = store
         .create_stream(mounted("returns", "orders/returns/"))
         .await
@@ -4129,4 +4199,215 @@ async fn adoption_waits_for_every_member() {
         store.get_shard_assignment(&key).await.expect("get"),
         adopted
     );
+}
+
+async fn recorded(store: &RaftStore) -> crate::store::identity::ClusterIdentity {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let crate::store::identity::GroupIdentity::Recorded(identity) =
+            store.group_identity().await.expect("identity")
+        {
+            return identity;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the identity was never recorded"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Until it is recorded the group answers pending; once it is, a second
+/// recorder, or a proposal carrying another id, finds the first one standing.
+#[tokio::test]
+async fn a_formed_group_records_one_identity_and_keeps_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    assert_eq!(
+        store.group_identity().await.expect("identity"),
+        crate::store::identity::GroupIdentity::Pending
+    );
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let first = store.spawn_identity_recorder("raft".to_string(), shutdown.clone());
+    let identity = recorded(&store).await;
+    assert_eq!(identity.shard_engine, "raft");
+    first.await.expect("the recorder stops once it is recorded");
+
+    // A second proposer, as a member that has not applied it yet would be.
+    store
+        .spawn_identity_recorder("hybrid".to_string(), shutdown.clone())
+        .await
+        .expect("recorder");
+    let answer = store
+        .propose(MetaCommand::RecordClusterIdentity {
+            group_id: "someone-else".to_string(),
+            shard_engine: "hybrid".to_string(),
+        })
+        .await
+        .expect("propose");
+    let MetaResponse::ClusterIdentity { identity: answered } = answer else {
+        panic!("unexpected answer");
+    };
+    assert_eq!(answered, identity);
+    assert_eq!(recorded(&store).await, identity);
+}
+
+/// A recorder that is told to stop before the group can record does so.
+#[tokio::test]
+async fn the_identity_recorder_stops_on_shutdown() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    // Below the level the command needs, so it can only retry.
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(31));
+    let addr = stub_member(Arc::clone(&version)).await;
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add old member");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let task = store.spawn_identity_recorder("hybrid".to_string(), shutdown.clone());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!task.is_finished(), "recorded past a member below level 32");
+    assert_eq!(
+        store.group_identity().await.expect("identity"),
+        crate::store::identity::GroupIdentity::Pending
+    );
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("stopped")
+        .expect("join");
+}
+
+/// Until the group records its identity, stream and cache creates are
+/// refused before they reach the log, as 503 `not_ready`: one created first
+/// would make a new group's record adopt brokers' data.
+#[tokio::test]
+async fn creates_wait_for_the_identity() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await < super::IDENTITY_LEVEL {
+        assert!(std::time::Instant::now() < deadline, "level never read");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "Ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    let applied = store.handle.status().last_applied_index;
+    let stream = || routed_stream("orders", crate::model::StreamRouting::Modulo);
+    let refusals = [
+        store.create_stream(stream()).await.map(drop),
+        store.create_cache(incarnated_cache("c", 0)).await.map(drop),
+        store
+            .create_resources(vec![stream()], vec![])
+            .await
+            .map(drop),
+    ];
+    for refused in refusals {
+        let err = refused.expect_err("refused");
+        let api = crate::api::error::api_internal("failed to create", &err);
+        assert_eq!(api.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(api.body.code, "not_ready");
+    }
+    assert_eq!(store.handle.status().last_applied_index, applied);
+
+    store
+        .propose(MetaCommand::RecordClusterIdentity {
+            group_id: "g-1".to_string(),
+            shard_engine: "hybrid".to_string(),
+        })
+        .await
+        .expect("record");
+    assert!(!recorded(&store).await.adopts_existing);
+    store.create_stream(stream()).await.expect("created");
+}
+
+/// A member that has not answered the version probe may be new, so a create
+/// waits for the identity even though the level it reads is below 32. Only
+/// once every member has answered and one is older does it go through
+/// unmarked.
+#[tokio::test]
+async fn creates_wait_while_a_member_level_is_unknown() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "Ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(SILENT));
+    let addr = stub_member(Arc::clone(&version)).await;
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add member");
+    // The level read before the member joined is served for a while.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await >= super::IDENTITY_LEVEL {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(store.handle.cluster_version_if_known().await, None);
+    let stream = |name: &str| routed_stream(name, crate::model::StreamRouting::Modulo);
+
+    let applied = store.handle.status().last_applied_index;
+    let err = store
+        .create_stream(stream("orders"))
+        .await
+        .expect_err("refused while the member is unknown");
+    let api = crate::api::error::api_internal("failed to create", &err);
+    assert_eq!(api.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(api.body.code, "not_ready");
+    assert_eq!(store.handle.status().last_applied_index, applied);
+
+    version.store(31, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.handle.cluster_version_if_known().await != Some(31) {
+        assert!(std::time::Instant::now() < deadline, "never answered");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    store
+        .create_stream(stream("orders"))
+        .await
+        .expect("created");
+    assert_eq!(
+        store.group_identity().await.expect("identity"),
+        crate::store::identity::GroupIdentity::Pending
+    );
+
+    version.store(SILENT, std::sync::atomic::Ordering::SeqCst);
+    store
+        .local()
+        .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
+        .await;
+    store.create_stream(stream("audit")).await.expect("created");
 }

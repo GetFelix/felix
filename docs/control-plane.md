@@ -965,6 +965,52 @@ The tenant, namespace, stream and cache feeds keep only their most recent
 `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that
 falls further behind than that has to take a new snapshot.
 
+### Cluster identity
+
+A Raft group records its identity once, when it forms: a random `group_id`
+and the `shard_engine` (`hybrid` or `raft`) from `FELIX_SHARD_ENGINE` on the
+instance that proposes it. The first record applied wins, and nothing changes
+it afterwards, so racing proposers on a new group are settled by log order. A
+background task on each instance proposes it while the group has none, and
+retries until every member is at metadata level 32 and a leader exists.
+
+The apply also records `adopts_existing`: whether the store already held a
+stream or a cache, or their change history, when the identity was recorded.
+It is computed from replicated state, so every member agrees. A group upgraded
+in place has it set, and a broker whose data directory holds data but no group
+record adopts such a group instead of refusing. A group formed on an empty
+store does not, and such a broker is refused.
+
+Until the record exists, stream and cache creates wait: they are refused
+with 503 `not_ready` unless every member has answered the version probe and
+one is below level 32, so the group cannot record yet. A member that has not
+answered counts as unknown, not as older, so nothing created while a new
+group forms can set `adopts_existing` on it.
+
+`GET /v1/cluster/identity` returns `{"group_id": "...", "shard_engine":
+"hybrid"}`, plus `"adopts_existing": true` when set. Every snapshot and every
+change-feed page (tenants, namespaces, streams, caches) carries `group_id`, so
+a broker checks each answer before applying it. Under Raft the route answers
+503 `identity_pending` until the record exists. The in-memory backend has no
+group, so it reports the configured engine and leaves `group_id` out, as do
+its snapshots and pages, which keeps their bytes what an older broker
+expects.
+
+If an instance's `FELIX_SHARD_ENGINE` differs from the record, it logs a
+warning and keeps running. The record wins.
+
+The identity is part of the Raft snapshot. An `ImportState` (a restore from
+an export) adopts the export's identity, `adopts_existing` included, since it
+restores that group. An export that carries none keeps the group's own id
+and sets `adopts_existing` if the import brought streams or caches. That
+lets brokers with no group record accept the restored group; a broker that
+already names another group still refuses it and needs an export carrying its
+group's id, or its data wiped. Take an export after the upgrade records the
+identity. Importing one cluster's export into another gives it that cluster's
+group id, so the brokers of both accept it: use import only to restore. An
+export that carries an identity needs every member at level 32, and the
+leader refuses its import until then.
+
 ### Shard ownership
 
 `GET /v1/shard-assignments` lists which broker leads each shard, and
@@ -2736,6 +2782,7 @@ be a member; it is legitimately 0 during a drain.
 | `node_liveness.expiry_timeout_ms` | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | 15000 |
 | `node_liveness.regrant_margin_ms` | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `expiry_timeout_ms` |
 | `node_liveness.sweep_interval_ms` | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | 2000 |
+| `shard_engine` | `FELIX_SHARD_ENGINE` | `hybrid` |
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than
