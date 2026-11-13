@@ -1350,19 +1350,37 @@ broker's lease: the term is what holds the shard. A publish routed at a
 term the broker no longer serves is refused with nothing written. Readers
 at every level are bound by the commit index. A forwarded publish is
 checked against the term the owner serves now, not the one the sender saw.
-A broker that holds no member of the shard has no route for it yet.
+
+The term a publish was routed at goes with it into the group. A broker
+deposed and elected again between the route and the proposal writes the
+batch at the newer term, where its stream may not be at the committed tail
+yet. That batch is given up: the publisher gets an unknown outcome, live
+subscribers see its offsets as a drop, and a reader resuming below it reads
+it from the log if it committed.
+
+A broker that holds no member of the shard forwards to the broker the
+shard's placement names as leader. That broker holds a member, and answers
+with the group's leader when it is not the leader itself. A member placed
+here that is not open yet is answered `not_ready`.
 
 When the broker stops, every member is stopped and its log closed before
 storage is flushed.
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_led_term_is_served_only_after_the_stream_is_at_the_committed_tail`,
-> `a_publish_on_a_raft_shard_commits_through_its_group` and
+> `a_publish_on_a_raft_shard_commits_through_its_group`,
+> `a_request_off_the_leader_is_routed_to_it`,
+> `readers_of_a_raft_shard_get_what_committed`,
+> `a_stopped_leader_is_replaced_and_no_acked_record_is_lost` and
 > `shutdown_stops_the_members_and_closes_their_logs`.
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_batch_written_at_another_term_is_given_up`.
 
-`FELIX_SHARD_ENGINE=raft` is still refused at startup: the routing above is
-tested in process, and not yet through a client connection or across
-brokers.
+`FELIX_SHARD_ENGINE=raft` is still refused at startup. Publishes, routes
+and a leader stopping are tested across three brokers in one process. Not
+yet tested: a subscribe through a client connection, and the Kafka, MQTT,
+commit and consumer-group paths, which still reach the hybrid's fence on a
+Raft shard.
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
