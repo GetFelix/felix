@@ -909,13 +909,9 @@ Two things are left for the pull request that puts stream shards on Raft
 Memory per member is measured by a test
 (`crates/server/felix-replication/tests/raft_memory.rs`): 120 idle members
 in one process, a third of them leaders, counting live heap bytes added on
-top of the open logs. It fails above 256 KB per member, and it fails
-today: see "The groups-per-broker gate" for the number and where it goes.
-Until the openraft pin carries databendlabs/openraft#2313 (issue #2312),
-the test is ignored in pull request CI and runs nightly instead, in the
-`raft-memory` job of `.github/workflows/nightly.yml`, which prints the
-number. Run it by hand with
-`cargo test -p felix-replication --features raft --test raft_memory -- --ignored`.
+top of the open logs. It fails above 256 KB per member and runs in pull
+request CI with the rest of the `raft` feature's tests. Run it by hand with
+`cargo test -p felix-replication --features raft --test raft_memory -- --nocapture`.
 `RAFT_MEMORY_TRACE=<bytes>` makes the test print the call sites of the live
 allocations of at least that size.
 
@@ -1609,37 +1605,28 @@ joined by the real peer transport on loopback (`RAFT_IDLE_PEERS=transport`),
 so the figure includes framing, QUIC and the listener. Until idle groups
 sleep, both report what ticking every group costs; nothing waits on them.
 
-Memory is the tight one, and it does not fit yet. The design assumed
-180 KB per leader member and 145 KB per follower. The runtime's memory test
-(Linux, release build, 120 idle members, a third leading) measures 436 KB
-of live heap per member, plus 1.4 MB per member that openraft reserves in
-two large buffers and does not touch while idle (#2335). At 436 KB, 5,000
-members are about 2.1 GB, twice the limit.
+Idle memory fits, with openraft at `30c947ef38` (openraft#2313 and openraft#2314).
+The design assumed 180 KB per leader member and 145 KB per follower. The
+runtime's memory test (Linux, release build, 120 idle members, a third
+leading) measures 142 KB of live heap per member, plus 535 KB per member
+that openraft reserves in a large buffer and does not touch while idle
+(#2415). The same three-runtime run, 1,500 members per broker, holds
+222 MB resident per broker, 17 MB of it the logs alone, and does not grow:
+217 MB ten minutes earlier. That is about 137 KB per member,
+and 5,000 members at 142 KB are about 0.7 GB. The loaded run, with publishers
+writing, is not measured yet (#2415).
 
-The two numbers are not the same measure. The design's figures were
-resident memory, and the test counts allocated bytes. A channel block
-becomes resident as its slots are used, which takes about 32 messages, so
-on a broker that has run for a minute the allocated figure is the one to
-plan with. The same three-runtime run shows it: 1,500 members per broker
-are 245 MB resident per broker a minute after forming and 481 MB after
-17 idle minutes, still rising by about 15 MB a minute, against 16 MB for
-the same logs with no Raft member on them. Resident memory on real brokers, against the hybrid, is still to
-be measured (#2314).
+The earlier pin measured 414 KB of live heap per member and 1.4 MB
+reserved, and the same run grew from 233 MB to 313 MB resident in ten
+minutes. The engine's command and response queues were preallocated for
+4,096 commands and walked as a ring, so an idle member slowly made every
+page of them resident (openraft#2312, Felix #2335). openraft#2313 resets a
+drained queue to its start, and openraft#2314 starts the queues at 64
+slots and grows them on demand.
 
-Almost none of it is Felix's: the runtime's own state is under 1 KB per
-member. Where the 436 KB goes:
-
-| Per member | What |
-| --- | --- |
-| 344 KB | The first block of three tokio channels openraft opens per member. A block is 32 slots and openraft's messages are 3.5 KB each |
-| 34 KB | 17 histograms openraft allocates whether or not its `runtime-stats` feature is on |
-| about 58 KB | Tasks, smaller channels, and the rest |
-
-The runtime already sets `log_stage_capacity` to 1, which removed another
-156 KB of statistics buffers per member (580 KB before). The three channel
-blocks need a change in openraft: smaller messages, or the large variants
-boxed. That is part of the upstream ask in #2335, and the gate cannot pass
-before it.
+The two kinds of number are not the same measure. The design's figures were
+resident memory, and the test counts allocated bytes. Resident memory on
+real brokers, against the hybrid, is still to be measured (#2314).
 
 So the memory row is measured twice: idle with three brokers, and with one
 broker killed while publishers write. The 1 GB limit applies to the second.
