@@ -1203,7 +1203,14 @@ The answer has the same first byte, then:
 
 A body that does not read is answered as unreachable. A count larger than the
 bytes left can hold is refused before anything is sized from it, and so are
-trailing bytes. Records in an append stay slices of the received frame.
+trailing bytes. Records in an append stay slices of the received frame. A
+membership entry with no voters is refused.
+
+An append carries at most 32 MiB of records, at least one record whatever
+its size. The sender cuts a longer one, and openraft takes the answer as a
+partial acknowledgement and sends the rest next. Raft calls have an in-flight
+budget per peer of their own (`FELIX_INTERNAL_MAX_INFLIGHT`), so groups waiting
+on a slow peer cannot take the permits its pings and fences need.
 
 An append with entries goes on the replication streams. Every other Raft
 message goes on the control stream, so a heartbeat or a vote never waits
