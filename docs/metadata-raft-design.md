@@ -1024,12 +1024,15 @@ start.
 lock, as today, and writes the file outside it. The data is stored as raw
 bytes. Today it is stored as a JSON array of numbers, several times larger.
 
-**Transfer.** A snapshot travels to a follower in one request over the
-authenticated peer listener. State is small, so chunking is not needed. The
-request's body is the length of a JSON head in four big-endian bytes, the
-head (the sender's vote, the snapshot's last log id and its membership),
-then the data as it is. The route has no body limit, and the request has a
-60 second timeout of its own.
+**Transfer.** A snapshot is streamed to a follower in one request over the
+authenticated peer listener, in the body form every group on the segment
+store shares ([replication engine](replication-engine.md), "Sending a
+snapshot"). The head is JSON: the sender's vote, the snapshot's last log id
+and its membership. The follower answers a stale sender, refuses a length
+over `FELIX_RAFT_SNAPSHOT_MAX_BYTES` (1 GiB by default) and refuses a second
+transfer while one runs, all before reading any data. The data is written
+to a file as it arrives and never held whole in memory, and the transfer
+fails only when no bytes move for 30 s.
 
 **Start.** Open the log, read the snapshot, restore it, and let openraft
 apply the log up to the committed index. The member stays out of rotation
@@ -1551,7 +1554,7 @@ is the umbrella.
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
 | Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
-| The segment store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | **Landed, off in every release**: with `--cfg felix_segment_store` the group runs on `felix-storage`'s metadata store (`raft/segment_store.rs`) with the standard leader id, snapshots in one request and every peer route under `/internal/raft/v2`. That build passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos` in CI, beside the redb build. `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. Still to come before the switch is turned on: the conversion tool, the simulator and history modes, and the perf gate. |
+| The segment store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | **Landed, off in every release**: with `--cfg felix_segment_store` the group runs on `felix-storage`'s metadata store (`raft/segment_store.rs`) with the standard leader id, snapshots streamed in one request to a file with a size cap and one install at a time ([#2364](https://github.com/GetFelix/felix/issues/2364)), and every peer route under `/internal/raft/v2`. That build passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos` in CI, beside the redb build. `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. Still to come before the switch is turned on: the conversion tool, the simulator and history modes, and the perf gate. |
 | openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed**: the type config, storage traits and network moved to 0.10. The peer and stored formats are Felix's own and unchanged from 0.9 (`raft/wire.rs`), snapshots still travel in chunks (`raft/chunks.rs`), and a group of v0.7.1 and current members exchanges snapshots both ways and survives a rollback (`tests/raft_runtime.rs`). The redb baseline benchmark for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
 | Chaos and conformance | [#342](https://github.com/GetFelix/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 

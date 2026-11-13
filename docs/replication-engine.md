@@ -560,6 +560,74 @@ opens. Before the install, the follower is on its old snapshot with every
 committed entry. After it, the snapshot is ahead of the log, and openraft's
 startup purges up to it. The purged id is never past the snapshot.
 
+### Sending a snapshot
+
+A snapshot that goes to another member is streamed. It is never held whole
+in memory on either side, and neither side gives up on a transfer that is
+still moving. The rules live in `felix-storage` (`raft_log::transfer`), so
+every group that sends snapshot data follows them. Only the transport
+differs: the control plane uses one HTTP request on `/internal/raft/v2`.
+A stream shard sends no snapshot body at all. Its state is its log, so a
+member that is behind is sent entries or copied segments
+([per-shard Raft](per-shard-raft.md), "Group runtime").
+
+**The body.** A form byte, the head's length, the data's length, the head,
+the data, then a crc32 of the data:
+
+```text
+form u8 | head_len u32 | data_len u64 | head | data | crc u32
+```
+
+The head belongs to the transport. For the control plane it is JSON
+holding the sender's vote and the snapshot's last log id and membership.
+An unknown form byte is refused, never guessed at. Later changes to the
+body get a new form byte.
+
+**The receiver decides from the head.** It reads at most 64 KiB of head
+before any data, and then, in this order:
+
+1. A sender whose vote is behind this member's gets this member's vote
+   back, and none of its data is read. This check only saves the data's
+   trip. openraft checks the vote again when it installs, and that check
+   is the one that counts.
+2. A data length over the member's cap is refused with 413. The cap is
+   `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, 1 GiB by default.
+3. The member's one install slot is taken. A second sender gets 503 at
+   once instead of waiting with its body open. A sender with a newer vote
+   than the one installing stops that transfer and takes the slot, so a
+   stale leader that trickles bytes cannot hold off the real one.
+
+**The data goes to a file.** `SnapshotStore::begin_receive` writes
+`raft-snapshot.recv` in the stored snapshot's own format while the data
+arrives, keeping the crc as it goes. Bytes past the declared length, a
+missing byte or a wrong crc fail the transfer. When the data is whole, the
+file is synced, and the state machine reads it back once (the one full
+copy a receive makes) and checks it. The file is then renamed over
+`raft-snapshot`, under the same rule as a local install: a snapshot never
+goes back. A receive that fails or is dropped deletes its file. A crash
+before the rename leaves the old snapshot, and the next open deletes the
+leftover.
+
+A sender reads the stored file the same way, a piece at a time
+(`SnapshotStore::open_current`). It keeps the descriptor it opened, so an
+install that replaces the file meanwhile does not change what it sends. A
+file whose crc does not match fails the send instead of reaching a peer.
+
+**Timeouts follow progress.** A transfer fails when no bytes move for 30 s,
+on either side. After the last byte the receiver gets 30 s plus 1 s per
+16 MiB to install before the sender gives up. A large snapshot that keeps
+moving always lands. openraft passes an install timeout to the network but
+does not enforce it, and the network does not use it.
+
+**Closing the store.** A close tells a receive in flight to stop and waits
+for it to delete its file before the store's lock is let go of. If it does
+not stop within 10 s, the close fails and keeps the lock.
+
+A built snapshot past half the cap is logged as an error, and
+`felix_meta_raft_snapshot_bytes` shows its size. A snapshot over the cap
+can never be installed by a follower, so that has to be visible well before
+it happens.
+
 **Three smaller rules.**
 
 - A command stored as a trim record is refused. A trim sets a floor the

@@ -42,6 +42,7 @@ pub(crate) mod state_file;
 mod tail_cache;
 #[cfg(test)]
 pub(crate) mod tests;
+pub mod transfer;
 mod writer;
 
 pub use codec::EntryCodec;
@@ -49,7 +50,9 @@ pub use codec::EntryCodec;
 /// of everything generic over [`LogTypes`].
 pub use openraft::type_config::alias::CommittedLeaderIdOf;
 pub use reader::LogReader;
-pub use snapshot::{SnapshotId, SnapshotStore, StoredSnapshot};
+pub use snapshot::{
+    SnapshotData, SnapshotId, SnapshotStore, StagedSnapshot, StoredReader, StoredSnapshot,
+};
 
 use std::io;
 use std::ops::Deref;
