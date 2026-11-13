@@ -502,6 +502,28 @@ async fn peers_blank_needs_a_blank_answer_from_every_other_member() {
     cluster.stop().await;
 }
 
+/// A vote alone and an entry alone each mean a group reached the member.
+/// A member can hold a vote and no entry after granting one in an election
+/// that never got as far as an append.
+#[test]
+fn a_vote_or_an_entry_alone_is_not_blank() {
+    use openraft::raft::VoteResponse;
+    use openraft::type_config::alias::LogIdOf;
+    let vote = |term: u64| {
+        let leader = LeaderIdOf::<ShardTypes>::new(term, MemberId::new("a", 1));
+        <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, false)
+    };
+    let answer = |term: u64, entry: bool| {
+        let last = entry.then(|| LogIdOf::<ShardTypes>::new(1_u64.into(), 1));
+        VoteResponse::<ShardTypes>::new(vote(term), last, false)
+    };
+
+    assert!(runtime::blank(&answer(0, false)));
+    assert!(!runtime::blank(&answer(1, false)), "a vote alone");
+    assert!(!runtime::blank(&answer(0, true)), "an entry alone");
+    assert!(!runtime::blank(&answer(1, true)));
+}
+
 /// The ticker asks a group for a timer check only when its timer can have
 /// run out: a leader once per heartbeat, a follower that hears its leader
 /// never.

@@ -152,8 +152,10 @@ later share a group without changing a caller.
 ### Group and member identity
 
 A group id is the `ShardKey` plus a group epoch, which starts at 0 and rises
-only when the group is re-formed (below). A member id is the pair of broker
-id and copy id.
+only when the group is re-formed (below). A stream shard's group under
+`FELIX_SHARD_ENGINE=raft` uses the stream's incarnation as its epoch, so
+members of a deleted stream never hear the group of the stream recreated
+under its name. A member id is the pair of broker id and copy id.
 
 The copy id is minted in the shard's own directory when the member is first
 created there, and is fsynced with the directory. It is per shard on
@@ -1511,7 +1513,10 @@ Membership changes are not built yet
   pre-vote, which changes nothing on the member asked. It forms the group
   only when each one answers that it holds no vote and no entry. A member
   that does not answer, or that holds either, stops it, and it asks again
-  on the next routing pass. The other members never form a group. They
+  on the next routing pass. The question names the stream's incarnation,
+  so a member still on an older incarnation of the stream (its broker has
+  not seen the stream recreated yet) does not answer it, and that also
+  stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
 - A formed group keeps its members. A member that placement drops stays
   open and keeps voting, and it opens again after a restart. A broker that
@@ -1531,14 +1536,20 @@ Two cases this does not cover. If placement changes a full set while it is
 forming, two brokers can each be the lowest of their own set and form two
 groups that share members. And if placement replaces every member of a
 formed group, the new set finds no member the group reached and forms a
-second one. Both need a placement change the list above already rules out.
+second one. Nothing stops either, so operators must not make these
+changes. At replication factor 1 the set is one broker, so any
+re-placement replaces every member.
 
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_short_placement_forms_no_group`,
 > `a_group_forms_only_when_every_member_answers_the_lowest`,
 > `a_broker_placed_on_a_formed_group_does_not_form_it_again`,
 > `a_member_placement_drops_keeps_serving`,
-> `a_dropped_member_reopens_after_a_restart`;
+> `a_dropped_member_reopens_after_a_restart`,
+> `a_dropped_member_reopens_after_a_failed_read`,
+> `a_member_of_an_earlier_incarnation_does_not_answer_for_a_later_one`;
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_vote_or_an_entry_alone_is_not_blank`;
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
 > `a_short_placement_acknowledges_nothing`.
 

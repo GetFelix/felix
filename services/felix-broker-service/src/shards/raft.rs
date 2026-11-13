@@ -53,6 +53,9 @@ pub(crate) struct RaftShards {
     /// Shards whose other members are being asked whether a group reached
     /// them.
     forming: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Shards whose forming was put off, so the reason is logged once, not
+    /// on every pass.
+    put_off: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Shards not placed here whose directory was found unmarked, by
     /// incarnation: only this module marks one, so it is read once.
     unclaimed: parking_lot::Mutex<HashMap<ShardKey, u64>>,
@@ -95,6 +98,7 @@ impl RaftShards {
             leading,
             placed: parking_lot::Mutex::default(),
             forming: parking_lot::Mutex::default(),
+            put_off: parking_lot::Mutex::default(),
             unclaimed: parking_lot::Mutex::default(),
             off_placement: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
@@ -150,7 +154,7 @@ impl RaftShards {
             log,
             follow: None,
         };
-        match self.start_member(key, &member.log).await {
+        match self.start_member(key, incarnation, &member.log).await {
             Ok(follow) => {
                 member.follow = follow;
                 Ok(member)
@@ -164,13 +168,18 @@ impl RaftShards {
 
     /// Opens the member and forms nothing: a member on an empty log waits
     /// for [`Self::form`] here or for a leader's first append.
+    ///
+    /// The group's epoch is the stream's incarnation, so a member of an
+    /// earlier incarnation refuses this one's messages. Its pre-vote answer
+    /// would otherwise say blank for a directory the new group never touched.
     async fn start_member(
         &self,
         key: &ShardKey,
+        incarnation: u64,
         log: &DiskLog,
     ) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
         self.runtime
-            .open(GroupId::new(key.clone(), 0), 0, log.clone())
+            .open(GroupId::new(key.clone(), incarnation), 0, log.clone())
             .await
             .context("open the Raft member")?;
         let handle = self
@@ -190,30 +199,42 @@ impl RaftShards {
     /// Whether an earlier run of this broker opened a member of `key`. Such
     /// a member is opened again whatever placement says now: it may be a
     /// voter its group counts on.
+    ///
+    /// Only an unmarked directory is remembered. A failed read, or a stream
+    /// not yet at `incarnation` here, is read again on the next pass: taken
+    /// for "never opened" for good, it would leave a voter closed.
     async fn claimed(&self, key: &ShardKey, incarnation: u64) -> bool {
         if self.unclaimed.lock().get(key) == Some(&incarnation) {
             return false;
         }
         let (broker, shard) = (Arc::clone(&self.broker), key.clone());
-        let claimed = tokio::task::spawn_blocking(move || {
-            broker.durable_storage().is_some_and(|storage| {
-                storage
-                    .claimed_for_raft(
-                        &shard.tenant_id,
-                        &shard.namespace,
-                        &shard.stream,
-                        shard.shard,
-                        incarnation,
-                    )
-                    .unwrap_or(false)
-            })
+        let read = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<bool>> {
+            let Some(storage) = broker.durable_storage() else {
+                return Ok(Some(false));
+            };
+            Ok(storage.claimed_for_raft(
+                &shard.tenant_id,
+                &shard.namespace,
+                &shard.stream,
+                shard.shard,
+                incarnation,
+            )?)
         })
         .await
-        .unwrap_or(false);
-        if !claimed {
-            self.unclaimed.lock().insert(key.clone(), incarnation);
+        .context("read task")
+        .and_then(|read| read);
+        match read {
+            Ok(Some(true)) => true,
+            Ok(Some(false)) => {
+                self.unclaimed.lock().insert(key.clone(), incarnation);
+                false
+            }
+            Ok(None) => false,
+            Err(err) => {
+                tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not read whether this broker held a Raft member of the shard");
+                false
+            }
         }
-        claimed
     }
 
     /// Form `key`'s group from `members`, off the pass: a member that is
@@ -233,6 +254,7 @@ impl RaftShards {
                 Ok(()) => {
                     // Under the pass's lock, so the member formed is the one
                     // the others were asked about.
+                    me.put_off.lock().remove(&key);
                     let open = me.open.lock().await;
                     if open
                         .get(&key)
@@ -242,8 +264,11 @@ impl RaftShards {
                         tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
                     }
                 }
-                Err(err) => {
+                Err(err) if me.put_off.lock().insert(key.clone()) => {
                     tracing::info!(shard = ?key, reason = %err, "not forming the shard's Raft group yet");
+                }
+                Err(err) => {
+                    tracing::debug!(shard = ?key, reason = %err, "not forming the shard's Raft group yet");
                 }
             }
             me.forming.lock().remove(&key);
@@ -396,6 +421,11 @@ impl EngineShards for RaftShards {
                 fed.insert(key, (assignment, full));
             }
             *self.placed.lock() = placed;
+            self.unclaimed.lock().retain(|key, _| fed.contains_key(key));
+            self.put_off.lock().retain(|key| fed.contains_key(key));
+            self.off_placement
+                .lock()
+                .retain(|key| fed.contains_key(key));
             // A member whose placement dropped this broker stays open: it
             // is still a voter of its group. Only a stream that is gone, or
             // made again, closes one.

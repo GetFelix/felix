@@ -55,6 +55,11 @@ pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
 
 /// [`broker`], with `orders` asking for `replicas` brokers a shard.
 pub(crate) async fn broker_of(root: &Path, replicas: u32) -> Arc<Broker> {
+    broker_at(root, replicas, INCARNATION).await
+}
+
+/// [`broker_of`], with `orders` at `incarnation`.
+async fn broker_at(root: &Path, replicas: u32, incarnation: u64) -> Arc<Broker> {
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
         preallocate_segments: false,
@@ -74,7 +79,7 @@ pub(crate) async fn broker_of(root: &Path, replicas: u32) -> Arc<Broker> {
             "orders",
             StreamMetadata {
                 durable: true,
-                incarnation: INCARNATION,
+                incarnation,
                 replication_factor: Some(replicas),
                 ..StreamMetadata::default()
             },
@@ -303,6 +308,57 @@ async fn a_dropped_member_reopens_after_a_restart() {
     shards.runtime.shutdown().await;
 }
 
+/// **A failed read of whether a member was opened here, or a stream not yet
+/// at the assignment's incarnation, is read again on the next pass.** Taken
+/// for "never opened" for good, either would keep a dropped voter closed.
+#[tokio::test]
+async fn a_dropped_member_reopens_after_a_failed_read() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let orders = key("orders", 0);
+    let mut elsewhere = assigned(orders.clone(), INCARNATION);
+    elsewhere.leader = "broker-b".to_string();
+    elsewhere.replicas = vec!["broker-b".to_string()];
+    {
+        let broker = broker(root.path()).await;
+        let shards = shards(&broker);
+        shards
+            .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+            .await;
+        until("the led term to be served", || {
+            shards.leading(&orders).is_some()
+        })
+        .await;
+        EngineShards::shutdown(&*shards).await;
+    }
+    let broker = broker(root.path()).await;
+    let storage = broker.durable_storage().expect("storage");
+    let (dir, _) = storage
+        .claim_for_raft("t1", "ns", "orders", 0, INCARNATION)
+        .expect("claimed");
+    // A directory where the marker file should be fails the read.
+    let marker = dir.join("engine");
+    let raft = std::fs::read(&marker).expect("marker");
+    std::fs::remove_file(&marker).expect("remove the marker");
+    std::fs::create_dir(&marker).expect("unreadable marker");
+    let shards = shards(&broker);
+    shards.take(&mut assignments([elsewhere.clone()])).await;
+    assert!(shards.runtime.status(&orders).is_none());
+    std::fs::remove_dir(&marker).expect("readable again");
+    std::fs::write(&marker, raft).expect("marker");
+
+    storage.set_stream_incarnation("t1", "ns", "orders", Some(INCARNATION - 1));
+    shards.take(&mut assignments([elsewhere.clone()])).await;
+    assert!(shards.runtime.status(&orders).is_none());
+    storage.set_stream_incarnation("t1", "ns", "orders", Some(INCARNATION));
+
+    shards.take(&mut assignments([elsewhere])).await;
+    until("the member to lead again", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+    shards.runtime.shutdown().await;
+}
+
 /// **A led term is not served while the stream could not be moved to the
 /// committed tail.** Here nothing tells the broker what the group committed,
 /// so the move does nothing, and that is not taken for a stream at its tail.
@@ -458,6 +514,37 @@ async fn a_broker_placed_on_a_formed_group_does_not_form_it_again() {
     let term = members[leader].shards.leading(&orders).expect("term");
     members[leader].publish(term, b"still one group").await;
     members.push(late);
+    stop(&members).await;
+}
+
+/// **A member of an earlier incarnation does not answer for a later one.**
+/// The stream was recreated with a full set, and one broker's feed still
+/// has the old incarnation, so its member there is blank. Taken as an
+/// answer, the new group would append into the old incarnation's directory
+/// on that broker and count it, and the broker drops that directory when
+/// its feed catches up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_of_an_earlier_incarnation_does_not_answer_for_a_later_one() {
+    let net = Arc::new(Loopback::default());
+    let mut members = Vec::new();
+    for name in ["broker-b", "broker-c"] {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        members.push(member);
+    }
+    let recreated = INCARNATION + 1;
+    let lowest = Member::start_at(&net, "broker-a", recreated).await;
+    let mut assignment = replicated();
+    assignment.incarnation = recreated;
+    lowest.shards.take(&mut assignments([assignment])).await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+
+    assert!(
+        !formed(&lowest),
+        "formed on blank answers from an earlier incarnation"
+    );
+    assert!(!members.iter().any(formed));
+    members.push(lowest);
     stop(&members).await;
 }
 
@@ -700,8 +787,13 @@ pub(crate) struct Member {
 impl Member {
     /// A broker on `net` whose readers are bound the way startup binds them.
     async fn start(net: &Arc<Loopback>, name: &'static str) -> Self {
+        Self::start_at(net, name, INCARNATION).await
+    }
+
+    /// [`Self::start`], with `orders` at `incarnation`.
+    async fn start_at(net: &Arc<Loopback>, name: &'static str, incarnation: u64) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        let broker = broker_of(root.path(), 3).await;
+        let broker = broker_at(root.path(), 3, incarnation).await;
         let runtime =
             GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
                 .expect("runtime");
