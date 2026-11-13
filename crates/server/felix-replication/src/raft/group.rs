@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::codec::ShardCodec;
 use super::commit::{self, Commits};
 use super::lead::{self, Leadership};
-use super::machine::Machine;
+use super::machine::{Cache, Machine};
 use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
 use super::propose::{self, Batch, Proposal};
 use super::runtime::{GroupStatus, OpenError, Role};
@@ -35,6 +35,12 @@ pub(crate) struct Group {
     commits: tokio::sync::watch::Receiver<Commits>,
     /// Whether this member leads and the shard is open.
     leadership: Arc<Leadership>,
+    /// A cache shard's projection, as this member has applied it.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the cache write and read paths are not built")
+    )]
+    cache: Option<Cache>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -302,11 +308,12 @@ impl Group {
     ) -> Result<Self, OpenError> {
         let snapshots = SnapshotStore::open(log.dir())?;
         let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
-        // A shard's state is its log, so nothing can rebuild what a purge
-        // past the snapshot would drop.
+        // A stream shard's state is its log, and a cache shard's is its
+        // snapshot plus the log above it. Either way nothing can rebuild
+        // what a purge past the snapshot would drop.
         log.purge_within(&snapshots)?;
         let positions = log.positions();
-        let (machine, commits) = Machine::open(snapshots).await?;
+        let (machine, commits, cache) = Machine::open(snapshots, id.shard.kind).await?;
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let network = Network {
             router: Router::new(transport, Arc::clone(&pace)),
@@ -332,6 +339,7 @@ impl Group {
             positions,
             commits,
             leadership,
+            cache,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -702,6 +710,11 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn leader_gap(&self) -> u64 {
         self.pace.leader_gap(self.pace.timers.now())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cache(&self) -> &Cache {
+        self.cache.as_ref().expect("a cache group")
     }
 
     #[cfg(test)]

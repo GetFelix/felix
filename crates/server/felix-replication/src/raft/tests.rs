@@ -22,10 +22,13 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod cache;
 mod commit;
 mod deliver;
 mod propose;
 
+/// Shards numbered from here are cache shards.
+const CACHE: u32 = 1000;
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
 
@@ -41,7 +44,10 @@ fn shard(n: u32) -> ShardKey {
         namespace: "ns".into(),
         stream: "orders".into(),
         shard: n,
-        kind: ShardKind::Stream,
+        kind: match n >= CACHE {
+            true => ShardKind::Cache,
+            false => ShardKind::Stream,
+        },
     }
 }
 
