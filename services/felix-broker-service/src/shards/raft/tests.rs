@@ -96,7 +96,17 @@ pub(crate) async fn broker_of(root: &Path, replicas: u32) -> Arc<Broker> {
     Arc::new(broker)
 }
 
+/// `broker`'s Raft shards, with its readers bound by them as startup does.
 pub(crate) fn shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
+    let shards = unbound_shards(broker);
+    broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        Arc::new(engine(&shards)),
+    )));
+    shards
+}
+
+/// [`shards`] on a broker nothing tells what its groups committed.
+fn unbound_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     let runtime =
         GroupRuntime::start("broker-a", timers(), Arc::new(AgreeingPeers)).expect("runtime");
     RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
@@ -293,6 +303,27 @@ async fn a_dropped_member_reopens_after_a_restart() {
     shards.runtime.shutdown().await;
 }
 
+/// **A led term is not served while the stream could not be moved to the
+/// committed tail.** Here nothing tells the broker what the group committed,
+/// so the move does nothing, and that is not taken for a stream at its tail.
+#[tokio::test]
+async fn a_term_is_not_served_while_nothing_says_what_committed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = unbound_shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the member to lead its group of one", || {
+        shards.engine.open_term(&orders).is_some()
+    })
+    .await;
+    tokio::time::sleep(LEAD_RETRY * 10).await;
+    assert_eq!(shards.leading(&orders), None);
+    shards.runtime.shutdown().await;
+}
+
 /// How long a group that must not form is watched.
 const NOT_FORMED_FOR: Duration = Duration::from_secs(1);
 
@@ -342,12 +373,20 @@ async fn a_short_placement_forms_no_group() {
 }
 
 /// **Only the lowest broker of the set forms the group, and only once every
-/// other member has answered.** The others never form one: with the lowest
-/// broker away they wait, where they would otherwise elect each other on a
-/// set the lowest broker may already have formed and written to.
+/// other member has answered.** The others never form one, even when every
+/// member answers them: two brokers forming at once could each be the lowest
+/// of a different set.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_group_forms_only_when_every_member_answers_the_lowest() {
     let net = Arc::new(Loopback::default());
+    let orders = key("orders", 0);
+    // The lowest broker still sees the short set, so it is open, answers,
+    // and forms nothing itself.
+    let lowest = Member::start(&net, "broker-a").await;
+    lowest
+        .shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
     let mut members = Vec::new();
     for name in ["broker-b", "broker-c"] {
         let member = Member::start(&net, name).await;
@@ -356,13 +395,12 @@ async fn a_group_forms_only_when_every_member_answers_the_lowest() {
     }
     tokio::time::sleep(NOT_FORMED_FOR).await;
     assert!(
-        !members.iter().any(formed),
-        "the set formed without its lowest broker"
+        !members.iter().any(formed) && !formed(&lowest),
+        "a broker other than the lowest formed the group"
     );
 
     // The lowest broker with one member silent forms nothing either.
     let silent = net.runtimes.lock().remove("broker-c").expect("runtime");
-    let lowest = Member::start(&net, "broker-a").await;
     lowest.shards.take(&mut assignments([replicated()])).await;
     tokio::time::sleep(NOT_FORMED_FOR).await;
     assert!(!formed(&lowest), "formed with a member that never answered");

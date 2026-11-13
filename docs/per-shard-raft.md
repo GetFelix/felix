@@ -1387,18 +1387,6 @@ log, where it is if it committed, instead of joining live below it.
 > `an_engine_that_settles_nothing_is_handed_no_more_batches` and
 > `a_reader_resuming_after_a_batch_given_up_on_starts_above_it`.
 
-Not built yet: nothing in the broker service opens a stream this way, so no
-shard runs on Raft. The routing change has to:
-
-- open each Raft shard's member and its stream over one log, and send
-  every publish of the stream through the engine;
-- answer `ReadBounds` from `RaftReads` for Raft shards only and from the
-  hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
-  refuses any shard it holds no group for;
-- make sure brokers never disagree on a shard's engine: a peer that does
-  not run Raft is never sent a Raft message, and a log directory written
-  by one engine is refused by the other.
-
 **How the service routes a Raft shard.** The routes the hybrid publishes
 never hold a shard a Raft group runs, so the service asks the group first.
 On a broker that holds a member:
@@ -1502,6 +1490,54 @@ group elects without it.
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
 > `a_publish_through_any_broker_reaches_a_subscriber`,
 > `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged`.
+
+**Forming a group.** Placement says where a shard's group forms. After
+that the group's members are its own, and placement changes none of them.
+Membership changes are not built yet
+([#2235](https://github.com/GetFelix/felix/issues/2235)), so until they are:
+
+- A group forms only when placement names as many brokers as the stream's
+  replication factor. The control plane can place a shard on the brokers it
+  has and fill the set later. A group of the brokers placed first would
+  acknowledge on its own, and the brokers placed later would form the full
+  set again on empty logs, elect each other and overwrite what the first
+  group acknowledged. On a short set every member waits and the shard
+  answers "not ready".
+- One broker forms the group: the one with the lowest id in the set. It
+  first asks every other member whether a group has reached it, with a Raft
+  pre-vote, which changes nothing on the member asked. It forms the group
+  only when each one answers that it holds no vote and no entry. A member
+  that does not answer, or that holds either, stops it, and it asks again
+  on the next routing pass. The other members never form a group. They
+  open on an empty log and join when the leader's first append arrives.
+- A formed group keeps its members. A member that placement drops stays
+  open and keeps voting, and it opens again after a restart. A broker that
+  placement adds opens an empty member that no group knows: it serves
+  nothing for the shard and answers "not ready".
+
+So **moves, drains and replacing a broker are not supported on Raft
+shards.** Placement may still write them, and the group ignores them. A
+broker counts the shards it holds whose voters are not the brokers
+placement names in `felix_broker_raft_shards_off_placement`, and logs each
+one once at warn level. Requests that reach a broker with no formed member
+go to the leader placement names, which is wrong once placement and the
+group differ, so keep placement where the group formed: do not drain or
+remove a broker that holds Raft shards.
+
+Two cases this does not cover. If placement changes a full set while it is
+forming, two brokers can each be the lowest of their own set and form two
+groups that share members. And if placement replaces every member of a
+formed group, the new set finds no member the group reached and forms a
+second one. Both need a placement change the list above already rules out.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_short_placement_forms_no_group`,
+> `a_group_forms_only_when_every_member_answers_the_lowest`,
+> `a_broker_placed_on_a_formed_group_does_not_form_it_again`,
+> `a_member_placement_drops_keeps_serving`,
+> `a_dropped_member_reopens_after_a_restart`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `brokers_placed_after_the_first_lose_nothing_it_acknowledged`.
 
 **Every broker that holds a shard must run it on the same engine.** A
 hybrid broker placed in a Raft shard would keep a log of its own that no

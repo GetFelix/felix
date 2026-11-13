@@ -11,5 +11,9 @@
   storage; a broker missing one refuses to start and says which. A stream on
   Raft takes plain publishes only: idempotent and conditional publishes,
   atomic commits, head trims, record headers, consumer groups, Kafka produce
-  and MQTT publish are refused by name (#2446). An unknown value is refused
-  instead of read as the default.
+  and MQTT publish are refused by name (#2446). A shard's group forms once
+  placement names as many brokers as the stream's replication factor and keeps
+  those members: moves, drains and broker replacement are not supported on
+  Raft shards yet (#2235), and `felix_broker_raft_shards_off_placement` counts
+  shards whose placement no longer matches their group. An unknown value is
+  refused instead of read as the default.
