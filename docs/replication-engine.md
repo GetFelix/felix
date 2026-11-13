@@ -633,9 +633,10 @@ missing byte or a wrong crc fail the transfer. When the data is whole, the
 file is synced and read back, and its crc is checked. A commit refuses a
 file that was not read back to its end and checked. The file is then renamed over
 `raft-snapshot`, under the same rule as a local install: a snapshot never
-goes back. A receive that fails or is dropped deletes its file. A crash
-before the rename leaves the old snapshot, and the next open deletes the
-leftover.
+goes back. A receive that fails or is dropped deletes its file, except one
+dropped while its file is still being created: that file stays until the next
+receive truncates it or the next open deletes it. A crash before the rename
+leaves the old snapshot, and the next open deletes the leftover.
 
 **Memory at install.** A group can read the staged file back whole
 (`StagedSnapshot::read`) or a piece at a time (`StagedSnapshot::next_chunk`).
