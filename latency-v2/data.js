@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794596382620,
+  "lastUpdate": 1794597892535,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69498,6 +69498,72 @@ window.BENCHMARK_DATA = {
             "range": "803.43",
             "unit": "us",
             "extra": "trials: 5\nmedian: 387.00\nmean: 960.40\nstdev: 803.43\ncv: 83.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "71a064d0486399f4445d1b7d65fd5b45fdc094bc",
+          "message": "ci: model-check only the TLA+ configurations a pull request affects (#2452)\n\n* ci: model-check only the TLA+ configurations a pull request affects\n\n`scripts/check_tla.sh --affected <base>` lists the registered configurations\na diff can change the result of: a changed .cfg, every configuration of a\nchanged .tla and of the modules that extend or instantiate it, the names on\nchanged registration lines, and everything when the runner logic or the\nformal jobs in ci.yml change. A new formal-plan job turns that into one\nshard per 30 minutes (at most 30, none when the list is empty), the heavy\njobs and whether to walk the unprobed crash. Main and dispatch keep thirty\nshards over the registered set.\n\n* ci(tla): a renamed spec file lists its old path too\n\ngit diff's rename detection listed only the new path, so a renamed cfg or\nmodule left its registered configs unchecked on the PR. Both diffs now\npass --no-renames; a test renames a cfg.",
+          "timestamp": "2026-11-13T10:50:56-08:00",
+          "tree_id": "736822c9a2cf7cc128990a739bce8edfe18972d9",
+          "url": "https://github.com/GetFelix/felix/commit/71a064d0486399f4445d1b7d65fd5b45fdc094bc"
+        },
+        "date": 1794597879509,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "2.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 153.40\nstdev: 2.79\ncv: 1.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 218,
+            "range": "369.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 447.40\nstdev: 369.55\ncv: 82.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 1028,
+            "range": "543.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1028.00\nmean: 967.40\nstdev: 543.10\ncv: 56.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "10.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 202.40\nstdev: 10.45\ncv: 5.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 381,
+            "range": "457.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 381.00\nmean: 588.20\nstdev: 457.32\ncv: 77.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 780,
+            "range": "948.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 780.00\nmean: 1231.60\nstdev: 948.55\ncv: 77.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
