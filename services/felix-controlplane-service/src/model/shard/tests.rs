@@ -1173,15 +1173,15 @@ fn a_shard_moved_in_the_epoch_is_not_alone() {
     assert!(!moved.only("broker-b"));
 }
 
-/// The next epoch's record is the brokers placed now and every broker the
-/// command listed.
+/// The next epoch's record is the brokers on this one that are not dead,
+/// plus the brokers placed now.
 #[test]
 fn a_re_form_starts_the_next_epochs_record() {
     let record = PlacedInEpoch {
         epoch: 2,
         brokers: brokers(&["a", "b", "c", "d"]),
     };
-    let next = record.next_epoch(&set("a", &["b", "c"]), &brokers(&["b", "d"]));
+    let next = record.next_epoch(&set("a", &["b", "c"]), &BTreeSet::new());
     assert_eq!(
         next,
         PlacedInEpoch {
@@ -1189,11 +1189,16 @@ fn a_re_form_starts_the_next_epochs_record() {
             brokers: brokers(&["a", "b", "c", "d"]),
         }
     );
-    let next = record.next_epoch(&set("a", &[]), &brokers(&["d"]));
+    let next = record.next_epoch(&set("a", &[]), &brokers(&["b", "c"]));
     assert_eq!(
         next.brokers,
         brokers(&["a", "d"]),
-        "a broker neither placed now nor listed leaves"
+        "a dead broker no longer placed leaves"
+    );
+    let next = record.next_epoch(&set("a", &["b"]), &brokers(&["b"]));
+    assert!(
+        next.brokers.contains("broker-b"),
+        "a broker placed now stays"
     );
 }
 

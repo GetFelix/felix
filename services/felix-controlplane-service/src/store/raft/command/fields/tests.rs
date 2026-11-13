@@ -322,6 +322,7 @@ fn exported() -> ExportedState {
             shard_engine: s("hybrid"),
             adopts_existing: true,
         }),
+        unplaced: [shard_key().owner(1)].into(),
         v: 1,
         tenants: vec![(s("t"), tenant())],
         namespaces: vec![(namespace_key(), namespace())],

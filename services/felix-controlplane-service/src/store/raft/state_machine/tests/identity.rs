@@ -226,6 +226,52 @@ async fn an_import_with_no_identity_over_streams_adopts_existing_data() {
             ..identity("g-new", "hybrid")
         })
     );
+    // The import's own rule holds too: the restored stream starts no record
+    // of the brokers placed in its epoch.
+    let after = serde_json::to_value(target.store().export_state().await).expect("json");
+    let unplaced = after["unplaced"].as_array().expect("unplaced");
+    assert!(
+        unplaced
+            .iter()
+            .any(|owner| owner.to_string().contains("\"s\"")),
+        "{unplaced:?}"
+    );
+}
+
+/// An export carrying an identity and streams: the import adopts that
+/// identity as exported and still marks the streams unplaced.
+#[tokio::test]
+async fn an_import_with_an_identity_keeps_it_and_marks_streams_unplaced() {
+    let source = machine_with_tenant().await;
+    answer(&source, record("g-old", "raft")).await;
+    source
+        .dispatch(MetaCommand::CreateStream {
+            needs_identity: true,
+            names: false,
+            stream: stream("t-a", "ns-1", "s"),
+            incarnations: false,
+        })
+        .await
+        .expect("create");
+    let exported = source.store().export_state().await;
+
+    let target = machine();
+    answer(&target, record("g-new", "hybrid")).await;
+    target
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(exported),
+            overwrite: true,
+        })
+        .await
+        .expect("import");
+    assert_eq!(
+        target.store().recorded_identity().await,
+        Some(identity("g-old", "raft")),
+        "recorded on a catalog with no streams yet, so it does not adopt"
+    );
+    let after = serde_json::to_value(target.store().export_state().await).expect("json");
+    let unplaced = after["unplaced"].as_array().expect("unplaced");
+    assert_eq!(unplaced.len(), 1, "{unplaced:?}");
 }
 
 /// A create proposed at level 32 that reaches the log before the record is

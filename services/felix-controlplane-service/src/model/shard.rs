@@ -154,6 +154,17 @@ pub struct ShardKey {
 }
 
 impl ShardKey {
+    /// The stream or cache this shard belongs to, at `incarnation`.
+    pub(crate) fn owner(&self, incarnation: u64) -> ShardOwner {
+        ShardOwner {
+            kind: self.kind,
+            tenant_id: self.tenant_id.clone(),
+            namespace: self.namespace.clone(),
+            name: self.stream.clone(),
+            incarnation,
+        }
+    }
+
     /// The stream this shard belongs to, or `None` if it belongs to a cache.
     pub fn stream_key(&self) -> Option<StreamKey> {
         (self.kind == ShardKind::Stream).then(|| StreamKey {
@@ -219,8 +230,8 @@ pub struct ShardAssignment {
     /// The incarnation of the stream this assignment is for, read from the
     /// stream when the assignment is written; whatever a caller passes is
     /// replaced. Stored with it, so a change replayed after the stream was
-    /// created anew still names the stream it was written for. 0 for a cache,
-    /// and for a stream from before incarnations.
+    /// created anew still names the stream it was written for. The same for a
+    /// cache. 0 for one from before incarnations.
     #[serde(default, skip_serializing_if = "is_zero_incarnation")]
     pub incarnation: u64,
     /// The storage identity the replica report a failover was decided on named
@@ -279,6 +290,17 @@ pub struct ShardAssignment {
     pub placed: Option<PlacedInEpoch>,
 }
 
+/// A stream or cache at one incarnation. An import marks every one it
+/// restores, and their shards never start a [`PlacedInEpoch`] record.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ShardOwner {
+    pub(crate) kind: ShardKind,
+    pub(crate) tenant_id: String,
+    pub(crate) namespace: String,
+    pub(crate) name: String,
+    pub(crate) incarnation: u64,
+}
+
 /// Every broker the control plane has placed for a shard's group in one
 /// group epoch, voter or learner, including brokers a later write removed
 /// (`docs/per-shard-raft.md`, "Re-forming a group").
@@ -334,17 +356,19 @@ impl PlacedInEpoch {
         self.brokers.len() == 1 && self.brokers.contains(broker)
     }
 
-    /// The record a re-form writes for the next epoch: the brokers placed
-    /// now (`current`) and every broker the command listed, voter or
-    /// learner. A broker that `current` no longer names and that was
-    /// declared dead is left off, though the model keeps it placed until its
-    /// removal commits; a dead broker never starts the new epoch.
-    pub fn next_epoch(&self, current: &ShardAssignment, listed: &BTreeSet<String>) -> Self {
+    /// The record a re-form writes for the next epoch: every broker on this
+    /// record that is not declared `dead` (the brokers the command lists),
+    /// plus the brokers placed now (`current`). A dead broker that `current`
+    /// no longer names is left off, though the model keeps it placed until
+    /// its removal commits; a dead broker never starts the new epoch.
+    pub fn next_epoch(&self, current: &ShardAssignment, dead: &BTreeSet<String>) -> Self {
         Self {
             epoch: self.epoch + 1,
-            brokers: current
-                .placed_nodes()
-                .chain(listed.iter())
+            brokers: self
+                .brokers
+                .iter()
+                .filter(|broker| !dead.contains(*broker))
+                .chain(current.placed_nodes())
                 .cloned()
                 .collect(),
         }
