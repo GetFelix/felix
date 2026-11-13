@@ -238,20 +238,14 @@ pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker
     // binary instead, so past a hard bound the process exits naming the
     // seed. Declared before the runtime, so it also covers the runtime's drop.
     let limit = config.real_time_limit + config.real_time_limit / 4;
-    let _bound = Deadline::start(limit, move || {
-        // Output that nobody drains blocks every writer, this message too,
-        // so the exit does not wait on it.
-        std::thread::spawn(|| {
-            std::thread::sleep(Duration::from_secs(10));
-            std::process::exit(1);
-        });
-        eprintln!(
+    let _bound = Deadline::exits(
+        limit,
+        format!(
             "seed {seed} ran past {limit:?} of real time: something holds the simulation \
              thread and never returns to the runtime, so the stall watch cannot end the run. \
              To run it again:\n    FELIX_SIM_SEED={seed} task sim:replay"
-        );
-        std::process::exit(1);
-    });
+        ),
+    );
     let mut builder = tokio::runtime::Builder::new_current_thread();
     builder.enable_all().start_paused(true);
     // `select!` picks among ready branches at random. Seeded, it picks the
@@ -266,11 +260,25 @@ pub fn run_seed_with(seed: u64, config: SimConfig, checkers: Vec<Box<dyn Checker
 
 /// Calls `expired` on a thread of its own unless it is dropped within `limit`
 /// of real time.
-struct Deadline {
+pub(crate) struct Deadline {
     _finished: mpsc::Sender<()>,
 }
 
 impl Deadline {
+    /// Ends the process with `message` unless dropped within `limit`.
+    pub(crate) fn exits(limit: Duration, message: String) -> Self {
+        Self::start(limit, move || {
+            // Output that nobody drains blocks every writer, this message
+            // too, so the exit does not wait on it.
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_secs(10));
+                std::process::exit(1);
+            });
+            eprintln!("{message}");
+            std::process::exit(1);
+        })
+    }
+
     fn start(limit: Duration, expired: impl FnOnce() + Send + 'static) -> Self {
         let (finished, wait) = mpsc::channel::<()>();
         std::thread::Builder::new()

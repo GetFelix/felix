@@ -111,6 +111,7 @@ module_of() {
     FelixRaftSleep*) echo FelixRaftSleep ;;
     FelixRaftCache*) echo FelixRaftCache ;;
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
+    FelixRaftWritten*) echo FelixRaftWritten ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -547,6 +548,16 @@ expectations=(
   "FelixRaftMembershipReachMove violates NeverMoves"
   "FelixRaftMembershipReachStepDown violates NeverRemovedLeaderStepsDown"
   "FelixRaftMembershipReachFailoverInJoint violates NeverFailoverInJoint"
+  "FelixRaftWritten pass"
+  "FelixRaftWrittenCrash pass"
+  "FelixRaftWrittenLearnerCounts violates AckedHeld"
+  "FelixRaftWrittenOtherTermCounts violates AckedHeld"
+  "FelixRaftWrittenJointOneHalf violates AckedHeld"
+  "FelixRaftWrittenCommits violates CommittedHeld"
+  "FelixRaftWrittenPowerCut violates AckedNeverLost"
+  "FelixRaftWrittenReachEarly violates NeverAcksEarly"
+  "FelixRaftWrittenReachEarlyInJoint violates NeverAcksEarlyInJoint"
+  "FelixRaftWrittenReachCommitsAfterFailover violates NeverCommitsAfterFailover"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"
@@ -649,9 +660,43 @@ expectations=(
   "FelixRaftSwitchReachGenZero violates NeverElects"
   "FelixRaftSwitchReachWipedSwitch violates NeverSwitches"
   "FelixRaftSwitchReachReseal violates NeverSwitchesAfterReseal"
+  "FelixRaftSwitchInFlight pass"
+  "FelixRaftSwitchInFlightFailover pass"
+  "FelixRaftSwitchPowerLoss pass"
+  "FelixRaftSwitchCopySource pass"
+  "FelixRaftSwitchDigestTag pass"
+  "FelixRaftSwitchDigestSide pass"
+  "FelixRaftSwitchVoteFloor pass"
+  "FelixRaftSwitchSealHolds pass"
+  "FelixRaftSwitchStartOrder pass"
+  "FelixRaftSwitchInFlightClaimFirst violates LeaderAcksInBase"
+  "FelixRaftSwitchInFlightFailoverLeaseAtEntry violates NoAckAfterHandOver"
+  "FelixRaftSwitchPowerLossSameGen violates HybridAcksInBase"
+  "FelixRaftSwitchCopySourceAny violates StateMachineSafety"
+  "FelixRaftSwitchDigestTagSkipped violates LeaderCompleteness"
+  "FelixRaftSwitchDigestSideSkipped violates SideComplete"
+  "FelixRaftSwitchVoteFloorOff violates LeaderCompleteness"
+  "FelixRaftSwitchSealHoldsReopen violates HybridAcksInBase"
+  "FelixRaftSwitchSealHoldsBallot violates HybridAcksInBase"
+  "FelixRaftSwitchStartOrderMarkFirst violates NeverReadsBelowBase"
+  "FelixRaftSwitchReachInFlightAck violates NeverSwitchesAfterLeaderAck"
+  "FelixRaftSwitchReachFailover violates NeverSwitchesAfterFailover"
+  "FelixRaftSwitchReachPowerLoss violates NeverSwitchesAfterFailover"
+  "FelixRaftSwitchFailoverWipe pass"
+  "FelixRaftSwitchPowerLossLag pass"
+  "FelixRaftSwitchPowerLossLagAll pass"
+  "FelixRaftSwitchPowerLossFollowers pass"
+  "FelixRaftSwitchEnds pass"
+  "FelixRaftSwitchFailoverWipeVotes violates HybridAcksInBase"
+  "FelixRaftSwitchPowerLossPeriodic violates HybridAcksInBase"
+  "FelixRaftSwitchPowerLossAckBeforeSync violates BaseAgree"
+  "FelixRaftSwitchEndsLeaderWiped violates liveness"
+  "FelixRaftSwitchReachStartCrash violates NeverRestartsBeforeMark"
   "FelixRaftReform pass"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"
+  "FelixRaftReformTwoRotatedOffsetsTerms pass"
+  "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
   "FelixRaftReformStaleMembershipIntact pass"
   "FelixRaftReformLearnerWaited pass"
@@ -664,7 +709,6 @@ expectations=(
   "FelixRaftReformTwoRotatedFull pass"
   "FelixRaftReformTwoRestarts pass"
   "FelixRaftReformBeforeAll violates AckedSurvive"
-  "FelixRaftReformEpochNotChecked violates AckedSurvive"
   "FelixRaftReformReportNotPromise violates AckedSurvive"
   "FelixRaftReformPlanNotRechecked violates AckedSurvive"
   "FelixRaftReformRetireNotDurable violates AckedSurvive"
@@ -680,7 +724,10 @@ expectations=(
   "FelixRaftReformWrongDeclaration violates AckedSurvive"
   "FelixRaftReformTwoRotatedOffsetsTrailing violates OffsetNeverReused"
   "FelixRaftReformTwoRotatedOffsetsNoFloor violates OffsetNeverReused"
-  "FelixRaftReformTwoRotatedOffsetsTerms violates OffsetNeverReused"
+  "FelixRaftReformTwoRotatedOffsetsTermsIndexOnly violates OffsetNeverReused"
+  "FelixRaftReformTwoRotatedOffsetsTermsCuts violates NeverCuts"
+  "FelixRaftReformTwoRotatedOffsetsTermsUnvouched violates LossNeedsLostDisk"
+  "FelixRaftReformTwoRotatedOffsetsCutToCommit violates AckedSurvive"
   "FelixRaftReformCommits violates NeverCommitsAfterReform"
   "FelixRaftReformOneReplicaCommits violates NeverCommitsAfterReform"
   "FelixRaftReformOneReplicaSelfStarts violates NeverSelfStarts"
@@ -940,6 +987,12 @@ fi
 # FelixRaftReformStaleMembershipFull, FelixRaftReformStaleMembershipTwoMoves
 # and FelixRaftLeaseAckWide are not registered: each is registered once a
 # dispatch run gives its declared outcome.
+# FelixRaftWrittenFailover passes in 46 minutes with 8 workers on a 32-core
+# machine and runs nightly (tla-walk.yml). FelixRaftWrittenJoint passes in
+# 2 h 10 min there, too long for a hosted runner's six hours, so only that
+# box run checks it. FelixRaftWrittenTerms and FelixRaftWrittenJointFailover
+# did not finish in two hours there (docs/formal/README.md has how far each
+# got).
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
@@ -1154,16 +1207,21 @@ weights=(
   "FelixRaftSwitchGenZero 6"
   "FelixRaftSwitchStarts 11"
   "FelixRaftSwitchReseal 4"
+  "FelixRaftSwitchFailoverWipe 60"
+  "FelixRaftSwitchPowerLossLagAll 8"
   "FelixRaftReform 3"
   "FelixRaftReformTwoRotated 2"
   "FelixRaftReformOneReplica 2"
   "FelixRaftReformDead 2"
   "FelixRaftReformStaleMembershipTwoRotated 7"
-  "FelixRaftReformStaleMembershipTwoMovesForgotten 13"
+  "FelixRaftReformStaleMembershipTwoMovesForgotten 20"
   "FelixRaftReformRejoinFull 13"
   "FelixRaftReformTwoRotatedFull 15"
+  "FelixRaftReformTwoRotatedOffsetsTerms 12"
   "FelixRaftSwitchGenZeroFull 37"
   "FelixRaftMembershipTerms 109"
+  "FelixRaftWritten 40"
+  "FelixRaftWrittenCrash 5"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
@@ -1220,9 +1278,10 @@ pr_minutes=(
   "FelixRaftReform 3"
   "FelixRaftReformOneReplica 2"
   "FelixRaftReformRejoinFull 13"
-  "FelixRaftReformStaleMembershipTwoMovesForgotten 12"
+  "FelixRaftReformStaleMembershipTwoMovesForgotten 25"
   "FelixRaftReformStaleMembershipTwoRotated 5"
   "FelixRaftReformTwoRotatedFull 15"
+  "FelixRaftReformTwoRotatedOffsetsTerms 15"
   "FelixRaftSnapshot 7"
   "FelixRaftSnapshotCrashes 26"
   "FelixRaftSnapshotReplace 8"

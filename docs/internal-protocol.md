@@ -1158,16 +1158,17 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 1. A reader refuses any other |
-| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer |
+| layout | `u8`, 2 (layout 1 had no report byte). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
 | member | broker (name), copy id `u64` |
 | beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
+| report | `u8`: 1 on a leader's append with entries when it wants the member's written position back (message 7); 0 otherwise. Any other value is refused |
 | vote | term `u64`, the member voted for, committed `u8` |
 | log id | term `u64`, index `u64` |
 
-After the beat comes the message:
+After the report byte comes the message:
 
 - **Append**: the leader's vote, the previous log id (optional), the
   leader's commit (optional), and for message 2 a `u32` count and that many
@@ -1184,6 +1185,13 @@ After the beat comes the message:
   sent entries.
 - **Leader transfer**: the leader's vote, the member to take over, and the
   leader's last log id (optional).
+- **Written position**: the member that sends it, and the log id of the
+  last entry it has written, fsynced or not. A follower sends it to the
+  leader whose append asked for it (report 1), once that append's entries
+  are written and before their fsync. It is addressed to the leader's
+  member. The leader uses it only to acknowledge a `Quorum` write early on
+  a stream that does not fsync on commit (`docs/per-shard-raft.md`,
+  "Two signals from one append"). It never moves the commit index.
 
 A membership is a `u8` count of voter sets (two during a joint change), each
 a `u8` count and that many members, then the members that are not voters the
@@ -1197,6 +1205,7 @@ The answer has the same first byte, then:
 | 2 voted | the voter's vote, granted `u8`, its last log id (optional) |
 | 3 snapshot | the member's vote |
 | 4 transferred | `u8` 0 accepted; 1 the vote changed (expected and actual votes); 2 the log is not flushed yet (expected and actual last log ids, optional) |
+| 5 written position taken | nothing |
 | 16 unreachable | a reason (name layout, up to 1,024 bytes) |
 | 17 no such member | the group and member. The broker holds no member for that copy and epoch |
 | 18 stopped | the group and member, and a reason |

@@ -227,6 +227,7 @@
 2 finalize_fleet_feature.feature
 0 import_state
 0 import_state.overwrite
+31 import_state.mark_unplaced
 0 import_state.state
 0 import_state.state.auth_bootstrapped
 0 import_state.state.cache_changes
@@ -428,6 +429,9 @@
 30 import_state.state.shard_changes.items[].assignment.readmitted[].node
 30 import_state.state.shard_changes.items[].assignment.readmitted[].offset
 30 import_state.state.shard_changes.items[].assignment.readmitted[].storage_id
+31 import_state.state.shard_changes.items[].assignment.placed
+31 import_state.state.shard_changes.items[].assignment.placed.brokers
+31 import_state.state.shard_changes.items[].assignment.placed.epoch
 21 import_state.state.shard_changes.items[].assignment.pending_set
 21 import_state.state.shard_changes.items[].assignment.pending_set.generation
 21 import_state.state.shard_changes.items[].assignment.pending_set.replicas
@@ -466,6 +470,9 @@
 30 import_state.state.shards[][].readmitted[].node
 30 import_state.state.shards[][].readmitted[].offset
 30 import_state.state.shards[][].readmitted[].storage_id
+31 import_state.state.shards[][].placed
+31 import_state.state.shards[][].placed.brokers
+31 import_state.state.shards[][].placed.epoch
 21 import_state.state.shards[][].pending_set
 21 import_state.state.shards[][].pending_set.generation
 21 import_state.state.shards[][].pending_set.replicas
@@ -555,6 +562,12 @@
 0 import_state.state.tenants
 0 import_state.state.tenants[][].display_name
 0 import_state.state.tenants[][].tenant_id
+31 import_state.state.unplaced
+31 import_state.state.unplaced[].incarnation
+31 import_state.state.unplaced[].kind
+31 import_state.state.unplaced[].name
+31 import_state.state.unplaced[].namespace
+31 import_state.state.unplaced[].tenant_id
 0 import_state.state.v
 0 insert_refresh_token
 0 insert_refresh_token.token
@@ -623,6 +636,9 @@
 30 put_shard_assignment.assignment.readmitted[].node
 30 put_shard_assignment.assignment.readmitted[].offset
 30 put_shard_assignment.assignment.readmitted[].storage_id
+31 put_shard_assignment.assignment.placed
+31 put_shard_assignment.assignment.placed.brokers
+31 put_shard_assignment.assignment.placed.epoch
 21 put_shard_assignment.assignment.pending_set
 21 put_shard_assignment.assignment.pending_set.generation
 21 put_shard_assignment.assignment.pending_set.replicas
@@ -641,6 +657,7 @@
 0 put_shard_assignment.assignment.successor
 0 put_shard_assignment.assignment.tenant_id
 17 put_shard_assignment.seq_generation
+31 put_shard_assignment.start_placed
 0 put_shard_assignment_fenced
 0 put_shard_assignment_fenced.assignment
 16 put_shard_assignment_fenced.assignment.fence_storage_ids
@@ -654,6 +671,9 @@
 30 put_shard_assignment_fenced.assignment.readmitted[].node
 30 put_shard_assignment_fenced.assignment.readmitted[].offset
 30 put_shard_assignment_fenced.assignment.readmitted[].storage_id
+31 put_shard_assignment_fenced.assignment.placed
+31 put_shard_assignment_fenced.assignment.placed.brokers
+31 put_shard_assignment_fenced.assignment.placed.epoch
 21 put_shard_assignment_fenced.assignment.pending_set
 21 put_shard_assignment_fenced.assignment.pending_set.generation
 21 put_shard_assignment_fenced.assignment.pending_set.replicas
@@ -676,6 +696,7 @@
 17 put_shard_assignment_fenced.seq_generation
 28 put_shard_assignment_fenced.at_least
 29 put_shard_assignment_fenced.record_previous
+31 put_shard_assignment_fenced.start_placed
 0 put_shard_assignment_if
 0 put_shard_assignment_if.assignment
 16 put_shard_assignment_if.assignment.fence_storage_ids
@@ -689,6 +710,9 @@
 30 put_shard_assignment_if.assignment.readmitted[].node
 30 put_shard_assignment_if.assignment.readmitted[].offset
 30 put_shard_assignment_if.assignment.readmitted[].storage_id
+31 put_shard_assignment_if.assignment.placed
+31 put_shard_assignment_if.assignment.placed.brokers
+31 put_shard_assignment_if.assignment.placed.epoch
 21 put_shard_assignment_if.assignment.pending_set
 21 put_shard_assignment_if.assignment.pending_set.generation
 21 put_shard_assignment_if.assignment.pending_set.replicas
@@ -1079,6 +1103,9 @@
 30 snapshot.state.shard_changes.items[].assignment.readmitted[].node
 30 snapshot.state.shard_changes.items[].assignment.readmitted[].offset
 30 snapshot.state.shard_changes.items[].assignment.readmitted[].storage_id
+31 snapshot.state.shard_changes.items[].assignment.placed
+31 snapshot.state.shard_changes.items[].assignment.placed.brokers
+31 snapshot.state.shard_changes.items[].assignment.placed.epoch
 21 snapshot.state.shard_changes.items[].assignment.pending_set
 21 snapshot.state.shard_changes.items[].assignment.pending_set.generation
 21 snapshot.state.shard_changes.items[].assignment.pending_set.replicas
@@ -1117,6 +1144,9 @@
 30 snapshot.state.shards[][].readmitted[].node
 30 snapshot.state.shards[][].readmitted[].offset
 30 snapshot.state.shards[][].readmitted[].storage_id
+31 snapshot.state.shards[][].placed
+31 snapshot.state.shards[][].placed.brokers
+31 snapshot.state.shards[][].placed.epoch
 21 snapshot.state.shards[][].pending_set
 21 snapshot.state.shards[][].pending_set.generation
 21 snapshot.state.shards[][].pending_set.replicas
@@ -1206,6 +1236,12 @@
 0 snapshot.state.tenants
 0 snapshot.state.tenants[][].display_name
 0 snapshot.state.tenants[][].tenant_id
+31 snapshot.state.unplaced
+31 snapshot.state.unplaced[].incarnation
+31 snapshot.state.unplaced[].kind
+31 snapshot.state.unplaced[].name
+31 snapshot.state.unplaced[].namespace
+31 snapshot.state.unplaced[].tenant_id
 0 snapshot.state.v
 1 stage_signing_key
 1 stage_signing_key.key
