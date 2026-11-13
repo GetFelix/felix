@@ -76,20 +76,27 @@
 (* The implementation design on issue #2242 adds these, each off unless a  *)
 (* config turns it on, so the configs above keep their state spaces:       *)
 (*                                                                         *)
-(*   InFlight   -- the seal leader has one `Leader` write inside its fence *)
-(*                 that has not taken an offset. ClaimWrite gives it the   *)
-(*                 next offset, AnswerWrite acknowledges it on the         *)
-(*                 leader's disk alone, while the leader's lease holds.    *)
+(*   InFlight   -- the seal leader has one write inside its fence that     *)
+(*                 has not taken an offset. ClaimWrite gives it the next   *)
+(*                 offset. As a `Leader` write, AnswerWrite acknowledges   *)
+(*                 it on the leader's disk alone while the leader's lease  *)
+(*                 holds. As a `Quorum` write, QuorumAnswer acknowledges   *)
+(*                 it once a majority holds it, and it joins `acked`.      *)
 (*                 SealClaim appends the record at N only once the write   *)
 (*                 is answered or failed (the quiesce).                    *)
 (*   Catchup    -- a hybrid follower takes the seal leader's records up to *)
 (*                 N - 1, and cuts a longer tail to it.                    *)
 (*   Failover   -- the control plane gives up the seal once the leader's   *)
 (*                 lease has lapsed and seals again with another copy, the *)
-(*                 one furthest ahead in a majority.                       *)
-(*   MayUnsynced, LeaderPowerLoss -- the seal leader's log above `syn` is  *)
-(*                 not on disk (a stream that is not fsync on commit) and  *)
-(*                 is lost. The leader then gives up the seal.             *)
+(*                 one furthest ahead in a majority of copies that were    *)
+(*                 never wiped.                                            *)
+(*   MayUnsynced -- the copies whose log above `syn` is not on disk yet.   *)
+(*                 Flush writes it. PowerLoss loses it, on any copy before *)
+(*                 it starts its member, once per behaviour. A seal leader *)
+(*                 that loses power before it reports gives up the seal.   *)
+(*                 The logs are fsync on commit, which the switch          *)
+(*                 requires: a record the hybrid acknowledged is on disk   *)
+(*                 on a majority.                                          *)
 (*   Purge      -- a Raft member moves its purged id up to its commit.     *)
 (*   MayDifferTag -- a follower's record differs only in the producer tag. *)
 (*   MayDifferSide -- a follower's dead-letter and group-cursor logs lack  *)
@@ -109,6 +116,9 @@
 (*   SideComplete       -- a Raft leader holds the leader's side logs.     *)
 (*   NeverReadsBelowBase -- a recorded voter starts with its purged id at  *)
 (*                         N.                                              *)
+(*   SwitchEnds         -- under FairSpec, a switch that started ends with *)
+(*                         the switch recorded and every copy's member     *)
+(*                         started.                                        *)
 (*                                                                         *)
 (* With one knob each that removes a rule:                                 *)
 (*                                                                         *)
@@ -132,21 +142,37 @@
 (*   MarkFirst          -- the member mark is written before the purge, so *)
 (*                         a crash between them restarts the voter on the  *)
 (*                         hybrid log.                                     *)
+(*   WipedVotesInFailover -- a wiped copy answers the failover's fence     *)
+(*                         before it is re-admitted.                       *)
+(*   SealPeriodic       -- the switch seals a `Periodic` log: a record is  *)
+(*                         acknowledged once a majority has written it,    *)
+(*                         before it is on disk.                           *)
+(*   AckBeforeSync      -- a follower acknowledges N, and the leader       *)
+(*                         reports, before N is on disk.                   *)
 (*                                                                         *)
 (* The model's term is the record's generation field. A Raft term is one   *)
 (* less in the code (`raft_log`: generation = term + 1), so the base's     *)
 (* term G here is Raft term G - 1 there, and the vote at G in Start is the *)
 (* vote at Raft term G - 1 the design calls the floor.                     *)
 (*                                                                         *)
-(* Abstracted. Storage is durable at once, except the seal leader's        *)
-(* unsynced tail under MayUnsynced: FelixRaft.tla covers the adapter's     *)
-(* fsync rules. A message is one atomic step between two brokers. The      *)
-(* hybrid before the seal is the Init choice. Reseal and Failover are one  *)
-(* step each. The digest and S travel in the `seal` variable, not in the   *)
-(* record. The promotion adds one voter in one step; FelixRaftMembership   *)
-(* covers joint changes. Records below S are outside the check, as the     *)
-(* design says: the switch proves nothing about them. Cache shards (a      *)
-(* digest over live state) are not modelled.                               *)
+(* A broker starts its member in two steps: Start writes the log, purged   *)
+(* id and vote floor, and StartMark writes the member mark. StartCrash is  *)
+(* a crash between them; the broker then starts again from the record.     *)
+(*                                                                         *)
+(* Abstracted. Storage is durable at once, except the unsynced tails under *)
+(* MayUnsynced: FelixRaft.tla covers the adapter's fsync rules once a      *)
+(* member has started. A message is one atomic step between two brokers.   *)
+(* The hybrid before the seal is the Init choice. Reseal and Failover are  *)
+(* one step each, and a copy that was wiped is never re-admitted. One      *)
+(* write is in flight at the seal. The digest and S travel in the `seal`   *)
+(* variable; in the code they are in the record at N, which a follower     *)
+(* appends as the leader sent it. The record at N carries its generation   *)
+(* in its content, so two seals' records never compare equal. `cp.rfirst`  *)
+(* and `cp.recs` are history for the checks: the control plane records     *)
+(* only the base and the voters. The promotion adds one voter in one step; *)
+(* FelixRaftMembership covers joint changes. Records below S are outside   *)
+(* the check, as the design says: the switch proves nothing about them.    *)
+(* Cache shards (a digest over live state) are not modelled.               *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -182,7 +208,7 @@ CONSTANTS
     InFlight,
     Catchup,
     MaxFailovers,
-    MayUnsynced,
+    MayUnsynced,    \* copies whose log may have a tail not on disk
     MaxPurges,
     MayDifferTag,
     MayDifferSide,
@@ -195,7 +221,10 @@ CONSTANTS
     NoVoteFloor,
     ReopenOnTimeout,
     BallotIgnoresSeal,
-    MarkFirst
+    MarkFirst,
+    WipedVotesInFailover,
+    SealPeriodic,
+    AckBeforeSync
 
 VARIABLES
     copy,       \* the copy id's counter; a wipe raises it
@@ -220,7 +249,7 @@ VARIABLES
     used,       \* budgets spent
     fly,        \* the seal leader's write in flight: its state and offset
     lease,      \* whether the first seal leader's lease still holds
-    syn,        \* the last offset on the first seal leader's disk
+    syn,        \* the last offset on each copy's disk; Durable when it has no tail
     side,       \* 1 if a copy's dead-letter and group-cursor logs hold the leader's state
     lacked,     \* `Leader` acknowledgements, <<offset, content>>
     lateAck     \* history: a `Leader` acknowledgement after the hand-over
@@ -237,11 +266,15 @@ Max(a, b) == IF a >= b THEN a ELSE b
 MaxOf(S) == CHOOSE x \in S : \A y \in S : y <= x
 Majority(Q) == 2 * Cardinality(Q) > Cardinality(Servers)
 
+\* A copy outside MayUnsynced has everything on disk.
+Durable == 99
+
 Rec(v, g) == [term |-> g, kind |-> "record", val |-> v, tag |-> 0, conf |-> {}]
-StartRec(g) == [term |-> g, kind |-> "start", val |-> 0, tag |-> 0, conf |-> {}]
+StartRec(g) == [term |-> g, kind |-> "start", val |-> g, tag |-> 0, conf |-> {}]
 Blank(t) == [term |-> t, kind |-> "blank", val |-> 0, tag |-> 0, conf |-> {}]
 MemberRec(t, C) == [term |-> t, kind |-> "member", val |-> 0, tag |-> 0, conf |-> C]
 \* What two copies of one record share: everything but the generation field.
+\* The record at N names its generation in its payload too (`val`).
 Content(e) == [e EXCEPT !.term = 0]
 
 NoVote == [term |-> 0, node |-> Nobody, committed |-> FALSE]
@@ -337,7 +370,16 @@ Init ==
                                l |-> Leader, claimed |-> ~InFlight, void |-> FALSE]
                     /\ acked = {<<k, Content(Rec(k, 0)), 0>> :
                                     k \in {o \in S..PreLen : Majority(holders(o))}}
-                    /\ syn \in IF MayUnsynced THEN (f[Leader] - 1)..PreLen ELSE {PreLen + 1}
+                    \* Fsync on commit: a record the hybrid acknowledged is on disk
+                    \* on a majority. SealPeriodic drops it.
+                    /\ syn \in {y \in [Servers -> (0..(PreLen + 1)) \cup {Durable}] :
+                            /\ \A s \in Servers :
+                                IF s \in MayUnsynced
+                                THEN f[s] - 1 <= y[s] /\ y[s] <= f[s] + Len(log[s]) - 1
+                                ELSE y[s] = Durable
+                            /\ SealPeriodic \/
+                                \A o \in {k \in S..PreLen : Majority(holders(k))} :
+                                    Majority({s \in holders(o) : y[s] >= o})}
     /\ copy = [s \in Servers |-> 1]
     /\ base = [s \in Servers |-> Empty]
     /\ st = [s \in Servers |-> "hybrid"]
@@ -376,7 +418,8 @@ DigestOk(s) ==
                /\ Digest(log[s], first[s], seal.s, to) = Digest(seal.lrecs, seal.lfirst, seal.s, to)
 
 \* The record at N is appended like any other, so only a log that reaches
-\* N - 1 can take it.
+\* N - 1 can take it. The rule: N and everything below it are on disk
+\* before the acknowledgement.
 FollowerAck(s) ==
     /\ s # seal.l
     /\ st[s] = "hybrid"
@@ -390,9 +433,12 @@ FollowerAck(s) ==
     /\ NoDigest \/ DigestOk(s)
     /\ log' = [log EXCEPT ![s] = Append(@, StartRec(seal.gen))]
     /\ seal' = [seal EXCEPT !.acks = @ \cup {Me(s)}]
-    /\ UNCHANGED <<raft, copy, first, base, member, cp, reports, acked, decided, cutHeld, used, extra>>
+    /\ syn' = [syn EXCEPT ![s] = IF AckBeforeSync THEN @ ELSE Max(@, seal.n)]
+    /\ UNCHANGED <<raft, copy, first, base, member, cp, reports, acked, decided, cutHeld, used,
+                   fly, lease, side, lacked, lateAck>>
 
 \* The leader counts copy ids. It does not know if one was wiped since.
+\* The rule: its own N is on disk before it reports.
 Report ==
     /\ seal.claimed
     /\ ~seal.void
@@ -404,7 +450,9 @@ Report ==
             {[gen |-> seal.gen, ver |-> cp.ver, n |-> seal.n, s |-> seal.s, voters |-> seal.acks,
               rfirst |-> seal.lfirst, recs |-> seal.lrecs]}
     /\ seal' = [seal EXCEPT !.reported = TRUE]
-    /\ UNCHANGED <<raft, disk, member, cp, acked, decided, cutHeld, used, extra>>
+    /\ syn' = [syn EXCEPT ![seal.l] = IF AckBeforeSync THEN @ ELSE Max(@, seal.n)]
+    /\ UNCHANGED <<raft, disk, member, cp, acked, decided, cutHeld, used,
+                   fly, lease, side, lacked, lateAck>>
 
 \* The switch. The write changes the set's version, so it happens once.
 CpWrite(r) ==
@@ -441,13 +489,16 @@ Reseal ==
                     IF s = l THEN log[s] \o <<w, StartRec(cp.gen + 2)>>
                     ELSE IF s \in Q THEN Append(log[s], w) ELSE log[s]]
               /\ acked' = acked \cup {<<seal.n + 1, Content(w), 0>>}
+              /\ syn' = [s \in Servers |->
+                    IF s \in Q /\ ~SealPeriodic THEN Max(syn[s], seal.n + 1) ELSE syn[s]]
               /\ seal' = [gen |-> cp.gen + 2, n |-> seal.n + 2, s |-> seal.s,
                           lfirst |-> first[l], lrecs |-> Append(log[l], w),
                           acks |-> {Me(l)}, reported |-> FALSE,
                           l |-> l, claimed |-> TRUE, void |-> FALSE]
     /\ cp' = [cp EXCEPT !.gen = @ + 2]
     /\ used' = [used EXCEPT !.reseals = @ + 1]
-    /\ UNCHANGED <<raft, copy, first, base, member, reports, decided, cutHeld, extra>>
+    /\ UNCHANGED <<raft, copy, first, base, member, reports, decided, cutHeld,
+                   fly, lease, side, lacked, lateAck>>
 
 \* The write in flight takes the writer's next offset. The writer is the
 \* first seal leader, whose fence admitted it before the seal.
@@ -461,7 +512,8 @@ ClaimWrite ==
                    lease, syn, side, lacked, lateAck>>
 
 \* A `Leader` write is acknowledged on the writer's disk alone, while its
-\* lease holds (the rule) or whatever the lease (LeaseAtEntryOnly).
+\* lease holds (the rule) or whatever the lease (LeaseAtEntryOnly). On disk
+\* means fsynced, unless the log is Periodic.
 AnswerWrite ==
     /\ fly.st = "claimed"
     /\ lease \/ LeaseAtEntryOnly
@@ -472,7 +524,21 @@ AnswerWrite ==
     /\ fly' = [fly EXCEPT !.st = "answered"]
     /\ lacked' = lacked \cup {<<fly.o, Content(Rec(80, 0))>>}
     /\ lateAck' = (lateAck \/ seal.l # Leader \/ cp.engine = "raft")
-    /\ UNCHANGED <<raft, disk, member, plane, acked, decided, cutHeld, used, lease, syn, side>>
+    /\ syn' = [syn EXCEPT ![Leader] = IF SealPeriodic THEN @ ELSE Max(@, fly.o)]
+    /\ UNCHANGED <<raft, disk, member, plane, acked, decided, cutHeld, used, lease, side>>
+
+\* A `Quorum` write is acknowledged once a majority holds it, on disk unless
+\* the log is Periodic. It needs no lease, and it can come after a failover.
+QuorumAnswer ==
+    /\ fly.st = "claimed"
+    /\ st[Leader] = "hybrid"
+    /\ copy[Leader] = 1
+    /\ Majority({s \in Servers : /\ Holds(s, fly.o)
+                                 /\ At(s, fly.o).val = 80
+                                 /\ SealPeriodic \/ syn[s] >= fly.o})
+    /\ fly' = [fly EXCEPT !.st = "answered"]
+    /\ acked' = acked \cup {<<fly.o, Content(Rec(80, 0)), 0>>}
+    /\ UNCHANGED <<raft, disk, member, plane, decided, cutHeld, used, lease, syn, side, lacked, lateAck>>
 
 \* Without a lease the write fails, and its client is told so.
 FailWrite ==
@@ -525,26 +591,37 @@ FollowerCatchUp(s) ==
              /\ log' = [log EXCEPT ![s] = SubSeq(@, 1, top - first[s] + 1)]
     /\ UNCHANGED <<raft, copy, first, base, member, plane, acked, decided, cutHeld, used, extra>>
 
-\* The first seal leader loses power and its unsynced tail. The rule: it
-\* gives up the seal. ResealSameGen: it appends the record at N again.
-LeaderPowerLoss ==
-    /\ MayUnsynced
+\* A copy writes its tail to disk.
+Flush(s) ==
+    /\ s \in MayUnsynced
+    /\ st[s] = "hybrid"
+    /\ syn[s] < LastIdx(s)
+    /\ syn' = [syn EXCEPT ![s] = LastIdx(s)]
+    /\ UNCHANGED <<raft, disk, member, plane, acked, decided, cutHeld, used,
+                   fly, lease, side, lacked, lateAck>>
+
+\* A copy loses power and its unsynced tail, at any point before it starts
+\* its member, the seal leader after its report included. The rule: a seal
+\* leader that has not reported gives up the seal. ResealSameGen: it
+\* appends the record at N again.
+PowerLoss(s) ==
+    /\ s \in MayUnsynced
     /\ used.losses = 0
-    /\ seal.l = Leader
-    /\ st[Leader] = "hybrid"
-    /\ copy[Leader] = 1
-    /\ cp.engine = "hybrid"
-    /\ ~seal.reported
-    /\ syn < LastIdx(Leader)
-    /\ log' = [log EXCEPT ![Leader] = SubSeq(@, 1, syn - first[Leader] + 1)]
-    /\ seal' = IF ResealSameGen
-               THEN [seal EXCEPT !.claimed = FALSE, !.acks = {Me(Leader)}]
-               ELSE [seal EXCEPT !.void = TRUE]
+    /\ st[s] = "hybrid"
+    /\ syn[s] < LastIdx(s)
+    /\ log' = [log EXCEPT ![s] = SubSeq(@, 1, syn[s] - first[s] + 1)]
+    /\ seal' = IF s = seal.l /\ ~seal.reported /\ ~seal.void
+               THEN IF ResealSameGen
+                    THEN [seal EXCEPT !.claimed = FALSE, !.acks = {Me(s)}]
+                    ELSE [seal EXCEPT !.void = TRUE]
+               ELSE seal
     /\ used' = [used EXCEPT !.losses = 1]
     /\ UNCHANGED <<raft, copy, first, base, member, cp, reports, acked, decided, cutHeld, extra>>
 
 \* Once the seal leader's lease has lapsed the control plane seals again with
-\* b, which the fence makes the furthest ahead of a majority.
+\* b, which the fence makes the furthest ahead of a majority. The rule: a
+\* wiped copy does not answer the fence until it is re-admitted, which the
+\* model never does.
 Failover(b) ==
     /\ used.failovers < MaxFailovers
     /\ cp.engine = "hybrid"
@@ -556,6 +633,7 @@ Failover(b) ==
         /\ Majority(Q)
         /\ \A q \in Q :
             /\ st[q] = "hybrid"
+            /\ WipedVotesInFailover \/ copy[q] = 1
             /\ LastIdx(q) <= LastIdx(b)
             /\ \A o \in first[q]..LastIdx(q) : Holds(b, o) /\ Content(At(q, o)) = Content(At(b, o))
         /\ log' = [log EXCEPT ![b] = Append(@, StartRec(cp.gen + 1))]
@@ -582,14 +660,19 @@ OpenSealed(s) ==
         /\ LET w == Rec(60, seal.gen)
            IN /\ log' = [q \in Servers |-> IF q \in Q THEN Append(log[q], w) ELSE log[q]]
               /\ acked' = acked \cup {<<seal.n + 1, Content(w), 0>>}
+              /\ syn' = [q \in Servers |->
+                    IF q \in Q /\ ~SealPeriodic THEN Max(syn[q], seal.n + 1) ELSE syn[q]]
     /\ used' = [used EXCEPT !.opens = 1]
-    /\ UNCHANGED <<raft, copy, first, base, member, plane, decided, cutHeld, extra>>
+    /\ UNCHANGED <<raft, copy, first, base, member, plane, decided, cutHeld,
+                   fly, lease, side, lacked, lateAck>>
 
 \* A broker reads the record and starts its member. A recorded voter cuts
 \* above N and purges up to the base. If its log does not reach N (possible
 \* only with a rule dropped) it votes with the log it has. Every other copy
-\* starts empty. Under MarkFirst a voter may crash between the mark and the
-\* purge and restart on the hybrid log as it is.
+\* starts empty. The vote floor is written with the rest and is on disk
+\* before StartMark writes the member mark. Under MarkFirst a voter may
+\* crash between the mark and the purge and restart on the hybrid log as it
+\* is.
 Start(s) ==
     /\ st[s] = "hybrid"
     /\ cp.engine = "raft"
@@ -598,23 +681,23 @@ Start(s) ==
             bn == cp.base.n
             keep == SubSeq(log[s], 1, Min(Len(log[s]), bn - first[s] + 1))
             end == first[s] + Len(keep) - 1
-        IN IF TermsBelowBase \/ (crash /\ voter)
-           THEN /\ log' = [log EXCEPT ![s] = keep]
-                /\ first' = first
-                /\ base' = [base EXCEPT ![s] = [idx |-> first[s] - 1, term |-> 0]]
-                /\ commit' = [commit EXCEPT ![s] = IF voter /\ end = bn THEN bn ELSE first[s] - 1]
-           ELSE IF voter
-           THEN /\ log' = [log EXCEPT ![s] = keep]
-                /\ first' = first
-                /\ base' = [base EXCEPT ![s] =
-                       IF end = bn THEN [idx |-> bn, term |-> cp.base.gen]
-                       ELSE [idx |-> end, term |-> IF keep = <<>> THEN 0 ELSE keep[Len(keep)].term]]
-                /\ commit' = [commit EXCEPT ![s] = end]
-           ELSE /\ log' = [log EXCEPT ![s] = <<>>]
-                /\ first' = [first EXCEPT ![s] = 1]
-                /\ base' = [base EXCEPT ![s] = Empty]
-                /\ commit' = [commit EXCEPT ![s] = 0]
-    /\ st' = [st EXCEPT ![s] = "raft"]
+        IN /\ IF TermsBelowBase \/ (crash /\ voter)
+              THEN /\ log' = [log EXCEPT ![s] = keep]
+                   /\ first' = first
+                   /\ base' = [base EXCEPT ![s] = [idx |-> first[s] - 1, term |-> 0]]
+                   /\ commit' = [commit EXCEPT ![s] = IF voter /\ end = bn THEN bn ELSE first[s] - 1]
+              ELSE IF voter
+              THEN /\ log' = [log EXCEPT ![s] = keep]
+                   /\ first' = first
+                   /\ base' = [base EXCEPT ![s] =
+                          IF end = bn THEN [idx |-> bn, term |-> cp.base.gen]
+                          ELSE [idx |-> end, term |-> IF keep = <<>> THEN 0 ELSE keep[Len(keep)].term]]
+                   /\ commit' = [commit EXCEPT ![s] = end]
+              ELSE /\ log' = [log EXCEPT ![s] = <<>>]
+                   /\ first' = [first EXCEPT ![s] = 1]
+                   /\ base' = [base EXCEPT ![s] = Empty]
+                   /\ commit' = [commit EXCEPT ![s] = 0]
+           /\ st' = [st EXCEPT ![s] = IF crash /\ voter THEN "raft" ELSE "floor"]
     /\ conf0' = [conf0 EXCEPT ![s] = cp.voters]
     /\ startBase' = [startBase EXCEPT ![s] = [cp.base EXCEPT !.s = 0]]
     /\ vote' = [vote EXCEPT ![s] =
@@ -622,6 +705,23 @@ Start(s) ==
     /\ side' = [side EXCEPT ![s] = IF IsVoterIn(s, cp.voters) \/ TermsBelowBase THEN @ ELSE 0]
     /\ UNCHANGED <<role, granted, elected, match, copy, plane, acked, decided, cutHeld, used,
                    fly, lease, syn, lacked, lateAck>>
+
+\* The member mark. The member opens.
+StartMark(s) ==
+    /\ st[s] = "floor"
+    /\ st' = [st EXCEPT ![s] = "raft"]
+    /\ UNCHANGED <<raft, disk, conf0, startBase, plane, acked, decided, cutHeld, used, extra>>
+
+\* A crash after the vote floor and before the mark. With no mark the broker
+\* starts again from the record, on what it wrote. It is the behaviour's
+\* one power loss, so only a copy in MayUnsynced has it.
+StartCrash(s) ==
+    /\ s \in MayUnsynced
+    /\ st[s] = "floor"
+    /\ used.losses = 0
+    /\ st' = [st EXCEPT ![s] = "hybrid"]
+    /\ used' = [used EXCEPT !.losses = 1]
+    /\ UNCHANGED <<raft, disk, conf0, startBase, plane, acked, decided, cutHeld, extra>>
 
 \* The disk is lost. The broker comes back empty under a new copy id and
 \* reads the control plane's record again.
@@ -642,7 +742,8 @@ Wipe(s) ==
     /\ commit' = [commit EXCEPT ![s] = 0]
     /\ used' = [used EXCEPT !.wipes = @ + 1]
     /\ side' = [side EXCEPT ![s] = 0]
-    /\ UNCHANGED <<elected, plane, acked, decided, cutHeld, fly, lease, syn, lacked, lateAck>>
+    /\ syn' = [syn EXCEPT ![s] = IF s \in MayUnsynced THEN 0 ELSE @]
+    /\ UNCHANGED <<elected, plane, acked, decided, cutHeld, fly, lease, lacked, lateAck>>
 
 ----------------------------------------------------------------------------
 \* Raft.
@@ -817,6 +918,10 @@ Next ==
         \/ Failover(s)
         \/ OpenSealed(s)
         \/ Start(s)
+        \/ StartMark(s)
+        \/ StartCrash(s)
+        \/ Flush(s)
+        \/ PowerLoss(s)
         \/ Wipe(s)
         \/ Campaign(s)
         \/ BecomeLeader(s)
@@ -830,7 +935,7 @@ Next ==
     \/ AnswerWrite
     \/ FailWrite
     \/ LeaseLapse
-    \/ LeaderPowerLoss
+    \/ QuorumAnswer
     \/ \E r \in reports : CpWrite(r)
     \/ \E i, j \in Servers :
         \/ GrantVote(i, j)
@@ -844,15 +949,28 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* Weak fairness on the switch's own steps, not on faults, failovers,
+\* reseals or Raft. SwitchEnds holds under it only where no fault needs the
+\* control plane: see the README for the states left stuck.
+FairSpec ==
+    /\ Spec
+    /\ \A s \in Servers :
+        /\ WF_vars(FollowerAck(s))
+        /\ WF_vars(FollowerCatchUp(s))
+        /\ WF_vars(Start(s))
+        /\ WF_vars(StartMark(s))
+    /\ WF_vars(SealClaim) /\ WF_vars(ClaimWrite) /\ WF_vars(AnswerWrite) /\ WF_vars(FailWrite)
+    /\ WF_vars(Report) /\ WF_vars(\E r \in reports : CpWrite(r))
+
 ----------------------------------------------------------------------------
 TypeOK ==
     /\ \A s \in Servers :
-        /\ st[s] \in {"hybrid", "raft"}
+        /\ st[s] \in {"hybrid", "floor", "raft"}
         /\ role[s] \in {"follower", "candidate", "leader"}
         /\ first[s] \in 1..2
         /\ st[s] = "raft" => base[s].idx >= first[s] - 1 /\ base[s].idx <= LastIdx(s)
         /\ commit[s] <= LastIdx(s)
-        /\ st[s] = "hybrid" => role[s] = "follower"
+        /\ st[s] # "raft" => role[s] = "follower"
         /\ side[s] \in {0, 1}
     /\ cp.engine \in {"hybrid", "raft"}
     /\ used.wipes <= MaxWipes
@@ -916,6 +1034,10 @@ NeverReadsBelowBase ==
     \A s \in Servers :
         (st[s] = "raft" /\ startBase[s] # NoBase /\ IsVoterIn(s, conf0[s])) => base[s].idx >= cp.base.n
 
+\* A switch that started ends: the control plane records it and every copy
+\* has started its member, as a voter or a learner.
+SwitchEnds == <>[](cp.engine = "raft" /\ \A s \in Servers : st[s] = "raft")
+
 ----------------------------------------------------------------------------
 \* Witnesses. Each says something never happens. Most must be violated, to
 \* show a passing config is not passing for want of behaviour. Two are
@@ -950,6 +1072,9 @@ NeverCutsHeldRecord == ~cutHeld
 
 \* The switch completes after the seal leader acknowledged a write in flight.
 NeverSwitchesAfterLeaderAck == ~(cp.engine = "raft" /\ lacked # {})
+
+\* A broker restarts between its vote floor and its member mark.
+NeverRestartsBeforeMark == \A s \in Servers : ~(st[s] = "hybrid" /\ startBase[s] # NoBase)
 
 \* The switch completes from a seal another copy took over.
 NeverSwitchesAfterFailover == ~(cp.engine = "raft" /\ used.failovers > 0)
