@@ -644,7 +644,20 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementReturnWipe.cfg` | three brokers, one term, one lost disk: a seat is removed and one is moved back, the leader on the current target only; the id told to delete is not placed again | pass the same (843K distinct states) |
 | `FelixRaftPlacementPlaceDoomed.cfg` | the same where the control plane may place an id it told to delete | violate `AckedOnDisk` |
 | `FelixRaftPlacementStaleWipe.cfg` | `FelixRaftPlacementStale.cfg` with one lost disk, every rule on: a leader on the replaced target gives a copy its vote back after the control plane told its broker to delete it | violate `AckedOnDisk`: an acknowledged write is on no disk. Pinned finding, #2385 |
-| `FelixRaftPlacementReachForm.cfg` | witness for a first boot: three brokers with empty directories elect a leader and acknowledge a write. The membership is given at the start; forming a group from the peers' answers is not modelled (#2371) | violate `NeverForms` |
+| `FelixRaftPlacementReachAck.cfg` | witness: three brokers whose membership is given at the start elect a leader and acknowledge a write | violate `NeverAcks` |
+| `FelixRaftPlacementForm.cfg` | a first start of the metadata group: three empty members withhold their votes and each forms only when every other member answers empty; two terms, one write, one volume lost after the first commit | pass every check but `OffsetNeverReused`, which one write cannot fail (98K distinct states) |
+| `FelixRaftPlacementFormWaiver.cfg` | the same with one slot waived (`form-without`) and its machine never started: two members form and run as two of three | pass the same (334 distinct states) |
+| `FelixRaftPlacementFormSilent.cfg` | a member never starts and no waiver names it | pass `NobodyForms`. One state, since the rule's guard is what is checked |
+| `FelixRaftPlacementFormWaiverMany.cfg` | the waiver names two of three slots and neither machine starts | pass `NobodyForms`: the empty answers are not a majority. One state |
+| `FelixRaftPlacementFormWaiverAnyNumber.cfg` | the same where a waiver may name a majority | violate `NobodyForms` |
+| `FelixRaftPlacementFormWaiverAnswers.cfg` | a group that exists, two terms, one write, one lost volume, while a waiver names a slot whose member is up and answers | pass the same checks as `Form` (195K distinct states) |
+| `FelixRaftPlacementFormWaiverExcuses.cfg` | the same where a waived member's answer is skipped like its silence | violate `AckedHeldSurvive` |
+| `FelixRaftPlacementFormAfterWipes.cfg` | a group that exists, three terms, one write, one volume lost after the first commit: the wiped member takes the first-start step again and cannot form over a member that holds the log | pass the same checks (1.9M distinct states) |
+| `FelixRaftPlacementFormTwoWipes.cfg` | the same with two terms and two lost volumes: two wiped members do not form over a third that holds the log | pass `AckedHeldSurvive` only, since two lost volumes of three is past what the group survives (1.3M distinct states) |
+| `FelixRaftPlacementFormMajority.cfg` | the same where a majority of empty answers is enough and silence is skipped, the rule before #2371 | violate `AckedHeldSurvive` |
+| `FelixRaftPlacementFormEarlyWipe.cfg` | `FelixRaftPlacementFormAfterWipes.cfg` with two terms and a volume lost before the first commit: every answer is empty, the member forms again and votes in a term it forgot | violate `AckedHeldSurvive`. Pinned finding, #2374 |
+| `FelixRaftPlacementReachForm.cfg` | witness: three empty members form under the rule, elect a leader and acknowledge a write | violate `NeverAcks` |
+| `FelixRaftPlacementReachFormWaiver.cfg` | witness: two members form with the third waived and never started | violate `NeverAcks` |
 | `FelixRaftReform.cfg` | `FelixRaftReform.tla`: three intact voters retire and re-form, two writes, one restart, one late append, no rotation | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused`, `SlowGroupLeftAlone` (8.3M distinct states, 2.5 min) |
 | `FelixRaftReformCommits.cfg` | the same as a witness: a re-form completes and the new epoch commits | violate `NeverCommitsAfterReform` |
 | `FelixRaftReformSlow.cfg` | a witness for step 2: two voters report, the third never does, nothing is retired and the group elects by itself | violate `NeverSlowGroupElects` |
@@ -2598,6 +2611,10 @@ Each knob drops one rule:
 - `NoWithhold`: a wiped member that keeps its id votes at once.
 - `WithheldCounts`: a leader counts the appends and heartbeats of a member
   whose vote is withheld.
+- `FormMajority`: an empty member forms on a majority of empty answers and
+  skips a member that does not answer.
+- `WaiverExcusesAnswer`: a waived member's answer is skipped like its silence.
+- `WaiverAnyNumber`: a waiver may name a majority of the slots.
 
 `WithheldCounts = TRUE` is what the metadata group does today, and it is a
 finding: `FelixRaftPlacementSameIdCounted.cfg` loses an acknowledged write
@@ -2638,12 +2655,73 @@ whatever became of the copies that gave them. None of the shard side is built
 yet: no code calls `add_learner` or `change_membership` for a shard group, and
 no code mints a copy id.
 
-The group's membership is given at the start. `FelixRaftPlacementReachForm.cfg`
-only shows that three empty brokers elect a leader and acknowledge a write.
-Forming a group from the peers' answers at first boot is not modelled
-(#2371), and neither is the metadata group rejoining under a new id after a
-lost volume, the fix #2365 settled on. The shard rule it copies is here
-(`Rotate = TRUE`, `FelixRaftPlacementReseat.cfg`, `AnswerAnyId`).
+The metadata group's first start is a step of the model (`Forming`). A member
+with an empty directory withholds its vote and asks every other member for
+its standing. It votes only when every one of them answers and none holds a
+log entry. Silence is read as empty only from a slot the operator waived, and
+only while the members that answer empty, this one included, are a majority.
+A member that lost its volume takes the same step. `FirstBoot` starts every
+member this way, so no leader exists until members have formed.
+
+- `FelixRaftPlacementForm.cfg` forms three empty members and then loses a
+  volume. `FelixRaftPlacementReachForm.cfg` shows they do form and
+  acknowledge a write.
+- `FelixRaftPlacementFormWaiver.cfg` forms two members with the third waived
+  and never started. A volume lost after that leaves no quorum, and the
+  wiped member never votes again. Without the waiver they never form
+  (`FelixRaftPlacementFormSilent.cfg`).
+- A waiver names a minority. With two of three slots waived and absent the
+  one member left does not form (`FelixRaftPlacementFormWaiverMany.cfg`);
+  `FelixRaftPlacementFormWaiverAnyNumber.cfg` drops the limit and it does.
+- A waiver excuses silence only. In `FelixRaftPlacementFormWaiverAnswers.cfg`
+  the waived member is up, answers and may hold the log, and a wiped member
+  does not form past its answer. `FelixRaftPlacementFormWaiverExcuses.cfg`
+  skips the answer (`WaiverExcusesAnswer`) and loses an acknowledged write.
+  A waived member that is up always answers in the model; `Absent` is the
+  silent case.
+- `FelixRaftPlacementFormAfterWipes.cfg` is a group that exists: a wiped
+  member cannot form over a member that holds the log, whether or not that
+  member answers. `FelixRaftPlacementFormMajority.cfg` drops the rule
+  (`FormMajority`, a majority of empty answers is enough and silence is
+  skipped, as before #2371) and loses an acknowledged write: the wiped member
+  forms with a member that never received the write while its holder is
+  silent.
+- `FelixRaftPlacementFormTwoWipes.cfg` loses two volumes. Two wiped members
+  do not form over a third that holds the log. When all three are empty
+  they do form, which is right for the log and wrong for a vote one of them
+  forgot, the gap below, so this one checks `AckedHeldSurvive` only.
+
+`AckedHeldSurvive` is `AckedSurvive` for the records some directory still
+holds. Losing every copy of a record is quorum loss, which no first-start
+rule can see, so a violation of this one is the rule's own. The twins and
+`FelixRaftPlacementFormTwoWipes.cfg` list it. Where `AckedSurvive` is
+listed it implies it.
+
+What the bounds leave unchecked. In `FelixRaftPlacementFormAfterWipes.cfg`
+and `FelixRaftPlacementFormWaiverAnswers.cfg` the volume is lost after the
+first commit, so a member that holds the log is always left and `Form` is
+never taken: they check that the guard holds, and their twins show what it
+stops. `FelixRaftPlacementFormSilent.cfg` and
+`FelixRaftPlacementFormWaiverMany.cfg` are one state each for the same
+reason. `OffsetNeverReused` is not listed on any of these: they have one
+write.
+
+The rule has a gap (#2374). An answer shows the log and not the vote. A
+volume lost after a vote and before the group's first log entry meets only
+empty answers, so the member forms again and votes for a candidate of an
+older term than the one it forgot. Both lead, and the older leader
+acknowledges a write the newer one lacks.
+`FelixRaftPlacementFormEarlyWipe.cfg` is pinned on it. The passing
+configurations above set `EarlyWipes = FALSE`, which keeps the lost volume
+until the group has committed an entry.
+
+The configurations without `Forming` are given their membership at the start
+and are unchanged by it; `FelixRaftPlacementReachAck.cfg` shows they elect a
+leader and acknowledge a write. A waiver is a constant here, so its being
+used up after one forming is not modelled. The metadata group rejoining
+under a new id after a lost volume, the fix #2365 settled on, is not
+modelled either. The shard rule it copies is here (`Rotate = TRUE`,
+`FelixRaftPlacementReseat.cfg`, `AnswerAnyId`).
 
 ### Re-forming a group
 
