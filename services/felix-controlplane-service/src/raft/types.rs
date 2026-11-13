@@ -5,7 +5,6 @@
 //! state machine knows what they mean. That keeps the consensus core and the
 //! command set (#338) evolvable independently — a new command variant is not
 //! a change to anything in `raft/`.
-use std::io::Cursor;
 
 /// A command's bytes. openraft wants its data to be `Display`; the serialized
 /// form is the plain byte array a `Vec<u8>` has, which is what every stored
@@ -43,7 +42,12 @@ openraft::declare_raft_types!(
         LeaderId = openraft::impls::leader_id_std::LeaderId<u64, u64>,
 );
 
-pub(crate) type SnapshotData = Cursor<Vec<u8>>;
+#[cfg(not(felix_segment_store))]
+pub(crate) type SnapshotData = std::io::Cursor<Vec<u8>>;
+/// Built in memory, sent from the stored file, received into a file of its
+/// own: a snapshot is never held whole on the way through.
+#[cfg(felix_segment_store)]
+pub(crate) type SnapshotData = felix_storage::raft_log::SnapshotData;
 pub(crate) type Raft = openraft::Raft<TypeConfig, super::store::StateMachineStore>;
 /// What a vote names.
 pub(crate) type LeaderId = openraft::type_config::alias::LeaderIdOf<TypeConfig>;

@@ -22,34 +22,14 @@ fn head() -> SnapshotHead {
 }
 
 #[test]
-fn a_snapshot_body_carries_its_head_and_its_data_as_they_are() {
-    let data = [0u8, 255, b'{', b'"', 7];
-    let body = snapshot_body(&head(), &data);
-    let (parsed, rest) = parse_snapshot_body(&body).expect("parse");
-    assert_eq!(parsed, head());
-    assert_eq!(rest, data);
-    // The data is not re-encoded: the body ends with it.
-    assert!(body.ends_with(&data));
-
-    let body = snapshot_body(&head(), &[]);
-    let (_, empty) = parse_snapshot_body(&body).expect("parse");
-    assert!(empty.is_empty());
-}
-
-#[test]
-fn a_body_that_is_not_a_snapshot_request_is_refused() {
-    let body = snapshot_body(&head(), b"data");
-    assert!(parse_snapshot_body(&[]).is_none());
-    assert!(parse_snapshot_body(&body[..3]).is_none());
-    // Cut inside the head.
-    assert!(parse_snapshot_body(&body[..10]).is_none());
-    // A length that points past the end.
-    let mut long = body.clone();
-    long[..4].copy_from_slice(&u32::MAX.to_be_bytes());
-    assert!(parse_snapshot_body(&long).is_none());
+fn a_snapshot_head_round_trips() {
+    let bytes = head().encode();
+    assert_eq!(SnapshotHead::decode(&bytes), Some(head()));
+    assert!(SnapshotHead::decode(&bytes[..bytes.len() - 1]).is_none());
     // The chunk request a member on redb sends.
     assert!(
-        parse_snapshot_body(br#"{"vote":{},"meta":{},"offset":0,"data":[],"done":true}"#).is_none()
+        SnapshotHead::decode(br#"{"vote":{},"meta":{},"offset":0,"data":[],"done":true}"#)
+            .is_none()
     );
 }
 

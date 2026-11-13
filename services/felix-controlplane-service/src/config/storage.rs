@@ -60,6 +60,7 @@ pub struct RaftBackendConfig {
     pub snapshot_logs_since_last: Option<u64>,
     pub logs_kept_behind_snapshot: Option<u64>,
     pub write_timeout_ms: Option<u64>,
+    pub snapshot_max_bytes: Option<u64>,
 }
 
 /// Shorter than this and a peer token is guessable, or a placeholder.
@@ -198,6 +199,7 @@ pub(super) fn raft_from_env() -> Result<Option<RaftBackendConfig>> {
                     .ok()
                     .and_then(|value| value.parse::<u64>().ok()),
                 write_timeout_ms: parse_positive_env("FELIX_RAFT_WRITE_TIMEOUT_MS"),
+                snapshot_max_bytes: parse_positive_env("FELIX_RAFT_SNAPSHOT_MAX_BYTES"),
             }))
         }
         _ => Err(anyhow!(

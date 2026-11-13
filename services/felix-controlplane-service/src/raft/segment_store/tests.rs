@@ -54,6 +54,8 @@ async fn open(dir: &std::path::Path) -> Store {
         .expect("open store")
 }
 
+const MAX: u64 = crate::raft::DEFAULT_SNAPSHOT_MAX_BYTES;
+
 fn meta(index: u64) -> SnapshotMeta {
     SnapshotMeta {
         last_log_id: Some(test_log_id(1, 1, index)),
@@ -156,10 +158,13 @@ impl StoreBuilder<TypeConfig, SuiteLog, StateMachineStore, (tempfile::TempDir, S
     > {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = open(dir.path()).await;
-        let machine =
-            StateMachineStore::open(store.snapshots().clone(), Arc::new(BytesApp::default()))
-                .await
-                .expect("open state machine");
+        let machine = StateMachineStore::open(
+            store.snapshots().clone(),
+            Arc::new(BytesApp::default()),
+            MAX,
+        )
+        .await
+        .expect("open state machine");
         let log = SuiteLog {
             log: store.log(),
             machine: machine.clone(),
@@ -266,12 +271,18 @@ async fn a_redb_file_beside_an_unconverted_store_refuses_the_start() {
 async fn an_installed_snapshot_is_restored_at_the_next_open() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = open(dir.path()).await;
-    let mut machine =
-        StateMachineStore::open(store.snapshots().clone(), Arc::new(BytesApp::default()))
-            .await
-            .expect("open");
+    let mut machine = StateMachineStore::open(
+        store.snapshots().clone(),
+        Arc::new(BytesApp::default()),
+        MAX,
+    )
+    .await
+    .expect("open");
     machine
-        .install_snapshot(&meta(7), Cursor::new(b"state at seven".to_vec()))
+        .install_snapshot(
+            &meta(7),
+            SnapshotData::Memory(Bytes::from_static(b"state at seven")),
+        )
         .await
         .expect("install");
     let stored = store
@@ -286,9 +297,10 @@ async fn an_installed_snapshot_is_restored_at_the_next_open() {
 
     let store = open(dir.path()).await;
     let app = Arc::new(BytesApp::default());
-    let mut machine = StateMachineStore::open(store.snapshots().clone(), Arc::clone(&app) as _)
-        .await
-        .expect("reopen");
+    let mut machine =
+        StateMachineStore::open(store.snapshots().clone(), Arc::clone(&app) as _, MAX)
+            .await
+            .expect("reopen");
     assert_eq!(*app.0.lock().expect("state"), b"state at seven");
     let (applied, _) = machine.applied_state().await.expect("applied");
     assert_eq!(applied, meta(7).last_log_id);
@@ -298,7 +310,59 @@ async fn an_installed_snapshot_is_restored_at_the_next_open() {
         .expect("read")
         .expect("snapshot");
     assert_eq!(current.meta, meta(7));
-    assert_eq!(current.snapshot.into_inner(), b"state at seven");
+    let mut data = current.snapshot;
+    assert_eq!(
+        data.next_chunk(1024).await.expect("read").as_deref(),
+        Some(&b"state at seven"[..])
+    );
+    assert_eq!(data.next_chunk(1024).await.expect("read"), None);
+    store.shutdown().await.expect("shutdown");
+}
+
+/// A snapshot received from a peer is installed from its own file: it is
+/// the stored snapshot and the live state after, and no receive file is
+/// left.
+#[tokio::test]
+async fn a_received_snapshot_is_installed_from_its_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = open(dir.path()).await;
+    let app = Arc::new(BytesApp::default());
+    let mut machine =
+        StateMachineStore::open(store.snapshots().clone(), Arc::clone(&app) as _, MAX)
+            .await
+            .expect("open");
+    let meta_bytes = serde_json::to_vec(&wire::SnapshotMeta::from(&meta(7))).expect("meta");
+    let mut staged = store
+        .snapshots()
+        .begin_receive(
+            Some(SnapshotId { term: 1, index: 7 }),
+            meta_bytes.into(),
+            14,
+        )
+        .await
+        .expect("begin");
+    staged
+        .write(Bytes::from_static(b"state at seven"))
+        .await
+        .expect("write");
+    staged.finish().await.expect("finish");
+    machine
+        .install_snapshot(&meta(7), SnapshotData::Staged(staged))
+        .await
+        .expect("install");
+    assert_eq!(*app.0.lock().expect("state"), b"state at seven");
+    let current = machine
+        .get_current_snapshot()
+        .await
+        .expect("read")
+        .expect("snapshot");
+    assert_eq!(current.meta, meta(7));
+    assert!(
+        !dir.path()
+            .join(STORE_DIR)
+            .join("raft-snapshot.recv")
+            .exists()
+    );
     store.shutdown().await.expect("shutdown");
 }
 
@@ -310,9 +374,10 @@ async fn a_snapshot_behind_the_applied_state_is_refused_and_not_stored() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = open(dir.path()).await;
     let app = Arc::new(BytesApp::default());
-    let mut machine = StateMachineStore::open(store.snapshots().clone(), Arc::clone(&app) as _)
-        .await
-        .expect("open");
+    let mut machine =
+        StateMachineStore::open(store.snapshots().clone(), Arc::clone(&app) as _, MAX)
+            .await
+            .expect("open");
     let entries = (0..=5).map(|index| {
         Ok((
             Entry {
@@ -328,7 +393,10 @@ async fn a_snapshot_behind_the_applied_state_is_refused_and_not_stored() {
         .expect("apply");
 
     machine
-        .install_snapshot(&meta(3), Cursor::new(b"behind".to_vec()))
+        .install_snapshot(
+            &meta(3),
+            SnapshotData::Memory(Bytes::from_static(b"behind")),
+        )
         .await
         .expect_err("behind the applied state");
     assert_eq!(store.snapshots().current().await.expect("read"), None);
@@ -344,18 +412,22 @@ async fn a_snapshot_behind_the_applied_state_is_refused_and_not_stored() {
 async fn a_build_does_not_replace_a_newer_stored_snapshot() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = open(dir.path()).await;
-    let machine = StateMachineStore::open(store.snapshots().clone(), Arc::new(BytesApp::default()))
-        .await
-        .expect("open");
+    let machine = StateMachineStore::open(
+        store.snapshots().clone(),
+        Arc::new(BytesApp::default()),
+        MAX,
+    )
+    .await
+    .expect("open");
     assert!(
         machine
-            .persist_snapshot(&meta(9), b"newer")
+            .persist_snapshot(&meta(9), Bytes::from_static(b"newer"))
             .await
             .expect("store")
     );
     assert!(
         !machine
-            .persist_snapshot(&meta(4), b"older")
+            .persist_snapshot(&meta(4), Bytes::from_static(b"older"))
             .await
             .expect("store")
     );

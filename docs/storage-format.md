@@ -1126,7 +1126,11 @@ snapshot may be purged, so it cannot be read as "no snapshot". The same
 goes for a file of another format version or with its reserved bytes set,
 even with a correct checksum. A
 `raft-snapshot.tmp` left by a crash is never read, and the next open deletes
-it.
+it. A snapshot received from another member is written to
+`raft-snapshot.recv`, in this same format, and renamed over `raft-snapshot`
+once it is whole and its checksum matches. It has its own name because a
+local build can finish while a receive is in flight. The open deletes a
+`raft-snapshot.recv` a crash left, and it is never read.
 
 ## `member`: a metadata store's member file
 

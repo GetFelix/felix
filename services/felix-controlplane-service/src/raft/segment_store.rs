@@ -13,14 +13,16 @@
 //! The state machine is volatile, as on redb: rebuilt at start from the
 //! stored snapshot, then the log.
 
-use std::io::{self, Cursor};
+use std::io;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use felix_storage::log::{AppendRecord, LogRecord, RecordMark};
 use felix_storage::metadata_store::{MetadataStore, STORE_DIR};
-use felix_storage::raft_log::{EntryCodec, RaftLog, SnapshotId, SnapshotStore, StoredSnapshot};
+use felix_storage::raft_log::{
+    EntryCodec, RaftLog, SnapshotId, SnapshotStore, StoredSnapshot, transfer,
+};
 use futures_util::{Stream, TryStreamExt};
 use openraft::OptionalSend;
 use openraft::storage::{EntryResponder, RaftLogStorage, RaftSnapshotBuilder, RaftStateMachine};
@@ -67,7 +69,7 @@ pub(super) async fn open_member(
     )
     .await
     .context("open the metadata store")?;
-    match start(&store, &settings.data_dir, app).await {
+    match start(&store, &settings.data_dir, app, settings.snapshot_max_bytes).await {
         Ok((state_machine, committed_floor)) => Ok(Opened {
             log_store: store.log(),
             state_machine,
@@ -115,6 +117,7 @@ async fn start(
     store: &Store,
     data_dir: &std::path::Path,
     app: Arc<dyn AppStateMachine>,
+    snapshot_max_bytes: u64,
 ) -> Result<(StateMachineStore, Option<u64>)> {
     let started = store.mark_started().await.context("set the started mark")?;
     // The mark of this store, not of some other one.
@@ -134,7 +137,8 @@ async fn start(
         .await
         .context("read the committed index")?;
     // A clone of the store's own: the log measures its purges against it.
-    let state_machine = StateMachineStore::open(store.snapshots().clone(), app).await?;
+    let state_machine =
+        StateMachineStore::open(store.snapshots().clone(), app, snapshot_max_bytes).await?;
     Ok((state_machine, committed.map(|id| id.index)))
 }
 
@@ -194,6 +198,12 @@ impl MemberState {
             .set_vote_withheld(withheld)
             .await
             .context("write the member file")
+    }
+
+    /// The store's snapshots, until the node stops.
+    pub(super) async fn snapshots(&self) -> Option<SnapshotStore> {
+        let store = self.store.lock().await;
+        store.as_ref().map(|store| store.snapshots().clone())
     }
 
     /// Whether this store holds the member's own mark that it set out to
@@ -314,6 +324,9 @@ struct SmInner {
     /// app state those describe, never half a batch later. Async because it
     /// is held across the app's own async calls.
     applied: Mutex<Applied>,
+    /// The largest snapshot a member accepts. A build past half of it is
+    /// logged, long before a follower can no longer be caught up.
+    snapshot_max_bytes: u64,
 }
 
 /// The state machine adapter: volatile app state, persistent snapshots.
@@ -331,6 +344,7 @@ impl StateMachineStore {
     pub(super) async fn open(
         snapshots: SnapshotStore,
         app: Arc<dyn AppStateMachine>,
+        snapshot_max_bytes: u64,
     ) -> Result<Self> {
         let mut applied = Applied {
             last_applied: None,
@@ -347,6 +361,7 @@ impl StateMachineStore {
                 snapshots,
                 app,
                 applied: Mutex::new(applied),
+                snapshot_max_bytes,
             }),
         })
     }
@@ -354,7 +369,7 @@ impl StateMachineStore {
     /// Store `meta` and `data` as the current snapshot, in one file. A
     /// snapshot behind the stored one is not written: openraft builds in a
     /// detached task, so a build can finish after a newer install (#1745).
-    async fn persist_snapshot(&self, meta: &SnapshotMeta, data: &[u8]) -> io::Result<bool> {
+    async fn persist_snapshot(&self, meta: &SnapshotMeta, data: Bytes) -> io::Result<bool> {
         self.inner
             .snapshots
             .install(StoredSnapshot {
@@ -365,7 +380,7 @@ impl StateMachineStore {
                 meta: serde_json::to_vec(&wire::SnapshotMeta::from(meta))
                     .map_err(io::Error::other)?
                     .into(),
-                data: Bytes::copy_from_slice(data),
+                data,
             })
             .await
     }
@@ -435,7 +450,12 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         meta: &SnapshotMeta,
         snapshot: SnapshotData,
     ) -> Result<(), io::Error> {
-        let data = snapshot.into_inner();
+        // A received snapshot is read back from its file and checked before
+        // anything is replaced: the one whole copy a receive makes.
+        let (data, staged) = match snapshot {
+            SnapshotData::Staged(mut staged) => (staged.read().await?.data, Some(staged)),
+            mut other => (read_all(&mut other).await?, None),
+        };
         // Held from the check to the restore, so nothing is applied in
         // between.
         let mut applied = self.inner.applied.lock().await;
@@ -453,7 +473,10 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         }
         // On disk before the live state is replaced, so a restart rebuilds
         // from this snapshot. Not written when the stored one is newer.
-        self.persist_snapshot(meta, &data).await?;
+        match staged {
+            Some(staged) => staged.commit().await?,
+            None => self.persist_snapshot(meta, data.clone()).await?,
+        };
         self.inner.app.restore(&data).await;
         applied.last_applied = meta.last_log_id;
         applied.membership = meta.last_membership.clone();
@@ -461,13 +484,39 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
     }
 
     async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot>, io::Error> {
-        let Some(stored) = self.inner.snapshots.current().await? else {
+        let Some(stored) = self.inner.snapshots.open_current().await? else {
             return Ok(None);
         };
         Ok(Some(Snapshot {
-            meta: decode_meta(&stored.meta)?,
-            snapshot: Cursor::new(stored.data.to_vec()),
+            meta: decode_meta(stored.meta())?,
+            snapshot: SnapshotData::Stored(stored),
         }))
+    }
+}
+
+/// The whole of a snapshot's data.
+async fn read_all(snapshot: &mut SnapshotData) -> io::Result<Bytes> {
+    if let SnapshotData::Memory(data) = snapshot {
+        return Ok(std::mem::take(data));
+    }
+    let mut data = Vec::new();
+    while let Some(chunk) = snapshot.next_chunk(transfer::CHUNK).await? {
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data.into())
+}
+
+/// Past the cap no follower can be caught up by a snapshot, so a build
+/// past half of it is an error to see long before then.
+fn note_size(data_len: usize, max: u64) {
+    metrics::gauge!("felix_meta_raft_snapshot_bytes").set(data_len as f64);
+    if data_len as u64 > max / 2 {
+        tracing::error!(
+            bytes = data_len,
+            max,
+            "the metadata snapshot is past half the largest a member accepts; raise \
+             FELIX_RAFT_SNAPSHOT_MAX_BYTES on every member before it gets there"
+        );
     }
 }
 
@@ -483,7 +532,7 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
         // written outside it, so applying goes on meanwhile.
         let (data, meta) = {
             let applied = self.inner.applied.lock().await;
-            let data = self.inner.app.snapshot().await;
+            let data = Bytes::from(self.inner.app.snapshot().await);
             let meta = SnapshotMeta {
                 last_log_id: applied.last_applied,
                 last_membership: applied.membership.clone(),
@@ -493,12 +542,13 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
         let store = StateMachineStore {
             inner: Arc::clone(&self.inner),
         };
+        note_size(data.len(), self.inner.snapshot_max_bytes);
         // Skipped when a newer snapshot was installed meanwhile; openraft
         // drops this older one when it sees it.
-        store.persist_snapshot(&meta, &data).await?;
+        store.persist_snapshot(&meta, data.clone()).await?;
         Ok(Snapshot {
             meta,
-            snapshot: Cursor::new(data),
+            snapshot: SnapshotData::Memory(data),
         })
     }
 }
