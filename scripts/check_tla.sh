@@ -838,6 +838,9 @@ fi
 # hours, so nothing checks it yet.
 # FelixRaftPlacementTransferMoveFull is FelixRaftPlacementTransferMove with a
 # write and runs nightly.
+# FelixRaftPlacement{RewindSpare,RewindSpareCommitted,StaleWipeTwoTerms,
+# MoveWipeTwoMoves,TransferMoveWipe} are registered once a dispatch run gives
+# each its declared outcome.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
