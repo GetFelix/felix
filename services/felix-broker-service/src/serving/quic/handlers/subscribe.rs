@@ -54,7 +54,7 @@ use crate::serving::quic::codec::write_message;
 use crate::serving::quic::telemetry::t_counter;
 use config::EventWriterConfig;
 use feeder::{SubscriberRevocation, run_lane_feeder};
-use replay::{CountingSink, EventFormat, write_history, write_replay};
+use replay::{CountingSink, EventFormat, ReplayRevoked, write_history, write_replay};
 
 /// Application code on an event stream reset because this broker stopped
 /// serving the shard before the subscription went live.
@@ -427,6 +427,10 @@ pub(crate) async fn handle_subscribe_message(
             timestamps: timestamps_enabled,
         };
         let sink_delivery = &delivery;
+        // Live delivery watches the credential from the feeder; until then the
+        // replay checks it, so a revoke ends a long replay rather than waiting
+        // for it to finish.
+        let revocable = revocation.as_ref().map(|r| &r.revocable);
         let replayed: Result<bool> = match (&mut subscription, replay) {
             (Some(subscription), Some((history, backlog, backlog_start))) => {
                 write_replay(
@@ -448,6 +452,7 @@ pub(crate) async fn handle_subscribe_message(
                     config.event_batch_max_bytes.max(1),
                     format,
                     end,
+                    revocable,
                 )
                 .await
             }
@@ -468,6 +473,7 @@ pub(crate) async fn handle_subscribe_message(
                     config.event_batch_max_events.max(1),
                     config.event_batch_max_bytes.max(1),
                     format,
+                    revocable,
                 )
                 .await
                 .map(|()| true),
@@ -476,6 +482,21 @@ pub(crate) async fn handle_subscribe_message(
         };
         let reached_end = match replayed {
             Ok(reached) => reached,
+            Err(err) if err.downcast_ref::<ReplayRevoked>().is_some() => {
+                // Dropping the subscription unregisters it from fanout.
+                drop(subscription);
+                subscriptions.release();
+                tracing::info!(
+                    subscription_id,
+                    "ending a subscription: its credential was revoked"
+                );
+                if let Some(revocation) = revocation
+                    && event_send.write_all(&revocation.last_frame).await.is_ok()
+                {
+                    let _ = event_send.finish();
+                }
+                return Ok(true);
+            }
             Err(err) => {
                 subscriptions.release();
                 tracing::info!(error = %err, "subscription replay failed");
