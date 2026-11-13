@@ -597,6 +597,14 @@ before any data, and then, in this order:
    than the one installing stops that transfer and takes the slot, so a
    stale leader that trickles bytes cannot hold off the real one.
 
+**The cap comes from configuration, never from `felix-storage`.** The
+shared code takes the cap from its caller on every transfer and has no
+default of its own. A group's cap must be at least the largest snapshot it
+can build, or a learner can never be caught up: for the control plane that
+is `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, and a group whose snapshot carries data
+(such as a cache group) must size its cap from its own configured limits,
+for example the largest cache shard, not from a fixed number.
+
 **The data goes to a file.** `SnapshotStore::begin_receive` writes
 `raft-snapshot.recv` in the stored snapshot's own format while the data
 arrives, keeping the crc as it goes. Bytes past the declared length, a

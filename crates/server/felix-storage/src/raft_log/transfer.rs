@@ -184,6 +184,8 @@ impl<N: Pieces> Incoming<N> {
     }
 
     /// Read the form, the lengths and the head, and nothing past them.
+    /// `cap` is the caller's configured limit; it must be at least the
+    /// largest snapshot the group can build, or a learner never catches up.
     /// Refuses an unknown form, a head over [`MAX_HEAD`] and a data length
     /// over `cap` before reading the data.
     pub async fn head(&mut self, cap: u64) -> Result<Head, TransferError> {
