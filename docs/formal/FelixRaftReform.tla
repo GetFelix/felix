@@ -231,7 +231,13 @@ Has(l, x) == x.i <= Len(l) /\ l[x.i] = x.ent
 \* A log id: an index, and the epoch and term of the entry there.
 LogId(l, i) == [i |-> i, e |-> l[i].e, t |-> l[i].t]
 NoFloor == [i |-> 0, e |-> 0, t |-> 0]
-HoldsId(l, id) == id.i = 0 \/ (id.i <= Len(l) /\ LogId(l, id.i) = id)
+\* A gap a later re-form padded up to the floor stands for the floor's entry:
+\* everything up to it is that epoch's base, which is committed.
+HoldsFloor(l) ==
+    \/ cpFloor.i = 0
+    \/ /\ cpFloor.i <= Len(l)
+       /\ \/ LogId(l, cpFloor.i) = cpFloor
+          \/ l[cpFloor.i].k = "gap" /\ l[cpFloor.i].e > cpFloor.e
 
 LastKey(l) == IF Len(l) = 0 THEN <<0, 0>> ELSE <<l[Len(l)].e, l[Len(l)].t>>
 KeyLess(k1, k2) == k1[1] < k2[1] \/ (k1[1] = k2[1] /\ k1[2] < k2[2])
@@ -626,11 +632,6 @@ WriteEpoch(e, base, voters, cut) ==
        /\ forms' = forms \cup {f}
        /\ cpEpoch' = e + 1
        /\ cpMem' = Simple(voters)
-       \* A padded base has a gap at the floor's index: the floor names it, or
-       \* no copy of the new epoch could ever hold the floor's entry.
-       /\ cpFloor' = IF Floor # "none" /\ cpFloor.i > Len(base)
-                     THEN [i |-> cpFloor.i, e |-> e + 1, t |-> 0]
-                     ELSE cpFloor
        \* Everything at or below the base is served as committed from here.
        /\ acked' = acked \cup
             {[e |-> e + 1, t |-> 0, i |-> j, ent |-> base[j]] : j \in 1..Len(base)}
@@ -645,7 +646,7 @@ WriteEpoch(e, base, voters, cut) ==
 Cut(S) ==
     /\ ~FloorIndexOnly
     /\ Floor # "none"
-    /\ \A b \in S : ~HoldsId(log[b], cpFloor)
+    /\ \A b \in S : ~HoldsFloor(log[b])
 
 Reform(p, pick) ==
     LET e == p.e
@@ -671,7 +672,7 @@ Reform(p, pick) ==
        /\ placed' = placed \cup S
        /\ everPlaced' = placed \cup S
        /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-       /\ UNCHANGED <<dead, plans, elected, counters>>
+       /\ UNCHANGED <<dead, cpFloor, plans, elected, counters>>
 
 \* A shard with one replica whose copy rotated and kept records: it is a
 \* re-form of one, without the command. No other broker was placed in the
@@ -688,7 +689,7 @@ SelfStart(b) ==
     /\ WriteEpoch(cpEpoch, log[b], {Mid(b)}, FALSE)
     /\ everPlaced' = placed
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-    /\ UNCHANGED <<placed, dead, plans, elected, counters>>
+    /\ UNCHANGED <<placed, dead, cpFloor, plans, elected, counters>>
 
 \* A voter held the base, so its log is the base and the gap. Anyone else
 \* keeps what agrees with the base and is a learner. A broker declared dead

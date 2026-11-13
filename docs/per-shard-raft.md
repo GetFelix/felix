@@ -484,11 +484,15 @@ What the implementation stores for this:
   names an entry the log does not hold: an open lowers a saved id whose
   entry a crash took and refuses one whose index holds another term's
   entry, and the log refuses a cut below it (`BelowCommit`). A rotated
-  copy keeps it with what is left of its records.
+  copy keeps it with what is left of its records. A member starting a new
+  epoch saves the end of the base (or of its common prefix with the base,
+  for a learner) as its commit index before it takes an append, so a late
+  append of the old epoch cannot cut the base either.
 - **The control plane records the floor as a log id**: index, epoch and
-  term. A report replaces it only with a higher index. A re-form that
-  pads keeps the index and names the gap there, so copies of the new
-  epoch hold the floor's entry.
+  term. A report replaces it only with a higher index. A re-form does
+  not change it: a copy whose entry at the floor's index is a gap that a
+  later re-form padded counts as holding the floor's entry, since its
+  log up to there is that epoch's base.
 - **The command reads, from each copy,** its last log id, the epoch and
   term of the entry at the floor's index, if it holds one, and its saved
   commit index.
