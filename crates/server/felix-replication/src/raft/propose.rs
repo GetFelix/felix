@@ -482,9 +482,10 @@ pub(super) async fn answer(
             };
         }
         // Records that name a term are refused one by one, so some of a
-        // batch can be in the log when the rest is not. No refusal's
-        // "nothing was written" holds for it, and the records that were
-        // applied are committed.
+        // batch can be in the log when the rest is not. A term change cuts
+        // a prefix, but a lapsed lease can cut any subset (#2472). No
+        // refusal's "nothing was written" holds for it, and the records
+        // that were applied are committed.
         let span = match (span, written_end) {
             (Ok(span), _) => span.ok_or_else(|| lost(EMPTY).into()),
             (Err(_), Some(end)) => Err(Unacknowledged {

@@ -710,14 +710,19 @@ still shares appends.
 A batch of several records can therefore be cut part way, which one
 message could not be. openraft checks each record on its own, so:
 
-- Leadership can be lost between two records. The first ones are in the
-  log at the admitted term, and the rest are refused.
+- Leadership can be lost between two records (a term change). The first
+  ones are in the log at the admitted term and the rest are refused, so the
+  cut is a prefix: a term cannot come back.
 - The write lease can lapse between two records ("openraft's write
-  lease"). The records before the lapse are in the log and the rest are
-  refused.
+  lease"). openraft checks the lease once per message and a batch is one
+  message per record, so a renewal between two records can append a later
+  record after an earlier one was refused. The records that were written
+  can be any subset of the batch, not a prefix (#2472; the upstream
+  request is databendlabs/openraft#2321).
 
 Neither writes a record at another term. The publisher is told only some
-of the batch was written, which is an unknown outcome like any other: the
+of the batch was written, which is an unknown outcome like any other, and a
+retry can redeliver records out of order after a lease cut: the
 written records may commit, and the publisher is told where the last of
 them ends. The batch is not delivered live on the leader, whose
 subscribers see its offsets as a drop. The stream's offsets move past the

@@ -173,7 +173,9 @@ A few things to know:
 - A batch of several records is not all or nothing on a `Quorum` stream. After
   an error with an unknown outcome (a dropped connection, a quorum timeout, a
   lost leader) any prefix of it may exist. `felix_client::outcome_unknown` tells
-  that from a refusal that wrote nothing. Use a [commit](/features/atomic-commits/)
+  that from a refusal that wrote nothing. On the Raft engine
+  (`FELIX_SHARD_ENGINE=raft`) a batch cut by a lapsed write lease can be any
+  subset of its records, not a prefix. Use a [commit](/features/atomic-commits/)
   when the batch must be all or nothing.
 - If the answer is lost, do not resend: the retry would be refused by your own
   write. Read the shard at the expected offset to see whether it landed.
