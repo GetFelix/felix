@@ -1,20 +1,28 @@
 //! One member of one group: its openraft instance over the shard's log.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPositions, RaftLog, SnapshotStore};
-use openraft::error::{InitializeError, RaftError};
-use openraft::{Config, Raft, ServerState};
+use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
+use openraft::{Config, Raft, ReadPolicy, ServerState};
+use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::codec::ShardCodec;
+use super::commit::{self, Commits};
+use super::lead::{self, Leadership};
 use super::machine::Machine;
 use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
+use super::propose::{self, Batch, Proposal};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
+use crate::engine::{CommitError, EngineHost, Written};
 
 pub(crate) struct Group {
     pub(crate) id: GroupId,
@@ -23,6 +31,10 @@ pub(crate) struct Group {
     pace: Arc<Pace>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
+    /// What this member has applied, as its state machine reports it.
+    commits: tokio::sync::watch::Receiver<Commits>,
+    /// Whether this member leads and the shard is open.
+    leadership: Arc<Leadership>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -30,6 +42,15 @@ pub(crate) struct Group {
     dropped_ticks: AtomicU64,
     /// Set once a timer check finds the group's core gone.
     stopped: AtomicBool,
+    /// The shard's publish queue, in commit order. Its task starts with the
+    /// first publish, so a group that takes none has none.
+    proposals: OnceLock<mpsc::UnboundedSender<Proposal>>,
+    /// Calls made to openraft for publishes. One carries every batch that
+    /// was queued when it was made.
+    client_writes: Arc<AtomicU64>,
+    /// Cancelled when the member is told to stop. Ends the publish task and
+    /// every publisher's wait.
+    stop: CancellationToken,
 }
 
 /// The runtime's clock and timers, as a group needs them to say when its
@@ -125,13 +146,11 @@ impl Pace {
     /// one once no entry has gone out for `idle_after`.
     pub(crate) fn sending(&self, to: &MemberId, entries: bool) -> Sent {
         let timers = &self.timers;
-        let now = timers.now();
         if entries {
-            self.wrote.store(now, Ordering::Relaxed);
             // The followers hear the short gap in this message.
-            self.due
-                .fetch_min(now + timers.heartbeat, Ordering::Relaxed);
+            self.wrote();
         }
+        let now = timers.now();
         let wrote = self.wrote.load(Ordering::Relaxed);
         let mut peers = self.peers.lock();
         if !peers.iter().any(|peer| &peer.id == to) {
@@ -146,6 +165,18 @@ impl Pace {
             false => timers.heartbeat,
         };
         Sent { gap, wrote }
+    }
+
+    /// The leader has an entry to send. An idle group is busy again: the
+    /// answers it slowed down on are void and its next heartbeat is due
+    /// within the short gap. A publish calls this itself, so a group with
+    /// nobody to send to, or nobody reachable, speeds up all the same.
+    pub(crate) fn wrote(&self) {
+        let timers = &self.timers;
+        let now = timers.now();
+        self.wrote.store(now, Ordering::Relaxed);
+        self.due
+            .fetch_min(now + timers.heartbeat, Ordering::Relaxed);
     }
 
     /// `to` took the append: it now waits by the gap the append named.
@@ -236,13 +267,19 @@ impl Pace {
     }
 }
 
+/// Timer checks dropped on this broker because a group had not taken one by
+/// the next interval, across every group: a label per group would be a label
+/// per shard.
+pub(super) const DROPPED_TICKS_TOTAL: &str = "felix_broker_raft_dropped_ticks_total";
+
 /// Counts a timer check that was dropped before the group took it.
-struct Dropped<'a>(Option<&'a AtomicU64>);
+pub(super) struct Dropped<'a>(pub(super) Option<&'a AtomicU64>);
 
 impl Drop for Dropped<'_> {
     fn drop(&mut self) {
         if let Some(dropped) = self.0 {
             dropped.fetch_add(1, Ordering::Relaxed);
+            metrics::counter!(DROPPED_TICKS_TOTAL).increment(1);
         }
     }
 }
@@ -257,6 +294,7 @@ impl Group {
         config: Arc<Config>,
         transport: Arc<dyn RaftTransport>,
         timers: Timers,
+        host: Option<Arc<dyn EngineHost>>,
     ) -> Result<Self, OpenError> {
         let snapshots = SnapshotStore::open(log.dir())?;
         let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
@@ -264,7 +302,7 @@ impl Group {
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
         let positions = log.positions();
-        let machine = Machine::open(snapshots).await?;
+        let (machine, commits) = Machine::open(snapshots).await?;
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let network = Network {
             router: Router::new(transport, Arc::clone(&pace)),
@@ -273,15 +311,29 @@ impl Group {
         let raft = Raft::new(member.clone(), config, network, log, machine)
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
+        let stop = CancellationToken::new();
+        let leadership = Arc::new(Leadership::new(Arc::clone(&id.shard), host));
+        // Ends on `stop`, or when the group's core is gone.
+        tokio::spawn(lead::run(
+            Arc::clone(&leadership),
+            raft.clone(),
+            commits.clone(),
+            stop.clone(),
+        ));
         Ok(Self {
             id,
             member,
             raft,
             pace,
             positions,
+            commits,
+            leadership,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
+            proposals: OnceLock::new(),
+            client_writes: Arc::default(),
+            stop,
         })
     }
 
@@ -357,14 +409,37 @@ impl Group {
 
     /// `beat` is the gap a leader's append named. Taking the append or
     /// granting a vote restarts this member's election timer.
-    pub(crate) async fn handle(&self, body: Request, beat: u64) -> Result<Reply, Refused> {
-        let reply = self.dispatch(body).await?;
-        match &reply {
-            Reply::Append(Ok(_)) => self.pace.followed(Some(beat)),
-            Reply::Vote(vote) if vote.vote_granted => self.pace.voted(),
-            _ => {}
+    ///
+    /// The timer restarts even if the caller stops waiting: openraft
+    /// persists the append or vote either way, and a follower that keeps
+    /// answering past the sender's deadline would otherwise stand for
+    /// election while it still hears its leader.
+    pub(crate) async fn handle(
+        self: &Arc<Self>,
+        body: Request,
+        beat: u64,
+    ) -> Result<Reply, Refused> {
+        let group = Arc::clone(self);
+        let handled = tokio::spawn(async move {
+            let reply = group.dispatch(body).await?;
+            match &reply {
+                Reply::Append(Ok(_)) => group.pace.followed(Some(beat)),
+                Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
+                _ => {}
+            }
+            Ok(reply)
+        });
+        match handled.await {
+            Ok(reply) => reply,
+            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+            Err(err) => Err(Refused::Stopped(
+                Box::new(Addressee {
+                    group: self.id.clone(),
+                    to: self.member.clone(),
+                }),
+                err.to_string(),
+            )),
         }
-        Ok(reply)
     }
 
     async fn dispatch(&self, body: Request) -> Result<Reply, Refused> {
@@ -415,9 +490,166 @@ impl Group {
         }
     }
 
+    /// Queue `batch` behind every batch queued before it and answer where
+    /// it landed, once its records are as far as `batch.ack` asks.
+    ///
+    /// The batch is queued by the call, not by the first poll of what it
+    /// returns. Dropping that future takes nothing back: the batch is still
+    /// written if this member leads, and the batches behind it keep their
+    /// place. An error is an unknown outcome and must not be retried as if
+    /// nothing was written.
+    pub(crate) fn propose(
+        &self,
+        batch: Batch,
+    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        let waiting = if self.stop.is_cancelled() {
+            Err(propose::stopped())
+        } else {
+            propose::split(batch).and_then(|(proposal, waiting)| {
+                let queued = self.proposer().send(proposal);
+                queued.map(|()| waiting).map_err(|_| propose::stopped())
+            })
+        };
+        let positions = self.positions.clone();
+        let leading = self.leadership.watch(&self.raft);
+        let stop = self.stop.clone();
+        async move { propose::acknowledged(waiting?, positions, leading, stop).await }
+    }
+
+    /// One past the last offset this member knows committed. It moves when
+    /// the state machine applies an entry, so it never passes the commit
+    /// index, on a leader or a follower.
+    pub(crate) fn read_bound(&self) -> u64 {
+        self.commits.borrow().read_bound()
+    }
+
+    /// Wait until `written` is committed: the commit index has passed it
+    /// and the entry there has the term it was written at.
+    pub(crate) fn await_commit(
+        &self,
+        written: Written,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+        commit::committed(
+            written,
+            self.commits.clone(),
+            self.leadership.watch(&self.raft),
+            self.stop.clone(),
+            timeout,
+        )
+    }
+
+    /// Confirm by a read-index round that this member still leads `term`,
+    /// the term it had open before the reader took its value. The term
+    /// open now is not enough: a member deposed and elected again since
+    /// the read is open in a later term, and its value can miss what the
+    /// leader in between committed.
+    ///
+    /// A majority that does not answer is a timeout, and so is a lapsed
+    /// lease: neither says another leader exists, and neither closes the
+    /// shard.
+    pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
+        let lost = |detail| CommitError::LeadershipLost {
+            what: "read",
+            detail,
+        };
+        match self.open_term() {
+            Some(open) if open == term => {}
+            Some(_) => return Err(lost("the shard was opened again after the read began")),
+            None => return Err(lost("this broker does not have the shard open")),
+        }
+        let timers = self.pace.timers;
+        let patience = Duration::from_millis(timers.election_max);
+        let unanswered = CommitError::TimedOut {
+            what: "read",
+            timeout: patience,
+        };
+        let deadline = tokio::time::Instant::now() + patience;
+        loop {
+            let round = tokio::select! {
+                biased;
+                () = self.stop.cancelled() => return Err(propose::stopped()),
+                round = self.raft.get_read_log_id(ReadPolicy::ReadIndex) => round,
+            };
+            let forward = match round {
+                Ok((read, _)) if **read.committed_leader_id() == term => return Ok(()),
+                Ok(_) => {
+                    return Err(lost(
+                        "this broker leads a later term than the read began in",
+                    ));
+                }
+                Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(forward))) => {
+                    forward
+                }
+                Err(RaftError::APIError(LinearizableReadError::QuorumNotEnough(_))) => {
+                    return Err(unanswered);
+                }
+                Err(RaftError::Fatal(_)) => return Err(propose::stopped()),
+            };
+            if forward.reason != ForwardReason::LeaseExpired {
+                return Err(lost("this broker does not lead the shard"));
+            }
+            // The leader is still the leader. Ask for a heartbeat, wait for
+            // a majority to answer it, and ask again.
+            if tokio::time::Instant::now() >= deadline {
+                return Err(unanswered);
+            }
+            let _ = self.raft.trigger().heartbeat().await;
+            let answered = lead::quorum_answered(&self.raft);
+            let again = Duration::from_millis(timers.heartbeat);
+            let _ = tokio::time::timeout(again, answered).await;
+        }
+    }
+
+    /// A transfer of leadership away from this member is about to start.
+    /// Closes the shard for the rest of the term this member leads, before
+    /// it returns that term. `None` if it leads none.
+    pub(crate) async fn transfer_starting(&self) -> Option<u64> {
+        use openraft::vote::RaftLeaderId;
+        // Asked of the core, in the queue a transfer request goes through.
+        let leads = self.raft.with_raft_state(|state| {
+            let leads = state.server_state == ServerState::Leader;
+            leads.then(|| state.vote_ref().leader_id().term())
+        });
+        self.leadership
+            .transfer_starting(leads.await.ok().flatten())
+    }
+
+    /// The term this member has the shard open in.
+    pub(crate) fn open_term(&self) -> Option<u64> {
+        let lead = self.leadership.lead();
+        lead.term.filter(|_| lead.open)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn watcher_looks(&self) -> u64 {
+        self.leadership.looks.load(Ordering::Relaxed)
+    }
+
+    fn proposer(&self) -> &mpsc::UnboundedSender<Proposal> {
+        let timers = self.pace.timers;
+        self.proposals.get_or_init(|| {
+            let (queue, queued) = mpsc::unbounded_channel();
+            // Ends on `stop`, or when this group and its queue are dropped.
+            tokio::spawn(propose::run(
+                self.raft.clone(),
+                Arc::clone(&self.pace),
+                queued,
+                self.stop.clone(),
+                Arc::clone(&self.client_writes),
+                propose::Lease {
+                    length: Duration::from_millis(timers.election_max),
+                    again: Duration::from_millis(timers.heartbeat),
+                },
+            ));
+            queue
+        })
+    }
+
     /// Stop the member's tasks. Entries and the vote it acknowledged are
     /// already on disk; nothing is written here.
     pub(crate) async fn shutdown(&self) {
+        self.stop.cancel();
         if let Err(err) = self.raft.shutdown().await {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group did not stop cleanly");
         }
@@ -448,11 +680,18 @@ impl Group {
             committed: metrics.local_committed.map(|id| id.index),
             ticks: self.ticks.load(Ordering::Relaxed),
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
+            client_writes: self.client_writes.load(Ordering::Relaxed),
         }
     }
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.positions.clone()
+    }
+
+    /// How long this member, as a leader, would wait for its next heartbeat.
+    #[cfg(test)]
+    pub(crate) fn leader_gap(&self) -> u64 {
+        self.pace.leader_gap(self.pace.timers.now())
     }
 
     #[cfg(test)]

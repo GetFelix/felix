@@ -12,6 +12,8 @@ use std::time::Duration;
 mod host;
 mod start;
 
+#[cfg(feature = "raft")]
+pub(crate) use host::EngineHost;
 pub(crate) use host::Host;
 pub use start::{StartDeps, Started, elections, replica_handler};
 

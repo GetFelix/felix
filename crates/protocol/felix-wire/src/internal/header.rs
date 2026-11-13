@@ -247,6 +247,14 @@ pub enum Kind {
     ReplicateStampedRecords = 55,
     /// `ReplicateHeaderedFetch`, answered with `ReplicateStampedRecords`.
     ReplicateStampedFetch = 56,
+    /// One Raft message for a member of a per-shard group: the correlation
+    /// id, then a body the replication crate lays out. Sent only to a peer
+    /// that offered [`PeerCapabilities::RAFT`].
+    ///
+    /// [`PeerCapabilities::RAFT`]: super::PeerCapabilities::RAFT
+    Raft = 57,
+    /// The answer to `Raft`, laid out the same way.
+    RaftAnswer = 58,
 }
 
 impl Kind {
@@ -310,6 +318,8 @@ impl Kind {
             54 => Ok(Kind::FenceAttestedOk),
             55 => Ok(Kind::ReplicateStampedRecords),
             56 => Ok(Kind::ReplicateStampedFetch),
+            57 => Ok(Kind::Raft),
+            58 => Ok(Kind::RaftAnswer),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

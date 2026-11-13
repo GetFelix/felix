@@ -9,7 +9,7 @@ night, as a campaign that builds on what earlier nights found.
 
 ## The targets
 
-Five fuzz crates, each outside the workspace because `cargo-fuzz` needs
+Six fuzz crates, each outside the workspace because `cargo-fuzz` needs
 nightly and links libFuzzer:
 
 | Crate | Target | Decoder | Where its bytes come from |
@@ -23,6 +23,8 @@ nightly and links libFuzzer:
 | `crates/server/felix-mqtt/fuzz` | `ws_frames` | the MQTT-over-WebSockets upgrade request, and client frames decoded whole and in pieces | anything that reaches the WebSocket port, before auth |
 | `crates/server/felix-kafka/fuzz` | `kafka_request` | Kafka request header and every body the listener answers, plus SASL/PLAIN | any Kafka client, before auth |
 | | `kafka_records` | produce record batches and their codecs | any Kafka client |
+| `crates/server/felix-replication/fuzz` | `raft_request` | a Raft message between brokers: every kind, entries, memberships and the sender's deadline | a peer broker that offered `RAFT` |
+| | `raft_answer` | the answer to one | a peer broker that offered `RAFT` |
 | `crates/server/felix-storage/fuzz` | `segment_record` | one segment record | disk, and replication peers |
 | | `segment_recovery` | a whole segment file at startup | disk |
 | | `sparse_index` | a segment's sparse index | disk |

@@ -22,6 +22,9 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod commit;
+mod propose;
+
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
 
@@ -78,12 +81,35 @@ struct Net {
     /// The only broker they are lost on the way to, if one is named.
     lose_idle_to: parking_lot::Mutex<Option<String>>,
     lost_idle: std::sync::atomic::AtomicU32,
+    /// Brokers nothing is heard from: what they send is lost.
+    muted: parking_lot::Mutex<HashSet<String>>,
+    /// While set, every append is lost. Votes still go through.
+    lose_appends: std::sync::atomic::AtomicBool,
+    /// Cut appends as the peer transport does, and hold each for as long as
+    /// its bytes take on a 1 Gbit/s link.
+    gigabit: std::sync::atomic::AtomicBool,
+}
+
+/// The broker that sent `request`, when it is a leader's or a candidate's.
+fn sender(request: &Request) -> Option<&str> {
+    let vote = match request {
+        Request::Append(rpc) => &rpc.vote,
+        Request::Vote(rpc) | Request::PreVote(rpc) => &rpc.vote,
+        Request::Snapshot { vote, .. } => vote,
+        Request::TransferLeader(_) => return None,
+    };
+    Some(&vote.leader_id().node_id().broker)
 }
 
 #[async_trait]
 impl RaftTransport for Net {
-    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+    async fn send(&self, mut request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
+        if self.gigabit.load(Relaxed) {
+            super::wire::fit(&mut request);
+            let bytes = super::wire::encode_request(&request).expect("encode").len();
+            tokio::time::sleep(Duration::from_secs_f64(bytes as f64 / 125_000_000.0)).await;
+        }
         let broker: &str = &request.to().broker;
         let loses = |only: &Option<String>| only.as_deref().is_none_or(|only| only == broker);
         if request.beat > timers().heartbeat.as_millis() as u64
@@ -94,6 +120,11 @@ impl RaftTransport for Net {
                 .is_ok()
         {
             self.lost_idle.fetch_add(1, Relaxed);
+            return Err(Refused::Unreachable("lost".into()));
+        }
+        if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
+            || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
+        {
             return Err(Refused::Unreachable("lost".into()));
         }
         let runtime = match self.cut.lock().contains(broker) {
@@ -1209,6 +1240,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         group: group(0),
         to: MemberId::new(behind, 1),
         beat: 0,
+        deadline: Duration::from_secs(1),
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
             meta,
@@ -1227,6 +1259,60 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
     for log in cluster.logs.values() {
         assert_eq!(log.base_offset(), 0, "a member is missing records");
     }
+    cluster.stop().await;
+}
+
+/// A follower far behind must catch up over a 1 Gbit/s link. Each append
+/// has one heartbeat interval before the leader gives up on it, and the
+/// leader cuts the next the same way, so an append that cannot cross the
+/// link and be fsynced in that time is never acknowledged. The log reader
+/// already hands openraft about 4 MiB at a time; `wire::fit` is the bound
+/// that holds whatever the reader does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let first = cluster.write(0, b"record").await;
+    cluster.committed_everywhere(0, first).await;
+    let leader = cluster.elected(0).await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+
+    cluster.net.cut.lock().insert(behind.into());
+    let member = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let record = Bytes::from(vec![7u8; 1024 * 1024]);
+    let mut last = first;
+    for _ in 0..48 {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: record.clone(),
+            written: None,
+        };
+        last = member
+            .raft()
+            .client_write(command)
+            .await
+            .expect("write")
+            .log_id
+            .index;
+    }
+
+    cluster
+        .net
+        .gigabit
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    cluster.net.cut.lock().clear();
+    tokio::time::timeout(
+        Duration::from_secs(60),
+        cluster.committed_everywhere(0, last),
+    )
+    .await
+    .expect("the follower did not catch up");
     cluster.stop().await;
 }
 
@@ -1302,6 +1388,7 @@ async fn a_message_for_another_member_is_refused() {
         group,
         to,
         beat: 0,
+        deadline: Duration::from_secs(1),
         body: vote(),
     };
 
@@ -1322,6 +1409,44 @@ async fn a_message_for_another_member_is_refused() {
         .await
         .expect("handled");
     eventually(|| (runtime.status(&shard(0))?.term == 5).then_some(())).await;
+    cluster.stop().await;
+}
+
+/// A vote the sender stopped waiting for is still granted once the member
+/// takes it, and granting it pushes the member's election back (#2405).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let runtime = cluster.runtime("a");
+    let member = runtime.group(&shard(0)).expect("group");
+    assert_eq!(member.due_at(), 0);
+
+    // Park the core so the vote cannot be answered before the deadline.
+    let (release, parked) = std::sync::mpsc::channel::<()>();
+    member
+        .raft()
+        .external_request(move |_| {
+            let _ = parked.recv();
+        })
+        .await
+        .expect("park");
+    let candidate = LeaderIdOf::<ShardTypes>::new(5, MemberId::new("b", 1));
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(candidate, false);
+    let request = RaftRequest {
+        group: group(0),
+        to: MemberId::new("a", 1),
+        beat: 0,
+        deadline: Duration::from_millis(50),
+        body: Request::Vote(VoteRequest::new(vote, None)),
+    };
+    let answered = tokio::time::timeout(Duration::from_millis(50), runtime.handle(request)).await;
+    assert!(answered.is_err(), "the parked member answered");
+
+    release.send(()).expect("release");
+    eventually(|| (runtime.status(&shard(0))?.term == 5).then_some(())).await;
+    let election_min = cluster.timers.election_min.as_millis() as u64;
+    eventually(|| (member.due_at() >= election_min).then_some(())).await;
     cluster.stop().await;
 }
 
@@ -1389,4 +1514,24 @@ fn a_member_id_round_trips_through_the_ballot() {
     }
     assert!(ShardCodec.decode_node_id("broker-1").is_err());
     assert!(ShardCodec.decode_node_id("broker-1#x").is_err());
+}
+
+/// A dropped timer check is counted on the group and in one counter for the
+/// broker, with no label per group.
+#[test]
+fn a_dropped_tick_is_counted_for_the_broker() {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let count = std::sync::atomic::AtomicU64::new(0);
+    drop(super::group::Dropped(Some(&count)));
+    drop(super::group::Dropped(Some(&count)));
+    // A check the group took is not counted.
+    drop(super::group::Dropped(None));
+    assert_eq!(count.load(std::sync::atomic::Ordering::Relaxed), 2);
+    let rendered = handle.render();
+    assert!(
+        rendered.contains(&format!("{} 2", super::group::DROPPED_TICKS_TOTAL)),
+        "{rendered}"
+    );
 }
