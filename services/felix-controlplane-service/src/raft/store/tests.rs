@@ -244,7 +244,7 @@ async fn a_redb_file_beside_no_store_refuses_the_start_and_writes_nothing() {
         .await
         .err()
         .expect("refused");
-    assert!(format!("{err:#}").contains("not converted"), "{err:#}");
+    assert!(format!("{err:#}").contains("cannot read"), "{err:#}");
     assert_eq!(names(dir.path()), ["raft.redb"]);
 }
 
@@ -258,7 +258,7 @@ async fn a_redb_file_beside_an_unconverted_store_refuses_the_start() {
         .await
         .err()
         .expect("refused");
-    assert!(format!("{err:#}").contains("not converted"), "{err:#}");
+    assert!(format!("{err:#}").contains("cannot read"), "{err:#}");
     match decide_start(dir.path()) {
         Err(_) => {}
         Ok(start) => panic!("{start:?}"),
