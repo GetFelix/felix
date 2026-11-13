@@ -53,6 +53,17 @@ snapshot install that did not complete fails the cell. Both sides run the head
 commit's benchmark file, so a base that predates it still works as long as the
 store traits it uses have not changed.
 
+## Snapshot build with a writer running
+
+On the segment store, `snapshot_build/1MiB build_ms` reads about 20% higher
+than on redb (8.4 against 7.0 ms, Actions run 43468194429). The timed call is
+the state machine's own serialization, which no store code runs inside. With
+nothing else running the two are equal (`build_idle_ms` 6.8 against 6.6 ms,
+32 MiB 272 against 279 ms), and so is the snapshot (`snapshot_bytes`). The
+gap is the writer: on the segment store it keeps applying while the build
+runs, where on redb it sits in a commit (`longest_write_ms` 28 against
+161 ms). At 32 MiB the build is not slower (267 against 281 ms).
+
 ## The redb baseline
 
 Median of three `full` runs on the shared self-hosted runner (the head side of
