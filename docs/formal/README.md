@@ -857,7 +857,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftCacheCondReachStale.cfg` | witness: a conditional write is refused because a newer write replaced the version it named | violate `NeverCondStale` |
 | `FelixRaftCacheTrim.cfg` | the applied-id table trimmed by entries: an add and a put from one producer, each entry carrying the producer's floor, one retire, four proposals (retries and late copies included), one leader change, one crash, two snapshots | pass `ForgetsOnlyDone`, `RetriesKeepAnswers`, `AppliedOnce`, `MembersAgree` (63.5M distinct states, depth 36, 39 min on a 32-core build box) |
 | `FelixRaftCacheTrimRetireDropsFloor.cfg` | retire forgets the producer, floor included | violate `AppliedOnce`: a late copy of the add commits after the retire and is applied again |
-| `FelixRaftCacheTrimSnapshotDropsFloor.cfg` | the snapshot keeps the answers and leaves out the floor | violate `MembersAgree`: a member that restored it applies a retry that the leader answers "forgotten" |
+| `FelixRaftCacheTrimSnapshotDropsFloor.cfg` | the snapshot keeps the answers and leaves out the floor | violate `MembersAgree`: in six steps a member restores a snapshot holding floor 0 while the others hold floor 1. The check compares state, so this is the difference itself; the trace does not go on to a retry that the two members answer differently |
 | `FelixRaftCacheTrimRetireLocal.cfg` | the leader forgets a retired producer itself, with no entry | violate `MembersAgree` |
 | `FelixRaftCacheTrimFloorPastUnanswered.cfg` | the producer sends its own sequence as the floor, past a request it has no answer for | violate `ForgetsOnlyDone`: that request commits later and is answered "forgotten", never applied |
 | `FelixRaftCacheTrimReachForgotten.cfg` | witness: a late copy below the floor answers "forgotten" | violate `NeverForgotten` |
@@ -3403,6 +3403,16 @@ Not modelled: more than one producer (the floor is per producer, so producers do
 interact), a producer id used again after its retire, membership entries (they are
 stampless like the blank entry), more than one key, and the log side of install and
 purge (`FelixRaft.tla`'s snapshot configurations).
+
+Two trim cases are not modelled either:
+
+- A producer that restarts under the same id at a lower sequence, with no retire. A new
+  write below the old floor answers "forgotten" and is never applied. `ForgetsOnlyDone`
+  cannot see this, because the model has one producer whose sequences are its request
+  ids. The producer has to retire, or take a new id, before it starts its sequence again.
+- A retry that sends a floor recomputed since the first copy. The model keeps the first
+  floor. This is safe by inspection: a retry that finds its answer in the table is a
+  dedup hit, and a dedup hit never raises the floor.
 
 ## How CI checks the models
 
