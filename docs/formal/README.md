@@ -704,8 +704,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
 | `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
 | `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
-| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on a rule that is not built and openraft 0.10.0 lacks (issue #2307), so it does not yet gate the lease pull request |
-| `FelixRaftLeaseRestartForgets.cfg` | the design as written and the engine as it is: a restarted follower may vote at once, as openraft 0.10.0 does | violate `LeaseExclusive` (issue #2307) |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
+| `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
+| `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
 | `FelixRaftLeaseLong.cfg` | a lease of 3 against an election timeout of 4, one more than the inequality allows | violate `LeaseExclusive` |
 | `FelixRaftLeaseDrift.cfg` | clocks gain up to 4 units a tick while the inequality was given 2 | violate `LeaseExclusive` |
 | `FelixRaftLeaseFromAck.cfg` | the lease runs from when the answer came back, not from the hand-off | violate `LeaseExclusive` |
@@ -2844,8 +2845,8 @@ acknowledged on local durability, as
 [The replication engine interface](../replication-engine.md) (Decisions, 5)
 decide it. Its configurations gate the pull request that turns on
 `admit_local_ack`, but their passing does not open the gate yet: the passing
-ones either have no restart or pass on a rule that is not built and that
-openraft 0.10.0 lacks (issue #2307, under "A restarted follower" below). The
+ones either have no restart or pass on a rule that is not built (issue
+#2307, under "A restarted follower" below). The
 module has two parts. The first is the lease the first
 version ships. The second, the `FelixRaftLeaseStore*` configurations, is the
 later design in "Leases that survive sleep" and is not in the first version.
@@ -2880,19 +2881,31 @@ Checked:
   `DeliveredNeverReplaced`: what the subscriber was given is what every
   broker has committed at that offset.
 
-**A restarted follower.** The refusal window lives in memory. openraft 0.10.0
-builds the stored vote with a zero lease at startup, so a follower that
-answers the leader, restarts and is then asked for a vote grants it at once.
-`FelixRaftLeaseRestartForgets.cfg` shows the old leader still passing the
-lease check when the new one is elected. The design's hold on a restarted
-member stops it campaigning, and the model keeps that hold; it does not stop
-it granting a vote to a broker that never heard the leader. `FelixRaftLeaseRestart.cfg` adds the
-rule that closes it: a restarted broker refuses votes for one election
-timeout from its start. The design page now has this rule, as the vote hold
-(issue #2307). openraft 0.10.0 does not, and it is not built. Until it is
-built, `FelixRaftLeaseRestart.cfg`
-passing says only that the rule would be enough, and
-`FelixRaftLeaseRestartForgets.cfg` is what the engine does.
+**A restarted follower.** The refusal window lives in memory, so a follower
+that answers the leader, restarts and is then asked for a vote must not
+grant it at once. `FelixRaftLeaseRestartForgets.cfg` has no rule for that
+and shows the old leader still passing the lease check when the new one is
+elected. The design's hold on a restarted member stops it campaigning, and
+the model keeps that hold; it does not stop it granting a vote to a broker
+that never heard the leader. Two rules close it, and the model checks each
+alone:
+
+- The node layer's vote hold (issue #2307): a restarted broker refuses votes
+  for one election timeout from its start, whatever vote it stored.
+  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule.
+  It is not built.
+- openraft 0.10.0's renewal (`RestartRenewsFollowed`): `Engine::startup`
+  renews the window for one election timeout when the stored vote is
+  committed and another broker's, which is the vote of a follower that took
+  its leader's message. A vote given to a candidate gets no window, and a
+  restarted leader's own vote is demoted with none.
+  `FelixRaftLeaseRestartRenews.cfg` passes on it with the hold off. The
+  members a lease counts on have all taken the leader's message, so the
+  votes that get no window are not ones the lease rests on.
+
+The design does not rest the lease on the engine's rule staying as it is,
+so the gate still waits for the vote hold. Both configurations have one
+restart and two terms.
 
 **Store-liveness leases (later design).** The group sends nothing of its own.
 Each pair of brokers exchanges liveness heartbeats. A broker gives a peer's
