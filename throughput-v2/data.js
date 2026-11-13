@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794563182015,
+  "lastUpdate": 1794568593810,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54444,6 +54444,58 @@ window.BENCHMARK_DATA = {
             "range": "26300.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 977649.25\nmean: 969292.79\nstdev: 26300.22\ncv: 2.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a97866270b84ca07c6a2baae29952248ec3357ce",
+          "message": "fix(replication): proposer follow-ups from the propose review (#2429)\n\nThe Raft proposer keeps passing openraft's answers on while it renews the lease and makes the next call; a drain is capped at 4 MiB or 4096 records (a batch past either cap keeps its place for the next drain, an oversized first batch goes alone); the proposer runs on the runtime the group was opened on; a lost lead reports why (deposed, standing for election, stopped), all as unknown outcomes. New test: a deposed leader's propose appends nothing. Closes #2414.\n\nSpec-Unaffected: the proposer adds no path into the log beside openraft's own append; votes, commit and lease rules are unchanged.",
+          "timestamp": "2026-11-13T03:11:05-08:00",
+          "tree_id": "958462dc79749d05e5faece869db02ce858e43f8",
+          "url": "https://github.com/GetFelix/felix/commit/a97866270b84ca07c6a2baae29952248ec3357ce"
+        },
+        "date": 1794568593025,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 690225.16,
+            "range": "77262.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 690225.16\nmean: 667606.73\nstdev: 77262.00\ncv: 11.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 690225.16,
+            "range": "77262.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 690225.16\nmean: 667606.73\nstdev: 77262.00\ncv: 11.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 154883.93,
+            "range": "4343.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 154883.93\nmean: 155068.87\nstdev: 4343.58\ncv: 2.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1548839.32,
+            "range": "43435.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1548839.32\nmean: 1550688.67\nstdev: 43435.81\ncv: 2.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
