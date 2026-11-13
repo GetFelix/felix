@@ -102,9 +102,9 @@ per-shard Raft engine without a broker service around them: three or five
 members, a fixed member set, simulated links, no control plane. It checks the
 client history, one leader per term, the read bound, acknowledgements and
 live deliveries against what a majority has fsynced, and recovery after the
-heal. A run that stalls fails with a finding, and each run prints a trace hash
-that a replay of the seed must match. See "Raft groups" in
-`docs/simulation.md`.
+heal. A run that stalls fails with a finding. A seed fixes the faults and the
+client plan but not yet election timing, so a rerun is not an exact replay
+(#2449). See "Raft groups" in `docs/simulation.md`.
 
 ```bash
 FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \

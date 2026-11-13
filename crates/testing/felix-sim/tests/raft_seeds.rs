@@ -3,8 +3,9 @@
 //! `raft_seed_*` run in the workspace suite. `raft_seeds` is the batch:
 //! `FELIX_SIM_SEED_START` and `FELIX_SIM_SEEDS` pick the seeds and
 //! `FELIX_SIM_CLOCKS=bounded` skews the members' timers.
-//! `each_raft_seed_runs_the_same_twice` takes the same variables and needs
-//! `RUSTFLAGS="--cfg tokio_unstable"`, which seeds `select!`.
+//! `each_raft_seed_runs_the_same_twice` takes the same variables. It fails
+//! today (#2449): a seed fixes the faults and the client plan, not when a
+//! member starts an election.
 
 use std::time::Duration;
 
@@ -78,11 +79,26 @@ fn clocks() -> Clocks {
     }
 }
 
+/// What the seed draws is the same in every run: the member count and
+/// every fault's time. Which member a leader isolation hits is not, since
+/// the runs can differ in who leads (#2449).
 #[test]
-#[cfg_attr(
-    not(tokio_unstable),
-    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
-)]
+fn a_seed_draws_the_same_faults_twice() {
+    let config = || RaftSimConfig {
+        nemesis: Duration::from_secs(15),
+        ..RaftSimConfig::default()
+    };
+    let (first, second) = (run_seed(3, config()), run_seed(3, config()));
+    let times = |faults: &[felix_cluster::history::model::FaultEvent]| -> Vec<u64> {
+        faults.iter().map(|fault| fault.at).collect()
+    };
+    assert!(first.history.faults.len() >= 4, "{first}");
+    assert_eq!(first.members, second.members);
+    assert_eq!(times(&first.history.faults), times(&second.history.faults));
+}
+
+#[test]
+#[ignore = "#2449: openraft draws election timeouts from an unseeded RNG"]
 fn each_raft_seed_runs_the_same_twice() {
     let start = env("FELIX_SIM_SEED_START", 1);
     let count = env("FELIX_SIM_SEEDS", 2);

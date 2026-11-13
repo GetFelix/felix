@@ -622,15 +622,21 @@ far is still checked. A healthy seed takes a little over one minute of virtual
 time. A run that holds the thread for 15 minutes of real time ends the
 process and prints the seed.
 
+A seed fixes the member count, the faults and their times, the link delays
+and what the clients do. It does not yet fix the whole run. openraft draws
+each election timeout from a random generator that cannot be seeded, so two
+runs of a seed can elect at different moments and then differ in everything
+after (#2449). Rerunning a failing seed gives the same faults, but it may not
+fail the same way, or at all.
+
 Each run prints a trace hash: one number over the faults, every operation,
-every delivery, the final reads and the findings. Built with
-`RUSTFLAGS="--cfg tokio_unstable"`, which seeds `select!`, a seed gives the
-same hash every time. This test runs each seed twice and shows the first event
-that differs:
+every delivery, the final reads and the findings. Two runs with the same hash
+were the same run. This test runs each seed twice and shows the first event
+that differs. It is ignored until #2449 is fixed:
 
 ```bash
 RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=4 \
-  cargo test -p felix-sim --test raft_seeds -- --exact each_raft_seed_runs_the_same_twice --nocapture
+  cargo test -p felix-sim --test raft_seeds -- --ignored --exact each_raft_seed_runs_the_same_twice --nocapture
 ```
 
 Not covered yet, because each needs a broker that serves a Raft shard: a
