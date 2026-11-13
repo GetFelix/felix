@@ -609,6 +609,11 @@ in its own way (`raft/install.rs`):
 - **Stale sender.** A sender the member has outvoted is answered with the
   member's vote before any of its data is kept, and stops sending.
 - **Idle.** Pieces held for 30 s with no next piece are dropped.
+- **Unreadable.** At the last piece the member reads the whole snapshot
+  before openraft is handed it. One it cannot read, such as a newer
+  build's format, is refused and the member stays behind but running.
+  openraft would treat the failed restore as a storage error and stop the
+  member.
 
 **The body.** A form byte, the head's length, the data's length, the head,
 the data, then a crc32 of the data:

@@ -73,11 +73,14 @@ struct Broker {
 
 impl Broker {
     async fn start(name: &str, book: &Book, raft: bool) -> Self {
+        Self::start_with(name, book, raft, RuntimeConfig::default()).await
+    }
+
+    async fn start_with(name: &str, book: &Book, raft: bool, timers: RuntimeConfig) -> Self {
         let stop = CancellationToken::new();
         let pool = PeerPool::new(name.into(), config(), stop.clone()).expect("pool");
         let transport = Arc::new(PeerTransport::new(Arc::clone(&pool), self::book(book)));
-        let runtime =
-            GroupRuntime::start(name, RuntimeConfig::default(), transport).expect("timers");
+        let runtime = GroupRuntime::start(name, timers, transport).expect("timers");
         let mut server =
             PeerServer::bind(name.into(), &config(), Arc::new(UnavailableHandler)).expect("bind");
         if raft {
@@ -298,4 +301,125 @@ async fn an_unreadable_message_is_answered_unreachable() {
         .expect("refused");
     assert!(matches!(refused, Refused::Unreachable(_)), "{refused}");
     runtime.shutdown().await;
+}
+
+/// A member that joins after its leader cut the log to a snapshot is sent
+/// the snapshot over real listeners. It is past one piece's budget, so it
+/// crosses as more than one `Request::Snapshot`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
+    use openraft::async_runtime::watch::WatchReceiver;
+
+    use crate::raft::cache::{CacheCommand, Condition, Request as Asked};
+    use crate::raft::types::Command;
+
+    const VALUE_BYTES: usize = 1 << 20;
+    const WRITES: u64 = 48;
+    let shard = ShardKey {
+        kind: ShardKind::Cache,
+        shard: 1,
+        ..shard()
+    };
+    let timers = RuntimeConfig {
+        cache_snapshot_every: 16,
+        cache_log_keep: 1,
+        ..RuntimeConfig::default()
+    };
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let mut brokers = Vec::new();
+    for name in BROKERS {
+        brokers.push(Broker::start_with(name, &book, true, timers.clone()).await);
+    }
+    let members: BTreeSet<MemberId> = BROKERS.map(|b| MemberId::new(b, 1)).into();
+    // "c" opens the group only once the others have purged its start.
+    for (name, broker) in BROKERS.iter().zip(&brokers).take(2) {
+        let group = GroupId::new(shard.clone(), 0);
+        broker
+            .runtime
+            .open(group, 1, open_log(&root, name))
+            .await
+            .expect("open");
+        broker
+            .runtime
+            .initialize(&shard, members.clone())
+            .await
+            .expect("initialize");
+    }
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let leader = loop {
+        let leading = brokers[..2].iter().find(|broker| {
+            let status = broker.runtime.status(&shard).expect("open");
+            status.role == Role::Leader && status.committed.is_some()
+        });
+        if let Some(leading) = leading {
+            break leading.runtime.group(&shard).expect("group");
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no leader");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let mut last = 0;
+    for sequence in 1..=WRITES {
+        let put = CacheCommand::Put {
+            key: format!("k{sequence}"),
+            value: vec![sequence as u8; VALUE_BYTES].into(),
+            expires_at: 0,
+            cond: Condition::None,
+            request: Asked {
+                producer: 7,
+                sequence,
+                floor: 0,
+            },
+        };
+        let command = Command {
+            timestamp_micros: sequence,
+            payload: put.encode(),
+            written: None,
+        };
+        let written = leader.raft().client_write(command).await.expect("write");
+        last = written.log_id.index;
+    }
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let snapshot = loop {
+        let snapshot = leader.raft().get_snapshot().await.expect("read");
+        let taken = snapshot.filter(|snapshot| {
+            let upto = snapshot.meta.last_log_id.map(|id| id.index);
+            upto.is_some_and(|upto| upto + 16 > last)
+        });
+        let purged = leader.raft().metrics().borrow_watched().purged;
+        if let Some(snapshot) = taken.filter(|_| purged.is_some()) {
+            break snapshot;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no snapshot");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let piece = Duration::from_millis(crate::raft::runtime::SNAPSHOT_PIECE_MILLIS);
+    let piece = crate::raft::wire::append_budget(piece);
+    assert!(snapshot.snapshot.len() > piece, "one piece would carry it");
+
+    let group = GroupId::new(shard.clone(), 0);
+    brokers[2]
+        .runtime
+        .open(group, 1, open_log(&root, "c"))
+        .await
+        .expect("open");
+    let joined = brokers[2].runtime.group(&shard).expect("group");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let installed = joined.raft().metrics().borrow_watched().snapshot;
+        if installed.is_some_and(|id| id.index >= snapshot.meta.last_log_id.expect("id").index) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no snapshot sent");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let data = |group: &crate::raft::group::Group| group.cache().read().snapshot();
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while data(&joined) != data(&leader) {
+        assert!(tokio::time::Instant::now() < deadline, "not caught up");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    for broker in brokers {
+        broker.stop().await;
+    }
 }

@@ -79,6 +79,7 @@ const DISCARDED: &str = "a newer leader discarded the entry";
 const STOPPED: &str = "the shard's group stopped";
 const UNKNOWN: &str = "the entry was not reported written";
 const EMPTY: &str = "the batch held no record";
+const WRONG_KIND: &str = "the shard's group does not take this kind of write";
 
 pub(crate) fn lost(detail: &'static str) -> CommitError {
     CommitError::LeadershipLost {
@@ -89,6 +90,12 @@ pub(crate) fn lost(detail: &'static str) -> CommitError {
 
 pub(crate) fn stopped() -> CommitError {
     lost(STOPPED)
+}
+
+/// A stream's batch sent to a cache shard's group, or a cache write to a
+/// stream's. Nothing was written.
+pub(crate) fn not_a_stream() -> CommitError {
+    lost(WRONG_KIND)
 }
 
 /// Where a batch's first and last record are.
@@ -359,6 +366,21 @@ pub(crate) async fn run(
             unstamped,
             answers,
         } = drain(first, &mut queue, &mut held);
+        // Every entry of a cache shard is a stamped command, and a stream's
+        // are raw records. A mix would stamp the wrong entries and append
+        // ones no member can apply.
+        let stamped = if stamper.is_some() { commands.len() } else { 0 };
+        if unstamped.len() != stamped {
+            tracing::error!(
+                entries = commands.len(),
+                cache_writes = unstamped.len(),
+                "a drain mixed stream and cache writes"
+            );
+            for (_, to) in answers {
+                let _ = to.send(Err(not_a_stream()));
+            }
+            continue;
+        }
         if leads(&raft) {
             pace.wrote();
         }

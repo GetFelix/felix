@@ -70,7 +70,7 @@ impl Default for RuntimeConfig {
 
 /// How long one piece of a snapshot may take to send and be answered. The
 /// last piece's answer waits for the install as well.
-const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
+pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
 
 fn wall_clock_micros() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);

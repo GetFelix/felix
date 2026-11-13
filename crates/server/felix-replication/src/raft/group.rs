@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 
 use bytes::Bytes;
 
-use super::cache::{Answer, CacheCommand};
+use super::cache::{Answer, CacheCommand, CacheState};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits};
 use super::install::{self, Incoming, Piece};
@@ -532,17 +532,36 @@ impl Group {
                 let piece = self.incoming.take(&vote, &meta, data_len, offset, &data);
                 match piece.map_err(Refused::Unreachable)? {
                     Piece::More => {
-                        if offset == 0 {
+                        if offset == 0 && self.incoming.watch() {
                             self.drop_incoming_when_idle();
                         }
                         Ok(Reply::Snapshot(SnapshotResponse::new(vote)))
                     }
-                    Piece::Whole(snapshot) => self
-                        .raft
-                        .install_full_snapshot(vote, Snapshot { meta, snapshot })
-                        .await
-                        .map(Reply::Snapshot)
-                        .map_err(|err| stopped(err.to_string())),
+                    Piece::Whole(snapshot) => {
+                        // openraft takes a snapshot the state machine cannot
+                        // restore as a storage failure and stops the member,
+                        // so one this build cannot read (a newer format, a
+                        // bad sender) is refused here and the member keeps
+                        // running behind.
+                        let snapshot = Bytes::from(snapshot);
+                        if let Err(err) = CacheState::restore(&snapshot) {
+                            tracing::warn!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, error = %err, "refused a snapshot this member cannot read");
+                            return Err(Refused::Unreachable(format!(
+                                "a snapshot this member cannot read: {err}"
+                            )));
+                        }
+                        self.raft
+                            .install_full_snapshot(
+                                vote,
+                                Snapshot {
+                                    meta,
+                                    snapshot: Vec::from(snapshot),
+                                },
+                            )
+                            .await
+                            .map(Reply::Snapshot)
+                            .map_err(|err| stopped(err.to_string()))
+                    }
                 }
             }
             // A stream group's snapshot carries no records, and installing
@@ -574,11 +593,19 @@ impl Group {
     /// written if this member leads, and the batches behind it keep their
     /// place. An error is an unknown outcome and must not be retried as if
     /// nothing was written.
+    ///
+    /// A cache shard takes no batch: its entries are commands stamped by
+    /// its publish task, and a raw record would fail to apply on every
+    /// member.
     pub(crate) fn propose(
         &self,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
-        self.queue(propose::split(batch))
+        let split = match self.cache {
+            Some(_) => Err(propose::not_a_stream()),
+            None => propose::split(batch),
+        };
+        self.queue(split)
     }
 
     fn queue(
@@ -942,6 +969,7 @@ impl Group {
     }
 
     /// A sender that goes away part way must not leave its pieces held.
+    /// One task at a time, however often senders start again.
     fn drop_incoming_when_idle(&self) {
         let incoming = Arc::clone(&self.incoming);
         let stop = self.stop.clone();
@@ -1019,6 +1047,16 @@ impl Group {
             let mut results = sent.expect("running");
             matches!(results.next().await, Some(Ok(Ok(_))))
         }
+    }
+
+    /// Queue `batch` as [`Self::propose`] does, without its check of the
+    /// shard's kind, to reach the publish task's own check.
+    #[cfg(test)]
+    pub(crate) fn propose_unchecked(
+        &self,
+        batch: Batch,
+    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        self.queue(propose::split(batch))
     }
 
     #[cfg(test)]

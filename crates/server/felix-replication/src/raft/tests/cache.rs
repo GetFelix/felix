@@ -626,6 +626,108 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     cluster.stop().await;
 }
 
+/// A stream's batch is never written to a cache shard: its raw record
+/// would fail to apply on every member and on every restart. It is refused
+/// at the call and again by the publish task, and the group goes on taking
+/// cache writes. A cache write to a stream shard is refused too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cache_shard_takes_no_stream_batch_and_a_stream_shard_no_cache_write() {
+    use super::super::propose::{AckAt, Batch, Record};
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    cluster.form(1).await;
+    let (engine, group) = leading(&cluster).await;
+    let batch = || Batch {
+        records: vec![Record {
+            timestamp_micros: 10,
+            payload: Bytes::from_static(b"a stream record"),
+        }],
+        ack: AckAt::Written,
+    };
+    // Refused at the call: nothing is queued.
+    let refused = futures::FutureExt::now_or_never(engine.propose(&shard(N), batch()));
+    assert!(matches!(refused, Some(Err(_))));
+    assert!(group.propose_unchecked(batch()).await.is_err());
+    let answer = engine
+        .cache_write(&shard(N), put("k", b"one", 1), 0, PATIENCE)
+        .await
+        .expect("write");
+    let Answer::Written { version } = answer else {
+        panic!("not written: {answer:?}");
+    };
+    cluster.committed_everywhere(N, version).await;
+    agreed(&cluster).await;
+    for broker in BROKERS {
+        let member = cluster.runtime(broker).group(&shard(N)).expect("group");
+        assert_ne!(member.status().role, Role::Stopped);
+    }
+
+    let leader = cluster.elected(1).await;
+    let stream = RaftEngine::new(cluster.runtime(&leader.broker));
+    let refused = stream
+        .cache_write(&shard(1), put("k", b"one", 2), 0, PATIENCE)
+        .await;
+    assert!(refused.is_err());
+    cluster.stop().await;
+}
+
+/// A snapshot this member cannot read is refused before openraft is handed
+/// it, and the member keeps running and catches up later. openraft would
+/// take the restore error as a storage failure and stop the member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let leader = cluster.elected(N).await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *leader.broker)
+        .expect("a follower");
+    cut_off(&cluster, behind);
+    let last = write(&cluster, 30, put("k", b"two", 2)).await;
+    let leader = cluster.elected(N).await;
+    cluster.snapshot(&leader.broker, N, last).await;
+    let leading = cluster
+        .runtime(&leader.broker)
+        .group(&shard(N))
+        .expect("group");
+    let snapshot = leading.raft().get_snapshot().await.expect("read");
+    let snapshot = snapshot.expect("snapshot");
+    // What a later build's format looks like to this one.
+    let mut newer = snapshot.snapshot.clone();
+    newer[0] = 2;
+    let leads = LeaderIdOf::<ShardTypes>::new(leading.status().term, leader.clone());
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true);
+    let request = RaftRequest {
+        group: group(N),
+        to: MemberId::new(behind, 1),
+        beat: 0,
+        deadline: Duration::from_secs(10),
+        body: super::super::network::Request::Snapshot {
+            vote,
+            meta: snapshot.meta.clone(),
+            data_len: newer.len() as u64,
+            offset: 0,
+            data: Bytes::from(newer),
+        },
+    };
+    let refused = cluster.runtime(behind).handle(request).await;
+    let Err(Refused::Unreachable(why)) = refused else {
+        panic!("the snapshot was not refused as unreadable");
+    };
+    assert!(why.contains("cannot read"), "{why}");
+    let member = cluster.runtime(behind).group(&shard(N)).expect("group");
+    assert_ne!(member.status().role, Role::Stopped);
+
+    joined(&cluster, behind);
+    let after = write(&cluster, 50, put("k", b"three", 3)).await;
+    cluster.committed_everywhere(N, after).await;
+    agreed(&cluster).await;
+    cluster.stop().await;
+}
+
 /// A measurement, not a check: what one openraft call per cache entry
 /// costs next to one call for the whole drain. Run it alone with
 /// `--ignored --nocapture`; only the ratio means anything.
