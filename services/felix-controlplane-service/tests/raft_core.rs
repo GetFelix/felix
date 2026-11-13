@@ -115,69 +115,11 @@ async fn start_gated(
     addr: Option<SocketAddr>,
     gate: Arc<Gate>,
 ) -> TestNode {
-    start_with(dir, settings, addr, gate, None).await
-}
-
-/// Start a member and enter the group before its routes serve, as the
-/// service does: served first, an empty member can grant a vote before it
-/// starts withholding it.
-async fn start_entering(
-    dir: PathBuf,
-    settings: RaftSettings,
-    addr: Option<SocketAddr>,
-    members: &BTreeMap<NodeId, String>,
-    shutdown: &tokio_util::sync::CancellationToken,
-) -> TestNode {
-    start_with(
-        dir,
-        settings,
-        addr,
-        Arc::default(),
-        Some((members, shutdown)),
-    )
-    .await
-}
-
-async fn start_with(
-    dir: PathBuf,
-    settings: RaftSettings,
-    addr: Option<SocketAddr>,
-    gate: Arc<Gate>,
-    enter: Option<(
-        &BTreeMap<NodeId, String>,
-        &tokio_util::sync::CancellationToken,
-    )>,
-) -> TestNode {
     let app = Arc::new(KvApp::default());
     let handle = RaftHandle::start(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
         .await
         .expect("start raft node");
-    if let Some((members, shutdown)) = enter {
-        handle
-            .enter_group(
-                members.clone(),
-                felix_controlplane_service::raft::InitialClusterState::New,
-                shutdown.clone(),
-            )
-            .await
-            .expect("enter group");
-    }
-    // A node restarting on its predecessor's address can race the aborted
-    // server task still holding the socket; retry briefly rather than flake.
-    let bind_addr = addr.unwrap_or("127.0.0.1:0".parse().expect("addr"));
-    let listener = {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match tokio::net::TcpListener::bind(bind_addr).await {
-                Ok(listener) => break listener,
-                Err(err) if Instant::now() < deadline => {
-                    let _ = err;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(err) => panic!("bind rpc listener: {err}"),
-            }
-        }
-    };
+    let listener = bind(addr.unwrap_or("127.0.0.1:0".parse().expect("addr"))).await;
     let addr = listener.local_addr().expect("local addr");
     let router = handle
         .rpc_router()
@@ -191,6 +133,58 @@ async fn start_with(
         addr,
         dir,
         server,
+    }
+}
+
+/// Start a member and enter the group before its routes serve, as the
+/// service does: served first, an empty member can grant a vote before it
+/// starts withholding it.
+async fn start_entering(
+    dir: PathBuf,
+    settings: RaftSettings,
+    addr: Option<SocketAddr>,
+    members: &BTreeMap<NodeId, String>,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> TestNode {
+    use felix_controlplane_service::raft::{InitialClusterState, RaftMember};
+
+    let app = Arc::new(KvApp::default());
+    let member = RaftMember::open(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
+        .await
+        .expect("open the member");
+    let listener = bind(addr.unwrap_or("127.0.0.1:0".parse().expect("addr"))).await;
+    let addr = listener.local_addr().expect("local addr");
+    let router = member.rpc_router();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let handle = member.start_node().await.expect("start raft node");
+    handle
+        .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+        .await
+        .expect("enter group");
+    member.attach(&handle);
+    TestNode {
+        handle,
+        app,
+        addr,
+        dir,
+        server,
+    }
+}
+
+/// A node restarting on its predecessor's address can race the aborted
+/// server task still holding the socket; retry briefly rather than flake.
+async fn bind(addr: SocketAddr) -> tokio::net::TcpListener {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => return listener,
+            Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => panic!("bind rpc listener: {err}"),
+        }
     }
 }
 
@@ -777,8 +771,8 @@ async fn three_empty_members_form_one_group() {
         None,
     )
     .await;
-    let (second, second_stub) = standing_stub(200, "{}").await;
-    let (third, third_stub) = standing_stub(200, "{}").await;
+    let (second, second_stub) = standing_stub(200, r#"{"member":2}"#).await;
+    let (third, third_stub) = standing_stub(200, r#"{"member":3}"#).await;
     let members = BTreeMap::from([
         (1, first.addr.to_string()),
         (2, second.to_string()),
@@ -1004,7 +998,9 @@ async fn formed_and_leaderless(
 }
 
 /// Stop `node` and start the same member on an empty volume at the same
-/// address, still told this is a first start.
+/// address, still told this is a first start. It starts the way the server
+/// starts a member: the routes serve from the open, and the node is attached
+/// only once it has entered the group.
 async fn wipe_and_restart(
     node: TestNode,
     dir: &tempfile::TempDir,
@@ -1075,10 +1071,14 @@ async fn assert_stays_withheld(wiped: &[&TestNode], all: &[&TestNode]) {
     tokio::time::sleep(Duration::from_secs(3)).await;
     for node in wiped {
         let status = node.handle.status();
+        // Voters here mean a leader's entries reached it: it gave a vote
+        // or took an append it must not have.
         assert!(
             status.voters.is_empty(),
-            "wiped member {} formed the group again",
-            status.id
+            "wiped member {} recorded voters {:?} from a leader's entries (leader {:?})",
+            status.id,
+            status.voters,
+            status.leader
         );
         assert!(
             withholds_its_vote(node).await,
@@ -1289,7 +1289,7 @@ async fn a_late_first_boot_member_forms_against_formed_leaderless_peers() {
         .collect();
     // Until member 3 starts, something at its address answers empty and
     // records, and gives no vote.
-    let (third, third_stub) = standing_stub(200, "{}").await;
+    let (third, third_stub) = standing_stub(200, r#"{"member":3}"#).await;
     let mut nodes = Vec::new();
     let mut gates = Vec::new();
     for (i, dir) in dirs[..2].iter().enumerate() {
@@ -1396,10 +1396,13 @@ async fn no_vote_before_every_peer_records_the_member() {
                 .expect("enter group");
         }
     };
-    // Members 2 and 3 only answer for now; member 1 sets out to form.
-    enter(&nodes[0]).await;
+    // A member records others only once it has entered the group itself,
+    // so all three set out to form. Member 3 records nobody for now.
+    for node in &nodes {
+        enter(node).await;
+    }
     let deadline = Instant::now() + Duration::from_secs(10);
-    while recorded_by(&nodes[1]).await != [1] {
+    while !recorded_by(&nodes[1]).await.contains(&1) {
         assert!(
             Instant::now() < deadline,
             "member 2 never recorded member 1"
@@ -1424,9 +1427,7 @@ async fn no_vote_before_every_peer_records_the_member() {
         || nodes[0].handle.status().voters == [1, 2, 3],
     )
     .await;
-    assert_eq!(recorded_by(&nodes[2]).await, [1]);
-    enter(&nodes[1]).await;
-    enter(&nodes[2]).await;
+    assert!(recorded_by(&nodes[2]).await.contains(&1));
     let refs: Vec<&TestNode> = nodes.iter().collect();
     let leader = leader_of(&refs).await;
     leader.write(set("k", "v1")).await.expect("write");
@@ -1454,6 +1455,42 @@ async fn a_403_or_undecodable_answer_blocks_formation() {
             node.stop().await;
         }
         stub.abort();
+    }
+}
+
+/// Two addresses in the peer list reach the same member: here member 3's
+/// is member 2's. Members 1 and 2 are empty and answer, and member 3 has
+/// not been asked, so nothing forms. Counted by address, the two would form
+/// a group without the member that may hold it.
+#[tokio::test]
+async fn two_addresses_for_one_member_do_not_form() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let dirs = [
+        tempfile::tempdir().expect("tempdir"),
+        tempfile::tempdir().expect("tempdir"),
+    ];
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        let dir: PathBuf = dir.path().into();
+        nodes.push(start_node(dir.clone(), settings(i as NodeId + 1, dir), None).await);
+    }
+    let members = BTreeMap::from([
+        (1, nodes[0].addr.to_string()),
+        (2, nodes[1].addr.to_string()),
+        (3, nodes[1].addr.to_string()),
+    ]);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        node.handle
+            .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+            .await
+            .expect("enter group");
+    }
+    assert_no_group_forms(&nodes, "member 3's address reaches member 2").await;
+    shutdown.cancel();
+    for node in &nodes {
+        node.stop().await;
     }
 }
 

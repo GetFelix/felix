@@ -10,7 +10,7 @@ use openraft::async_runtime::WatchReceiver;
 
 use super::types::Raft;
 use super::{
-    AppStateMachine, NodeId, PeerSecurity, RaftSettings, RaftStatus, http, network, store,
+    AppStateMachine, NodeId, PeerSecurity, RaftMember, RaftSettings, RaftStatus, network, store,
 };
 
 /// One running member of the metadata Raft group.
@@ -110,28 +110,18 @@ impl RaftHandle {
     /// ceremony — that is the point of the data dir — unless it was still
     /// catching up after starting empty, in which case it keeps withholding
     /// its vote.
+    ///
+    /// [`RaftMember::open`] and [`RaftMember::start_node`] are the two
+    /// halves, for a caller that serves the peer listener in between.
     pub async fn start(settings: RaftSettings, app: Arc<dyn AppStateMachine>) -> Result<Self> {
-        // The store is opened and marked as started before the node below
-        // exists: a node campaigns on its own timer.
-        let opened = store::open_member(&settings, Arc::clone(&app)).await?;
-        let member = opened.member.clone();
-        match Self::start_on(settings, app, opened).await {
-            Ok(handle) => Ok(handle),
-            Err(err) => {
-                // Closed here, or the store stays locked and a retry in this
-                // process is refused as busy.
-                if let Err(close) = member.close().await {
-                    tracing::warn!(error = %close, "close the store after a failed start");
-                }
-                Err(err)
-            }
-        }
+        RaftMember::open(settings, app).await?.start_node().await
     }
 
-    async fn start_on(
+    pub(super) async fn start_on(
         settings: RaftSettings,
         app: Arc<dyn AppStateMachine>,
         opened: store::Opened,
+        versions: Arc<std::sync::Mutex<super::version::Versions>>,
     ) -> Result<Self> {
         let store::Opened {
             log_store,
@@ -167,7 +157,6 @@ impl RaftHandle {
         };
         let config = Arc::new(config.validate().context("raft config")?);
 
-        let versions = Arc::default();
         let hold = Arc::new(super::hold::Hold::new(
             Arc::clone(&app),
             Arc::clone(&versions),
@@ -307,11 +296,24 @@ impl RaftHandle {
         Ok(())
     }
 
+    /// This node as the member its peers reach.
+    pub(super) fn peer(&self) -> RaftMember {
+        RaftMember {
+            id: self.id,
+            security: Arc::clone(&self.security),
+            app: Arc::clone(&self.app),
+            state: self.member.clone(),
+            versions: Arc::clone(&self.versions),
+            opened: Arc::default(),
+            node: Arc::new(self.clone().into()),
+        }
+    }
+
     /// Router serving this node's Raft RPCs, peer authentication included.
     /// Serve it on the peer listener only: [`RaftHandle::serve_peers`] does,
     /// with mTLS when configured.
     pub fn rpc_router(&self) -> axum::Router {
-        http::router(self.clone())
+        self.peer().rpc_router()
     }
 
     /// Serve the Raft RPCs on `listener` until `shutdown` fires, over mTLS
@@ -321,19 +323,7 @@ impl RaftHandle {
         listener: tokio::net::TcpListener,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Result<()> {
-        let router = self.rpc_router();
-        match self.security.server_tls()? {
-            Some(tls) => {
-                crate::server::tls::serve_tls("raft", listener, router, tls, shutdown).await;
-            }
-            None => {
-                axum::serve(listener, router.into_make_service())
-                    .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                    .await
-                    .context("serve raft peer listener")?;
-            }
-        }
-        Ok(())
+        self.peer().serve_peers(listener, shutdown).await
     }
 
     /// The base URL of a member's peer listener: the configured address when

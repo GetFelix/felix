@@ -15,6 +15,8 @@
 //!   outside the log, forwarded there from any member.
 //! - `join` — entering the group at startup: forming it on first boot, or
 //!   catching up without a vote after starting empty.
+//! - `member` — the member before it has a node: what the peer listener
+//!   serves from, so a member answers `standing` without one.
 //! - `waiver` — the operator's `form-without` file, which lets a first
 //!   boot form without a member whose machine is gone for good.
 //! - `health` — whether this member is fit to serve, and its gauges.
@@ -24,7 +26,7 @@
 //! - `network` / `http` — Raft RPCs as JSON over HTTP between instances,
 //!   on a peer listener of their own, never the public API one.
 //! - `peer` — how that traffic is authenticated: cluster id, peer token,
-//!   optional mTLS.
+//!   optional mTLS, and the member a request is meant for.
 //! - `version` — the command level every member can apply, so nothing
 //!   newer is proposed part-way through a rolling upgrade.
 //! - `wire` — the JSON this member sends and stores, in Felix's own form
@@ -38,6 +40,7 @@ mod hold;
 mod http;
 mod join;
 mod leader;
+mod member;
 mod network;
 mod peer;
 mod proposal;
@@ -49,7 +52,8 @@ mod wire;
 
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
-pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
+pub use member::RaftMember;
+pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls, TARGET_HEADER};
 pub use proposal::NoQuorum;
 pub use waiver::form_without;
 
