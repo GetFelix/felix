@@ -1785,6 +1785,33 @@ time the record at `N` carries, and never from a copy's own clock, so two
 copies with skewed clocks compute the same digest. A voter's base snapshot is that state, and the log below `N` is
 never compared.
 
+**Fsync on commit, on every copy.** The switch needs every copy of the
+shard on `OnCommit`, not only the seal leader. A copy that is not neither
+answers the seal's fence nor acknowledges `N`. Otherwise a `Periodic`
+follower could acknowledge `N`, be recorded as a voter, and then never
+start, because a Raft log refuses to open unless it fsyncs on commit
+(`crates/server/felix-storage/src/raft_log.rs`). Today there is no per-stream fsync policy: the mode is
+one broker-wide setting read at start (`FELIX_DURABLE_FSYNC_MODE`), and the
+default is `Periodic` at 250 ms. Neither the control plane's shard record
+nor `felix-replication` holds it. So each copy reports its fsync mode as a
+new field, the mode cannot change during a switch without a restart, and a
+cluster on the default must restart every broker on `on_commit` before any
+shard switches. That is one of the `shard_raft` prerequisites.
+
+**Only the sealing copy leads.** A follower takes catch-up records for the
+seal only from the copy that sealed. Catch-up batches carry the leader's
+copy id, and the sealed promise stores it beside the follower's own. A seal
+leader that was wiped comes back under a new copy id, so no follower takes
+records from it or cuts its tail to it. This is the same storage identity
+rule the hybrid already follows for a leader that lost records: it "leads
+nothing from the copy it led" (`replication-design.md`, "Failure model").
+
+**What a sealed leader still serves.** The seal leader keeps serving
+catch-up and rebuilds below `N` while sealed. A copy that holds the sealed
+promise refuses hybrid batches, rebuild writes and ballots for the shard;
+a copy without it, such as a wiped follower back under a new id, can still
+catch up from the seal leader and acknowledge `N` under its new id.
+
 The shard is closed from the seal until the Raft leader opens: one hybrid
 promotion plus one Raft election. Shards switch a few at a time, paced like
 moves. There is no switch back. See Questions, 6.
@@ -2107,7 +2134,7 @@ and the hybrid is what ships.
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
+| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |
