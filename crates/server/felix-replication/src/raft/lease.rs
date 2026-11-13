@@ -49,8 +49,8 @@ pub(crate) struct Lease {
 /// look newer after a wake than they are.
 ///
 /// Under the simulator boottime is virtual and the monotonic side is
-/// tokio's, so the two drift and the check may refuse for good. Raft groups
-/// do not run there yet.
+/// tokio's, so the two drift and the check may refuse for good. Nothing
+/// there asks the check yet.
 #[derive(Debug, Default)]
 pub(crate) struct Wake {
     /// How far boottime was ahead of the monotonic clock at the last jump.
