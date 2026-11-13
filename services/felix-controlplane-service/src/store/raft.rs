@@ -19,6 +19,7 @@
 //! two vocabularies that must not drift: the store traits on one side, the
 //! versioned command set on the other.
 pub mod command;
+mod identity;
 mod soft_state;
 pub mod state_machine;
 
@@ -1258,6 +1259,10 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
         Ok(self.soft.suspicions())
+    }
+
+    async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
+        Ok(self.identity().await)
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

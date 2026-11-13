@@ -31,6 +31,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                 "/v1/caches/snapshot",
                 get(|| async {
                     Json(CacheSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -41,6 +42,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                 "/v1/streams/snapshot",
                 get(|| async {
                     Json(StreamSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -117,6 +119,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
             None,
             None,
             Provisional::default(),
+            None,
         ));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);

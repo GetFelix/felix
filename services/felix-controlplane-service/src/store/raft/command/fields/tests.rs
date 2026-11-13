@@ -313,6 +313,10 @@ fn exported() -> ExportedState {
     ExportedState {
         deleted_stream_names: vec![stream_key()],
         deleted_cache_names: vec![cache_key()],
+        cluster_identity: Some(crate::store::identity::ClusterIdentity {
+            group_id: s("g"),
+            shard_engine: s("hybrid"),
+        }),
         v: 1,
         tenants: vec![(s("t"), tenant())],
         namespaces: vec![(namespace_key(), namespace())],
@@ -513,6 +517,10 @@ fn commands() -> Vec<MetaCommand> {
             readmit: true,
         },
         MetaCommand::SetMovesPaused { paused: true },
+        MetaCommand::RecordClusterIdentity {
+            group_id: s("g"),
+            shard_engine: s("hybrid"),
+        },
         MetaCommand::UpsertIdpIssuer {
             tenant_id: s("t"),
             issuer: issuer(),
@@ -689,6 +697,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::DeleteShardAssignment { .. } => "delete_shard_assignment",
         MetaCommand::RecordReplicaReport { .. } => "record_replica_report",
         MetaCommand::SetMovesPaused { .. } => "set_moves_paused",
+        MetaCommand::RecordClusterIdentity { .. } => "record_cluster_identity",
         MetaCommand::UpsertIdpIssuer { .. } => "upsert_idp_issuer",
         MetaCommand::DeleteIdpIssuer { .. } => "delete_idp_issuer",
         MetaCommand::AddRbacPolicy { .. } => "add_rbac_policy",

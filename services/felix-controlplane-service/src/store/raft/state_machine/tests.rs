@@ -2,6 +2,7 @@
 //! all-commands script the themes share.
 mod commands;
 mod determinism;
+mod identity;
 mod retries;
 
 use std::collections::BTreeMap;

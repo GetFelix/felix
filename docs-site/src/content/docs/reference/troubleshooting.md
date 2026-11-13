@@ -120,6 +120,36 @@ If registration itself is refused, the broker logs
 and exits. While heartbeats fail, `felix_broker_heartbeat_age_seconds` keeps
 rising, and the broker stops serving its shards once its lease runs out.
 
+### The data directory belongs to another control plane
+
+```
+ERROR the data directory was written under control-plane metadata group <old> but the control plane is group <new>; the control plane was recreated, so this data cannot be served under it. ...
+ERROR the data directory holds data but records no control-plane metadata group ...
+```
+
+A broker with durable storage records the control plane's metadata group in
+`controlplane_group` in its data directory the first time it starts, and
+refuses to run against any other. The first message means the control plane was
+recreated since, so the streams on disk belong to a catalog that no longer
+exists. The second means the directory was written by a release that did not
+record the group (0.7 or earlier), so nothing says which catalog it belongs
+to. A running broker that is handed a snapshot from another group refuses it,
+counts it in `felix_broker_controlplane_group_mismatch_total` and stops.
+
+Stop the broker, wipe its whole data directory and start it again. It joins as
+a new, empty broker and takes its shards from the others. See
+[upgrades](/deployment/upgrades/#a-recreated-control-plane).
+
+### This broker runs another shard engine
+
+```
+ERROR this broker runs shard engine hybrid but the cluster was formed with raft; set FELIX_SHARD_ENGINE=raft on this broker (the control plane's record does not change)
+```
+
+The control plane records the cluster's shard engine when the cluster forms,
+and a broker whose engine differs refuses to start. Set `FELIX_SHARD_ENGINE` on
+the broker to the engine the message names.
+
 ### A peer is refused
 
 ```

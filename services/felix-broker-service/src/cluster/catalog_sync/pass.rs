@@ -13,6 +13,9 @@ use super::fetch::*;
 use super::wire::*;
 use crate::cluster::feed_cursor::{BehindCursor, Verdict};
 
+/// Snapshots refused for naming another control-plane metadata group.
+const GROUP_MISMATCH_TOTAL: &str = "felix_broker_controlplane_group_mismatch_total";
+
 /// Pages of one change feed applied per pass, so a broker far behind catches
 /// up in one pass without a single feed starving the others forever.
 const MAX_PAGES_PER_FEED: usize = 64;
@@ -145,6 +148,7 @@ pub(super) async fn sync_into(
     if !state.seeded.caches {
         match fetch_cache_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                admit_group(state, snapshot.group_id.as_deref(), "cache snapshot")?;
                 // Deletes first, as for streams.
                 let tombstones: Vec<_> = snapshot
                     .tombstones
@@ -218,6 +222,7 @@ pub(super) async fn sync_into(
     if !state.seeded.streams {
         match fetch_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                admit_group(state, snapshot.group_id.as_deref(), "stream snapshot")?;
                 // Deletes first: the data of every incarnation a tombstone
                 // covers goes, whether or not this broker heard of it.
                 let tombstones: Vec<_> = snapshot
@@ -550,6 +555,21 @@ pub(super) async fn sync_into(
         }
     }
     Ok(())
+}
+
+/// Refuse a snapshot from another control-plane metadata group before any of
+/// it is applied. The broker stops: the group's `refused` token is what the
+/// node waits on.
+fn admit_group(state: &SyncState, claim: Option<&str>, what: &str) -> Result<()> {
+    let Some(guard) = &state.group else {
+        return Ok(());
+    };
+    guard.check(claim).map_err(|mismatch| {
+        metrics::counter!(GROUP_MISMATCH_TOTAL).increment(1);
+        tracing::error!(what, error = %mismatch, "refused a control-plane snapshot");
+        guard.refused.cancel();
+        mismatch.into()
+    })
 }
 
 /// [`sync_into`] on a state of its own, for tests.

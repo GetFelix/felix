@@ -1230,3 +1230,12 @@
 0 upsert_idp_issuer.issuer.issuer
 0 upsert_idp_issuer.issuer.jwks_url
 0 upsert_idp_issuer.tenant_id
+31 record_cluster_identity
+31 record_cluster_identity.group_id
+31 record_cluster_identity.shard_engine
+31 import_state.state.cluster_identity
+31 import_state.state.cluster_identity.group_id
+31 import_state.state.cluster_identity.shard_engine
+31 snapshot.state.cluster_identity
+31 snapshot.state.cluster_identity.group_id
+31 snapshot.state.cluster_identity.shard_engine

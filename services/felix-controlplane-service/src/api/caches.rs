@@ -334,6 +334,7 @@ pub(crate) async fn cache_snapshot(
         items: snapshot.items,
         next_seq: snapshot.next_seq,
         tombstones,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }
 

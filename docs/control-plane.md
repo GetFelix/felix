@@ -965,6 +965,28 @@ The tenant, namespace, stream and cache feeds keep only their most recent
 `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that
 falls further behind than that has to take a new snapshot.
 
+### Cluster identity
+
+A Raft group records its identity once, when it forms: a random `group_id`
+and the `shard_engine` (`hybrid` or `raft`) from `FELIX_SHARD_ENGINE` on the
+instance that proposes it. The first record applied wins, and nothing changes
+it afterwards, so racing proposers on a new group are settled by log order. A
+background task on each instance proposes it while the group has none, and
+retries until every member is at metadata level 31 and a leader exists.
+
+`GET /v1/cluster/identity` returns `{"group_id": "...", "shard_engine":
+"hybrid"}`, and the stream and cache snapshots carry `group_id`. Under Raft the
+route answers 503 `identity_pending` until the record exists. The in-memory
+backend has no group, so it reports the configured engine and leaves
+`group_id` out, as do its snapshots.
+
+If an instance's `FELIX_SHARD_ENGINE` differs from the record, it logs a
+warning and keeps running. The record wins.
+
+The identity is part of the Raft snapshot. An `ImportState` (a restore from
+an export) adopts the export's identity, since it restores that group. An
+export that carries none leaves the group's own in place.
+
 ### Shard ownership
 
 `GET /v1/shard-assignments` lists which broker leads each shard, and
@@ -2697,6 +2719,7 @@ be a member; it is legitimately 0 during a drain.
 | `node_liveness.expiry_timeout_ms` | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | 15000 |
 | `node_liveness.regrant_margin_ms` | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `expiry_timeout_ms` |
 | `node_liveness.sweep_interval_ms` | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | 2000 |
+| `shard_engine` | `FELIX_SHARD_ENGINE` | `hybrid` |
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than

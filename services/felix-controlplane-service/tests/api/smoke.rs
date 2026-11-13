@@ -619,6 +619,42 @@ async fn snapshots_and_changes_endpoints() {
     }
 }
 
+/// A memory backend has no group: the route reports the engine alone, and
+/// the snapshots keep the bytes they always had.
+#[tokio::test]
+async fn the_cluster_identity_route_on_memory_has_no_group_id() {
+    let h = harness("local").await;
+    let app = h.app.clone();
+
+    let anonymous = Request::builder()
+        .uri("/v1/cluster/identity")
+        .body(Body::empty())
+        .expect("request");
+    let response = app.clone().oneshot(anonymous).await.expect("identity");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let response = app
+        .clone()
+        .oneshot(request_as("GET", "/v1/cluster/identity", &h.operator()))
+        .await
+        .expect("identity");
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        read_json(response).await,
+        serde_json::json!({"shard_engine": "hybrid"})
+    );
+
+    for path in ["/v1/streams/snapshot", "/v1/caches/snapshot"] {
+        let response = app
+            .clone()
+            .oneshot(request_as("GET", path, &h.operator()))
+            .await
+            .expect("snapshot");
+        let payload = read_json(response).await;
+        assert!(payload.get("group_id").is_none(), "{path}: {payload}");
+    }
+}
+
 #[tokio::test]
 async fn stream_and_cache_conflict_and_delete_errors() {
     let h = harness("local").await;

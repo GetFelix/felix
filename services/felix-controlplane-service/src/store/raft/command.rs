@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 30;
+pub const METADATA_VERSION: u16 = 31;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -463,6 +463,13 @@ pub enum MetaCommand {
         change: crate::store::AuthChange,
         revocation: crate::store::Revocation,
     },
+    /// Record the group's identity, once. The first one applied stays and
+    /// every later one is answered with it, so racing proposers are settled
+    /// by log order. Level 31.
+    RecordClusterIdentity {
+        group_id: String,
+        shard_engine: String,
+    },
     /// `TakeRefreshToken` and, when it spends, `InsertRefreshToken` of
     /// `next`, in one entry. Level 9.
     RotateRefreshToken {
@@ -537,6 +544,9 @@ impl MetaCommand {
             Self::CreateResources { .. } => 5,
             Self::RevokePrincipals { .. } => 7,
             Self::ChangeAuthAndRevoke { .. } | Self::RotateRefreshToken { .. } => 9,
+            // A member before level 31 would refuse the command and keep no
+            // identity.
+            Self::RecordClusterIdentity { .. } => 31,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -693,6 +703,10 @@ pub enum MetaResponse {
     /// A refresh token as the leader holds it, unspent. Leader requests only.
     RefreshToken {
         token: Option<RefreshToken>,
+    },
+    /// `RecordClusterIdentity`'s answer: the identity the group holds after it.
+    ClusterIdentity {
+        identity: crate::store::identity::ClusterIdentity,
     },
 }
 

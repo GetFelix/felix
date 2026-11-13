@@ -77,6 +77,7 @@ fn feed(since: u64) -> StreamChangesResponse {
 fn router() -> Router {
     router_with(
         || StreamSnapshotResponse {
+            group_id: None,
             items: vec![Stream {
                 incarnation: 5,
                 ..stream(None)
@@ -120,6 +121,7 @@ fn router_with(
             "/v1/caches/snapshot",
             get(|| async {
                 Json(CacheSnapshotResponse {
+                    group_id: None,
                     items: vec![],
                     next_seq: 1,
                     tombstones: Vec::new(),
@@ -215,6 +217,7 @@ async fn a_change_that_always_fails_does_not_replay_the_changes_before_it() -> R
         None,
         None,
         Provisional::default(),
+        None,
     ));
 
     // The first pass deletes the old stream and creates the new one. Waits on
@@ -289,6 +292,7 @@ async fn a_delete_naming_no_incarnation_keeps_an_incarnated_stream() -> Result<(
     let storage = felix_broker::DurableStorage::open(dir.path(), config)?;
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
     let recreated = || StreamSnapshotResponse {
+        group_id: None,
         items: vec![Stream {
             incarnation: 7,
             ..stream(None)
@@ -305,6 +309,7 @@ async fn a_delete_naming_no_incarnation_keeps_an_incarnated_stream() -> Result<(
         None,
         None,
         Provisional::default(),
+        None,
     ));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while broker.stream_incarnation("t1", "ns", "orders").is_none() {
@@ -349,6 +354,7 @@ fn lagging_member(_since: u64) -> StreamChangesResponse {
 
 fn live() -> StreamSnapshotResponse {
     StreamSnapshotResponse {
+        group_id: None,
         items: vec![Stream {
             incarnation: 8,
             ..stream(None)
@@ -454,6 +460,7 @@ async fn a_snapshot_tombstone_deletes_a_stream_missed_while_down() -> Result<()>
     assert!(old.exists());
 
     let recreated = || StreamSnapshotResponse {
+        group_id: None,
         items: vec![Stream {
             incarnation: 9,
             ..stream(None)

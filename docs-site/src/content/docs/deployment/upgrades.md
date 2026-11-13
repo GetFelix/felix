@@ -742,6 +742,53 @@ of their own: a cluster moves to the newer one once
 single broker from the start, after which an older build cannot read that
 shard's groups.
 
+### A recreated control plane
+
+A Raft control plane picks a random **group id** when its metadata group first
+forms, and keeps it for the life of the group. A broker with durable storage
+writes the group id it first served under into its data directory, in a file
+named `controlplane_group`, and checks it against the control plane every time
+it starts.
+
+A broker refuses to start when:
+
+- its data directory names a different group id. The control plane was
+  recreated (new volumes, or a release whose control plane starts from empty
+  data directories), and the streams this broker holds belong to a catalog
+  that no longer exists. Serving them under the new catalog would mix old
+  records into new streams that happen to reuse a name.
+- its data directory already holds data but names no group id. That directory
+  was written by a release before this check, so nothing says which catalog
+  its data belongs to.
+
+The fix in both cases is the same: stop the broker, wipe its whole data
+directory, and start it again. It joins as a new, empty broker and takes its
+shards from the others. Upgrading to a release whose control plane cannot
+read the previous one's metadata means doing this for every broker.
+
+A broker that is already running when the control plane is recreated refuses
+the new catalog's snapshots and stops, with the same message, rather than
+serving its old data under the new catalog.
+
+An empty data directory adopts the control plane's group id on its first
+start. A control plane on the in-memory backend has no group, so its brokers
+skip this check. A control plane restored from an export keeps the group id of
+the cluster it was exported from, so its brokers keep their data.
+
+### The cluster's shard engine
+
+The same record holds the cluster's **shard engine**, the engine that
+replicates durable stream shards: `hybrid` (the default) or `raft`. The
+control plane takes it from its own `FELIX_SHARD_ENGINE` when the group
+forms and never changes it. Changing `FELIX_SHARD_ENGINE` on the control
+plane later only logs a warning.
+
+A broker running a different engine from the record refuses to start and
+names both. Set the broker's engine to the recorded one. A cluster that should
+run the other engine is created afresh: a new control-plane store and empty
+broker data directories, with `FELIX_SHARD_ENGINE` set on the control plane
+from its first start.
+
 ## Upgrade order
 
 For a release that changes none of the versions above (the ordinary case):

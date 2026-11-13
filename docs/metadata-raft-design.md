@@ -946,6 +946,7 @@ the field itself, on every member alike, or refuses the command:
 | `adopt_elected_leader` `elected_set` | 26 | every member takes only the generation of a leader elected on a set other than the recorded one, and the report handler then moves the shard past it |
 | `adopt_elected_leader` `own_leader_set` | 27 | every member takes only the generation when the shard's own leader was elected on another set, and the report handler then moves the shard past it (#1929) |
 | replica report `refused.ballot`, and in the snapshot; shard put `at_least` | 28 | the report is proposed without the ballot and the write without the floor, so every member names the refusing leader one generation up, as before #1951 |
+| `record_cluster_identity`, import `cluster_identity`, and in the snapshot | 31 | the command is held back until every member is at 31, so a group below it records no identity and `GET /v1/cluster/identity` answers 503 |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

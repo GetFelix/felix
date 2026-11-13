@@ -425,6 +425,18 @@ impl MetadataStateMachine {
                     crate::store::ReportWrite::NotLeader => MetaResponse::NotLeaderReport,
                 })
                 .map_err(Into::into),
+            MetaCommand::RecordClusterIdentity {
+                group_id,
+                shard_engine,
+            } => {
+                let identity = store
+                    .apply_record_identity(crate::store::identity::ClusterIdentity {
+                        group_id,
+                        shard_engine,
+                    })
+                    .await;
+                Ok(MetaResponse::ClusterIdentity { identity })
+            }
             MetaCommand::SetMovesPaused { paused } => store
                 .set_moves_paused(paused)
                 .await
@@ -611,7 +623,15 @@ impl MetadataStateMachine {
                         "store already holds state; import requires overwrite".to_string(),
                     ));
                 }
+                // A restore from an export is a restore of that group, so it
+                // adopts the export's identity. An export with none (taken
+                // before one was recorded, or from a memory store) keeps the
+                // identity the group already has.
+                let kept = store.recorded_identity().await;
                 store.import_state(*state).await?;
+                if let Some(identity) = kept {
+                    store.apply_record_identity(identity).await;
+                }
                 self.recompute_floor().await;
                 self.node_reset(None);
                 Ok(MetaResponse::Unit)

@@ -64,6 +64,7 @@ fn control_plane(
             "/v1/caches/snapshot",
             get(|| async {
                 Json(CacheSnapshotResponse {
+                    group_id: None,
                     items: vec![],
                     next_seq: 1,
                     tombstones: Vec::new(),
@@ -126,6 +127,7 @@ fn change(op: StreamChangeOp, seq: u64, mount: Option<&str>) -> StreamChangesRes
 
 fn mounted_snapshot() -> StreamSnapshotResponse {
     StreamSnapshotResponse {
+        group_id: None,
         items: vec![stream(Some("plant/"))],
         next_seq: 1,
         tombstones: Vec::new(),

@@ -101,6 +101,7 @@ fn router_with(
             "/v1/streams/snapshot",
             get(|| async {
                 Json(StreamSnapshotResponse {
+                    group_id: None,
                     items: vec![],
                     next_seq: 1,
                     tombstones: Vec::new(),
@@ -236,6 +237,7 @@ async fn a_snapshot_tombstone_deletes_a_cache_missed_while_down() -> Result<()> 
     assert!(old.exists());
 
     let recreated = || CacheSnapshotResponse {
+        group_id: None,
         items: vec![cache(9)],
         next_seq: 12,
         tombstones: vec![CacheTombstone {
@@ -262,6 +264,7 @@ async fn a_snapshot_tombstone_deletes_a_cache_missed_while_down() -> Result<()> 
 
 fn at_five() -> CacheSnapshotResponse {
     CacheSnapshotResponse {
+        group_id: None,
         items: vec![cache(5)],
         next_seq: 1,
         tombstones: Vec::new(),
@@ -323,6 +326,7 @@ async fn a_delete_naming_no_incarnation_keeps_the_data_for_a_recreate_at_zero() 
         &broker,
         router_with(
             || CacheSnapshotResponse {
+                group_id: None,
                 items: vec![cache(0)],
                 next_seq: 1,
                 tombstones: Vec::new(),

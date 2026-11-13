@@ -98,6 +98,10 @@ pub struct ExportedState {
     /// As `deleted_stream_names`, for caches.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) deleted_cache_names: Vec<crate::model::CacheKey>,
+    /// The group's identity, recorded once at formation. Absent from older
+    /// snapshots and while none is recorded, as for `moves_paused`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) cluster_identity: Option<crate::store::identity::ClusterIdentity>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -317,6 +321,10 @@ pub async fn export_state_from(
         cache_tombstones: store.cache_tombstones().await?,
         deleted_stream_names: store.deleted_stream_names().await?,
         deleted_cache_names: store.deleted_cache_names().await?,
+        cluster_identity: match store.group_identity().await? {
+            crate::store::identity::GroupIdentity::Recorded(identity) => Some(identity),
+            _ => None,
+        },
     })
 }
 

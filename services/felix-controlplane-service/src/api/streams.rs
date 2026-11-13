@@ -452,6 +452,7 @@ pub(crate) async fn stream_snapshot(
         items: snapshot.items,
         next_seq: snapshot.next_seq,
         tombstones,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }
 

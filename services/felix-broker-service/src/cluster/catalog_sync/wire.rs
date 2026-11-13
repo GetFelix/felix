@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 pub(super) struct StreamSnapshotResponse {
     pub(super) items: Vec<Stream>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
     /// For each deleted name, the incarnation through which it is deleted.
     /// Absent from a control plane that predates them.
     #[serde(default)]
@@ -29,6 +33,10 @@ pub(super) struct StreamTombstone {
 pub(super) struct CacheSnapshotResponse {
     pub(super) items: Vec<Cache>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
     /// For each deleted name, the incarnation through which it is deleted.
     /// Absent from a control plane that predates them.
     #[serde(default)]

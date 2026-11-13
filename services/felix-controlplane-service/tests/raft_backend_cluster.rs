@@ -18,6 +18,7 @@ use felix_controlplane_service::model::{
 use felix_controlplane_service::raft::{
     AppStateMachine, LeadershipGate, NodeId, RaftHandle, RaftSettings,
 };
+use felix_controlplane_service::store::identity::GroupIdentity;
 use felix_controlplane_service::store::memory::InMemoryStore;
 use felix_controlplane_service::store::raft::RaftStore;
 use felix_controlplane_service::store::raft::state_machine::MetadataStateMachine;
@@ -200,6 +201,65 @@ async fn a_follower_serves_writes_by_forwarding_and_reads_locally() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
+    for node in &nodes {
+        let _ = node.handle.shutdown().await;
+        node.server.abort();
+    }
+}
+
+/// A formed group records exactly one identity, and every member reads the
+/// same one.
+#[tokio::test]
+#[serial_test::serial(raft_cluster)]
+async fn every_member_agrees_on_the_recorded_identity() {
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let mut nodes = Vec::new();
+    for (i, dir) in dirs.iter().enumerate() {
+        nodes.push(start_node((i + 1) as NodeId, dir.path()).await);
+    }
+    let members: BTreeMap<NodeId, String> = nodes
+        .iter()
+        .map(|n| (n.handle.status().id, n.addr.to_string()))
+        .collect();
+    nodes[0]
+        .handle
+        .initialize(members)
+        .await
+        .expect("initialize");
+    wait_for_leader(&nodes).await;
+
+    // Every member runs the recorder, as in production.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    for node in &nodes {
+        drop(
+            node.store
+                .spawn_identity_recorder("hybrid".to_string(), shutdown.clone()),
+        );
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut seen = Vec::new();
+    for node in &nodes {
+        loop {
+            if let GroupIdentity::Recorded(identity) =
+                node.store.group_identity().await.expect("identity")
+            {
+                seen.push(identity);
+                break;
+            }
+            assert!(Instant::now() < deadline, "a member never saw the identity");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+    assert!(
+        seen.windows(2).all(|pair| pair[0] == pair[1]),
+        "members disagree: {seen:?}"
+    );
+    assert_eq!(seen[0].shard_engine, "hybrid");
+
+    shutdown.cancel();
     for node in &nodes {
         let _ = node.handle.shutdown().await;
         node.server.abort();

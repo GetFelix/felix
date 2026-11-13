@@ -64,6 +64,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                 "/v1/caches/snapshot",
                 get(|| async {
                     Json(CacheSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -74,6 +75,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                 "/v1/streams/snapshot",
                 get(|| async {
                     Json(StreamSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -178,6 +180,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                 "/v1/caches/snapshot",
                 get(|| async {
                     Json(CacheSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -188,6 +191,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                 "/v1/streams/snapshot",
                 get(|| async {
                     Json(StreamSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -289,6 +293,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                 "/v1/caches/snapshot",
                 get(|| async {
                     Json(CacheSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -299,6 +304,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                 "/v1/streams/snapshot",
                 get(|| async {
                     Json(StreamSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 1,
                         tombstones: Vec::new(),
@@ -463,6 +469,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                 "/v1/caches/snapshot",
                 get(|| async {
                     Json(CacheSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 0,
                         tombstones: Vec::new(),
@@ -473,6 +480,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                 "/v1/streams/snapshot",
                 get(|| async {
                     Json(StreamSnapshotResponse {
+                        group_id: None,
                         items: vec![],
                         next_seq: 0,
                         tombstones: vec![],

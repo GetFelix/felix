@@ -233,6 +233,11 @@ pub struct StreamSnapshotResponse {
     /// while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tombstones: Vec<crate::model::StreamTombstone>,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -261,6 +266,21 @@ pub struct CacheSnapshotResponse {
     /// while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tombstones: Vec<crate::model::CacheTombstone>,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+}
+
+/// The cluster's identity, recorded once when the metadata group forms.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct ClusterIdentityResponse {
+    /// Left out where there is no group (the in-memory backend).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// `hybrid` or `raft`.
+    pub shard_engine: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]

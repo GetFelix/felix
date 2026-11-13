@@ -3928,3 +3928,83 @@ async fn adoption_waits_for_every_member() {
         adopted
     );
 }
+
+async fn recorded(store: &RaftStore) -> crate::store::identity::ClusterIdentity {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let crate::store::identity::GroupIdentity::Recorded(identity) =
+            store.group_identity().await.expect("identity")
+        {
+            return identity;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the identity was never recorded"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// Until it is recorded the group answers pending; once it is, a second
+/// recorder, or a proposal carrying another id, finds the first one standing.
+#[tokio::test]
+async fn a_formed_group_records_one_identity_and_keeps_it() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    assert_eq!(
+        store.group_identity().await.expect("identity"),
+        crate::store::identity::GroupIdentity::Pending
+    );
+
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let first = store.spawn_identity_recorder("raft".to_string(), shutdown.clone());
+    let identity = recorded(&store).await;
+    assert_eq!(identity.shard_engine, "raft");
+    first.await.expect("the recorder stops once it is recorded");
+
+    // A second proposer, as a member that has not applied it yet would be.
+    store
+        .spawn_identity_recorder("hybrid".to_string(), shutdown.clone())
+        .await
+        .expect("recorder");
+    let answer = store
+        .propose(MetaCommand::RecordClusterIdentity {
+            group_id: "someone-else".to_string(),
+            shard_engine: "hybrid".to_string(),
+        })
+        .await
+        .expect("propose");
+    let MetaResponse::ClusterIdentity { identity: answered } = answer else {
+        panic!("unexpected answer");
+    };
+    assert_eq!(answered, identity);
+    assert_eq!(recorded(&store).await, identity);
+}
+
+/// A recorder that is told to stop before the group can record does so.
+#[tokio::test]
+async fn the_identity_recorder_stops_on_shutdown() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    // Below the level the command needs, so it can only retry.
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(30));
+    let addr = stub_member(Arc::clone(&version)).await;
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add old member");
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let task = store.spawn_identity_recorder("hybrid".to_string(), shutdown.clone());
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!task.is_finished(), "recorded past a member below level 31");
+    assert_eq!(
+        store.group_identity().await.expect("identity"),
+        crate::store::identity::GroupIdentity::Pending
+    );
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("stopped")
+        .expect("join");
+}
