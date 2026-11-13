@@ -110,6 +110,7 @@ tlc() {
     FelixRaftReform*) module="FelixRaftReform" ;;
     FelixRaftLease*) module="FelixRaftLease" ;;
     FelixRaftSleep*) module="FelixRaftSleep" ;;
+    FelixRaftCache*) module="FelixRaftCache" ;;
     FelixRaftSwitch*) module="FelixRaftSwitch" ;;
     FelixRaft*) module="FelixRaft" ;;
     FelixShardUnified*) module="FelixShardUnified" ;;
@@ -672,6 +673,9 @@ expectations=(
   "FelixRaftLeaseStoreStalledAsks violates StalledLeaseLapses"
   "FelixRaftLeaseStoreReachLocalAck violates NeverLocalAck"
   "FelixRaftLeaseStoreReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftLeaseSleep pass"
+  "FelixRaftLeaseSleepHoldEndClearsWindow violates LeaseExclusive"
+  "FelixRaftLeaseSleepAnswerRenews violates LeaseExclusive"
   "FelixRaftSleep pass"
   "FelixRaftSleepWrite pass"
   "FelixRaftSleepLeaderDies pass"
@@ -693,6 +697,35 @@ expectations=(
   "FelixRaftSleepFalseAlarmFollowerBehind violates AsleepIsLevel"
   "FelixRaftSleepReachWakeOnWrite violates NeverWakesOnWrite"
   "FelixRaftSleepReachAuditElection violates NeverElectsAfterDyingAsleep"
+  "FelixRaftSleepWake pass"
+  "FelixRaftSleepWakeWrite pass"
+  "FelixRaftSleepAuditLost pass"
+  "FelixRaftSleepFalseAlarmFollowerAsked pass"
+  "FelixRaftSleepFalseAlarmFollowerAskedLost pass"
+  "FelixRaftSleepFalseAlarmFollowerBehindAsked pass"
+  "FelixRaftSleepTtl pass"
+  "FelixRaftSleepMidHandshake pass"
+  "FelixRaftSleepWriteBeforeRound violates NoWriteRefused"
+  "FelixRaftSleepAuditCampaigns pass"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostDroppedPreVoteGrants violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoVoteHold violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoPreVote violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoLeftOutAsked pass"
+  "FelixRaftSleepFalseAlarmFollowerBehindAskedNoRefusalWakes pass"
+  "FelixRaftSleepNoTtlWake violates QuiescentTtl"
+  "FelixRaftSleepReachMidHandshake violates NeverElectedMidHandshake"
+  "FelixRaftCache pass"
+  "FelixRaftCacheClock pass"
+  "FelixRaftCacheNoRequestId violates SumExact"
+  "FelixRaftCacheSnapshotDropsDedup violates SumExact"
+  "FelixRaftCacheSnapshotIdAhead violates MembersAgree"
+  "FelixRaftCacheReadNoApplyWait violates ReadsFresh"
+  "FelixRaftCacheClockApplyLocalClock violates MembersAgree"
+  "FelixRaftCacheClockReadsLocalClock violates OneClock"
+  "FelixRaftCacheClockStampNotMonotone violates OneClock"
+  "FelixRaftCacheReachInstallRead violates NeverReadAfterInstall"
+  "FelixRaftCacheReachRetry violates NeverRetryApplied"
+  "FelixRaftCacheClockReachExpiry violates NeverExpiredThenTaken"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -1119,7 +1152,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Placement Reform Lease Sleep Switch"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"

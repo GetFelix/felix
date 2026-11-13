@@ -1660,9 +1660,11 @@ as well, though the leader does not wait for its answer. If the member
 matches, it sleeps like the others. If it is behind, its refusal wakes the
 leader, which catches it up before proposing again. If the request or the
 refusal is lost, the vote hold under "Waking" keeps the other members from
-electing it while the leader is healthy. A left-out member can still be
-asleep and behind for a while: it accepted an older request, and the newer
-one never reached it. The leader's next audit round finds that and
+electing it while the leader is healthy. The hold is the rule that keeps the
+leader: the model passes with the request to the left-out member, the waking
+refusal or the audit's ask turned off, which only cost a pre-vote round or a
+later catch-up. A left-out member can still be asleep and behind for a
+while: it accepted an older request, and the newer one never reached it. The leader's next audit round finds that and
 replicates. The level check for a sleeping group is therefore: every member
 the leader counted is level, and a member it left out is level within one
 audit period. See Questions, 14 (issue #2310).
