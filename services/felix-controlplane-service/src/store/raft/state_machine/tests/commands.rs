@@ -348,6 +348,16 @@ async fn an_import_forgets_the_brokers_placed_in_each_epoch() {
     };
     assert_eq!(placed(&exported), 1, "the export carries the record");
 
+    let changed = |state: &crate::store::export::ExportedState| {
+        serde_json::to_value(state).expect("json")["shard_changes"]["items"]
+            .as_array()
+            .expect("changes")
+            .iter()
+            .filter(|change| change["assignment"].get("placed").is_some())
+            .count()
+    };
+    assert!(changed(&exported) > 0, "the change log carries the record");
+
     let restored = machine();
     restored
         .dispatch(MetaCommand::ImportState {
@@ -363,6 +373,97 @@ async fn an_import_forgets_the_brokers_placed_in_each_epoch() {
         .expect("list");
     assert!(!assignments.is_empty());
     assert!(assignments.iter().all(|a| a.placed.is_none()));
+    let after = restored.store().export_state().await;
+    assert_eq!(changed(&after), 0, "feed followers read no record either");
+}
+
+/// A shard the export shows unassigned may have been placed on other
+/// brokers since. Its first assignment after the import starts no record,
+/// while a stream created after the import starts one.
+#[tokio::test]
+async fn a_shard_first_assigned_after_an_import_starts_no_record() {
+    let source = machine();
+    let setup = [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t1"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t1", "ns"),
+        },
+        MetaCommand::CreateStream {
+            names: false,
+            stream: stream("t1", "ns", "orders"),
+            incarnations: false,
+        },
+        MetaCommand::CreateCache {
+            names: false,
+            cache: cache("t1", "ns", "orders"),
+            incarnations: false,
+        },
+        MetaCommand::RegisterNode {
+            node: node("broker-0", 7_000),
+        },
+    ];
+    for command in setup {
+        source.dispatch(command).await.expect("setup");
+    }
+    let exported = source.store().export_state().await;
+
+    let restored = machine();
+    restored
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(exported),
+            overwrite: false,
+        })
+        .await
+        .expect("import");
+    restored
+        .dispatch(MetaCommand::CreateStream {
+            names: false,
+            stream: stream("t1", "ns", "payments"),
+            incarnations: false,
+        })
+        .await
+        .expect("create after the import");
+    let assign = |name: &str, kind| {
+        let mut assignment = shard_assignment("t1", "ns", name, "broker-0");
+        assignment.key.kind = kind;
+        MetaCommand::PutShardAssignment {
+            seq_generation: false,
+            assignment,
+            start_placed: true,
+        }
+    };
+    for (name, kind, started) in [
+        ("orders", crate::model::ShardKind::Stream, false),
+        ("orders", crate::model::ShardKind::Cache, false),
+        ("payments", crate::model::ShardKind::Stream, true),
+    ] {
+        let MetaResponse::Assignment { assignment } =
+            restored.dispatch(assign(name, kind)).await.expect("assign")
+        else {
+            panic!("an assignment answers with it");
+        };
+        assert_eq!(assignment.placed.is_some(), started, "{name} {kind:?}");
+    }
+
+    // The mark survives a snapshot.
+    let snapshot = crate::raft::AppStateMachine::snapshot(&restored).await;
+    let installed = machine();
+    crate::raft::AppStateMachine::restore(&installed, &snapshot).await;
+    let key = shard_assignment("t1", "ns", "orders", "broker-0").key;
+    installed
+        .dispatch(MetaCommand::DeleteShardAssignment { key })
+        .await
+        .expect("unassign");
+    let MetaResponse::Assignment { assignment } = installed
+        .dispatch(assign("orders", crate::model::ShardKind::Stream))
+        .await
+        .expect("assign")
+    else {
+        panic!("an assignment answers with it");
+    };
+    assert!(assignment.placed.is_none());
 }
 
 async fn machine_with_reported_shards() -> MetadataStateMachine {

@@ -258,6 +258,9 @@ async fn write_shard_assignment(
     stored.carry_readmitted(&held);
     // In the same write that names a broker, so it is on the record before
     // any leader acts on the set.
+    // A shard of a restored stream or cache may have had brokers before
+    // the import that its export does not show.
+    let start_placed = start_placed && !state.unplaced.contains(&stored.key.owner(incarnation));
     stored.carry_placed(existing, start_placed);
     state.records.insert(stored.key.clone(), stored.clone());
     state.record(op, &stored.key, Some(stored.clone()));

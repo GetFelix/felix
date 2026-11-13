@@ -32,7 +32,8 @@ pub use shard::{
     ShardState, ShardValidationError,
 };
 pub(crate) use shard::{
-    Learning, check_elected_generation, first_generation, generation_at_least, previous_generation,
+    Learning, ShardOwner, check_elected_generation, first_generation, generation_at_least,
+    previous_generation,
 };
 pub(crate) use stream::default_replication_factor;
 pub(crate) use stream::deleted_stream_payload;

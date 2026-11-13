@@ -317,6 +317,7 @@ fn exported() -> ExportedState {
     ExportedState {
         deleted_stream_names: vec![stream_key()],
         deleted_cache_names: vec![cache_key()],
+        unplaced: [shard_key().owner(1)].into(),
         v: 1,
         tenants: vec![(s("t"), tenant())],
         namespaces: vec![(namespace_key(), namespace())],

@@ -561,6 +561,12 @@
 0 import_state.state.tenants
 0 import_state.state.tenants[][].display_name
 0 import_state.state.tenants[][].tenant_id
+31 import_state.state.unplaced
+31 import_state.state.unplaced[].incarnation
+31 import_state.state.unplaced[].kind
+31 import_state.state.unplaced[].name
+31 import_state.state.unplaced[].namespace
+31 import_state.state.unplaced[].tenant_id
 0 import_state.state.v
 0 insert_refresh_token
 0 insert_refresh_token.token
@@ -1229,6 +1235,12 @@
 0 snapshot.state.tenants
 0 snapshot.state.tenants[][].display_name
 0 snapshot.state.tenants[][].tenant_id
+31 snapshot.state.unplaced
+31 snapshot.state.unplaced[].incarnation
+31 snapshot.state.unplaced[].kind
+31 snapshot.state.unplaced[].name
+31 snapshot.state.unplaced[].namespace
+31 snapshot.state.unplaced[].tenant_id
 0 snapshot.state.v
 1 stage_signing_key
 1 stage_signing_key.key
