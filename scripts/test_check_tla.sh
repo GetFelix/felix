@@ -99,6 +99,33 @@ rm "$work/scripts/check_tla.sh.bak"
 check "pr_minutes line" "FelixRaftSwitchLag
 $(footer 4 1)"
 
+# A new module's `module_of` line is that module's configurations, not all.
+sed -i.bak 's/^    FelixRaft\*) echo FelixRaft ;;$/    FelixRaftWritten*) echo FelixRaftWritten ;;\
+&/' "$work/scripts/check_tla.sh"
+rm "$work/scripts/check_tla.sh.bak"
+check "module_of line added" "$(footer 0 0)"
+
+# A changed mapping lists what the old pattern matched: those configurations
+# now check a different module.
+sed -i.bak 's/^    FelixRaftSleep\*) echo FelixRaftSleep ;;$/    FelixRaftSleepy*) echo FelixRaftSleep ;;/' \
+  "$work/scripts/check_tla.sh"
+rm "$work/scripts/check_tla.sh.bak"
+check "module_of mapping changed" "$(registered 'FelixRaftSleep[A-Za-z]*')
+$(footer ? 1)"
+
+# The default branch is not a mapping of one pattern: it is all of them.
+sed -i.bak 's/^    \*) echo FelixShard ;;$/    *) echo FelixRaft ;;/' "$work/scripts/check_tla.sh"
+rm "$work/scripts/check_tla.sh.bak"
+git_ add -A
+git_ commit -qm default
+if [ "$("$work/scripts/check_tla.sh" --affected base 2>/dev/null | tail -1)" != "# shards: 30" ]; then
+  echo "FAIL module_of default branch"
+  failed=1
+else
+  echo "ok   module_of default branch"
+fi
+git_ reset -q --hard base
+
 sed -i.bak 's/^# Each configuration and what it must do\./# What each configuration must do./' "$work/scripts/check_tla.sh"
 rm "$work/scripts/check_tla.sh.bak"
 check "comment in the runner" "$(footer 0 0)"
