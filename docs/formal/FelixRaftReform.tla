@@ -211,7 +211,7 @@ VARIABLES
     plans,      \* dry runs: epoch, and what each copy read held
     forms,      \* epochs written: epoch, base, voters, whether the base was cut
     acked,      \* history: entries committed, by epoch, term and index
-    lost,       \* history: acknowledged entries no live disk held at a re-form
+    lost,       \* history: documented losses at a re-form (see AckedSurvive)
     elected,    \* history: epoch, term, broker
     writes, steps, places, rotations, rejoins, restarts
 
@@ -774,9 +774,10 @@ TypeOK ==
 OneLeaderPerTerm ==
     \A x, y \in elected : x.e = y.e /\ x.t = y.t => x.b = y.b
 
-\* An acknowledged record outlives its epoch. The only loss allowed is the
-\* one the design documents: no disk held it any more, not counting the
-\* disks of brokers declared dead.
+\* An acknowledged record outlives its epoch. The only losses allowed are
+\* the ones the design documents: no live disk held it any more, or the
+\* base was cut and every live disk that held it had it above what that
+\* disk vouches for.
 AckedSurvive ==
     \A x \in acked \ lost :
         /\ \A f \in forms : f.e > x.e => Has(f.base, x)
