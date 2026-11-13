@@ -71,6 +71,7 @@ fn feed(since: u64) -> StreamChangesResponse {
             .filter(|change| change.seq.is_some_and(|seq| seq >= since))
             .collect(),
         next_seq: 4,
+        group_id: None,
     }
 }
 
@@ -102,6 +103,7 @@ fn router_with(
                         tenant_id: "t1".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -114,6 +116,7 @@ fn router_with(
                         namespace: "ns".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -141,6 +144,7 @@ fn router_with(
                 Json(TenantChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -150,6 +154,7 @@ fn router_with(
                 Json(NamespaceChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -159,6 +164,7 @@ fn router_with(
                 Json(CacheChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -275,6 +281,7 @@ fn legacy_delete(since: u64) -> StreamChangesResponse {
         .filter(|change| change.seq.is_some_and(|seq| seq >= since))
         .collect(),
         next_seq: 2,
+        group_id: None,
     }
 }
 
@@ -349,6 +356,7 @@ fn lagging_member(_since: u64) -> StreamChangesResponse {
             deleted_through: None,
         }],
         next_seq: 4,
+        group_id: None,
     }
 }
 
@@ -382,6 +390,7 @@ async fn a_replayed_create_of_an_older_incarnation_keeps_the_live_stream() -> Re
     let (addr, shutdown_tx, handle) = serve_router(router_with(live, |_| StreamChangesResponse {
         items: vec![],
         next_seq: 10,
+        group_id: None,
     }))
     .await?;
     sync_into(
@@ -477,6 +486,7 @@ async fn a_snapshot_tombstone_deletes_a_stream_missed_while_down() -> Result<()>
         serve_router(router_with(recreated, |_| StreamChangesResponse {
             items: vec![],
             next_seq: 12,
+            group_id: None,
         }))
         .await?;
     let mut state = SyncState::new();

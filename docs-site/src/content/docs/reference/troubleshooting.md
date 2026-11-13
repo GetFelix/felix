@@ -132,13 +132,31 @@ A broker with durable storage records the control plane's metadata group in
 refuses to run against any other. The first message means the control plane was
 recreated since, so the streams on disk belong to a catalog that no longer
 exists. The second means the directory was written by a release that did not
-record the group (0.7 or earlier), so nothing says which catalog it belongs
-to. A running broker that is handed a snapshot from another group refuses it,
-counts it in `felix_broker_controlplane_group_mismatch_total` and stops.
+record the group (0.7 or earlier) and the control plane was created fresh, so
+nothing says which catalog it belongs to. A control plane upgraded in place
+records that it held a catalog already, and its brokers adopt its group
+instead. A running broker that is handed a snapshot or change-feed page from
+another group refuses it, counts it in
+`felix_broker_controlplane_group_mismatch_total` and stops.
 
-Stop the broker, wipe its whole data directory and start it again. It joins as
-a new, empty broker and takes its shards from the others. See
-[upgrades](/deployment/upgrades/#a-recreated-control-plane).
+If the control plane lost its volumes, restore its export with `import` first:
+that brings back the old group id and the brokers keep their data. Only if
+there is no export, stop the broker, wipe its whole data directory and start
+it again. It joins as a new, empty broker and takes its shards from the
+others. See [upgrades](/deployment/upgrades/#a-recreated-control-plane).
+
+### The broker waits for the control plane's identity
+
+```
+ERROR the control plane refused this node's identity lookup: the node token needs the node.view:cluster:* permission; retrying
+WARN the control plane has no identity route: it is older than this broker and must be upgraded first; retrying
+```
+
+A broker with durable storage does not open it until the control plane says
+which metadata group it is. The first message means the node token lacks
+`node.view:cluster:*`: grant it. The second means the control plane runs an
+older release: upgrade every control-plane member before the brokers. The
+broker keeps retrying either way and starts once the control plane answers.
 
 ### This broker runs another shard engine
 

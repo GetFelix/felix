@@ -312,6 +312,15 @@ impl InMemoryStore {
         self.identity.write().await.get_or_insert(proposed).clone()
     }
 
+    /// Whether the store holds, or has held, a stream or a cache: what a
+    /// broker could have data for.
+    pub(crate) async fn held_data_catalog(&self) -> bool {
+        !self.streams.read().await.is_empty()
+            || !self.caches.read().await.is_empty()
+            || self.stream_changes.read().await.next_seq > 0
+            || self.cache_changes.read().await.next_seq > 0
+    }
+
     /// The identity recorded so far, if any.
     pub(crate) async fn recorded_identity(
         &self,

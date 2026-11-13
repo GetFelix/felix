@@ -11,9 +11,11 @@ use super::SyncState;
 use super::apply::{apply_cache_upsert, apply_namespace_create, apply_stream_upsert};
 use super::fetch::*;
 use super::wire::*;
+use crate::cluster::controlplane_group::Refusal;
 use crate::cluster::feed_cursor::{BehindCursor, Verdict};
 
-/// Snapshots refused for naming another control-plane metadata group.
+/// Snapshots and change-feed pages refused for naming another control-plane
+/// metadata group.
 const GROUP_MISMATCH_TOTAL: &str = "felix_broker_controlplane_group_mismatch_total";
 
 /// Pages of one change feed applied per pass, so a broker far behind catches
@@ -57,6 +59,7 @@ pub(super) async fn sync_into(
     if !state.seeded.tenants {
         match fetch_tenant_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                admit_group(state, snapshot.group_id.as_deref(), "tenant snapshot")?;
                 let named: BTreeSet<&str> = snapshot
                     .items
                     .iter()
@@ -100,6 +103,7 @@ pub(super) async fn sync_into(
     if !state.seeded.namespaces {
         match fetch_namespace_snapshot(source, bearer).await {
             Ok(snapshot) => {
+                admit_group(state, snapshot.group_id.as_deref(), "namespace snapshot")?;
                 let named: BTreeSet<(&str, &str)> = snapshot
                     .items
                     .iter()
@@ -299,6 +303,7 @@ pub(super) async fn sync_into(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_tenant_changes(source, bearer, state.next_tenant_seq).await {
             Ok(changes) => {
+                admit_group(state, changes.group_id.as_deref(), "tenant change page")?;
                 if !accept(
                     &mut state.behind.tenants,
                     &mut state.seeded.tenants,
@@ -346,6 +351,7 @@ pub(super) async fn sync_into(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_namespace_changes(source, bearer, state.next_namespace_seq).await {
             Ok(changes) => {
+                admit_group(state, changes.group_id.as_deref(), "namespace change page")?;
                 if !accept(
                     &mut state.behind.namespaces,
                     &mut state.seeded.namespaces,
@@ -406,6 +412,7 @@ pub(super) async fn sync_into(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_cache_changes(source, bearer, state.next_cache_seq).await {
             Ok(changes) => {
+                admit_group(state, changes.group_id.as_deref(), "cache change page")?;
                 if !accept(
                     &mut state.behind.caches,
                     &mut state.seeded.caches,
@@ -481,6 +488,7 @@ pub(super) async fn sync_into(
     for _ in 0..MAX_PAGES_PER_FEED {
         match fetch_changes(source, bearer, state.next_stream_seq).await {
             Ok(changes) => {
+                admit_group(state, changes.group_id.as_deref(), "stream change page")?;
                 if !accept(
                     &mut state.behind.streams,
                     &mut state.seeded.streams,
@@ -557,18 +565,22 @@ pub(super) async fn sync_into(
     Ok(())
 }
 
-/// Refuse a snapshot from another control-plane metadata group before any of
-/// it is applied. The broker stops: the group's `refused` token is what the
-/// node waits on.
-fn admit_group(state: &SyncState, claim: Option<&str>, what: &str) -> Result<()> {
+/// Check an answer's group before any of it is applied. Another group stops
+/// the broker: the group's `refused` token is what the node waits on. No
+/// group, while this directory has one, ends the pass, which the next one
+/// asks again.
+fn admit_group(state: &SyncState, claim: Option<&str>, what: &'static str) -> Result<()> {
     let Some(guard) = &state.group else {
         return Ok(());
     };
-    guard.check(claim).map_err(|mismatch| {
-        metrics::counter!(GROUP_MISMATCH_TOTAL).increment(1);
-        tracing::error!(what, error = %mismatch, "refused a control-plane snapshot");
-        guard.refused.cancel();
-        mismatch.into()
+    guard.check(claim, what).map_err(|refusal| match refusal {
+        Refusal::Mismatch(mismatch) => {
+            metrics::counter!(GROUP_MISMATCH_TOTAL).increment(1);
+            tracing::error!(what, error = %mismatch, "refused a control-plane answer");
+            guard.refused.cancel();
+            mismatch.into()
+        }
+        Refusal::Unclaimed(unclaimed) => unclaimed.into(),
     })
 }
 

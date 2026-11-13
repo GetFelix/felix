@@ -59,6 +59,7 @@ fn delete_then_create(
             .filter(|change| change.seq.is_some_and(|seq| seq >= since))
             .collect(),
         next_seq: 3,
+        group_id: None,
     }
 }
 
@@ -75,6 +76,7 @@ fn router_with(
                         tenant_id: "t1".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -87,6 +89,7 @@ fn router_with(
                         namespace: "ns".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -114,6 +117,7 @@ fn router_with(
                 Json(TenantChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -123,6 +127,7 @@ fn router_with(
                 Json(NamespaceChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -140,6 +145,7 @@ fn router_with(
                 Json(StreamChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -252,6 +258,7 @@ async fn a_snapshot_tombstone_deletes_a_cache_missed_while_down() -> Result<()> 
         router_with(recreated, |_| CacheChangesResponse {
             items: vec![],
             next_seq: 12,
+            group_id: None,
         }),
     )
     .await?;

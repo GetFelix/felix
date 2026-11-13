@@ -41,6 +41,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                         tenant_id: "t1".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -53,6 +54,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                         namespace: "ns".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -84,6 +86,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(TenantChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -93,6 +96,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(NamespaceChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -102,6 +106,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                 Json(CacheChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -128,6 +133,7 @@ fn router(created: StdArc<AtomicBool>, polls: StdArc<AtomicUsize>) -> Router {
                             vec![]
                         },
                         next_seq: if created { 2 } else { 1 },
+                        group_id: None,
                     })
                 }
             }),

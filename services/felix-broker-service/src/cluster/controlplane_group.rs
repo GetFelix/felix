@@ -3,8 +3,11 @@
 //! A Raft control plane picks a random group id when its metadata group forms.
 //! A broker with durable storage keeps the id it first served under in
 //! `controlplane_group` and checks it at every start and against every
-//! catalog snapshot, so data written under a control plane that was later
-//! recreated is refused instead of served under a catalog that never knew it.
+//! catalog snapshot and change-feed page, so data written under a control
+//! plane that was later recreated is refused instead of served under a
+//! catalog that never knew it. A group upgraded in place says so
+//! (`adopts_existing`), and a directory with data from before the record
+//! adopts it.
 
 use std::io::Write as _;
 use std::path::Path;
@@ -30,6 +33,11 @@ pub(crate) struct Identity {
     #[serde(default)]
     pub(crate) group_id: Option<String>,
     pub(crate) shard_engine: String,
+    /// The group recorded its id over a catalog it already held: it was
+    /// upgraded in place, so a directory with data and no record is this
+    /// group's. Absent from a control plane that predates it.
+    #[serde(default)]
+    pub(crate) adopts_existing: bool,
 }
 
 /// The shard engine this broker runs.
@@ -49,31 +57,50 @@ pub(crate) enum Verdict {
     Adopt,
     /// The record names another group.
     Other { stored: String },
-    /// Data from before the record, which says nothing of its catalog.
+    /// Data from before the record, under a group formed on an empty
+    /// catalog: nothing says the data is this group's.
     Unrecorded,
 }
 
-/// Decide a start from the record, the control plane's group and whether the
-/// directory already holds data.
-pub(crate) fn decide(stored: Option<&str>, current: Option<&str>, holds_data: bool) -> Verdict {
+/// Decide a start from the record, the control plane's group, whether that
+/// group recorded its id over an existing catalog, and whether the directory
+/// already holds data.
+pub(crate) fn decide(
+    stored: Option<&str>,
+    current: Option<&str>,
+    adopts_existing: bool,
+    holds_data: bool,
+) -> Verdict {
     match (stored, current) {
         (_, None) => Verdict::Skip,
         (Some(stored), Some(current)) if stored == current => Verdict::Matches,
         (Some(stored), Some(_)) => Verdict::Other {
             stored: stored.to_owned(),
         },
-        (None, Some(_)) if holds_data => Verdict::Unrecorded,
+        (None, Some(_)) if holds_data && !adopts_existing => Verdict::Unrecorded,
         (None, Some(_)) => Verdict::Adopt,
     }
 }
 
-/// Whether a broker has run on `root`. The storage id is written when a run
-/// begins, before any log, so a directory without one holds nothing; one that
-/// cannot be told apart counts as holding data.
+/// Whether anything is under `root` besides this module's own record. The
+/// storage id only exists since 0.6.0-preview.8, so any other entry counts
+/// too. `lost+found` is what a fresh filesystem starts with. A directory that
+/// cannot be listed counts as holding data.
 pub(crate) fn holds_data(root: &Path) -> bool {
-    root.join(felix_storage::storage_identity::FILE_NAME)
-        .try_exists()
-        .unwrap_or(true)
+    let entries = match std::fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
+    };
+    let own = Path::new(FILE_NAME).with_extension("tmp");
+    for entry in entries {
+        let Ok(entry) = entry else { return true };
+        let name = entry.file_name();
+        if name != FILE_NAME && name != own.as_os_str() && name != "lost+found" {
+            return true;
+        }
+    }
+    false
 }
 
 /// The group id recorded under `root`. An empty or unreadable file is an
@@ -108,23 +135,26 @@ pub(crate) fn write(root: &Path, id: &str) -> Result<()> {
         .with_context(|| format!("sync {}", root.display()))
 }
 
+/// What to do about a refusal: restoring the control plane comes first.
+pub(crate) const RECOVER: &str = "If the control plane lost its volumes, restore its export with \
+     `import`, which brings back the old group id, and restart the broker. Only if no export \
+     exists: stop the broker, wipe its whole data directory and start it again";
+
 /// The refusal for a directory written under another group.
 pub(crate) fn other_group_message(stored: &str, current: &str) -> String {
     format!(
         "the data directory was written under control-plane metadata group {stored} but the \
          control plane is group {current}; the control plane was recreated, so this data cannot \
-         be served under it. Stop the broker, wipe its whole data directory and start it again: \
-         {UPGRADES}"
+         be served under it. {RECOVER}: {UPGRADES}"
     )
 }
 
 /// The refusal for a directory that holds data and names no group.
 pub(crate) fn unrecorded_message(current: &str) -> String {
     format!(
-        "the data directory holds data but records no control-plane metadata group (it was \
-         written by 0.7 or by a build before this check), and the control plane is group \
-         {current}; this data may belong to a catalog that no longer exists. Stop the broker, \
-         wipe its whole data directory and start it again: {UPGRADES}"
+        "the data directory holds data but records no control-plane metadata group, and the \
+         control plane is group {current}, which recorded its id on an empty catalog; this data \
+         may belong to a catalog that no longer exists. {RECOVER}: {UPGRADES}"
     )
 }
 
@@ -154,9 +184,34 @@ pub(crate) async fn fetch(
     response.json().await.context("body")
 }
 
+/// Why an ask failed, as far as the operator can act on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Failure {
+    /// The node token lacks the permission.
+    Forbidden,
+    /// The control plane has no identity route: it is older than this broker.
+    Older,
+    /// Anything else, including 503 until the group records its identity.
+    Other,
+}
+
+impl Failure {
+    fn of(err: &anyhow::Error) -> Self {
+        let status = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<reqwest::Error>())
+            .and_then(reqwest::Error::status);
+        match status {
+            Some(reqwest::StatusCode::FORBIDDEN) => Self::Forbidden,
+            Some(reqwest::StatusCode::NOT_FOUND) => Self::Older,
+            _ => Self::Other,
+        }
+    }
+}
+
 /// Ask until the control plane answers; it answers 503 until its group has
 /// recorded an identity. Ends only by an answer, so callers race it with the
-/// shutdown.
+/// shutdown: the fence is never bypassed.
 pub(crate) async fn await_identity(
     client: &reqwest::Client,
     base_url: &str,
@@ -165,10 +220,25 @@ pub(crate) async fn await_identity(
     loop {
         match fetch(client, base_url, credential.bearer().as_str()).await {
             Ok(identity) => return identity,
-            Err(err) => tracing::warn!(
-                error = %format!("{err:#}"),
-                "the control plane has not given its identity; retrying"
-            ),
+            Err(err) => {
+                let error = format!("{err:#}");
+                match Failure::of(&err) {
+                    Failure::Forbidden => tracing::error!(
+                        error,
+                        "the control plane refused this node's identity lookup: the node token \
+                         needs the node.view:cluster:* permission; retrying"
+                    ),
+                    Failure::Older => tracing::warn!(
+                        error,
+                        "the control plane has no identity route: it is older than this broker \
+                         and must be upgraded first; retrying"
+                    ),
+                    Failure::Other => tracing::warn!(
+                        error,
+                        "the control plane has not given its identity; retrying"
+                    ),
+                }
+            }
         }
         tokio::time::sleep(RETRY).await;
     }
@@ -188,6 +258,7 @@ pub(crate) fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> 
     match decide(
         stored.as_deref(),
         identity.group_id.as_deref(),
+        identity.adopts_existing,
         holds_data(root),
     ) {
         Verdict::Skip | Verdict::Matches => Ok(stored),
@@ -195,6 +266,7 @@ pub(crate) fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> 
             write(root, current)?;
             tracing::info!(
                 group_id = current,
+                adopts_existing = identity.adopts_existing,
                 "recorded the control-plane metadata group"
             );
             Ok(Some(current.to_owned()))
@@ -204,16 +276,17 @@ pub(crate) fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> 
     }
 }
 
-/// What the catalog sync holds the control plane's snapshots to.
+/// What the catalog sync holds the control plane's snapshots and change-feed
+/// pages to.
 #[derive(Debug, Clone)]
 pub(crate) struct Guard {
     /// The group this directory is recorded under.
     pub(crate) stored: String,
-    /// Cancelled when a snapshot names another group: the broker stops.
+    /// Cancelled when an answer names another group: the broker stops.
     pub(crate) refused: CancellationToken,
 }
 
-/// A snapshot named a group other than the one this directory is under.
+/// An answer named a group other than the one this directory is under.
 #[derive(Debug, thiserror::Error)]
 #[error("{}", other_group_message(.stored, .current))]
 pub(crate) struct Mismatch {
@@ -221,16 +294,39 @@ pub(crate) struct Mismatch {
     pub(crate) current: String,
 }
 
+/// An answer named no group while this directory is recorded under one: from
+/// a member that has not applied the record yet, or one older than it. Not
+/// applied, and asked again next pass.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the control plane's {what} names no metadata group but this data directory is recorded \
+     under {stored}; not applied, retrying"
+)]
+pub(crate) struct Unclaimed {
+    pub(crate) what: &'static str,
+    pub(crate) stored: String,
+}
+
+/// Why an answer may not be applied.
+#[derive(Debug)]
+pub(crate) enum Refusal {
+    Mismatch(Mismatch),
+    Unclaimed(Unclaimed),
+}
+
 impl Guard {
-    /// Whether a snapshot claiming `claim` may be applied. No claim is not a
-    /// mismatch.
-    pub(crate) fn check(&self, claim: Option<&str>) -> Result<(), Mismatch> {
+    /// Whether an answer (`what`) claiming `claim` may be applied.
+    pub(crate) fn check(&self, claim: Option<&str>, what: &'static str) -> Result<(), Refusal> {
         match claim {
-            Some(current) if current != self.stored => Err(Mismatch {
+            Some(current) if current == self.stored => Ok(()),
+            Some(current) => Err(Refusal::Mismatch(Mismatch {
                 stored: self.stored.clone(),
                 current: current.to_owned(),
-            }),
-            _ => Ok(()),
+            })),
+            None => Err(Refusal::Unclaimed(Unclaimed {
+                what,
+                stored: self.stored.clone(),
+            })),
         }
     }
 }

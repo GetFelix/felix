@@ -367,5 +367,6 @@ pub(crate) async fn cache_changes(
     Ok(Json(CacheChangesResponse {
         items: changes.items,
         next_seq: changes.next_seq,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }

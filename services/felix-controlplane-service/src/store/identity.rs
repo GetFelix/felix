@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize};
 pub struct ClusterIdentity {
     pub group_id: String,
     pub shard_engine: String,
+    /// The store already held streams or caches, or their history, when the
+    /// id was recorded: an in-place upgrade, so a broker directory with data
+    /// and no record of a group is this group's. Set by the apply, from
+    /// replicated state, so every member agrees.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopts_existing: bool,
 }
 
 impl ClusterIdentity {
@@ -19,6 +25,7 @@ impl ClusterIdentity {
         Self {
             group_id: uuid::Uuid::new_v4().to_string(),
             shard_engine: shard_engine.to_string(),
+            adopts_existing: false,
         }
     }
 }

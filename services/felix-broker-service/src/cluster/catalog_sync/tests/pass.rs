@@ -48,6 +48,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                             tenant_id: "t1".to_string(),
                         }],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -57,6 +58,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                     Json(NamespaceSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -93,6 +95,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                             seq: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -102,6 +105,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                     Json(NamespaceChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -111,6 +115,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                     Json(CacheChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -120,6 +125,7 @@ async fn sync_once_handles_tenant_deletion() -> Result<()> {
                     Json(StreamChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             );
@@ -161,6 +167,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                             tenant_id: "t1".to_string(),
                         }],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -173,6 +180,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                             namespace: "ns".to_string(),
                         }],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -204,6 +212,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                     Json(TenantChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -221,6 +230,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                             seq: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -230,6 +240,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                     Json(CacheChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -239,6 +250,7 @@ async fn sync_once_handles_namespace_deletion() -> Result<()> {
                     Json(StreamChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             );
@@ -277,6 +289,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                     Json(TenantSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -286,6 +299,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                     Json(NamespaceSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -324,6 +338,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                             seq: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -344,6 +359,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                             seq: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -369,6 +385,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                             deleted_through: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -398,6 +415,7 @@ async fn sync_once_registers_created_and_updated_changes() -> Result<()> {
                             seq: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             );
@@ -453,6 +471,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                     Json(TenantSnapshotResponse {
                         items: vec![],
                         next_seq: 0,
+                        group_id: None,
                     })
                 }),
             )
@@ -462,6 +481,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                     Json(NamespaceSnapshotResponse {
                         items: vec![],
                         next_seq: 0,
+                        group_id: None,
                     })
                 }),
             )
@@ -508,6 +528,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                         Json(TenantChangesResponse {
                             items: page,
                             next_seq,
+                            group_id: None,
                         })
                     },
                 ),
@@ -518,6 +539,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                     Json(NamespaceChangesResponse {
                         items: vec![],
                         next_seq: 0,
+                        group_id: None,
                     })
                 }),
             )
@@ -527,6 +549,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                     Json(CacheChangesResponse {
                         items: vec![],
                         next_seq: 0,
+                        group_id: None,
                     })
                 }),
             )
@@ -536,6 +559,7 @@ async fn sync_once_follows_a_feed_across_pages() -> Result<()> {
                     Json(StreamChangesResponse {
                         items: vec![],
                         next_seq: 0,
+                        group_id: None,
                     })
                 }),
             );
@@ -588,6 +612,7 @@ async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
                             tenant: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -597,6 +622,7 @@ async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
                     Json(NamespaceChangesResponse {
                         items: vec![],
                         next_seq: 3,
+                        group_id: None,
                     })
                 }),
             )
@@ -606,6 +632,7 @@ async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
                     Json(CacheChangesResponse {
                         items: vec![],
                         next_seq: 3,
+                        group_id: None,
                     })
                 }),
             )
@@ -615,6 +642,7 @@ async fn sync_once_ignores_a_page_from_behind_the_cursor() -> Result<()> {
                     Json(StreamChangesResponse {
                         items: vec![],
                         next_seq: 3,
+                        group_id: None,
                     })
                 }),
             );
@@ -683,6 +711,7 @@ async fn a_feed_reset_is_followed_by_a_new_snapshot() -> Result<()> {
                             tenant_id: "t2".to_string(),
                         }],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -694,6 +723,7 @@ async fn a_feed_reset_is_followed_by_a_new_snapshot() -> Result<()> {
                     Json(TenantChangesResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -703,6 +733,7 @@ async fn a_feed_reset_is_followed_by_a_new_snapshot() -> Result<()> {
                     Json(NamespaceChangesResponse {
                         items: vec![],
                         next_seq: 50,
+                        group_id: None,
                     })
                 }),
             )
@@ -712,6 +743,7 @@ async fn a_feed_reset_is_followed_by_a_new_snapshot() -> Result<()> {
                     Json(CacheChangesResponse {
                         items: vec![],
                         next_seq: 50,
+                        group_id: None,
                     })
                 }),
             )
@@ -721,6 +753,7 @@ async fn a_feed_reset_is_followed_by_a_new_snapshot() -> Result<()> {
                     Json(StreamChangesResponse {
                         items: vec![],
                         next_seq: 50,
+                        group_id: None,
                     })
                 }),
             );

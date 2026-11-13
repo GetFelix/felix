@@ -4,6 +4,15 @@ fn identity(group_id: Option<&str>, engine: &str) -> Identity {
     Identity {
         group_id: group_id.map(str::to_owned),
         shard_engine: engine.to_owned(),
+        adopts_existing: false,
+    }
+}
+
+/// A group that recorded its id over a catalog it already held.
+fn upgraded(group_id: &str) -> Identity {
+    Identity {
+        adopts_existing: true,
+        ..identity(Some(group_id), "hybrid")
     }
 }
 
@@ -40,19 +49,53 @@ fn a_new_directory_holds_no_data_and_a_used_one_does() {
     assert!(holds_data(used().path()));
 }
 
+/// Before 0.6.0-preview.8 there was no storage id: logs alone are data.
+#[test]
+fn a_directory_without_a_storage_id_still_holds_data() {
+    let dir = tempfile::tempdir().expect("dir");
+    std::fs::create_dir(dir.path().join("t1")).expect("mkdir");
+    assert!(holds_data(dir.path()));
+    let file = tempfile::tempdir().expect("dir");
+    std::fs::write(file.path().join("anything"), b"x").expect("write");
+    assert!(holds_data(file.path()));
+}
+
+/// The record, its temporary file and a fresh filesystem's lost+found are
+/// not data.
+#[test]
+fn the_record_and_lost_and_found_are_not_data() {
+    let dir = tempfile::tempdir().expect("dir");
+    std::fs::create_dir(dir.path().join("lost+found")).expect("mkdir");
+    std::fs::write(dir.path().join("controlplane_group.tmp"), b"").expect("tmp");
+    write(dir.path(), "g-1").expect("write");
+    assert!(!holds_data(dir.path()));
+}
+
+/// A root that is a file cannot be listed: data, not empty.
+#[test]
+fn a_root_that_cannot_be_listed_holds_data() {
+    let dir = tempfile::tempdir().expect("dir");
+    let file = dir.path().join("file");
+    std::fs::write(&file, b"x").expect("write");
+    assert!(holds_data(&file));
+}
+
 #[test]
 fn the_decision_table() {
-    assert_eq!(decide(Some("a"), Some("a"), true), Verdict::Matches);
-    assert_eq!(
-        decide(Some("a"), Some("b"), true),
-        Verdict::Other {
-            stored: "a".to_owned()
-        }
-    );
-    assert_eq!(decide(None, Some("b"), false), Verdict::Adopt);
-    assert_eq!(decide(None, Some("b"), true), Verdict::Unrecorded);
-    assert_eq!(decide(Some("a"), None, true), Verdict::Skip);
-    assert_eq!(decide(None, None, false), Verdict::Skip);
+    assert_eq!(decide(Some("a"), Some("a"), false, true), Verdict::Matches);
+    for adopts_existing in [false, true] {
+        assert_eq!(
+            decide(Some("a"), Some("b"), adopts_existing, true),
+            Verdict::Other {
+                stored: "a".to_owned()
+            }
+        );
+    }
+    assert_eq!(decide(None, Some("b"), false, false), Verdict::Adopt);
+    assert_eq!(decide(None, Some("b"), false, true), Verdict::Unrecorded);
+    assert_eq!(decide(None, Some("b"), true, true), Verdict::Adopt);
+    assert_eq!(decide(Some("a"), None, false, true), Verdict::Skip);
+    assert_eq!(decide(None, None, false, false), Verdict::Skip);
 }
 
 #[test]
@@ -78,7 +121,7 @@ fn a_directory_from_another_group_is_refused_and_left_alone() {
     let err = admit(dir.path(), &identity(Some("g-2"), "hybrid")).expect_err("refused");
     let text = err.to_string();
     assert!(text.contains("g-1") && text.contains("g-2"), "{text}");
-    assert!(text.contains("wipe its whole data directory"), "{text}");
+    restore_comes_before_wipe(&text);
     assert_eq!(read(dir.path()).expect("read").as_deref(), Some("g-1"));
 }
 
@@ -86,8 +129,37 @@ fn a_directory_from_another_group_is_refused_and_left_alone() {
 fn a_directory_with_data_and_no_record_is_refused_not_adopted() {
     let dir = used();
     let err = admit(dir.path(), &identity(Some("g-1"), "hybrid")).expect_err("refused");
-    assert!(err.to_string().contains("wipe its whole data directory"));
+    restore_comes_before_wipe(&err.to_string());
     assert_eq!(read(dir.path()).expect("read"), None);
+}
+
+/// A refusal tells the operator to restore the control plane's export before
+/// wiping anything.
+fn restore_comes_before_wipe(text: &str) {
+    let restore = text.find("`import`").expect("names the import");
+    let wipe = text
+        .find("wipe its whole data directory")
+        .expect("names the wipe");
+    assert!(restore < wipe, "{text}");
+}
+
+/// An in-place upgrade: the group recorded its id over its existing catalog,
+/// so a directory with data from before the record is this group's.
+#[test]
+fn an_upgraded_group_adopts_a_directory_with_data_and_no_record() {
+    let dir = used();
+    let group = admit(dir.path(), &upgraded("g-1")).expect("adopted");
+    assert_eq!(group.as_deref(), Some("g-1"));
+    assert_eq!(read(dir.path()).expect("read").as_deref(), Some("g-1"));
+}
+
+/// The flag never overrides a record of another group.
+#[test]
+fn an_upgraded_group_still_refuses_another_groups_record() {
+    let dir = used();
+    write(dir.path(), "g-1").expect("write");
+    admit(dir.path(), &upgraded("g-2")).expect_err("refused");
+    assert_eq!(read(dir.path()).expect("read").as_deref(), Some("g-1"));
 }
 
 #[test]
@@ -112,14 +184,20 @@ fn another_shard_engine_is_refused_whatever_the_group() {
 }
 
 #[test]
-fn the_guard_refuses_only_another_group() {
+fn the_guard_takes_only_its_own_group() {
     let guard = Guard {
         stored: "g-1".to_owned(),
         refused: CancellationToken::new(),
     };
-    assert!(guard.check(Some("g-1")).is_ok());
-    assert!(guard.check(None).is_ok());
-    assert!(guard.check(Some("g-2")).is_err());
+    assert!(guard.check(Some("g-1"), "page").is_ok());
+    assert!(matches!(
+        guard.check(None, "page"),
+        Err(Refusal::Unclaimed(_))
+    ));
+    assert!(matches!(
+        guard.check(Some("g-2"), "page"),
+        Err(Refusal::Mismatch(_))
+    ));
 }
 
 /// A control plane that answers 503 once, then `body`, to its identity route.
@@ -169,6 +247,7 @@ async fn the_identity_is_asked_again_until_the_control_plane_answers() {
         super::Identity {
             group_id: Some("g-1".to_owned()),
             shard_engine: "hybrid".to_owned(),
+            adopts_existing: false,
         }
     );
     let _ = stop.send(());
@@ -187,4 +266,50 @@ async fn an_identity_without_a_group_reads_as_none() {
     .expect("answers");
     assert_eq!(identity.group_id, None);
     let _ = stop.send(());
+}
+
+#[tokio::test]
+async fn an_identity_records_whether_it_adopts_existing_data() {
+    let (addr, stop) = serve_identity(serde_json::json!({
+        "group_id": "g-1", "shard_engine": "hybrid", "adopts_existing": true,
+    }))
+    .await;
+    let client = crate::test_support::build_test_client().expect("client");
+    let credential = crate::cluster::credential::NodeCredential::new("token");
+    let identity = tokio::time::timeout(
+        Duration::from_secs(10),
+        await_identity(&client, &format!("http://{addr}"), &credential),
+    )
+    .await
+    .expect("answers");
+    assert!(identity.adopts_existing);
+    let _ = stop.send(());
+}
+
+/// A control plane that answers `status` to its identity route.
+async fn failing_with(status: u16) -> anyhow::Error {
+    let status = axum::http::StatusCode::from_u16(status).expect("status");
+    let router = axum::Router::new().route(
+        "/v1/cluster/identity",
+        axum::routing::get(move || async move { status }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let (stop, handle) = crate::test_support::spawn_axum_with_shutdown(listener, router);
+    drop(handle);
+    let client = crate::test_support::build_test_client().expect("client");
+    let err = fetch(&client, &format!("http://{addr}"), "token")
+        .await
+        .expect_err("fails");
+    let _ = stop.send(());
+    err
+}
+
+#[tokio::test]
+async fn a_failed_ask_says_what_to_fix() {
+    assert_eq!(Failure::of(&failing_with(403).await), Failure::Forbidden);
+    assert_eq!(Failure::of(&failing_with(404).await), Failure::Older);
+    assert_eq!(Failure::of(&failing_with(503).await), Failure::Other);
 }

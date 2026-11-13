@@ -687,7 +687,7 @@ The endpoints not covered above:
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |
 | `GET /v1/shard-assignments/{snapshot,changes}` | the assignment feed brokers follow | `node.view:cluster:*` |
 | `GET /v1/regions`, `GET /v1/regions/{region_id}` | the region this control plane serves (`FELIX_REGION_ID`, default `local`) | none |
-| `GET /v1/cluster/identity` | the cluster's identity, recorded once when the metadata group forms: `{"group_id": "...", "shard_engine": "hybrid"}`. 503 `identity_pending` under Raft until the group has recorded it, so a broker retries. The in-memory backend has no group and leaves `group_id` out | `node.view:cluster:*` |
+| `GET /v1/cluster/identity` | the cluster's identity, recorded once when the metadata group forms: `{"group_id": "...", "shard_engine": "hybrid"}`, plus `"adopts_existing": true` when the group recorded it over streams or caches it already held (an in-place upgrade), so brokers with older data adopt the group. 503 `identity_pending` under Raft until the group has recorded it, so a broker retries. The in-memory backend has no group and leaves `group_id` out | `node.view:cluster:*` |
 | `GET /v1/system/info` | region, API version and feature flags | none |
 | `GET /v1/system/live` | 200 while the process runs | none |
 | `GET /v1/system/ready`, `GET /v1/system/health` | 200 when the instance can serve metadata, 503 `not_ready` otherwise | none |
@@ -755,9 +755,9 @@ Authorization: Bearer <FELIX_NODE_TOKEN>
   "next_seq": 43 }
 ```
 
-The stream and cache snapshots also carry the metadata group's `group_id`
-once it is recorded, so a broker can tell it has reached a different group
-than the one it kept data from. It is left out where there is none, which is
+Every snapshot and change-feed page (tenants, namespaces, streams, caches)
+also carries the metadata group's `group_id` once it is recorded, so a broker
+can tell it has reached a different group than the one it kept data from. It is left out where there is none, which is
 the in-memory backend and a Raft group that has not recorded it yet.
 
 A broker loads each snapshot once, then asks for changes from the snapshot's

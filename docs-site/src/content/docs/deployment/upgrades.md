@@ -757,23 +757,44 @@ A broker refuses to start when:
   data directories), and the streams this broker holds belong to a catalog
   that no longer exists. Serving them under the new catalog would mix old
   records into new streams that happen to reuse a name.
-- its data directory already holds data but names no group id. That directory
-  was written by a release before this check, so nothing says which catalog
-  its data belongs to.
+- its data directory already holds data but names no group id, and the
+  control plane recorded its group id on an empty catalog. That control plane
+  was created fresh, so nothing says which catalog the data belongs to.
 
-The fix in both cases is the same: stop the broker, wipe its whole data
+If the control plane lost its volumes, first restore its metadata from its
+latest export with `import` (see [backup and restore](/deployment/backup-and-restore/#restoring)).
+The export carries the old group id, so the brokers accept it and keep their
+data. Only if there is no export: stop each broker, wipe its whole data
 directory, and start it again. It joins as a new, empty broker and takes its
-shards from the others. Upgrading to a release whose control plane cannot
-read the previous one's metadata means doing this for every broker.
+shards from the others.
 
 A broker that is already running when the control plane is recreated refuses
-the new catalog's snapshots and stops, with the same message, rather than
-serving its old data under the new catalog.
+the new catalog's snapshots and change-feed pages and stops, with the same
+message, rather than serving its old data under the new catalog. An answer
+that names no group at all, from a control-plane member that has not applied
+the record yet, is skipped and asked for again.
 
 An empty data directory adopts the control plane's group id on its first
 start. A control plane on the in-memory backend has no group, so its brokers
-skip this check. A control plane restored from an export keeps the group id of
-the cluster it was exported from, so its brokers keep their data.
+skip this check.
+
+#### Upgrading an existing cluster to the release that adds the check
+
+Existing broker data directories name no group id, and they keep their data:
+
+1. Upgrade every control-plane member first. The group records its id once
+   all members run the new release (metadata level 32) and a leader exists.
+   Because it already holds streams, it records that the id was taken over an
+   existing catalog. `GET /v1/cluster/identity` then answers with
+   `"adopts_existing": true`.
+2. Then roll the brokers as usual. Each one finds data and no group id, sees
+   `adopts_existing`, records the group id and starts. Nothing is wiped.
+
+A broker started before the record exists waits for it, logging that it is
+retrying. A control plane that is still on the older release answers 404 and
+the broker logs that it must be upgraded first; a node token without
+`node.view:cluster:*` gets 403 and an error naming that permission. The broker
+keeps retrying in each case and never starts without the check.
 
 ### The cluster's shard engine
 

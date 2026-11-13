@@ -45,6 +45,7 @@ fn control_plane(
                         tenant_id: "t1".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -57,6 +58,7 @@ fn control_plane(
                         namespace: "ns".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -81,6 +83,7 @@ fn control_plane(
                 Json(TenantChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -90,6 +93,7 @@ fn control_plane(
                 Json(NamespaceChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -99,6 +103,7 @@ fn control_plane(
                 Json(CacheChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -122,6 +127,7 @@ fn change(op: StreamChangeOp, seq: u64, mount: Option<&str>) -> StreamChangesRes
             deleted_through: None,
         }],
         next_seq: seq + 1,
+        group_id: None,
     }
 }
 
@@ -138,6 +144,7 @@ fn nothing_new(since: u64) -> StreamChangesResponse {
     StreamChangesResponse {
         items: vec![],
         next_seq: since.max(1),
+        group_id: None,
     }
 }
 

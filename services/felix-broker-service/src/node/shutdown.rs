@@ -459,8 +459,8 @@ impl Running {
             tracing::error!("broker stopped: the control plane is another metadata group");
             return Err(anyhow::anyhow!(
                 "the control plane is a different metadata group than this data directory was \
-                 written under (logged above); stop the broker, wipe its whole data directory \
-                 and start it again"
+                 written under (logged above). {}",
+                crate::cluster::controlplane_group::RECOVER
             ));
         }
         if membership_rejected {

@@ -485,5 +485,6 @@ pub(crate) async fn stream_changes(
     Ok(Json(StreamChangesResponse {
         items: changes.items,
         next_seq: changes.next_seq,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }

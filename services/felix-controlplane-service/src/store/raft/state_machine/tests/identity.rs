@@ -14,6 +14,7 @@ fn identity(group_id: &str, shard_engine: &str) -> ClusterIdentity {
     ClusterIdentity {
         group_id: group_id.to_string(),
         shard_engine: shard_engine.to_string(),
+        adopts_existing: false,
     }
 }
 
@@ -136,4 +137,46 @@ async fn an_exported_state_carries_the_identity() {
         restored.recorded_identity().await,
         Some(identity("g-1", "raft"))
     );
+}
+
+/// A group upgraded in place records that it already held streams, so its
+/// brokers keep their data; one formed empty does not.
+#[tokio::test]
+async fn an_identity_recorded_over_streams_adopts_existing_data() {
+    let empty = machine();
+    empty
+        .dispatch(MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        })
+        .await
+        .expect("tenant");
+    assert!(
+        !answer(&empty, record("g-1", "hybrid"))
+            .await
+            .adopts_existing,
+        "a tenant alone holds no broker data"
+    );
+
+    let upgraded = machine();
+    for command in [
+        MetaCommand::CreateTenant {
+            tenant: tenant("t-a"),
+        },
+        MetaCommand::CreateNamespace {
+            namespace: namespace("t-a", "ns-1"),
+        },
+        MetaCommand::CreateStream {
+            names: false,
+            stream: stream("t-a", "ns-1", "s"),
+            incarnations: false,
+        },
+    ] {
+        upgraded.dispatch(command).await.expect("create");
+    }
+    let recorded = answer(&upgraded, record("g-2", "hybrid")).await;
+    assert!(recorded.adopts_existing);
+
+    let restored = machine();
+    restored.restore(&upgraded.snapshot().await).await;
+    assert_eq!(restored.store().recorded_identity().await, Some(recorded));
 }

@@ -15,6 +15,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(TenantSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -24,6 +25,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(NamespaceSnapshotResponse {
                         items: vec![],
                         next_seq: 1,
+                        group_id: None,
                     })
                 }),
             )
@@ -67,7 +69,11 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                                 seq: None,
                             }]
                         };
-                        Json(TenantChangesResponse { items, next_seq: 2 })
+                        Json(TenantChangesResponse {
+                            items,
+                            next_seq: 2,
+                            group_id: None,
+                        })
                     }
                 }),
             )
@@ -88,6 +94,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                             seq: None,
                         }],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -97,6 +104,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(CacheChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             )
@@ -106,6 +114,7 @@ async fn start_sync_retries_after_transient_parent_ordering_error() -> Result<()
                     Json(StreamChangesResponse {
                         items: vec![],
                         next_seq: 2,
+                        group_id: None,
                     })
                 }),
             );

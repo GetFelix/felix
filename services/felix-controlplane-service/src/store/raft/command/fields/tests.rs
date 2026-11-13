@@ -320,6 +320,7 @@ fn exported() -> ExportedState {
         cluster_identity: Some(crate::store::identity::ClusterIdentity {
             group_id: s("g"),
             shard_engine: s("hybrid"),
+            adopts_existing: true,
         }),
         v: 1,
         tenants: vec![(s("t"), tenant())],

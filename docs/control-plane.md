@@ -974,18 +974,30 @@ it afterwards, so racing proposers on a new group are settled by log order. A
 background task on each instance proposes it while the group has none, and
 retries until every member is at metadata level 32 and a leader exists.
 
+The apply also records `adopts_existing`: whether the store already held a
+stream or a cache, or their change history, when the identity was recorded.
+It is computed from replicated state, so every member agrees. A group upgraded
+in place has it set, and a broker whose data directory holds data but no group
+record adopts such a group instead of refusing. A group formed on an empty
+store does not, and such a broker is refused.
+
 `GET /v1/cluster/identity` returns `{"group_id": "...", "shard_engine":
-"hybrid"}`, and the stream and cache snapshots carry `group_id`. Under Raft the
-route answers 503 `identity_pending` until the record exists. The in-memory
-backend has no group, so it reports the configured engine and leaves
-`group_id` out, as do its snapshots.
+"hybrid"}`, plus `"adopts_existing": true` when set. Every snapshot and every
+change-feed page (tenants, namespaces, streams, caches) carries `group_id`, so
+a broker checks each answer before applying it. Under Raft the route answers
+503 `identity_pending` until the record exists. The in-memory backend has no
+group, so it reports the configured engine and leaves `group_id` out, as do
+its snapshots and pages, which keeps their bytes what an older broker
+expects.
 
 If an instance's `FELIX_SHARD_ENGINE` differs from the record, it logs a
 warning and keeps running. The record wins.
 
 The identity is part of the Raft snapshot. An `ImportState` (a restore from
-an export) adopts the export's identity, since it restores that group. An
-export that carries none leaves the group's own in place.
+an export) adopts the export's identity, `adopts_existing` included, since it
+restores that group. An export that carries none leaves the group's own in
+place. Importing one cluster's export into another gives it that cluster's
+group id, so the brokers of both accept it: use import only to restore.
 
 ### Shard ownership
 

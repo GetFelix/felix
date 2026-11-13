@@ -41,10 +41,12 @@ fn identity_response(identity: GroupIdentity) -> Result<ClusterIdentityResponse,
         GroupIdentity::Recorded(identity) => Ok(ClusterIdentityResponse {
             group_id: Some(identity.group_id),
             shard_engine: identity.shard_engine,
+            adopts_existing: identity.adopts_existing,
         }),
         GroupIdentity::NoGroup { shard_engine } => Ok(ClusterIdentityResponse {
             group_id: None,
             shard_engine,
+            adopts_existing: false,
         }),
         GroupIdentity::Pending => Err(api_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -54,7 +56,7 @@ fn identity_response(identity: GroupIdentity) -> Result<ClusterIdentityResponse,
     }
 }
 
-/// The group id for a snapshot, when one is recorded.
+/// The group id for a snapshot or a change-feed page, when one is recorded.
 pub(crate) async fn group_id(state: &AppState) -> Result<Option<String>, ApiError> {
     state
         .store

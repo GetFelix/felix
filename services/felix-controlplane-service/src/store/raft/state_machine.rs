@@ -436,6 +436,7 @@ impl MetadataStateMachine {
                     .apply_record_identity(crate::store::identity::ClusterIdentity {
                         group_id,
                         shard_engine,
+                        adopts_existing: store.held_data_catalog().await,
                     })
                     .await;
                 Ok(MetaResponse::ClusterIdentity { identity })

@@ -58,6 +58,10 @@ pub(super) struct CacheTombstone {
 pub(super) struct TenantSnapshotResponse {
     pub(super) items: Vec<Tenant>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
 }
 
 /// Full snapshot response for namespaces; used to seed a cold-start broker.
@@ -65,6 +69,10 @@ pub(super) struct TenantSnapshotResponse {
 pub(super) struct NamespaceSnapshotResponse {
     pub(super) items: Vec<Namespace>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
 }
 
 /// Incremental change feed response for streams; used after snapshot seeding.
@@ -72,6 +80,10 @@ pub(super) struct NamespaceSnapshotResponse {
 pub(super) struct StreamChangesResponse {
     pub(super) items: Vec<StreamChange>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
 }
 
 /// Incremental change feed response for caches; used after snapshot seeding.
@@ -79,6 +91,10 @@ pub(super) struct StreamChangesResponse {
 pub(super) struct CacheChangesResponse {
     pub(super) items: Vec<CacheChange>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
 }
 
 /// Incremental change feed response for tenants; used after snapshot seeding.
@@ -86,6 +102,10 @@ pub(super) struct CacheChangesResponse {
 pub(super) struct TenantChangesResponse {
     pub(super) items: Vec<TenantChange>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
 }
 
 /// Incremental change feed response for namespaces; used after snapshot seeding.
@@ -93,6 +113,10 @@ pub(super) struct TenantChangesResponse {
 pub(super) struct NamespaceChangesResponse {
     pub(super) items: Vec<NamespaceChange>,
     pub(super) next_seq: u64,
+    /// The control plane's metadata group. Absent from a control plane with no
+    /// group, or one that predates it: no claim.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) group_id: Option<String>,
 }
 
 /// Represents a single change-feed event for a tenant.

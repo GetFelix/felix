@@ -1257,8 +1257,10 @@
 32 record_cluster_identity.group_id
 32 record_cluster_identity.shard_engine
 32 import_state.state.cluster_identity
+32 import_state.state.cluster_identity.adopts_existing
 32 import_state.state.cluster_identity.group_id
 32 import_state.state.cluster_identity.shard_engine
 32 snapshot.state.cluster_identity
+32 snapshot.state.cluster_identity.adopts_existing
 32 snapshot.state.cluster_identity.group_id
 32 snapshot.state.cluster_identity.shard_engine

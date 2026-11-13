@@ -620,7 +620,7 @@ async fn snapshots_and_changes_endpoints() {
 }
 
 /// A memory backend has no group: the route reports the engine alone, and
-/// the snapshots keep the bytes they always had.
+/// the snapshots and change pages keep the bytes they always had.
 #[tokio::test]
 async fn the_cluster_identity_route_on_memory_has_no_group_id() {
     let h = harness("local").await;
@@ -644,12 +644,22 @@ async fn the_cluster_identity_route_on_memory_has_no_group_id() {
         serde_json::json!({"shard_engine": "hybrid"})
     );
 
-    for path in ["/v1/streams/snapshot", "/v1/caches/snapshot"] {
+    for path in [
+        "/v1/tenants/snapshot",
+        "/v1/namespaces/snapshot",
+        "/v1/streams/snapshot",
+        "/v1/caches/snapshot",
+        "/v1/tenants/changes?since=0",
+        "/v1/namespaces/changes?since=0",
+        "/v1/streams/changes?since=0",
+        "/v1/caches/changes?since=0",
+    ] {
         let response = app
             .clone()
             .oneshot(request_as("GET", path, &h.operator()))
             .await
             .expect("snapshot");
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
         let payload = read_json(response).await;
         assert!(payload.get("group_id").is_none(), "{path}: {payload}");
     }
