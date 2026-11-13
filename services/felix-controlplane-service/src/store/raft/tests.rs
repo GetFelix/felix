@@ -1629,9 +1629,10 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
     assert_eq!(restored.join_floor(), PLACED_LEVEL);
 }
 
-/// An import that marks the streams and caches it restores needs level 31,
-/// so it never reaches a member that would apply it without marking. One
-/// that marks nothing is proposed at any level, and marks nothing.
+/// An import marks the streams and caches it restores only at level 31, so
+/// every member applies the same mark. The leader settles the field
+/// whatever the proposer sent: an import without it marks at level 31, and
+/// one with it marks nothing below.
 #[tokio::test]
 async fn an_import_marks_restored_streams_only_at_the_placed_level() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1652,8 +1653,11 @@ async fn an_import_marks_restored_streams_only_at_the_placed_level() {
         matches!(refused, Err(StoreError::Conflict(_))),
         "{refused:?}"
     );
-    store.propose(import(false)).await.expect("unmarked import");
     let marked = || async { store.machine.store().export_state().await.unplaced.len() };
+    // Raw bytes through the peer route skip the store's check; the leader
+    // still takes the mark off below the level.
+    let raw = |mark| crate::store::raft::command::encode_command(&import(mark));
+    store.handle.write(raw(true)).await.expect("raw import");
     assert_eq!(marked().await, 0);
 
     version.store(
@@ -1661,11 +1665,13 @@ async fn an_import_marks_restored_streams_only_at_the_placed_level() {
         std::sync::atomic::Ordering::SeqCst,
     );
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while let Err(err) = store.propose(import(true)).await {
-        assert!(matches!(err, StoreError::Conflict(_)), "{err:?}");
+    while marked().await == 0 {
+        // Without the field, as an operator's import arrives: the leader
+        // sets it once every member has the level.
+        store.handle.write(raw(false)).await.expect("raw import");
         assert!(
             std::time::Instant::now() < deadline,
-            "still refused after every member reported the level"
+            "not marked after every member reported the level"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

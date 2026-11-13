@@ -854,6 +854,38 @@ const HEARTBEAT_OP: &str = "record_node_heartbeat";
 /// The other command carrying a clock reading the leader replaces.
 const REPLICA_REPORT_OP: &str = "record_replica_report";
 
+/// The import command, whose restore mark depends on the group's level.
+const IMPORT_STATE_OP: &str = "import_state";
+
+/// Set an import's `mark_unplaced` from the group's `level`, whatever the
+/// proposer sent: true from level 31, absent below it. An operator import
+/// arrives as raw JSON, and one that left the field out would otherwise
+/// mark nothing at a level where every member can.
+pub fn settle_for_level(command: &[u8], level: u16) -> Option<Vec<u8>> {
+    edit_command_json(command, |object| {
+        if object.get("op").and_then(serde_json::Value::as_str) != Some(IMPORT_STATE_OP) {
+            return false;
+        }
+        if level >= super::PLACED_LEVEL {
+            object.insert("mark_unplaced".to_string(), true.into());
+        } else {
+            object.remove("mark_unplaced");
+        }
+        true
+    })
+}
+
+/// Whether `command` is an import, read without decoding the state it
+/// carries.
+pub fn depends_on_level(command: &[u8]) -> bool {
+    #[derive(Deserialize)]
+    struct OpPeek<'a> {
+        #[serde(borrow)]
+        op: Option<&'a str>,
+    }
+    serde_json::from_slice::<OpPeek>(command).is_ok_and(|peek| peek.op == Some(IMPORT_STATE_OP))
+}
+
 /// Replace the proposer's clock reading in `command` with `now_millis`.
 ///
 /// `None` for every other command, so the caller proposes the original bytes.
