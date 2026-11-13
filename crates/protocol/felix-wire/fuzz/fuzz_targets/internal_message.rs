@@ -54,7 +54,8 @@ fuzz_target!(|data: &[u8]| {
     // that names older sets), and `RECORD_HEADERS` exactly
     // when it travelled as a headered kind or inside a stamped envelope that
     // holds a headered batch; a sequenced forward needs `SEQUENCED_FORWARDS`
-    // as well. An incarnation envelope might hold either.
+    // as well. An incarnation envelope might hold either. A Raft message needs
+    // `RAFT`.
     // Nothing else may be withheld from a peer that did not offer it.
     if let Ok(header) = InternalHeader::decode(&input) {
         let election = PeerCapabilities::ELECTION;
@@ -79,6 +80,7 @@ fuzz_target!(|data: &[u8]| {
                 required,
                 Some(headers.union(PeerCapabilities::SEQUENCED_FORWARDS))
             ),
+            Kind::Raft | Kind::RaftAnswer => assert_eq!(required, Some(PeerCapabilities::RAFT)),
             _ => assert_eq!(required, None),
         }
     }
