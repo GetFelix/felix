@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794532334305,
+  "lastUpdate": 1794533476752,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -68244,6 +68244,72 @@ window.BENCHMARK_DATA = {
             "range": "687.49",
             "unit": "us",
             "extra": "trials: 5\nmedian: 571.00\nmean: 978.80\nstdev: 687.49\ncv: 70.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "52762afdd9c04e8752a871dc6cb3f4c6ea2b5c54",
+          "message": "spec: the metadata group's first start in FelixRaftPlacement (#2394)\n\nModels the metadata group's first start (#2371): all-peers formation, the form-without waiver (bounded count, never excusing an answering peer), and two lost volumes. Twin configs for each knob; Form is dead in FormAfterWipes and FormWaiverAnswers, as the README states.",
+          "timestamp": "2026-11-13T01:22:55Z",
+          "tree_id": "371bb48d0b5335699eb2fc2c2b7344f8a19aa433",
+          "url": "https://github.com/GetFelix/felix/commit/52762afdd9c04e8752a871dc6cb3f4c6ea2b5c54"
+        },
+        "date": 1794533467064,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 122,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 122.20\nstdev: 0.84\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 171,
+            "range": "5.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 169.60\nstdev: 5.59\ncv: 3.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 320,
+            "range": "215.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 320.00\nmean: 403.40\nstdev: 215.59\ncv: 53.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 170,
+            "range": "8.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 173.80\nstdev: 8.53\ncv: 4.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 349,
+            "range": "316.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 349.00\nmean: 485.80\nstdev: 316.57\ncv: 65.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1458,
+            "range": "983.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1458.00\nmean: 1449.80\nstdev: 983.26\ncv: 67.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
