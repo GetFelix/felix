@@ -981,9 +981,11 @@ in place has it set, and a broker whose data directory holds data but no group
 record adopts such a group instead of refusing. A group formed on an empty
 store does not, and such a broker is refused.
 
-Until the record exists, a group at level 32 refuses stream and cache creates
-with 503 `not_ready`, so nothing created in that window can set
-`adopts_existing` on a new group.
+Until the record exists, stream and cache creates wait: they are refused
+with 503 `not_ready` unless every member has answered the version probe and
+one is below level 32, so the group cannot record yet. A member that has not
+answered counts as unknown, not as older, so nothing created while a new
+group forms can set `adopts_existing` on it.
 
 `GET /v1/cluster/identity` returns `{"group_id": "...", "shard_engine":
 "hybrid"}`, plus `"adopts_existing": true` when set. Every snapshot and every

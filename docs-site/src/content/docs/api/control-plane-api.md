@@ -585,7 +585,8 @@ A create, update or delete of a tenant, namespace, stream or cache can answer
 `503`. Code `unavailable` means no Raft quorum committed the write in time and
 it may still land, so a retried create can answer `409` and a retried delete
 `404`. A stream or cache create answers `503` `not_ready` under Raft until the
-group has recorded its identity, which takes a few seconds after it forms.
+group has recorded its identity, which takes a few seconds after it forms, or
+until every member has reported a level below 32 (a group mid-upgrade).
 
 #### Creating several at once
 

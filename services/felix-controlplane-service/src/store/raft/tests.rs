@@ -4261,3 +4261,78 @@ async fn creates_wait_for_the_identity() {
     assert!(!recorded(&store).await.adopts_existing);
     store.create_stream(stream()).await.expect("created");
 }
+
+/// A member that has not answered the version probe may be new, so a create
+/// waits for the identity even though the level it reads is below 32. Only
+/// once every member has answered and one is older does it go through
+/// unmarked.
+#[tokio::test]
+async fn creates_wait_while_a_member_level_is_unknown() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(crate::model::Namespace {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            display_name: "Ns".to_string(),
+        })
+        .await
+        .expect("namespace");
+    let version = Arc::new(std::sync::atomic::AtomicU16::new(SILENT));
+    let addr = stub_member(Arc::clone(&version)).await;
+    store
+        .handle
+        .add_learner_without_waiting(2, addr)
+        .await
+        .expect("add member");
+    // The level read before the member joined is served for a while.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await >= super::IDENTITY_LEVEL {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(store.handle.cluster_version_if_known().await, None);
+    let stream = |name: &str| routed_stream(name, crate::model::StreamRouting::Modulo);
+
+    let applied = store.handle.status().last_applied_index;
+    let err = store
+        .create_stream(stream("orders"))
+        .await
+        .expect_err("refused while the member is unknown");
+    let api = crate::api::error::api_internal("failed to create", &err);
+    assert_eq!(api.status, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(api.body.code, "not_ready");
+    assert_eq!(store.handle.status().last_applied_index, applied);
+
+    version.store(31, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.handle.cluster_version_if_known().await != Some(31) {
+        assert!(std::time::Instant::now() < deadline, "never answered");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    store
+        .create_stream(stream("orders"))
+        .await
+        .expect("created");
+    assert_eq!(
+        store.group_identity().await.expect("identity"),
+        crate::store::identity::GroupIdentity::Pending
+    );
+
+    version.store(SILENT, std::sync::atomic::Ordering::SeqCst);
+    store
+        .local()
+        .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
+        .await;
+    store.create_stream(stream("audit")).await.expect("created");
+}

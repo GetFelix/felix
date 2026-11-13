@@ -182,19 +182,27 @@ impl RaftStore {
             .await
     }
 
-    /// Whether a create at `level` must wait for the identity. Refused here
-    /// while the record is missing, and marked so the apply refuses it too
-    /// if it reaches the log first.
+    /// Whether a create at `level` must carry the identity mark, so the
+    /// apply refuses it if it reaches the log before the record. Refused
+    /// here while the record is missing, unless every member has answered
+    /// and one is below [`IDENTITY_LEVEL`]: a member that has not answered
+    /// may be new, and `level` counts it at the join floor.
     async fn needs_identity(&self, level: u16) -> StoreResult<bool> {
-        if level < IDENTITY_LEVEL {
+        if self.local().recorded_identity().await.is_some() {
+            return Ok(level >= IDENTITY_LEVEL);
+        }
+        let older = level < IDENTITY_LEVEL
+            && self
+                .handle
+                .cluster_version_if_known()
+                .await
+                .is_some_and(|known| known < IDENTITY_LEVEL);
+        if older {
             return Ok(false);
         }
-        if self.local().recorded_identity().await.is_none() {
-            return Err(StoreError::Unexpected(
-                crate::store::identity::IdentityPending.into(),
-            ));
-        }
-        Ok(true)
+        Err(StoreError::Unexpected(
+            crate::store::identity::IdentityPending.into(),
+        ))
     }
 
     /// A mount is refused below [`MOUNT_LEVEL`] rather than dropped: a member
