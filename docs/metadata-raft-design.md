@@ -1153,8 +1153,10 @@ fails only when no bytes move for 30 s.
 
 **Start.** Open the log, read the snapshot, restore it, and let openraft
 apply the log up to the committed index. The member stays out of rotation
-until it has applied everything it had committed before it stopped, as
-today.
+until it has applied up to the committed index it last saved, as today.
+That index is written at most once a second, behind the write path, so
+after a crash it may be up to a second behind what the member had
+committed.
 
 ### openraft 0.9 to 0.10
 
@@ -1486,7 +1488,7 @@ fsynced, including a rename whose directory was not fsynced.
 | An append, after the fsync | The entries | Kept. A new leader keeps or truncates them, as Raft does. |
 | A truncation | The cut is on disk before any later append is reported flushed | A cut tail never comes back under a committed id (`TruncateNotDurable`). |
 | A vote save | The old vote or the new one | The higher of the two files is read, so the vote never goes down (`VoteNeverLowers`). |
-| Saving the committed index | An index that may be past the recovered log | Lowered to the log's end at open. An entry at that index with another term stops the member (issue [#2221](https://github.com/GetFelix/felix/issues/2221)). |
+| Saving the committed index | An index that may be past the recovered log, or up to a second behind: it is written at most once a second, off the write path | Lowered to the log's end at open; a lower one only shortens the replay a restart waits for. An entry at that index with another term stops the member (issue [#2221](https://github.com/GetFelix/felix/issues/2221)). |
 | A snapshot build or install | The old snapshot or the new one; maybe a temporary file | The temporary file is deleted. The log still holds everything after the stored snapshot. |
 | A purge | Entries removed up to some point at or before the stored snapshot. Entries a purge hid past the snapshot are back. | The log starts at or before the snapshot's next index and has no gap. Entries at or below the snapshot are not applied. |
 | A write of the member file | The old file or the new one | The vote-withheld flag is durable before the member acts on it, as today. |

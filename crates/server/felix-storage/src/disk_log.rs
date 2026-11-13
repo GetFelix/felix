@@ -2221,6 +2221,22 @@ impl LogInner {
 }
 
 impl LogInner {
+    /// How long the commit writer waits before its next write: the rest of
+    /// [`COMMIT_PERSIST_INTERVAL`] on a Raft log, nothing otherwise.
+    fn commit_write_wait(&self) -> Option<std::time::Duration> {
+        if !self.config.raft_log {
+            return None;
+        }
+        // Held while a write is in flight, which is a write just made.
+        let last = match self.replica_persisted.try_lock() {
+            Some(persisted) => persisted.1?,
+            None => return Some(COMMIT_PERSIST_INTERVAL),
+        };
+        COMMIT_PERSIST_INTERVAL
+            .checked_sub(last.elapsed())
+            .filter(|wait| !wait.is_zero())
+    }
+
     /// The replica state as memory has it.
     fn replica_state(&self) -> replica_state::ReplicaState {
         let committed = self.committed_generation.lock();
@@ -2276,6 +2292,13 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
 /// log; it loops until disk has caught up with memory, so an advance made
 /// while a write is in flight is carried by the next one rather than adding
 /// its own.
+///
+/// On a Raft log a write waits until [`COMMIT_PERSIST_INTERVAL`] has passed
+/// since the last one. Its commit index moves on almost every entry, and a
+/// write is a create, two fsyncs and a rename that the log's own fsyncs queue
+/// behind on the same disk: written back to back they cost a 3-member group
+/// about half its throughput and tripled its p99
+/// (`docs/metadata-raft-benchmark.md`).
 fn write_commit_behind(inner: &Arc<LogInner>) {
     if inner.commit_writer.swap(true, Ordering::AcqRel) {
         return;
@@ -2284,6 +2307,10 @@ fn write_commit_behind(inner: &Arc<LogInner>) {
     let weak = Arc::downgrade(inner);
     tokio::spawn(async move {
         loop {
+            let wait = weak.upgrade().and_then(|inner| inner.commit_write_wait());
+            if let Some(wait) = wait {
+                tokio::time::sleep(wait).await;
+            }
             let Some(inner) = weak.upgrade() else {
                 return;
             };

@@ -59,8 +59,9 @@ where
     }
 
     /// Kept as the log's commit offset with the id's term beside it, written
-    /// behind the call: after a crash the id read back may be older, never
-    /// newer.
+    /// behind the call and at most once per
+    /// [`crate::disk_log::COMMIT_PERSIST_INTERVAL`]: after a crash the id
+    /// read back may be older, never newer.
     async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> io::Result<()> {
         match committed {
             None => Ok(()),

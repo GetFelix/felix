@@ -392,6 +392,32 @@ async fn advances_coalesce_into_few_replica_state_writes() {
     );
 }
 
+/// **A Raft log writes its commit index at most once per
+/// [`COMMIT_PERSIST_INTERVAL`].** The index moves on almost every entry, and
+/// a write per move puts the log's own fsyncs behind it.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_log_writes_its_commit_index_once_per_interval() {
+    let dir = tempdir().expect("tempdir");
+    let config = LogConfig {
+        raft_log: true,
+        ..config(FsyncMode::OnCommit)
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config).expect("open");
+    log.save_committed(0, 1).await.expect("save");
+    on_disk(&dir, 1).await;
+    let writes = || log.inner.replica_writes.load(Ordering::Relaxed);
+    let before = writes();
+    // Each move waits long enough for a write started by the last to land.
+    for index in 1..10 {
+        log.save_committed(index, 1).await.expect("save");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(writes() - before, 0, "a write within the interval");
+    on_disk(&dir, 10).await;
+    assert_eq!(writes() - before, 1, "one write carries every move");
+}
+
 /// **An advance made as the writer finishes is not left behind.** The writer
 /// clears its flag and then checks memory; an advance that found the flag
 /// still set relies on that check. A race, so this cannot fail on demand; it
