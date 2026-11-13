@@ -1064,6 +1064,7 @@ weights=(
   "FelixRaftReformOneReplica 2"
   "FelixRaftReformDead 2"
   "FelixRaftReformStaleMembershipTwoRotated 7"
+  "FelixRaftReformStaleMembershipTwoMovesForgotten 13"
   "FelixRaftReformRejoinFull 13"
   "FelixRaftReformTwoRotatedFull 15"
   "FelixRaftSwitchGenZeroFull 37"
