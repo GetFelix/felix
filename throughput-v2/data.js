@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794534849523,
+  "lastUpdate": 1794535327348,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53872,6 +53872,58 @@ window.BENCHMARK_DATA = {
             "range": "25422.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1166827.53\nmean: 1164101.15\nstdev: 25422.64\ncv: 2.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d6dd006c505b0c578e986f93b8c82864eb7983fc",
+          "message": "feat(storage): the Raft log tells a proposer where its entry was written (#2398)\n\nPart 4b of #2233. A Command carries a WrittenToken (never encoded) that the Raft log resolves with the entry's index and term after the write, before the flush. An unresolved token means unknown outcome.\n\nSpec-Unaffected: an in-memory signal for the publisher's acknowledgement; votes, the flush callback, the commit index and what is stored are unchanged.",
+          "timestamp": "2026-11-13T01:56:41Z",
+          "tree_id": "28b92060b39a288cfe181b9e2482ca735c00d5e1",
+          "url": "https://github.com/GetFelix/felix/commit/d6dd006c505b0c578e986f93b8c82864eb7983fc"
+        },
+        "date": 1794535326397,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 364466.69,
+            "range": "13463.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364466.69\nmean: 362319.14\nstdev: 13463.56\ncv: 3.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 364466.69,
+            "range": "13463.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 364466.69\nmean: 362319.14\nstdev: 13463.56\ncv: 3.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81627.83,
+            "range": "210.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81627.83\nmean: 81698.21\nstdev: 210.83\ncv: 0.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816278.32,
+            "range": "2108.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816278.32\nmean: 816982.12\nstdev: 2108.31\ncv: 0.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
