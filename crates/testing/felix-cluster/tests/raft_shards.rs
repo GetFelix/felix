@@ -212,19 +212,18 @@ async fn a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged() 
     }
 }
 
-/// **Brokers placed on a shard after the first one lose nothing it
-/// acknowledged.** The stream asks for three brokers and starts with one, so
-/// placement names that one alone and fills the set when the others
-/// register. No group forms on the short set. A group of one would
-/// acknowledge on its own, and the brokers placed later would form the full
-/// set again on empty logs and elect each other.
+/// **A shard placed on fewer brokers than its stream asks for forms no
+/// group and acknowledges nothing.** The stream asks for three brokers and
+/// the cluster has one, so placement names that one alone. A group of one
+/// would acknowledge on its own, and brokers placed later would form the
+/// full set again on empty logs and elect each other.
 #[tokio::test]
 #[serial]
-async fn brokers_placed_after_the_first_lose_nothing_it_acknowledged() {
+async fn a_short_placement_acknowledges_nothing() {
     if !opted_in() {
         return;
     }
-    let mut cluster = Cluster::start(ClusterConfig {
+    let cluster = Cluster::start(ClusterConfig {
         nodes: 1,
         streams: Vec::new(),
         broker_env: vec![engine("raft")],
@@ -232,65 +231,34 @@ async fn brokers_placed_after_the_first_lose_nothing_it_acknowledged() {
     })
     .await
     .expect("start cluster");
-    let first = cluster.node_ids().remove(0);
+    let only = cluster.node_ids().remove(0);
     cluster
         .create_stream(&StreamSpec::quorum(STREAM, 1, 3))
         .await
         .expect("create the stream");
+    felix_cluster::wait::until(ELECTED_WITHIN, "the shard to be placed", || async {
+        cluster.place_shards().await;
+        cluster
+            .shard_owners_for(STREAM)
+            .await
+            .is_ok_and(|owners| owners.get(&0) == Some(&only))
+    })
+    .await
+    .expect("placed on the one broker");
 
-    // Whatever the lone broker acknowledges is owed at the end.
-    let mut alone = Vec::new();
+    let mut acked = 0;
     let until = tokio::time::Instant::now() + Duration::from_secs(10);
     while tokio::time::Instant::now() < until {
         cluster.place_shards().await;
-        let payload = format!("alone-{}", alone.len()).into_bytes();
-        let acked = tokio::time::timeout(
-            Duration::from_secs(2),
-            cluster.publish_via_at(&first, STREAM, payload.clone()),
-        )
-        .await;
-        if matches!(acked, Ok(Ok(Some(_)))) {
-            alone.push(payload);
+        let publish = cluster.publish_via_at(&only, STREAM, b"alone".to_vec());
+        if let Ok(Ok(Some(_))) = tokio::time::timeout(Duration::from_secs(2), publish).await {
+            acked += 1;
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
-
-    cluster.add_node().await.expect("second broker");
-    cluster.add_node().await.expect("third broker");
-    // Placement is stepped until the full set serves: nothing else fills it.
-    let filled = b"after the set filled".to_vec();
-    felix_cluster::wait::until(ELECTED_WITHIN, "the full set to serve", || async {
-        cluster.place_shards().await;
-        matches!(
-            cluster.publish_via_at(&first, STREAM, filled.clone()).await,
-            Ok(Some(_))
-        )
-    })
-    .await
-    .expect("a publish once the set is full");
-
-    let nodes = cluster.node_ids();
-    let mut owed = alone.clone();
-    owed.push(filled);
-    for node in &nodes {
-        let payload = format!("through-{node}").into_bytes();
-        publish_acked(&cluster, node, &payload).await;
-        owed.push(payload);
-    }
-    let leader = leader_among(&cluster, &nodes).await;
-    let held = replay_holding(&cluster, &leader, &owed).await;
-    for payload in &owed {
-        assert_eq!(
-            held.iter().filter(|have| *have == payload).count(),
-            1,
-            "{leader} holds {:?} other than once",
-            String::from_utf8_lossy(payload)
-        );
-    }
-    assert!(
-        alone.is_empty(),
-        "one broker of three acknowledged {} records on its own",
-        alone.len()
+    assert_eq!(
+        acked, 0,
+        "one broker of three acknowledged records on its own"
     );
 }
 

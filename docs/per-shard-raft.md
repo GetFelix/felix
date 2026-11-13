@@ -1502,7 +1502,10 @@ Membership changes are not built yet
   acknowledge on its own, and the brokers placed later would form the full
   set again on empty logs, elect each other and overwrite what the first
   group acknowledged. On a short set every member waits and the shard
-  answers "not ready".
+  answers "not ready". Placement fills a short set only after the shard's
+  leader has reported to it, which a Raft shard does not do, so today a
+  shard placed short stays short: create a stream once as many brokers as
+  its replication factor are registered.
 - One broker forms the group: the one with the lowest id in the set. It
   first asks every other member whether a group has reached it, with a Raft
   pre-vote, which changes nothing on the member asked. It forms the group
@@ -1537,7 +1540,7 @@ second one. Both need a placement change the list above already rules out.
 > `a_member_placement_drops_keeps_serving`,
 > `a_dropped_member_reopens_after_a_restart`;
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
-> `brokers_placed_after_the_first_lose_nothing_it_acknowledged`.
+> `a_short_placement_acknowledges_nothing`.
 
 **Every broker that holds a shard must run it on the same engine.** A
 hybrid broker placed in a Raft shard would keep a log of its own that no

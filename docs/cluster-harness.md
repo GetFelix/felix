@@ -634,8 +634,8 @@ publish to be accepted.
 `Cluster::create_stream` creates a stream on a running cluster and waits for
 nothing. A test that needs a shard placed on fewer brokers than its stream
 asks for starts with no streams, creates one, and steps placement itself:
-`brokers_placed_after_the_first_lose_nothing_it_acknowledged` starts one
-broker, creates a stream of three replicas, then adds two brokers.
+`a_short_placement_acknowledges_nothing` starts one broker and creates a
+stream of three replicas.
 
 The data directory is a temporary one and goes with the cluster. Set
 `FELIX_TEST_CLUSTER_LOG_DIR` to keep the logs: at teardown each cluster copies
