@@ -10,7 +10,9 @@
 //! arrive. [`PeerTransport`] carries them over the broker's peer connections,
 //! and a runtime given to `PeerServer::with_raft` answers them there.
 //!
-//! A publish goes in through [`RaftEngine::propose`].
+//! A publish goes in through [`RaftEngine::propose`] and waits for its
+//! commit on [`RaftEngine::await_commit`]. Readers are bounded by
+//! [`RaftEngine::read_bound`].
 //!
 //! Nothing in the broker calls this yet. No shard runs on it, and the
 //! `raft` feature that compiles it is in no release. The design is in
@@ -19,11 +21,13 @@
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
 mod codec;
+mod commit;
 mod engine;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
 mod group;
+mod lead;
 mod machine;
 mod network;
 mod peer;

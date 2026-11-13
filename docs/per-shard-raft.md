@@ -537,8 +537,10 @@ publisher, as today.
 
 **`propose` as built** (`raft::RaftEngine::propose`, in
 `crates/server/felix-replication/src/raft/propose.rs`). It is on the Raft
-engine only. The `Engine` trait gains it with the commit index, when the
-Raft engine can answer the rest of the trait.
+engine only, like `await_commit`, `read_bound` and `confirm_read`. The
+`Engine` trait gains `propose` in the pull request that routes a shard to
+the Raft engine: until then the trait's cache, counter and peer-message
+methods have no Raft answer.
 
 A batch is a list of records and where its acknowledgement waits: `Written`
 or `Flushed`. `AckAt::for_fsync` picks `Flushed` for a stream that fsyncs
@@ -598,7 +600,7 @@ A token has no time limit of its own, so every wait also ends when:
 - openraft refuses the write. A member that does not lead, and a leader
   no majority has answered for its lease, append nothing.
 - This member stops leading, or leads at another term than the one that
-  wrote the batch. This is read from openraft's metrics.
+  wrote the batch. The group's role watcher says so ("When it closes").
 - The flushed position shows a later term. Another leader wrote there, and
   whether the batch is still under it is not known.
 - The group is closed or the runtime shuts down.
@@ -840,6 +842,9 @@ open:
 - A command may carry a `WrittenToken`. The leader's `append` resolves it
   with the record's index and term once the record is written.
   `RaftEngine::propose` sets them ("Writing through openraft").
+- `report_to(serving, fence)` names who is told when a shard opens and
+  closes here ("When a leader opens"). It is called once, before the first
+  `open`.
 - `status(shard)` also counts `client_writes`: the calls made to openraft
   for publishes. Each carries every batch that was queued when it was
   made, so under load the count is well below the number of batches.
@@ -984,6 +989,43 @@ The engine calls `deposed` and the write fence closes on any of:
 A failed lease check is not on this list. A leader whose lease has lapsed
 is still the leader until Raft says otherwise.
 
+**As built.** Each member has one small task, the role watcher
+(`crates/server/felix-replication/src/raft/lead.rs`). It watches openraft's
+server metrics, which change only with the role, the vote and the
+membership, so a heartbeat answer does not wake it. While a term waits to
+open it also watches the commit table ("Reads"). It calls
+`opened(shard, term)` when this member leads `term` and the last applied
+entry has that term. The blank entry is the first entry of a term, so by
+then it is committed. It calls `deposed(shard, term)`, once, for a term it
+opened, when openraft no longer names this member the leader of that term,
+or when the group has stopped. A storage error stops the group.
+
+`RaftEngine::transfer_starting(shard)` is what the transfer code calls
+before it asks openraft for a transfer (issue #2249 adds that single entry
+point). It asks the group's core which term this member leads, not the
+metrics, which can trail an election. The shard is closed when the call
+returns, and that term never opens again, whether or not the transfer goes
+through. The shard opens again in a later term. The call returns the term
+it closed, or nothing when this member leads no term, and then the
+transfer must not be asked for.
+
+Nothing else calls `deposed`. A write openraft refuses because its lease
+lapsed, a refused `admit_local_ack` and a read-index round no majority
+answers all leave the shard open.
+
+A publisher's wait and a commit wait end when the watcher says the term is
+lost. The watcher hears of an election a moment after openraft does, so
+neither wait takes "not leading" on the watcher's word alone: openraft's
+own role is read as well.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_leader_opens_only_once_its_blank_entry_commits`,
+> `a_write_whose_index_commits_under_another_term_is_refused`,
+> `a_transfer_about_to_start_closes_the_shard`,
+> `a_term_closed_before_it_opened_is_not_waited_on`,
+> `a_group_that_stops_on_a_storage_error_closes_the_shard` and
+> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard`.
+
 openraft reports role changes through its metrics channel, which is
 asynchronous, so the fence can close a moment late. That is safe. A write
 proposed in the gap is refused by openraft, or appended as an uncommitted
@@ -999,6 +1041,30 @@ it ("Two signals from one append"). If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
+
+**`await_commit` as built** (`RaftEngine::await_commit`, in
+`crates/server/felix-replication/src/raft/commit.rs`). It takes the
+`Written` that `propose` returned and waits on the commit table ("Reads")
+until the record's offset is applied. Then it checks the term of the entry
+at that offset:
+
+| The entry at the offset | The waiter gets |
+| --- | --- |
+| Has the term the record was written at | Committed |
+| Has another term: a later leader's entry took the offset | Leadership lost |
+| Is older than the terms this member remembers | Leadership lost |
+
+The table keeps the first applied index of each of the last eight terms.
+Terms never go down along a log, so that is enough to name the term at any
+index since. The wait also ends, as leadership lost, when this member stops
+leading the term it wrote in, and with a timeout when the caller's budget
+runs out. Each is an unknown outcome. A commit that is already visible
+wins over all of them.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_write_waits_for_its_commit`,
+> `a_write_whose_index_commits_under_another_term_is_refused` and
+> `the_commit_table_knows_the_term_at_every_applied_index`.
 
 A `Leader` write is acknowledged on local durability if `admit_local_ack`
 passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
@@ -1051,8 +1117,35 @@ consistency level. Subscriber fanout, cursor replay, Kafka fetch and cache
 watch all take it. The engine publishes each commit index advance into the
 table the commit hold already waits on.
 
-`confirm_read` is a read-index round (`Raft::get_read_linearizer` with the
-read-index policy).
+**As built.** Each group's state machine keeps what it has applied: the
+last entry, and where each recent term starts. It publishes that once per
+run of applied entries, into a watch channel the group holds. This is the
+commit table. Nothing reads openraft's metrics for it: they change on every
+heartbeat answer, and every waiter would wake. An entry is applied only
+after it is committed, so `RaftEngine::read_bound`, the last applied index
+plus one, can trail the commit index and never passes it. A follower has a
+bound too, from what it has applied.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `the_read_bound_never_passes_the_commit_index`.
+
+`confirm_read` is a read-index round (`Raft::get_read_log_id` with
+`ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
+first, then its value, then calls `RaftEngine::confirm_read` with that
+term. The read is confirmed only if the shard is still open in that term
+and the round's answer is for it. The term open at confirm time is not
+enough. A broker that was deposed and elected again after the read is open
+in a later term, and the value it read can miss a record the leader in
+between committed. A member that does not lead is refused as leadership lost. A majority that does not
+answer within the longest election timeout is a timeout, not a lost
+leadership. If openraft reports a lapsed lease, the engine asks for a
+heartbeat, waits for a majority to answer and asks again within the same
+bound.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
+> `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
+
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
 page, "openraft version").

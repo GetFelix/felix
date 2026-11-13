@@ -7,14 +7,16 @@
 
 use std::io;
 
-use felix_storage::raft_log::{SnapshotId, SnapshotStore, StoredSnapshot};
+use felix_storage::raft_log::{LogPoint, SnapshotId, SnapshotStore, StoredSnapshot};
 use futures::{Stream, StreamExt};
 use openraft::storage::{EntryResponder, RaftSnapshotBuilder, RaftStateMachine};
 use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf};
 use openraft::{EntryPayload, OptionalSend};
 use serde::{Deserialize, Serialize};
+use tokio::sync::watch;
 
 use super::codec::{StoredMembership, invalid};
+use super::commit::Commits;
 use super::types::{Applied, ShardTypes};
 
 #[derive(Clone, Default)]
@@ -26,17 +28,48 @@ struct State {
 pub(crate) struct Machine {
     snapshots: SnapshotStore,
     state: State,
+    /// What this member has applied, and so knows committed.
+    commits: Commits,
+    /// `commits` as the read bound and the commit waits see it, moved once
+    /// per run of applied entries.
+    published: watch::Sender<Commits>,
 }
 
 impl Machine {
-    /// The state machine over the snapshot `snapshots` holds, if any.
-    pub(crate) async fn open(snapshots: SnapshotStore) -> io::Result<Self> {
+    /// The state machine over the snapshot `snapshots` holds, if any, and
+    /// what it has applied as that changes.
+    pub(crate) async fn open(
+        snapshots: SnapshotStore,
+    ) -> io::Result<(Self, watch::Receiver<Commits>)> {
         let state = match snapshots.current().await? {
             Some(stored) => StoredMeta::state(&stored.meta)?,
             None => State::default(),
         };
-        Ok(Self { snapshots, state })
+        let commits = Commits::resumed(state.last_applied.as_ref().map(point));
+        let (published, applied) = watch::channel(commits.clone());
+        let machine = Self {
+            snapshots,
+            state,
+            commits,
+            published,
+        };
+        Ok((machine, applied))
     }
+
+    fn publish(&self) {
+        self.published.send_if_modified(|published| {
+            let moved = *published != self.commits;
+            if moved {
+                published.clone_from(&self.commits);
+            }
+            moved
+        });
+    }
+}
+
+fn point(id: &LogIdOf<ShardTypes>) -> LogPoint {
+    let (term, index) = term_index(id);
+    LogPoint { term, index }
 }
 
 /// A snapshot's metadata as stored, in JSON.
@@ -133,18 +166,29 @@ impl RaftStateMachine<ShardTypes> for Machine {
     where
         Strm: Stream<Item = io::Result<EntryResponder<ShardTypes>>> + Unpin + OptionalSend,
     {
+        let mut applied = Ok(());
         while let Some(next) = entries.next().await {
-            let (entry, responder) = next?;
+            let (entry, responder) = match next {
+                Ok(next) => next,
+                Err(err) => {
+                    applied = Err(err);
+                    break;
+                }
+            };
             if let EntryPayload::Membership(membership) = entry.payload {
                 self.state.membership =
                     StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);
             }
+            self.commits.advance(point(&entry.log_id));
             self.state.last_applied = Some(entry.log_id);
             if let Some(responder) = responder {
                 responder.send(Applied);
             }
         }
-        Ok(())
+        // Once for the run, whatever ended it: a waiter is woken per append,
+        // not per record.
+        self.publish();
+        applied
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
@@ -164,6 +208,12 @@ impl RaftStateMachine<ShardTypes> for Machine {
             last_applied: meta.last_log_id,
             membership: meta.last_membership.clone(),
         };
+        // Only the snapshot's last entry is known by term now.
+        let resumed = Commits::resumed(meta.last_log_id.as_ref().map(point));
+        if resumed.read_bound() > self.commits.read_bound() {
+            self.commits = resumed;
+            self.publish();
+        }
         Ok(())
     }
 

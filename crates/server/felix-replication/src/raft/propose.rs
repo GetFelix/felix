@@ -18,8 +18,7 @@ use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
 use openraft::raft::WriteResult;
-use openraft::type_config::alias::WatchReceiverOf;
-use openraft::{Raft, RaftMetrics, ServerState};
+use openraft::{Raft, ServerState};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -351,32 +350,6 @@ pub(crate) trait Leading: Send {
     /// Returns once this member is not the leader, or, with a term, not the
     /// leader of that term.
     fn lost(&mut self, term: Option<u64>) -> impl Future<Output = ()> + Send;
-}
-
-/// [`Leading`] read from the group's metrics. openraft publishes them a
-/// moment after the change, so this can answer late. It never answers
-/// "lost" for a leader that is leading: a leader's metrics say so before it
-/// takes its first write.
-pub(crate) struct Metrics(pub(crate) WatchReceiverOf<ShardTypes, RaftMetrics<ShardTypes>>);
-
-impl Leading for Metrics {
-    async fn lost(&mut self, term: Option<u64>) {
-        use openraft::async_runtime::watch::WatchReceiver;
-        loop {
-            {
-                let metrics = self.0.borrow_watched();
-                if metrics.running_state.is_err()
-                    || metrics.state != ServerState::Leader
-                    || term.is_some_and(|term| metrics.current_term != term)
-                {
-                    return;
-                }
-            }
-            if self.0.changed().await.is_err() {
-                return;
-            }
-        }
-    }
 }
 
 /// Wait for what `waiting.ack` asks for and say where the batch landed.
