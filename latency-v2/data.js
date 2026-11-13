@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794558915579,
+  "lastUpdate": 1794563178079,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69036,6 +69036,72 @@ window.BENCHMARK_DATA = {
             "range": "1134.93",
             "unit": "us",
             "extra": "trials: 5\nmedian: 297.00\nmean: 1090.40\nstdev: 1134.93\ncv: 104.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "39e95f0762e25f7a534d1a5725594c3d7d8b55cf",
+          "message": "feat(replication): a Raft shard delivers committed records only, from the publisher's batch (#2426)\n\nA publish on a Raft shard goes through Broker::propose_publish and reaches subscribers from the publisher's own bytes (one shared envelope, encoded once per frame shape) only after await_commit passes its term check, in offset order, also when a publisher is cancelled. Readers are bounded by the commit index at every consistency level (RaftReads) and woken as it moves. Offsets taken by blank and membership entries are reported as skipped. A commit wait that times out keeps waiting on a detached task; a definite loss leaves a gap marker and restarts the replay ring. Behind the raft feature; no shard is routed to the engine yet. Routing preconditions are listed in docs/per-shard-raft.md; residuals in #2428. Refs #2233.\n\nSpec-Unaffected: FelixRaft already bounds Deliver by applied (DeliverUncommitted twin), checks DeliveredInOrder and counts skips (SkippedBefore, twin SkipsNotCounted); the code now follows those rules.",
+          "timestamp": "2026-11-13T09:38:52Z",
+          "tree_id": "4306d30f2d4447cf181fd3860f5f677692d5cb89",
+          "url": "https://github.com/GetFelix/felix/commit/39e95f0762e25f7a534d1a5725594c3d7d8b55cf"
+        },
+        "date": 1794563167798,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 116,
+            "range": "7.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 116.00\nmean: 113.60\nstdev: 7.77\ncv: 6.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 173,
+            "range": "12.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 168.80\nstdev: 12.66\ncv: 7.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 223,
+            "range": "233.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 223.00\nmean: 380.60\nstdev: 233.30\ncv: 61.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 125.80\nstdev: 1.92\ncv: 1.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 268,
+            "range": "35.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 282.60\nstdev: 35.48\ncv: 12.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 543,
+            "range": "402.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 543.00\nmean: 715.00\nstdev: 402.17\ncv: 56.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
