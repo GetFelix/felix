@@ -59,10 +59,39 @@ pub struct RaftHandle {
     pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
 }
 
+/// How long a failed start waits for the node to stop. Short under test so
+/// the stuck-stop case does not take five seconds.
+const STOP_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_millis(200)
+} else {
+    Duration::from_secs(5)
+};
+
 /// Stop a node whose start failed. Bounded: the stop waits for an apply in
 /// flight, and a stuck one must not turn a failed start into a hang.
-async fn stop_failed_start(raft: &Raft) {
-    let stop = tokio::time::timeout(Duration::from_secs(5), raft.shutdown()).await;
+///
+/// A stop that times out leaves the old node running, and it may still
+/// finish that apply. An in-process retry with the same `app` would then
+/// replay beside it, so after a failed start the process should exit
+/// instead of calling [`RaftHandle::start`] again with the same state
+/// machine.
+async fn stop_failed_start(raft: &Raft, #[cfg(test)] faults: super::Faults) {
+    #[cfg(test)]
+    if let Some(probe) = faults.stop_probe {
+        probe.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let stop = tokio::time::timeout(STOP_TIMEOUT, async {
+        #[cfg(test)]
+        if faults.stall_failed_start_stop {
+            return std::future::pending().await;
+        }
+        raft.shutdown().await
+    })
+    .await;
+    #[cfg(test)]
+    if faults.stall_failed_start_stop {
+        let _ = raft.shutdown().await;
+    }
     if !matches!(stop, Ok(Ok(()))) {
         tracing::warn!("the raft node did not stop cleanly after a failed start");
     }
@@ -159,14 +188,30 @@ impl RaftHandle {
             false => replayed,
         };
         if let Err(err) = replayed {
-            stop_failed_start(&raft).await;
+            stop_failed_start(
+                &raft,
+                #[cfg(test)]
+                settings.faults,
+            )
+            .await;
             return Err(err);
         }
 
-        let forward = match settings.security.client(settings.write_timeout) {
+        let forward = settings.security.client(settings.write_timeout);
+        #[cfg(test)]
+        let forward = match settings.faults.fail_forward_client {
+            true => Err(anyhow::anyhow!("injected: the client build fails")),
+            false => forward,
+        };
+        let forward = match forward {
             Ok(forward) => forward,
             Err(err) => {
-                stop_failed_start(&raft).await;
+                stop_failed_start(
+                    &raft,
+                    #[cfg(test)]
+                    settings.faults,
+                )
+                .await;
                 return Err(err).context("build forwarding client");
             }
         };

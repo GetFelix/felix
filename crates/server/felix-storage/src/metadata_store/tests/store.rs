@@ -548,3 +548,24 @@ fn the_store_passes_the_whole_storage_suite() {
         Suite::test_all(SuiteBuilder).await.expect("suite");
     });
 }
+
+/// A snapshot store that fails to close does not leave the log open: the
+/// error comes back and an append through a log clone is refused.
+#[tokio::test]
+async fn a_failed_snapshot_close_still_closes_the_log() {
+    let dir = tempdir().expect("dir");
+    let store = open(dir.path()).await.expect("open");
+    let mut log = store.log();
+    append_flushed(&mut log, &entries(0, 3)).await;
+    store.snapshots().fail_next_close();
+    store
+        .shutdown()
+        .await
+        .expect_err("the snapshot close fails");
+
+    assert!(log.disk_log().is_closed(), "the log was left open");
+    append(&mut log, &entries(3, 4))
+        .await
+        .err()
+        .expect("refused");
+}

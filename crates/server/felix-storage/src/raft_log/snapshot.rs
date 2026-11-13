@@ -64,6 +64,9 @@ struct Shared {
     /// Held while a clone can still install. openraft builds a snapshot on
     /// a task it does not wait for, so a clone can outlive the store.
     keep_alive: parking_lot::Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
+    /// Makes the next close fail, for tests.
+    #[cfg(test)]
+    fail_close: std::sync::atomic::AtomicBool,
 }
 
 impl SnapshotStore {
@@ -82,6 +85,8 @@ impl SnapshotStore {
                 stored: parking_lot::Mutex::new(stored),
                 closed: std::sync::atomic::AtomicBool::new(false),
                 keep_alive: parking_lot::Mutex::new(None),
+                #[cfg(test)]
+                fail_close: std::sync::atomic::AtomicBool::new(false),
             }),
         })
     }
@@ -95,6 +100,14 @@ impl SnapshotStore {
     /// Refuse every later install, through this store or any clone, once an
     /// install in flight has finished, then let go of the keep-alive value.
     pub(crate) async fn close(&self) -> io::Result<()> {
+        #[cfg(test)]
+        if self
+            .shared
+            .fail_close
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(io::Error::other("injected: the snapshot close fails"));
+        }
         let shared = Arc::clone(&self.shared);
         felix_common::blocking::spawn(move || {
             let _stored = shared.stored.lock();
@@ -105,6 +118,14 @@ impl SnapshotStore {
         })
         .await
         .map_err(io::Error::other)
+    }
+
+    /// Make the next [`Self::close`] fail without closing anything.
+    #[cfg(test)]
+    pub(crate) fn fail_next_close(&self) {
+        self.shared
+            .fail_close
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// The last entry the stored snapshot covers, or `None` when there is

@@ -174,15 +174,16 @@ where
     /// the log's hold on the lock, so the store can be opened again once the
     /// store and every clone of its member file are dropped. From here on an
     /// append or install through any clone fails, so nothing writes into a
-    /// store another process may have opened. A shutdown that fails keeps
-    /// the log's hold, and the lock stays until the last clone of the log
-    /// is gone.
+    /// store another process may have opened. The log is closed even when
+    /// the snapshot store fails to close, and that error is returned. A
+    /// log that fails to close keeps its hold, and the lock stays until the
+    /// last clone of the log is gone.
     pub async fn shutdown(self) -> io::Result<()> {
-        self.snapshots.close().await?;
+        let snapshots = self.snapshots.close().await;
         let disk = self.log.disk_log();
         disk.close().await.map_err(io_error)?;
         disk.release_keep_alive();
-        Ok(())
+        snapshots
     }
 }
 

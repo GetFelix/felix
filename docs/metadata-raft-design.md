@@ -320,6 +320,10 @@ A first boot acts on answers, never on silence:
   every member answers empty, so the members of a first boot never wait on
   each other.
 
+The model checks the rule (`docs/formal/FelixRaftPlacementForm.cfg`,
+`FelixRaftPlacementFormAfterWipes.cfg`), and shows the majority rule it
+replaced losing an acknowledged write (`FelixRaftPlacementFormMajority.cfg`).
+
 #### Forming the group
 
 An empty log does not show that nobody has voted. Members vote before the
@@ -385,6 +389,11 @@ if all of those volumes are lost as well, and then nothing is left for a
 second vote to contradict. Neither the mark nor the records are Raft state:
 a member that holds only those still counts as empty, and `form-without`
 still accepts it.
+
+The model checks the three steps (`docs/formal/FelixRaftPlacementFormEarlyWipe.cfg`,
+`FelixRaftPlacementFormEarlyWipeFirstBoot.cfg`), and shows a member voting
+twice in a term without the record
+(`FelixRaftPlacementFormEarlyWipeUnrecorded.cfg`).
 
 What it costs:
 
@@ -1169,9 +1178,11 @@ today.
 
 ### openraft 0.9 to 0.10
 
-The workspace pins `openraft = "=0.10.0"`, and the control plane runs that
-pin. It moved first, still on redb and still with its leader id (a term and
-a node id), so the library change and the store change are separate steps.
+The workspace pins openraft 0.10 exactly, and the control plane runs that
+pin: today one commit just past 0.10.0, and `=0.10.1` once that is released
+([`replication-engine.md`](replication-engine.md), "openraft version"). It
+moved first, still on redb and still with its leader id (a term and a node
+id), so the library change and the store change are separate steps.
 
 A group is upgraded one member at a time: stop a member, start it on the new
 build, wait until it is ready, then do the next. A member can also go back
@@ -1341,6 +1352,24 @@ empty (configuration rejects an empty `FELIX_RAFT_CLUSTER_ID`). The write
 changes nothing the check reads. Without a stub the older binary would find
 no store and come up as a new, empty member.
 
+**What a build without the switch does with `store/`.** It refuses to
+start, before it creates `raft.redb` or writes anything, and the error names
+`--cfg felix_segment_store`. `felix-controlplane raft form-without` refuses
+the directory too. A directory that a build with the switch created from
+scratch has `store/` and no `raft.redb`. Without the check, a build without
+the switch would create an empty `raft.redb` there and start as a new
+member. Restart every member that way and the group forms again with no
+metadata. A build without the switch cannot read the member file, so it
+cannot tell a rolled-back store from a live one, and it refuses any
+`store/`:
+
+- A directory created by a build with the switch has no way back to redb.
+  Keep running it on a build with the switch, or wipe it and let the member
+  rejoin.
+- A converted directory goes back through `rollback` or `restore`, which
+  move `store/` aside. A `restore` that stopped part way is finished by
+  running it again.
+
 **How the service decides, without reading redb.** It looks at names and at
 its own member file only:
 
@@ -1429,8 +1458,10 @@ or earlier upgrades through 0.8.
   in openraft as an optional dependency.
 - The control plane turns the feature on, today only in a build with
   `--cfg felix_segment_store`. `felix-broker` never does.
-- openraft types stay inside `felix-storage::raft_log` and the control
-  plane's `src/raft/`. The store traits and handlers never see them.
+- openraft types stay inside `felix-storage::raft_log`, the per-shard
+  runtime in `felix-replication`'s `src/raft/` (behind that crate's own
+  `raft` feature) and the control plane's `src/raft/`. The store traits and
+  handlers never see them.
 - redb moves to the conversion tool's crate, then leaves the workspace.
 
 Cargo merges features across one build. The simulator and the cluster
@@ -1442,7 +1473,7 @@ the broker alone. The check is therefore per package, as a lint step:
   `cargo check -p felix-broker` passes on its own.
 - The same holds for the broker binary's package until per-shard Raft
   lands, which removes that line on purpose.
-- A script fails the lint if `openraft::` appears outside the two modules
+- A script fails the lint if `openraft::` appears outside the three modules
   above and their tests.
 
 All three are `scripts/check-openraft-containment.sh`, a step of

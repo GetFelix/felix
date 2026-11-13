@@ -207,6 +207,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_lag_records` | gauge | - | How far the slowest follower is behind, in records, across every shard this broker leads. This is the loss window for `Leader` consistency. |
 | `felix_broker_replication_halted` | gauge | - | Followers replication has stopped for because their log diverged or this broker was superseded. Any non-zero value needs attention. |
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
+| `felix_broker_raft_ticker_restarts_total` | counter | - | Times the per-shard Raft ticker ended on a panic and was started again. Any increase is a bug: no Raft group on the broker heartbeats or notices a timeout while the ticker is down. Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_replication_rebuilds_total` | counter | `outcome` | Follower rebuilds by outcome. |
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
 | `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |

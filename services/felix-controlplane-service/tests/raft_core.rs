@@ -606,12 +606,23 @@ async fn empty_members_form_a_group_only_when_told_to() {
     }
 }
 
-/// An address nothing listens on, as a member that is down looks.
-async fn closed_addr() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
+/// An address nothing listens on, as a member that is down looks. The
+/// socket stays bound and never listens: a port given back could go to
+/// another test's member, which would answer as this group's.
+struct ClosedAddr {
+    addr: SocketAddr,
+    _bound: tokio::net::TcpSocket,
+}
+
+fn closed_addr() -> ClosedAddr {
+    let bound = tokio::net::TcpSocket::new_v4().expect("socket");
+    bound
+        .bind("127.0.0.1:0".parse().expect("addr"))
         .expect("bind");
-    listener.local_addr().expect("addr")
+    ClosedAddr {
+        addr: bound.local_addr().expect("addr"),
+        _bound: bound,
+    }
 }
 
 /// Something at a member's address that answers `standing` with `status`
@@ -790,11 +801,13 @@ async fn first_boot_waits_for_every_peer() {
         tempfile::tempdir().expect("tempdir"),
         tempfile::tempdir().expect("tempdir"),
     ];
-    let second = closed_addr().await;
+    let closed = closed_addr();
+    let second = closed.addr;
     let (mut nodes, members, shutdown) = first_start_without_the_second(&dirs, None, second).await;
     assert_no_group_forms(&nodes, "one member is down").await;
 
     // The missing member answers, empty like the others.
+    drop(closed);
     let dir = tempfile::tempdir().expect("tempdir");
     let late = start_node(
         dir.path().into(),
@@ -1390,8 +1403,8 @@ async fn form_without_forms_once_and_is_consumed() {
     }
     let waiver = dirs[0].path().join("form-without");
     let written = std::fs::read(&waiver).expect("read the waiver");
-    let (nodes, members, shutdown) =
-        first_start_without_the_second(&dirs, None, closed_addr().await).await;
+    let closed = closed_addr();
+    let (nodes, members, shutdown) = first_start_without_the_second(&dirs, None, closed.addr).await;
     let refs: Vec<&TestNode> = nodes.iter().collect();
     let leader = leader_of(&refs).await;
     leader.write(set("k", "v1")).await.expect("write");
@@ -1557,7 +1570,8 @@ async fn form_without_applies_after_a_blocked_first_start() {
         tempfile::tempdir().expect("tempdir"),
         tempfile::tempdir().expect("tempdir"),
     ];
-    let second = closed_addr().await;
+    let closed = closed_addr();
+    let second = closed.addr;
     let (nodes, _, shutdown) = first_start_without_the_second(&dirs, None, second).await;
     assert_no_group_forms(&nodes, "one member is down").await;
     shutdown.cancel();

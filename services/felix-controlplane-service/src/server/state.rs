@@ -12,7 +12,7 @@ use crate::api::types::{FeatureFlags, Region};
 use crate::auth::oidc::UpstreamOidcValidator;
 use crate::cluster::placement::PlacementWakes;
 use crate::config::{ControlPlaneConfig, RaftBackendConfig, StorageBackend};
-use crate::raft::{AppStateMachine, RaftHandle, RaftMember, RaftSettings};
+use crate::raft::{AppStateMachine, InitialClusterState, RaftHandle, RaftMember, RaftSettings};
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::RaftStore;
 use crate::store::raft::state_machine::MetadataStateMachine;
@@ -178,21 +178,32 @@ async fn start_node(
     // Before the node's routes serve: an empty member must not answer a
     // vote until it knows whether it is forming the group or rejoining one
     // it forgot.
-    let entered = handle
-        .enter_group(
-            raft_cfg.peers.clone(),
-            raft_cfg.initial_cluster_state,
-            api_shutdown.child_token(),
-        )
-        .await;
-    if let Err(err) = entered {
-        if let Err(stop) = handle.shutdown().await {
-            tracing::warn!(error = %stop, "stop the raft node after a failed start");
-        }
-        return Err(err);
-    }
+    enter_group_or_stop(
+        &handle,
+        raft_cfg.peers.clone(),
+        raft_cfg.initial_cluster_state,
+        api_shutdown.child_token(),
+    )
+    .await?;
     member.attach(&handle);
     Ok(handle)
+}
+
+/// Enter the group; on failure stop the member, so its store is closed
+/// rather than left to the process exit.
+pub(super) async fn enter_group_or_stop(
+    handle: &RaftHandle,
+    peers: std::collections::BTreeMap<crate::raft::NodeId, String>,
+    initial: InitialClusterState,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
+    let entered = handle.enter_group(peers, initial, shutdown).await;
+    if entered.is_err()
+        && let Err(err) = handle.shutdown().await
+    {
+        tracing::warn!(error = %err, "stop the member after a failed group entry");
+    }
+    entered
 }
 
 /// The seam's defaults, overridden by whatever the operator set.

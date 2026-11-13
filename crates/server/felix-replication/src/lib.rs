@@ -53,6 +53,8 @@ pub(crate) mod leadership;
 pub(crate) mod metrics;
 pub mod promotion;
 pub mod quorum;
+#[cfg(feature = "raft")]
+pub mod raft;
 mod rebuild;
 pub(crate) mod reclaim;
 pub(crate) mod replica;

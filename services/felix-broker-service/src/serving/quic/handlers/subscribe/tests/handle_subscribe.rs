@@ -1105,3 +1105,200 @@ async fn a_latest_join_counts_generation_starts_as_drops_only_without_the_skip_b
     assert_eq!(dropped(4, &without), 3, "one per generation start");
     Ok(())
 }
+
+/// Subscribes from offset 0 with `end` over a history much larger than the
+/// client's stream window, so the replay stalls part way, then revokes the
+/// credential. Returns how many events arrived and the last frame.
+async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
+    const RECORDS: u64 = 256;
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            felix_broker::StreamMetadata {
+                durable: true,
+                ..Default::default()
+            },
+        )
+        .await?;
+    for _ in 0..RECORDS {
+        broker
+            .publish("t1", "default", "orders", Bytes::from(vec![7u8; 1024]))
+            .await?;
+    }
+
+    let revocations = Arc::new(crate::serving::revocation::Revocations::default());
+    let owner = crate::serving::auth::AuthContext {
+        tenant_id: "t1".to_string(),
+        matcher: felix_authz::PermissionMatcher::from_strings(&[]).expect("matcher"),
+        token: "token".to_string(),
+        subject: "alice".to_string(),
+        actor: None,
+        publisher: None,
+        issued_at: 0,
+        expires_at: i64::MAX,
+        lease_token: false,
+        revocable: crate::serving::revocation::Revocable::new(
+            Arc::clone(&revocations),
+            "t1".to_string(),
+            "alice".to_string(),
+            None,
+            100,
+        ),
+    };
+
+    let (server_config, cert) = make_server_config()?;
+    let server = QuicServer::bind(
+        "127.0.0.1:0".parse()?,
+        server_config,
+        TransportConfig::default(),
+    )?;
+    let addr = server.local_addr()?;
+    let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
+    let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
+    let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+    let lane_manager = WriterLaneManager::new(&test_config());
+    let server_broker = Arc::clone(&broker);
+    // Runs the replay inline, so it is still going while the test reads.
+    let server_task = tokio::spawn(async move {
+        let connection = server.accept().await?;
+        let held = connection.clone();
+        handle_subscribe_message(
+            server_broker,
+            connection,
+            test_config(),
+            &IdentityLimits::unlimited(),
+            &lane_manager,
+            None,
+            &out_ack_tx,
+            &out_ack_depth,
+            &ack_throttle_tx,
+            &ack_timeout_state,
+            &cancel_tx,
+            "t1".to_string(),
+            "default".to_string(),
+            "orders".to_string(),
+            Some(7),
+            Some(StartPosition::Offset(0)),
+            None,
+            None,
+            end,
+            felix_wire::FLAG_EVENT_BATCH_OFFSETS,
+            0,
+            felix_wire::FEATURE_ERROR_CODES,
+            0,
+            Some(&owner),
+        )
+        .await?;
+        Result::<_>::Ok((held, lane_manager))
+    });
+    // A window of a few events: the replay blocks on flow control long
+    // before it has written the whole history.
+    let client_transport = TransportConfig {
+        stream_receive_window: 16 * 1024,
+        ..TransportConfig::default()
+    };
+    let client = QuicClient::bind(
+        "0.0.0.0:0".parse()?,
+        make_client_config(cert)?,
+        client_transport,
+    )?;
+    let connection = client.connect(addr, "localhost").await?;
+    match tokio::time::timeout(Duration::from_secs(2), out_ack_rx.recv())
+        .await
+        .context("ack timeout")?
+        .context("ack missing")?
+    {
+        Outgoing::Message(Message::Subscribed { .. }) => {}
+        other => panic!("unexpected ack: {other:?}"),
+    }
+    let mut event_recv = tokio::time::timeout(Duration::from_secs(2), connection.accept_uni())
+        .await
+        .context("accept uni timeout")??;
+    let mut scratch = crate::serving::quic::FrameScratch::new();
+    async fn read(
+        event_recv: &mut quinn::RecvStream,
+        scratch: &mut crate::serving::quic::FrameScratch,
+    ) -> Result<Option<felix_wire::Frame>> {
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            crate::serving::quic::codec::read_frame_limited_into(event_recv, 1 << 20, scratch),
+        )
+        .await
+        .context("the event stream stalled")?
+    }
+    let hello = read(&mut event_recv, &mut scratch).await?.expect("hello");
+    assert!(matches!(
+        Message::decode(hello)?,
+        Message::EventStreamHello { .. }
+    ));
+    let first = read(&mut event_recv, &mut scratch)
+        .await?
+        .expect("the first replayed batch");
+    let mut events = decode_delivery_payloads(&first)?.len();
+
+    revocations.revoke("t1", "alice", 100);
+
+    let mut last = None;
+    while let Some(frame) = read(&mut event_recv, &mut scratch).await? {
+        if frame.header.flags
+            & (felix_wire::FLAG_BINARY_EVENT_BATCH | felix_wire::FLAG_BINARY_EVENT_BATCH_SHARED)
+            != 0
+        {
+            events += decode_delivery_payloads(&frame)?.len();
+        } else {
+            last = Some(Message::decode(frame)?);
+        }
+    }
+    let _held = server_task.await.context("server join")??;
+    Ok((
+        events,
+        last.context("the event stream ended without a frame")?,
+    ))
+}
+
+fn assert_revoked(events: usize, last: Message) {
+    assert!(
+        events < 256,
+        "the whole history was replayed after the revoke"
+    );
+    let Message::Error { code, .. } = last else {
+        panic!("expected the revoked error last, got {last:?}");
+    };
+    assert_eq!(code, Some(felix_wire::ErrorCode::Revoked));
+}
+
+/// **A revoke ends a history-only replay** (an `end` below the tail) with the
+/// refusal, rather than at `end`.
+#[tokio::test]
+async fn a_revoke_ends_a_history_only_replay() -> Result<()> {
+    let (events, last) = revoked_mid_replay(Some(256)).await?;
+    assert_revoked(events, last);
+    Ok(())
+}
+
+/// **A revoke ends the replay a live subscription starts with**, before it
+/// reaches live delivery.
+#[tokio::test]
+async fn a_revoke_ends_the_replay_before_live_delivery() -> Result<()> {
+    let (events, last) = revoked_mid_replay(None).await?;
+    assert_revoked(events, last);
+    Ok(())
+}

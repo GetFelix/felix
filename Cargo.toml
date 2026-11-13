@@ -121,7 +121,13 @@ bytes = "1"
 # Pinned exactly: a version change is a reviewed update with the storage suite
 # and crash-point tests re-run, never a lockfile refresh. See
 # docs/replication-engine.md, "openraft version".
-openraft = { version = "=0.10.0", default-features = false }
+#
+# A git rev because the node ticker needs `Trigger::tick()`, which is on
+# openraft main (2026-11-11, two changes after the 0.10.0 tag) and ships in
+# 0.10.1. Goes back to `version = "=0.10.1"` when that is released.
+openraft = { git = "https://github.com/databendlabs/openraft", rev = "8fd649442f613bb790f727d065aba03c8fe151f6", default-features = false }
+# One shared router for every group's messages. Same rev as `openraft`.
+openraft-multi = { git = "https://github.com/databendlabs/openraft", rev = "8fd649442f613bb790f727d065aba03c8fe151f6" }
 uuid = { version = "1", features = ["v4", "serde"] }
 # `test-util` (paused time) is a dev-dependency feature, added per member.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }

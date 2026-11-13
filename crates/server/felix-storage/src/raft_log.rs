@@ -65,7 +65,7 @@ use self::hide::{Bounds, Covering, PastSnapshot};
 use self::tail_cache::TailCache;
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
-use crate::log::Offset;
+use crate::log::{FsyncMode, Offset};
 #[cfg(doc)]
 use crate::log::{LogConfig, RecordMark, UNKNOWN_WRITER};
 
@@ -110,9 +110,41 @@ pub struct RaftLog<C, K> {
     types: std::marker::PhantomData<fn() -> C>,
 }
 
+/// One entry of a log: its index and the term that wrote it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogPoint {
+    pub term: u64,
+    pub index: u64,
+}
+
+/// How far a Raft log has got since it was opened, by the last entry of
+/// each kind. `None` until this adapter's first append.
+///
+/// `written` moves as soon as an append has handed its entries to the log,
+/// before the fsync, so a power cut can take what it names. `flushed` moves
+/// once they are on disk, and is the only one Raft is told about. A
+/// truncation moves both back.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogPositions {
+    pub written: Option<LogPoint>,
+    pub flushed: Option<LogPoint>,
+}
+
+impl LogPositions {
+    /// Drop what a truncation to `kept` cut.
+    fn cut_to(&mut self, kept: Option<LogPoint>) {
+        for point in [&mut self.written, &mut self.flushed] {
+            if point.is_some_and(|at| kept.is_none_or(|kept| at.index > kept.index)) {
+                *point = kept;
+            }
+        }
+    }
+}
+
 struct Shared<K> {
     log: DiskLog,
     codec: K,
+    positions: tokio::sync::watch::Sender<LogPositions>,
     /// The last purged entry.
     bounds: parking_lot::Mutex<Bounds>,
     /// Set by [`RaftLog::purge_within`] or [`RaftLog::purge_hides_past`]:
@@ -152,6 +184,10 @@ where
     /// Refused unless the log was opened with [`LogConfig::raft_log`]: any
     /// other log starts on a format with no generations and may delete
     /// entries by retention.
+    ///
+    /// Refused unless its fsync mode is [`FsyncMode::OnCommit`]. Under any
+    /// other mode an append's callback fires before the fsync, and Raft
+    /// would count toward a quorum an entry that a power cut can still take.
     pub fn new(log: DiskLog, codec: K) -> io::Result<Self> {
         if !log.config().raft_log {
             return Err(invalid(format!(
@@ -159,11 +195,19 @@ where
                 log.label()
             )));
         }
+        if log.config().fsync_mode != FsyncMode::OnCommit {
+            return Err(invalid(format!(
+                "{} is a Raft log and must fsync on commit, not {:?}",
+                log.label(),
+                log.config().fsync_mode
+            )));
+        }
         let purged = purged::load(log.dir())?;
         Ok(Self {
             shared: Arc::new(Shared {
                 log,
                 codec,
+                positions: tokio::sync::watch::Sender::default(),
                 bounds: parking_lot::Mutex::new(Bounds {
                     on_disk: purged,
                     hidden: None,
@@ -178,6 +222,11 @@ where
             }),
             types: std::marker::PhantomData,
         })
+    }
+
+    /// The log's written and flushed positions, as they change.
+    pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
+        self.shared.positions.subscribe()
     }
 
     /// The log underneath.

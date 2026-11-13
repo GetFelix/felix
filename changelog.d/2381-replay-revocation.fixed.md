@@ -1,0 +1,1 @@
+Revoking a principal now ends a subscription that is still replaying history, with the usual `revoked` error as its last frame. Before, a history-only subscription (an `end` below the tail) kept sending until `end`, and a resumed subscription replayed all of its history before the revoke took effect (#2381).

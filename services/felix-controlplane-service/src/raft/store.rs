@@ -64,6 +64,10 @@ const KEY_FORMING: &str = "forming";
 /// The ids of the members that asked this one to record that they set out
 /// to form the group. Neither key counts as consensus state.
 const KEY_FORMED: &str = "formed";
+/// Where a `--cfg felix_segment_store` build keeps its state
+/// (`felix_storage::metadata_store::STORE_DIR`, not a dependency of this
+/// build).
+const SEGMENT_STORE_DIR: &str = "store";
 
 /// A member's store, opened: what its Raft node is made from.
 pub(super) struct Opened {
@@ -82,6 +86,7 @@ pub(super) async fn open_member(
     settings: &super::RaftSettings,
     app: Arc<dyn AppStateMachine>,
 ) -> Result<Opened> {
+    refuse_segment_store(&settings.data_dir)?;
     std::fs::create_dir_all(&settings.data_dir).context("create raft data dir")?;
     let db = open(&settings.data_dir.join("raft.redb"))?;
     claim_cluster_id(&db, &settings.security.cluster_id)?;
@@ -262,6 +267,7 @@ fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
 /// a store that belongs to a cluster other than `cluster_id`. Creates and
 /// records nothing; no store is no state.
 pub(super) async fn stopped_member_holds_state(data_dir: &Path, cluster_id: &str) -> Result<bool> {
+    refuse_segment_store(data_dir)?;
     let path = data_dir.join("raft.redb");
     if !path.exists() {
         return Ok(false);
@@ -274,6 +280,29 @@ pub(super) async fn stopped_member_holds_state(data_dir: &Path, cluster_id: &str
         anyhow::bail!("raft data dir belongs to cluster '{recorded}', not '{cluster_id}'");
     }
     holds_state(&db)
+}
+
+/// Refuse a data dir that a `--cfg felix_segment_store` build has written.
+/// That build keeps its state in `store/` and no `raft.redb`, so opening
+/// redb here would create an empty store and the member would come up as
+/// new, dropping the group's metadata. This build cannot read the member
+/// file, so it cannot tell a rolled-back store from a live one, and any
+/// `store/` is refused (`rollback` and `restore` move it aside). Checked
+/// before anything is written.
+fn refuse_segment_store(data_dir: &Path) -> Result<()> {
+    let store = data_dir.join(SEGMENT_STORE_DIR);
+    match std::fs::symlink_metadata(&store) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("examine {}", store.display())),
+        Ok(_) => anyhow::bail!(
+            "{} holds a segment store, written by a build with --cfg felix_segment_store. \
+             This build keeps its state in raft.redb and cannot read it: run the member on \
+             a build with that switch, or finish going back to redb with the conversion \
+             tool's rollback or restore (docs/metadata-raft-design.md, \"Upgrading an \
+             existing cluster\")",
+            store.display()
+        ),
+    }
 }
 
 /// Open (or create) the store file and make sure both tables exist, so
