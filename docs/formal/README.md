@@ -2846,7 +2846,10 @@ acknowledged on local durability, as
 decide it. Its configurations gate the pull request that turns on
 `admit_local_ack`, but their passing does not open the gate yet: the passing
 ones either have no restart or pass on a rule that is not built (issue
-#2307, under "A restarted follower" below). The
+#2307, under "A restarted follower" below).
+`FelixRaftLeaseRestartRenews` passes on openraft's own start-time renewal,
+but only if `save_vote` is durable when it returns, which waits on the Raft
+engine. The
 module has two parts. The first is the lease the first
 version ships. The second, the `FelixRaftLeaseStore*` configurations, is the
 later design in "Leases that survive sleep" and is not in the first version.
