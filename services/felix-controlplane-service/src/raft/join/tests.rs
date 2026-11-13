@@ -386,6 +386,59 @@ async fn a_404_on_forming_blocks_the_vote() {
     server.abort();
 }
 
+/// The address configured for member 3 can reach member 2. The announce
+/// asks member 3 to record, so member 2 refuses it instead of recording a
+/// member that member 3 never heard from.
+#[tokio::test]
+async fn an_announce_is_recorded_only_by_the_member_it_is_for() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let second = Served::start(member_settings(2, dir.path()), None).await;
+    let peers: BTreeMap<NodeId, String> = (1..=3).map(|id| (id, "127.0.0.1:1".into())).collect();
+    second
+        .handle
+        .enter_group(
+            peers,
+            InitialClusterState::Existing,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("enter group");
+    let client = second
+        .handle
+        .security
+        .client(Duration::from_secs(5))
+        .expect("client");
+    let base = format!("http://{}", second.addr);
+    let forming = Forming {
+        member: 1,
+        members: BTreeSet::from([1, 2, 3]),
+    };
+
+    let refused = announce(&client, 3, &base, &forming)
+        .await
+        .expect_err("recorded by the wrong member");
+    assert!(refused.contains("503"), "{refused}");
+    assert!(
+        second
+            .handle
+            .standing()
+            .await
+            .expect("standing")
+            .formed
+            .is_empty(),
+        "member 2 recorded an announce meant for member 3"
+    );
+
+    announce(&client, 2, &base, &forming)
+        .await
+        .expect("recorded");
+    assert_eq!(
+        second.handle.standing().await.expect("standing").formed,
+        [1]
+    );
+    second.stop().await;
+}
+
 /// A peer records a forming member only for the group it is configured
 /// with itself, and never itself or a member outside the group.
 #[tokio::test]

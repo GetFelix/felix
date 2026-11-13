@@ -146,10 +146,11 @@ impl Versions {
     }
 }
 
-/// Ask the member at `base` for the level it can apply. `None` when it does
-/// not answer within `timeout`.
+/// Ask member `id` at `base` for the level it can apply. `None` when it
+/// does not answer within `timeout`, or another member answers there.
 pub(super) async fn probe(
     client: &reqwest::Client,
+    id: NodeId,
     base: &str,
     asker: &Asker,
     timeout: Duration,
@@ -164,7 +165,13 @@ pub(super) async fn probe(
     if !response.status().is_success() {
         return None;
     }
-    Some(response.json::<Standing>().await.ok()?.version)
+    let standing = response.json::<Standing>().await.ok()?;
+    // Another member's level says nothing about `id`. A build that predates
+    // the field names nobody, and answers only at its own address.
+    if standing.member.is_some_and(|member| member != id) {
+        return None;
+    }
+    Some(standing.version)
 }
 
 /// The levels the members reported, as of one refresh.
@@ -268,7 +275,8 @@ impl RaftHandle {
                 continue;
             };
             let (client, asker, id) = (self.forward.clone(), self.asker(), *id);
-            probes.spawn(async move { (id, probe(&client, &base, &asker, PROBE_TIMEOUT).await) });
+            probes
+                .spawn(async move { (id, probe(&client, id, &base, &asker, PROBE_TIMEOUT).await) });
         }
         let mut answers = Vec::new();
         while let Some(joined) = probes.join_next().await {
@@ -287,7 +295,7 @@ impl RaftHandle {
     /// answer. `None` when it does not answer.
     pub(super) async fn probe_version(&self, id: NodeId, base: &str) -> Option<u16> {
         let asked_at = self.versions.lock().expect("versions lock").epoch();
-        let version = probe(&self.forward, base, &self.asker(), PROBE_TIMEOUT).await;
+        let version = probe(&self.forward, id, base, &self.asker(), PROBE_TIMEOUT).await;
         let mut versions = self.versions.lock().expect("versions lock");
         match version {
             Some(version) => versions.record(id, version, asked_at),

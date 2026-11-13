@@ -227,11 +227,19 @@ async fn probe(client: &reqwest::Client, me: NodeId, asked: NodeId, base: Option
     }
 }
 
-/// Ask the member at `base` to record `forming`. Anything but a 2xx is no
-/// record.
-async fn announce(client: &reqwest::Client, base: &str, forming: &Forming) -> Result<(), String> {
+/// Ask member `target` at `base` to record `forming`. Anything but a 2xx
+/// is no record.
+async fn announce(
+    client: &reqwest::Client,
+    target: NodeId,
+    base: &str,
+    forming: &Forming,
+) -> Result<(), String> {
+    // The record counts for `target` only, so another member that answers
+    // at its address must refuse rather than record.
     let response = client
         .post(format!("{base}{}", super::peer_route("forming")))
+        .header(super::TARGET_HEADER, target.to_string())
         .json(forming)
         .send()
         .await
@@ -301,8 +309,10 @@ impl RaftHandle {
             if holds_state {
                 return Ok(());
             }
-            self.member.set_vote_withheld(true).await?;
+            // Before the write: it awaits, and a vote served meanwhile
+            // would be granted from an empty log.
             self.may_vote.store(false, Ordering::SeqCst);
+            self.member.set_vote_withheld(true).await?;
             self.raft.runtime_config().elect(false);
         }
         let handle = self.clone();
@@ -406,7 +416,7 @@ impl RaftHandle {
                         for (id, base) in &others {
                             // A waived slot that did not answer is not asked.
                             if let (true, Some(base)) = (answered.contains(id), base)
-                                && let Err(why) = announce(&client, base, &forming).await
+                                && let Err(why) = announce(&client, *id, base, &forming).await
                             {
                                 waiting.push(format!("member {id} {why}"));
                             }

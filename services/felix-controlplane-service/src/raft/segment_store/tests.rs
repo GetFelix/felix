@@ -368,3 +368,38 @@ async fn a_build_does_not_replace_a_newer_stored_snapshot() {
     assert_eq!(stored.data.as_ref(), b"newer");
     store.shutdown().await.expect("shutdown");
 }
+
+/// Writing the withheld vote awaits the store. A vote request served while
+/// it does must already be refused, or the empty member grants it.
+#[tokio::test]
+async fn a_member_refuses_votes_while_it_writes_its_withheld_vote() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handle = RaftHandle::start(settings(dir.path()), Arc::new(BytesApp::default()))
+        .await
+        .expect("start");
+    assert!(handle.may_vote.load(Ordering::SeqCst));
+    let held = handle.member.store.lock().await;
+    let peers: BTreeMap<u64, String> = (1..=3).map(|id| (id, format!("127.0.0.1:{id}"))).collect();
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let entering = tokio::spawn({
+        let (handle, shutdown) = (handle.clone(), shutdown.clone());
+        async move {
+            handle
+                .enter_group(peers, InitialClusterState::Existing, shutdown)
+                .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(
+        !entering.is_finished(),
+        "the write did not wait for the store"
+    );
+    assert!(
+        !handle.may_vote.load(Ordering::SeqCst),
+        "votes are served while the withheld vote is written"
+    );
+    drop(held);
+    entering.await.expect("join").expect("enter group");
+    shutdown.cancel();
+    handle.shutdown().await.expect("shutdown");
+}

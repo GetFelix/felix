@@ -76,6 +76,12 @@ impl RaftMember {
         let _ = self.node.set(node.clone());
     }
 
+    /// Whether a node serves this member's routes.
+    #[cfg(test)]
+    pub(crate) fn is_attached(&self) -> bool {
+        self.node.get().is_some()
+    }
+
     pub(super) fn node(&self) -> Option<&RaftHandle> {
         self.node.get()
     }

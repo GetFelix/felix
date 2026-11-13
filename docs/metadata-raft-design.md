@@ -365,7 +365,9 @@ sequenceDiagram
    its own store and syncs it before it answers. A member records whatever
    its own state is: formed, empty or still withholding its vote. It refuses
    a group that is not the one in its own `FELIX_RAFT_PEERS` (409), since
-   members initialized with different groups can split.
+   members initialized with different groups can split. The request names
+   the member it is for in `x-felix-raft-target`, so another member that
+   answers at that address refuses it (503) instead of recording.
 3. **Vote.** Once every one of them has answered, the member gives back its
    vote and initializes. Until then it votes for nobody and asks again.
 
@@ -576,8 +578,8 @@ The network layer resolves a member's address from `FELIX_RAFT_PEERS` by
 id before falling back to the address recorded in the membership, so moving
 the peer port is a config change, not a membership change.
 
-An address does not prove who is behind it. Every vote request, append and
-snapshot a member sends therefore names the member it is meant for, in the
+An address does not prove who is behind it. Every vote request, append,
+snapshot and `forming` record a member sends therefore names the member it is meant for, in the
 `x-felix-raft-target` header. A member that receives one meant for another
 id answers 503, which the sender reads as an unreachable member, so its
 vote or its acknowledgement is never counted as the other member's.
@@ -679,7 +681,8 @@ and restore and each member's last reported level; a send never waits on a
 probe. The leader keeps those levels fresh in the background
 (`watch_versions` in `raft/version.rs`): it asks every member on the
 `standing` route when it takes the lead, every 10 seconds after that, and
-every 500 ms while a member is held.
+every 500 ms while a member is held. An answer that names another member is
+no answer: that member's level says nothing about the one asked.
 
 The evidence is one of two things. Either the member reported a level
 below the floor (every released build that runs Raft answers `standing`

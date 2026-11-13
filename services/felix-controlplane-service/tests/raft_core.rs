@@ -119,22 +119,7 @@ async fn start_gated(
     let handle = RaftHandle::start(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
         .await
         .expect("start raft node");
-    // A node restarting on its predecessor's address can race the aborted
-    // server task still holding the socket; retry briefly rather than flake.
-    let bind_addr = addr.unwrap_or("127.0.0.1:0".parse().expect("addr"));
-    let listener = {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            match tokio::net::TcpListener::bind(bind_addr).await {
-                Ok(listener) => break listener,
-                Err(err) if Instant::now() < deadline => {
-                    let _ = err;
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-                Err(err) => panic!("bind rpc listener: {err}"),
-            }
-        }
-    };
+    let listener = bind(addr.unwrap_or("127.0.0.1:0".parse().expect("addr"))).await;
     let addr = listener.local_addr().expect("local addr");
     let router = handle
         .rpc_router()
@@ -148,6 +133,21 @@ async fn start_gated(
         addr,
         dir,
         server,
+    }
+}
+
+/// A node restarting on its predecessor's address can race the aborted
+/// server task still holding the socket; retry briefly rather than flake.
+async fn bind(addr: SocketAddr) -> tokio::net::TcpListener {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => return listener,
+            Err(_) if Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            Err(err) => panic!("bind rpc listener: {err}"),
+        }
     }
 }
 
@@ -957,26 +957,46 @@ async fn formed_and_leaderless(
 }
 
 /// Stop `node` and start the same member on an empty volume at the same
-/// address, still told this is a first start.
+/// address, still told this is a first start. It starts the way the server
+/// starts a member: the routes serve from the open, and the node is attached
+/// only once it has entered the group.
 async fn wipe_and_restart(
     node: TestNode,
     dir: &tempfile::TempDir,
     members: &BTreeMap<NodeId, String>,
     shutdown: &tokio_util::sync::CancellationToken,
 ) -> TestNode {
-    use felix_controlplane_service::raft::InitialClusterState;
+    use felix_controlplane_service::raft::{InitialClusterState, RaftMember};
 
     let (id, addr) = (node.handle.status().id, node.addr);
     node.stop().await;
     drop(node);
     let dir: PathBuf = dir.path().into();
-    let wiped = start_node(dir.clone(), settings(id, dir), Some(addr)).await;
-    wiped
-        .handle
+    let app = Arc::new(KvApp::default());
+    let member = RaftMember::open(
+        settings(id, dir.clone()),
+        Arc::clone(&app) as Arc<dyn AppStateMachine>,
+    )
+    .await
+    .expect("open the member");
+    let listener = bind(addr).await;
+    let router = member.rpc_router();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let handle = member.start_node().await.expect("start raft node");
+    handle
         .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
         .await
         .expect("enter group");
-    wiped
+    member.attach(&handle);
+    TestNode {
+        handle,
+        app,
+        addr,
+        dir,
+        server,
+    }
 }
 
 /// Whether `node` refuses a vote request the way a member withholding its
@@ -1033,10 +1053,14 @@ async fn assert_stays_withheld(wiped: &[&TestNode], all: &[&TestNode]) {
     tokio::time::sleep(Duration::from_secs(3)).await;
     for node in wiped {
         let status = node.handle.status();
+        // Voters here mean a leader's entries reached it: it gave a vote
+        // or took an append it must not have.
         assert!(
             status.voters.is_empty(),
-            "wiped member {} formed the group again",
-            status.id
+            "wiped member {} recorded voters {:?} from a leader's entries (leader {:?})",
+            status.id,
+            status.voters,
+            status.leader
         );
         assert!(
             withholds_its_vote(node).await,

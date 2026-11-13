@@ -169,7 +169,7 @@ async fn serve_peers(
 }
 
 /// Start the member's Raft node and open its routes.
-async fn start_node(
+pub(super) async fn start_node(
     member: &RaftMember,
     raft_cfg: &RaftBackendConfig,
     api_shutdown: &CancellationToken,
