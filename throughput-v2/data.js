@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794530699620,
+  "lastUpdate": 1794531066944,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53560,6 +53560,58 @@ window.BENCHMARK_DATA = {
             "range": "15020.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 980249.14\nmean: 974510.10\nstdev: 15020.96\ncv: 1.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "efda6e86d109d0404038f361f51688624011d795",
+          "message": "fix(controlplane): a redb build refuses a segment-store data dir (#2363)\n\nA data dir written by a --cfg felix_segment_store build holds store/ and no raft.redb. The default build created an empty raft.redb there and started as a new member, so restarting every member that way formed a new group without the metadata. open_member and form-without now refuse any store/ before writing, and the error names the switch and the rollback/restore path. Docs in metadata-raft-design.md separate a fresh segment store (no way back to redb) from a converted one.",
+          "timestamp": "2026-11-13T00:45:47Z",
+          "tree_id": "ba57c05a669ef73fa0ba38ed6b45b956c8d0f4dc",
+          "url": "https://github.com/GetFelix/felix/commit/efda6e86d109d0404038f361f51688624011d795"
+        },
+        "date": 1794531066201,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356746.45,
+            "range": "6681.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356746.45\nmean: 358604.06\nstdev: 6681.04\ncv: 1.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356746.45,
+            "range": "6681.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356746.45\nmean: 358604.06\nstdev: 6681.04\ncv: 1.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80904.12,
+            "range": "3122.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80904.12\nmean: 79604.51\nstdev: 3122.00\ncv: 3.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809041.25,
+            "range": "31219.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809041.25\nmean: 796045.10\nstdev: 31219.99\ncv: 3.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
