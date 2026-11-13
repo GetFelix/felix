@@ -840,6 +840,18 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftCacheExpiryReachRefresh.cfg` | witness: an expiry delete commits after a newer write and leaves it | violate `NeverExpirySkipsNewer` |
 | `FelixRaftCacheExpiryReachExpireRead.cfg` | witness: a read waits for the expiry delete and answers absent | violate `NeverReadAfterExpiry` |
 | `FelixRaftCacheClockSnapshotReachInstallStamp.cfg` | witness: a leader that installed a snapshot stamps from the snapshot's time, ahead of its clock | violate `NeverStampFromSnapshot` |
+| `FelixRaftCacheDelete.cfg` | a delete against expiry: an expiring put and a delete, three proposals (a retry moves the log's time), one expiry delete, clocks 0..2, one read | pass `OneClock` (6.3M distinct states) |
+| `FelixRaftCacheDeleteSnapshot.cfg` | a snapshot that holds live records only (`SnapshotDropsExpired`): an expiring put and a delete, three proposals, one expiry delete, clocks 0..1, one crash, one snapshot, one read | pass `AnswersKept`, `MembersAgree` (31.2M distinct states) |
+| `FelixRaftCachePutAbsentSnapshot.cfg` | the same with a put-if-absent in place of the delete | pass (28.4M distinct states) |
+| `FelixRaftCacheCond.cfg` | a put and a delete that name a version, against an expiring put; three proposals, one expiry delete, clocks 0..1, one read | pass `CondExact`, `OneClock` (1.3M distinct states) |
+| `FelixRaftCacheDeleteSeesExpired.cfg` | a delete treats an expired record as present | violate `OneClock`: a read answers absent, then the delete removes a version |
+| `FelixRaftCacheDeleteSnapshotSeesExpired.cfg` | the same with a snapshot that dropped the record | violate `AnswersKept`: a member that replayed the log removes a version, one that restored the snapshot answers absent |
+| `FelixRaftCachePutAbsentSnapshotSeesExpired.cfg` | a put-if-absent treats an expired record as present, with a snapshot that dropped it | violate `MembersAgree` |
+| `FelixRaftCacheCondSeesExpired.cfg` | a conditional write matches the version of an expired record | violate `OneClock` |
+| `FelixRaftCacheDeleteReachExpired.cfg` | witness: a delete finds an expired record that no expiry delete removed and answers absent | violate `NeverDeleteOfExpired` |
+| `FelixRaftCacheDeleteSnapshotReachDropped.cfg` | witness: a member restores a snapshot that left out an expired record while another still holds it | violate `NeverDroppedAndKept` |
+| `FelixRaftCacheCondReachApplied.cfg` | witness: a conditional write applies | violate `NeverCondApplied` |
+| `FelixRaftCacheCondReachStale.cfg` | witness: a conditional write is refused because a newer write replaced the version it named | violate `NeverCondStale` |
 
 Drift is checked where it matters and nowhere else. The lease configurations
 carry drifting clocks and no writes, so every interleaving of three drifting
@@ -3338,9 +3350,25 @@ The rules and their checks:
   with a slower clock cannot contradict it (`OneClock`). The two simpler rules both fail:
   answering from the leader's clock alone breaks `OneClock`, and answering at the log's
   time alone breaks `ReadsNotStale`.
+- An expired record is absent to every write, judged at the entry's stamp: a put-if-absent
+  takes the key, a delete answers "absent", a write that names a version finds none. So
+  after a read answered "absent", no write finds the key present until something writes it
+  (`OneClock`). It also lets a snapshot hold live records only (`SnapshotDropsExpired`): a
+  member that restored one and a member that replayed the log hold different records and
+  give the same answers (`AnswersKept`, and `MembersAgree` over what a request can
+  observe). A delete that removes an expired record breaks both: `OneClock` on its own,
+  `AnswersKept` once a snapshot dropped the record.
+- A put or a delete may name a version. It applies only to that version, unexpired
+  (`CondExact`).
 - Purge goes up to the member's snapshot and no further (`LiveReadable`).
 
 Each twin drops one rule and breaks one check; the module header lists them.
+
+The bounds are small on purpose. Each configuration has one read (`MaxReads`) and at most
+one expiry delete (`MaxExpiries`), and two or three proposals. One read is enough for
+every read check, which compares a single read with the log before or after it; no check
+relates two reads. One expiry delete covers the delete racing a write and a read waiting
+for it. Two expiries of two versions of the key are not explored.
 
 Not modelled: trimming the table of applied request ids (it only grows here; a real trim
 must be a rule over the log, with its result in the snapshot), membership entries (they

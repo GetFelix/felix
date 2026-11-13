@@ -48,13 +48,25 @@
 (*   - A snapshot is the projection and the id of the last entry it        *)
 (*     applied, taken together. Restart and install both resume from it.   *)
 (*     Purge goes up to the snapshot and no further.                       *)
+(*   - An expired record is absent to every write, as it is to a read:     *)
+(*     a put-if-absent takes the key, a delete answers "absent" and a      *)
+(*     conditional write finds no version. Each judges that at its own     *)
+(*     entry's time. So a snapshot may leave out a record that had expired *)
+(*     at the log's time (`SnapshotDropsExpired`, which the design does),  *)
+(*     and no answer can tell a member that restored from it from one that *)
+(*     replayed the log.                                                   *)
+(*   - A put or a delete may name a version (`cond`). It applies only if   *)
+(*     the key holds that version, unexpired; otherwise it is refused.     *)
 (*                                                                         *)
-(* One key and one counter. Five requests: an add (id 1), a put that       *)
+(* One key and one counter. Seven requests: an add (id 1), a put that      *)
 (* expires one time unit after its stamp (id 2), a put-if-absent (id 3),   *)
 (* which is refused while the key holds an unexpired value, a delete (id   *)
-(* 4) and a put that never expires (id 5). A configuration picks which     *)
-(* ones exist. A request whose answer has not come may be proposed again:  *)
-(* that is a retry.                                                        *)
+(* 4), a put that never expires (id 5), and a put (id 6) and a delete (id  *)
+(* 7) that name a version. The version they name is the one the leader     *)
+(* held, expired or not, when the client first sent the request; a retry   *)
+(* names the same one. A configuration picks which requests exist. A       *)
+(* request whose answer has not come may be proposed again: that is a      *)
+(* retry.                                                                  *)
 (*                                                                         *)
 (* For the implementation:                                                 *)
 (*                                                                         *)
@@ -72,7 +84,9 @@
 (*   MembersAgree     -- two members that applied the same prefix hold the *)
 (*                       same projection.                                  *)
 (*   ProjectionIsFold -- every member holds the fold of the committed log  *)
-(*                       up to what it applied.                            *)
+(*                       up to what it applied. With SnapshotDropsExpired  *)
+(*                       these two compare what a request can observe: a   *)
+(*                       record expired at the log's time counts as gone.  *)
 (*   SumExact         -- a counter counts each request once.               *)
 (*   AppliedOnce      -- a request id changes the projection once.         *)
 (*   AnswersKept      -- an answer a client got is the answer the first    *)
@@ -87,8 +101,12 @@
 (*   ReadsNotStale    -- a read never answers "present" for a key that     *)
 (*                       had expired at the leader's read time.            *)
 (*   OneClock         -- a read that found the key absent is never         *)
-(*                       followed, with no write between, by a             *)
-(*                       put-if-absent that finds it present.              *)
+(*                       followed, with no write between, by a write that  *)
+(*                       finds it present: a refused put-if-absent, a      *)
+(*                       delete that removes a version, or a conditional   *)
+(*                       write that matches one.                           *)
+(*   CondExact        -- a conditional write that applied replaced the     *)
+(*                       version it named, and that version was unexpired. *)
 (*   LiveReadable     -- a live key's record is in the member's log above  *)
 (*                       its purge point or in its snapshot.               *)
 (*                                                                         *)
@@ -113,12 +131,18 @@
 (*                         holds.                                          *)
 (*   ReadNoApplyWait    -- a read answers from what the leader has applied *)
 (*                         without waiting for its commit index.           *)
+(*   SeesExpired        -- these operations (delete, putAbsent, putIf,     *)
+(*                         deleteIf) treat an expired record as present.   *)
+(*                                                                         *)
+(* SnapshotDropsExpired is not a dropped rule. It picks which of two       *)
+(* allowed snapshots a member builds: with it, the snapshot holds live     *)
+(* records only; without it, the whole projection.                         *)
 (***************************************************************************)
 EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
     Servers,
-    Requests,           \* the request ids clients send, out of 1..5
+    Requests,           \* the request ids clients send, out of 1..7
     MaxProposals,       \* client entries proposed, retries included
     MaxExpiries,        \* expiry deletes proposed
     MaxClock,           \* every clock runs 0..MaxClock
@@ -138,7 +162,9 @@ CONSTANTS
     FloorFromCommitted,
     FloorCountsBlank,
     ExpiryUnconditional,
-    ReadNoApplyWait
+    ReadNoApplyWait,
+    SeesExpired,        \* a set of operation names
+    SnapshotDropsExpired
 
 VARIABLES
     clog,       \* the committed entries
@@ -162,6 +188,9 @@ Max2(a, b) == IF a >= b THEN a ELSE b
 
 Op(r) == CASE r = 1 -> "add" [] r = 2 -> "put" [] r = 3 -> "putAbsent"
            [] r = 4 -> "delete" [] r = 5 -> "put"
+           [] r = 6 -> "putIf" [] r = 7 -> "deleteIf"
+
+CondOps == {"putIf", "deleteIf"}
 
 NoAns == <<>>
 
@@ -169,23 +198,33 @@ NoAns == <<>>
 Empty == [val |-> 0, ver |-> 0, exp |-> 0, sum |-> 0, t |-> 0,
           ans |-> [r \in Requests |-> NoAns]]
 
-Blank == [rid |-> 0, op |-> "blank", t |-> 0, exp |-> 0, ver |-> 0]
+Blank == [rid |-> 0, op |-> "blank", t |-> 0, exp |-> 0, ver |-> 0, cond |-> 0]
 
 \* Present and not expired at time t. exp 0 is "never".
 Live(s, t) == s.val # 0 /\ (s.exp = 0 \/ t < s.exp)
 
+\* What a request can observe of s: a record expired at the log's time is
+\* gone, and an absent key has no version.
+Obs(s) == IF Live(s, s.t) THEN s ELSE [s EXCEPT !.val = 0, !.ver = 0, !.exp = 0]
+
+\* Whether a write of this kind finds the key present at time t.
+Present(s, t, op) == IF op \in SeesExpired THEN s.val # 0 ELSE Live(s, t)
+
 \* A client entry applied at index i, checking expiry at time t.
 Write(s, e, i, t) ==
-    CASE e.op = "add" ->
+    LET here == Present(s, t, e.op)
+        put == [s EXCEPT !.val = e.rid, !.ver = i, !.exp = e.exp, !.ans[e.rid] = <<"ok", i>>]
+        del == [s EXCEPT !.val = 0, !.ver = i, !.exp = 0, !.ans[e.rid] = <<"ok", s.ver>>]
+        conflict == [s EXCEPT !.ans[e.rid] = <<"conflict", IF here THEN s.ver ELSE 0>>]
+    IN CASE e.op = "add" ->
             [s EXCEPT !.sum = @ + 1, !.ans[e.rid] = <<"ok", s.sum + 1>>]
-      [] e.op = "put" ->
-            [s EXCEPT !.val = e.rid, !.ver = i, !.exp = e.exp, !.ans[e.rid] = <<"ok", i>>]
+      [] e.op = "put" -> put
       [] e.op = "putAbsent" ->
-            IF Live(s, t) THEN [s EXCEPT !.ans[e.rid] = <<"refused", s.ver>>]
-            ELSE [s EXCEPT !.val = e.rid, !.ver = i, !.exp = 0, !.ans[e.rid] = <<"ok", i>>]
+            IF here THEN [s EXCEPT !.ans[e.rid] = <<"refused", s.ver>>] ELSE put
       [] e.op = "delete" ->
-            IF s.val = 0 THEN [s EXCEPT !.ans[e.rid] = <<"absent", 0>>]
-            ELSE [s EXCEPT !.val = 0, !.ver = i, !.exp = 0, !.ans[e.rid] = <<"ok", s.ver>>]
+            IF here THEN del ELSE [s EXCEPT !.ans[e.rid] = <<"absent", 0>>]
+      [] e.op = "putIf" -> IF here /\ s.ver = e.cond THEN put ELSE conflict
+      [] e.op = "deleteIf" -> IF here /\ s.ver = e.cond THEN del ELSE conflict
 
 \* Apply entry e at index i, checking expiry at time t.
 Step(s, e, i, t) ==
@@ -231,7 +270,8 @@ Init ==
     /\ given = {}
     /\ reads = {}
     /\ used = [props |-> 0, exps |-> 0, changes |-> 0, crashes |-> 0, reads |-> 0, snaps |-> 0]
-    /\ hist = [installed |-> {}, readAfterInstall |-> FALSE, snapFloor |-> FALSE]
+    /\ hist = [installed |-> {}, readAfterInstall |-> FALSE, snapFloor |-> FALSE,
+               cond |-> [r \in Requests |-> 0]]
 
 ----------------------------------------------------------------------------
 
@@ -242,14 +282,21 @@ SnapFloor ==
     /\ \A k \in (purged[ldr] + 1)..Len(All) : All[k].op = "blank"
     /\ snap[ldr].st.t > clock[ldr]
 
-\* A client request, or a retry of one whose answer has not come.
+\* A client request, or a retry of one whose answer has not come. A
+\* conditional write names the version the leader held when the client
+\* first sent it (`hist.cond`), and a retry names the same one.
 Propose(r) ==
+    LET c == IF Op(r) \notin CondOps THEN 0
+             ELSE IF hist.cond[r] # 0 THEN hist.cond[r] ELSE st[ldr].ver
+    IN
     /\ \A g \in given : g.rid # r
     /\ used.props < MaxProposals
+    /\ Op(r) \in CondOps => (hist.cond[r] # 0 \/ st[ldr].val # 0)
     /\ pend' = Append(pend, [rid |-> r, op |-> Op(r), t |-> Stamp,
-                             exp |-> IF r = 2 THEN Stamp + 1 ELSE 0, ver |-> 0])
+                             exp |-> IF r = 2 THEN Stamp + 1 ELSE 0, ver |-> 0,
+                             cond |-> c])
     /\ used' = [used EXCEPT !.props = @ + 1]
-    /\ hist' = [hist EXCEPT !.snapFloor = @ \/ SnapFloor]
+    /\ hist' = [hist EXCEPT !.snapFloor = @ \/ SnapFloor, !.cond[r] = c]
     /\ UNCHANGED <<clog, ldr, clock, applied, st, snap, purged, given, reads>>
 
 \* The leader's expiry timer: the key it applied has expired at its time.
@@ -259,7 +306,7 @@ Expire ==
     IN /\ used.exps < MaxExpiries
        /\ s.val # 0 /\ s.exp # 0 /\ Now >= s.exp
        /\ pend' = Append(pend, [rid |-> 0, op |-> "expire", t |-> Stamp, exp |-> 0,
-                                ver |-> s.ver])
+                                ver |-> s.ver, cond |-> 0])
        /\ used' = [used EXCEPT !.exps = @ + 1]
        /\ UNCHANGED <<clog, ldr, clock, applied, st, snap, purged, given, reads, hist>>
 
@@ -301,9 +348,11 @@ Apply(s) ==
        /\ applied' = [applied EXCEPT ![s] = i]
        /\ UNCHANGED <<clog, pend, ldr, clock, snap, purged, given, reads, used, hist>>
 
-\* The projection and the id of the last entry it applied, together.
+\* The projection and the id of the last entry it applied, together. With
+\* SnapshotDropsExpired it holds live records only, judged at the log's time.
 BuildSnapshot(s) ==
-    LET kept == IF SnapshotDropsDedup THEN [st[s] EXCEPT !.ans = Empty.ans] ELSE st[s]
+    LET live == IF SnapshotDropsExpired THEN Obs(st[s]) ELSE st[s]
+        kept == IF SnapshotDropsDedup THEN [live EXCEPT !.ans = Empty.ans] ELSE live
     IN /\ applied[s] > snap[s].idx
        /\ used.snaps < MaxSnapshots
        /\ used' = [used EXCEPT !.snaps = @ + 1]
@@ -380,10 +429,14 @@ TypeOK ==
         /\ purged[s] <= snap[s].idx
     /\ \A g \in given : g.rid \in Requests /\ g.ans # NoAns
 
-MembersAgree ==
-    \A s, t \in Servers : applied[s] = applied[t] => st[s] = st[t]
+\* A snapshot that drops expired records leaves members with different
+\* bytes for the same state, so they are compared by what can be observed.
+View(s) == IF SnapshotDropsExpired THEN Obs(s) ELSE s
 
-ProjectionIsFold == \A s \in Servers : st[s] = FoldTo(applied[s])
+MembersAgree ==
+    \A s, t \in Servers : applied[s] = applied[t] => View(st[s]) = View(st[t])
+
+ProjectionIsFold == \A s \in Servers : View(st[s]) = View(FoldTo(applied[s]))
 
 SumExact ==
     \A s \in Servers :
@@ -419,18 +472,27 @@ ReadsNotStale == \A r \in reads : r.present => Live(FoldTo(r.c), r.rt)
 \* Nothing wrote the key between index a and index b.
 Untouched(a, b) == FoldTo(a).ver = FoldTo(b).ver
 
+\* Entry j is the first commit of a write that found the key present.
+FoundPresent(j) ==
+    LET a == FoldTo(j).ans[clog[j].rid]
+    IN /\ clog[j].op \in {"putAbsent", "delete", "putIf", "deleteIf"}
+       /\ FoldTo(j - 1).ans[clog[j].rid] = NoAns
+       /\ a[1] = (IF clog[j].op = "putAbsent" THEN "refused" ELSE "ok")
+
 OneClock ==
     \A r \in reads : \A j \in 1..Len(clog) :
-        (/\ ~r.present
-         /\ j > r.c
-         /\ clog[j].op = "putAbsent"
-         /\ Untouched(r.c, j - 1))
-        => ~Live(FoldTo(j - 1), clog[j].t)
+        (~r.present /\ j > r.c /\ Untouched(r.c, j - 1)) => ~FoundPresent(j)
+
+CondExact ==
+    \A j \in 1..Len(clog) :
+        (clog[j].op \in CondOps /\ FoundPresent(j))
+        => /\ FoldTo(j - 1).ver = clog[j].cond
+           /\ Live(FoldTo(j - 1), clog[j].t)
 
 \* A live key's record is above the member's purge point or in its snapshot.
 LiveReadable ==
     \A s \in Servers :
-        st[s].val # 0 =>
+        (IF SnapshotDropsExpired THEN Live(st[s], st[s].t) ELSE st[s].val # 0) =>
             \/ st[s].ver > purged[s]
             \/ snap[s].st.val # 0 /\ snap[s].st.ver = st[s].ver
 
@@ -470,5 +532,34 @@ NeverReadAfterExpiry ==
 
 \* A leader that installed a snapshot stamps from the snapshot's time.
 NeverStampFromSnapshot == ~hist.snapFloor
+
+\* A delete finds an expired record that no expiry delete removed, and
+\* answers "absent".
+NeverDeleteOfExpired ==
+    ~ \E j \in 1..Len(clog) :
+        /\ clog[j].op = "delete"
+        /\ FoldTo(j - 1).val # 0
+        /\ FoldTo(j - 1).ans[clog[j].rid] = NoAns
+        /\ FoldTo(j).ans[clog[j].rid] = <<"absent", 0>>
+
+\* A member restores a snapshot that left out an expired record, and a
+\* member that replayed the log still holds it at the same index.
+NeverDroppedAndKept ==
+    ~ \E s, t \in Servers :
+        applied[s] = applied[t] /\ st[s].val = 0 /\ st[t].val # 0
+
+\* A conditional write applies.
+NeverCondApplied ==
+    ~ \E j \in 1..Len(clog) : clog[j].op \in CondOps /\ FoundPresent(j)
+
+\* A conditional write is refused because a newer write replaced the
+\* version it named.
+NeverCondStale ==
+    ~ \E j \in 1..Len(clog) :
+        /\ clog[j].op \in CondOps
+        /\ FoldTo(j - 1).ans[clog[j].rid] = NoAns
+        /\ Live(FoldTo(j - 1), clog[j].t)
+        /\ FoldTo(j - 1).ver # clog[j].cond
+        /\ FoldTo(j).ans[clog[j].rid][1] = "conflict"
 
 =============================================================================

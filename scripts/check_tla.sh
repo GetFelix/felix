@@ -777,6 +777,18 @@ expectations=(
   "FelixRaftCacheExpiryReachRefresh violates NeverExpirySkipsNewer"
   "FelixRaftCacheExpiryReachExpireRead violates NeverReadAfterExpiry"
   "FelixRaftCacheClockSnapshotReachInstallStamp violates NeverStampFromSnapshot"
+  "FelixRaftCacheDelete pass"
+  "FelixRaftCacheDeleteSnapshot pass"
+  "FelixRaftCacheCond pass"
+  "FelixRaftCachePutAbsentSnapshot pass"
+  "FelixRaftCacheDeleteSeesExpired violates OneClock"
+  "FelixRaftCacheDeleteSnapshotSeesExpired violates AnswersKept"
+  "FelixRaftCachePutAbsentSnapshotSeesExpired violates MembersAgree"
+  "FelixRaftCacheCondSeesExpired violates OneClock"
+  "FelixRaftCacheDeleteReachExpired violates NeverDeleteOfExpired"
+  "FelixRaftCacheDeleteSnapshotReachDropped violates NeverDroppedAndKept"
+  "FelixRaftCacheCondReachApplied violates NeverCondApplied"
+  "FelixRaftCacheCondReachStale violates NeverCondStale"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -1137,6 +1149,10 @@ weights=(
   "FelixRaftCacheClock 9"
   "FelixRaftCacheClockSnapshot 18"
   "FelixRaftCacheExpiry 2"
+  "FelixRaftCacheDelete 9"
+  "FelixRaftCacheCond 3"
+  "FelixRaftCacheDeleteSnapshot 50"
+  "FelixRaftCachePutAbsentSnapshot 45"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
 )
@@ -1261,6 +1277,9 @@ pr_minutes=(
   "FelixRaftCache 6"
   "FelixRaftCacheClock 13"
   "FelixRaftCacheClockSnapshot 26"
+  "FelixRaftCacheDelete 13"
+  "FelixRaftCacheDeleteSnapshot 72"
+  "FelixRaftCachePutAbsentSnapshot 65"
 )
 
 weight_of() {

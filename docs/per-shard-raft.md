@@ -1366,8 +1366,9 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   snapshot. The snapshot is a function of the applied entries alone, so two
   members that snapshot at the same index hold the same state. It writes
   nothing to the log, so offsets never differ between members.
-- **The snapshot** is the applied state as of one log id: the live cache
-  records with their values, versions and expiries, the counter sums, the
+- **The snapshot** is the applied state as of one log id: the cache records
+  that are unexpired at the log's time, with their values, versions and
+  expiries, the counter sums, the
   log's time (the stamp of the last stamped entry applied) and the table of
   applied request ids with their answers.
 - **Apply never reads a clock.** The leader stamps each entry, no earlier
@@ -1380,6 +1381,15 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   leader's read time, the later of its clock and the log's time. If that
   finds a key expired that the log's time does not, the leader commits the
   conditional delete first and answers after applying it.
+- **An expired record is absent to every write.** A put-if-absent takes the
+  key, a delete answers "absent", and a put or delete that names a version
+  finds none. Each judges expiry at its own entry's stamp. A snapshot leaves
+  out records that had expired at the log's time, so a member that restored
+  one may lack a record that a member replaying the log still holds. Because
+  no write treats an expired record as present, both give the same answers.
+- **A put or a delete can name a version.** It applies only if the key holds
+  that version, unexpired, at the entry's stamp. Otherwise it is refused
+  with the current version, or none.
 - **Every write carries a request id** and is applied once. A retry gets the
   answer the first commit gave. The id must name the client across
   connections and leaders (a producer id and a sequence).
