@@ -605,6 +605,14 @@ impl Group {
         let mut seen: Vec<View> = Vec::new();
         for member in members.iter() {
             let running = member.running.as_ref().context("a member is down")?;
+            // A restarted member refuses reads until a leader commits its
+            // log tail: not converged yet, rather than a failure.
+            if let Err(reason) = running.handle.caught_up() {
+                return Ok((
+                    format!("member {}: {reason}", member.id),
+                    Some(format!("member {} is catching up", member.id)),
+                ));
+            }
             // The index before and after: a state read while it moved is not
             // a state at either.
             let before = running.handle.status().last_applied_index;
