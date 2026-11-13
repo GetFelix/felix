@@ -42,7 +42,7 @@ jobs:
         run: |
           set -euo pipefail
           for d in "$GITHUB_WORKSPACE" "$RUNNER_TEMP/base"; do
-            (cd "$d" && cargo test --locked --release -p felix-replication --features raft --lib --no-run)
+            (cd "$d" && cargo test --locked --release -p felix-replication --features raft,felix-common/sim --lib --no-run)
           done
       - name: Measure
         run: |
@@ -50,7 +50,7 @@ jobs:
           nproc; free -m
           run() {
             (cd "$1" && MEASURE_KEYS=$3 MEASURE_LABEL=$2 cargo test --locked --release -q -p felix-replication \
-              --features raft --lib raft::cache::measure -- --ignored --nocapture 2>&1 | grep '^cache_read_path')
+              --features raft,felix-common/sim --lib raft::cache::measure -- --ignored --nocapture 2>&1 | grep '^cache_read_path')
           }
           for round in 1 2 3 4; do
             for keys in 1000 1000000; do
