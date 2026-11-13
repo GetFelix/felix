@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794572319540,
+  "lastUpdate": 1794584425231,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54548,6 +54548,58 @@ window.BENCHMARK_DATA = {
             "range": "59987.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1618665.53\nmean: 1603719.34\nstdev: 59987.43\ncv: 3.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5b513b271c509c1b7a6e1ad21c10e446d45898ae",
+          "message": "deps: quinn-udp 0.5.16 for RUSTSEC-2026-0538 (#2437)\n\nThe receive loop could spin after a truncated datagram. Bumped in the\nworkspace and the four demo lockfiles.\n\nSpec-Unaffected: lockfile-only dependency bump",
+          "timestamp": "2026-11-13T07:32:02-08:00",
+          "tree_id": "650ae1ce2a9bbd7dbacc8e2de5d1b01984fba9a9",
+          "url": "https://github.com/GetFelix/felix/commit/5b513b271c509c1b7a6e1ad21c10e446d45898ae"
+        },
+        "date": 1794584424251,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351892.98,
+            "range": "8076.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351892.98\nmean: 356014.13\nstdev: 8076.44\ncv: 2.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351892.98,
+            "range": "8076.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351892.98\nmean: 356014.13\nstdev: 8076.44\ncv: 2.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80220.96,
+            "range": "826.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80220.96\nmean: 80338.45\nstdev: 826.60\ncv: 1.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802209.57,
+            "range": "8265.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802209.57\nmean: 803384.49\nstdev: 8265.98\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
