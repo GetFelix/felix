@@ -779,6 +779,7 @@ async fn shard_renewal_waits_for_every_member() {
                     pending_set: None,
                     previous_generation: None,
                     readmitted: Default::default(),
+                    placed: None,
                 })
                 .await
                 .expect("assign");
@@ -867,6 +868,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     pending_set: None,
                     previous_generation: None,
                     readmitted: Default::default(),
+                    placed: None,
                 })
                 .await
                 .expect("assign");
@@ -1067,6 +1069,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -1187,6 +1190,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1321,6 +1325,7 @@ async fn a_previous_generation_waits_for_every_member() {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1416,6 +1421,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -1503,6 +1509,126 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
     assert_eq!(restored.join_floor(), READMITTED_LEVEL);
 }
 
+/// A member before level 31 would keep no record of the brokers placed in a
+/// shard's epoch, and its assignment would differ from the others'. So while
+/// one is in the group a first assignment starts none, and a shard assigned
+/// then never gets one. Once every member has the level a new shard starts
+/// one, every later write grows it, and it survives a snapshot.
+#[tokio::test]
+async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
+    use crate::model::{ShardAssignment, ShardKey, ShardKind, ShardState};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), PLACED_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    for (id, port) in [("broker-x", 7101), ("broker-y", 7102), ("broker-z", 7103)] {
+        store
+            .register_node(crate::store::contract::nodes::node(id, port))
+            .await
+            .expect("register");
+    }
+    let key = |shard: u32| ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard,
+        kind: ShardKind::Stream,
+    };
+    let set = |shard: u32, replicas: &[&str]| ShardAssignment {
+        key: key(shard),
+        leader: "broker-x".to_string(),
+        replicas: replicas.iter().map(|r| r.to_string()).collect(),
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
+        placed: None,
+    };
+    let first = |shard: u32| {
+        let store = Arc::clone(&store);
+        async move {
+            let token = store.placement_token().await.expect("token");
+            match store
+                .put_shard_assignment_if(set(shard, &["broker-y"]), None, token)
+                .await
+                .expect("first assignment")
+            {
+                AssignmentWrite::Written(written) => written,
+                other => panic!("not written: {other:?}"),
+            }
+        }
+    };
+
+    let old = first(0).await;
+    assert_eq!(old.placed, None, "not started below its level");
+    assert!(store.machine.join_floor() < PLACED_LEVEL);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let shard = 1;
+    while first(shard).await.placed.is_none() {
+        store
+            .delete_shard_assignment(&key(shard))
+            .await
+            .expect("unassign");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "still not started after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(store.machine.join_floor(), PLACED_LEVEL);
+
+    let moved = store
+        .put_shard_assignment(set(shard, &["broker-z"]))
+        .await
+        .expect("move");
+    let brokers: std::collections::BTreeSet<String> = ["broker-x", "broker-y", "broker-z"]
+        .map(String::from)
+        .into();
+    assert_eq!(moved.placed.expect("record").brokers, brokers);
+    let old = store
+        .put_shard_assignment(set(0, &["broker-z"]))
+        .await
+        .expect("write the old shard");
+    assert_eq!(
+        old.placed, None,
+        "a shard assigned below the level gets none"
+    );
+
+    let restored = MetadataStateMachine::new(Arc::new(InMemoryStore::new(StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    })));
+    restored.restore(&store.machine.snapshot().await).await;
+    assert_eq!(
+        restored
+            .store()
+            .get_shard_assignment(&key(shard))
+            .await
+            .expect("restored assignment")
+            .placed
+            .expect("restored record")
+            .brokers,
+        brokers
+    );
+    assert_eq!(restored.join_floor(), PLACED_LEVEL);
+}
+
 /// Under `joint_fence` a rename past a refusal's ballot skips generations, and
 /// a broker that missed the one before has no set to fence against. So while
 /// a member below level 29 is in the group, such a write takes the next
@@ -1550,6 +1676,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1660,6 +1787,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
 
     let written = store
@@ -1739,6 +1867,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -1869,6 +1998,7 @@ async fn pending_sets_wait_for_every_member() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -2038,6 +2168,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -2141,6 +2272,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -2245,6 +2377,7 @@ async fn inherited_storage_waits_for_every_member() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -2362,6 +2495,7 @@ async fn learners_wait_for_every_member() {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     let assigned = store
         .put_shard_assignment(learning.clone())
@@ -2509,6 +2643,7 @@ async fn a_refusal_waits_for_every_member() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -2645,6 +2780,7 @@ async fn storage_ids_wait_for_every_member() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -2971,6 +3107,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -3882,6 +4019,7 @@ async fn adoption_waits_for_every_member() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");

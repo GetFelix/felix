@@ -353,6 +353,7 @@ async fn machine_with_reported_shards() -> MetadataStateMachine {
             .dispatch(MetaCommand::PutShardAssignment {
                 seq_generation: false,
                 assignment,
+                start_placed: false,
             })
             .await
             .expect("assign");

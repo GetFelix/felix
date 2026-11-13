@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 30;
+pub const METADATA_VERSION: u16 = 31;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -216,6 +216,10 @@ pub enum MetaCommand {
         /// generation at any incarnation (`model::first_generation`).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         seq_generation: bool,
+        /// Level 31: a first assignment starts the record of brokers placed
+        /// in the epoch (`ShardAssignment::placed`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        start_placed: bool,
     },
     /// Write only if the shard is at `expected_generation` (`None`: has no
     /// assignment), checked as the command applies.
@@ -253,6 +257,9 @@ pub enum MetaCommand {
         /// replaced (`ShardAssignment::previous_generation`, #2024).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         record_previous: bool,
+        /// Level 31: as for `PutShardAssignment`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        start_placed: bool,
     },
     /// Adopt a leader that elected itself
     /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
