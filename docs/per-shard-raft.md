@@ -299,9 +299,9 @@ write and leaves a `poisoned` marker in its directory. So does a rollover,
 a truncation or a reset that fails partway. The next open of a poisoned log
 cuts it back to its last sync (`docs/durable-storage.md`, "A failed fsync
 poisons the log"). That is right for a log whose every acknowledgement
-waited for the fsync. It would be wrong for a copy whose written position a
-leader counts toward a `Quorum` acknowledgement, which is planned (issue
-#2233) and not built on this page's code yet:
+waited for the fsync. It is wrong for a copy whose written position a
+leader counts toward a `Quorum` acknowledgement (`await_quorum_ack`, see
+"Acknowledging a write"):
 
 1. Leader L and follower F1 write record R. R is acknowledged on the
    written count.
@@ -375,8 +375,9 @@ it and treat it as a copy that may hold less than it reported.
 > Tests: `raft_copy::tests::judge::a_copy_whose_flush_failed_rotates`
 > (storage) and
 > `raft::tests::identity::a_copy_whose_flush_failed_does_not_vote_with_the_cut_log`
-> (three members, an injected flush failure on a follower). Neither
-> covers a record acknowledged on the written count, which needs #2233.
+> (three members: a record acknowledged on the written count by the
+> leader and a follower whose flush then fails, with the third member cut
+> off; the record survives and the follower does not vote).
 
 **What this does not catch.** A single shard directory that goes back to a
 state younger than one mark interval, with no vote saved since, passes
@@ -820,13 +821,11 @@ What the acknowledgement promises, and what it does not
   with two writes (`FelixRaftWrittenTerms.cfg`) and the membership change
   across a change of leader (`FelixRaftWrittenJointFailover.cfg`) found no
   violation but have not finished.
-- A failed flush counts as a power cut for that copy. A Raft log is fsync
-  on commit, and a log whose flush failed is cut back to its last sync when
-  it restarts, on the grounds that nothing past it was acknowledged. A
-  written-majority acknowledgement makes that untrue, so the copy comes
-  back without the record exactly as if it had lost power. Before routing
-  calls `await_quorum_ack`, such a copy must not vote with the cut log
-  (issue #2469).
+- A failed flush counts as a power cut for that copy in the model. A log
+  whose flush failed is cut back to its last sync when it opens, and a
+  written-majority acknowledgement may have counted a record past it. The
+  code is stricter than the model: the copy restarts under a new copy id
+  and never votes with the cut log (see "A poisoned log").
 - It can be lost only if a copy that held it loses power, or fails a
   flush, before its fsync and a majority then elects without a copy that
   still holds it. At RF 3 one power cut is enough. The leader and one follower hold the record. One
@@ -1615,10 +1614,7 @@ change has to:
   from `await_quorum_ack`. `propose_publish` answers at the commit today,
   and live delivery stays at the commit either way. The answer has to wait
   for the batch's turn in `ProposalOrder`, because written-count wakeups
-  arrive in no particular order;
-- keep a Raft copy whose flush failed from voting with its cut log, by
-  restarting it as a rotated copy or refusing to open it, before
-  `await_quorum_ack` is wired (#2469).
+  arrive in no particular order.
 
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs

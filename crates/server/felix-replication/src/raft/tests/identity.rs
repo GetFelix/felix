@@ -151,10 +151,11 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
     }
 }
 
-/// A follower writes a record and its flush fails. Restarted, its log would
-/// be cut back to the last sync, without the record. It comes back under a
-/// new id instead, the old id answers no vote request, and the new copy is
-/// not a voter.
+/// Issue #2469. The leader and follower F1 write record R, and R is
+/// acknowledged on the written count while F2 is cut off. F1's flush fails,
+/// so a restart would cut its log back to the last sync, without R. It comes
+/// back under a new copy id instead. With the leader cut off, F1 and F2
+/// cannot elect a leader without R, and once the leader is back R commits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
     let mut cluster = Cluster::new(true);
@@ -185,10 +186,35 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
     cluster.committed_everywhere(0, before).await;
 
     let leader = cluster.elected(0).await;
-    let failing = *BROKERS
+    let engine = RaftEngine::new(cluster.runtime(&leader.broker));
+    let batch = |payload: &'static [u8]| Batch {
+        records: vec![Record {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+        }],
+        ack: AckAt::Written,
+    };
+    // A wait on the written count makes the leader ask for reports.
+    let primed = engine
+        .propose(&shard(0), batch(b"primed"))
+        .await
+        .expect("written");
+    engine
+        .await_quorum_ack(&shard(0), primed, AckAt::Written, PATIENCE)
+        .await
+        .expect("acknowledged");
+    engine
+        .await_commit(&shard(0), primed, PATIENCE)
+        .await
+        .expect("committed");
+    cluster.committed_everywhere(0, primed.end - 1).await;
+
+    let mut followers = BROKERS
         .iter()
-        .find(|broker| **broker != &*leader.broker)
-        .expect("a follower");
+        .copied()
+        .filter(|broker| *broker != &*leader.broker);
+    let failing = followers.next().expect("a follower");
+    let other = followers.next().expect("another follower");
     let old = cluster
         .runtime(failing)
         .status(&shard(0))
@@ -203,10 +229,28 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    // Only the flush of the next record fails: an idle flush in between
-    // passes and leaves the failure armed.
+    // Only the flush of R fails: an idle flush in between passes and leaves
+    // the failure armed.
     log.fail_flush_past(log.tail_offset().await.expect("tail"));
-    let acked = cluster.write(0, b"acked").await;
+    cluster.net.cut.lock().insert(other.into());
+    cluster.net.muted.lock().insert(other.into());
+    let r = engine
+        .propose(&shard(0), batch(b"R"))
+        .await
+        .expect("written");
+    engine
+        .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
+        .await
+        .expect("R acknowledged on the written count");
+    let committed = cluster
+        .runtime(&leader.broker)
+        .status(&shard(0))
+        .expect("status")
+        .committed;
+    assert!(
+        committed.is_none_or(|at| at < r.end - 1),
+        "R committed, so it was not acknowledged on the written count alone"
+    );
     let deadline = tokio::time::Instant::now() + PATIENCE;
     while !log.is_poisoned() {
         assert!(
@@ -217,9 +261,10 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
     }
     assert!(
         log.tail_offset().await.expect("tail") > log.durable_offset(),
-        "the record was written past the last sync"
+        "R was written past the last sync"
     );
 
+    // F1 restarts.
     cluster.net.cut.lock().insert(failing.into());
     assert!(cluster.runtime(failing).close(&shard(0)).await);
     // A poisoned log has nothing left to flush, so its close may fail.
@@ -234,6 +279,57 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         )
         .await
         .expect("reopen");
+
+    // The leader goes away and F2 comes back. A cut copy that kept its id
+    // would elect a leader with F2, and neither holds R.
+    {
+        let mut cut = cluster.net.cut.lock();
+        cut.clear();
+        cut.insert(leader.broker.to_string());
+    }
+    {
+        let mut muted = cluster.net.muted.lock();
+        muted.clear();
+        muted.insert(leader.broker.to_string());
+    }
+    let settle = tokio::time::Instant::now() + 3 * timers().election_max;
+    while tokio::time::Instant::now() < settle {
+        for broker in [failing, other] {
+            let status = cluster.runtime(broker).status(&shard(0));
+            assert!(
+                status.is_none_or(|status| status.role != Role::Leader),
+                "{broker} was elected without R"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // The leader comes back, and a write in whatever term follows commits R
+    // where it was written. The new copy is left out: nothing is sent to it.
+    cluster.net.muted.lock().clear();
+    {
+        let mut cut = cluster.net.cut.lock();
+        cut.clear();
+        cut.insert(failing.into());
+    }
+    let after = cluster.write(0, b"after").await;
+    assert!(after > r.end - 1);
+    for broker in [&*leader.broker, other] {
+        let range = felix_storage::log::ReadRange {
+            start: r.end - 1,
+            max_bytes: 1 << 20,
+        };
+        let records = logs[broker]
+            .read_range_with_trims(range)
+            .await
+            .expect("read");
+        assert_eq!(
+            records.first().map(|record| &record.payload[..]),
+            Some(&b"R"[..]),
+            "{broker} lost R"
+        );
+    }
+
     assert_eq!(
         reopened.rotation.as_ref().map(|rotation| rotation.reason),
         Some(RotateReason::Poisoned)
@@ -241,11 +337,11 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
     let new = reopened.member.clone();
     assert_eq!(new.broker, old.broker);
     assert_ne!(new.copy, old.copy);
-
     let request = RaftRequest {
         group: group(0),
         to: old.clone(),
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(1),
         body: {
             let candidate = LeaderIdOf::<ShardTypes>::new(99, MemberId::new("b", 1));
@@ -257,12 +353,6 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         cluster.runtime(failing).handle(request).await,
         Err(Refused::NoSuchMember(_))
     ));
-
-    // The two copies that synced the record go on, and the new copy is not
-    // a voter.
-    let after = cluster.write(0, b"after").await;
-    assert!(after > acked);
-    let leader = cluster.elected(0).await;
     let member = cluster
         .runtime(&leader.broker)
         .group(&shard(0))
@@ -279,19 +369,6 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         voters.contains(&old) && !voters.contains(&new),
         "{voters:?}"
     );
-    // Reachable again, the new copy is still asked for nothing: the group
-    // sends to the old id, which the broker refuses.
-    cluster.net.cut.lock().remove(failing);
-    let command = Command {
-        timestamp_micros: 1_700_000_000,
-        payload: Bytes::from_static(b"reachable"),
-        written: None,
-    };
-    member
-        .raft()
-        .client_write(command)
-        .await
-        .expect("a write with the new copy reachable");
     let status = cluster.runtime(failing).status(&shard(0)).expect("status");
     assert_eq!(status.member, new);
     assert_eq!(status.role, Role::Learner);

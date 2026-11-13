@@ -94,8 +94,9 @@ impl RaftEngine {
     /// own word and before its fsync, when that comes before the commit. It
     /// can be lost if one of those copies loses power before its fsync and a
     /// majority then elects without a copy that still holds the record. A
-    /// failed flush counts as a power cut for that copy: its log is cut back
-    /// to the last sync on restart (#2469). Outside that case it survives
+    /// failed flush is no worse: that copy restarts under a new copy id and
+    /// does not vote with its cut log (`docs/per-shard-raft.md`, "A poisoned
+    /// log"). Outside that case it survives
     /// process crashes, a change of leader and a membership change, which
     /// the model checks to the end; two terms with two writes and a
     /// membership change across a change of leader have not finished
