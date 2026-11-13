@@ -492,8 +492,8 @@ proposal or a follower's append would shift the match.
 What a token says, and what it does not:
 
 - It resolves once, after the whole `append` is written and after the
-  written position has moved, so a proposer that wakes on it finds the
-  position at or past its record.
+  written position has moved. At that moment the position is at or past
+  the record. A truncation after it can move the position back.
 - An `append` that fails resolves none of its tokens, and a command
   dropped before it reached the log resolves none either. The proposer
   reads that as an unknown outcome.

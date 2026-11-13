@@ -857,11 +857,14 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
             .written
             .is_some_and(|written| written.index >= at.index)
     );
+    // A leader deposed meanwhile refuses the write. It never reports it done.
     assert!(
-        futures::FutureExt::now_or_never(&mut write).is_none(),
+        !matches!(
+            futures::FutureExt::now_or_never(&mut write),
+            Some(Ok(Ok(_)))
+        ),
         "the write was answered with no follower reachable"
     );
-
     cluster.net.cut.lock().clear();
     write.abort();
     cluster.stop().await;
