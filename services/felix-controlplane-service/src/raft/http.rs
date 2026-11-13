@@ -156,16 +156,11 @@ async fn catch_up_target(State(handle): State<super::RaftHandle>) -> Response {
     }
 }
 
-#[cfg(not(felix_segment_store))]
+/// On the segment store the body is read as a stream, which the router's
+/// body limit does not cover; the transfer's own cap does, from the length
+/// in the head.
 fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
     post(install_snapshot)
-}
-
-/// The body streams through this route, so the router's limit does not
-/// apply; the transfer's own cap does, from the length in the head.
-#[cfg(felix_segment_store)]
-fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
-    post(install_snapshot).layer(axum::extract::DefaultBodyLimit::disable())
 }
 
 /// A snapshot streamed in one request (`felix_storage::raft_log::transfer`).
