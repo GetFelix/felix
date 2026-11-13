@@ -52,6 +52,7 @@ pub(crate) async fn run_pubsub(
             subscription_id: None,
             shard: None,
             queue_capacity: None,
+            end: None,
         },
     )
     .await?;

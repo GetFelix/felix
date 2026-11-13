@@ -85,6 +85,32 @@ pub(super) async fn open_member(
     }
 }
 
+/// Whether the stopped member in `data_dir` holds Raft state. Refuses a
+/// store that belongs to a cluster other than `cluster_id`. No store is no
+/// state, and none is created.
+pub(super) async fn stopped_member_holds_state(
+    data_dir: &std::path::Path,
+    cluster_id: &str,
+) -> Result<bool> {
+    use felix_storage::metadata_store::REDB_FILE;
+
+    if !data_dir.join(STORE_DIR).exists() {
+        // An older release's store may hold a group this build cannot read.
+        anyhow::ensure!(
+            !data_dir.join(REDB_FILE).exists(),
+            "the data directory holds {REDB_FILE} from an older release; this is not a first start"
+        );
+        return Ok(false);
+    }
+    // Fails while the member runs: its process holds the store's lock.
+    let store = Store::open(data_dir, cluster_id, Codec, "form-without")
+        .await
+        .context("open the metadata store; stop the member first")?;
+    let holds = store.has_raft_state();
+    store.shutdown().await.context("close the metadata store")?;
+    Ok(holds)
+}
+
 async fn start(
     store: &Store,
     data_dir: &std::path::Path,

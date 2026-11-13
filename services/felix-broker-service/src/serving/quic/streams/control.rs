@@ -524,6 +524,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                 start,
                 shard,
                 queue_capacity,
+                end,
             } => {
                 subscribe::subscribe(
                     &cx,
@@ -535,6 +536,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     start,
                     shard,
                     queue_capacity,
+                    end,
                 )
                 .await?
             }
@@ -1184,6 +1186,7 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
             | Message::ShardMoved { .. }
             | Message::StreamDeleted { .. }
             | Message::SubscriptionLagged { .. }
+            | Message::SubscriptionEnded { .. }
             | Message::PublishOk { .. }
             | Message::PublishError { .. }
             | Message::PublishRefused { .. }

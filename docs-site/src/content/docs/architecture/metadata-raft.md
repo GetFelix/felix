@@ -110,10 +110,28 @@ mTLS on top.
 
 `FELIX_RAFT_CLUSTER_ID` is recorded in the data dir on first start; a member
 refuses to start on a data dir from another cluster. Empty members form a
-new group only under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. With the
-default, `existing`, members that lost their volumes wait for the group
-instead of quietly starting an empty control plane, so set `new` for the
-cluster's first start and nothing else.
+new group only under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`, and only once
+every configured member has answered that it is empty, so start all of them
+for the cluster's first start. A member that is down blocks the first start:
+it may be the one holding the data. With the default, `existing`, members
+that lost their volumes wait for the group instead of quietly starting an
+empty control plane, so set `new` for the cluster's first start and nothing
+else.
+
+If a member's machine is lost for good before the group has ever formed,
+stop the others and run this on each, naming the absent member's
+`FELIX_RAFT_NODE_ID`:
+
+```bash
+felix-controlplane raft form-without --data-dir /var/lib/felix/raft \
+  --cluster-id prod-metadata --slot 3
+```
+
+The next start of each forms the group without that member's answer, once.
+The absent member stays in the group, so it runs two of three until a
+machine with an empty volume takes its place. Use this only under a cluster
+id that no volume has held: it cannot tell whether the absent machine holds
+data.
 
 Upgrading an existing Raft group to a release with the peer listener is not
 a rolling change: old members send unauthenticated RPCs to the API port, and

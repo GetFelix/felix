@@ -566,6 +566,16 @@ pub enum Message {
         /// a broker that advertised `FEATURE_SUBSCRIBE_QUEUE`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         queue_capacity: Option<u32>,
+        /// Stop after the record before this offset: the subscription delivers
+        /// `[start, end)` of a durable stream shard, then ends with
+        /// `subscription_ended`. Absent means no bound.
+        ///
+        /// Needs negotiated event offsets. An `end` at or below the committed
+        /// tail is answered from history alone and never joins fanout. Sent only
+        /// to a broker that advertised `FEATURE_SUBSCRIBE_END`: an older one
+        /// ignores the field and would run on into live delivery.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end: Option<u64>,
     },
     /// Subscription confirmation with server-assigned ID.
     Subscribed {
@@ -668,6 +678,12 @@ pub enum Message {
         /// it received none.
         resume_from: u64,
     },
+    /// Last message on the event stream of a subscription that reached the
+    /// `end` it asked for. The broker finishes the stream after it. Every
+    /// record below `end` was delivered or holds no event.
+    ///
+    /// Sent only in answer to a `subscribe` that carried `end`.
+    SubscriptionEnded { subscription_id: u64, end: u64 },
     /// Single event delivered to a subscriber.
     Event {
         tenant_id: String,

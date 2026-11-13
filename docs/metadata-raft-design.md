@@ -282,14 +282,89 @@ refuses vote requests and does not stand for election. It asks its peers
   (`GET /internal/raft/catch-up-target`, answered only after a read-index
   round confirms the leadership) and votes again once it has applied that
   far. Readiness keeps it out of rotation until then.
-- **First boot**: a majority, this member included, answers and is empty,
-  *and* the operator set `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. Each such
-  member initializes the configured group, which openraft allows. A
-  single-member group decides this alone. With the default, `existing`, an
-  empty majority waits and logs why instead: a member cannot tell a first
-  boot from a lost volume, and only the operator knows which it is.
-- **Neither**: it waits and asks again, so a lone wiped member never forms a
-  group of its own.
+- **First boot**: every configured member answers and is empty, *and* the
+  operator set `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`. Each such member
+  initializes the configured group, which openraft allows. A single-member
+  group decides this alone. With the default, `existing`, empty members wait
+  and log why instead: a member cannot tell a first boot from a lost volume,
+  and only the operator knows which it is.
+- **Neither**: it waits and asks again, and logs which members it is waiting
+  for and why.
+
+A first boot acts on answers, never on silence:
+
+- **Every member must answer.** A member that is down may be the one that
+  holds the group's data. A majority of empty answers used to be enough, so
+  two members that lost their volumes while the third was down formed a new
+  group under `new`, and the third's acknowledged writes were gone when it
+  came back. The cost is that a cluster's first start needs every member
+  up, once.
+- **Only a decoded, empty answer is empty.** A 403 (the member belongs to
+  another cluster), any other refusal, a failed TLS handshake and a body
+  that does not decode all block a first boot. None of them counts as "the
+  group exists" either.
+- **Each member has its own address.** `FELIX_RAFT_PEERS` is refused when
+  two ids share one, since one machine would then answer for both.
+- **The group exists when a log holds an entry at index 1 or above.** Every
+  first-boot member writes the same membership at index 0 and may vote for
+  itself before anyone leads, so neither says a group exists. An entry at
+  index 1 takes a leader, and a leader takes a formed majority. Until then
+  every member answers empty, so the members of a first boot never wait on
+  each other.
+
+One case is not covered: a volume lost after the group formed and before its
+first leader wrote an entry. Every log is still empty then, so under `new` the
+member forms again and has forgotten any vote it gave
+([#2374](https://github.com/GetFelix/felix/issues/2374)).
+
+#### Forming without a lost machine
+
+If a member's machine is gone for good before the group ever formed, the
+others would wait for it forever. The operator can waive it. On each
+surviving member, while it is stopped:
+
+```bash
+felix-controlplane raft form-without --data-dir /var/lib/felix/raft \
+  --cluster-id prod-metadata --slot 3
+```
+
+`--slot` is the absent member's `FELIX_RAFT_NODE_ID` and may be repeated.
+The command writes a `form-without` file into the data directory and prints
+what it wrote. At its next start the member logs the waiver as a warning and
+may form the group without an answer from that slot.
+
+What the waiver does and does not do:
+
+- **It excuses silence only.** If the waived slot answers, its answer counts
+  like any other: a group that exists is caught up with, and a 403, a
+  failed TLS handshake or an undecodable answer still blocks. Silence is a
+  connection that fails or times out.
+- **It names a minority.** The members that answer empty, this one included,
+  must still be a majority of the configured group.
+- **It is used once.** The member removes the file before it initializes.
+  It also removes it, with a warning, when it finds the group exists or
+  that it holds Raft state. A crash between the removal and the
+  initialization leaves an empty member with no waiver: run the command
+  again.
+- **It applies to a first start only.** The command refuses a member that
+  holds Raft state (a vote, a log entry or a snapshot). A member that
+  started, waited for the dead peer and was stopped holds none, so the
+  command accepts it.
+- **It does not shrink the group.** The absent slot stays a voter, so the
+  group runs two of three with no slack until a machine with an empty volume
+  starts at that slot's address.
+- **It cannot see the absent machine's disk.** If that machine holds this
+  cluster's data and returns, the group formed without it has replaced it.
+  Use the waiver only under a cluster id that no volume has ever held.
+
+**Known gap (#2365).** Only the vote is withheld. The member still answers
+appends and heartbeats, and a leader counts them. It forgot the term it last
+voted in, so a leader of an older term can commit with it after a newer
+leader was elected on its vote, and that entry is then cut
+(`docs/formal/FelixRaftPlacementSameIdCounted.cfg`). A rule that no leader
+counts a member while its vote is withheld closes this for three members
+(`FelixRaftPlacementSameId.cfg`). It does not for five: the member can vote
+a second time in the term it forgot (`FelixRaftPlacementSameIdFive.cfg`).
 
 The withheld vote is written to the member's store before any of this, so a
 crash half-way through catching up restarts still withholding it, not as a
@@ -302,7 +377,8 @@ restore path is the answer. What the member must not do is paper over it:
 two empty members of three that can reach each other but not the third
 used to form a new, empty group on their own, with new signing keys and
 every generation back to zero. Now they form one only under `new`, which
-belongs to a cluster's first start and nowhere else.
+belongs to a cluster's first start and nowhere else, and only once the
+third has answered that it is empty too.
 
 **Cluster id.** Every member is configured with `FELIX_RAFT_CLUSTER_ID`,
 etcd's cluster token under another name. The first start records it in the
@@ -755,7 +831,8 @@ leader's snapshot as in
 | --- | --- |
 | One instance of three dies | Leader (if it was the leader) re-elected in one election timeout; writes pause for that long, reads keep serving; M7 signal holds |
 | Instance loses its volume | Rejoins without a vote, catches up by log or snapshot, then votes again ([above](#rejoining-after-a-lost-volume)); no operator data surgery |
-| A majority loses its volumes | The empty members wait rather than form a new, empty group, unless `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`; recovery is the snapshot restore |
+| A majority loses its volumes | The empty members wait rather than form a new, empty group. Under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new` they still wait until every member answers and is empty, so a member that holds the log blocks them whether it is up or down; recovery is the snapshot restore |
+| A member's machine is lost before the group first forms | The others wait for its answer. `felix-controlplane raft form-without` lets them form without it ([above](#forming-without-a-lost-machine)) |
 | Something other than a member reaches the peer port | Refused before any route runs: wrong cluster id 403, missing or wrong peer token 401, and under peer mTLS no TLS handshake without a certificate from the cluster CA |
 | Network partition, leader in minority | Old leader steps down (cannot commit), majority elects; minority instances fail readiness rather than serve writes that cannot commit |
 | Quorum lost (2 of 3 down) | Writes and readiness fail on survivors; brokers keep serving on catalogs and leases as during any control-plane outage; recovery = restore instances (see [Restoring beyond quorum loss](#restoring-beyond-quorum-loss)) |
@@ -782,6 +859,12 @@ leader's snapshot as in
   with a moving grantor).
 - **Snapshot/restore**: wipe one instance's volume mid-traffic; assert it
   rejoins and converges.
+- **First start** (`tests/raft_core.rs`): two empty members do not form
+  while the third is down, answers 403 or answers something undecodable;
+  two wiped members do not form over a down member that holds an
+  acknowledged write; three empty members form one group; and the
+  `form-without` waiver forms once, is removed, and never overrides a member
+  that answers.
 
 ## What would overturn this
 
@@ -1128,6 +1211,24 @@ cluster id and refuses to start, because its own configured id is never
 empty (configuration rejects an empty `FELIX_RAFT_CLUSTER_ID`). The write
 changes nothing the check reads. Without a stub the older binary would find
 no store and come up as a new, empty member.
+
+**What a build without the switch does with `store/`.** It refuses to
+start, before it creates `raft.redb` or writes anything, and the error names
+`--cfg felix_segment_store`. `felix-controlplane raft form-without` refuses
+the directory too. A directory that a build with the switch created from
+scratch has `store/` and no `raft.redb`. Without the check, a build without
+the switch would create an empty `raft.redb` there and start as a new
+member. Restart every member that way and the group forms again with no
+metadata. A build without the switch cannot read the member file, so it
+cannot tell a rolled-back store from a live one, and it refuses any
+`store/`:
+
+- A directory created by a build with the switch has no way back to redb.
+  Keep running it on a build with the switch, or wipe it and let the member
+  rejoin.
+- A converted directory goes back through `rollback` or `restore`, which
+  move `store/` aside. A `restore` that stopped part way is finished by
+  running it again.
 
 **How the service decides, without reading redb.** It looks at names and at
 its own member file only:

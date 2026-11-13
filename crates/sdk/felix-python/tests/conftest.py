@@ -54,6 +54,11 @@ def _cluster(work: pathlib.Path):
     fixture_path = work / "fixture.json"
     ca_file = work / "brokers.pem"
 
+    # To a file, not a pipe: nothing here reads a pipe while the suite runs, and
+    # a full one blocks the fixture's control plane mid-write, which looks like
+    # a broker that stopped answering.
+    log_path = work / "fixture.log"
+    log = log_path.open("w")
     process = subprocess.Popen(
         [
             str(REPO_ROOT / "target" / "debug" / "felix-cluster"),
@@ -65,16 +70,17 @@ def _cluster(work: pathlib.Path):
         ],
         env={**os.environ, "RUST_LOG": "warn"},
         cwd=REPO_ROOT,
-        stdout=subprocess.PIPE,
+        stdout=log,
         stderr=subprocess.STDOUT,
         text=True,
     )
+    log.close()
 
     deadline = time.monotonic() + FIXTURE_WAIT_SECONDS
     body = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            output = process.stdout.read() if process.stdout else ""
+            output = log_path.read_text()
             pytest.fail(f"the fixture exited during startup:\n{output}")
         if fixture_path.exists() and ca_file.exists():
             try:
@@ -87,7 +93,10 @@ def _cluster(work: pathlib.Path):
 
     if body is None:
         process.terminate()
-        pytest.fail(f"the fixture was not ready within {FIXTURE_WAIT_SECONDS}s")
+        pytest.fail(
+            f"the fixture was not ready within {FIXTURE_WAIT_SECONDS}s:\n"
+            f"{log_path.read_text()}"
+        )
 
     try:
         yield body

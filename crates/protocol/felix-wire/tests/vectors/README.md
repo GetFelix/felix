@@ -10,6 +10,8 @@ Files:
 - `cache_put.json` / `cache_put.hex`
 - `cache_get.json` / `cache_get.hex`
 - `cache_value.json` / `cache_value.hex`
+- `subscribe_end.json` / `.hex` (a subscribe with an `end` offset, sent only to a broker advertising `FEATURE_SUBSCRIBE_END`)
+- `subscription_ended.json` / `.hex` (the last frame of a subscription that reached its `end`)
 - `ok.json` / `ok.hex`
 - `error.json` / `error.hex`
 - `binary_publish_acked.json` / `.hex` (binary, flags `0x0009`)

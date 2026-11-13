@@ -31,7 +31,14 @@ pub enum WipeScope {
 const WINDOW: u64 = 100;
 
 /// Every client value in the stream shards below `root`.
+///
+/// The read opens every segment, torn ones included, and repairs nothing. It
+/// is kept out of the opens `torn-tail-repaired` holds a broker to.
 pub(crate) fn stream_values(root: &Path) -> BTreeSet<u64> {
+    felix_storage::sim_fs::unobserved(|| read_stream_values(root))
+}
+
+fn read_stream_values(root: &Path) -> BTreeSet<u64> {
     let mut values = BTreeSet::new();
     let Ok(shards) = find_shards(root) else {
         return values;

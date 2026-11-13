@@ -33,6 +33,10 @@ pub(crate) struct EventWriterConfig {
     /// If true, encode each payload as its own one-item EventBatch frame.
     pub(super) single_event_mode: bool,
 
+    /// The offset the subscriber asked to stop before. The feeder ends the
+    /// subscription with `subscription_ended` once delivery reaches it.
+    pub(super) end: Option<u64>,
+
     /// Whether this subscriber negotiated `FLAG_EVENT_BATCH_OFFSETS`.
     ///
     /// Per-subscriber, because a stream can carry subscribers of both kinds and
