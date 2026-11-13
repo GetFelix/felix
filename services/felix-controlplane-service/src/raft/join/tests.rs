@@ -14,6 +14,11 @@ fn form<const N: usize>(answered: [NodeId; N]) -> Decision {
     Decision::Form(BTreeSet::from(answered))
 }
 
+const FORMING: Mark = Mark {
+    forming: true,
+    reached: false,
+};
+
 fn refused() -> Answer {
     Answer::Unreadable("answered 403 Forbidden".to_string())
 }
@@ -21,8 +26,14 @@ fn refused() -> Answer {
 #[test]
 fn every_member_empty_is_a_first_boot() {
     let all = answers([(2, Answer::Empty), (3, Answer::Empty)]);
-    assert_eq!(decide(&all, &BTreeSet::new(), 3, false), form([2, 3]));
-    assert_eq!(decide(&answers([]), &BTreeSet::new(), 1, false), form([]));
+    assert_eq!(
+        decide(&all, &BTreeSet::new(), 3, Mark::default()),
+        form([2, 3])
+    );
+    assert_eq!(
+        decide(&answers([]), &BTreeSet::new(), 1, Mark::default()),
+        form([])
+    );
 }
 
 /// Two of three empty is a majority, and still not a first boot: the
@@ -32,7 +43,7 @@ fn an_empty_majority_does_not_form_past_a_silent_member() {
     for third in [down(), refused()] {
         let some = answers([(2, Answer::Empty), (3, third)]);
         assert!(matches!(
-            decide(&some, &BTreeSet::new(), 3, false),
+            decide(&some, &BTreeSet::new(), 3, Mark::default()),
             Decision::Wait(waiting) if waiting.len() == 1 && waiting[0].contains("member 3")
         ));
     }
@@ -43,8 +54,11 @@ fn a_group_that_exists_is_never_formed_over() {
     let waived = BTreeSet::from([3]);
     for third in [Answer::Empty, down(), refused()] {
         let some = answers([(2, Answer::Exists), (3, third)]);
-        assert_eq!(decide(&some, &BTreeSet::new(), 3, false), Decision::Exists);
-        assert_eq!(decide(&some, &waived, 3, false), Decision::Exists);
+        assert_eq!(
+            decide(&some, &BTreeSet::new(), 3, Mark::default()),
+            Decision::Exists
+        );
+        assert_eq!(decide(&some, &waived, 3, Mark::default()), Decision::Exists);
     }
 }
 
@@ -53,18 +67,21 @@ fn a_waiver_excuses_only_silence() {
     let waived = BTreeSet::from([3]);
     let silent = answers([(2, Answer::Empty), (3, down())]);
     // The silent slot is not among the members that must record this one.
-    assert_eq!(decide(&silent, &waived, 3, false), form([2]));
+    assert_eq!(decide(&silent, &waived, 3, Mark::default()), form([2]));
     let answering = answers([(2, Answer::Empty), (3, Answer::Empty)]);
-    assert_eq!(decide(&answering, &waived, 3, false), form([2, 3]));
+    assert_eq!(
+        decide(&answering, &waived, 3, Mark::default()),
+        form([2, 3])
+    );
     let refusing = answers([(2, Answer::Empty), (3, refused())]);
     assert!(matches!(
-        decide(&refusing, &waived, 3, false),
+        decide(&refusing, &waived, 3, Mark::default()),
         Decision::Wait(_)
     ));
     // The waiver names slot 3, not slot 2.
     let other = answers([(2, down()), (3, Answer::Empty)]);
     assert!(matches!(
-        decide(&other, &waived, 3, false),
+        decide(&other, &waived, 3, Mark::default()),
         Decision::Wait(_)
     ));
 }
@@ -76,7 +93,7 @@ fn a_waiver_cannot_name_a_majority() {
     let waived = BTreeSet::from([2, 3]);
     let alone = answers([(2, down()), (3, down())]);
     assert!(matches!(
-        decide(&alone, &waived, 3, false),
+        decide(&alone, &waived, 3, Mark::default()),
         Decision::Wait(waiting) if waiting[0].contains("not a majority")
     ));
     let waived = BTreeSet::from([4, 5]);
@@ -86,11 +103,14 @@ fn a_waiver_cannot_name_a_majority() {
         (4, down()),
         (5, down()),
     ]);
-    assert_eq!(decide(&three_of_five, &waived, 5, false), form([2, 3]));
+    assert_eq!(
+        decide(&three_of_five, &waived, 5, Mark::default()),
+        form([2, 3])
+    );
     let waived = BTreeSet::from([3, 4, 5]);
     let two_of_five = answers([(2, Answer::Empty), (3, down()), (4, down()), (5, down())]);
     assert!(matches!(
-        decide(&two_of_five, &waived, 5, false),
+        decide(&two_of_five, &waived, 5, Mark::default()),
         Decision::Wait(_)
     ));
 }
@@ -103,13 +123,16 @@ fn a_member_named_without_its_mark_lost_its_volume() {
     let waived = BTreeSet::from([3]);
     for third in [Answer::Empty, Answer::NamesMe, down(), refused()] {
         let named = answers([(2, Answer::NamesMe), (3, third)]);
-        assert_eq!(decide(&named, &BTreeSet::new(), 3, false), Decision::Lost);
-        assert_eq!(decide(&named, &waived, 3, false), Decision::Lost);
+        assert_eq!(
+            decide(&named, &BTreeSet::new(), 3, Mark::default()),
+            Decision::Lost
+        );
+        assert_eq!(decide(&named, &waived, 3, Mark::default()), Decision::Lost);
     }
     // A group that exists is caught up with either way.
     let exists = answers([(2, Answer::NamesMe), (3, Answer::Exists)]);
     assert_eq!(
-        decide(&exists, &BTreeSet::new(), 3, false),
+        decide(&exists, &BTreeSet::new(), 3, Mark::default()),
         Decision::Exists
     );
 }
@@ -120,17 +143,48 @@ fn a_member_named_without_its_mark_lost_its_volume() {
 #[test]
 fn a_member_named_with_its_mark_goes_on_forming() {
     let named = answers([(2, Answer::NamesMe), (3, Answer::NamesMe)]);
-    assert_eq!(decide(&named, &BTreeSet::new(), 3, true), form([2, 3]));
+    assert_eq!(decide(&named, &BTreeSet::new(), 3, FORMING), form([2, 3]));
     let mixed = answers([(2, Answer::NamesMe), (3, Answer::Empty)]);
-    assert_eq!(decide(&mixed, &BTreeSet::new(), 3, true), form([2, 3]));
+    assert_eq!(decide(&mixed, &BTreeSet::new(), 3, FORMING), form([2, 3]));
     // The mark excuses nothing else.
     let silent = answers([(2, Answer::NamesMe), (3, down())]);
     assert!(matches!(
-        decide(&silent, &BTreeSet::new(), 3, true),
+        decide(&silent, &BTreeSet::new(), 3, FORMING),
         Decision::Wait(_)
     ));
     let exists = answers([(2, Answer::NamesMe), (3, Answer::Exists)]);
-    assert_eq!(decide(&exists, &BTreeSet::new(), 3, true), Decision::Exists);
+    assert_eq!(
+        decide(&exists, &BTreeSet::new(), 3, FORMING),
+        Decision::Exists
+    );
+}
+
+/// #2407: a member that reached the vote from this store and finds its log
+/// blank lost the log, which held its vote. Its mark is still there, so
+/// without the flag it would go on forming. It never forms, whatever the
+/// answers, the mark or a waiver say.
+#[test]
+fn a_member_that_reached_the_vote_with_a_blank_log_lost_it() {
+    let waived = BTreeSet::from([3]);
+    for forming in [true, false] {
+        let mark = Mark {
+            forming,
+            reached: true,
+        };
+        for second in [Answer::Empty, Answer::NamesMe] {
+            for third in [Answer::Empty, Answer::NamesMe, down(), refused()] {
+                let given = answers([(2, second.clone()), (3, third)]);
+                assert_eq!(decide(&given, &BTreeSet::new(), 3, mark), Decision::Lost);
+                assert_eq!(decide(&given, &waived, 3, mark), Decision::Lost);
+            }
+        }
+        assert_eq!(
+            decide(&answers([]), &BTreeSet::new(), 1, mark),
+            Decision::Lost
+        );
+        let exists = answers([(2, Answer::NamesMe), (3, Answer::Exists)]);
+        assert_eq!(decide(&exists, &BTreeSet::new(), 3, mark), Decision::Exists);
+    }
 }
 
 struct NullApp;
@@ -186,8 +240,9 @@ async fn a_crash_between_the_waiver_and_initialize_leaves_a_member_the_tool_acce
         .await
         .expect("write the waiver");
 
+    static STOPPED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let mut crashing = settings(dir.path());
-    crashing.faults.stop_before_initialize = true;
+    crashing.faults.stop_before_initialize = Some(&STOPPED);
     let handle = RaftHandle::start(crashing, Arc::new(NullApp))
         .await
         .expect("start");
@@ -200,7 +255,10 @@ async fn a_crash_between_the_waiver_and_initialize_leaves_a_member_the_tool_acce
         .await
         .expect("enter group");
     wait_for("the waiver to be removed", || !waiver_file.exists()).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    wait_for("the member to stop short of initialize", || {
+        STOPPED.load(Ordering::SeqCst) == 1
+    })
+    .await;
     assert!(handle.status().voters.is_empty(), "initialized");
     handle.shutdown().await.expect("shutdown");
 
@@ -269,18 +327,20 @@ async fn bind(addr: Option<std::net::SocketAddr>) -> tokio::net::TcpListener {
 
 /// #2374: every member is stopped after its peers recorded it and before
 /// `initialize`, as three crashes there would. On the restart every peer
-/// names every member. Each holds its own mark, so each goes on and the
-/// group forms. Without the mark all three would read as members that lost
-/// a volume, and nobody could ever form.
+/// names every member. Each holds its own mark and has not reached the
+/// vote, so each goes on and the group forms. Without the mark all three
+/// would read as members that lost a volume, and nobody could ever form; the
+/// same if the reached flag were written before `initialize` (#2407).
 #[tokio::test]
 async fn a_member_interrupted_after_its_mark_resumes_forming() {
     let dirs: Vec<tempfile::TempDir> = (0..3)
         .map(|_| tempfile::tempdir().expect("tempdir"))
         .collect();
+    static STOPPED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let mut members = Vec::new();
     for (i, dir) in dirs.iter().enumerate() {
         let mut crashing = member_settings(i as NodeId + 1, dir.path());
-        crashing.faults.stop_before_initialize = true;
+        crashing.faults.stop_before_initialize = Some(&STOPPED);
         members.push(Served::start(crashing, None).await);
     }
     let peers: BTreeMap<NodeId, String> = members
@@ -300,13 +360,14 @@ async fn a_member_interrupted_after_its_mark_resumes_forming() {
     }
     // Each reached the vote step: its mark is written, the others recorded
     // it, and it stopped short of initialize.
+    wait_for("every member to reach its vote", || {
+        STOPPED.load(Ordering::SeqCst) == 3
+    })
+    .await;
     for member in &members {
         let handle = &member.handle;
-        wait_for("the member to reach its vote", || {
-            handle.may_vote.load(Ordering::SeqCst)
-        })
-        .await;
         assert!(handle.member.forming_mark().await.expect("mark"));
+        assert!(!handle.member.reached().await.expect("reached"));
         assert!(handle.status().voters.is_empty(), "initialized");
     }
     for member in &members {

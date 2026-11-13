@@ -944,12 +944,16 @@ async fn formed_and_leaderless(
             .expect("enter group");
     }
     wait_until(
-        "every member to initialize",
+        "every member to initialize and record that it reached the vote",
         Duration::from_secs(10),
         || {
-            nodes
-                .iter()
-                .all(|node| node.handle.status().voters == [1, 2, 3])
+            nodes.iter().all(|node| {
+                node.handle.status().voters == [1, 2, 3]
+                    && node
+                        .handle
+                        .readiness()
+                        .is_err_and(|why| !why.contains("catching up"))
+            })
         },
     )
     .await;
@@ -1111,6 +1115,54 @@ async fn a_member_wiped_before_the_first_entry_does_not_form_again() {
     }
 }
 
+/// #2407: on the segment store the vote is in `store/log/` and the forming
+/// mark is in `store/formation`. A member whose log directory is emptied
+/// keeps its mark, and every peer names it. Before the reached flag it went
+/// on forming and could vote twice in a term; now it catches up instead.
+#[cfg(felix_segment_store)]
+#[tokio::test]
+async fn a_member_whose_log_was_emptied_does_not_form_again() {
+    use felix_controlplane_service::raft::InitialClusterState;
+
+    let dirs: Vec<tempfile::TempDir> = (0..3)
+        .map(|_| tempfile::tempdir().expect("tempdir"))
+        .collect();
+    let (mut nodes, _gates, members, shutdown) = formed_and_leaderless(&dirs).await;
+    let third = nodes.pop().expect("third");
+    let (id, addr) = (third.handle.status().id, third.addr);
+    third.stop().await;
+    drop(third);
+
+    let log_dir = dirs[2].path().join("store").join("log");
+    for entry in std::fs::read_dir(&log_dir).expect("read the log dir") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            std::fs::remove_dir_all(&path).expect("remove");
+        } else {
+            std::fs::remove_file(&path).expect("remove");
+        }
+    }
+    assert!(
+        dirs[2].path().join("store").join("formation").exists(),
+        "the formation file went with the log"
+    );
+
+    let dir: PathBuf = dirs[2].path().into();
+    let emptied = start_node(dir.clone(), settings(id, dir), Some(addr)).await;
+    emptied
+        .handle
+        .enter_group(members, InitialClusterState::New, shutdown.clone())
+        .await
+        .expect("enter group");
+    assert_stays_withheld(&[&emptied], &[&nodes[0], &nodes[1], &emptied]).await;
+
+    shutdown.cancel();
+    emptied.stop().await;
+    for node in &nodes {
+        node.stop().await;
+    }
+}
+
 /// The same wiped member is not stuck: once the others elect a leader it
 /// catches up with what that leader holds, and then votes again.
 #[tokio::test]
@@ -1145,6 +1197,18 @@ async fn a_wiped_member_catches_up_once_a_leader_exists() {
             "the wiped member never voted again"
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // It votes, so it recorded that it reached the vote (#2407): flags bit 1
+    // of the formation file.
+    #[cfg(felix_segment_store)]
+    {
+        let formation =
+            std::fs::read(empty.path().join("store").join("formation")).expect("formation file");
+        assert_eq!(
+            formation[7] & 0x02,
+            0x02,
+            "no reached flag after the catch-up"
+        );
     }
 
     // Its vote counts: with the leader stopped, the other member and the
@@ -1259,7 +1323,13 @@ async fn a_late_first_boot_member_forms_against_formed_leaderless_peers() {
         late.handle.status().voters == [1, 2, 3]
     })
     .await;
-    assert!(!withholds_its_vote(&late).await, "formed without its vote");
+    // The vote comes back after `initialize`, once the reached flag is on
+    // disk.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while withholds_its_vote(&late).await {
+        assert!(Instant::now() < deadline, "formed without its vote");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 
     for gate in &gates {
         gate.votes.store(false, SeqCst);

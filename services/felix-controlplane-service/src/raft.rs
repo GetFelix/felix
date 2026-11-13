@@ -143,8 +143,8 @@ pub(crate) struct Faults {
     /// Counts the stops a failed start asks for.
     pub(crate) stop_probe: Option<&'static std::sync::atomic::AtomicUsize>,
     /// A member forming the group stops short of `initialize`, as a crash
-    /// there would.
-    pub(crate) stop_before_initialize: bool,
+    /// there would, and counts itself here.
+    pub(crate) stop_before_initialize: Option<&'static std::sync::atomic::AtomicUsize>,
 }
 
 impl RaftSettings {

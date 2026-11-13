@@ -535,6 +535,105 @@ future. A publisher that goes away cannot leave a batch half proposed, and
 the batch behind it keeps its place. The outcome is unknown to that
 publisher, as today.
 
+**`propose` as built** (`raft::RaftEngine::propose`, in
+`crates/server/felix-replication/src/raft/propose.rs`). It is on the Raft
+engine only, like `await_commit`, `read_bound` and `confirm_read`. The
+`Engine` trait gains `propose` in the pull request that routes a shard to
+the Raft engine: until then the trait's cache, counter and peer-message
+methods have no Raft answer.
+
+A batch is a list of records and where its acknowledgement waits: `Written`
+or `Flushed`. `AckAt::for_fsync` picks `Flushed` for a stream that fsyncs
+on commit and `Written` for any other.
+
+Each shard has a queue, and the queue is the shard's commit order. Under
+Raft a record has no offset until openraft gives it one, so there is no
+offset to order by before the write. The order is the order of the calls:
+
+1. `propose` puts the batch on the queue before it returns its future.
+   Dropping the future takes nothing back.
+2. One task per shard takes everything queued and makes one
+   `client_write_many` call for all of it, one entry per record. Batches
+   that arrive while an append runs go down together in the next call. The
+   task starts with the shard's first publish, so a shard that takes none
+   has no task.
+3. The task does not wait for a call to commit before it makes the next.
+   openraft takes calls in the order they are made, so offsets follow the
+   queue.
+
+A call takes batches until it holds 4 MiB of payload. One call is one
+append, and the group handles no heartbeat or vote while an append runs.
+The queue itself has no limit yet. The publish path bounds what is in
+flight when it is wired to `propose`.
+
+**openraft's write lease.** At the pinned commit openraft refuses a write
+when no majority has answered the leader for its lease, which is the
+longest election timeout (2 s). It does not wait for commit. An idle group
+heartbeats about that far apart, so its first write after a pause could be
+refused. Before a call, the task checks how old the majority's last answer
+is. If it is older than half the lease, the task asks for a heartbeat,
+again every heartbeat interval, and waits up to one lease for a majority
+to answer. The batches behind
+wait in the queue, so nothing is proposed twice and nothing changes
+place. A leader that is the only voter needs no answer and is not held. If
+no majority answers, the write is sent and openraft refuses it, with
+nothing appended. A refused batch is not proposed again by the task:
+later batches may already be on their way, and it would land behind them.
+
+The publisher's future then waits. It puts a fresh token on the first and
+on the last record of its batch, and reads the batch's place from both. It
+does not work the first offset out from the last, and it does not accept
+two tokens that are not one run of the batch's length in one term.
+
+| The publisher waits for | It ends on |
+| --- | --- |
+| `Written`: both tokens | The tokens, or openraft's answer |
+| `Flushed`: both tokens, then the flushed position at or past the last record in the same term | The flush, or openraft's answer |
+
+openraft answers a write when it is applied, which is after it committed.
+A committed record is fsynced on a majority, which is more than either
+acknowledgement asks of the leader's own disk, so an answer ends either
+wait.
+
+A token has no time limit of its own, so every wait also ends when:
+
+- openraft refuses the write. A member that does not lead, and a leader
+  no majority has answered for its lease, append nothing.
+- This member stops leading, or leads at another term than the one that
+  wrote the batch. The group's role watcher says so ("When it closes").
+- The flushed position shows a later term. Another leader wrote there, and
+  whether the batch is still under it is not known.
+- The group is closed or the runtime shuts down.
+
+Each of those is an unknown outcome, never "not written": the batch may be
+in the log and may commit. `propose` makes one attempt and never proposes a
+batch again, because a second attempt could land beside the first. A
+failed flush stops the group in openraft, which reaches the publisher as
+openraft's answer.
+
+`admit_local_ack` always refuses on a Raft shard, so a `Leader` write
+waits for commit after `propose` returns.
+
+> `crates/server/felix-replication/src/raft/tests/propose.rs`,
+> `batches_queued_together_go_to_openraft_in_one_call`,
+> `a_publisher_that_goes_away_keeps_its_place`,
+> `a_member_that_does_not_lead_refuses_and_appends_nothing`,
+> `an_ack_follows_the_policy_and_not_the_commit`,
+> `a_write_after_a_silence_renews_the_lease_first`,
+> `a_leader_no_majority_answers_refuses_and_appends_nothing`,
+> `a_call_cut_short_answers_every_batch_as_stopped`,
+> `a_written_ack_does_not_wait_for_the_flush`,
+> `a_flushed_ack_waits_for_the_fsync`,
+> `a_deposed_leaders_publisher_stops_waiting`,
+> `a_stopped_groups_publisher_stops_waiting` and
+> `a_batch_not_reported_whole_is_an_unknown_outcome`.
+
+**A token never leaves the broker.** The codec does not encode it, and the
+router clears it from every append it sends. A transport inside one
+process hands a message over as it is. A token that went with it would be
+resolved by the follower's append, and the publisher would read that as
+the leader's write.
+
 The cost is on the hot path: each batch crosses into the Raft task before
 it reaches the disk, and the payload moves into an entry on the way. The
 single-node and RF 3 steady cells at 1 KiB price it against the hybrid. A
@@ -647,7 +746,9 @@ Nothing is negotiated. Each side acts only on what it has seen:
 - A leader goes on heartbeating at the short interval, naming the idle gap,
   until every follower has answered a message that named it. Only then
   does it slow down. Sending an entry voids those answers and makes the
-  next heartbeat due within 200 ms.
+  next heartbeat due within 200 ms. A publish does the same when it hands
+  its batch to the group, before anything is sent. So a group with one
+  member, or with no follower in reach, is fast again on its first write.
 - A follower that restarts has forgotten the gap and may stand as soon as
   openraft lets it. So a message a follower does not take, because it was
   lost, refused or rejected, voids that follower's answer too. The leader
@@ -739,8 +840,14 @@ open:
   entries to the log and `flushed` once they are fsynced, and a truncation
   moves both back. The publish path that waits on them is #2233.
 - A command may carry a `WrittenToken`. The leader's `append` resolves it
-  with the record's index and term once the record is written. Nothing
-  sets one yet: `propose` is the next pull request of #2233.
+  with the record's index and term once the record is written.
+  `RaftEngine::propose` sets them ("Writing through openraft").
+- `report_to(serving, fence)` names who is told when a shard opens and
+  closes here ("When a leader opens"). It is called once, before the first
+  `open`.
+- `status(shard)` also counts `client_writes`: the calls made to openraft
+  for publishes. Each carries every batch that was queued when it was
+  made, so under load the count is well below the number of batches.
 
 Messages leave through a `RaftTransport`, one for all groups, so groups
 share connections. The runtime wraps it in an `openraft-multi`
@@ -882,6 +989,43 @@ The engine calls `deposed` and the write fence closes on any of:
 A failed lease check is not on this list. A leader whose lease has lapsed
 is still the leader until Raft says otherwise.
 
+**As built.** Each member has one small task, the role watcher
+(`crates/server/felix-replication/src/raft/lead.rs`). It watches openraft's
+server metrics, which change only with the role, the vote and the
+membership, so a heartbeat answer does not wake it. While a term waits to
+open it also watches the commit table ("Reads"). It calls
+`opened(shard, term)` when this member leads `term` and the last applied
+entry has that term. The blank entry is the first entry of a term, so by
+then it is committed. It calls `deposed(shard, term)`, once, for a term it
+opened, when openraft no longer names this member the leader of that term,
+or when the group has stopped. A storage error stops the group.
+
+`RaftEngine::transfer_starting(shard)` is what the transfer code calls
+before it asks openraft for a transfer (issue #2249 adds that single entry
+point). It asks the group's core which term this member leads, not the
+metrics, which can trail an election. The shard is closed when the call
+returns, and that term never opens again, whether or not the transfer goes
+through. The shard opens again in a later term. The call returns the term
+it closed, or nothing when this member leads no term, and then the
+transfer must not be asked for.
+
+Nothing else calls `deposed`. A write openraft refuses because its lease
+lapsed, a refused `admit_local_ack` and a read-index round no majority
+answers all leave the shard open.
+
+A publisher's wait and a commit wait end when the watcher says the term is
+lost. The watcher hears of an election a moment after openraft does, so
+neither wait takes "not leading" on the watcher's word alone: openraft's
+own role is read as well.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_leader_opens_only_once_its_blank_entry_commits`,
+> `a_write_whose_index_commits_under_another_term_is_refused`,
+> `a_transfer_about_to_start_closes_the_shard`,
+> `a_term_closed_before_it_opened_is_not_waited_on`,
+> `a_group_that_stops_on_a_storage_error_closes_the_shard` and
+> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard`.
+
 openraft reports role changes through its metrics channel, which is
 asynchronous, so the fence can close a moment late. That is safe. A write
 proposed in the gap is refused by openraft, or appended as an uncommitted
@@ -897,6 +1041,30 @@ it ("Two signals from one append"). If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
+
+**`await_commit` as built** (`RaftEngine::await_commit`, in
+`crates/server/felix-replication/src/raft/commit.rs`). It takes the
+`Written` that `propose` returned and waits on the commit table ("Reads")
+until the record's offset is applied. Then it checks the term of the entry
+at that offset:
+
+| The entry at the offset | The waiter gets |
+| --- | --- |
+| Has the term the record was written at | Committed |
+| Has another term: a later leader's entry took the offset | Leadership lost |
+| Is older than the terms this member remembers | Leadership lost |
+
+The table keeps the first applied index of each of the last eight terms.
+Terms never go down along a log, so that is enough to name the term at any
+index since. The wait also ends, as leadership lost, when this member stops
+leading the term it wrote in, and with a timeout when the caller's budget
+runs out. Each is an unknown outcome. A commit that is already visible
+wins over all of them.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_write_waits_for_its_commit`,
+> `a_write_whose_index_commits_under_another_term_is_refused` and
+> `the_commit_table_knows_the_term_at_every_applied_index`.
 
 A `Leader` write is acknowledged on local durability if `admit_local_ack`
 passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
@@ -949,8 +1117,35 @@ consistency level. Subscriber fanout, cursor replay, Kafka fetch and cache
 watch all take it. The engine publishes each commit index advance into the
 table the commit hold already waits on.
 
-`confirm_read` is a read-index round (`Raft::get_read_linearizer` with the
-read-index policy).
+**As built.** Each group's state machine keeps what it has applied: the
+last entry, and where each recent term starts. It publishes that once per
+run of applied entries, into a watch channel the group holds. This is the
+commit table. Nothing reads openraft's metrics for it: they change on every
+heartbeat answer, and every waiter would wake. An entry is applied only
+after it is committed, so `RaftEngine::read_bound`, the last applied index
+plus one, can trail the commit index and never passes it. A follower has a
+bound too, from what it has applied.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `the_read_bound_never_passes_the_commit_index`.
+
+`confirm_read` is a read-index round (`Raft::get_read_log_id` with
+`ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
+first, then its value, then calls `RaftEngine::confirm_read` with that
+term. The read is confirmed only if the shard is still open in that term
+and the round's answer is for it. The term open at confirm time is not
+enough. A broker that was deposed and elected again after the read is open
+in a later term, and the value it read can miss a record the leader in
+between committed. A member that does not lead is refused as leadership lost. A majority that does not
+answer within the longest election timeout is a timeout, not a lost
+leadership. If openraft reports a lapsed lease, the engine asks for a
+heartbeat, waits for a majority to answer and asks again within the same
+bound.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
+> `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
+
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
 page, "openraft version").

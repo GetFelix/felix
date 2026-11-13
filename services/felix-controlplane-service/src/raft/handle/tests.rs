@@ -216,3 +216,24 @@ async fn a_failed_forwarding_client_stops_the_node_and_releases_the_store() {
         .expect("restart after the failed client");
     handle.shutdown().await.expect("shutdown");
 }
+
+/// #2407: a member that starts with Raft state and may vote has the reached
+/// flag on disk before its node exists, whatever path left it there (a crash
+/// after `initialize`, a store from an older build). One still withholding
+/// its vote does not get it.
+#[tokio::test]
+async fn a_member_that_may_vote_has_the_reached_flag_from_its_start() {
+    for withheld in [false, true] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        store_of_a_former_leader(dir.path(), "127.0.0.1:1", withheld).await;
+        let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
+            .await
+            .expect("start");
+        assert_eq!(
+            handle.member.reached().await.expect("reached"),
+            !withheld,
+            "withheld {withheld}"
+        );
+        handle.shutdown().await.expect("shutdown");
+    }
+}
