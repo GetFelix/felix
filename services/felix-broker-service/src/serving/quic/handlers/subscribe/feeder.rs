@@ -85,15 +85,18 @@ pub(super) async fn run_lane_feeder(
     loop {
         let (envelope, mut queued) = match pending.take() {
             Some(next) => next,
+            // Revoke first: a subscription handed over from a replay can
+            // start already revoked with batches queued, and none may go out.
             None => tokio::select! {
-                next = event_rx.recv_held() => match next {
-                    Some(next) => next,
-                    None => break,
-                },
+                biased;
                 () = &mut revoked => {
                     revoked_frame = revoke(&config, revocation.take());
                     break;
                 }
+                next = event_rx.recv_held() => match next {
+                    Some(next) => next,
+                    None => break,
+                },
             },
         };
         // Waits only on this subscription's own frames, so a stalled stream

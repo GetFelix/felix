@@ -230,6 +230,7 @@ async fn replay_as(
         1024 * 1024,
         format,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -1113,6 +1114,7 @@ async fn a_replay_stops_before_its_end() {
             1024 * 1024,
             SKIPS,
             Some(end),
+            None,
         )
         .await
         .expect("replay");
@@ -1151,6 +1153,7 @@ async fn a_replay_short_of_its_end_is_not_over() {
         1024 * 1024,
         SKIPS,
         Some(10),
+        None,
     )
     .await
     .expect("replay");
@@ -1177,6 +1180,7 @@ async fn history_alone_stops_before_its_end() {
         64,
         1024 * 1024,
         SKIPS,
+        None,
     )
     .await
     .expect("history");
@@ -1221,6 +1225,7 @@ async fn a_replay_fills_a_hole_below_its_end_before_stopping() {
         1024 * 1024,
         SKIPS,
         Some(6),
+        None,
     )
     .await
     .expect("replay");

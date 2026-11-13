@@ -6,9 +6,10 @@
 
 use std::io;
 use std::ops::Deref;
+use std::sync::Arc;
 
 use openraft::OptionalSend;
-use openraft::entry::RaftEntry;
+use openraft::entry::{EntryPayload, RaftEntry};
 use openraft::storage::{IOFlushed, LogState, RaftLogStorage};
 use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf, VoteOf};
 use openraft::vote::{RaftLeaderId, RaftVote};
@@ -16,7 +17,7 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 use super::codec::record_from_entry;
 use super::purged::Purged;
 use super::{
-    EntryCodec, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
+    EntryCodec, LogPoint, LogReader, LogTypes, RaftLog, generation_of, invalid, log_id, term_at,
     term_of_generation,
 };
 #[cfg(doc)]
@@ -102,10 +103,8 @@ where
     }
 
     /// Returns once the entries are written and a reader sees them.
-    /// `callback` fires once the log's fsync policy is
-    /// met for everything up to the last of them: under
-    /// `FsyncMode::OnCommit`, once a flush has covered them. A flush covers
-    /// a prefix of the log, so nothing below them is left out.
+    /// `callback` fires once a flush has covered them. A flush covers a
+    /// prefix of the log, so nothing below them is left out.
     ///
     /// The first entry must be the next index. An empty log takes any first
     /// index and starts there.
@@ -128,8 +127,21 @@ where
         let mut earlier: Vec<Batch> = Vec::new();
         let mut batch = Batch::default();
         let mut next = None;
+        let mut last = None;
+        // Proposers waiting to hear where their entry was written.
+        let mut tokens = Vec::new();
         for entry in entries {
             let index = entry.index();
+            let point = LogPoint {
+                term: **entry.log_id().committed_leader_id(),
+                index,
+            };
+            last = Some(point);
+            if let EntryPayload::Normal(data) = &entry.payload
+                && let Some(token) = shared.codec.written_token(data)
+            {
+                tokens.push((token, point));
+            }
             if next.is_some_and(|next| next != index) {
                 return Err(invalid(format!(
                     "{}: an append skips to index {index}",
@@ -196,9 +208,9 @@ where
         };
         // Read before the write: see `TailCache`.
         let cuts = log.cuts();
-        let mut last = None;
+        let mut pending = None;
         for batch in earlier.into_iter().chain([batch]) {
-            let pending = log
+            let appended = log
                 .append_pending_at(
                     batch.first,
                     &batch.records,
@@ -214,26 +226,48 @@ where
                     ))
                 })?;
             shared.tail.lock().extend(cuts, batch.into_log_records());
-            last = Some(pending);
+            pending = Some(appended);
         }
+        // Written, not yet on disk: the signal an acknowledgement that does
+        // not wait for the fsync goes by.
+        shared.positions.send_modify(|at| at.written = last);
+        // After the position, so a proposer woken here finds it moved. A
+        // write that failed returned above and dropped its tokens unresolved.
+        for (token, at) in tokens {
+            token.resolve(at);
+        }
+
         // A flush covers a prefix of the log, so the last batch's wait
         // stands for the append.
-        let last = last.expect("at least one batch");
+        let pending = pending.expect("at least one batch");
 
         // Fired here only when no earlier callback is still to come, so
         // callbacks keep the order of their appends.
         let flushed = if shared.flushes.is_empty() {
-            log.commit_now(&last)
+            log.commit_now(&pending)
         } else {
             None
         };
+        let done = {
+            let shared = Arc::clone(shared);
+            move |flushed: io::Result<()>| {
+                if flushed.is_ok() {
+                    // An append behind this one may have flushed first.
+                    shared.positions.send_modify(|at| {
+                        if at
+                            .flushed
+                            .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
+                        {
+                            at.flushed = last;
+                        }
+                    });
+                }
+                callback.io_completed(flushed);
+            }
+        };
         match flushed {
-            Some(flushed) => callback.io_completed(flushed.map_err(io_error)),
-            None => shared.flushes.push(
-                log,
-                last,
-                Box::new(move |flushed| callback.io_completed(flushed)),
-            ),
+            Some(flushed) => done(flushed.map_err(io_error)),
+            None => shared.flushes.push(log, pending, Box::new(done)),
         }
         Ok(())
     }
@@ -252,6 +286,10 @@ where
         // Before the cut, so no read finds here an entry the log has lost.
         self.shared.tail.lock().clear();
         let first = self.shared.first_index();
+        let kept = last_log_id.as_ref().map(|id| LogPoint {
+            term: **id.committed_leader_id(),
+            index: id.index(),
+        });
         let keep = match last_log_id {
             None => first,
             Some(id) => {
@@ -292,7 +330,9 @@ where
         if keep >= log.tail_now() {
             return Ok(());
         }
-        log.truncate(keep).await.map_err(io_error)
+        log.truncate(keep).await.map_err(io_error)?;
+        self.shared.positions.send_modify(|at| at.cut_to(kept));
+        Ok(())
     }
 
     /// Drop every entry up to and including `log_id`. The id is on disk

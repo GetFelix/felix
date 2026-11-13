@@ -24,8 +24,11 @@ tasks:
       # misplaced `#[cfg]` on felix-common's modules reached main past a lint
       # that only ever ran `--all-features`.
       - "cargo check -p felix-common"
+      # Without `raft`, as every release builds it.
+      - "cargo check -p felix-replication"
       # felix-broker must not depend on openraft, and openraft's types stay
-      # in the Raft log adapter and the control plane's Raft module.
+      # in the Raft log adapter, the per-shard runtime and the control
+      # plane's Raft module.
       - "scripts/check-openraft-containment.sh"
 
 

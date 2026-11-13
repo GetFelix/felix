@@ -460,7 +460,8 @@ latest revocation, so `since=0` is the whole set. When a broker learns of one:
 - An open control stream gets an `error` with `revoked` and is closed. A uni
   publish stream is closed.
 - A subscription or cache watch gets an `error` with `revoked` as its last frame
-  on its event stream. A client that did not offer error codes gets the same
+  on its event stream, including one still replaying history: the replay stops
+  before its next frame. A client that did not offer error codes gets the same
   frame without the code. The Rust client yields it from `next_event` as a
   `BrokerError`, and from `CacheWatch::refusal` after the watch ends.
 - A Kafka connection is closed at its next request, and a new SASL login with

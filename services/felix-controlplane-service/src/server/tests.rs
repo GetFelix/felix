@@ -217,3 +217,39 @@ async fn unreadable_api_key_material_fails_startup() {
         "{err:#}"
     );
 }
+
+/// A group entry that fails stops the member, so its store is closed
+/// instead of left to the process exit.
+#[tokio::test]
+async fn a_failed_group_entry_stops_the_member() {
+    use crate::raft::{PeerSecurity, RaftHandle, RaftSettings};
+    use crate::store::StoreConfig;
+    use crate::store::memory::InMemoryStore;
+    use crate::store::raft::state_machine::MetadataStateMachine;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    // A waiver that does not decode fails the entry of an empty member.
+    std::fs::write(dir.path().join("form-without"), b"not json").expect("waiver");
+    let machine = Arc::new(MetadataStateMachine::new(Arc::new(InMemoryStore::new(
+        StoreConfig {
+            changes_limit: 10,
+            change_retention_max_rows: Some(20),
+        },
+    ))));
+    let security = PeerSecurity {
+        cluster_id: "test-cluster".to_string(),
+        token: Some("0123456789abcdef0123456789abcdef".to_string()),
+        tls: None,
+    };
+    let settings = RaftSettings::new(1, dir.path().into(), security);
+    let handle = RaftHandle::start(settings, machine).await.expect("start");
+    super::state::enter_group_or_stop(
+        &handle,
+        Default::default(),
+        crate::raft::InitialClusterState::New,
+        CancellationToken::new(),
+    )
+    .await
+    .expect_err("the entry fails");
+    assert!(handle.is_stopped(), "the member was left running");
+}

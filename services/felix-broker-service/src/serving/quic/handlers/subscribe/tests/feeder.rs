@@ -987,3 +987,82 @@ async fn lane_feeder_reports_a_lag_over_a_shard_move() -> Result<()> {
     );
     Ok(())
 }
+
+/// **A feeder that starts already revoked sends nothing it had queued**, only
+/// the refusal. A replay can hand over with the revoke already landed and
+/// live batches waiting. Repeated because the race it guards was a coin flip.
+#[tokio::test]
+async fn a_feeder_started_revoked_sends_only_the_refusal() -> Result<()> {
+    for _ in 0..32 {
+        let broker = Broker::new(EphemeralCache::new().into());
+        broker.register_tenant("t1").await?;
+        broker.register_namespace("t1", "default").await?;
+        broker
+            .register_stream(
+                "t1",
+                "default",
+                "orders",
+                felix_broker::StreamMetadata::default(),
+            )
+            .await?;
+        let (event_rx, _guard) = broker
+            .subscribe("t1", "default", "orders", 0)
+            .await?
+            .into_parts();
+        for _ in 0..4 {
+            publish(&broker).await?;
+        }
+        let revocations = Arc::new(crate::serving::revocation::Revocations::default());
+        revocations.revoke("t1", "alice", 100);
+        let revocation = SubscriberRevocation {
+            revocable: crate::serving::revocation::Revocable::new(
+                revocations,
+                "t1".to_string(),
+                "alice".to_string(),
+                None,
+                100,
+            ),
+            last_frame: Bytes::from_static(b"revoked"),
+        };
+        let (manager, mut lane_rx) = capture_lane();
+        let config = EventWriterConfig {
+            offsets_enabled: false,
+            skip_enabled: false,
+            shard_moved_enabled: false,
+            stream_deleted_enabled: false,
+            subscription_id: 1,
+            max_events: 64,
+            max_bytes: 64 * 1024,
+            flush_delay: Duration::ZERO,
+            single_event_mode: false,
+            end: None,
+            flush_max_items: 64,
+            flush_max_delay: Duration::from_micros(200),
+            max_bytes_per_write: 256 * 1024,
+            publisher_enabled: false,
+            timestamps_enabled: false,
+            headers_enabled: false,
+        };
+        let feeder = tokio::spawn(run_lane_feeder(
+            event_rx,
+            Arc::downgrade(&manager),
+            0,
+            None,
+            config,
+            IdentityLimits::unlimited(),
+            TenantDelivery::for_tenant("t1"),
+            Some(revocation),
+        ));
+        match tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
+            .await?
+            .expect("lane open")
+        {
+            LaneCommand::Unregister { last, .. } => {
+                assert_eq!(last.as_deref(), Some(&b"revoked"[..]));
+            }
+            _ => panic!("a record went out after the revoke"),
+        }
+        tokio::time::timeout(Duration::from_secs(2), feeder).await??;
+    }
+    Ok(())
+}

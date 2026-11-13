@@ -32,11 +32,12 @@ for package in felix-broker felix-broker-service; do
 done
 
 # openraft's types stay inside the adapter and its tests, the tests of the
-# store built on it, and the control plane's Raft module.
-allowed='^(crates/server/felix-storage/src/raft_log(\.rs|/)|crates/server/felix-storage/tests/raft_log[^/]*\.rs$|crates/server/felix-storage/src/metadata_store/tests/|services/felix-controlplane-service/src/raft(\.rs|/))'
+# store built on it, felix-replication's per-shard runtime, and the control
+# plane's Raft module.
+allowed='^(crates/server/felix-storage/src/raft_log(\.rs|/)|crates/server/felix-replication/src/raft(\.rs|/)|crates/server/felix-storage/tests/raft_log[^/]*\.rs$|crates/server/felix-storage/src/metadata_store/tests/|services/felix-controlplane-service/src/raft(\.rs|/))'
 outside=$(git grep -lE '\bopenraft::' -- 'crates/**/*.rs' 'services/**/*.rs' 'demos/**/*.rs' 'tests/**/*.rs' | grep -vE "$allowed" || true)
 if [ -n "$outside" ]; then
-  echo "error: openraft is named outside felix-storage's raft_log and the control plane's src/raft:" >&2
+  echo "error: openraft is named outside felix-storage's raft_log, felix-replication's src/raft and the control plane's src/raft:" >&2
   echo "$outside" >&2
   fail=1
 fi
