@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794609547834,
+  "lastUpdate": 1794609886830,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55068,6 +55068,58 @@ window.BENCHMARK_DATA = {
             "range": "2844.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805043.44\nmean: 803898.24\nstdev: 2844.70\ncv: 0.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "38b654f9273703bb9f77c48845c77ce5b7edeeec",
+          "message": "spec: track 4 PR 6 and PR 7 models, cache state machine v3 and sleep and wake v2 (#2418)\n\nTrack 4 PR 6 and PR 7 models: the cache and counters as one Raft state machine (FelixRaftCache, v3) and sleep and wake (FelixRaftSleep, v2).\n\n- Cache: compaction is a local Raft snapshot (no proposed entries); the expiry delete is conditional on the version the timer saw; every cache op is deduplicated with its original answer; the snapshot carries the log's time and holds live records only.\n- Delete, put-if-absent and the conditional put and delete judge whether a record is live at the entry's stamp, so an expired record answers as absent everywhere. A read evaluates expiry at the later of the leader's clock and the log's time, and commits the conditional delete before answering when only the clock says expired.\n- 42 Cache configs reach their registered outcome, including the snapshot-dropping pairs for delete, put-if-absent and conditional writes, each with a twin that violates.\n- Sleep: the expiry delete names the version the timer saw; all 41 Sleep configs reach their registered outcome, MidHandshake in Actions.\n- Second design note on #2238. Follow-ups: #2433 (durable request identity on the wire), #2434 (local clock reads in apply and compaction).",
+          "timestamp": "2026-11-13T14:24:34-08:00",
+          "tree_id": "6e640357ed2804bd6c132f0548e5a488925fed29",
+          "url": "https://github.com/GetFelix/felix/commit/38b654f9273703bb9f77c48845c77ce5b7edeeec"
+        },
+        "date": 1794609886186,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341034.54,
+            "range": "7679.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341034.54\nmean: 343377.22\nstdev: 7679.57\ncv: 2.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341034.54,
+            "range": "7679.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341034.54\nmean: 343377.22\nstdev: 7679.57\ncv: 2.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80240.05,
+            "range": "1009.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80240.05\nmean: 79862.48\nstdev: 1009.46\ncv: 1.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 802400.52,
+            "range": "10094.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 802400.52\nmean: 798624.85\nstdev: 10094.61\ncv: 1.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
