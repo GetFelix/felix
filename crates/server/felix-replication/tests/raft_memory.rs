@@ -22,10 +22,10 @@ use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, Reco
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 /// The same in allocations of [`RESERVATION`] or more.
 static RESERVED: AtomicUsize = AtomicUsize::new(0);
-/// An allocation this large is a buffer set aside ahead of use: openraft
-/// reserves room for 4,096 commands per member when it starts. The pages
-/// of one are not resident until they are written, and an idle member does
-/// not write them, so they are counted apart from what the gate measures.
+/// An allocation this large is a buffer set aside ahead of use, which
+/// openraft does for some queues when a member starts. Its pages are not
+/// resident until they are written, and an idle member does not write
+/// them, so they are counted apart from what the gate measures.
 const RESERVATION: usize = 128 * 1024;
 
 fn counter(size: usize) -> &'static AtomicUsize {
@@ -175,9 +175,7 @@ fn shard(n: u32) -> ShardKey {
     }
 }
 
-// Runs in the nightly workflow until the pin moves; see docs/per-shard-raft.md.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "fails until the openraft pin carries databendlabs/openraft#2313 (issue #2312); run with --ignored"]
 async fn an_idle_member_stays_within_the_designs_memory() {
     let root = tempfile::tempdir().expect("dir");
     let net = Arc::new(Net::default());
