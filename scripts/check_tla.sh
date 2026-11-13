@@ -1180,6 +1180,7 @@ weights=(
   "FelixRaftCacheDeleteSnapshot 50"
   "FelixRaftCachePutAbsentSnapshot 45"
   "FelixRaftCacheCondSnapshot 33"
+  "FelixRaftCacheTrim 105"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
   "FelixRaftSleepMidHandshake 87"
