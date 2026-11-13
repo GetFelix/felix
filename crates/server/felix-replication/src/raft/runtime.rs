@@ -9,11 +9,13 @@ use std::time::Duration;
 use arc_swap::ArcSwap;
 use felix_storage::DiskLog;
 use felix_storage::raft_log::{LogPoint, LogPositions};
-use openraft::{Config, SnapshotPolicy};
+use openraft::impls::leader_id_std::LeaderId;
+use openraft::raft::VoteRequest;
+use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
-use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
+use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::ticker;
 use super::types::{GroupId, MemberId};
 use crate::ShardKey;
@@ -128,6 +130,17 @@ pub enum InitializeError {
     NotAMember(MemberId),
     #[error("the group was not formed: {0}")]
     Raft(String),
+}
+
+/// Why a member set was not found untouched by any group.
+#[derive(Debug, thiserror::Error)]
+pub enum NotBlank {
+    #[error("the shard has no group here")]
+    NoSuchGroup,
+    #[error("{0} did not answer: {1}")]
+    Unanswered(MemberId, String),
+    #[error("{0} already holds a vote or an entry of a group")]
+    Formed(MemberId),
 }
 
 /// What a member is doing in its group.
@@ -412,6 +425,72 @@ impl GroupRuntime {
             .initialize(members)
             .await
             .map_err(InitializeError::Raft)
+    }
+
+    /// Ask every other member of `members` whether it has heard from a
+    /// group of `shard`. `Ok` only when each one answered within `within`
+    /// that it holds no vote and no entry.
+    ///
+    /// The one member that forms a group asks this first: a set with a
+    /// member a group already reached must not be formed a second time,
+    /// because the second group would elect on empty logs and overwrite
+    /// what the first acknowledged. Silence is not an answer. The question
+    /// is a pre-vote, which changes nothing on the member asked.
+    pub async fn peers_blank(
+        &self,
+        shard: &ShardKey,
+        members: &BTreeSet<MemberId>,
+        within: Duration,
+    ) -> Result<(), NotBlank> {
+        let group = self
+            .inner
+            .registry
+            .get(shard)
+            .ok_or(NotBlank::NoSuchGroup)?;
+        let asks = members
+            .iter()
+            .filter(|member| **member != group.member)
+            .map(|member| {
+                let request = RaftRequest {
+                    group: group.id.clone(),
+                    to: member.clone(),
+                    beat: 0,
+                    deadline: within,
+                    body: Request::PreVote(VoteRequest::new(
+                        Vote {
+                            leader_id: LeaderId {
+                                term: 0,
+                                voted_for: group.member.clone(),
+                            },
+                            committed: false,
+                        },
+                        None,
+                    )),
+                };
+                let transport = Arc::clone(&self.inner.transport);
+                async move {
+                    let unanswered = |why: String| NotBlank::Unanswered(member.clone(), why);
+                    match tokio::time::timeout(within, transport.send(request)).await {
+                        Ok(Ok(RaftReply(Reply::Vote(answer)))) => {
+                            if answer.vote.leader_id.term == 0 && answer.last_log_id.is_none() {
+                                Ok(())
+                            } else {
+                                Err(NotBlank::Formed(member.clone()))
+                            }
+                        }
+                        Ok(Ok(_)) => Err(unanswered("not an answer to the question".into())),
+                        Ok(Err(refused)) => Err(unanswered(refused.to_string())),
+                        Err(_) => Err(unanswered(format!("nothing within {within:?}"))),
+                    }
+                }
+            });
+        futures::future::try_join_all(asks).await.map(|_| ())
+    }
+
+    /// The brokers that vote in `shard`'s group, as this member's log has
+    /// them. Empty until the member has heard from a group.
+    pub fn voters(&self, shard: &ShardKey) -> Option<BTreeSet<MemberId>> {
+        self.inner.registry.get(shard).map(|group| group.voters())
     }
 
     /// Stop this broker's member of `shard`'s group and forget it. The log

@@ -240,19 +240,31 @@ mod engine_log {
         let handle = open(&broker, &log).await;
         assert_eq!(handle.tail_seq(), 0, "nothing is known committed yet");
 
-        // The engine cannot say yet: nothing moves.
-        broker
+        // The engine cannot say yet: nothing moves, and the caller is told.
+        let moved = broker
             .lead_from_tail("t1", "ns", "orders", 0)
             .await
             .expect("lead");
+        assert!(!moved, "a stream with no bound was reported at its tail");
         assert_eq!(handle.tail_seq(), 0);
+        let absent = broker
+            .lead_from_tail("t1", "ns", "orders", 7)
+            .await
+            .expect("lead");
+        assert!(!absent, "a shard not open here was reported at its tail");
 
         *bound.0.lock() = ReadBound::Committed(4);
-        broker
+        let moved = broker
             .lead_from_tail("t1", "ns", "orders", 0)
             .await
             .expect("lead");
+        assert!(moved);
         assert_eq!(handle.tail_seq(), 4);
+        let again = broker
+            .lead_from_tail("t1", "ns", "orders", 0)
+            .await
+            .expect("lead");
+        assert!(again, "a stream already at its tail was reported behind");
     }
 
     /// **Nothing but its engine writes its log.** A record the broker

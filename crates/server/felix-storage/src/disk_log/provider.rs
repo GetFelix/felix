@@ -161,6 +161,16 @@ impl DiskLogProvider {
         Ok((dir, label))
     }
 
+    /// Whether [`Self::claim_for_raft`] has marked `shard`'s directory at
+    /// `incarnation`, on this run or an earlier one. Marks nothing.
+    pub fn claimed_for_raft(&self, shard: &ShardKey, incarnation: u64) -> Result<bool> {
+        if self.incarnation_of(shard) != Some(incarnation) {
+            return Ok(false);
+        }
+        let dir = layout::incarnation_dir(&self.root, shard, incarnation);
+        engine_marker::claimed_for_raft(&dir, &layout::shard_label(shard))
+    }
+
     /// What [`Self::open_incarnation`] would return, when the log is open
     /// already; `None` without creating, recovering or waiting otherwise.
     /// `None` for `incarnation` checks nothing, as [`Self::open_shard`] does.

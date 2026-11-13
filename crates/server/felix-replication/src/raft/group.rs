@@ -694,6 +694,12 @@ impl Group {
         }
     }
 
+    pub(crate) fn voters(&self) -> BTreeSet<MemberId> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics().borrow_watched();
+        metrics.membership_config.membership().voter_ids().collect()
+    }
+
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.positions.clone()
     }
