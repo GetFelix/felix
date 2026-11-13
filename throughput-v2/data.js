@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794554246789,
+  "lastUpdate": 1794554592437,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -54132,6 +54132,58 @@ window.BENCHMARK_DATA = {
             "range": "7628.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1203608.75\nmean: 1201858.96\nstdev: 7628.14\ncv: 0.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c05a67d9f28b6c022622c9d4c8be797a87ffe152",
+          "message": "feat(replication): the Raft engine says what is committed and when a shard opens (#2233) (#2410)\n\n* wip(replication): commit index from apply, await_commit, read_bound, confirm_read, opened and deposed (#2233)\n\nSpec-Unaffected: the Raft engine is behind the raft feature and no shard is routed to it; no spec-paired file changes.\n\n* feat(replication): the Raft engine says what is committed and when a shard opens (#2233)\n\nThe state machine publishes the commit index as it applies entries.\nawait_commit checks the term at the write's offset, read_bound is the\ncommit index plus one, confirm_read is a read-index round, and a role\nwatcher reports opened and deposed.\n\nSpec-Unaffected: the Raft engine is behind the raft feature and no shard is routed to it; no spec-paired file changes.\n\n* fix(replication): review fixes for the Raft commit plumbing (#2233)\n\nThe role watcher no longer spins in a term a transfer closed.\nconfirm_read takes the term the reader had open before its read.\ntransfer_starting asks the group's core which term it leads.\n\nSpec-Unaffected: the Raft engine is behind the raft feature and no shard is routed to it; no spec-paired file changes.\n\n* test(replication): a term closed before it opened is not waited on (#2233)\n\nSpec-Unaffected: test and docs only, behind the raft feature.\n\n* docs(replication): name the read-index call 4d makes\n\nSpec-Unaffected: docs wording only.",
+          "timestamp": "2026-11-12T23:13:11-08:00",
+          "tree_id": "35859c9138754dbe189dcc26b13d25d8ee1765cf",
+          "url": "https://github.com/GetFelix/felix/commit/c05a67d9f28b6c022622c9d4c8be797a87ffe152"
+        },
+        "date": 1794554591696,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 399777.24,
+            "range": "10753.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 399777.24\nmean: 396558.87\nstdev: 10753.42\ncv: 2.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 399777.24,
+            "range": "10753.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 399777.24\nmean: 396558.87\nstdev: 10753.42\ncv: 2.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 92044.28,
+            "range": "487.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 92044.28\nmean: 92044.86\nstdev: 487.28\ncv: 0.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 920442.79,
+            "range": "4872.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 920442.79\nmean: 920448.56\nstdev: 4872.82\ncv: 0.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
