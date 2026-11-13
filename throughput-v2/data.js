@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794532339192,
+  "lastUpdate": 1794533480683,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53768,6 +53768,58 @@ window.BENCHMARK_DATA = {
             "range": "34760.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1221890.50\nmean: 1210526.20\nstdev: 34760.21\ncv: 2.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "52762afdd9c04e8752a871dc6cb3f4c6ea2b5c54",
+          "message": "spec: the metadata group's first start in FelixRaftPlacement (#2394)\n\nModels the metadata group's first start (#2371): all-peers formation, the form-without waiver (bounded count, never excusing an answering peer), and two lost volumes. Twin configs for each knob; Form is dead in FormAfterWipes and FormWaiverAnswers, as the README states.",
+          "timestamp": "2026-11-13T01:22:55Z",
+          "tree_id": "371bb48d0b5335699eb2fc2c2b7344f8a19aa433",
+          "url": "https://github.com/GetFelix/felix/commit/52762afdd9c04e8752a871dc6cb3f4c6ea2b5c54"
+        },
+        "date": 1794533480085,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 369237.82,
+            "range": "10426.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 369237.82\nmean: 364621.25\nstdev: 10426.75\ncv: 2.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 369237.82,
+            "range": "10426.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 369237.82\nmean: 364621.25\nstdev: 10426.75\ncv: 2.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83658.64,
+            "range": "1024.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83658.64\nmean: 83373.58\nstdev: 1024.12\ncv: 1.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 836586.42,
+            "range": "10241.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 836586.42\nmean: 833735.86\nstdev: 10241.17\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
