@@ -1424,7 +1424,8 @@ directories; there is no snapshot export.
 ("[Upgrading an existing cluster](metadata-raft-design.md#upgrading-an-existing-cluster)")
 proposes a separate tool that converts a stopped member's redb store
 ([#2234](https://github.com/GetFelix/felix/issues/2234)). The refusal
-above stays either way. Until the tool ships, this decision stands.
+above stays either way. The tool is not planned for 0.8, so this decision
+stands.
 
 ## Control-plane storage on the segment log
 

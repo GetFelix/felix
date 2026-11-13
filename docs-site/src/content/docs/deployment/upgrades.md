@@ -763,8 +763,10 @@ finalize it. See the runbook above.
 
 ## Control plane metadata in 0.8
 
-A Raft control plane from 0.7 or earlier does not upgrade in place to 0.8.
-Its metadata starts over.
+0.8 does not upgrade a 0.7 control plane's metadata. There is no in-place
+upgrade and no conversion tool. To move to 0.8, stop the cluster, start the
+control plane and every broker on 0.8 with empty data directories, and recreate
+tenants, namespaces, streams, caches and tokens (steps below).
 
 **Why.** 0.8 keeps the control plane's Raft state (log, vote, snapshot) in
 `store/` under `FELIX_RAFT_DATA_DIR`, on the same storage engine the brokers

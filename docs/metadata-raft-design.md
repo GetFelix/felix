@@ -999,8 +999,8 @@ on `felix-storage`'s metadata store: the member file, the lock, the
 snapshot file, the purge rule and `MetadataStore::open`, which checks the
 start rules below, with the standard leader id and every peer route under
 `/internal/raft/v2`. redb is gone from the service. The conversion tool
-below was not built ([#2234](https://github.com/GetFelix/felix/issues/2234)
-is open), so a member that finds a `raft.redb` refuses to start and an
+below was not built and is not planned for 0.8
+([#2234](https://github.com/GetFelix/felix/issues/2234)), so a member that finds a `raft.redb` refuses to start and an
 existing group starts over
 ([replication-engine.md, decision 7](replication-engine.md#7-the-control-plane-starts-fresh-and-refuses-an-old-redb-directory)).
 This section is the design, conversion included, for a Felix node with one
@@ -1251,7 +1251,8 @@ questions.
 `raft.redb` refuses to start and writes nothing, and the docs-site upgrades
 page tells operators to start the group over. What follows is the design
 for the tool, kept for
-[#2234](https://github.com/GetFelix/felix/issues/2234). The service already
+[#2234](https://github.com/GetFelix/felix/issues/2234), which is not planned
+for 0.8. The service already
 keeps its side of it: the start rule from names and the member file, the
 converted and started marks, and the term display.
 

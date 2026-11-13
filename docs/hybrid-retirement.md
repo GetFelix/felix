@@ -429,12 +429,11 @@ Each has an issue and blocks what is named.
 
 A 0.7 cluster cannot go straight to 0.8.0. The path:
 
-1. Roll the cluster to the bridge build. Control-plane members are
-   converted from redb one at a time with the tool in
-   [`metadata-raft-design.md`](metadata-raft-design.md) ("Upgrading an
-   existing cluster"), run from the bridge build. That tool is not built
-   ([#2234](https://github.com/GetFelix/felix/issues/2234)); without it the
-   control-plane group starts over on empty data directories.
+1. Roll the cluster to the bridge build. Control-plane metadata does not
+   carry over: there is no conversion from redb
+   ([#2234](https://github.com/GetFelix/felix/issues/2234) is not planned
+   for 0.8), so the control-plane group starts over on empty data
+   directories.
 2. Finalize `record_generations`, then `shard_raft`. Shards switch a few at
    a time. Each is closed for one hybrid promotion plus one Raft election.
 3. When the fleet status shows no shard on the hybrid, finalize
