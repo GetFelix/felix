@@ -45,10 +45,12 @@
 (* when every one of them answers and none holds a log entry. Silence is   *)
 (* never read as empty, except from a slot the operator waived, and then   *)
 (* only while the members that answer empty, this one included, are a      *)
-(* majority. A member that lost its volume takes the same step, so two     *)
-(* wiped members cannot form a second group over a third that holds the    *)
-(* log, whether or not it answers. With FirstBoot every member starts this *)
-(* way, so no leader exists until members have formed.                     *)
+(* majority. A waiver excuses silence only: a waived member that answers   *)
+(* is counted like any other. Here a waived member that is up always       *)
+(* answers, and Absent is the silent case. A member that lost its volume   *)
+(* takes the same step, so wiped members cannot form a second group over   *)
+(* one that holds the log, whether or not it answers. With FirstBoot every *)
+(* member starts this way, so no leader exists until members have formed.  *)
 (*                                                                         *)
 (* An answer shows the log and not the vote. A volume lost after a vote and*)
 (* before the first log entry meets only empty answers, and the member     *)
@@ -121,6 +123,8 @@
 (*                     answers and skips a member that does not answer,    *)
 (*                     which is what the metadata group did before issue   *)
 (*                     2371.                                               *)
+(*   WaiverExcusesAnswer -- a waived member's answer is skipped too.       *)
+(*   WaiverAnyNumber     -- a waiver may name a majority of the slots.     *)
 (*                                                                         *)
 (* FelixRaftMembership.tla has the twins for a change before the last one  *)
 (* is committed and for a learner that counts.                             *)
@@ -155,6 +159,8 @@ CONSTANTS
     Forming,        \* a member whose vote is withheld may form from its peers' answers
     FirstBoot,      \* the group has not formed: every member starts with its vote withheld
     FormMajority,
+    WaiverExcusesAnswer,
+    WaiverAnyNumber,
     Waived,         \* brokers a `form-without` waiver names: their silence does not block
     Absent,         \* brokers that never start
     EarlyWipes      \* a directory may be lost before the group has committed an entry
@@ -537,17 +543,19 @@ VoteAgain(s) ==
     /\ hold' = [hold EXCEPT ![s] = 0]
     /\ UNCHANGED <<election, raft, copy, plane, delivered, used>>
 
-\* First start. A is the set of members that answer, and none of them may
-\* show a log entry. Every other member answers, bar those a waiver names,
-\* and the members that answer empty, this one included, are a majority.
-\* The member decided its own directory was empty before it asked and does
-\* not look again.
+\* First start. A is the set of members that answer, and it holds every
+\* waived member that is up. No answer may show a log entry. Every other
+\* member answers, bar those a waiver names, and the members that answer
+\* empty, this one included, are a majority. The member decided its own
+\* directory was empty before it asked and does not look again.
 Form(s, A) ==
+    LET empty == {t \in A : LastIdx(t) = 0} IN
     /\ Forming
     /\ hold[s] = 1
     /\ A \subseteq (InitBrokers \ Absent) \ {s}
-    /\ \A t \in A : LastIdx(t) = 0
-    /\ Majority({s} \cup A, InitBrokers)
+    /\ (Waived \ Absent) \ {s} \subseteq A
+    /\ \A t \in A \ empty : WaiverExcusesAnswer /\ t \in Waived
+    /\ WaiverAnyNumber \/ Majority({s} \cup empty, InitBrokers)
     /\ FormMajority \/ (InitBrokers \ {s}) \ A \subseteq Waived
     /\ hold' = [hold EXCEPT ![s] = 0]
     /\ UNCHANGED <<election, raft, copy, plane, delivered, used>>
@@ -646,6 +654,9 @@ IsMember(e) == e.kind = "member"
 \* A write is acknowledged. With FirstBoot every vote starts withheld, so
 \* this also says members formed.
 NeverAcks == Acked = {}
+
+\* No member of a first boot forms.
+NobodyForms == \A s \in Brokers : hold[s] = 1
 
 \* The committed memberships that are not joint.
 FinalCfgs == {committed[k].e.cfg : k \in {n \in CommittedCfgs : ~Joint(committed[n].e.cfg)}}
