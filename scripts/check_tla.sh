@@ -1155,6 +1155,8 @@ weights=(
   "FelixRaftCachePutAbsentSnapshot 45"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
+  "FelixRaftSleepMidHandshake 87"
+  "FelixRaftSleepWake 9"
 )
 
 # Minutes a configuration took on a pull request's runner, from the `Finished
