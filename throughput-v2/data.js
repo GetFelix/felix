@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794531066944,
+  "lastUpdate": 1794531340501,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -53612,6 +53612,58 @@ window.BENCHMARK_DATA = {
             "range": "31219.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809041.25\nmean: 796045.10\nstdev: 31219.99\ncv: 3.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5c0a34556a3d63966d7c9f7a57c9440dd6c802ea",
+          "message": "feat(replication): per-group openraft runtime and node ticker (#2231, #2248) (#2326)\n\nPer-group openraft runtime and node ticker (#2231, #2248): one openraft instance per group, an external ticker driving Trigger::tick (openraft git pin), idle groups beat every 2 s and busy ones every 200 ms, the OnCommit-only Raft log adapter, snapshots refused until log retention is designed.\n\nDecided: merges with the per-broker memory gate red (upstream databendlabs/openraft#2312, fix in #2313); raft_memory is ignored and runs nightly until the pin moves.\n\nSpec-Unaffected: tests, a CI job and docs only.",
+          "timestamp": "2026-11-13T00:46:25Z",
+          "tree_id": "82a49c23463164e5588da90b98429adfbd077cd1",
+          "url": "https://github.com/GetFelix/felix/commit/5c0a34556a3d63966d7c9f7a57c9440dd6c802ea"
+        },
+        "date": 1794531339607,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 660246.89,
+            "range": "50379.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 660246.89\nmean: 640222.49\nstdev: 50379.33\ncv: 7.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 660246.89,
+            "range": "50379.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 660246.89\nmean: 640222.49\nstdev: 50379.33\ncv: 7.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 153998.82,
+            "range": "5502.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 153998.82\nmean: 153067.27\nstdev: 5502.06\ncv: 3.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1539988.21,
+            "range": "55020.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1539988.21\nmean: 1530672.72\nstdev: 55020.63\ncv: 3.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
