@@ -580,9 +580,11 @@ minority split off, one direction of one link cut (a request that never
 arrives, or one that is handled and whose answer is lost), and the leader of a
 shard isolated.
 
-Clients publish through the engine on the member they believe leads, and
-sometimes on another member, which must refuse. Readers read a member's log up
-to its read bound, on any member. Every publish error is recorded as unknown.
+Clients publish through the engine on the member they believe leads (the one
+claiming leadership at the highest term), and sometimes on another member,
+which must refuse. Readers read a member's log directly up to its read bound,
+on any member. They do not go through the broker's read path. Every publish
+error is recorded as unknown.
 Every member's broker also has a live subscriber on each shard. Publishers
 exist only on the member that leads, so a subscriber sees what its member
 fans out while it leads.
@@ -594,22 +596,37 @@ What a seed checks:
   a majority, whatever the stream's level, because a Raft shard acknowledges
   at commit: an acknowledged write that is missing, or a read that saw
   records the final log does not hold, fails the seed.
-- At most one member leads a term.
+- At most one member leads a term. Sampled once a second, so a leader that
+  comes and goes between two samples is not seen.
 - A member's read bound never goes back, and never passes what a majority of
-  members has fsynced.
-- When a member acknowledges a write, the record is below that member's read
-  bound and a majority of members has fsynced it.
-- A record handed to a live subscriber is below its member's read bound at
-  that moment, comes in offset order, and is in the final log at its offset.
+  members holds on disk. Also sampled once a second. A member counts toward
+  the majority only when its log holds the same record (same term, same
+  payload) at that offset and it reports having fsynced that far. A deposed
+  leader's own flushed tail does not count.
+- When a member acknowledges a write, its log holds that value at the
+  acknowledged offset, below its read bound, and a majority holds the same
+  record fsynced, counted the same way.
+- A record handed to a live subscriber comes in offset order and is in the
+  final log at its offset. The subscriber also checks the member's read bound
+  at delivery, but the broker's commit hold reads the same bound, so that
+  check cannot disagree with the hold. The final log comparison is the one
+  that counts.
 - Within 30 seconds of the heal every shard has a leader that acknowledges a
   write, no member refuses a read, and every member serves the same records.
+
+A seed also fails when it checked too little: no leader change, or fewer
+than 500 live deliveries, 1000 acknowledged writes, 200 reads or 4 faults.
 
 `FELIX_SIM_CLOCKS=bounded` gives each member timers that run at its own rate,
 0.8x to 1.2x. The engine reads no clock except its timers, so this is all that
 clock skew can do to it. Without the variable the timers agree.
 
-Two pinned seeds run with the workspace tests. The batch is ignored by default.
-It runs every seed and lists the ones that failed:
+Two pinned seeds, `raft_seed_1` and `raft_seed_2_with_skewed_timers`, run in
+CI's non-blocking `sim-seeds` job with a few more seeds. They stay out of the
+workspace tests until a seed replays its run (see below). A failing seed
+prints its whole outcome: mode, faults, counts, terms led and every finding.
+The batch is ignored by default. It runs every seed and lists the ones that
+failed:
 
 ```bash
 FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
@@ -642,7 +659,8 @@ RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=4 \
 Not covered yet, because each needs a broker that serves a Raft shard: a
 subscriber that follows a shard from one leader to the next, consumer groups,
 reads after a restart, and the whole-cluster history campaign in
-`history.yml`.
+`history.yml`. Nor are the engine's read index (`confirm_read`) and a stale
+read served by a member that has fallen behind another.
 
 ## The nightly sweep
 

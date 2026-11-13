@@ -1,6 +1,8 @@
 //! Seeds of the Raft group simulation (`felix_sim::raft`).
 //!
-//! `raft_seed_*` run in the workspace suite. `raft_seeds` is the batch:
+//! `raft_seed_*` are pinned seeds. They are ignored here and run in CI's
+//! non-blocking `sim-seeds` job until a seed replays its run (#2449): today
+//! each run of a seed is a fresh sample. `raft_seeds` is the batch:
 //! `FELIX_SIM_SEED_START` and `FELIX_SIM_SEEDS` pick the seeds and
 //! `FELIX_SIM_CLOCKS=bounded` skews the members' timers.
 //! `each_raft_seed_runs_the_same_twice` takes the same variables. It fails
@@ -9,7 +11,8 @@
 
 use std::time::Duration;
 
-use felix_sim::raft::{Clocks, RaftSimConfig, run_seed};
+use felix_cluster::history::model::Action;
+use felix_sim::raft::{Clocks, RaftOutcome, RaftSimConfig, run_seed};
 use felix_sim::run::first_difference;
 
 fn env(name: &str, default: u64) -> u64 {
@@ -19,25 +22,56 @@ fn env(name: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
-/// Run `seed` and say what failed, if anything did.
+// What a seed must exercise to count. Seeds 1-40 on 2 shards each had at
+// least 9 terms led, 2400 live deliveries, 2600 acknowledged writes, 530
+// reads and 6 faults; the floors sit well below that.
+const MIN_DELIVERIES: usize = 500;
+const MIN_ACKNOWLEDGED: usize = 1000;
+const MIN_READS: usize = 200;
+const MIN_FAULTS: usize = 4;
+
+/// Why `outcome` checked too little to mean anything, if it did.
+fn vacuous(outcome: &RaftOutcome, shards: u32) -> Option<String> {
+    let history = &outcome.history;
+    let reads = history
+        .ops
+        .iter()
+        .filter(|op| matches!(op.action, Action::Read { .. }))
+        .count();
+    let faults = history.faults.iter().filter(|f| f.what != "heal").count();
+    if outcome.terms_led <= shards as usize {
+        Some(format!(
+            "leadership never moved ({} terms led)",
+            outcome.terms_led
+        ))
+    } else if outcome.deliveries.len() < MIN_DELIVERIES {
+        Some(format!("{} live deliveries", outcome.deliveries.len()))
+    } else if history.acknowledged() < MIN_ACKNOWLEDGED {
+        Some(format!("{} acknowledged writes", history.acknowledged()))
+    } else if reads < MIN_READS {
+        Some(format!("{reads} reads"))
+    } else if faults < MIN_FAULTS {
+        Some(format!("{faults} faults"))
+    } else {
+        None
+    }
+}
+
+/// Run `seed` and say what failed, if anything did, with the whole outcome.
 fn failure(seed: u64, clocks: Clocks) -> Option<String> {
     let config = RaftSimConfig {
         clocks,
         ..RaftSimConfig::default()
     };
+    let shards = config.shards;
     let outcome = run_seed(seed, config);
     println!("{outcome}");
-    if outcome.history.acknowledged() <= 100 {
-        return Some(format!(
-            "raft seed {seed} ({clocks:?}) acknowledged too little to check anything"
-        ));
-    }
-    (!outcome.passed()).then(|| {
-        format!(
-            "raft seed {seed} ({clocks:?}) failed: {}",
-            outcome.first_failure()
-        )
-    })
+    let why = if outcome.passed() {
+        vacuous(&outcome, shards).map(|why| format!("checked too little: {why}"))
+    } else {
+        Some(format!("failed: {}", outcome.first_failure()))
+    };
+    why.map(|why| format!("raft seed {seed} ({clocks:?}) {why}\n{outcome}"))
 }
 
 fn check(seed: u64, clocks: Clocks) {
@@ -47,11 +81,13 @@ fn check(seed: u64, clocks: Clocks) {
 }
 
 #[test]
+#[ignore = "#2449: a sample, not a replay; runs in CI sim-seeds"]
 fn raft_seed_1() {
     check(1, Clocks::Off);
 }
 
 #[test]
+#[ignore = "#2449: a sample, not a replay; runs in CI sim-seeds"]
 fn raft_seed_2_with_skewed_timers() {
     check(2, Clocks::Bounded);
 }

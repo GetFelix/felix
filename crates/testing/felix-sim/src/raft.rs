@@ -30,7 +30,7 @@ use felix_cluster::history::model::{
 };
 use felix_cluster::history::rng::Rng;
 use felix_replication::raft::{
-    AckAt, GroupId, GroupRuntime, MemberId, RaftEngine, RaftReads, Role, RuntimeConfig,
+    AckAt, GroupId, GroupRuntime, LogPoint, MemberId, RaftEngine, RaftReads, Role, RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig, ReadRange, RecordMark};
@@ -262,6 +262,28 @@ struct Sim {
     next_process: AtomicUsize,
 }
 
+/// A log record, as much of it as tells two apart: an old leader's entry
+/// and a new leader's entry at one offset differ in generation (the term)
+/// and payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Held {
+    generation: Option<u64>,
+    mark: RecordMark,
+    payload: Bytes,
+}
+
+/// How many of `members` (each one's flushed point and its record at
+/// `offset`) hold `record` there and have flushed it. An index alone is not
+/// enough: a deposed leader can have flushed its own tail past `offset`.
+fn holders(record: &Held, offset: u64, members: &[(Option<LogPoint>, Option<Held>)]) -> usize {
+    members
+        .iter()
+        .filter(|(flushed, held)| {
+            flushed.is_some_and(|point| point.index >= offset) && held.as_ref() == Some(record)
+        })
+        .count()
+}
+
 fn stream(shard: u32) -> String {
     format!("s{shard}")
 }
@@ -412,17 +434,20 @@ impl Sim {
         self.history.lock().faults.push(FaultEvent { at, what });
     }
 
-    /// The member that says it leads `shard` and has opened it.
+    /// The member that says it leads `shard` at the highest term and has
+    /// opened it. A deposed leader cut off from the rest still says it
+    /// leads, at an older term.
     fn leader(&self, shard: u32) -> Option<usize> {
         let key = key(shard);
-        (0..self.members.len()).find(|member| {
-            let member = &self.members[*member];
-            let leads = member
-                .runtime
-                .status(&key)
-                .is_some_and(|status| status.role == Role::Leader);
-            leads && member.engine.open_term(&key).is_some()
-        })
+        (0..self.members.len())
+            .filter_map(|member| {
+                let at = &self.members[member];
+                let status = at.runtime.status(&key)?;
+                let leads = status.role == Role::Leader && at.engine.open_term(&key).is_some();
+                leads.then_some((status.term, member))
+            })
+            .max()
+            .map(|(_, member)| member)
     }
 
     /// Publish a fresh value to `shard` on `member` and record how it ended.
@@ -445,7 +470,7 @@ impl Sim {
             Ok(proposed) => match proposed.complete().await {
                 Ok(done) => {
                     let offset = done.offsets.map(|(first, _)| first);
-                    self.acknowledged(member, shard, offset);
+                    self.acknowledged(member, shard, value, offset).await;
                     AppendOutcome::Ok { offset }
                 }
                 Err(_) => AppendOutcome::Info,
@@ -466,8 +491,9 @@ impl Sim {
     }
 
     /// An acknowledged record is committed, so the member that acknowledged
-    /// it has it below its read bound, on a majority's disks.
-    fn acknowledged(&self, member: usize, shard: u32, offset: Option<u64>) {
+    /// it holds it at its offset, below its read bound, and a majority holds
+    /// the same record on disk.
+    async fn acknowledged(&self, member: usize, shard: u32, value: u64, offset: Option<u64>) {
         let Some(offset) = offset else {
             self.finding(format!(
                 "{}: {} acknowledged a write without an offset",
@@ -485,10 +511,26 @@ impl Sim {
                 name(member)
             ));
         }
-        let holders = self.flushed_past(shard, offset);
+        let Some(record) = self.record(member, shard, offset).await else {
+            self.finding(format!(
+                "{}: {} acknowledged offset {offset}, which its log does not hold",
+                list(shard),
+                name(member)
+            ));
+            return;
+        };
+        if record.mark != RecordMark::None || decode(&record.payload) != value {
+            self.finding(format!(
+                "{}: {} acknowledged value {value} at offset {offset}, where its log holds \
+                 something else",
+                list(shard),
+                name(member)
+            ));
+        }
+        let holders = self.holders(shard, offset, &record).await;
         if holders < self.majority() {
             self.finding(format!(
-                "{}: {} acknowledged offset {offset}, which only {holders} of {} members have \
+                "{}: {} acknowledged offset {offset}, which only {holders} of {} members hold \
                  flushed",
                 list(shard),
                 name(member),
@@ -501,14 +543,38 @@ impl Sim {
         self.members.len() / 2 + 1
     }
 
-    /// How many members have `offset` of `shard` on disk.
-    fn flushed_past(&self, shard: u32, offset: u64) -> usize {
+    /// The record at `offset` of `member`'s log of `shard`, blank and
+    /// membership entries included.
+    async fn record(&self, member: usize, shard: u32, offset: u64) -> Option<Held> {
+        let log = &self.members[member].logs[shard as usize];
+        let range = ReadRange {
+            start: offset,
+            max_bytes: 1 << 16,
+        };
+        let page = log.read_range(range).await.ok()?;
+        let record = page.records.into_iter().find(|r| r.offset == offset)?;
+        Some(Held {
+            generation: record.generation,
+            mark: record.mark,
+            payload: record.payload,
+        })
+    }
+
+    /// How many members hold `record` at `offset` of `shard` and have
+    /// flushed past it, read from each member's log.
+    async fn holders(&self, shard: u32, offset: u64, record: &Held) -> usize {
         let key = key(shard);
-        self.members
-            .iter()
-            .filter_map(|member| member.runtime.status(&key))
-            .filter(|status| status.flushed.is_some_and(|point| point.index >= offset))
-            .count()
+        let mut members = Vec::new();
+        for member in 0..self.members.len() {
+            // Status first: a record read after it is still the one that was
+            // flushed, unless it was truncated, and only uncommitted records are.
+            let flushed = self.members[member]
+                .runtime
+                .status(&key)
+                .and_then(|status| status.flushed);
+            members.push((flushed, self.record(member, shard, offset).await));
+        }
+        holders(record, offset, &members)
     }
 
     /// A live subscriber on `member`'s broker. Only the member that leads
@@ -764,9 +830,12 @@ impl Sim {
                         ));
                     }
                     // A record below the bound is committed, so a majority
-                    // has it on disk.
+                    // holds the same record on disk.
                     let holders = match bound.checked_sub(1) {
-                        Some(last) => self.flushed_past(shard, last),
+                        Some(last) => match self.record(member, shard, last).await {
+                            Some(record) => self.holders(shard, last, &record).await,
+                            None => 0,
+                        },
                         None => majority,
                     };
                     if holders < majority {
@@ -963,3 +1032,6 @@ async fn drive(
         member.runtime.shutdown().await;
     }
 }
+
+#[cfg(test)]
+mod tests;
