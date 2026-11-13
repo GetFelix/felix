@@ -377,7 +377,8 @@ What `plan` works out for one group, and `apply` then does:
    and never removes one. The shard's first assignment starts it, and so
    must the switch from the hybrid and each re-form, for the epoch they
    begin. A group whose shard has no record (first assigned below metadata
-   level 31) is blocked: no list of its brokers can be trusted. In code,
+   level 31, or restored from an export) is blocked: no list of its brokers
+   can be trusted. In code,
    `PlacedInEpoch::unaccounted` gives the brokers that block a group,
    `off_record` the voters a copy names off the record, `only` the RF 1
    test below, and `next_epoch` the record a re-form writes.

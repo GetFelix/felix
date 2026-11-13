@@ -1024,6 +1024,10 @@ caller's value is ignored.
 - It is carried in snapshots and the change feed like the rest of the
   assignment, and goes with the assignment when the stream or cache is
   deleted.
+- Restoring an export (the import ceremony) drops every record. The export
+  is older than the epoch it is restored into, so a broker placed and moved
+  away since would be missing, and a re-form trusting the record would skip
+  its disk. Without a record the re-form blocks the group.
 
 The record grows with every move for as long as the epoch lasts. No pruning
 rule exists yet, and any rule must be modelled first. Under Raft it is

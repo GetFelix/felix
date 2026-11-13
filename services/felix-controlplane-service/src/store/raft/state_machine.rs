@@ -614,7 +614,9 @@ impl MetadataStateMachine {
                         "store already holds state; import requires overwrite".to_string(),
                     ));
                 }
-                store.import_state(*state).await?;
+                let mut state = *state;
+                state.forget_placed();
+                store.import_state(state).await?;
                 self.recompute_floor().await;
                 self.node_reset(None);
                 Ok(MetaResponse::Unit)

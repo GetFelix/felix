@@ -336,7 +336,9 @@ impl PlacedInEpoch {
 
     /// The record a re-form writes for the next epoch: the brokers placed
     /// now (`current`) and every broker the command listed, voter or
-    /// learner.
+    /// learner. A broker that `current` no longer names and that was
+    /// declared dead is left off, though the model keeps it placed until its
+    /// removal commits; a dead broker never starts the new epoch.
     pub fn next_epoch(&self, current: &ShardAssignment, listed: &BTreeSet<String>) -> Self {
         Self {
             epoch: self.epoch + 1,

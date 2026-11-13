@@ -105,6 +105,17 @@ fn is_zero(value: &u64) -> bool {
 }
 
 impl ExportedState {
+    /// Drops every shard's record of brokers placed in its epoch
+    /// ([`ShardAssignment::placed`]). An export is older than the epoch it is
+    /// restored into: a broker placed and moved away since is missing from
+    /// it, and a re-form trusting the record would skip that disk. Without a
+    /// record the re-form blocks the group instead.
+    pub(crate) fn forget_placed(&mut self) {
+        for (_, assignment) in &mut self.shards {
+            assignment.placed = None;
+        }
+    }
+
     /// What the operator is about to move, for the tool's own output —
     /// the cheap sanity check before and after a cutover.
     pub fn summary(&self) -> String {
