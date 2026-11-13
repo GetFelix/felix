@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794600723046,
+  "lastUpdate": 1794607599000,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -69762,6 +69762,72 @@ window.BENCHMARK_DATA = {
             "range": "32.04",
             "unit": "us",
             "extra": "trials: 5\nmedian: 346.00\nmean: 358.60\nstdev: 32.04\ncv: 8.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "97a14372f5e9c0571624f63789879fc5704511fd",
+          "message": "fix(commit): a record of short-key deletes decodes (#2464)\n\nCommitRecord::decode bounded the operation count at one per 9 bytes, but a delete with a short key is 5 bytes, so a valid record of short-key deletes was refused as malformed and state rebuild failed on it. The bound is now one per 5 bytes. Test: a record of short deletes round-trips (fails with the old bound).",
+          "timestamp": "2026-11-13T21:49:33Z",
+          "tree_id": "850b5f7bdee89034009f56aab53011b20819f3d7",
+          "url": "https://github.com/GetFelix/felix/commit/97a14372f5e9c0571624f63789879fc5704511fd"
+        },
+        "date": 1794607589736,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.20\nstdev: 0.45\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 129.20\nstdev: 1.79\ncv: 1.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 185,
+            "range": "39.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 193.40\nstdev: 39.87\ncv: 20.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.20\nstdev: 1.48\ncv: 1.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 261,
+            "range": "29.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 261.00\nmean: 272.40\nstdev: 29.81\ncv: 10.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 846,
+            "range": "462.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 846.00\nmean: 810.00\nstdev: 462.22\ncv: 57.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
