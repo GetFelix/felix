@@ -1441,6 +1441,7 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
         group: group(0),
         to: MemberId::new("a", 1),
         beat: 0,
+        report: false,
         deadline: Duration::from_millis(50),
         body: Request::Vote(VoteRequest::new(vote, None)),
     };

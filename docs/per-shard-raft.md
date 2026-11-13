@@ -580,7 +580,8 @@ What the acknowledgement promises, and what it does not
   a machine crash under a new storage identity and is not counted, so the
   shard stays closed until the copy that holds the record returns
   ([Replication design](replication-design.md), "Storage identities").
-  Under Raft a power cut rotates nothing, and the group elects.
+  Under Raft a power cut rotates nothing, and the group elects. Whether
+  to close that gap before a shard is routed to Raft is issue #2423.
 
 > `crates/server/felix-replication/src/raft/tests/written.rs`,
 > `a_quorum_write_is_acknowledged_once_a_majority_has_written_it`,
@@ -1113,7 +1114,8 @@ the log except through openraft ("Writing through openraft").
 A `Quorum` write is acknowledged when `await_commit` returns: the commit
 index has passed it and the entry there has the term it was written at. On
 a `Periodic` stream it is acknowledged earlier if a majority has written
-it ("Two signals from one append"). If
+it: the publish path calls `await_quorum_ack`, which is `await_commit`
+raced with the written count ("Two signals from one append"). If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
@@ -1538,6 +1540,17 @@ live brokers are declared dead and commit in the old epoch before they
 learn of the new one. Add the restored RF 1 copy that starts by itself,
 with a twin where a second broker is placed and it must not.
 
+**Written-majority acknowledgements.** Modelled in `FelixRaftWritten.tla`:
+a follower's written report, the leader's count, process crashes, power
+cuts and one joint change. It checks that an acknowledged record is missing
+from no broker that could win an election unless a power cut took it from a
+copy before its fsync, and that with no power cut it is never missing.
+Twins that fail: a learner's report counted, a report counted whatever its
+term, one half of a joint configuration taken as enough, and the commit
+index counting written reports. One expected violation is pinned: every
+rule on and one power cut, which is the loss "Two signals from one append"
+states.
+
 **Leader leases.** Add a clock per broker with bounded drift, the leader's
 lease from the send time of its last majority-acknowledged message, and the
 follower's vote refusal from its receive time. Add `Leader`
@@ -1738,7 +1751,7 @@ and the hybrid is what ships.
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
+| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. `admit_local_ack` always refuses, so `Leader` writes wait for commit. Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. No lease, no membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced, declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait | 4 | Behind the feature. Needs the model's lease configs first |

@@ -252,9 +252,20 @@ async fn led_with_a_learner() -> (Led, &'static str) {
         leader,
         engine,
     };
+    // A leader just elected refuses writes until a majority has answered it.
     let group = led.group();
-    let learner = group.raft().add_learner(member("c"), EmptyNode {}, true);
-    learner.await.expect("the learner joined");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let learner = group.raft().add_learner(member("c"), EmptyNode {}, true);
+        match learner.await {
+            Ok(_) => break,
+            Err(err) if tokio::time::Instant::now() < deadline => {
+                tracing::debug!(error = %err, "the learner was refused, trying again");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => panic!("the learner never joined: {err}"),
+        }
+    }
     (led, other)
 }
 
