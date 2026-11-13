@@ -1333,6 +1333,37 @@ shard runs on Raft. The routing change has to:
   not run Raft is never sent a Raft message, and a log directory written
   by one engine is refused by the other.
 
+**How the service routes a Raft shard.** The routes the hybrid publishes
+never hold a shard a Raft group runs, so the service asks the group first.
+On a broker that holds a member:
+
+| The member | A publish or a redirect is |
+|---|---|
+| leads, and its stream is at the committed tail | served here, at the term |
+| follows a leader | forwarded to that leader |
+| has no leader, or leads and is still moving to the tail | answered `shard_unavailable` (`not_ready`), which a client retries |
+
+A publish served here is proposed in the order the shard's publishes
+arrive and answered at its commit, for every consistency level and fsync
+policy. It does not enter the hybrid's write fence and does not need this
+broker's lease: the term is what holds the shard. A publish routed at a
+term the broker no longer serves is refused with nothing written. Readers
+at every level are bound by the commit index. A forwarded publish is
+checked against the term the owner serves now, not the one the sender saw.
+A broker that holds no member of the shard has no route for it yet.
+
+When the broker stops, every member is stopped and its log closed before
+storage is flushed.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_led_term_is_served_only_after_the_stream_is_at_the_committed_tail`,
+> `a_publish_on_a_raft_shard_commits_through_its_group` and
+> `shutdown_stops_the_members_and_closes_their_logs`.
+
+`FELIX_SHARD_ENGINE=raft` is still refused at startup: the routing above is
+tested in process, and not yet through a client connection or across
+brokers.
+
 The records a Raft stream stores carry no publisher or headers, so its
 subscribers are told neither. The state machine remembers the last 64 runs
 of entries that hold no record; a batch committed after more runs than

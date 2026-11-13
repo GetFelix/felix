@@ -614,7 +614,7 @@ where
         nodes: view.as_ref().map(from_view::nodes).unwrap_or_default(),
         reports_held: view.as_ref().map(|_| restore_checked.clone()),
         leads_after: view.as_ref().map(|_| clients.clone()),
-        engine_shards: raft_shards.engine_shards,
+        engine_shards: raft_shards.engine_shards.clone(),
         sync_shutdown: &sync_shutdown,
     });
 
@@ -670,6 +670,7 @@ where
         controlplane_task,
         controlplane_view,
         storage: shutdown::Storage {
+            engine_shards: raft_shards.engine_shards,
             broker: Arc::clone(&broker),
             run: durable_storage
                 .as_ref()

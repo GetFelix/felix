@@ -7,6 +7,7 @@
 
 use std::collections::BTreeSet;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,7 +21,7 @@ use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
 
-use super::routing::EngineShards;
+use super::routing::{Dispatch, EngineShards, Reason};
 use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
 
@@ -55,6 +56,8 @@ impl RaftShards {
         let leading = Arc::new(Leading {
             broker: Arc::clone(&broker),
             terms: Arc::default(),
+            #[cfg(test)]
+            stall: tokio::sync::watch::Sender::new(false),
         });
         runtime.report_to(Arc::clone(&leading), Arc::clone(&leading));
         let shards = Arc::new(Self {
@@ -175,6 +178,11 @@ impl RaftShards {
     }
 
     #[cfg(test)]
+    pub(crate) fn stall_leading(&self, stalled: bool) {
+        self.leading.stall.send_replace(stalled);
+    }
+
+    #[cfg(test)]
     pub(crate) async fn log_of(&self, shard: &ShardKey) -> Option<DiskLog> {
         self.open
             .lock()
@@ -274,6 +282,45 @@ impl EngineShards for RaftShards {
             }
         })
     }
+
+    fn dispatch(
+        &self,
+        key: &ShardKey,
+        nodes: &dyn Fn(&str) -> Option<SocketAddr>,
+    ) -> Option<Dispatch> {
+        let status = self.runtime.status(key)?;
+        // Led is not enough: the term is served once `Leading` opened it.
+        if let Some(term) = self.leading(key) {
+            return Some(Dispatch::Local { generation: term });
+        }
+        let leader = status
+            .leader
+            .filter(|leader| *leader.broker != *self.local)
+            .map(|leader| leader.broker);
+        Some(match leader {
+            // Electing, or elected here and still moving to the tail.
+            None => Dispatch::Unavailable(Reason::NotReady),
+            Some(leader) => match nodes(&leader) {
+                Some(advertise_addr) => Dispatch::Forward {
+                    node_id: leader.to_string(),
+                    advertise_addr,
+                    generation: status.term,
+                    incarnation: 0,
+                },
+                None => Dispatch::Unavailable(Reason::OwnerUnavailable(leader.to_string())),
+            },
+        })
+    }
+
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async move {
+            let mut open = self.open.lock().await;
+            for (key, member) in open.drain() {
+                self.close_member(&key, member).await;
+            }
+            self.runtime.shutdown().await;
+        })
+    }
 }
 
 impl felix_broker::EngineLogs for RaftShards {
@@ -309,6 +356,9 @@ impl felix_broker::EngineLogs for RaftShards {
 struct Leading {
     broker: Arc<Broker>,
     terms: Arc<parking_lot::Mutex<HashMap<ShardKey, Lead>>>,
+    /// While true, a new term's move to the committed tail does not start.
+    #[cfg(test)]
+    stall: tokio::sync::watch::Sender<bool>,
 }
 
 struct Lead {
@@ -366,7 +416,11 @@ impl WriteFence for Leading {
         // The term is served only once the stream is at the committed tail:
         // a batch committed below it and delivered after it would reach a
         // resuming reader twice.
+        #[cfg(test)]
+        let mut stall = self.stall.subscribe();
         tokio::spawn(async move {
+            #[cfg(test)]
+            let _ = stall.wait_for(|stalled| !stalled).await;
             loop {
                 let moved = broker
                     .lead_from_tail(&key.tenant_id, &key.namespace, &key.stream, key.shard)

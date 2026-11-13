@@ -486,6 +486,14 @@ mod feed {
                 }
             })
         }
+
+        fn dispatch(
+            &self,
+            _key: &ShardKey,
+            _nodes: &dyn Fn(&str) -> Option<std::net::SocketAddr>,
+        ) -> Option<Dispatch> {
+            None
+        }
     }
 
     /// **A shard another engine took is never opened or routed by the

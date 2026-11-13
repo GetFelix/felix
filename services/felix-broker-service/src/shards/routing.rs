@@ -132,7 +132,7 @@ impl std::fmt::Display for Reason {
 /// the hot path for a lookup that is two loads.
 pub type ServableShards = HashMap<ShardKey, u64>;
 
-pub use super::engine::StreamEngine;
+pub use super::engine::{RaftPublish, RaftRefusal, StreamEngine};
 
 /// Resolves ingress requests against cluster ownership.
 ///
@@ -149,6 +149,9 @@ pub struct IngressRouter {
     /// Woken on every new view, for writes held while their shard moves.
     changed: tokio::sync::Notify,
     hold: MoveHold,
+    /// Routes for the shards the hybrid does not run. They never reach the
+    /// view, so they are asked for first.
+    engine_shards: std::sync::OnceLock<Arc<dyn EngineShards>>,
     /// Runs inside [`IngressRouter::publish`] just before the view is stored,
     /// so a test can land a change between the read and the store. Held while
     /// the hook runs, so a hook must not call `publish` itself.
@@ -183,9 +186,23 @@ impl IngressRouter {
             fence,
             changed: tokio::sync::Notify::new(),
             hold: MoveHold::disabled(),
+            engine_shards: std::sync::OnceLock::new(),
             #[cfg(test)]
             before_publish: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Route the shards `engine_shards` runs by what it says. Only the first
+    /// call counts.
+    pub fn set_engine_shards(&self, engine_shards: Arc<dyn EngineShards>) {
+        let _ = self.engine_shards.set(engine_shards);
+    }
+
+    /// Where another engine sends `key`, when one runs it here. A local
+    /// answer has no place in the hybrid's fence and needs no broker lease.
+    pub(crate) fn engine_dispatch(&self, key: &ShardKey) -> Option<Dispatch> {
+        let nodes = |broker: &str| self.router.node_addr(broker);
+        self.engine_shards.get()?.dispatch(key, &nodes)
     }
 
     /// Hold writes to a moving shard under `hold` rather than refusing them.
@@ -362,6 +379,9 @@ impl IngressRouter {
     /// trusting only local state would keep serving a shard that has been
     /// reassigned.
     pub fn dispatch(&self, key: &ShardKey) -> Dispatch {
+        if let Some(dispatch) = self.engine_dispatch(key) {
+            return dispatch;
+        }
         self.dispatch_in(&self.view.load(), key)
     }
 
@@ -374,6 +394,11 @@ impl IngressRouter {
     /// closes before the write claims its offsets still counts it and the move
     /// waits for it.
     pub(crate) async fn dispatch_write(&self, key: &ShardKey) -> (Dispatch, Option<FenceGuard>) {
+        // Not held through an election: the group answers who leads next,
+        // and the client's retry finds it.
+        if let Some(dispatch) = self.engine_dispatch(key) {
+            return (dispatch, None);
+        }
         let mut held = None;
         loop {
             let changed = self.changed.notified();
@@ -799,6 +824,22 @@ pub trait EngineShards: Send + Sync {
         &'a self,
         assignments: &'a mut HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+
+    /// Where a request for `key` goes, when this engine runs the shard on
+    /// this broker: here once it leads and may take writes, to the leader
+    /// it follows (addressed through `nodes`) otherwise. `None` for a shard
+    /// it holds no member of.
+    fn dispatch(
+        &self,
+        key: &ShardKey,
+        nodes: &dyn Fn(&str) -> Option<SocketAddr>,
+    ) -> Option<Dispatch>;
+
+    /// Stop every member and close its log. The broker calls it once, when
+    /// it stops, before storage is flushed.
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
 }
 
 /// The cluster state one task keeps in step. Grouped because they are only ever

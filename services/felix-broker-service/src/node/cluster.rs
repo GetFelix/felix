@@ -163,6 +163,9 @@ pub(super) fn start_raft_shards(
         membership.node_id.clone(),
     );
     engine.set_raft(Arc::clone(&shards));
+    if let Some(ingress) = engine.serving() {
+        ingress.set_engine_shards(Arc::clone(&shards) as Arc<dyn shard_routing::EngineShards>);
+    }
     Ok(RaftShards {
         engine_shards: Some(shards),
         handler: Some(Arc::new(runtime)),
