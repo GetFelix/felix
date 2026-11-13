@@ -687,7 +687,9 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformStaleMembershipIntact.cfg` | four brokers, {a, b, c} to {a, b, d} through a joint configuration, d placed before the leader proposes, no disk lost | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety`, `NothingLost`, `OffsetNeverReused` (0.04M distinct states) |
 | `FelixRaftReformStaleMembership.cfg` | the same with one disk lost or restored to any prefix | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (0.77M distinct states) |
 | `FelixRaftReformStaleMembershipHappens.cfg` | a witness: the change commits and the group then re-forms | violate `NeverReformsAfterChange` |
-| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the same with two disks lost: no copy of the old voters names d, and the command lists d because it is placed; an empty copy names the first voters, so the group is blocked while c is unplaced and holds an entry | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (7.3M distinct states) |
+| `FelixRaftReformStaleMembershipTwoRotated.cfg` | the same with two disks lost: no copy of the old voters names d, and the command lists d because it is placed; once the change completes, c is still listed because it was placed in the epoch | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (STATES_TWOROT distinct states) |
+| `FelixRaftReformStaleMembershipTwoMoves.cfg` | the same with a move and the move back: {a, b, c} to {a, b, d} and back to {a, b, c}; d is unplaced and can hold every entry while the copies of a, b and c are empty; not registered, run by dispatch | expected to pass the same. Not shown yet: no violation in the first 6.7M distinct states on the build box |
+| `FelixRaftReformStaleMembershipTwoMovesForgotten.cfg` | the same with the list cut to the brokers placed now: d drops off when the move back commits, the empty copies name {a, b, c}, and the group re-forms from an empty base while d's disk holds the acknowledged entries | violate `AckedSurvive` |
 | `FelixRaftReformStaleMembershipTwoRotatedUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311) |
 | `FelixRaftReformStaleMembershipFull.cfg` | `FelixRaftReformStaleMembershipTwoRotated.cfg` with a client write; not registered, run by dispatch | expected to pass the same. Not shown yet: no violation in the first 59M distinct states of a run on the build box, which stopped under it |
 | `FelixRaftReformStaleMembershipFullUnlisted.cfg` | the same with d left off the list | violate `AckedSurvive` (issue #2311). Its passing side is the row above, which is not shown yet |
@@ -712,8 +714,6 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformStopNotRechecked.cfg` | the group elects after the plan and apply stops its leader | violate `ElectedGroupLeftAlone` |
 | `FelixRaftReformBaseNotHighest.cfg` | the base is a shorter log | violate `AckedSurvive` |
 | `FelixRaftReformRotatedNotWaited.cfg` | a rotated copy is not read, and its disk holds the record | violate `AckedSurvive` (issue #2304) |
-| `FelixRaftReformNamedNotChecked.cfg` | the change is complete and c is unplaced; a lagging copy still names c, and the command goes on without c, whose disk holds an entry a and d lost | violate `AckedSurvive` |
-| `FelixRaftReformStartNotNamed.cfg` | the change is complete, c is unplaced, a and b lose their disks; an empty copy names nobody, and the command re-forms from an empty base while c's disk holds an acknowledged entry | violate `AckedSurvive` |
 | `FelixRaftReformNoCas.cfg` | one replica; epoch 1 is written twice from epoch 0 with two bases | violate `StateMachineSafety` |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.2M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
@@ -2833,17 +2833,19 @@ The control plane keeps three things the command needs:
   before the leader sends it anything, and a move's target before the
   leader proposes the change. `Unplace` removes a broker when the leader
   reports the membership that drops it as committed.
+- `everPlaced`: every broker placed in the current epoch. `Unplace` does
+  not remove one; a re-form starts the record again with the brokers the
+  new epoch places.
 - `dead`: the brokers an operator declared dead (`DeclareDead`).
 - `cpFloor`: the highest commit offset a leader reported (`ReportFloor`).
 
 The command is three actions:
 
-- `Plan` is the dry run. It lists the placed brokers and reads every copy
-  that is not declared dead: copy id, last log id, newest membership. A
-  copy that holds no membership of the epoch is taken to name the epoch's
-  first voters. It refuses while a listed copy leads, and while a copy
-  names a voter that is neither listed nor declared dead. It changes
-  nothing.
+- `Plan` is the dry run. It lists every broker placed in the epoch
+  (`everPlaced`) and reads every copy that is not declared dead: copy id,
+  last log id, newest membership. It refuses while a listed copy leads,
+  and while a copy names a voter that is neither listed nor declared dead.
+  It changes nothing.
 - `Stop` sets a durable marker. A stopped member does not vote, acknowledge
   or append in that epoch again, also after a restart. `Stop` asks for a
   leader again first, and does nothing while a listed copy leads.
@@ -2855,8 +2857,8 @@ The command is three actions:
 
 `StartEpoch` starts a member at the new epoch from the base. `SelfStart` is
 the one re-form without the command: a rotated copy that kept records, in a
-group whose only placed broker is its own, writes the next epoch with
-itself as the single voter.
+group where no other broker was placed in the epoch, writes the next epoch
+with itself as the single voter.
 
 No answer of a copy is kept between runs. A plan holds what the operator
 saw, and `Reform` uses only what it reads after the stop.
@@ -2864,16 +2866,20 @@ saw, and `Reform` uses only what it reads after the stop.
 The first voters of an epoch are in the control plane: it writes the first
 member set of a new group, the voters of a switch, and the voters of every
 re-form. The model keeps them in `boot`, per broker, and a lost disk does
-not clear it, because the command reads them from the control plane and not
-from the copy. `BootIsRecorded` checks that `boot` never holds anything
-else. The rule matters when every listed copy is empty. In
-`FelixRaftReformStaleMembershipTwoRotated.cfg` the change to {a, b, d}
-commits on a and b, c is unplaced holding the joint entry, and a and b lose
-their disks. The empty copies name {a, b, c}, c is not listed, and the
-group is blocked until c is declared dead. In
-`FelixRaftReformStartNotNamed.cfg` an empty copy names nobody, and the
-group re-forms from an empty base while c's disk holds an acknowledged
-entry.
+not clear it. `BootIsRecorded` checks that `boot` never holds anything
+else.
+
+The list is every broker placed in the epoch, not only the ones placed now,
+because a removed voter's disk can hold the newest records. In
+`FelixRaftReformStaleMembershipTwoMoves.cfg` the group moves from {a, b, c}
+to {a, b, d} and back, both changes committed by a and b, and a and b then
+lose their disks. The copies of {a, b, c} are empty and name {a, b, c}, so
+nothing on them points at d. Only the record of every placed broker does.
+With the list cut to the brokers placed now
+(`FelixRaftReformStaleMembershipTwoMovesForgotten.cfg`) the group re-forms
+from an empty base while d's disk holds the acknowledged entries. With
+that record, the check that a copy names no voter off the list never
+refuses; it stays as a guard against a wrong record.
 
 What is checked:
 
@@ -2897,19 +2903,20 @@ What is checked:
   `FelixRaftReformTwoRestarts.cfg` and `FelixRaftReformRejoin.cfg`, and
   `FelixRaftReformStopNotRechecked.cfg` violates it. It says nothing about
   a copy stopped just before the election: that one stays stopped (#2403).
-- `BootIsRecorded`, in every passing config.
+- `BootIsRecorded` and `PlacedIsRecorded`, in every passing config. The
+  second says every broker a membership of the current epoch names is in
+  `everPlaced`.
 
 Each knob drops one rule: `ReformBeforeAll` (go on while a placed broker
 has not answered and is not declared dead), `EpochNotChecked` (a member
 takes an append from another epoch), `ReportNotPromise` (read the copies
 without stopping them), `PlanNotRechecked` (apply uses the list and the
 answers of the plan and does not read the copies again), `RotatedNotWaited`
-(a rotated copy is not read), `NamedNotChecked` (go on although a copy's
-records name a voter that is not listed), `RetireNotDurable` (a restart
-forgets the stop marker), `BaseNotHighest`, `NoCas`, `SoloPlacedTwo` (a
-restored copy starts by itself although a second broker is placed),
-`StartNotNamed` (a copy with no membership of the epoch names nobody) and
-`StopNotRechecked` (apply stops a copy although a listed copy leads).
+(a rotated copy is not read), `RetireNotDurable` (a restart forgets the
+stop marker), `BaseNotHighest`, `NoCas`, `SoloPlacedTwo` (a restored copy
+starts by itself although a second broker is placed), `StopNotRechecked`
+(apply stops a copy although a listed copy leads) and `PlacedForgotten`
+(the list is the brokers placed now, so a removed broker drops off).
 `RetireNotDurable` needs two restarts to fail, and
 `FelixRaftReformTwoRestarts.cfg` is the same bounds with the rule on.
 
