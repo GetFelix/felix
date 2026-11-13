@@ -100,6 +100,7 @@ async fn an_import_adopts_the_exports_identity_and_keeps_its_own_when_it_has_non
         .dispatch(MetaCommand::ImportState {
             state: Box::new(without),
             overwrite: true,
+            mark_unplaced: false,
         })
         .await
         .expect("import without identity");
@@ -113,6 +114,7 @@ async fn an_import_adopts_the_exports_identity_and_keeps_its_own_when_it_has_non
         .dispatch(MetaCommand::ImportState {
             state: Box::new(with_identity),
             overwrite: true,
+            mark_unplaced: false,
         })
         .await
         .expect("import with identity");
@@ -216,6 +218,7 @@ async fn an_import_with_no_identity_over_streams_adopts_existing_data() {
         .dispatch(MetaCommand::ImportState {
             state: Box::new(without),
             overwrite: true,
+            mark_unplaced: true,
         })
         .await
         .expect("import without identity");
@@ -261,6 +264,7 @@ async fn an_import_with_an_identity_keeps_it_and_marks_streams_unplaced() {
         .dispatch(MetaCommand::ImportState {
             state: Box::new(exported),
             overwrite: true,
+            mark_unplaced: true,
         })
         .await
         .expect("import");

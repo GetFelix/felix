@@ -227,6 +227,7 @@
 2 finalize_fleet_feature.feature
 0 import_state
 0 import_state.overwrite
+31 import_state.mark_unplaced
 0 import_state.state
 0 import_state.state.auth_bootstrapped
 0 import_state.state.cache_changes

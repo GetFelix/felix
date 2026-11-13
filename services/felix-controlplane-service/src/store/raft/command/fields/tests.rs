@@ -596,6 +596,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::ImportState {
             state: Box::new(exported()),
             overwrite: true,
+            mark_unplaced: true,
         },
         MetaCommand::InsertRefreshToken {
             token: refresh_token(),

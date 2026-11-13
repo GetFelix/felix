@@ -1642,6 +1642,51 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
     assert_eq!(restored.join_floor(), PLACED_LEVEL);
 }
 
+/// An import that marks the streams and caches it restores needs level 31,
+/// so it never reaches a member that would apply it without marking. One
+/// that marks nothing is proposed at any level, and marks nothing.
+#[tokio::test]
+async fn an_import_marks_restored_streams_only_at_the_placed_level() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), PLACED_LEVEL - 1).await;
+    store
+        .create_stream(routed_stream("orders", Default::default()))
+        .await
+        .expect("stream");
+    let mut exported = store.machine.store().export_state().await;
+    // An identity in the export needs level 32 on its own; this is about the mark.
+    exported.cluster_identity = None;
+    let import = |mark_unplaced| MetaCommand::ImportState {
+        state: Box::new(exported.clone()),
+        overwrite: true,
+        mark_unplaced,
+    };
+    assert_eq!(import(true).version(), PLACED_LEVEL);
+    let refused = store.propose(import(true)).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    store.propose(import(false)).await.expect("unmarked import");
+    let marked = || async { store.machine.store().export_state().await.unplaced.len() };
+    assert_eq!(marked().await, 0);
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while let Err(err) = store.propose(import(true)).await {
+        assert!(matches!(err, StoreError::Conflict(_)), "{err:?}");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "still refused after every member reported the level"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(marked().await, 1);
+}
+
 /// Under `joint_fence` a rename past a refusal's ballot skips generations, and
 /// a broker that missed the one before has no set to fence against. So while
 /// a member below level 29 is in the group, such a write takes the next

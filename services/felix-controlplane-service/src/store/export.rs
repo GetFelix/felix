@@ -117,12 +117,12 @@ fn is_zero(value: &u64) -> bool {
 impl ExportedState {
     /// Drops every shard's record of brokers placed in its epoch
     /// ([`ShardAssignment::placed`]), in the assignments and in the change
-    /// log, and marks every stream and cache restored so none of its shards
-    /// starts one. An export is older than the epoch it is restored into: a
+    /// log, and with `mark` marks every stream and cache restored so none of
+    /// its shards starts one. An export is older than the epoch it is restored into: a
     /// broker placed and moved away since is missing from it, including on
     /// a shard the export has unassigned. A re-form trusting such a record
     /// would skip that disk; without one it blocks the group instead.
-    pub(crate) fn forget_placed(&mut self) {
+    pub(crate) fn forget_placed(&mut self, mark: bool) {
         for (_, assignment) in &mut self.shards {
             assignment.placed = None;
         }
@@ -130,6 +130,9 @@ impl ExportedState {
             if let Some(assignment) = &mut change.assignment {
                 assignment.placed = None;
             }
+        }
+        if !mark {
+            return;
         }
         let streams = self.streams.iter().map(|(key, stream)| {
             ShardKey {

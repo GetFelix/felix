@@ -642,7 +642,11 @@ impl MetadataStateMachine {
                 }
                 Ok(MetaResponse::Unit)
             }
-            MetaCommand::ImportState { state, overwrite } => {
+            MetaCommand::ImportState {
+                state,
+                overwrite,
+                mark_unplaced,
+            } => {
                 // A store with any history has consumers whose checkpoints
                 // this would silently invalidate; only an operator saying
                 // `overwrite` — the restore ceremony — may replace it.
@@ -658,7 +662,7 @@ impl MetadataStateMachine {
                 // streams or caches, as an in-place upgrade would.
                 let kept = store.recorded_identity().await;
                 let mut state = *state;
-                state.forget_placed();
+                state.forget_placed(mark_unplaced);
                 store.import_state(state).await?;
                 if let Some(identity) = kept {
                     let adopts_existing = store.held_data_catalog().await;
