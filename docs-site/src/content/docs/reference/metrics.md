@@ -370,7 +370,7 @@ Present when the control plane runs its metadata Raft group.
 | `felix_meta_raft_last_log_index` | gauge | - | Index of the last log entry. |
 | `felix_meta_raft_last_applied_index` | gauge | - | Index of the last entry applied. A gap to the last log index is apply lag. |
 | `felix_meta_raft_snapshot_index` | gauge | - | Index of the last snapshot. |
-| `felix_meta_raft_snapshot_bytes` | gauge | - | Size of the last snapshot this member built, in bytes. Only a build on the segment store sets it. A follower refuses a snapshot over `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, so alert well before this reaches it; the member logs an error once it passes half. |
+| `felix_meta_raft_snapshot_bytes` | gauge | - | Size of the last snapshot this member built, in bytes. A follower refuses a snapshot over `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, so alert well before this reaches it; the member logs an error once it passes half. |
 | `felix_meta_raft_member_below_floor` | gauge | `member` | `1` while replication to a Raft `member` is held back because its log is below the group's join floor, as after a wiped volume. Clears when the member catches up. |
 | `felix_meta_raft_forwarded_proposals_total` | counter | - | Proposals a follower forwarded to the leader. Informational; forwarding is correct, one hop more. |
 | `felix_meta_raft_deduplicated_proposals_total` | counter | - | Proposals answered from the applied record because a retry carried an id already applied. |

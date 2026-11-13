@@ -9,7 +9,7 @@
 //!   cargo test -p felix-controlplane-service --release --test metadata_bench -- --ignored --nocapture
 //! ```
 //!
-//! Members run in this process, each on its own redb directory and its own
+//! Members run in this process, each on its own data directory and its own
 //! peer listener, driven through the store traits the HTTP API uses. The
 //! output is a JSON map of cell name to metrics, read by
 //! `scripts/ci/metadata_bench.py`. The cells are listed in

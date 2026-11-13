@@ -109,9 +109,10 @@ impl RaftHandle {
     }
 }
 
-/// The first term of a store converted from redb. Terms it copied are below
-/// this and every term after the conversion is at or above it
-/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster").
+/// The first term of a store a conversion from redb would write: copied
+/// terms below it, every later term at or above it
+/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster"; no
+/// conversion tool ships yet, #2234).
 const CONVERTED_TERM_BASE: u64 = 1 << 62;
 
 /// A term as it is shown: one at or past [`CONVERTED_TERM_BASE`] with that

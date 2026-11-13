@@ -53,17 +53,11 @@ pub struct RaftHandle {
     /// Set by [`RaftHandle::shutdown`]. openraft's metrics keep the last
     /// leader after a stop, so leadership checks read this first.
     pub(super) stopped: Arc<AtomicBool>,
-    /// The snapshot transfer this member is receiving, chunk by chunk
-    /// ([`super::chunks`]).
-    #[cfg(not(felix_segment_store))]
-    pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
     /// The one snapshot install this member runs at a time, ranked by the
     /// sender's vote.
-    #[cfg(felix_segment_store)]
     pub(super) install_slot:
         Arc<felix_storage::raft_log::transfer::InstallSlot<super::types::Vote>>,
     /// The largest snapshot this member accepts.
-    #[cfg(felix_segment_store)]
     pub(super) snapshot_max_bytes: u64,
 }
 
@@ -117,8 +111,8 @@ impl RaftHandle {
     /// catching up after starting empty, in which case it keeps withholding
     /// its vote.
     pub async fn start(settings: RaftSettings, app: Arc<dyn AppStateMachine>) -> Result<Self> {
-        // The store is opened, and on the segment store marked as started,
-        // before the node below exists: a node campaigns on its own timer.
+        // The store is opened and marked as started before the node below
+        // exists: a node campaigns on its own timer.
         let opened = store::open_member(&settings, Arc::clone(&app)).await?;
         let member = opened.member.clone();
         match Self::start_on(settings, app, opened).await {
@@ -252,11 +246,7 @@ impl RaftHandle {
             versions,
             hold,
             stopped: Arc::default(),
-            #[cfg(not(felix_segment_store))]
-            receiving: Arc::default(),
-            #[cfg(felix_segment_store)]
             install_slot: Arc::default(),
-            #[cfg(felix_segment_store)]
             snapshot_max_bytes: settings.snapshot_max_bytes,
         };
         tokio::spawn(handle.clone().watch_versions());

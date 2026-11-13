@@ -432,7 +432,9 @@ A 0.7 cluster cannot go straight to 0.8.0. The path:
 1. Roll the cluster to the bridge build. Control-plane members are
    converted from redb one at a time with the tool in
    [`metadata-raft-design.md`](metadata-raft-design.md) ("Upgrading an
-   existing cluster"), run from the bridge build.
+   existing cluster"), run from the bridge build. That tool is not built
+   ([#2234](https://github.com/GetFelix/felix/issues/2234)); without it the
+   control-plane group starts over on empty data directories.
 2. Finalize `record_generations`, then `shard_raft`. Shards switch a few at
    a time. Each is closed for one hybrid promotion plus one Raft election.
 3. When the fleet status shows no shard on the hybrid, finalize
@@ -478,7 +480,7 @@ build can be started again.
 
 | Finds | Does |
 | --- | --- |
-| Control plane: a redb store | Refuses, as today, and names the tool |
+| Control plane: a redb store | Refuses, as today, and says the group must start over |
 | Control plane: a store whose snapshot is not at or past the latch entry | Refuses. This is also how it knows the cluster is latched |
 | Broker: a control plane without `hybrid_retired` finalized | Does not register and exits |
 

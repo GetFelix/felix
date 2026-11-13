@@ -1,79 +1,43 @@
-//! Persistent Raft state: log, vote, and the current snapshot.
+//! Persistent Raft state on `felix-storage`'s metadata store: the log, the
+//! vote and the committed index in a `DiskLog` opened as a Raft log, the
+//! snapshot in one file, and the member file.
 //!
-//! Everything lives in one redb file per instance. redb gives crash-safe,
-//! fsynced-on-commit transactions, which is exactly the guarantee Raft
-//! storage must not fake: a vote or a log entry acknowledged to the core and
-//! then lost is how a cluster elects two leaders for one term. Choosing an
-//! embedded ACID store over hand-rolled files is deliberate — consensus
-//! durability plumbing is the last place Felix should be inventive
-//! (`docs/metadata-raft-design.md#library`).
+//! `felix_storage::metadata_store::MetadataStore::open` owns the start
+//! rules, the lock and the purge rule; this module adds what only the
+//! control plane knows: how a command and a membership are stored, and the
+//! state machine. The design is `docs/metadata-raft-design.md`, "Moving to
+//! the segment store".
 //!
-//! What is written is Felix's own JSON (`super::wire`), the form openraft 0.9
-//! stored, so a member can be rolled back to a release that ran 0.9.
-//!
-//! This log is not `felix-storage` yet. The segment store now has a Raft
-//! log (`felix_storage::raft_log`, which cuts uncommitted suffixes without
-//! rewriting a record), and the control plane moves onto it
-//! (`docs/replication-engine.md`, "Raft log on the segment store").
-//!
-//! The state machine itself is volatile and rebuilt on startup from the
-//! persisted snapshot plus log replay — the "persistent snapshot" option in
-//! openraft's contract. That keeps [`super::AppStateMachine`] free of any
-//! durability obligation, which is what lets #338 plug the in-memory
-//! metadata store in unchanged.
+//! The state machine is volatile: rebuilt at start from the
+//! stored snapshot, then the log.
 
-use std::collections::BTreeSet;
-use std::io::{self, Cursor};
-use std::ops::RangeBounds;
-use std::path::Path;
+use std::io;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use bytes::Bytes;
+use felix_storage::log::{AppendRecord, LogRecord, RecordMark};
+use felix_storage::metadata_store::{MetadataStore, STORE_DIR};
+use felix_storage::raft_log::{
+    EntryCodec, RaftLog, SnapshotId, SnapshotStore, StoredSnapshot, transfer,
+};
 use futures_util::{Stream, TryStreamExt};
 use openraft::OptionalSend;
-use openraft::storage::{
-    EntryResponder, IOFlushed, LogState, RaftLogReader, RaftLogStorage, RaftSnapshotBuilder,
-    RaftStateMachine,
-};
-use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
+use openraft::storage::{EntryResponder, RaftLogStorage, RaftSnapshotBuilder, RaftStateMachine};
 use tokio::sync::Mutex;
 
 use super::AppStateMachine;
 use super::types::{
-    Entry, EntryPayload, LogId, Snapshot, SnapshotData, SnapshotMeta, StoredMembership, TypeConfig,
-    Vote,
+    Command, EntryPayload, LogId, Membership, Snapshot, SnapshotData, SnapshotMeta,
+    StoredMembership, TypeConfig,
 };
 use super::wire;
 
-const LOGS: TableDefinition<u64, &[u8]> = TableDefinition::new("raft_logs");
-const META: TableDefinition<&str, &[u8]> = TableDefinition::new("raft_meta");
+type Store = MetadataStore<TypeConfig, Codec>;
+pub(super) type LogStore = RaftLog<TypeConfig, Codec>;
 
-const KEY_VOTE: &str = "vote";
-const KEY_COMMITTED: &str = "committed";
-const KEY_LAST_PURGED: &str = "last_purged";
-const KEY_SNAPSHOT_META: &str = "snapshot_meta";
-const KEY_SNAPSHOT_DATA: &str = "snapshot_data";
-/// Set while this member must not vote: from the moment it started empty
-/// until it has formed the group or caught up with it (`super::join`).
-const KEY_VOTE_WITHHELD: &str = "vote_withheld";
-/// The cluster this data dir belongs to (`FELIX_RAFT_CLUSTER_ID`).
-const KEY_CLUSTER_ID: &str = "cluster_id";
-/// This member's own mark that it set out to form the group: the cluster
-/// id it set out under (`super::join`). Never cleared.
-const KEY_FORMING: &str = "forming";
-/// The ids of the members that asked this one to record that they set out
-/// to form the group. Neither key counts as consensus state.
-const KEY_FORMED: &str = "formed";
-/// Set once the member may vote from this store. Kept in step with the
-/// segment store's formation file; here the log is in the same file, so a
-/// blank log beside it cannot happen.
-const KEY_REACHED: &str = "reached";
-/// Where a `--cfg felix_segment_store` build keeps its state
-/// (`felix_storage::metadata_store::STORE_DIR`, not a dependency of this
-/// build).
-const SEGMENT_STORE_DIR: &str = "store";
-
-/// A member's store, opened: what its Raft node is made from.
+/// A member's store, opened and marked as started: what its Raft node is
+/// made from.
 pub(super) struct Opened {
     pub(super) log_store: LogStore,
     pub(super) state_machine: StateMachineStore,
@@ -85,478 +49,263 @@ pub(super) struct Opened {
     pub(super) member: MemberState,
 }
 
-/// Open (or create) the member's store under `settings.data_dir`.
+/// Open (or create) the member's store under `settings.data_dir` and set
+/// its started mark.
+///
+/// The mark is on disk before this returns, so before the Raft node exists:
+/// a node campaigns on its own timer, and from its first vote the member
+/// could no longer go back to a redb file alone (the mark is the
+/// conversion's, `docs/metadata-raft-design.md`).
 pub(super) async fn open_member(
     settings: &super::RaftSettings,
     app: Arc<dyn AppStateMachine>,
 ) -> Result<Opened> {
-    refuse_segment_store(&settings.data_dir)?;
-    std::fs::create_dir_all(&settings.data_dir).context("create raft data dir")?;
-    let db = open(&settings.data_dir.join("raft.redb"))?;
-    claim_cluster_id(&db, &settings.security.cluster_id)?;
-    if holds_state(&db)? && !vote_withheld(&db)? {
-        write_meta(&db, KEY_REACHED, &true)
-            .map_err(|err| anyhow::anyhow!("write the reached flag: {err}"))?;
+    let store = Store::open(
+        &settings.data_dir,
+        &settings.security.cluster_id,
+        Codec,
+        "metadata raft",
+    )
+    .await
+    .context("open the metadata store")?;
+    match start(&store, &settings.data_dir, app, settings.snapshot_max_bytes).await {
+        Ok((state_machine, committed_floor)) => Ok(Opened {
+            log_store: store.log(),
+            state_machine,
+            may_vote: !store.member_file().member().vote_withheld,
+            committed_floor,
+            member: MemberState {
+                raft_state: store.has_raft_state(),
+                store: Arc::new(Mutex::new(Some(store))),
+            },
+        }),
+        Err(err) => {
+            let _ = store.shutdown().await;
+            Err(err)
+        }
     }
-    Ok(Opened {
-        log_store: LogStore::new(Arc::clone(&db)),
-        state_machine: StateMachineStore::open(Arc::clone(&db), app).await?,
-        may_vote: !vote_withheld(&db)?,
-        committed_floor: persisted_committed_index(&db),
-        member: MemberState {
-            db: Arc::downgrade(&db),
-        },
-    })
 }
 
-/// What a running member reads and changes in its store outside the log.
-///
-/// Weak, so that a stopped node releases its store even while clones of the
-/// handle live on, and a restart in the same process can reopen it.
-#[derive(Clone)]
-pub(super) struct MemberState {
-    db: std::sync::Weak<Database>,
-}
+/// Whether the stopped member in `data_dir` holds Raft state. Refuses a
+/// store that belongs to a cluster other than `cluster_id`. No store is no
+/// state, and none is created.
+pub(super) async fn stopped_member_holds_state(
+    data_dir: &std::path::Path,
+    cluster_id: &str,
+) -> Result<bool> {
+    use felix_storage::metadata_store::REDB_FILE;
 
-impl MemberState {
-    fn db(&self) -> Result<Arc<Database>> {
-        self.db
-            .upgrade()
-            .ok_or_else(|| anyhow::anyhow!("raft node has stopped"))
+    if !data_dir.join(STORE_DIR).exists() {
+        // An older release's store may hold a group this build cannot read.
+        anyhow::ensure!(
+            !data_dir.join(REDB_FILE).exists(),
+            "the data directory holds {REDB_FILE} from an older release; this is not a first start"
+        );
+        return Ok(false);
     }
-
-    /// Whether the store holds any consensus state.
-    pub(super) fn holds_state(&self) -> Result<bool> {
-        holds_state(&*self.db()?)
-    }
-
-    /// Durable before it returns.
-    pub(super) async fn set_vote_withheld(&self, withheld: bool) -> Result<()> {
-        set_vote_withheld(&*self.db()?, withheld)
-    }
-
-    /// Whether this store holds the member's own mark that it set out to
-    /// form the group.
-    pub(super) async fn forming_mark(&self) -> Result<bool> {
-        let db = self.db()?;
-        let read = |key| read_meta::<String>(&db, key).context("read the forming mark");
-        let mark = read(KEY_FORMING)?;
-        Ok(mark.is_some() && mark == read(KEY_CLUSTER_ID)?)
-    }
-
-    /// Set that mark. Durable before it returns.
-    pub(super) async fn mark_forming(&self) -> Result<()> {
-        blocking_write(&self.db()?, |db| {
-            let cluster_id = read_meta::<String>(db, KEY_CLUSTER_ID)?
-                .ok_or_else(|| io::Error::other("the store names no cluster"))?;
-            write_meta(db, KEY_FORMING, &cluster_id)
-        })
+    // Fails while the member runs: its process holds the store's lock.
+    let store = Store::open(data_dir, cluster_id, Codec, "form-without")
         .await
-        .context("write the forming mark")
-    }
+        .context("open the metadata store; stop the member first")?;
+    let holds = store.has_raft_state();
+    store.shutdown().await.context("close the metadata store")?;
+    Ok(holds)
+}
 
-    /// Whether this store records that the member has voted from it.
-    pub(super) async fn reached(&self) -> Result<bool> {
-        Ok(read_meta::<bool>(&*self.db()?, KEY_REACHED)
-            .context("read the reached flag")?
-            .unwrap_or(false))
-    }
-
-    /// Record that the member may vote from this store. Durable before it
-    /// returns.
-    pub(super) async fn mark_reached(&self) -> Result<()> {
-        blocking_write(&self.db()?, |db| write_meta(db, KEY_REACHED, &true))
+async fn start(
+    store: &Store,
+    data_dir: &std::path::Path,
+    app: Arc<dyn AppStateMachine>,
+    snapshot_max_bytes: u64,
+) -> Result<(StateMachineStore, Option<u64>)> {
+    let started = store.mark_started().await.context("set the started mark")?;
+    // The mark of this store, not of some other one.
+    started.check(&data_dir.join(STORE_DIR))?;
+    // A member that votes from here on has the flag on disk first, whatever
+    // path brought it here (a crash after `initialize`, a converted store).
+    let member = store.member_file();
+    if store.has_raft_state() && !member.member().vote_withheld {
+        member
+            .mark_reached()
             .await
-            .context("write the reached flag")
+            .context("write the formation file")?;
     }
-
-    /// The members this one recorded as having set out to form the group.
-    pub(super) async fn formed(&self) -> Result<BTreeSet<super::NodeId>> {
-        Ok(read_meta(&*self.db()?, KEY_FORMED)
-            .context("read the formation record")?
-            .unwrap_or_default())
-    }
-
-    /// Record that `member` set out to form the group. Durable before it
-    /// returns.
-    pub(super) async fn record_formed(&self, member: super::NodeId) -> Result<()> {
-        blocking_write(&self.db()?, move |db| {
-            // One write transaction, so two records at once both land.
-            let txn = db.begin_write().map_err(io_err)?;
-            {
-                let mut table = txn.open_table(META).map_err(io_err)?;
-                let mut formed: BTreeSet<super::NodeId> =
-                    match table.get(KEY_FORMED).map_err(io_err)? {
-                        Some(stored) => serde_json::from_slice(stored.value()).map_err(io_err)?,
-                        None => BTreeSet::new(),
-                    };
-                if !formed.insert(member) {
-                    return Ok(());
-                }
-                let bytes = serde_json::to_vec(&formed).map_err(io_err)?;
-                table.insert(KEY_FORMED, bytes.as_slice()).map_err(io_err)?;
-            }
-            txn.commit().map_err(io_err)
-        })
+    let committed = store
+        .log()
+        .read_committed()
         .await
-        .context("write the formation record")
-    }
-
-    /// The node has stopped. The file closes when its last user is dropped.
-    pub(super) async fn close(&self) -> Result<()> {
-        Ok(())
-    }
+        .context("read the committed index")?;
+    // A clone of the store's own: the log measures its purges against it.
+    let state_machine =
+        StateMachineStore::open(store.snapshots().clone(), app, snapshot_max_bytes).await?;
+    Ok((state_machine, committed.map(|id| id.index)))
 }
 
 /// Leave a store in `dir` as a member that held `vote` and `entries` would
 /// have, with its vote withheld or not.
 #[cfg(test)]
 pub(super) async fn seed(
-    dir: &Path,
-    _cluster_id: &str,
-    vote: Vote,
-    entries: Vec<Entry>,
+    dir: &std::path::Path,
+    cluster_id: &str,
+    vote: super::types::Vote,
+    entries: Vec<super::types::Entry>,
     vote_withheld: bool,
 ) {
-    let db = open(&dir.join("raft.redb")).expect("open store");
-    let mut log = LogStore::new(Arc::clone(&db));
+    use openraft::storage::IOFlushed;
+
+    let store = Store::open(dir, cluster_id, Codec, "seed")
+        .await
+        .expect("open store");
+    let mut log = store.log();
     log.save_vote(&vote).await.expect("save vote");
     log.append(entries, IOFlushed::Noop).await.expect("append");
-    set_vote_withheld(&db, vote_withheld).expect("vote flag");
-}
-
-/// The committed index this store had persisted when it last ran — what a
-/// restarting node must re-apply before it is fit to serve.
-fn persisted_committed_index(db: &Database) -> Option<u64> {
-    read_meta::<Option<wire::LogId>>(db, KEY_COMMITTED)
-        .ok()
-        .flatten()
-        .flatten()
-        .map(|log_id| log_id.index)
-}
-
-/// Whether this store holds any consensus state: a vote, a log entry, or a
-/// snapshot. An empty one is a first boot or a wiped volume.
-fn holds_state(db: &Database) -> Result<bool> {
-    let txn = db.begin_read().context("read raft store")?;
-    let logs = txn.open_table(LOGS).context("open log table")?;
-    if logs.first().context("read log table")?.is_some() {
-        return Ok(true);
-    }
-    let meta = txn.open_table(META).context("open meta table")?;
-    for key in [KEY_VOTE, KEY_COMMITTED, KEY_LAST_PURGED, KEY_SNAPSHOT_META] {
-        if meta.get(key).context("read raft meta")?.is_some() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn vote_withheld(db: &Database) -> Result<bool> {
-    Ok(read_meta::<bool>(db, KEY_VOTE_WITHHELD)
-        .map_err(|err| anyhow::anyhow!("read vote flag: {err}"))?
-        .unwrap_or(false))
-}
-
-/// Durable before it returns, so a crash never forgets that a half-filled
-/// log is not yet fit to vote.
-fn set_vote_withheld(db: &Database, withheld: bool) -> Result<()> {
-    write_meta(db, KEY_VOTE_WITHHELD, &withheld)
-        .map_err(|err| anyhow::anyhow!("write vote flag: {err}"))
-}
-
-/// Record that this data dir belongs to `cluster_id`, or refuse if it
-/// already belongs to another cluster.
-///
-/// A store without a recorded id takes the configured one, whether it is
-/// empty or predates the id: either way this is the first start that knows
-/// it. After that, a member pointed at the wrong group's peers, or a volume
-/// mounted into the wrong cluster, fails here instead of mixing two logs.
-fn claim_cluster_id(db: &Database, cluster_id: &str) -> Result<()> {
-    let recorded = read_meta::<String>(db, KEY_CLUSTER_ID)
-        .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
-    match recorded {
-        Some(recorded) if recorded == cluster_id => Ok(()),
-        Some(recorded) => anyhow::bail!(
-            "raft data dir belongs to cluster '{recorded}', not the configured \
-             FELIX_RAFT_CLUSTER_ID '{cluster_id}'"
-        ),
-        None => write_meta(db, KEY_CLUSTER_ID, &cluster_id.to_string())
-            .map_err(|err| anyhow::anyhow!("write cluster id: {err}")),
-    }
-}
-
-/// Whether the stopped member in `data_dir` holds consensus state. Refuses
-/// a store that belongs to a cluster other than `cluster_id`. Creates and
-/// records nothing; no store is no state.
-pub(super) async fn stopped_member_holds_state(data_dir: &Path, cluster_id: &str) -> Result<bool> {
-    refuse_segment_store(data_dir)?;
-    let path = data_dir.join("raft.redb");
-    if !path.exists() {
-        return Ok(false);
-    }
-    // Fails while the member runs: its process holds the file.
-    let db = open(&path).context("open the raft store; stop the member first")?;
-    let recorded = read_meta::<String>(&db, KEY_CLUSTER_ID)
-        .map_err(|err| anyhow::anyhow!("read cluster id: {err}"))?;
-    if let Some(recorded) = recorded.filter(|recorded| recorded != cluster_id) {
-        anyhow::bail!("raft data dir belongs to cluster '{recorded}', not '{cluster_id}'");
-    }
-    holds_state(&db)
-}
-
-/// Refuse a data dir that a `--cfg felix_segment_store` build has written.
-/// That build keeps its state in `store/` and no `raft.redb`, so opening
-/// redb here would create an empty store and the member would come up as
-/// new, dropping the group's metadata. This build cannot read the member
-/// file, so it cannot tell a rolled-back store from a live one, and any
-/// `store/` is refused (`rollback` and `restore` move it aside). Checked
-/// before anything is written.
-fn refuse_segment_store(data_dir: &Path) -> Result<()> {
-    let store = data_dir.join(SEGMENT_STORE_DIR);
-    match std::fs::symlink_metadata(&store) {
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("examine {}", store.display())),
-        Ok(_) => anyhow::bail!(
-            "{} holds a segment store, written by a build with --cfg felix_segment_store. \
-             This build keeps its state in raft.redb and cannot read it: run the member on \
-             a build with that switch, or finish going back to redb with the conversion \
-             tool's rollback or restore (docs/metadata-raft-design.md, \"Upgrading an \
-             existing cluster\")",
-            store.display()
-        ),
-    }
-}
-
-/// Open (or create) the store file and make sure both tables exist, so
-/// every later read can assume them.
-pub(super) fn open(path: &Path) -> Result<Arc<Database>> {
-    let db = Database::create(path).context("open raft store")?;
-    let txn = db.begin_write().context("init raft store")?;
-    txn.open_table(LOGS).context("init log table")?;
-    txn.open_table(META).context("init meta table")?;
-    txn.commit().context("init raft store commit")?;
-    Ok(Arc::new(db))
-}
-
-fn io_err(err: impl std::error::Error + Send + Sync + 'static) -> io::Error {
-    io::Error::other(err)
-}
-
-fn read_meta<T: serde::de::DeserializeOwned>(
-    db: &Database,
-    key: &str,
-) -> Result<Option<T>, io::Error> {
-    let txn = db.begin_read().map_err(io_err)?;
-    let table = txn.open_table(META).map_err(io_err)?;
-    let Some(guard) = table.get(key).map_err(io_err)? else {
-        return Ok(None);
-    };
-    let value = serde_json::from_slice(guard.value()).map_err(io_err)?;
-    Ok(Some(value))
-}
-
-fn write_meta<T: serde::Serialize>(db: &Database, key: &str, value: &T) -> Result<(), io::Error> {
-    let bytes = serde_json::to_vec(value).map_err(io_err)?;
-    let txn = db.begin_write().map_err(io_err)?;
-    {
-        let mut table = txn.open_table(META).map_err(io_err)?;
-        table.insert(key, bytes.as_slice()).map_err(io_err)?;
-    }
-    txn.commit().map_err(io_err)?;
-    Ok(())
-}
-
-/// Runs a durable write on the blocking pool and waits for it.
-///
-/// Every redb commit fsyncs. Run inline, a slow disk would hold an async
-/// worker for the whole flush and stall every task queued on it, heartbeats
-/// and RPC handlers included. Openraft still awaits each call before issuing
-/// the next, so writes keep their order and are durable when this returns.
-async fn blocking_write<T, F>(db: &Arc<Database>, write: F) -> Result<T, io::Error>
-where
-    T: Send + 'static,
-    F: FnOnce(&Database) -> Result<T, io::Error> + Send + 'static,
-{
-    let db = Arc::clone(db);
-    tokio::task::spawn_blocking(move || write(&db))
+    store
+        .member_file()
+        .set_vote_withheld(vote_withheld)
         .await
-        .map_err(io_err)?
+        .expect("vote flag");
+    store.shutdown().await.expect("shutdown");
 }
 
-/// The Raft log and vote. Clones share the database; openraft hands clones
-/// to its replication tasks as log readers.
+/// What a running member reads and changes in its store outside the log.
+///
+/// Holds the store until [`Self::close`], which the node's stop calls, so a
+/// restart in the same process can reopen it while clones of the handle
+/// live on.
 #[derive(Clone)]
-pub(super) struct LogStore {
-    db: Arc<Database>,
+pub(super) struct MemberState {
+    store: Arc<Mutex<Option<Store>>>,
+    raft_state: bool,
 }
 
-impl LogStore {
-    pub(super) fn new(db: Arc<Database>) -> Self {
-        Self { db }
+impl MemberState {
+    /// Whether the open found a vote, an entry, a purged id or a snapshot.
+    /// Without one this member is treated as one with an empty store, which
+    /// is also what a crash between the started mark and the first vote
+    /// leaves.
+    pub(super) fn holds_state(&self) -> Result<bool> {
+        Ok(self.raft_state)
     }
 
-    fn owned_bound(bound: std::ops::Bound<&u64>) -> std::ops::Bound<u64> {
-        match bound {
-            std::ops::Bound::Included(index) => std::ops::Bound::Included(*index),
-            std::ops::Bound::Excluded(index) => std::ops::Bound::Excluded(*index),
-            std::ops::Bound::Unbounded => std::ops::Bound::Unbounded,
-        }
-    }
-}
-
-impl RaftLogReader<TypeConfig> for LogStore {
-    async fn try_get_log_entries<RB: RangeBounds<u64> + Clone + std::fmt::Debug + Send>(
-        &mut self,
-        range: RB,
-    ) -> Result<Vec<Entry>, io::Error> {
-        let txn = self.db.begin_read().map_err(io_err)?;
-        let table = txn.open_table(LOGS).map_err(io_err)?;
-        let start = Self::owned_bound(range.start_bound());
-        let end = Self::owned_bound(range.end_bound());
-        let mut entries = Vec::new();
-        for item in table.range((start, end)).map_err(io_err)? {
-            let (_, value) = item.map_err(io_err)?;
-            let entry: wire::Entry = serde_json::from_slice(value.value()).map_err(io_err)?;
-            entries.push(entry.into());
-        }
-        Ok(entries)
-    }
-
-    async fn read_vote(&mut self) -> Result<Option<Vote>, io::Error> {
-        Ok(read_meta::<wire::Vote>(&self.db, KEY_VOTE)?.map(Vote::from))
-    }
-}
-
-impl RaftLogStorage<TypeConfig> for LogStore {
-    type LogReader = Self;
-
-    async fn get_log_state(&mut self) -> Result<LogState<TypeConfig>, io::Error> {
-        let last_purged: Option<LogId> =
-            read_meta::<wire::LogId>(&self.db, KEY_LAST_PURGED)?.map(LogId::from);
-        let txn = self.db.begin_read().map_err(io_err)?;
-        let table = txn.open_table(LOGS).map_err(io_err)?;
-        let last = match table.last().map_err(io_err)? {
-            Some((_, value)) => {
-                let entry: wire::Entry = serde_json::from_slice(value.value()).map_err(io_err)?;
-                Some(entry.log_id.into())
-            }
-            None => last_purged,
+    /// Durable before it returns.
+    pub(super) async fn set_vote_withheld(&self, withheld: bool) -> Result<()> {
+        let member = match self.store.lock().await.as_ref() {
+            Some(store) => store.member_file().clone(),
+            None => anyhow::bail!("raft node has stopped"),
         };
-        Ok(LogState {
-            last_purged_log_id: last_purged,
-            last_log_id: last,
+        member
+            .set_vote_withheld(withheld)
+            .await
+            .context("write the member file")
+    }
+
+    /// The store's snapshots, until the node stops.
+    pub(super) async fn snapshots(&self) -> Option<SnapshotStore> {
+        let store = self.store.lock().await;
+        store.as_ref().map(|store| store.snapshots().clone())
+    }
+
+    /// Whether this store holds the member's own mark that it set out to
+    /// form the group.
+    pub(super) async fn forming_mark(&self) -> Result<bool> {
+        Ok(self.formation().await?.forming)
+    }
+
+    /// Set that mark. Durable before it returns.
+    pub(super) async fn mark_forming(&self) -> Result<()> {
+        // The store stays locked to the end of the write, so a stop waits
+        // for it and nothing is written into a store that has closed.
+        let written = match self.store.lock().await.as_ref() {
+            Some(store) => store.member_file().mark_forming().await,
+            None => anyhow::bail!("raft node has stopped"),
+        };
+        written.context("write the formation file")
+    }
+
+    /// Whether this store records that the member has voted from it.
+    pub(super) async fn reached(&self) -> Result<bool> {
+        Ok(self.formation().await?.reached)
+    }
+
+    /// Record that the member may vote from this store. Durable before it
+    /// returns.
+    pub(super) async fn mark_reached(&self) -> Result<()> {
+        let written = match self.store.lock().await.as_ref() {
+            Some(store) => store.member_file().mark_reached().await,
+            None => anyhow::bail!("raft node has stopped"),
+        };
+        written.context("write the formation file")
+    }
+
+    /// The members this one recorded as having set out to form the group.
+    pub(super) async fn formed(&self) -> Result<std::collections::BTreeSet<super::NodeId>> {
+        Ok(self.formation().await?.formed)
+    }
+
+    /// Record that `member` set out to form the group. Durable before it
+    /// returns.
+    pub(super) async fn record_formed(&self, member: super::NodeId) -> Result<()> {
+        let written = match self.store.lock().await.as_ref() {
+            Some(store) => store.member_file().record_formed(member).await,
+            None => anyhow::bail!("raft node has stopped"),
+        };
+        written.context("write the formation file")
+    }
+
+    async fn formation(&self) -> Result<felix_storage::metadata_store::Formation> {
+        match self.store.lock().await.as_ref() {
+            Some(store) => Ok(store.member_file().formation()),
+            None => anyhow::bail!("raft node has stopped"),
+        }
+    }
+
+    /// The node has stopped: flush and close the log.
+    pub(super) async fn close(&self) -> Result<()> {
+        let store = self.store.lock().await.take();
+        match store {
+            Some(store) => store.shutdown().await.context("close the metadata store"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// How the control plane's commands, memberships and node ids are stored.
+#[derive(Clone, Copy)]
+pub(super) struct Codec;
+
+impl EntryCodec<TypeConfig> for Codec {
+    fn encode_data(&self, data: &Command) -> io::Result<AppendRecord> {
+        Ok(AppendRecord {
+            payload: Bytes::copy_from_slice(&data.0),
+            timestamp_micros: crate::clock::now_millis().saturating_mul(1000),
+            mark: RecordMark::None,
+            publisher: None,
+            headers: None,
         })
     }
 
-    async fn get_log_reader(&mut self) -> Self::LogReader {
-        self.clone()
+    fn decode_data(&self, record: LogRecord) -> io::Result<Command> {
+        Ok(Command(record.payload.to_vec()))
     }
 
-    async fn save_vote(&mut self, vote: &Vote) -> Result<(), io::Error> {
-        // The commit fsyncs; a vote that is acknowledged but not durable
-        // lets this node vote twice for one term after a crash.
-        let vote = wire::Vote::from(vote);
-        blocking_write(&self.db, move |db| write_meta(db, KEY_VOTE, &vote)).await
+    fn encode_membership(&self, membership: &Membership) -> io::Result<Bytes> {
+        serde_json::to_vec(&wire::Membership::from(membership))
+            .map(Bytes::from)
+            .map_err(io::Error::other)
     }
 
-    async fn save_committed(&mut self, committed: Option<LogId>) -> Result<(), io::Error> {
-        let committed = wire::log_id(&committed);
-        blocking_write(&self.db, move |db| {
-            write_meta(db, KEY_COMMITTED, &committed)
-        })
-        .await
+    fn decode_membership(&self, payload: &[u8]) -> io::Result<Membership> {
+        serde_json::from_slice::<wire::Membership>(payload)
+            .map(Membership::from)
+            .map_err(io::Error::other)
     }
 
-    async fn read_committed(&mut self) -> Result<Option<LogId>, io::Error> {
-        let committed = read_meta::<Option<wire::LogId>>(&self.db, KEY_COMMITTED)?;
-        Ok(wire::lib_log_id(committed.flatten()))
+    fn encode_node_id(&self, node_id: &u64) -> String {
+        node_id.to_string()
     }
 
-    async fn append<I>(
-        &mut self,
-        entries: I,
-        callback: IOFlushed<TypeConfig>,
-    ) -> Result<(), io::Error>
-    where
-        I: IntoIterator<Item = Entry> + OptionalSend,
-        I::IntoIter: OptionalSend,
-    {
-        let rows = entries
-            .into_iter()
-            .map(|entry| {
-                Ok((
-                    entry.log_id.index,
-                    serde_json::to_vec(&wire::Entry::from(&entry)).map_err(io_err)?,
-                ))
-            })
-            .collect::<Result<Vec<_>, io::Error>>()?;
-        blocking_write(&self.db, move |db| {
-            let txn = db.begin_write().map_err(io_err)?;
-            {
-                let mut table = txn.open_table(LOGS).map_err(io_err)?;
-                for (index, bytes) in rows {
-                    table.insert(index, bytes.as_slice()).map_err(io_err)?;
-                }
-            }
-            txn.commit().map_err(io_err)
-        })
-        .await?;
-        // Only after the durable commit: this callback is openraft's "these
-        // entries survive a crash" signal, and everything downstream
-        // (commit, apply, acknowledgements) leans on it being true.
-        callback.io_completed(Ok(()));
-        Ok(())
-    }
-
-    async fn truncate_after(&mut self, last_log_id: Option<LogId>) -> Result<(), io::Error> {
-        // Conflict resolution: a deposed leader's uncommitted suffix goes
-        // away. `last_log_id` is the last entry kept.
-        let start = last_log_id.map_or(0, |id| id.index + 1);
-        blocking_write(&self.db, move |db| {
-            let txn = db.begin_write().map_err(io_err)?;
-            {
-                let mut table = txn.open_table(LOGS).map_err(io_err)?;
-                let doomed: Vec<u64> = table
-                    .range(start..)
-                    .map_err(io_err)?
-                    .map(|item| item.map(|(key, _)| key.value()))
-                    .collect::<Result<_, _>>()
-                    .map_err(io_err)?;
-                for index in doomed {
-                    table.remove(index).map_err(io_err)?;
-                }
-            }
-            txn.commit().map_err(io_err)
-        })
-        .await
-    }
-
-    async fn purge(&mut self, log_id: LogId) -> Result<(), io::Error> {
-        // Compaction behind a snapshot. The purge marker commits in the same
-        // transaction as the deletions so a crash between them cannot leave
-        // the log claiming a hole it does not have.
-        let bytes = serde_json::to_vec(&wire::LogId::from(&log_id)).map_err(io_err)?;
-        blocking_write(&self.db, move |db| {
-            let txn = db.begin_write().map_err(io_err)?;
-            {
-                let mut meta = txn.open_table(META).map_err(io_err)?;
-                meta.insert(KEY_LAST_PURGED, bytes.as_slice())
-                    .map_err(io_err)?;
-                let mut table = txn.open_table(LOGS).map_err(io_err)?;
-                let doomed: Vec<u64> = table
-                    .range(..=log_id.index)
-                    .map_err(io_err)?
-                    .map(|item| item.map(|(key, _)| key.value()))
-                    .collect::<Result<_, _>>()
-                    .map_err(io_err)?;
-                for index in doomed {
-                    table.remove(index).map_err(io_err)?;
-                }
-            }
-            txn.commit().map_err(io_err)
-        })
-        .await
+    fn decode_node_id(&self, leader: &str) -> io::Result<u64> {
+        leader.parse().map_err(io::Error::other)
     }
 }
 
@@ -567,13 +316,16 @@ struct Applied {
 }
 
 struct SmInner {
-    db: Arc<Database>,
+    snapshots: SnapshotStore,
     app: Arc<dyn AppStateMachine>,
     /// One lock over the bookkeeping *and* every app mutation: a snapshot
     /// built under it pairs `(last_applied, membership)` with exactly the
     /// app state those describe, never half a batch later. Async because it
     /// is held across the app's own async calls.
     applied: Mutex<Applied>,
+    /// The largest snapshot a member accepts. A build past half of it is
+    /// logged, long before a follower can no longer be caught up.
+    snapshot_max_bytes: u64,
 }
 
 /// The state machine adapter: volatile app state, persistent snapshots.
@@ -583,71 +335,72 @@ pub(super) struct StateMachineStore {
 }
 
 impl StateMachineStore {
-    /// Rebuild the app state from the last persisted snapshot, if any. Log
-    /// entries after it are replayed by openraft on startup — that pairing
-    /// is what makes a volatile state machine safe.
-    pub(super) async fn open(db: Arc<Database>, app: Arc<dyn AppStateMachine>) -> Result<Self> {
+    /// Rebuild the app state from the stored snapshot, if any. Log entries
+    /// after it are replayed by openraft on startup.
+    ///
+    /// `snapshots` must be a clone of the store the log was opened with:
+    /// the log decides what a purge may remove from what this one holds.
+    pub(super) async fn open(
+        snapshots: SnapshotStore,
+        app: Arc<dyn AppStateMachine>,
+        snapshot_max_bytes: u64,
+    ) -> Result<Self> {
         let mut applied = Applied {
             last_applied: None,
             membership: StoredMembership::default(),
         };
-        let meta: Option<wire::SnapshotMeta> =
-            read_meta(&db, KEY_SNAPSHOT_META).map_err(|err| anyhow::anyhow!("{err}"))?;
-        if let Some(meta) = meta.map(SnapshotMeta::from) {
-            let data: Option<Vec<u8>> =
-                read_meta(&db, KEY_SNAPSHOT_DATA).map_err(|err| anyhow::anyhow!("{err}"))?;
-            let data = data.context("snapshot meta without snapshot data")?;
-            app.restore(&data).await;
+        if let Some(stored) = snapshots.current().await.context("read the snapshot")? {
+            let meta = decode_meta(&stored.meta).context("read the snapshot's meta")?;
+            app.restore(&stored.data).await;
             applied.last_applied = meta.last_log_id;
             applied.membership = meta.last_membership;
         }
         Ok(Self {
             inner: Arc::new(SmInner {
-                db,
+                snapshots,
                 app,
                 applied: Mutex::new(applied),
+                snapshot_max_bytes,
             }),
         })
     }
 
-    /// Store `meta` and `data` as the current snapshot unless the stored one
-    /// is at the same log index or past it. Returns whether it wrote.
-    ///
-    /// Openraft builds snapshots in a detached task, so a build that captured
-    /// its state before an install of a newer snapshot can reach here after
-    /// it (#1745). Writing it would leave a snapshot behind the purged log,
-    /// and the member could not restart. The check reads the stored meta in
-    /// the same write transaction, and redb runs one writer at a time, so no
-    /// other snapshot can land between the check and the write.
-    async fn persist_snapshot(&self, meta: &SnapshotMeta, data: &[u8]) -> Result<bool, io::Error> {
-        // Meta and data commit together: a snapshot that exists without its
-        // descriptor (or the reverse) reads as no snapshot at all.
-        let index = meta.last_log_id.map(|id| id.index);
-        let meta_bytes = serde_json::to_vec(&wire::SnapshotMeta::from(meta)).map_err(io_err)?;
-        let data_bytes = serde_json::to_vec(&data).map_err(io_err)?;
-        blocking_write(&self.inner.db, move |db| {
-            let txn = db.begin_write().map_err(io_err)?;
-            {
-                let mut table = txn.open_table(META).map_err(io_err)?;
-                if let Some(stored) = table.get(KEY_SNAPSHOT_META).map_err(io_err)? {
-                    let stored: wire::SnapshotMeta =
-                        serde_json::from_slice(stored.value()).map_err(io_err)?;
-                    if stored.last_log_id.map(|id| id.index) >= index {
-                        return Ok(false);
-                    }
-                }
-                table
-                    .insert(KEY_SNAPSHOT_META, meta_bytes.as_slice())
-                    .map_err(io_err)?;
-                table
-                    .insert(KEY_SNAPSHOT_DATA, data_bytes.as_slice())
-                    .map_err(io_err)?;
-            }
-            txn.commit().map_err(io_err)?;
-            Ok(true)
+    /// Store `meta` and `data` as the current snapshot, in one file. A
+    /// snapshot behind the stored one is not written: openraft builds in a
+    /// detached task, so a build can finish after a newer install (#1745).
+    async fn persist_snapshot(&self, meta: &SnapshotMeta, data: Bytes) -> io::Result<bool> {
+        self.inner
+            .snapshots
+            .install(StoredSnapshot {
+                last: meta.last_log_id.map(|id| SnapshotId {
+                    term: *id.leader_id,
+                    index: id.index,
+                }),
+                meta: serde_json::to_vec(&wire::SnapshotMeta::from(meta))
+                    .map_err(io::Error::other)?
+                    .into(),
+                data,
+            })
+            .await
+    }
+
+    /// Store a snapshot of what has been applied. openraft purges only what
+    /// a stored snapshot covers; its storage suite purges what it has only
+    /// applied, and stores this first.
+    #[cfg(test)]
+    pub(super) async fn store_applied(&self) -> io::Result<()> {
+        RaftSnapshotBuilder::build_snapshot(&mut SnapshotBuilder {
+            inner: Arc::clone(&self.inner),
         })
         .await
+        .map(|_| ())
     }
+}
+
+fn decode_meta(bytes: &[u8]) -> io::Result<SnapshotMeta> {
+    serde_json::from_slice::<wire::SnapshotMeta>(bytes)
+        .map(SnapshotMeta::from)
+        .map_err(io::Error::other)
 }
 
 impl RaftStateMachine<TypeConfig> for StateMachineStore {
@@ -696,18 +449,20 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
         meta: &SnapshotMeta,
         snapshot: SnapshotData,
     ) -> Result<(), io::Error> {
-        let data = snapshot.into_inner();
-        // Persist before replacing live state, so open rebuilds from this
-        // snapshot after a crash. An older snapshot is not written, so what
-        // is on disk only ever moves forward. Openraft purges the log behind
-        // this snapshot without waiting for it to be persisted, so a crash
-        // before this commit can leave the log purged past the stored one.
-        self.persist_snapshot(meta, &data).await?;
+        // A received snapshot is read back from its file and checked before
+        // anything is replaced: the one whole copy a receive makes.
+        let (data, staged) = match snapshot {
+            SnapshotData::Staged(mut staged) => (staged.read().await?.data, Some(staged)),
+            mut other => (read_all(&mut other).await?, None),
+        };
+        // Held from the check to the restore, so nothing is applied in
+        // between.
         let mut applied = self.inner.applied.lock().await;
         // Openraft only installs past its committed index, so this does not
         // happen. If it did, restoring would move the applied cursor back
         // and the entries in between would be applied twice; failing stops
-        // the member instead of letting it diverge.
+        // the member instead of letting it diverge. Checked before the file
+        // is written, so a refused snapshot is not what a restart finds.
         let applied_index = applied.last_applied.map(|id| id.index);
         if applied_index > meta.last_log_id.map(|id| id.index) {
             return Err(io::Error::other(format!(
@@ -715,6 +470,12 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
                 meta.last_log_id, applied.last_applied
             )));
         }
+        // On disk before the live state is replaced, so a restart rebuilds
+        // from this snapshot. Not written when the stored one is newer.
+        match staged {
+            Some(staged) => staged.commit().await?,
+            None => self.persist_snapshot(meta, data.clone()).await?,
+        };
         self.inner.app.restore(&data).await;
         applied.last_applied = meta.last_log_id;
         applied.membership = meta.last_membership.clone();
@@ -722,18 +483,39 @@ impl RaftStateMachine<TypeConfig> for StateMachineStore {
     }
 
     async fn get_current_snapshot(&mut self) -> Result<Option<Snapshot>, io::Error> {
-        let meta: Option<wire::SnapshotMeta> = read_meta(&self.inner.db, KEY_SNAPSHOT_META)?;
-        let Some(meta) = meta else {
-            return Ok(None);
-        };
-        let data: Option<Vec<u8>> = read_meta(&self.inner.db, KEY_SNAPSHOT_DATA)?;
-        let Some(data) = data else {
+        let Some(stored) = self.inner.snapshots.open_current().await? else {
             return Ok(None);
         };
         Ok(Some(Snapshot {
-            meta: meta.into(),
-            snapshot: Cursor::new(data),
+            meta: decode_meta(stored.meta())?,
+            snapshot: SnapshotData::Stored(stored),
         }))
+    }
+}
+
+/// The whole of a snapshot's data.
+async fn read_all(snapshot: &mut SnapshotData) -> io::Result<Bytes> {
+    if let SnapshotData::Memory(data) = snapshot {
+        return Ok(std::mem::take(data));
+    }
+    let mut data = Vec::new();
+    while let Some(chunk) = snapshot.next_chunk(transfer::CHUNK).await? {
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data.into())
+}
+
+/// Past the cap no follower can be caught up by a snapshot, so a build
+/// past half of it is an error to see long before then.
+fn note_size(data_len: usize, max: u64) {
+    metrics::gauge!("felix_meta_raft_snapshot_bytes").set(data_len as f64);
+    if data_len as u64 > max / 2 {
+        tracing::error!(
+            bytes = data_len,
+            max,
+            "the metadata snapshot is past half the largest a member accepts; raise \
+             FELIX_RAFT_SNAPSHOT_MAX_BYTES on every member before it gets there"
+        );
     }
 }
 
@@ -745,26 +527,27 @@ impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
     type SnapshotData = SnapshotData;
 
     async fn build_snapshot(&mut self) -> Result<Snapshot, io::Error> {
+        // The state and its id are taken under the apply lock. The file is
+        // written outside it, so applying goes on meanwhile.
         let (data, meta) = {
             let applied = self.inner.applied.lock().await;
-            let data = self.inner.app.snapshot().await;
+            let data = Bytes::from(self.inner.app.snapshot().await);
             let meta = SnapshotMeta {
                 last_log_id: applied.last_applied,
                 last_membership: applied.membership.clone(),
             };
             (data, meta)
         };
-
         let store = StateMachineStore {
             inner: Arc::clone(&self.inner),
         };
+        note_size(data.len(), self.inner.snapshot_max_bytes);
         // Skipped when a newer snapshot was installed meanwhile; openraft
         // drops this older one when it sees it.
-        store.persist_snapshot(&meta, &data).await?;
-
+        store.persist_snapshot(&meta, data.clone()).await?;
         Ok(Snapshot {
             meta,
-            snapshot: Cursor::new(data),
+            snapshot: SnapshotData::Memory(data),
         })
     }
 }

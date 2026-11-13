@@ -312,14 +312,14 @@ fn the_binary_refuses_raft_without_a_peer_token() {
     assert!(stderr.contains("FELIX_RAFT_PEER_TOKEN"), "{stderr}");
 }
 
-/// The path of a control plane binary from the last release that ran
-/// openraft 0.9 (v0.7.1). CI downloads it
+/// The path of a released control plane binary, one that keeps its store in
+/// `raft.redb` (v0.7.1). CI downloads it
 /// (`scripts/fetch-released-controlplane.sh`) and sets [`REQUIRE_RELEASED`];
-/// elsewhere the mixed-version test has nothing to run against and says so.
+/// elsewhere the test that needs it has nothing to run against and says so.
 const RELEASED_BIN: &str = "RELEASED_CONTROLPLANE_BIN";
 const REQUIRE_RELEASED: &str = "REQUIRE_RELEASED_CONTROLPLANE_BIN";
 
-/// One member of a three-member group, whichever binary runs it.
+/// A member run as a child process, on whichever binary.
 struct Member {
     id: u64,
     api: SocketAddr,
@@ -361,18 +361,6 @@ impl Member {
         stop(&mut self.child.take().expect("running"));
     }
 
-    /// A gauge from this member's metrics endpoint, 0 until it is reported.
-    fn gauge(&self, name: &str) -> u64 {
-        let Some((200, body)) = http(self.metrics, "GET", "/metrics", None, None) else {
-            return 0;
-        };
-        body.lines()
-            .filter(|line| line.starts_with(name))
-            .filter_map(|line| line.split_whitespace().last()?.parse::<f64>().ok())
-            .next()
-            .unwrap_or(0.0) as u64
-    }
-
     fn lists(&self, bearer: &str, tenant: &str) -> bool {
         matches!(
             http(self.api, "GET", "/v1/tenants", Some(bearer), None),
@@ -389,8 +377,7 @@ fn until(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
-/// Create tenants `t<n>` for each `n` in `range` through `member`. A member
-/// that is not the leader forwards, so this also crosses versions.
+/// Create tenants `t<n>` for each `n` in `range` through `member`.
 fn create_tenants(member: &Member, bearer: &str, range: std::ops::Range<u32>) {
     for n in range {
         let body = format!(r#"{{"tenant_id": "t{n}", "display_name": "Tenant {n}"}}"#);
@@ -409,55 +396,30 @@ fn create_tenants(member: &Member, bearer: &str, range: std::ops::Range<u32>) {
     }
 }
 
-/// Stop `lagging`, write past the others' next snapshot, and start it again
-/// on `bin`. Both of the others have then purged the entries it missed, so
-/// whichever leads can only bring it up to date with a snapshot.
-fn catch_up_by_snapshot(
-    members: &mut [Member],
-    lagging: usize,
-    bin: &std::ffi::OsStr,
-    peers: &str,
-    bearer: &str,
-    tenants: std::ops::Range<u32>,
-) {
-    let last = format!("t{}", tenants.end - 1);
-    let had = members[lagging].gauge("felix_meta_raft_last_log_index");
-    members[lagging].stop();
-    let writer = (lagging + 1) % members.len();
-    create_tenants(&members[writer], bearer, tenants);
-    until("the running members snapshot past the stopped one", || {
-        members
-            .iter()
-            .filter(|member| member.child.is_some())
-            .all(|member| member.gauge("felix_meta_raft_snapshot_index") > had)
-    });
-    members[lagging].start(bin, peers, "existing");
-    members[lagging].wait_ready();
-    until("the restarted member holds the writes it missed", || {
-        members[lagging].lists(bearer, &last)
-    });
-    until(
-        "the restarted member holds a snapshot past its old log",
-        || members[lagging].gauge("felix_meta_raft_snapshot_index") > had,
-    );
+/// Every file under `dir`, with its length and modification time.
+fn listing(dir: &std::path::Path) -> Vec<(std::path::PathBuf, u64, std::time::SystemTime)> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(next) = pending.pop() {
+        for entry in std::fs::read_dir(&next).expect("read_dir") {
+            let entry = entry.expect("entry");
+            let meta = entry.metadata().expect("metadata");
+            if meta.is_dir() {
+                pending.push(entry.path());
+            }
+            found.push((entry.path(), meta.len(), meta.modified().expect("mtime")));
+        }
+    }
+    found.sort();
+    found
 }
 
-/// A group is upgraded from openraft 0.9 to 0.10 one member at a time, so
-/// members on both must replicate to each other, snapshots included, and a
-/// member must be able to go back.
-///
-/// 1. Members 1 and 2 run the release, member 3 this build. A 0.9 leader
-///    sends member 3 a snapshot.
-/// 2. Members 1 and 2 move to this build.
-/// 3. Member 3 is rolled back to the release on the store this build wrote
-///    a snapshot into, and a 0.10 leader sends it a snapshot.
+/// A data directory a released control plane wrote holds its metadata in
+/// `raft.redb`, which this build cannot read. Started on it, this build must
+/// refuse before it writes anything: starting as a new member would drop
+/// the group's metadata without a word.
 #[test]
-fn members_on_openraft_0_9_and_0_10_exchange_snapshots_and_one_rolls_back() {
-    // A member on the segment store and a released one on redb serve
-    // different peer routes and never talk, so there is nothing to run.
-    if cfg!(felix_segment_store) {
-        return;
-    }
+fn this_build_refuses_a_data_dir_a_released_binary_wrote() {
     let Some(released) = std::env::var_os(RELEASED_BIN) else {
         assert!(
             std::env::var_os(REQUIRE_RELEASED).is_none(),
@@ -466,65 +428,67 @@ fn members_on_openraft_0_9_and_0_10_exchange_snapshots_and_one_rolls_back() {
         eprintln!("skipped: {RELEASED_BIN} is not set");
         return;
     };
-    let current = std::ffi::OsString::from(env!("CARGO_BIN_EXE_felix-controlplane"));
-    let mut members: Vec<Member> = (1..=3)
-        .map(|id| Member {
-            id,
-            api: common::reserve_port(),
-            peer: common::reserve_port(),
-            metrics: common::reserve_port(),
-            dir: tempfile::tempdir().expect("data dir"),
-            child: None,
-        })
-        .collect();
-    let peers = members
-        .iter()
-        .map(|member| format!("{}={}", member.id, member.peer))
-        .collect::<Vec<_>>()
-        .join(",");
+    let mut member = Member {
+        id: 1,
+        api: common::reserve_port(),
+        peer: common::reserve_port(),
+        metrics: common::reserve_port(),
+        dir: tempfile::tempdir().expect("data dir"),
+        child: None,
+    };
+    let peers = format!("1={}", member.peer);
+    member.start(&released, &peers, "new");
+    member.wait_ready();
+    let bearer = seed_operator(member.api, member.peer);
+    create_tenants(&member, &bearer, 0..3);
+    until("the released member holds its writes", || {
+        member.lists(&bearer, "t2")
+    });
+    member.stop();
+    let before = listing(member.dir.path());
+    assert!(
+        before.iter().any(|(path, ..)| path.ends_with("raft.redb")),
+        "the release keeps its store in raft.redb: {before:?}"
+    );
 
-    members[0].start(&released, &peers, "new");
-    members[1].start(&released, &peers, "new");
-    members[2].start(&current, &peers, "new");
-    for member in &mut members {
-        member.wait_ready();
-    }
-    let bearer = seed_operator(members[0].api, members[0].peer);
-    create_tenants(&members[2], &bearer, 0..5);
-    for member in &members {
-        until("every member holds the first writes", || {
-            member.lists(&bearer, "t4")
-        });
-    }
-
-    // A 0.9 leader, a lagging 0.10 member.
-    catch_up_by_snapshot(&mut members, 2, &current, &peers, &bearer, 5..45);
-
-    // The rest of the upgrade, one member at a time.
-    for index in [0, 1] {
-        members[index].stop();
-        members[index].start(&current, &peers, "existing");
-        members[index].wait_ready();
-    }
-    create_tenants(&members[0], &bearer, 45..50);
-    for member in &members {
-        until("every member holds the writes after the upgrade", || {
-            member.lists(&bearer, "t49")
-        });
-    }
-
-    // A 0.10 leader, and member 3 back on the release, on a store this build
-    // installed and built snapshots in.
-    catch_up_by_snapshot(&mut members, 2, &released, &peers, &bearer, 50..90);
-
-    // The rolled-back member still takes writes and hands them to the leader.
-    create_tenants(&members[2], &bearer, 90..91);
-    for member in &members {
-        until("every member holds the last write", || {
-            member.lists(&bearer, "t90")
-        });
-    }
-    for member in &mut members {
-        member.stop();
-    }
+    let refused = Command::new(env!("CARGO_BIN_EXE_felix-controlplane"))
+        .env("FELIX_CONTROLPLANE_BIND", member.api.to_string())
+        .env(
+            "FELIX_CONTROLPLANE_METRICS_BIND",
+            member.metrics.to_string(),
+        )
+        .env("FELIX_RAFT_NODE_ID", "1")
+        .env("FELIX_RAFT_DATA_DIR", member.dir.path())
+        .env("FELIX_RAFT_PEERS", &peers)
+        .env("FELIX_RAFT_BIND_ADDR", member.peer.to_string())
+        .env("FELIX_RAFT_CLUSTER_ID", CLUSTER_ID)
+        .env("FELIX_RAFT_PEER_TOKEN", PEER_TOKEN)
+        .env("FELIX_RAFT_INITIAL_CLUSTER_STATE", "new")
+        .env("FELIX_SHUTDOWN_PREDRAIN_MS", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn controlplane");
+    let (status, stderr) = {
+        let mut child = Reaped(refused);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while child.try_wait().expect("try_wait").is_none() {
+            assert!(
+                Instant::now() < deadline,
+                "this build started on a released data dir"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        let mut stderr = String::new();
+        child
+            .stderr
+            .take()
+            .expect("stderr")
+            .read_to_string(&mut stderr)
+            .expect("read stderr");
+        (child.try_wait().expect("status").expect("exited"), stderr)
+    };
+    assert!(!status.success(), "refused with a failure status");
+    assert!(stderr.contains("raft.redb"), "{stderr}");
+    assert_eq!(listing(member.dir.path()), before, "nothing was written");
 }

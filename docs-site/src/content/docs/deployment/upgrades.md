@@ -759,6 +759,44 @@ If it changes `FORMAT_VERSION`, back up first and do not plan to roll back.
 If it adds a fleet feature, the feature stays off after step 2 until you
 finalize it. See the runbook above.
 
+## Control plane metadata in 0.8
+
+A Raft control plane from 0.7 or earlier does not upgrade in place to 0.8.
+Its metadata starts over.
+
+**Why.** 0.8 keeps the control plane's Raft state (log, vote, snapshot) in
+`store/` under `FELIX_RAFT_DATA_DIR`, on the same storage engine the brokers
+use. 0.7 and earlier kept it in one file, `raft.redb`, in that directory.
+0.8 cannot read that file, and no tool converts it.
+
+**What happens if you start 0.8 on a 0.7 data directory.** The member
+refuses to start and names `raft.redb`. It writes nothing, so starting it on
+0.7 again carries on where it stopped. A 0.8 member also never talks to a
+0.7 one: their peer routes differ, so a mixed group is two partitions, not
+one group.
+
+**What starts over.** Everything the control plane holds: tenants,
+namespaces, streams, caches, consumer checkpoints, signing keys (so every
+issued token stops working) and shard assignments. The brokers' data does
+not carry over safely either. A new group hands out stream incarnations and
+assignment generations from the start again, and a broker that still holds
+the old ones refuses a stream whose incarnation went backwards.
+
+**How to move a cluster to 0.8.**
+
+1. Stop every client, broker and control-plane member.
+2. Keep the old data directories if you may want to go back.
+3. Start every control-plane member on 0.8 with an empty
+   `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`, as for a
+   new cluster.
+4. Start every broker on 0.8 with an empty data directory.
+5. Recreate tenants, namespaces, streams and caches, and issue new tokens.
+
+**Going back.** Stop everything and start 0.7 on the directories kept in
+step 2. Do not start 0.7 on a directory 0.8 wrote: 0.7 does not recognise
+`store/`, creates an empty `raft.redb` beside it and starts as a new member
+([#2424](https://github.com/GetFelix/felix/issues/2424)).
+
 ## Rollback
 
 | Changed | Rollback |
@@ -769,6 +807,7 @@ finalize it. See the runbook above.
 | Fleet feature, not finalized | Safe; broker by broker |
 | Fleet feature, finalized | **Not possible** to a build without it; a broker on such a build is refused. Roll back to a build that still has the feature |
 | Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
+| Control plane 0.7 to 0.8 (Raft) | Only to the 0.7 data directories kept before the move; see [Control plane metadata in 0.8](#control-plane-metadata-in-08) |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
 

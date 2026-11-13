@@ -1,7 +1,7 @@
 //! The metadata Raft group, exercised as a group: election, replication,
 //! restart with state, rebuild from snapshot, and learner-first growth.
 //!
-//! Each node here is the real thing — a `RaftHandle` over the redb store,
+//! Each node here is the real thing — a `RaftHandle` over the metadata store,
 //! serving its RPCs on a real HTTP listener — with a toy key/value app
 //! standing where the metadata state machine (#338) will stand.
 use std::collections::BTreeMap;
@@ -986,11 +986,7 @@ async fn wipe_and_restart(
 /// Whether `node` refuses a vote request the way a member withholding its
 /// vote does.
 async fn withholds_its_vote(node: &TestNode) -> bool {
-    let vote = if cfg!(felix_segment_store) {
-        serde_json::json!({"term": 0, "voted_for": 9, "committed": false})
-    } else {
-        serde_json::json!({"leader_id": {"term": 0, "node_id": 9}, "committed": false})
-    };
+    let vote = serde_json::json!({"term": 0, "voted_for": 9, "committed": false});
     let response = peer_security()
         .client(Duration::from_secs(5))
         .expect("peer client")
@@ -1095,7 +1091,6 @@ async fn a_member_wiped_before_the_first_entry_does_not_form_again() {
 /// mark is in `store/formation`. A member whose log directory is emptied
 /// keeps its mark, and every peer names it. Before the reached flag it went
 /// on forming and could vote twice in a term; now it catches up instead.
-#[cfg(felix_segment_store)]
 #[tokio::test]
 async fn a_member_whose_log_was_emptied_does_not_form_again() {
     use felix_controlplane_service::raft::InitialClusterState;
@@ -1176,7 +1171,6 @@ async fn a_wiped_member_catches_up_once_a_leader_exists() {
     }
     // It votes, so it recorded that it reached the vote (#2407): flags bit 1
     // of the formation file.
-    #[cfg(felix_segment_store)]
     {
         let formation =
             std::fs::read(empty.path().join("store").join("formation")).expect("formation file");

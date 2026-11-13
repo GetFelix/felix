@@ -98,10 +98,8 @@ readme = "README.md"
 # `pub` that is not actually reachable from outside the crate reads as public
 # API and makes the real surface hard to see. Use `pub(crate)`.
 unreachable_pub = "warn"
-# felix-sim seeds tokio's `select!` under `--cfg tokio_unstable`. The control
-# plane's metadata store moves to the segment store under
-# `--cfg felix_segment_store`.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(felix_segment_store)"] }
+# felix-sim seeds tokio's `select!` under `--cfg tokio_unstable`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }
 
 [workspace.lints.clippy]
 # One module style: `foo.rs` + `foo/`, never `foo/mod.rs`. `task lint` runs
