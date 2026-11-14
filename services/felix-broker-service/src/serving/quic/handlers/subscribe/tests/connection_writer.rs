@@ -703,14 +703,9 @@ async fn frames_dropped_over_the_bound_are_counted_as_the_subscribers_drops() ->
         ..writer_config()
     };
     let writer_task = tokio::spawn(run_connection_writer(connection_id, command_rx, config));
-    tokio::time::sleep(Duration::from_millis(200)).await;
 
     let dropped = ((FRAMES - KEPT) * RECORDS_PER_FRAME) as u64;
-    let page = broker
-        .list_subscriptions(&felix_wire::SubscriptionFilter::default(), None, 10)
-        .await;
-    assert_eq!(page.subscriptions.len(), 1);
-    assert_eq!(page.subscriptions[0].dropped, dropped);
+    wait_for_dropped(&broker, dropped).await;
     assert_eq!(rx.lagged(), Some((KEPT * RECORDS_PER_FRAME) as u64));
     let text = rendered.render();
     assert!(
@@ -721,6 +716,152 @@ async fn frames_dropped_over_the_bound_are_counted_as_the_subscribers_drops() ->
         text.contains(&format!("felix_sub_queue_dropped_total {dropped}")),
         "{text}"
     );
+
+    drop(tx);
+    writer_task.await.context("writer join")?;
+    let _ = crate::observability::timings::take_samples();
+    Ok(())
+}
+
+/// Wait until the one subscription on `broker` has `dropped` drops.
+pub(super) async fn wait_for_dropped(broker: &Broker, dropped: u64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let page = broker
+            .list_subscriptions(&felix_wire::SubscriptionFilter::default(), None, 10)
+            .await;
+        assert_eq!(page.subscriptions.len(), 1);
+        let seen = page.subscriptions[0].dropped;
+        if seen == dropped {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "dropped stayed at {seen}, expected {dropped}"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// A server and client connection over loopback.
+pub(super) async fn quic_pair() -> Result<(
+    felix_transport::QuicConnection,
+    felix_transport::QuicConnection,
+)> {
+    let (server_config, cert) = make_server_config()?;
+    let transport = TransportConfig::default();
+    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+    let addr = server.local_addr()?;
+    let server_task = tokio::spawn(async move { server.accept().await });
+    let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
+    let client_conn = client.connect(addr, "localhost").await?;
+    let connection = server_task.await.context("server join")??;
+    Ok((connection, client_conn))
+}
+
+/// Once the writer drops a frame with offsets, it sheds the rest for that
+/// subscriber too, though there is room again: delivering them would leave a
+/// hole the client sees only as the later records arriving.
+#[tokio::test]
+#[serial]
+async fn after_a_writer_drop_later_frames_are_shed_until_the_unregister() -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            felix_broker::StreamMetadata::default(),
+        )
+        .await?;
+    let (rx, guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await?
+        .into_parts();
+    let (connection, client_conn) = quic_pair().await?;
+    let connection_id = connection.info().id.0;
+
+    let delivery = |offset: u64| -> Result<ConnectionCommand> {
+        let now = Instant::now();
+        Ok(ConnectionCommand::Delivery {
+            subscriber_id: 1,
+            frame: felix_wire::binary::encode_event_batch_bytes(
+                1,
+                &[Bytes::from(offset.to_string())],
+            )?,
+            item_count: 1,
+            base_offset: Some(offset),
+            first_enqueued_at: now,
+            enqueue_at: now,
+            held: EgressBytes::default(),
+        })
+    };
+    // Queued before the writer runs: it keeps 0 and 1 and drops 2.
+    let (tx, command_rx) = mpsc::channel(64);
+    tx.send(ConnectionCommand::Register {
+        subscriber_id: 1,
+        connection: connection.clone(),
+        connection_id: Some(connection_id),
+        event_send: connection.open_uni().await?,
+        guard,
+    })
+    .await
+    .context("register")?;
+    for offset in 0..3 {
+        tx.send(delivery(offset)?).await.context("delivery")?;
+    }
+    let config = ConnectionWriterConfig {
+        max_queued_per_subscriber: 2,
+        block: false,
+        ..writer_config()
+    };
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, command_rx, config));
+
+    let mut event_recv = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
+        .await
+        .context("accept uni timeout")??;
+    let mut scratch = crate::serving::quic::FrameScratch::new();
+    let mut next = async || -> Result<Option<Bytes>> {
+        let frame = tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::serving::quic::codec::read_frame_limited_into(
+                &mut event_recv,
+                16 * 1024,
+                &mut scratch,
+            ),
+        )
+        .await
+        .context("no frame")??;
+        Ok(match frame {
+            Some(frame) => Some(
+                felix_wire::binary::decode_event_batch(&frame)
+                    .context("decode")?
+                    .payloads[0]
+                    .clone(),
+            ),
+            None => None,
+        })
+    };
+    assert_eq!(next().await?.as_deref(), Some(&b"0"[..]));
+    assert_eq!(next().await?.as_deref(), Some(&b"1"[..]));
+
+    // The queue has room again; 3 is shed anyway, and the last frame is not.
+    tx.send(delivery(3)?).await.context("delivery 3")?;
+    wait_for_dropped(&broker, 2).await;
+    assert_eq!(rx.lagged(), Some(2));
+    tx.send(ConnectionCommand::Unregister {
+        subscriber_id: 1,
+        last: Some(felix_wire::binary::encode_event_batch_bytes(
+            1,
+            &[Bytes::from_static(b"last")],
+        )?),
+    })
+    .await
+    .context("unregister")?;
+    assert_eq!(next().await?.as_deref(), Some(&b"last"[..]));
+    assert_eq!(next().await?, None, "nothing follows the last frame");
 
     drop(tx);
     writer_task.await.context("writer join")?;

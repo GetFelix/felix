@@ -209,6 +209,25 @@ fn drops_below_a_covered_offset_are_forgotten() {
     assert_eq!(lag.first_dropped(), Some(15));
 }
 
+/// The connection writer can drop a frame below one the queue already
+/// dropped; resuming from the queue's drop would skip the writer's.
+#[test]
+fn a_lower_drop_after_a_higher_one_moves_the_resume_offset_down() {
+    let lag = Lag::default();
+    lag.dropped(100);
+    lag.dropped(50);
+    assert_eq!(lag.first_dropped(), Some(50));
+    lag.dropped(120);
+    assert_eq!(lag.first_dropped(), Some(50));
+
+    // The highest drop, not the latest, decides whether one is above the floor.
+    let lag = Lag::default();
+    lag.covered_below(60);
+    lag.dropped(100);
+    lag.dropped(50);
+    assert_eq!(lag.first_dropped(), Some(60));
+}
+
 /// A receiver told to end at an offset cuts the batch that straddles it, then
 /// yields `None` with nothing more published, and says why.
 #[tokio::test]

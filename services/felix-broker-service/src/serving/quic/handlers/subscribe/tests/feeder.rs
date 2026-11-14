@@ -1067,3 +1067,158 @@ async fn a_feeder_started_revoked_sends_only_the_refusal() -> Result<()> {
     }
     Ok(())
 }
+
+/// The offsets the feeder gives each frame, on a durable stream, are where
+/// the writer's drop note says to resume: a batch split across frames and
+/// single records coalesced into one both carry their first record's offset.
+#[tokio::test]
+#[serial_test::serial]
+async fn writer_drops_resume_from_the_feeders_offsets() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let storage = felix_broker::DurableStorage::open(
+        dir.path(),
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            felix_broker::StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await?;
+    let (mut event_rx, guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await?
+        .into_parts();
+    event_rx.end_on_lag();
+    let batch: Vec<Bytes> = (0..3).map(|_| make_payload(b"event")).collect();
+    broker
+        .publish_batch("t1", "default", "orders", 0, &batch)
+        .await?;
+    publish(&broker).await?;
+    publish(&broker).await?;
+
+    let (manager, mut lane_rx) = capture_lane();
+    let config = EventWriterConfig {
+        offsets_enabled: true,
+        skip_enabled: false,
+        shard_moved_enabled: false,
+        stream_deleted_enabled: false,
+        subscription_id: 1,
+        max_events: 2,
+        max_bytes: 64 * 1024,
+        flush_delay: Duration::ZERO,
+        single_event_mode: false,
+        end: None,
+        flush_max_items: 64,
+        flush_max_delay: Duration::from_micros(200),
+        max_bytes_per_write: 256 * 1024,
+        publisher_enabled: false,
+        timestamps_enabled: false,
+        headers_enabled: false,
+    };
+    let feeder = tokio::spawn(run_lane_feeder(
+        event_rx,
+        Arc::downgrade(&manager),
+        0,
+        None,
+        config,
+        IdentityLimits::unlimited(),
+        TenantDelivery::for_tenant("t1"),
+        None,
+    ));
+
+    let mut frames = Vec::new();
+    let mut seen = Vec::new();
+    while seen.iter().map(|(_, count)| count).sum::<usize>() < 5 {
+        match tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
+            .await?
+            .expect("lane open")
+        {
+            LaneCommand::Delivery {
+                subscriber_id,
+                frame,
+                item_count,
+                base_offset,
+                first_enqueued_at,
+                enqueue_at,
+                held,
+            } => {
+                seen.push((base_offset, item_count));
+                frames.push(ConnectionCommand::Delivery {
+                    subscriber_id,
+                    frame,
+                    item_count,
+                    base_offset,
+                    first_enqueued_at,
+                    enqueue_at,
+                    held,
+                });
+            }
+            other => panic!("unexpected lane command: {other:?}"),
+        }
+    }
+    assert_eq!(seen, [(Some(0), 2), (Some(2), 1), (Some(3), 2)]);
+
+    // A writer holding one frame keeps the first and drops the rest, so the
+    // subscriber has records 0 and 1 and should resume from 2.
+    let (connection, _client_conn) = super::connection_writer::quic_pair().await?;
+    let connection_id = connection.info().id.0;
+    let (tx, command_rx) = mpsc::channel(64);
+    tx.send(ConnectionCommand::Register {
+        subscriber_id: 1,
+        connection: connection.clone(),
+        connection_id: Some(connection_id),
+        event_send: connection.open_uni().await?,
+        guard,
+    })
+    .await?;
+    for frame in frames {
+        tx.send(frame).await?;
+    }
+    let writer_config = super::super::writer::ConnectionWriterConfig {
+        max_bytes_per_write: 64 * 1024,
+        max_queued_per_subscriber: 1,
+        block: false,
+    };
+    let writer = tokio::spawn(run_connection_writer(
+        connection_id,
+        command_rx,
+        writer_config,
+    ));
+
+    let last = loop {
+        match tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
+            .await?
+            .expect("lane open")
+        {
+            LaneCommand::Unregister { last, .. } => break last.expect("a last frame"),
+            other => panic!("unexpected lane command: {other:?}"),
+        }
+    };
+    assert_eq!(
+        Message::decode(felix_wire::Frame::decode(last)?)?,
+        Message::SubscriptionLagged {
+            subscription_id: 1,
+            resume_from: 2,
+        }
+    );
+    tokio::time::timeout(Duration::from_secs(2), feeder).await??;
+
+    drop(tx);
+    writer.await?;
+    let _ = crate::observability::timings::take_samples();
+    Ok(())
+}

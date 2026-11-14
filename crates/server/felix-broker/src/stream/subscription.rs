@@ -445,18 +445,19 @@ pub(crate) struct Lag {
 struct Drops {
     /// Drops below this were filled in some other way.
     floor: u64,
-    first: Option<u64>,
-    latest: Option<u64>,
+    lowest: Option<u64>,
+    highest: Option<u64>,
 }
 
 impl Drops {
-    /// Offsets reach the queue in order, so the first drop at or above the
-    /// floor is `first` when that is above it. When it is not, but a later
-    /// drop is, the floor itself is a safe place to resume.
+    /// Drops can arrive out of offset order (the connection writer sheds
+    /// frames the queue accepted before it dropped a later one), so resume
+    /// from the lowest drop. When that is below the floor but another drop
+    /// is not, the floor itself is a safe place to resume.
     fn resume_from(&self) -> Option<u64> {
-        match (self.first, self.latest) {
-            (Some(first), _) if first >= self.floor => Some(first),
-            (_, Some(latest)) if latest >= self.floor => Some(self.floor),
+        match (self.lowest, self.highest) {
+            (Some(lowest), _) if lowest >= self.floor => Some(lowest),
+            (_, Some(highest)) if highest >= self.floor => Some(self.floor),
             _ => None,
         }
     }
@@ -467,8 +468,8 @@ impl Lag {
     pub(crate) fn dropped(&self, offset: u64) {
         let mut drops = self.drops.lock().unwrap_or_else(|e| e.into_inner());
         let before = drops.resume_from();
-        drops.first.get_or_insert(offset);
-        drops.latest = Some(offset);
+        drops.lowest = Some(drops.lowest.map_or(offset, |low| low.min(offset)));
+        drops.highest = Some(drops.highest.map_or(offset, |high| high.max(offset)));
         if before.is_none() && drops.resume_from().is_some() {
             self.notify.notify_waiters();
         }

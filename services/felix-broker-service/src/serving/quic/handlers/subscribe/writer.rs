@@ -237,6 +237,10 @@ pub(super) async fn run_connection_writer(
     let mut subscribers: HashMap<u64, LaneSubscriber> = HashMap::default();
     // Kept apart from `subscribers`, which is empty for one mid-write.
     let mut drop_accounts: HashMap<u64, felix_broker::SubscriberDrops> = HashMap::default();
+    // Subscribers that lost a frame with offsets here. Everything after it is
+    // shed too, so the client sees the drop as where its stream stops rather
+    // than a hole followed by later records.
+    let mut shedding: HashSet<u64> = HashSet::default();
     let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::default();
     // Unregistered, but still writing what was queued before the unregister.
     let mut leaving: HashSet<u64> = HashSet::default();
@@ -257,6 +261,7 @@ pub(super) async fn run_connection_writer(
                 // Never registered here, or already gone: nothing to write to.
                 deliveries.remove(&subscriber_id);
                 drop_accounts.remove(&subscriber_id);
+                shedding.remove(&subscriber_id);
                 continue;
             };
             let Some(queue) = deliveries.get_mut(&subscriber_id) else {
@@ -408,6 +413,7 @@ pub(super) async fn run_connection_writer(
                                 subscribers.remove(&subscriber_id);
                                 deliveries.remove(&subscriber_id);
                                 drop_accounts.remove(&subscriber_id);
+                                shedding.remove(&subscriber_id);
                             }
                         }
                         ConnectionCommand::Delivery {
@@ -426,13 +432,17 @@ pub(super) async fn run_connection_writer(
                             // `Block` never drops: a batch taken just before the
                             // bound was hit may overshoot it, and the writer then
                             // stops taking more until this subscriber drains.
-                            if !block && queue.len() >= max_queued_per_subscriber {
+                            let full = !block && queue.len() >= max_queued_per_subscriber;
+                            if full || shedding.contains(&subscriber_id) {
                                 // This subscriber is not keeping up; the others
                                 // on the connection are not made to wait for it.
                                 metrics::counter!("felix_sub_queue_dropped_total")
                                     .increment(item_count as u64);
                                 if let Some(account) = drop_accounts.get(&subscriber_id) {
                                     account.dropped(base_offset, item_count as u64);
+                                }
+                                if base_offset.is_some() {
+                                    shedding.insert(subscriber_id);
                                 }
                                 continue;
                             }
@@ -467,6 +477,7 @@ pub(super) async fn run_connection_writer(
                             leaving.remove(&subscriber_id);
                             deliveries.remove(&subscriber_id);
                             drop_accounts.remove(&subscriber_id);
+                            shedding.remove(&subscriber_id);
                             drop(subscriber);
                         } else {
                             subscribers.insert(subscriber_id, subscriber);
@@ -524,6 +535,7 @@ pub(super) async fn run_connection_writer(
                         leaving.remove(&subscriber_id);
                         deliveries.remove(&subscriber_id);
                         drop_accounts.remove(&subscriber_id);
+                        shedding.remove(&subscriber_id);
                         t_counter!(
                             "broker_sub_conn_write_errors_total",
                             "connection_id" => conn_label.clone()
