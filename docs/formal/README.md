@@ -605,7 +605,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenOtherTermCounts.cfg` | a report counts whatever term its log id carries | violate `AckedHeld` |
 | `FelixRaftWrittenJointOneHalf.cfg` | a majority of either half of a joint configuration is enough | violate `AckedHeld` |
 | `FelixRaftWrittenCommits.cfg` | the commit index counts written reports | violate `CommittedHeld` |
-| `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut that rotates the cut broker's copy (`CutRotates`), as the broker does | pass the same and `AckedNeverLost` (STATES distinct states) |
+| `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut that rotates the cut broker's copy (`CutRotates`), as the broker does | pass the same and `AckedNeverLost` (16.8k distinct states) |
 | `FelixRaftWrittenPowerCutKeeps.cfg` | the same with the copy kept: the loss the early acknowledgement would leave open | violate `AckedNeverLost` |
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
