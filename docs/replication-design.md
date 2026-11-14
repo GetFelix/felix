@@ -816,11 +816,13 @@ readmitted: the copy's log counts a set newer than any ballot it took
 unkept that names it under its storage id now, as a voter, and holds that
 set's generation start, shipped by that set's leader or a later one. With no
 unkept ballot to count from, that needs a start that minted the storage id
-(a wipe, a rotation, or a corrupt id file replaced), so only a set written after the loss can name it. A
+(a wipe, a rotation, or a corrupt id file replaced), so only a set written after the loss can name it.
+A rotation during an earlier run, as the Raft restore gate's, counts while the
+control plane names the id it rotated from or to (`last-rotation`). A
 directory that lost its copies under an older id, as one swapped back after
 the node ran under another, may be named by sets from before the loss, so
 its copies get no readmission. So does a copy not yet readmitted when the
-broker restarts cleanly, until a later rotation. The broker records the set's
+broker restarts cleanly on an id no rotation since the last loss gave it, until a later rotation. The broker records the set's
 generation in the directory's `copy-trust` file (`docs/storage-format.md`)
 before the copy's promises count for that set and later ones, and marks the
 copy untrusted until a vouch after the readmission. The record holds until

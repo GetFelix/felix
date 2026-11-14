@@ -62,6 +62,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
+  last-rotation                              ← the id the last rotation gave the directory, and the one before
   copy-trust                                 ← which copies a leader vouched for since the id last rotated
   copy-trust-kept                            ← a release that keeps copy-trust ran here
   run-token                                  ← this run's token, which the run witness outside the directory names
@@ -1950,6 +1951,28 @@ leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
 `kept` and the control plane's record names the id from before the crash,
 or one `rotated-ids` names.
 An older release neither reads nor writes the file.
+
+## `last-rotation`: the directory's last rotation
+
+One text file at the durable root, written each time the storage id rotates,
+before the new id, through `last-rotation.tmp`, synced, renamed and the
+directory synced.
+
+```text
+last_rotation
+<the new storage id, 32 hex digits>
+<the id it replaced, 32 hex digits>
+```
+
+A rotation during a run (the Raft restore gate, a deferred restore check)
+records the clean stop under the new id, so the next start does not rotate
+again and nothing else says the id is new. While the control plane's record
+names either id, no set from before the rotation names the directory's id,
+so a lost copy here counts from the first set that readmits it. A start that
+finds the record naming another id than the directory's, or a control plane
+record naming a third id (the node ran on another directory since), removes
+it. A missing file, or one that does not decode, claims nothing, which only
+costs a readmission. An older release neither reads nor writes the file.
 
 ## `rotated-ids`: ids a crash rotated away on this directory
 

@@ -442,6 +442,57 @@ pub fn rotated_ids(root: &Path) -> Result<Vec<StorageId>> {
     Ok(decode_rotated_ids(&bytes).unwrap_or_default())
 }
 
+/// The rotation record's name under the durable root: the id the last
+/// rotation gave the directory and the one it had before.
+pub const ROTATION_FILE_NAME: &str = "last-rotation";
+const ROTATION_HEADER: &str = "last_rotation\n";
+
+/// The directory's last rotation: [`copy_trust::rotate_storage_id`] gave it
+/// `to` in place of `from`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rotation {
+    pub to: StorageId,
+    pub from: StorageId,
+}
+
+/// Record, durably, that the directory is about to rotate from `from` to
+/// `to`. Written before the new id, so a crash in between leaves a record
+/// naming an id the directory never took.
+pub(crate) fn record_rotation(root: &Path, rotation: Rotation) -> Result<()> {
+    let body = format!(
+        "{ROTATION_HEADER}{}\n{}\n",
+        rotation.to.to_hex(),
+        rotation.from.to_hex()
+    );
+    write_atomically(root, ROTATION_FILE_NAME, body.as_bytes(), true)
+}
+
+/// What [`record_rotation`] recorded under `root`. `None` without the file
+/// or for one that does not decode.
+pub fn last_rotation(root: &Path) -> Result<Option<Rotation>> {
+    let bytes = match crate::fs::read(root.join(ROTATION_FILE_NAME)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    let decoded = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|body| body.strip_prefix(ROTATION_HEADER))
+        .and_then(|body| {
+            let mut lines = body.lines().map(StorageId::from_hex);
+            match (lines.next(), lines.next(), lines.next()) {
+                (Some(Some(to)), Some(Some(from)), None) => Some(Rotation { to, from }),
+                _ => None,
+            }
+        });
+    Ok(decoded)
+}
+
+/// Remove the rotation record under `root`, durably.
+pub fn forget_rotation(root: &Path) -> Result<()> {
+    remove_record(root, ROTATION_FILE_NAME)
+}
+
 pub(crate) fn decode_rotated_ids(bytes: &[u8]) -> Option<Vec<StorageId>> {
     let body = std::str::from_utf8(bytes)
         .ok()?

@@ -626,6 +626,7 @@ where
                 // Readmits first: setting kept is what lets a readmission
                 // count (`QuorumMarks::knows_kept_ballots`).
                 marks.set_readmits(kept.readmits);
+                marks.set_minted_storage(kept.minted);
                 marks.set_kept_ballots(kept.ballots);
             })
         }),

@@ -240,6 +240,7 @@ fn start_run(
         .is_some_and(|prior| {
             before.as_deref() == Some(prior) || rotated.iter().any(|id| id.to_hex() == prior)
         });
+    let rotation = last_rotation(root, begun.id, registered)?;
     let kept = Kept {
         promises: begun.rotated && !restored && own_id && !lost,
         // A record from before storage ids cannot tell this directory from a
@@ -251,7 +252,10 @@ fn start_run(
         // A set names a copy by the id the control plane registered, so
         // without one no set can readmit it.
         readmits: registered.is_some_and(|r| r.storage_id.is_some()),
-        minted: begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded,
+        minted: begun.rotated
+            || begun.origin != felix_storage::storage_identity::Origin::Loaded
+            || rotated_since_registered(rotation, registered),
+        rotation,
         deferred: false,
     };
     // Before the new id registers: a set written since names that one, and
@@ -264,6 +268,43 @@ fn start_run(
     }
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
+}
+
+/// The rotation that gave the directory `id`, if one did. One the control
+/// plane's record shows a later loss since is removed: the node registered
+/// another directory after it, so sets from before that loss may name `id`.
+fn last_rotation(
+    root: &Path,
+    id: StorageId,
+    registered: Option<&Registered>,
+) -> Result<Option<felix_storage::run_state::Rotation>> {
+    let context = || format!("read the rotation record under {}", root.display());
+    let Some(rotation) = felix_storage::run_state::last_rotation(root).with_context(context)?
+    else {
+        return Ok(None);
+    };
+    let checked = registered.is_some_and(|r| r.storage_id.is_some());
+    if rotation.to != id || (checked && !rotated_since_registered(Some(rotation), registered)) {
+        felix_storage::run_state::forget_rotation(root)
+            .with_context(|| format!("remove the rotation record under {}", root.display()))?;
+        return Ok(None);
+    }
+    Ok(Some(rotation))
+}
+
+/// Whether `rotation` minted the directory's id since the node's last
+/// registration: the control plane names the id it rotated from or the one
+/// it rotated to. A rotation during a run (the Raft restore gate, a deferred
+/// restore check) records a clean stop under the new id, so the next start
+/// does not rotate again, and only this says no set before it names the id.
+fn rotated_since_registered(
+    rotation: Option<felix_storage::run_state::Rotation>,
+    registered: Option<&Registered>,
+) -> bool {
+    let prior = registered.and_then(|r| r.storage_id.as_deref());
+    rotation.zip(prior).is_some_and(|(rotation, prior)| {
+        prior == rotation.to.to_hex() || prior == rotation.from.to_hex()
+    })
 }
 
 /// What a start found its directory kept of the ballots it took.
@@ -284,8 +325,12 @@ pub(crate) struct Kept {
     pub(crate) readmits: bool,
     /// This start minted the storage id, by rotating it or writing a new one, so
     /// no set written before it names the id. A lost copy with no recorded
-    /// floor is readmitted only then.
+    /// floor is readmitted only then. A rotation during an earlier run counts
+    /// while the control plane's record shows no registration since.
     pub(crate) minted: bool,
+    /// The rotation that gave the directory its id, for the deferred restore
+    /// check to decide `minted` by.
+    pub(crate) rotation: Option<felix_storage::run_state::Rotation>,
     /// A start from the view that kept it: what a fence answer attests is
     /// decided by the deferred restore check ([`Self::checked`]), and is
     /// nothing until then.
@@ -318,6 +363,7 @@ impl Kept {
         Self {
             ballots: self.ballots && registered.is_none_or(|r| r.storage_id.is_some()),
             readmits: registered.is_some_and(|r| r.storage_id.is_some()),
+            minted: self.minted || rotated_since_registered(self.rotation, registered),
             deferred: false,
             ..self
         }

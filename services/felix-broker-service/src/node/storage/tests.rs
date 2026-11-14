@@ -441,6 +441,7 @@ fn a_start_from_the_view_attests_no_kept_ballot() {
         ballots: true,
         readmits: true,
         minted: true,
+        rotation: None,
         deferred: false,
     };
     assert!(kept.attested(false).ballots && kept.attested(false).readmits);
@@ -497,6 +498,7 @@ fn a_checked_start_from_the_view_attests_its_own_kept_ballots() {
         ballots: true,
         readmits: false,
         minted: false,
+        rotation: None,
         deferred: true,
     };
     let record = |storage_id: Option<&str>| Registered {
@@ -592,4 +594,51 @@ fn every_run_witnesses_the_directory_anew() {
     // A restore of what the first run left is not.
     std::fs::write(&token, &first).expect("restore");
     assert!(!witnessed(root.path(), Some(shm.path()), boot));
+}
+
+/// **A rotation during a run mints the id the next start runs under**
+/// (#2546). The Raft restore gate rotates the id mid-run and the clean stop
+/// names the new one, so the restart does not rotate again; until the node
+/// registers another directory, no set from before the rotation names that
+/// id, and a lost copy there is readmitted from 0. The deferred restore
+/// check decides the same once it has the record.
+#[test]
+fn a_rotation_during_a_run_mints_the_id_until_another_registers() {
+    let log = felix_storage::log::LogConfig::default();
+    let root = tempfile::tempdir().expect("tempdir");
+    let (before, _, _, _) = start_run(root.path(), &log, None, None).expect("first run");
+    let registered = registered_as(Some(before));
+    let rotate = |root: &Path, fresh: [u8; 16]| {
+        let id = felix_storage::run_state::copy_trust::rotate_storage_id(root, fresh)
+            .expect("rotate at open");
+        mark_clean_stop(root, id).expect("clean stop");
+        id
+    };
+    let restart = |root: &Path, registered: Option<&Registered>| {
+        let (id, rotated, _, kept) = start_run(root, &log, registered, None).expect("restart");
+        assert!(!rotated, "the clean stop names the new id");
+        (id, kept)
+    };
+
+    let after = rotate(root.path(), [7; 16]);
+    let (id, kept) = restart(root.path(), Some(&registered));
+    assert_eq!(id, after);
+    assert!(
+        kept.minted,
+        "the control plane still names the id it rotated from"
+    );
+    let (_, kept) = restart(root.path(), Some(&registered_as(Some(after))));
+    assert!(kept.minted, "it names the minted id");
+
+    // A start from the view decides once the restore check has the record.
+    let (_, kept) = restart(root.path(), None);
+    assert!(!kept.minted);
+    assert!(kept.checked(Some(&registered)).minted);
+
+    // Another directory registered since: sets from before may name the id.
+    let other = registered_as(Some(StorageId::from_bytes([9; 16])));
+    let (_, kept) = restart(root.path(), Some(&other));
+    assert!(!kept.minted);
+    let (_, kept) = restart(root.path(), Some(&registered_as(Some(after))));
+    assert!(!kept.minted, "the record went with that loss");
 }

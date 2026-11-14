@@ -1,0 +1,1 @@
+- A broker whose Raft restore gate rotated its storage id mid-run now keeps readmission credit for a lost copy at the next start. The directory records its last rotation in `last-rotation`, and while the control plane names either id, the id counts as minted (#2546).

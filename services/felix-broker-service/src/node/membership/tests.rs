@@ -293,6 +293,7 @@ fn a_passed_deferred_check_attests_the_runs_kept_ballots() {
         ballots: true,
         readmits: false,
         minted: false,
+        rotation: None,
         deferred: true,
     };
     let check = deferred_check(&checked, own_kept, {
