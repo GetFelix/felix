@@ -2,11 +2,9 @@
 //! [`RaftTransport`] to send, and the router that turns openraft's calls
 //! into them.
 
-use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -27,6 +25,7 @@ use felix_storage::raft_log::LogPoint;
 use super::group::Pace;
 use super::lease::Lease;
 use super::machine::SnapshotData;
+use super::reach::{Reach, Refusals};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 
@@ -197,61 +196,12 @@ pub(crate) struct Router {
     lease: Arc<Lease>,
     reports: Arc<Reports>,
     reach: Arc<Reach>,
+    refusals: Arc<Refusals>,
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("the answer was to another kind of message")]
 struct WrongReply;
-
-/// Which peer brokers this runtime's calls failed to reach, and which of
-/// those have answered since.
-///
-/// openraft waits longer and longer, up to a second, before it retries a
-/// stream to a member it could not reach, and only a call that succeeds
-/// ends the wait. A broker that answers any call again is reported here, so
-/// the ticker can end every leader's wait for its members at once rather
-/// than leave each to its next retry (#2543).
-#[derive(Default)]
-pub(crate) struct Reach {
-    /// Whether `down` holds anyone: an answer takes no lock when no call
-    /// has failed.
-    any_down: AtomicBool,
-    state: parking_lot::Mutex<ReachState>,
-}
-
-#[derive(Default)]
-struct ReachState {
-    down: HashSet<Arc<str>>,
-    back: Vec<Arc<str>>,
-}
-
-impl Reach {
-    /// A call to `broker` was refused by the transport or went unanswered.
-    pub(crate) fn lost(&self, broker: &Arc<str>) {
-        let mut state = self.state.lock();
-        if state.down.insert(Arc::clone(broker)) {
-            self.any_down.store(true, Ordering::Relaxed);
-        }
-    }
-
-    /// `broker` answered a call, whatever the answer said.
-    pub(crate) fn answered(&self, broker: &Arc<str>) {
-        if !self.any_down.load(Ordering::Relaxed) {
-            return;
-        }
-        let mut state = self.state.lock();
-        if state.down.remove(broker) {
-            state.back.push(Arc::clone(broker));
-            self.any_down
-                .store(!state.down.is_empty(), Ordering::Relaxed);
-        }
-    }
-
-    /// The brokers that answered again since the last call.
-    pub(crate) fn take_back(&self) -> Vec<Arc<str>> {
-        std::mem::take(&mut self.state.lock().back)
-    }
-}
 
 impl Router {
     pub(crate) fn new(
@@ -260,6 +210,7 @@ impl Router {
         lease: Arc<Lease>,
         reports: Arc<Reports>,
         reach: Arc<Reach>,
+        refusals: Arc<Refusals>,
     ) -> Self {
         Self {
             transport,
@@ -267,6 +218,7 @@ impl Router {
             lease,
             reports,
             reach,
+            refusals,
         }
     }
 
@@ -306,6 +258,7 @@ impl Router {
             deadline: option.hard_ttl(),
             body,
         };
+        let sent_at = self.reach.now();
         let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
         if let Some(sent) = &sent {
             match &answer {
@@ -321,8 +274,18 @@ impl Router {
             self.lease.named(term);
         }
         match &answer {
-            Ok(Err(Refused::Unreachable(_))) | Err(_) => self.reach.lost(&to.broker),
-            Ok(_) => self.reach.answered(&to.broker),
+            Ok(Err(Refused::Unreachable(_))) | Err(_) => self.reach.lost(&to.broker, sent_at),
+            // The broker is up, but this group's member is not open there.
+            Ok(Err(Refused::NoSuchMember(_) | Refused::Stopped(..))) => {
+                self.reach.answered(&to.broker);
+                self.refusals.refused(&to.broker);
+            }
+            Ok(_) => {
+                self.reach.answered(&to.broker);
+                if self.refusals.answered(&to.broker, self.reach.now()) {
+                    self.reach.opened(&to.broker, &self.refusals.group);
+                }
+            }
         }
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),

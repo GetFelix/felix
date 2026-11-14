@@ -29,11 +29,12 @@ use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
 use super::machine::{self, Cache, Machine, SnapshotData};
 use super::network::{
-    Addressee, Network, RaftRequest, RaftTransport, Reach, Refused, Reply, Request, Router, term_of,
+    Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
 use super::propose::{
     self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
 };
+use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
@@ -55,6 +56,8 @@ pub(crate) struct Group {
     transport: Arc<dyn RaftTransport>,
     /// The written positions other members told this one.
     reports: Arc<Reports>,
+    /// The brokers on which this group's member refused this one's calls.
+    refusals: Arc<Refusals>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -463,6 +466,7 @@ impl Group {
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new());
+        let refusals = Arc::new(Refusals::new(id.clone()));
         let network = Network {
             router: Router::new(
                 Arc::clone(&transport),
@@ -470,6 +474,7 @@ impl Group {
                 Arc::clone(&lease),
                 Arc::clone(&reports),
                 reach,
+                Arc::clone(&refusals),
             ),
             group: id.clone(),
         };
@@ -517,6 +522,7 @@ impl Group {
             hold,
             transport,
             reports,
+            refusals,
             positions,
             commits,
             copy,
@@ -588,6 +594,11 @@ impl Group {
     /// grants no vote at first".
     pub(super) fn holds_votes(&self) -> bool {
         self.pace.timers.now() < self.hold.until
+    }
+
+    /// Whether this group's member on `broker` refused the last call to it.
+    pub(crate) fn refused_on(&self, broker: &str) -> bool {
+        self.refusals.holds(broker)
     }
 
     /// If this member leads, retry its members on `broker` now rather than

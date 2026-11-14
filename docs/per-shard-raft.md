@@ -1433,16 +1433,35 @@ refused, openraft waits before it sends that follower's stream again:
 wait. Left alone, a follower back from a cut of a second or two would wait
 up to a second more before it is sent what it missed.
 
-So the router notes, per peer broker, whether its last call failed. A call
-fails when the transport refuses it or its deadline passes. The first call
-to that broker that is answered afterwards, whatever the answer says,
-marks it back. Heartbeats are not delayed by the backoff, so with any group
-leading here this is within about a heartbeat of the heal. At its next
+So the router reports the outcome of every call. A call *fails* when the
+transport refuses it or its deadline passes. Any other reply is an
+*answer*, including a refusal from the member it was for: the broker that
+sent it is up. A broker counts as down only once its calls have kept
+failing, with no answer between, for at least a heartbeat, so one slow
+call is not an outage.
+
+The first answer from a broker that was down marks it back. At its next
 interval the ticker has every group that leads here retry its members on
-that broker at once, through openraft's `Trigger::reset_backoff`, which cuts
-a running wait short. A broker that keeps failing and answering is retried
-this way at most once a heartbeat. A dead peer answers nothing, so it costs
-what it costs without this.
+that broker at once, through openraft's `Trigger::reset_backoff`, which
+cuts a running wait short. Heartbeats are not held by the backoff, so this
+happens within about a heartbeat (200 ms by default) of the heal. A group
+that has gone idle heartbeats every `idle_heartbeat` (2 s by default), but
+the walk does not wait for its heartbeat: any answer from the broker is
+enough.
+
+A restarted broker opens its groups over time, and until one opens its
+member refuses with "no such member". Such a group is left out of the
+walk, since the broker being up says nothing about it, and is retried on
+its own member's first answer instead: a heartbeat once it opens. For an
+idle group that heartbeat can take up to `idle_heartbeat`.
+
+None of this calls a peer more often than openraft would. A broker is
+walked at most once a second, openraft's longest delay, and never twice
+at once, and each group's member is retried early at most once a second.
+A dead peer answers nothing, so it costs what it costs without the retry.
+A peer that answers only some of its calls can count as down now and then,
+and is then retried early at most once a second, which openraft's backoff
+would do anyway.
 
 A snapshot must not cost a record either, and a stream shard's snapshot
 holds none. Two settings keep that true until retention is designed:

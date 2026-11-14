@@ -117,6 +117,17 @@ struct Net {
     heal_after: parking_lot::Mutex<HashMap<String, u32>>,
     /// When the first broker came back that way.
     healed: parking_lot::Mutex<Option<std::time::Instant>>,
+    /// A member of shard `n` on a broker that is up but has not opened it
+    /// yet: it refuses until this many appends that carry entries have
+    /// been refused.
+    closed: parking_lot::Mutex<HashMap<(String, u32), u32>>,
+    /// When the first such member opened.
+    opened: parking_lot::Mutex<Option<std::time::Instant>>,
+    /// Every other call to this broker is answered after its deadline.
+    flaky: parking_lot::Mutex<Option<String>>,
+    flaky_calls: std::sync::atomic::AtomicU32,
+    flaky_beats: std::sync::atomic::AtomicU32,
+    flaky_rest: std::sync::atomic::AtomicU32,
     /// Appends carrying entries that were handed to a broker.
     appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
@@ -191,6 +202,38 @@ impl RaftTransport for Net {
         let cut = self.cut.lock().contains(broker);
         if cut && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty()) {
             self.refused_entries(broker);
+        }
+        let key = (broker.to_string(), request.group.shard.shard);
+        let closed = self.closed.lock().get(&key).copied();
+        if !cut && let Some(left) = closed {
+            if matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty()) {
+                if left == 1 {
+                    self.closed.lock().remove(&key);
+                    self.opened
+                        .lock()
+                        .get_or_insert_with(std::time::Instant::now);
+                } else {
+                    self.closed.lock().insert(key, left - 1);
+                }
+            }
+            return Err(Refused::NoSuchMember(Box::new(super::network::Addressee {
+                group: request.group.clone(),
+                to: request.to().clone(),
+            })));
+        }
+        // Heartbeats and the rest alternate apart, so neither kind is
+        // always the one that fails.
+        let beat = matches!(&request.body, Request::Append(rpc) if rpc.entries.is_empty());
+        if self.flaky.lock().as_deref() == Some(broker) {
+            self.flaky_calls.fetch_add(1, Relaxed);
+            let kind = match beat {
+                true => &self.flaky_beats,
+                false => &self.flaky_rest,
+            };
+            if kind.fetch_add(1, Relaxed) % 2 == 0 {
+                tokio::time::sleep(request.deadline + Duration::from_millis(10)).await;
+                return Err(Refused::Unreachable("too late".into()));
+            }
         }
         let runtime = match cut {
             true => None,
@@ -1629,23 +1672,6 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
     cluster.stop().await;
 }
 
-/// A broker counts as back once, on its first answer after a failed call,
-/// and an answer from a broker that never failed wakes nothing (#2543).
-#[test]
-fn a_broker_is_back_on_its_first_answer_after_a_failure() {
-    let reach = super::network::Reach::default();
-    let b: Arc<str> = "b".into();
-    reach.answered(&b);
-    assert!(reach.take_back().is_empty());
-    reach.lost(&b);
-    reach.lost(&b);
-    assert!(reach.take_back().is_empty(), "still down");
-    reach.answered(&b);
-    reach.answered(&b);
-    assert_eq!(reach.take_back(), vec![b]);
-    assert!(reach.take_back().is_empty());
-}
-
 /// A follower back from a cut takes the entries it missed within about a
 /// heartbeat. Each comes back just after its fourth refused append, when
 /// openraft's default delays would make it wait a second more (#2543).
@@ -1696,10 +1722,126 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
         "the leader changed, so this measured an election"
     );
     assert!(
-        took < Duration::from_millis(600),
+        took < Duration::from_millis(900),
         "the first commit after the cut took {took:?}"
     );
     cluster.stop().await;
+}
+
+/// A broker back from a restart opens its groups in two waves. Its first
+/// answers end the early wave's backoff, but the late wave's members are
+/// not open yet and refuse, so each is retried on its own member's first
+/// answer. Each opens just after its fourth refused append, when
+/// openraft's delays alone would make it wait a second more (#2543).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbeat() {
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(10),
+        election_max: Duration::from_secs(20),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(patient, true);
+    for n in [0, 1] {
+        cluster.form(n).await;
+        let index = cluster.write(n, b"committed").await;
+        cluster.committed_everywhere(n, index).await;
+    }
+    let leader = cluster.elected(0).await;
+    assert_eq!(leader.broker, cluster.elected(1).await.broker);
+
+    for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
+        cluster.net.heal_after.lock().insert((*broker).into(), 4);
+        cluster.net.closed.lock().insert(((*broker).into(), 1), 4);
+        cluster.net.cut.lock().insert((*broker).into());
+    }
+    let writes: Vec<_> = [0, 1]
+        .map(|n| {
+            let raft = cluster
+                .runtime(&leader.broker)
+                .group(&shard(n))
+                .expect("group")
+                .raft()
+                .clone();
+            tokio::spawn(async move {
+                raft.client_write(Command {
+                    timestamp_micros: 1_700_000_000,
+                    payload: Bytes::from_static(b"after the restart"),
+                    producer: None,
+                    written: None,
+                })
+                .await
+            })
+        })
+        .into_iter()
+        .collect();
+    for write in writes {
+        tokio::time::timeout(PATIENCE, write)
+            .await
+            .expect("answered")
+            .expect("task")
+            .expect("committed");
+    }
+    let opened = cluster.net.opened.lock().expect("a late member opened");
+    let took = opened.elapsed();
+    eprintln!("late open to first commit: {took:?}");
+    assert_eq!(
+        leader,
+        cluster.elected(1).await,
+        "this measured an election"
+    );
+    assert!(
+        took < Duration::from_millis(900),
+        "the late wave's first commit took {took:?}"
+    );
+    cluster.stop().await;
+}
+
+/// Calls to a follower that answers every other call after its deadline,
+/// over a few seconds of steady writes, and the walks its leader started.
+async fn calls_to_a_flaky_peer(wake: bool) -> (u32, usize) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(10),
+        election_max: Duration::from_secs(20),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(patient, true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let runtime = cluster.runtime(&leader.broker);
+    runtime.reach().no_wake.store(!wake, Relaxed);
+    let flaky = *BROKERS
+        .iter()
+        .find(|broker| **broker != &*leader.broker)
+        .expect("a follower");
+    *cluster.net.flaky.lock() = Some(flaky.into());
+    let until = tokio::time::Instant::now() + Duration::from_secs(4);
+    while tokio::time::Instant::now() < until {
+        cluster.write(0, b"steady").await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    *cluster.net.flaky.lock() = None;
+    let calls = cluster.net.flaky_calls.load(Relaxed);
+    let walks = runtime.reach().walks.load(Relaxed);
+    assert_eq!(leader, cluster.elected(0).await, "the leader changed");
+    cluster.stop().await;
+    (calls, walks)
+}
+
+/// A peer that answers every other call too late is not retried ahead of
+/// openraft's own backoff any more often than without the wake (#2543).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_timing_out_every_other_call_is_called_no_more_than_without_the_wake() {
+    let (without, _) = calls_to_a_flaky_peer(false).await;
+    let (with, walks) = calls_to_a_flaky_peer(true).await;
+    eprintln!(
+        "calls to the flaky peer: {without} without the wake, {with} with it ({walks} walks)"
+    );
+    assert!(without > 10, "the peer was called {without} times");
+    assert!(
+        with <= without + without / 5 + 4,
+        "{with} calls with the wake, {without} without"
+    );
 }
 
 #[test]

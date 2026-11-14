@@ -550,7 +550,11 @@ async fn a_token_does_not_leave_with_an_append() {
         Arc::new(pace().0),
         Arc::new(lease),
         reports,
-        Arc::default(),
+        Arc::new(super::super::reach::Reach::new(
+            tokio::time::Instant::now(),
+            Duration::from_millis(200),
+        )),
+        Arc::new(super::super::reach::Refusals::new(group(0))),
     );
     let (token, written) = WrittenToken::channel();
     let command = Command {
