@@ -24,10 +24,12 @@
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use bytes::Bytes;
 use felix_storage::{CommitSequencer, CommitTurn};
 use parking_lot::Mutex;
+use tokio::time::Instant;
 
 /// How far a reader may see into a stream shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -295,13 +297,16 @@ pub(crate) struct HeldBatch {
     /// Holds no records: it stands where a batch with an unknown outcome
     /// would have been, and the replay ring restarts there.
     pub(crate) gap: bool,
+    /// One past the last offset of the batch a gap stands for, when its
+    /// engine wrote it.
+    pub(crate) gap_end: Option<u64>,
 }
 
 impl HeldBatch {
     /// Stands in the order for a batch whose outcome is unknown. Its
     /// records may have committed, so the replay ring restarts above it and
     /// a reader resuming below it is served from the log.
-    pub(crate) fn gap() -> Self {
+    pub(crate) fn gap(written_end: Option<u64>) -> Self {
         Self {
             payloads: Vec::new(),
             publisher: None,
@@ -313,6 +318,7 @@ impl HeldBatch {
             trim_applied: None,
             skipped_before: 0,
             gap: true,
+            gap_end: written_end,
         }
     }
 
@@ -332,15 +338,24 @@ impl HeldBatch {
 /// a failed or cancelled one never holds up the rest.
 #[derive(Debug)]
 pub(crate) struct ProposalOrder {
-    /// The next hand-over's place. Locked across the hand-over itself.
-    next: Mutex<u64>,
+    /// Locked across the hand-over itself.
+    order: Mutex<HandOvers>,
     turns: Arc<CommitSequencer>,
+}
+
+#[derive(Debug, Default)]
+struct HandOvers {
+    /// The next hand-over's place.
+    next: u64,
+    /// When each batch the engine has not settled was handed over, oldest
+    /// first. Batches settle in hand-over order.
+    pending: VecDeque<Instant>,
 }
 
 impl Default for ProposalOrder {
     fn default() -> Self {
         Self {
-            next: Mutex::new(0),
+            order: Mutex::default(),
             turns: Arc::new(CommitSequencer::new(0)),
         }
     }
@@ -349,12 +364,33 @@ impl Default for ProposalOrder {
 impl ProposalOrder {
     /// Call `hand_over` with the next place taken. It must queue its batch
     /// with the engine before it returns.
-    pub(crate) fn hand_over<T>(&self, hand_over: impl FnOnce() -> T) -> (T, CommitTurn<'static>) {
-        let mut next = self.next.lock();
-        let place = *next;
-        *next += 1;
+    ///
+    /// Refused, with how long the oldest unsettled batch has waited, once
+    /// that is more than `stalled_after`. Each unsettled batch keeps its
+    /// payload in memory, and an engine that cannot commit (a leader cut
+    /// off from its majority) settles none, so this is what bounds them.
+    pub(crate) fn hand_over<T>(
+        &self,
+        stalled_after: Duration,
+        hand_over: impl FnOnce() -> T,
+    ) -> Result<(T, CommitTurn<'static>), Duration> {
+        let mut order = self.order.lock();
+        if let Some(oldest) = order.pending.front() {
+            let waited = oldest.elapsed();
+            if waited > stalled_after {
+                return Err(waited);
+            }
+        }
+        let place = order.next;
+        order.next += 1;
+        order.pending.push_back(Instant::now());
         let turn = self.turns.reserve_owned(place, place + 1);
-        (hand_over(), turn)
+        Ok((hand_over(), turn))
+    }
+
+    /// The oldest unsettled batch joined the hold, or was given up on.
+    pub(crate) fn settled(&self) {
+        self.order.lock().pending.pop_front();
     }
 }
 

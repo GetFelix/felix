@@ -123,6 +123,20 @@ impl Cluster {
         Ok(cluster)
     }
 
+    /// Create a stream on the running cluster. Nothing is placed or waited
+    /// for: a test that starts with fewer brokers than the stream asks for
+    /// steps placement itself.
+    pub async fn create_stream(&self, spec: &crate::StreamSpec) -> Result<()> {
+        create_stream(
+            &self.http,
+            &self.control_plane().base_url,
+            &self.config,
+            &self.credentials.admin_token(),
+            spec,
+        )
+        .await
+    }
+
     /// Wait for every broker process to report ready.
     async fn await_brokers_ready(&mut self) -> Result<()> {
         // Written as a loop rather than through `wait::until` so a broker that
@@ -336,6 +350,15 @@ impl Cluster {
         // after fencing its replicas, has not reported yet, and a leader killed
         // before its first report leaves a shard placement will never promote.
         // The probe above only proves shard 0 serves.
+        // A Raft shard's group elects its own leader: nothing is reported
+        // for placement to promote from.
+        let raft = std::iter::once(&config.broker_env)
+            .chain(&config.node_env)
+            .flatten()
+            .any(|(name, value)| name == "FELIX_SHARD_ENGINE" && value == "raft");
+        if raft {
+            return Ok(());
+        }
         wait::until(
             READY_TIMEOUT,
             "every replicated shard's leader to report its replicas",
@@ -366,6 +389,44 @@ impl Cluster {
     }
 }
 
+/// Create one stream through the control plane's API.
+async fn create_stream(
+    http: &reqwest::Client,
+    base: &str,
+    config: &ClusterConfig,
+    token: &str,
+    spec: &crate::StreamSpec,
+) -> Result<()> {
+    let stream = &spec.name;
+    post(
+        http,
+        &format!(
+            "{base}/v1/tenants/{}/namespaces/{}/streams",
+            config.tenant_id, config.namespace
+        ),
+        token,
+        serde_json::json!({
+            "tenant_id": config.tenant_id,
+            "namespace": config.namespace,
+            "stream": stream,
+            "kind": "Stream",
+            "shards": spec.shards,
+            "replication_factor": spec.replication_factor,
+            "retention": { "max_age_seconds": null, "max_size_bytes": null },
+            "consistency": spec.consistency,
+            "region": spec.region,
+            "delivery": "AtLeastOnce",
+            // Durable, so the brokers gate readiness on having actually
+            // recovered their logs. An ephemeral stream would let a broker
+            // report ready before it could serve anything.
+            "durable": spec.durable,
+            "mount": spec.mount,
+        }),
+    )
+    .await
+    .with_context(|| format!("create stream {stream}"))
+}
+
 /// Create the tenant, namespace, and streams the cluster serves.
 async fn seed_metadata(
     http: &reqwest::Client,
@@ -392,34 +453,7 @@ async fn seed_metadata(
     .context("create namespace")?;
 
     for spec in &config.streams {
-        let stream = &spec.name;
-        post(
-            http,
-            &format!(
-                "{base}/v1/tenants/{}/namespaces/{}/streams",
-                config.tenant_id, config.namespace
-            ),
-            token,
-            serde_json::json!({
-                "tenant_id": config.tenant_id,
-                "namespace": config.namespace,
-                "stream": stream,
-                "kind": "Stream",
-                "shards": spec.shards,
-                "replication_factor": spec.replication_factor,
-                "retention": { "max_age_seconds": null, "max_size_bytes": null },
-                "consistency": spec.consistency,
-                "region": spec.region,
-                "delivery": "AtLeastOnce",
-                // Durable, so the brokers gate readiness on having actually
-                // recovered their logs. An ephemeral stream would let a broker
-                // report ready before it could serve anything.
-                "durable": spec.durable,
-                "mount": spec.mount,
-            }),
-        )
-        .await
-        .with_context(|| format!("create stream {stream}"))?;
+        create_stream(http, base, config, token, spec).await?;
     }
 
     for spec in &config.caches {

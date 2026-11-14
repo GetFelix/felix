@@ -207,3 +207,39 @@ async fn sasl_binds_a_delegated_token_to_its_actors_certificate() {
         .await
         .expect("alice's own certificate still binds her subject");
 }
+
+/// **A Kafka produce to a shard on Raft is refused before anything is
+/// claimed**, with an error the client does not retry.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_produce_to_a_raft_shard_is_refused_for_good() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let cluster = BrokerCluster::new(
+        Arc::new(BrokerAuth::new("http://127.0.0.1:1".to_string())),
+        Arc::new(fixture::engine(&shards)),
+        None,
+        STANDALONE_NODE_ID,
+        "127.0.0.1:9092",
+    )
+    .expect("cluster");
+    let shard = ShardRef {
+        tenant_id: "t1",
+        namespace: "ns",
+        stream: "orders",
+        shard: 0,
+    };
+
+    let refused = cluster.admit_write(&shard).await;
+
+    assert_eq!(refused.err(), Some(WriteError::Unsupported));
+    EngineShards::shutdown(&*shards).await;
+}

@@ -26,7 +26,7 @@ use super::machine::Machine;
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
-use super::propose::{self, AckAt, Batch, Proposal};
+use super::propose::{self, AckAt, Batch, Proposal, Unacknowledged};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
@@ -761,7 +761,7 @@ impl Group {
     pub(crate) fn propose(
         &self,
         batch: Batch,
-    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let waiting = if self.stop.is_cancelled() {
             Err(propose::stopped())
         } else {
@@ -1030,6 +1030,13 @@ impl Group {
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
             client_writes: self.client_writes.load(Ordering::Relaxed),
         }
+    }
+
+    pub(crate) fn voters(&self) -> BTreeSet<MemberId> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        metrics.membership_config.membership().voter_ids().collect()
     }
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {

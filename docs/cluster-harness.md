@@ -610,6 +610,33 @@ difference between "lost a port" and "the control plane refused this identity".
 Broker output goes to `broker.log` in each node's data directory rather than
 being discarded, so that reason exists to be quoted.
 
+### Raft shards
+
+`tests/raft_shards.rs` runs durable stream shards on per-shard Raft
+(`FELIX_SHARD_ENGINE=raft`). Its tests return at once unless
+`FELIX_TEST_RAFT_SHARDS=1` is set, because they need a broker built with the
+`raft` cargo feature and the default build has none:
+
+```bash
+cargo build -p felix-broker-service --bin felix-broker --features raft
+FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test raft_shards
+```
+
+Build the broker without the feature again before running the other cluster
+tests. In CI the `cluster-raft` job ("Cluster tests (Raft shards)") does
+both steps on every code change. It reports and does not gate a merge yet.
+
+`Cluster::start` normally waits for every replicated shard's leader to
+report its replicas to the control plane. A cluster whose brokers run Raft
+skips that wait: a Raft shard reports none, and the start still waits for a
+publish to be accepted.
+
+`Cluster::create_stream` creates a stream on a running cluster and waits for
+nothing. A test that needs a shard placed on fewer brokers than its stream
+asks for starts with no streams, creates one, and steps placement itself:
+`a_short_placement_acknowledges_nothing` starts one broker and creates a
+stream of three replicas.
+
 The data directory is a temporary one and goes with the cluster. Set
 `FELIX_TEST_CLUSTER_LOG_DIR` to keep the logs: at teardown each cluster copies
 its brokers' logs to `<dir>/<test>/cluster-<n>/<node>.log`, where `<test>` is

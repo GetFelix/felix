@@ -196,3 +196,34 @@ async fn a_sequence_gap_is_not_told_to_the_client() {
     assert_eq!(result, Err(WriteError::OutcomeUnknown("write_failed")));
     assert!(stored(&broker).await.is_empty());
 }
+
+/// **An MQTT message for a shard on Raft is refused before anything is
+/// claimed.** Its log takes plain publishes only.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_message_for_a_raft_shard_is_refused_by_name() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    broker.record_headers_when(|| true);
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(fixture::engine(&shards)),
+        Duration::from_secs(1),
+    );
+    let mut message = batch(0, writes.new_producer_id(), &["plant/a"]);
+    message.tenant_id = "t1".into();
+    message.target.stream = "orders".into();
+
+    let refused = writes.write(message).await;
+
+    assert_eq!(refused, Err(WriteError::Refused(Refusal::Unsupported)));
+    EngineShards::shutdown(&*shards).await;
+}

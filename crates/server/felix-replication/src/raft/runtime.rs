@@ -15,13 +15,15 @@ use felix_storage::raft_copy::{
     CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
 };
 use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
-use openraft::{Config, SnapshotPolicy};
+use openraft::impls::leader_id_std::LeaderId;
+use openraft::raft::{VoteRequest, VoteResponse};
+use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
-use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
+use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::ticker;
-use super::types::{GroupId, MemberId};
+use super::types::{GroupId, MemberId, ShardTypes};
 use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
@@ -186,6 +188,17 @@ pub enum InitializeError {
     NotAMember(MemberId),
     #[error("the group was not formed: {0}")]
     Raft(String),
+}
+
+/// Why a member set was not found untouched by any group.
+#[derive(Debug, thiserror::Error)]
+pub enum NotBlank {
+    #[error("the shard has no group here")]
+    NoSuchGroup,
+    #[error("{0} did not answer: {1}")]
+    Unanswered(MemberId, String),
+    #[error("{0} already holds a vote or an entry of a group")]
+    Formed(MemberId),
 }
 
 /// A member [`GroupRuntime::open_copy`] started.
@@ -450,9 +463,10 @@ impl GroupRuntime {
     /// ([`Self::initialize`]) or to hear from a leader.
     ///
     /// Nothing here checks that the directory may still hold copy `copy`,
-    /// and no marks are kept, so it is for tests only. A shard opens
-    /// through [`Self::open_copy`].
-    #[cfg(any(test, feature = "testing"))]
+    /// and no marks are kept. A shard is meant to open through
+    /// [`Self::open_copy`]. The broker opening its groups here is interim:
+    /// it runs without the copy and restore check until it opens them
+    /// through the gate (#2441).
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
         let reserved = self.reserve(&group)?;
         let member = MemberId::new(self.inner.broker.clone(), copy);
@@ -671,6 +685,73 @@ impl GroupRuntime {
             .map_err(InitializeError::Raft)
     }
 
+    /// Ask every other member of `members` whether it has heard from a
+    /// group of `shard`. `Ok` only when each one answered within `within`
+    /// that it holds no vote and no entry.
+    ///
+    /// The one member that forms a group asks this first: a set with a
+    /// member a group already reached must not be formed a second time,
+    /// because the second group would elect on empty logs and overwrite
+    /// what the first acknowledged. Silence is not an answer. The question
+    /// is a pre-vote, which changes nothing on the member asked.
+    pub async fn peers_blank(
+        &self,
+        shard: &ShardKey,
+        members: &BTreeSet<MemberId>,
+        within: Duration,
+    ) -> Result<(), NotBlank> {
+        let group = self
+            .inner
+            .registry
+            .get(shard)
+            .ok_or(NotBlank::NoSuchGroup)?;
+        let asks = members
+            .iter()
+            .filter(|member| **member != group.member)
+            .map(|member| {
+                let request = RaftRequest {
+                    group: group.id.clone(),
+                    to: member.clone(),
+                    beat: 0,
+                    report: false,
+                    deadline: within,
+                    body: Request::PreVote(VoteRequest::new(
+                        Vote {
+                            leader_id: LeaderId {
+                                term: 0,
+                                voted_for: group.member.clone(),
+                            },
+                            committed: false,
+                        },
+                        None,
+                    )),
+                };
+                let transport = Arc::clone(&self.inner.transport);
+                async move {
+                    let unanswered = |why: String| NotBlank::Unanswered(member.clone(), why);
+                    match tokio::time::timeout(within, transport.send(request)).await {
+                        Ok(Ok(RaftReply(Reply::Vote(answer)))) => {
+                            if blank(&answer) {
+                                Ok(())
+                            } else {
+                                Err(NotBlank::Formed(member.clone()))
+                            }
+                        }
+                        Ok(Ok(_)) => Err(unanswered("not an answer to the question".into())),
+                        Ok(Err(refused)) => Err(unanswered(refused.to_string())),
+                        Err(_) => Err(unanswered(format!("nothing within {within:?}"))),
+                    }
+                }
+            });
+        futures::future::try_join_all(asks).await.map(|_| ())
+    }
+
+    /// The brokers that vote in `shard`'s group, as this member's log has
+    /// them. Empty until the member has heard from a group.
+    pub fn voters(&self, shard: &ShardKey) -> Option<BTreeSet<MemberId>> {
+        self.inner.registry.get(shard).map(|group| group.voters())
+    }
+
     /// Stop this broker's member of `shard`'s group and forget it. The log
     /// is left as it is, for the caller to close or reopen. False if the
     /// shard has no group here.
@@ -813,4 +894,10 @@ impl GroupRuntime {
             .trip_ticker
             .store(true, Ordering::Relaxed);
     }
+}
+
+/// Whether a pre-vote answer comes from a member no group has reached: it
+/// holds no vote and no entry. Either one alone means a group got there.
+pub(super) fn blank(answer: &VoteResponse<ShardTypes>) -> bool {
+    answer.vote.leader_id.term == 0 && answer.last_log_id.is_none()
 }
