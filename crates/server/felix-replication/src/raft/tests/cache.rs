@@ -676,39 +676,54 @@ async fn a_build_dropped_part_way_folds_back_with_nothing_lost() {
     assert!(*cache.read() == mixed_upto(23_000), "a write was lost");
 }
 
-/// A build taken just as the last one finishes, its fold back possibly
-/// still running, is exact at its own entry, and nothing is lost.
+/// A second build taken while the first still holds its cut, or just as
+/// the first finishes and its writes are folding back, is exact at its
+/// own entry, and nothing is lost once both let go.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_build_taken_while_the_last_folds_back_is_exact() {
+async fn a_second_build_while_the_first_holds_or_folds_is_exact() {
     use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
     let dir = tempdir().expect("dir");
     let (mut machine, cache) = cache_machine(dir.path()).await;
     let mut last = 20_000;
     machine.apply(entries(1, last, mixed)).await.expect("apply");
-    for _ in 0..5 {
+    for round in 0..4 {
         let mut first = machine.get_snapshot_builder().await;
+        let first_at = last;
+        machine
+            .apply(entries(last + 1, last + 5_000, mixed))
+            .await
+            .expect("apply");
+        last += 5_000;
+        // Even rounds take the second cut while the first is held; odd
+        // ones once the first is built and folding back.
+        let mut second = None;
+        if round % 2 == 0 {
+            second = Some((machine.get_snapshot_builder().await, last));
+        }
         let writes = async {
             machine
-                .apply(entries(last + 1, last + 5_000, mixed))
+                .apply(entries(last + 1, last + 1_000, mixed))
                 .await
                 .expect("apply");
         };
         let (built, ()) = tokio::join!(first.build_snapshot(), writes);
-        built.expect("build");
+        last += 1_000;
+        assert!(built.expect("build").snapshot.bytes == mixed_upto(first_at).snapshot());
         drop(first);
-        last += 5_000;
-        let at = last;
-        let mut second = machine.get_snapshot_builder().await;
+        let (mut second, second_at) = match second {
+            Some(second) => second,
+            None => (machine.get_snapshot_builder().await, last),
+        };
         machine
             .apply(entries(last + 1, last + 1_000, mixed))
             .await
             .expect("apply");
         last += 1_000;
         let built = second.build_snapshot().await.expect("build");
-        assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(at));
+        assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(second_at));
         assert!(
-            built.snapshot.bytes == mixed_upto(at).snapshot(),
-            "the second build is not the state at its entry"
+            built.snapshot.bytes == mixed_upto(second_at).snapshot(),
+            "round {round}: the second build is not the state at its entry"
         );
     }
     folded(&cache).await;

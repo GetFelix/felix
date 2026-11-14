@@ -684,9 +684,11 @@ fn a_delete_then_put_during_a_build_holds_the_new_value() {
         &[
             delete("a", None, request(1, 2)),
             put_with("a", "w", 0, Condition::Absent, request(1, 3)),
+            delete("a", None, request(1, 4)),
+            put_with("a", "x", 0, Condition::Absent, request(1, 5)),
         ],
     );
-    assert_eq!(value(&state, "a", u64::MAX), Some(("w".into(), 3)));
+    assert_eq!(value(&state, "a", u64::MAX), Some(("x".into(), 5)));
     assert_eq!(state.next_expiry(), None);
 }
 
