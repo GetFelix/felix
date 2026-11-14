@@ -1275,6 +1275,8 @@ weights=(
   "FelixRaftMembershipTerms 109"
   "FelixRaftWritten 40"
   "FelixRaftWrittenCrash 5"
+  "FelixRaftBatch 18"
+  "FelixRaftBatchKeepsCut 18"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"

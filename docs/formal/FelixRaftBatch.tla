@@ -43,6 +43,10 @@
 (*   - none held: the batch is new;                                        *)
 (*   - the table cannot say how many are held: the send is refused.        *)
 (*                                                                         *)
+(* Placing a send and appending its pieces is one step: the leader takes   *)
+(* one producer's sends in turn, and holds the turn from the table read to *)
+(* the append, so two sends of one batch are never both placed as new.     *)
+(*                                                                         *)
 (* A purge writes the table as of the new base into the member's table     *)
 (* snapshot. `AtPurge` is what it does with a batch that is cut there:     *)
 (*                                                                         *)
@@ -362,7 +366,11 @@ NeverRefuses ==
 \* which it retains: the count came from its table snapshot.
 NeverFinishesFromSnapshot ==
     \A q \in inflight :
-        (q.from > 0 /\ At(q.p, q.s) # {}) => base[leader] < Max(At(q.p, q.s))
+        (/\ q.from > 0
+         /\ At(q.p, q.s) # {}
+         /\ ~\E i \in 1..Len(tail) :
+               tail[i].kind = "piece" /\ tail[i].p = q.p /\ tail[i].s = q.s /\ tail[i].pos < q.from)
+            => base[leader] < Max(At(q.p, q.s))
 
 \* A new leader finishes a cut batch while the held pieces it took over are
 \* still uncommitted.

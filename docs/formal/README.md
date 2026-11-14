@@ -609,8 +609,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
-| `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (STATES_MAIN distinct states) |
-| `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (STATES_KEEP distinct states) |
+| `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8.53M distinct states) |
+| `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8.53M distinct states, the same count) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
 | `FelixRaftBatchRewrite.cfg` | the re-send of a cut batch is written whole (#2516) | violate `BatchExactlyOnce`: the held prefix is in the log twice |
 | `FelixRaftBatchRewriteOrder.cfg` | the same, checked for order | violate `BatchInOrder` |
@@ -3885,13 +3885,17 @@ What is modelled:
   its next batch only after the one before is acknowledged.
 - The producer table is a function of a member's table snapshot and the log
   it retains. The leader's includes its uncommitted entries: its own appends
-  and the ones it took over at a change of leader. Per producer it holds the highest sequence seen, how many of
-  its pieces are held, and its length. Pieces only land in order, so a piece
-  at position j means positions 0 to j are held. That is why the count can be
-  read from any suffix of the log.
+  and the ones it took over at a change of leader. Per producer it holds the
+  highest sequence seen, how many of its pieces are held, and its length.
+  Pieces only land in order, so a piece at position j means positions 0 to j
+  are held. That is why the count can be read from any suffix of the log.
 - The leader places a send by its table: answered as held when every piece
-  is and the committed log has them all, finished from the first missing position when the batch is cut, written
-  whole when no piece is held, and refused when the table cannot say.
+  is and the committed log has them all, finished from the first missing
+  position when the batch is cut, written whole when no piece is held, and
+  refused when the table cannot say. Placing and appending are one step:
+  the leader takes one producer's sends in turn and holds the turn until
+  the pieces are appended, so two sends of one batch are never both placed
+  as new.
 - A purge writes the table as of the new base into the table snapshot. A
   snapshot install gives a member another member's base and table snapshot.
   So a member can lead with none of a cut batch's held pieces in its log.
