@@ -503,7 +503,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             term,
             count: 1,
             timeout: PATIENCE,
-            on_lease: Some(on_lease),
+            on_lease: Some((AnswerAt::Lease, on_lease)),
         };
         settled(engine, batch, written)
     });

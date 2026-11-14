@@ -68,6 +68,11 @@ pub enum AnswerAt {
     /// does not. A `Leader` stream: the batch can still be lost if this
     /// broker stops leading before it commits.
     Lease,
+    /// Once a majority of the voters has written the batch, before their
+    /// fsync, or at the commit if that is first
+    /// ([`super::RaftEngine::await_quorum_ack`]). A `Quorum` stream that
+    /// does not fsync on commit.
+    MajorityWritten,
 }
 
 /// A publish batch for [`super::RaftEngine::propose`]. It must hold a record.

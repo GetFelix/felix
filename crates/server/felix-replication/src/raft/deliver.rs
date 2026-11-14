@@ -64,7 +64,7 @@ impl RaftEngine {
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let records = payloads.clone();
         let (on_lease, answered) = oneshot::channel();
-        let on_lease = (answer == AnswerAt::Lease).then_some(on_lease);
+        let on_lease = (answer != AnswerAt::Commit).then_some((answer, on_lease));
         // A leader cut off from its majority is not deposed, and every batch
         // it is handed waits, payload in hand, until the partition heals.
         // Refusing once the oldest has waited out its timeout bounds them.
@@ -89,7 +89,7 @@ impl RaftEngine {
             settled(self.clone(), batch, written)
         })?;
         let proposed = match answer {
-            AnswerAt::Lease => proposed.answer_at(answered),
+            AnswerAt::Lease | AnswerAt::MajorityWritten => proposed.answer_at(answered),
             AnswerAt::Commit => proposed,
         };
         Ok(
@@ -126,8 +126,9 @@ pub(super) struct Proposed {
     /// How many records it holds.
     pub(super) count: u64,
     pub(super) timeout: Duration,
-    /// Told the batch's end if it may be acknowledged on the lease.
-    pub(super) on_lease: Option<oneshot::Sender<u64>>,
+    /// Told the batch's end if it may be acknowledged before its commit,
+    /// and which rule decides that.
+    pub(super) on_lease: Option<(AnswerAt, oneshot::Sender<u64>)>,
 }
 
 /// What the broker is told of a proposed batch: committed and where, or
@@ -161,11 +162,31 @@ pub(super) async fn settled(
     // The lease is asked only now, with the batch on this log under the
     // term it names. A refusal leaves the publisher waiting for the commit
     // below, like a `Quorum` one.
-    if let Some(on_lease) = on_lease
-        && engine.admit_local_ack(&shard, written.generation).is_ok()
-    {
-        let _ = on_lease.send(written.end);
+    let mut on_majority = None;
+    match on_lease {
+        Some((AnswerAt::Lease, on_lease)) => {
+            if engine.admit_local_ack(&shard, written.generation).is_ok() {
+                let _ = on_lease.send(written.end);
+            }
+        }
+        Some((_, early)) => on_majority = Some(early),
+        None => {}
     }
+    // Ends no later than the commit wait below: it takes the commit too.
+    let majority = {
+        let waited = on_majority.map(|early| {
+            let wait = engine.await_quorum_ack(&shard, written, AckAt::Written, timeout);
+            (early, wait)
+        });
+        async move {
+            if let Some((early, wait)) = waited
+                && wait.await.is_ok()
+            {
+                let _ = early.send(written.end);
+            }
+        }
+    };
+    tokio::spawn(majority);
     // The publisher's own wait is bounded by `answer_within`. Delivery is
     // not: a batch skipped here and committed later would reach no live
     // subscriber, while the one behind it did.

@@ -172,6 +172,14 @@ impl StreamEngine {
             // vote with its cut log (#2469). The commit is never weaker.
             let answer = match handle.consistency() {
                 felix_broker::ConsistencyLevel::Leader => AnswerAt::Lease,
+                // Prototype: lands for real once a copy whose flush failed
+                // cannot vote with its cut log (#2469, PR #2481).
+                felix_broker::ConsistencyLevel::Quorum
+                    if ack == AckAt::Written
+                        && std::env::var_os("FELIX_PROTO_QUORUM_WRITTEN").is_some() =>
+                {
+                    AnswerAt::MajorityWritten
+                }
                 felix_broker::ConsistencyLevel::Quorum => AnswerAt::Commit,
             };
             let proposed = raft.publish(

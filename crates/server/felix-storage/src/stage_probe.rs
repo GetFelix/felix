@@ -104,6 +104,7 @@ stages!(
     FOLLOWER_APPEND_HANDLE,
     APPLY_ENTRIES_N,
     PUBLISH_TOTAL,
+    COMMIT_TO_APPLIED,
 );
 
 pub fn enabled() -> bool {

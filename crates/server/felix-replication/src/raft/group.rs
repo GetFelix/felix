@@ -812,13 +812,57 @@ impl Group {
         written: Written,
         timeout: Duration,
     ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
-        commit::committed(
+        let committed = commit::committed(
             written,
             self.commits.clone(),
             self.leadership.watch(&self.raft),
             self.stop.clone(),
             timeout,
-        )
+        );
+        // Measurement only: how long after openraft's commit index passes
+        // the write the state machine has applied it. One wait in 16.
+        static SAMPLE: AtomicU64 = AtomicU64::new(0);
+        let probe = felix_storage::stage_probe::enabled()
+            && SAMPLE.fetch_add(1, Ordering::Relaxed) % 16 == 0;
+        let raft = self.raft.clone();
+        async move {
+            if !probe {
+                return committed.await;
+            }
+            use openraft::async_runtime::watch::WatchReceiver;
+            let index = written.end.saturating_sub(1);
+            let seen = async {
+                let mut metrics = raft.metrics();
+                loop {
+                    let passed = metrics
+                        .borrow_watched()
+                        .committed
+                        .as_ref()
+                        .is_some_and(|at| at.index >= index);
+                    if passed {
+                        return std::time::Instant::now();
+                    }
+                    if metrics.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            };
+            let mut committed = std::pin::pin!(committed);
+            let mut seen = std::pin::pin!(seen);
+            let mut at = None;
+            loop {
+                tokio::select! {
+                    biased;
+                    done = &mut committed => {
+                        if let Some(at) = at {
+                            felix_storage::stage_probe::COMMIT_TO_APPLIED.since(at);
+                        }
+                        return done;
+                    }
+                    passed = &mut seen, if at.is_none() => at = Some(passed),
+                }
+            }
+        }
     }
 
     /// Wait until a `Quorum` write may be acknowledged. With `AckAt::Flushed`
