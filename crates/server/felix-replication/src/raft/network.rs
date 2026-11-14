@@ -110,6 +110,11 @@ pub enum Refused {
     /// group it has not opened.
     #[error("{0} is not on this broker")]
     NoSuchMember(Box<Addressee>),
+    /// The broker holds this group's member under another copy id, the one
+    /// given. The broker that forms a group learns its members' copy ids
+    /// from this.
+    #[error("{0} is not on this broker, which holds copy {1:016x} of the group")]
+    OtherCopy(Box<Addressee>, u64),
     /// The member is there and has stopped.
     #[error("{0} has stopped: {1}")]
     Stopped(Box<Addressee>, String),

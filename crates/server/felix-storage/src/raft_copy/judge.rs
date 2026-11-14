@@ -8,8 +8,8 @@ use super::copy_file::{self, CopyFile};
 use super::gate::GatePassed;
 use super::marks::{CopyMarks, MarkLog};
 use super::{VoteMark, log_below};
-use crate::disk_log::crash_point;
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
+use crate::disk_log::{crash_point, engine_marker};
 use crate::log::LogConfig;
 use crate::raft_log::state_file;
 use crate::{DiskLog, StorageId};
@@ -206,6 +206,9 @@ impl CopyRoot {
         let parent = parent_of(dir)?;
         let step = || crash_point::reached(&parent);
         step()?;
+        // The engine marker goes into `.kept` with the directory, and the
+        // new directory is as much a Raft member's as the old one.
+        let marked = engine_marker::claimed_for_raft(dir, shard).map_err(io::Error::other)?;
         let kept = if holds_no_records(dir)? {
             None
         } else {
@@ -221,6 +224,9 @@ impl CopyRoot {
         crate::fs::create_dir_all(dir)?;
         step()?;
         crate::io::sync_dir(&parent)?;
+        if marked && kept.is_some() {
+            engine_marker::claim_for_raft(dir, shard).map_err(io::Error::other)?;
+        }
         let copy = loop {
             let copy = (self.mint)();
             if copy != 0 && Some(copy) != replaced {
@@ -310,20 +316,42 @@ fn holds_no_records(dir: &Path) -> io::Result<bool> {
     let temporary = state_file::temporary(dir, copy_file::FILE_NAME);
     for entry in entries {
         let path = entry?.path();
-        if path != dir.join(copy_file::FILE_NAME) && path != temporary {
+        if path != dir.join(copy_file::FILE_NAME)
+            && path != temporary
+            && !engine_marker::is_marker(dir, &path)
+        {
             return Ok(false);
         }
     }
     Ok(true)
 }
 
-/// Missing, or holding nothing.
+/// Missing, or holding nothing but the engine marker a broker writes
+/// before a member first opens.
 fn is_empty(dir: &Path) -> io::Result<bool> {
-    match crate::fs::read_dir(dir) {
-        Ok(mut entries) => Ok(entries.next().is_none()),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(true),
-        Err(err) => Err(err),
+    let entries = match crate::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(err) => return Err(err),
+    };
+    for entry in entries {
+        if !engine_marker::is_marker(dir, &entry?.path()) {
+            return Ok(false);
+        }
     }
+    Ok(true)
+}
+
+/// Whether `dir` holds a log and no copy file. Only a member opened with no
+/// copy id leaves one: a copy file is written before a copy's first
+/// segment. [`CopyRoot::open_copy`] would rotate it as it does any
+/// directory without a copy file, so a caller whose group's members may
+/// all be such directories has to ask this first.
+pub fn holds_log_without_copy(dir: &Path) -> io::Result<bool> {
+    if copy_file::load(dir)?.is_some() {
+        return Ok(false);
+    }
+    engine_marker::holds_segments(dir).map_err(io::Error::other)
 }
 
 pub(super) fn parent_of(dir: &Path) -> io::Result<PathBuf> {

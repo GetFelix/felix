@@ -414,7 +414,7 @@ impl GroupRuntime {
     /// leads is committed, `deposed(shard, term)` when it stops leading
     /// that term. See `docs/per-shard-raft.md`, "When a leader opens".
     ///
-    /// Call it before the first [`Self::open`]: a group opened earlier
+    /// Call it before the first [`Self::open_copy`]: a group opened earlier
     /// reports to nobody. Only the first call counts.
     pub fn report_to<S, F>(&self, serving: Arc<S>, fence: Arc<F>)
     where
@@ -449,10 +449,9 @@ impl GroupRuntime {
     /// ([`Self::initialize`]) or to hear from a leader.
     ///
     /// Nothing here checks that the directory may still hold copy `copy`,
-    /// and no marks are kept. A shard is meant to open through
-    /// [`Self::open_copy`]. The broker opening its groups here is interim:
-    /// it runs without the copy and restore check until it opens them
-    /// through the gate (#2441).
+    /// and no marks are kept, so only tests open a member this way. A
+    /// broker opens its members through [`Self::open_copy`].
+    #[cfg(any(test, feature = "testing"))]
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
         let reserved = self.reserve(&group)?;
         let member = MemberId::new(self.inner.broker.clone(), copy);
@@ -692,42 +691,107 @@ impl GroupRuntime {
         let asks = members
             .iter()
             .filter(|member| **member != group.member)
-            .map(|member| {
-                let request = RaftRequest {
-                    group: group.id.clone(),
-                    to: member.clone(),
-                    beat: 0,
-                    report: false,
-                    deadline: within,
-                    body: Request::PreVote(VoteRequest::new(
-                        Vote {
-                            leader_id: LeaderId {
-                                term: 0,
-                                voted_for: group.member.clone(),
-                            },
-                            committed: false,
-                        },
-                        None,
-                    )),
-                };
-                let transport = Arc::clone(&self.inner.transport);
+            .map(|member| self.ask_blank(&group, member.clone(), within));
+        futures::future::try_join_all(asks).await.map(|_| ())
+    }
+
+    /// The first member set of `shard`'s group on `brokers`: this broker's
+    /// member, and for every other broker the member it holds, by the copy
+    /// id its directory was given. `Ok` only when each of those answered
+    /// within `within` that it holds no vote and no entry, as for
+    /// [`Self::peers_blank`].
+    ///
+    /// A copy id is minted where the copy is, so the broker that forms a
+    /// group asks for each: a question to a copy id the broker does not
+    /// hold is refused with the one it does, and is asked again of that
+    /// one. A copy that rotates after it answered is not in the set, and
+    /// joins no group until membership changes are built.
+    pub async fn first_members(
+        &self,
+        shard: &ShardKey,
+        brokers: impl IntoIterator<Item = &str>,
+        within: Duration,
+    ) -> Result<BTreeSet<MemberId>, NotBlank> {
+        let group = self
+            .inner
+            .registry
+            .get(shard)
+            .ok_or(NotBlank::NoSuchGroup)?;
+        let asks = brokers
+            .into_iter()
+            .filter(|broker| **broker != *group.member.broker)
+            .map(|broker| {
+                let group = &group;
                 async move {
-                    let unanswered = |why: String| NotBlank::Unanswered(member.clone(), why);
-                    match tokio::time::timeout(within, transport.send(request)).await {
-                        Ok(Ok(RaftReply(Reply::Vote(answer)))) => {
-                            if blank(&answer) {
-                                Ok(())
-                            } else {
-                                Err(NotBlank::Formed(member.clone()))
-                            }
+                    // No copy has id 0, so this asks which one is there.
+                    let unknown = MemberId::new(broker, 0);
+                    match self.ask(group, unknown.clone(), within).await {
+                        Err(Refused::OtherCopy(_, copy)) => {
+                            self.ask_blank(group, MemberId::new(broker, copy), within)
+                                .await
                         }
-                        Ok(Ok(_)) => Err(unanswered("not an answer to the question".into())),
-                        Ok(Err(refused)) => Err(unanswered(refused.to_string())),
-                        Err(_) => Err(unanswered(format!("nothing within {within:?}"))),
+                        Err(refused) => Err(NotBlank::Unanswered(unknown, refused.to_string())),
+                        Ok(_) => Err(NotBlank::Unanswered(
+                            unknown,
+                            "answered as a copy with no copy id".into(),
+                        )),
                     }
                 }
             });
-        futures::future::try_join_all(asks).await.map(|_| ())
+        let mut members: BTreeSet<MemberId> = futures::future::try_join_all(asks)
+            .await?
+            .into_iter()
+            .collect();
+        members.insert(group.member.clone());
+        Ok(members)
+    }
+
+    /// Ask `member` whether a group reached it. `Ok(member)` if not.
+    async fn ask_blank(
+        &self,
+        group: &Group,
+        member: MemberId,
+        within: Duration,
+    ) -> Result<MemberId, NotBlank> {
+        match self.ask(group, member.clone(), within).await {
+            Ok(Reply::Vote(answer)) if blank(&answer) => Ok(member),
+            Ok(Reply::Vote(_)) => Err(NotBlank::Formed(member)),
+            Ok(_) => Err(NotBlank::Unanswered(
+                member,
+                "not an answer to the question".into(),
+            )),
+            Err(refused) => Err(NotBlank::Unanswered(member, refused.to_string())),
+        }
+    }
+
+    /// Send `member` a pre-vote of term 0, which changes nothing on it.
+    async fn ask(
+        &self,
+        group: &Group,
+        member: MemberId,
+        within: Duration,
+    ) -> Result<Reply, Refused> {
+        let request = RaftRequest {
+            group: group.id.clone(),
+            to: member,
+            beat: 0,
+            report: false,
+            deadline: within,
+            body: Request::PreVote(VoteRequest::new(
+                Vote {
+                    leader_id: LeaderId {
+                        term: 0,
+                        voted_for: group.member.clone(),
+                    },
+                    committed: false,
+                },
+                None,
+            )),
+        };
+        match tokio::time::timeout(within, self.inner.transport.send(request)).await {
+            Ok(answer) => answer.map(|RaftReply(reply)| reply),
+            Err(_) => Err(Refused::Unreachable(format!("nothing within {within:?}"))),
+        }
     }
 
     /// The brokers that vote in `shard`'s group, as this member's log has
@@ -812,6 +876,10 @@ impl GroupRuntime {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
                 member.handle(body, beat, report).await.map(RaftReply)
+            }
+            Some(member) if member.id == group && member.member.broker == to.broker => {
+                let copy = member.member.copy;
+                Err(Refused::OtherCopy(Box::new(Addressee { group, to }), copy))
             }
             _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
         }

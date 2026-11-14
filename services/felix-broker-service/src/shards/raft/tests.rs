@@ -112,9 +112,195 @@ pub(crate) fn shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
 
 /// [`shards`] on a broker nothing tells what its groups committed.
 fn unbound_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
+    let shards = held_shards(broker);
+    open_root(broker, &shards);
+    shards
+}
+
+/// [`unbound_shards`] whose data root has not passed the restore gate.
+fn held_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     let runtime =
         GroupRuntime::start("broker-a", timers(), Arc::new(AgreeingPeers)).expect("runtime");
     RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
+}
+
+/// Pass `broker`'s data root through the restore gate and let `shards` open
+/// members on it, as a start does. The control plane's copy is one from
+/// before any mark, so a root a test opens a second time passes too.
+pub(crate) fn open_root(broker: &Arc<Broker>, shards: &RaftShards) {
+    use felix_storage::raft_copy::{ControlPlaneCopy, Evidence, Gate, check, random_copy_id};
+    let root = broker
+        .durable_storage()
+        .expect("storage")
+        .root()
+        .to_path_buf();
+    let (storage_id, _) = felix_storage::storage_identity::load_or_create(&root, || {
+        felix_common::random::uuid_v4().into_bytes()
+    })
+    .expect("storage id");
+    let gate = check(
+        &root,
+        Evidence {
+            witness_dir: None,
+            control_plane: Some(ControlPlaneCopy {
+                storage_id,
+                sequence: 0,
+            }),
+            restored: false,
+        },
+    )
+    .expect("gate");
+    let Gate::Passed(passed) = gate else {
+        panic!("the root did not pass the gate: {gate:?}");
+    };
+    shards.set_root(Arc::new(CopyRoot::open(root, passed, random_copy_id)));
+}
+
+/// The directory `orders` shard 0 opens on.
+fn orders_dir(broker: &Arc<Broker>) -> std::path::PathBuf {
+    let storage = broker.durable_storage().expect("storage");
+    storage
+        .claim_for_raft("t1", "ns", "orders", 0, INCARNATION)
+        .expect("directory")
+        .0
+}
+
+/// Take `orders` and wait until its group of one is led and served.
+async fn lead_orders(shards: &Arc<RaftShards>) {
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the led term to be served", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+}
+
+/// **No member opens on a data root the restore gate has not passed.** A
+/// held root may be a restored one, whose copies would vote a second time
+/// in a term they already voted in. The shard answers "not ready", and the
+/// pass after the gate passes the root opens the member.
+#[tokio::test]
+async fn no_member_opens_before_the_restore_gate_passes_the_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = held_shards(&broker);
+    let orders = key("orders", 0);
+    let fed = || assignments([assigned(orders.clone(), INCARNATION)]);
+
+    let mut left = fed();
+    shards.take(&mut left).await;
+    assert!(left.is_empty(), "a held Raft shard was left to the hybrid");
+    assert!(shards.engine_for(&orders).is_none());
+    assert!(matches!(
+        shards.dispatch(&orders, &|_| None),
+        Some(Dispatch::Unavailable(Reason::NotReady))
+    ));
+
+    // The feed is woken, so the members do not wait for a placement change.
+    let wake = Arc::new(tokio::sync::Notify::new());
+    shards.wake_with(Arc::clone(&wake));
+    open_root(&broker, &shards);
+    tokio::time::timeout(Duration::from_secs(5), wake.notified())
+        .await
+        .expect("the feed was not woken");
+    shards.take(&mut fed()).await;
+    assert!(shards.engine_for(&orders).is_some());
+    shards.runtime.shutdown().await;
+}
+
+/// **A copy the restore check refuses does not open as the member it was.**
+/// A data root that got a new storage id (a restore, an unsafe crash, the
+/// operator command) may hold older votes and logs than its copies gave
+/// out. The directory is moved aside and the shard opens as a member with
+/// a new copy id, no vote and no entry, which the old group does not know.
+#[tokio::test]
+async fn a_copy_the_restore_check_refuses_opens_as_a_new_member() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let orders = key("orders", 0);
+    let (old, dir) = {
+        let broker = broker(root.path()).await;
+        let shards = shards(&broker);
+        lead_orders(&shards).await;
+        let old = shards.runtime.status(&orders).expect("status").member;
+        assert_ne!(old.copy, 0);
+        shards.shutdown().await;
+        (old, orders_dir(&broker))
+    };
+
+    felix_storage::run_state::copy_trust::rotate_storage_id(
+        root.path(),
+        felix_common::random::uuid_v4().into_bytes(),
+    )
+    .expect("rotate");
+    let broker = broker(root.path()).await;
+    // Held, so the new member forms no group before it is looked at.
+    let shards = held_shards(&broker);
+    open_root(&broker, &shards);
+    let mut alone = assigned(orders.clone(), INCARNATION);
+    alone.replicas.push("broker-b".to_string());
+    shards.take(&mut assignments([alone])).await;
+
+    let status = shards.runtime.status(&orders).expect("a member");
+    assert_eq!(status.member.broker, old.broker);
+    assert_ne!(status.member.copy, old.copy);
+    assert_eq!((status.term, status.last_index), (0, None));
+    let kept = felix_storage::raft_copy::kept_copies(&dir).expect("kept");
+    assert_eq!(
+        kept.iter().map(|kept| kept.copy).collect::<Vec<_>>(),
+        vec![Some(old.copy)],
+        "the refused copy's records are kept"
+    );
+    shards.shutdown().await;
+}
+
+/// **A shard directory written before members had copy ids is refused.**
+/// It holds a Raft log and no copy file. Opened as a copy it would rotate,
+/// on every broker of its group, and the brokers would then form the group
+/// again on empty logs. It stays closed and untouched until an operator
+/// removes it.
+#[tokio::test]
+async fn a_directory_from_before_copy_ids_is_not_opened() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let orders = key("orders", 0);
+    let dir = {
+        let broker = broker(root.path()).await;
+        let shards = shards(&broker);
+        lead_orders(&shards).await;
+        shards.shutdown().await;
+        orders_dir(&broker)
+    };
+    std::fs::remove_file(dir.join("raft-copy")).expect("no copy file");
+    let listing = || {
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .expect("directory")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing();
+
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let mut left = assignments([assigned(orders.clone(), INCARNATION)]);
+    shards.take(&mut left).await;
+    assert!(left.is_empty(), "the refused shard was left to the hybrid");
+    assert!(shards.engine_for(&orders).is_none());
+    assert_eq!(listing(), before);
+    assert_eq!(
+        felix_storage::raft_copy::kept_copies(&dir).expect("kept"),
+        Vec::new()
+    );
+
+    // Removed by the operator, the shard opens as a new member.
+    std::fs::remove_dir_all(&dir).expect("remove");
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    assert!(shards.engine_for(&orders).is_some());
+    shards.shutdown().await;
 }
 
 fn timers() -> RuntimeConfig {
@@ -803,6 +989,7 @@ impl Member {
             .lock()
             .insert(name.to_string(), runtime.clone());
         let shards = RaftShards::new(Arc::clone(&broker), runtime, name.to_string());
+        open_root(&broker, &shards);
         let engine = Arc::new(engine(&shards));
         broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
             Arc::clone(&engine),

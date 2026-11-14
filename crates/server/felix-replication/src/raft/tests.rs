@@ -1487,7 +1487,12 @@ async fn a_message_for_another_member_is_refused() {
     let wiped = request(group(0), MemberId::new("a", 2));
     let reformed = request(GroupId::new(shard(0), 1), MemberId::new("a", 1));
     let unopened = request(group(3), MemberId::new("a", 1));
-    for other in [wiped, reformed, unopened] {
+    // Another copy of the group is refused with the copy that is here.
+    assert!(matches!(
+        runtime.handle(wiped).await,
+        Err(Refused::OtherCopy(_, 1))
+    ));
+    for other in [reformed, unopened] {
         let what = format!("{other:?}");
         assert!(
             matches!(runtime.handle(other).await, Err(Refused::NoSuchMember(_))),

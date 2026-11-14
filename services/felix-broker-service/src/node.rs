@@ -399,6 +399,23 @@ where
         clients,
         restore_checked,
     } = membership::Gates::new(view.is_some(), &seeded);
+    let root_sequence = crate::cluster::membership::RootSequenceSlot::default();
+    #[cfg(feature = "raft")]
+    if let (Some(root), Some(membership)) = (&durable_root, &config.membership) {
+        cluster::open_raft_root(
+            &raft_shards,
+            cluster::RaftRoot {
+                root: root.clone(),
+                witness: witnesses.clone(),
+                restore_checked: restore_checked.clone(),
+                link: link.clone(),
+                node_id: membership.node_id.clone(),
+                credential: credential.clone(),
+                slot: root_sequence.clone(),
+                stop: sync_shutdown.clone(),
+            },
+        );
+    }
     startup::bind_read_check(
         &config,
         &cluster,
@@ -595,9 +612,8 @@ where
                 marks.set_kept_ballots(kept.ballots);
             })
         }),
-        // The Raft engine sets it once its data root opens through the
-        // restore gate (`felix_replication::raft::open_root`).
-        crate::cluster::membership::RootSequenceSlot::default(),
+        // Set once the Raft data root opens through the restore gate.
+        root_sequence,
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes

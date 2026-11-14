@@ -46,6 +46,67 @@ impl Roots {
     }
 }
 
+/// A copy id is minted where the copy is, so the broker that forms a group
+/// asks each other broker for its member. The set it forms names the copy
+/// every directory holds, a silent broker stops it, and so does a member a
+/// group already reached.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_first_members_are_the_copies_the_brokers_hold() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut opened = BTreeSet::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let member = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        opened.insert(member.member);
+        logs.push(member.log);
+    }
+    let (a, key, within) = (cluster.runtime("a"), shard(0), Duration::from_secs(5));
+
+    cluster.net.cut.lock().insert("c".into());
+    match a.first_members(&key, BROKERS, within).await {
+        Err(NotBlank::Unanswered(member, _)) => assert_eq!(&*member.broker, "c"),
+        other => panic!("a silent broker counted as a member: {other:?}"),
+    }
+    cluster.net.cut.lock().clear();
+
+    let members = a
+        .first_members(&key, BROKERS, within)
+        .await
+        .expect("every broker is blank");
+    assert_eq!(members, opened);
+    assert!(members.iter().all(|member| member.copy != 0));
+    // The questions are pre-votes: they leave the members as they were.
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, 0, "{status:?}");
+    }
+
+    a.initialize(&key, members).await.expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"record").await;
+    match cluster
+        .runtime("b")
+        .first_members(&key, BROKERS, within)
+        .await
+    {
+        Err(NotBlank::Formed(_)) => {}
+        other => panic!("a formed group looked blank: {other:?}"),
+    }
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.expect("close");
+    }
+}
+
 /// A copy whose directory was wiped comes back under a new id. A request
 /// for the old id is refused, the group still counts the old id as its
 /// voter, and the new copy never votes: the old promise is not made again
@@ -125,7 +186,7 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
     };
     assert!(matches!(
         cluster.runtime("c").handle(request).await,
-        Err(Refused::NoSuchMember(_))
+        Err(Refused::OtherCopy(_, copy)) if copy == new.copy
     ));
 
     // The group goes on with the two copies kept.

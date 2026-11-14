@@ -342,3 +342,76 @@ async fn a_directory_with_only_a_copy_file_temporary_is_not_kept() {
     assert_eq!(kept_copies(&dir).expect("kept"), Vec::new());
     close(opened).await;
 }
+
+/// A broker marks a shard directory as a Raft member's before the member
+/// first opens. The marker is not a record: the directory is still new,
+/// and nothing is moved aside.
+#[tokio::test]
+async fn a_directory_holding_only_the_engine_marker_is_new() {
+    use crate::disk_log::engine_marker;
+    let root = Root::new();
+    let dir = root.shard_dir();
+    engine_marker::claim_for_raft(&dir, SHARD).expect("claim");
+    let copies = root.open();
+    let opened = open_copy(&copies, &dir).await;
+    let rotation = opened.rotation.clone().expect("a new copy");
+    assert_eq!(rotation.reason, RotateReason::Empty);
+    assert_eq!(rotation.kept, None);
+    assert_eq!(kept_copies(&dir).expect("kept"), Vec::new());
+    assert!(engine_marker::claimed_for_raft(&dir, SHARD).expect("marker"));
+    close(opened).await;
+}
+
+/// The marker goes into `.kept` with a rotated directory. The new directory
+/// is marked again before its copy file is written, so the hybrid engine
+/// never opens the log a rotated member writes.
+#[tokio::test]
+async fn a_rotated_raft_directory_is_marked_again() {
+    use crate::disk_log::engine_marker;
+    let root = Root::new();
+    let dir = root.shard_dir();
+    engine_marker::claim_for_raft(&dir, SHARD).expect("claim");
+    let old = {
+        let copies = root.open();
+        let opened = open_copy(&copies, &dir).await;
+        save_vote(&opened, 5).await;
+        close(opened).await
+    };
+    std::fs::remove_file(root.path().join(super::super::marks::FILE_NAME)).expect("lose marks");
+    root.forget_witness();
+    let copies = root.open();
+    let reopened = open_copy(&copies, &dir).await;
+    let rotation = reopened.rotation.clone().expect("rotated");
+    assert_eq!(rotation.reason, RotateReason::NoMarks);
+    assert_eq!(rotation.replaced, Some(old));
+    assert!(rotation.kept.is_some(), "the old directory held a vote");
+    assert!(engine_marker::claimed_for_raft(&dir, SHARD).expect("marker"));
+    close(reopened).await;
+}
+
+/// A log with no copy file is what a member opened with no copy id leaves.
+/// A copy's own directory never reads as one: its copy file is written
+/// before its first segment.
+#[tokio::test]
+async fn a_log_with_no_copy_file_is_told_apart() {
+    use crate::disk_log::engine_marker;
+    let root = Root::new();
+    let dir = root.shard_dir();
+    assert!(!holds_log_without_copy(&dir).expect("missing"));
+    engine_marker::claim_for_raft(&dir, SHARD).expect("claim");
+    assert!(!holds_log_without_copy(&dir).expect("marker only"));
+
+    let copies = root.open();
+    let opened = open_copy(&copies, &dir).await;
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    let flushed = append(&mut log, &[normal(1, 0, "a")])
+        .await
+        .expect("append");
+    flushed.await.expect("flush");
+    drop(log);
+    close(opened).await;
+    assert!(!holds_log_without_copy(&dir).expect("a copy"));
+
+    std::fs::remove_file(dir.join(super::super::copy_file::FILE_NAME)).expect("no copy file");
+    assert!(holds_log_without_copy(&dir).expect("a log alone"));
+}

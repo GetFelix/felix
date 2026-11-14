@@ -180,6 +180,7 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
         Err(Refused::NoSuchMember(addressee())),
         Err(Refused::Stopped(addressee(), "fatal".into())),
         Err(Refused::NoSnapshots(addressee())),
+        Err(Refused::OtherCopy(addressee(), 0xfeed)),
     ]
 }
 

@@ -257,6 +257,9 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
+        if let Some(inner) = &self.inner {
+            inner.wake_with(Arc::clone(&wake));
+        }
         let _ = self.wake.set(wake);
     }
 

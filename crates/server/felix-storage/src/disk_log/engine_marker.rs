@@ -50,8 +50,26 @@ pub fn claim_for_raft(dir: &Path, label: &str) -> Result<()> {
 }
 
 /// Whether [`claim_for_raft`] has marked `dir`.
-pub(super) fn claimed_for_raft(dir: &Path, label: &str) -> Result<bool> {
+pub(crate) fn claimed_for_raft(dir: &Path, label: &str) -> Result<bool> {
     marked_raft(dir, label)
+}
+
+/// Whether `path` is `dir`'s marker or the temporary it is written through.
+/// Neither is a record, so a directory holding only these holds no log.
+#[cfg(feature = "raft")]
+pub(crate) fn is_marker(dir: &Path, path: &Path) -> bool {
+    let marker = path_in(dir);
+    path == marker || path == marker.with_extension("tmp")
+}
+
+/// Whether `dir` holds a segment.
+#[cfg(feature = "raft")]
+pub(crate) fn holds_segments(dir: &Path) -> Result<bool> {
+    match discover_segment_ids(dir) {
+        Ok(ids) => Ok(!ids.is_empty()),
+        Err(StorageError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(err),
+    }
 }
 
 /// Refuse to open `dir` as a hybrid log when a Raft member wrote it.

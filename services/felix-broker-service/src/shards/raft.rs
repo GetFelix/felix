@@ -6,6 +6,10 @@
 //! shard's own directory. Placement decides where a group forms. Once it
 //! has, its members are the group's own, and placement changes none of them.
 //! See `docs/per-shard-raft.md`, "Forming a group".
+//!
+//! No member opens before the data root has passed the restore gate
+//! ([`RaftShards::set_root`]), and each opens as a copy through it, so a
+//! directory that may not keep its copy id comes back as a new member.
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -19,9 +23,10 @@ use felix_broker::{Broker, StreamLog};
 use felix_common::random::{HashMap, HashSet};
 use felix_replication::driver::WriteFence;
 use felix_replication::quorum::ShardServing;
-use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine};
+use felix_replication::raft::{GroupId, GroupRuntime, RaftEngine};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
+use felix_storage::raft_copy::{CopyRoot, holds_log_without_copy};
 
 use super::routing::{Dispatch, EngineShards, Reason, Taken};
 use super::watch::ShardAssignment;
@@ -64,9 +69,29 @@ pub(crate) struct RaftShards {
     /// Shards already reported as off their placement, so each is logged
     /// once per time it happens.
     off_placement: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Shards whose directory holds a log with no copy id, logged once.
+    carried_over: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// The data root, once the restore gate has passed it. No member opens
+    /// before.
+    root: std::sync::OnceLock<Arc<CopyRoot>>,
+    /// The feed's wake, so the pass after the root opens comes at once.
+    wake: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
     /// Held across a whole pass and a whole close, so a stream's delete
     /// never runs between a member's claim of its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
+}
+
+/// A shard directory an earlier build wrote as a member with no copy id.
+/// Opening it as a copy would rotate it, and with it every member of its
+/// group, so the brokers would form the group again on empty logs.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{dir} holds a Raft log with no copy id, written by a build from before Raft members had \
+     one; it is not opened. Delete the stream and create it again, or stop every broker that \
+     holds the shard and remove this directory on each"
+)]
+pub(crate) struct CarriedOver {
+    dir: String,
 }
 
 /// One open member: the log is this module's to close, because the storage
@@ -104,12 +129,25 @@ impl RaftShards {
             unreadable: parking_lot::Mutex::default(),
             unclaimed: parking_lot::Mutex::default(),
             off_placement: parking_lot::Mutex::default(),
+            carried_over: parking_lot::Mutex::default(),
+            root: std::sync::OnceLock::new(),
+            wake: std::sync::OnceLock::new(),
             open: tokio::sync::Mutex::default(),
         });
         shards
             .broker
             .set_engine_logs(Arc::clone(&shards) as Arc<dyn felix_broker::EngineLogs>);
         shards
+    }
+
+    /// Let members open on `root`, which passed the restore gate. Only the
+    /// first call counts.
+    pub(crate) fn set_root(&self, root: Arc<CopyRoot>) {
+        if self.root.set(root).is_ok()
+            && let Some(wake) = self.wake.get()
+        {
+            wake.notify_one();
+        }
     }
 
     /// The Raft engine, when this broker holds a member of `shard`.
@@ -123,68 +161,58 @@ impl RaftShards {
         self.leading.generation(shard)
     }
 
+    /// Open this broker's member of `key` as a copy on `root`. It forms
+    /// nothing: a member on an empty log waits for [`Self::form`] here or
+    /// for a leader's first append.
+    ///
+    /// The group's epoch is the stream's incarnation, so a member of an
+    /// earlier incarnation refuses this one's messages. Its pre-vote answer
+    /// would otherwise say blank for a directory the new group never touched.
     async fn open_member(
         &self,
         key: &ShardKey,
         assignment: &ShardAssignment,
+        root: &CopyRoot,
     ) -> anyhow::Result<Member> {
         self.unclaimed.lock().remove(key);
         let broker = Arc::clone(&self.broker);
         let (shard, incarnation) = (key.clone(), assignment.incarnation);
-        // The marker write fsyncs and the open recovers the log.
-        let log = tokio::task::spawn_blocking(move || -> anyhow::Result<DiskLog> {
+        // The marker write fsyncs.
+        let claim = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let storage = broker
                 .durable_storage()
                 .context("a Raft shard needs durable storage")?;
-            let (dir, label) = storage.claim_for_raft(
+            let (dir, _) = storage.claim_for_raft(
                 &shard.tenant_id,
                 &shard.namespace,
                 &shard.stream,
                 shard.shard,
                 incarnation,
             )?;
+            if holds_log_without_copy(&dir)? {
+                return Err(CarriedOver {
+                    dir: dir.display().to_string(),
+                }
+                .into());
+            }
             let config = LogConfig {
                 raft_log: true,
                 fsync_mode: FsyncMode::OnCommit,
                 ..storage.config().clone()
             };
-            Ok(DiskLog::open(dir, label, config)?)
-        })
-        .await
-        .context("open task")??;
-        let mut member = Member {
-            incarnation,
-            log,
-            follow: None,
-        };
-        match self.start_member(key, incarnation, &member.log).await {
-            Ok(follow) => {
-                member.follow = follow;
-                Ok(member)
-            }
-            Err(err) => {
-                self.close_member(key, member).await;
-                Err(err)
-            }
-        }
-    }
-
-    /// Opens the member and forms nothing: a member on an empty log waits
-    /// for [`Self::form`] here or for a leader's first append.
-    ///
-    /// The group's epoch is the stream's incarnation, so a member of an
-    /// earlier incarnation refuses this one's messages. Its pre-vote answer
-    /// would otherwise say blank for a directory the new group never touched.
-    async fn start_member(
-        &self,
-        key: &ShardKey,
-        incarnation: u64,
-        log: &DiskLog,
-    ) -> anyhow::Result<Option<tokio::task::JoinHandle<()>>> {
-        self.runtime
-            .open(GroupId::new(key.clone(), incarnation), 0, log.clone())
+            Ok((dir, config))
+        });
+        let (dir, config) = claim.await.context("claim task")??;
+        let opened = self
+            .runtime
+            .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
             .await
             .context("open the Raft member")?;
+        let mut member = Member {
+            incarnation,
+            log: opened.log,
+            follow: None,
+        };
         let handle = self
             .broker
             .open_stream_on_engine_log(
@@ -192,11 +220,20 @@ impl RaftShards {
                 &key.namespace,
                 &key.stream,
                 key.shard,
-                StreamLog::from_log(log.clone()),
+                StreamLog::from_log(member.log.clone()),
             )
             .await
-            .context("open the stream on the member's log")?;
-        Ok(self.engine.follow_commits(key, handle))
+            .context("open the stream on the member's log");
+        match handle {
+            Ok(handle) => {
+                member.follow = self.engine.follow_commits(key, handle);
+                Ok(member)
+            }
+            Err(err) => {
+                self.close_member(key, member).await;
+                Err(err)
+            }
+        }
     }
 
     /// Whether an earlier run of this broker opened a member of `key`. Such
@@ -247,12 +284,12 @@ impl RaftShards {
         }
     }
 
-    /// Form `key`'s group from `members`, off the pass: a member that is
+    /// Form `key`'s group on `brokers`, off the pass: a member that is
     /// down must not slow the feed. Only the broker with the lowest id in
     /// the set gets here, so a set is formed by one broker or by none, and
-    /// only once every other member has said no group reached it. The rest
-    /// join when the leader's first append arrives.
-    fn form(&self, key: ShardKey, members: BTreeSet<MemberId>, incarnation: u64) {
+    /// only once every other broker has named its copy and said no group
+    /// reached it. The rest join when the leader's first append arrives.
+    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, incarnation: u64) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
@@ -260,8 +297,12 @@ impl RaftShards {
             return;
         }
         tokio::spawn(async move {
-            match me.runtime.peers_blank(&key, &members, ASK_WITHIN).await {
-                Ok(()) => {
+            let asked = me
+                .runtime
+                .first_members(&key, brokers.iter().map(String::as_str), ASK_WITHIN)
+                .await;
+            match asked {
+                Ok(members) => {
                     // Under the pass's lock, so the member formed is the one
                     // the others were asked about.
                     me.put_off.lock().remove(&key);
@@ -437,6 +478,7 @@ impl EngineShards for RaftShards {
             self.off_placement
                 .lock()
                 .retain(|key| fed.contains_key(key));
+            self.carried_over.lock().retain(|key| fed.contains_key(key));
             // A member whose placement dropped this broker stays open: it
             // is still a voter of its group. Only a stream that is gone, or
             // made again, closes one.
@@ -472,16 +514,28 @@ impl EngineShards for RaftShards {
             for (key, (assignment, full)) in &fed {
                 let brokers = brokers_of(assignment);
                 if !open.contains_key(key) {
+                    // Held by the restore gate: the pass after it opens
+                    // the root opens the members.
+                    let Some(root) = self.root.get() else {
+                        continue;
+                    };
                     if !brokers.contains(self.local.as_str())
                         && !self.claimed(key, assignment.incarnation).await
                     {
                         continue;
                     }
-                    match self.open_member(key, assignment).await {
+                    match self.open_member(key, assignment, root).await {
                         Ok(member) => {
+                            self.carried_over.lock().remove(key);
                             open.insert(key.clone(), member);
                         }
                         // Tried again on the next pass.
+                        Err(err) if err.is::<CarriedOver>() => {
+                            if self.carried_over.lock().insert(key.clone()) {
+                                tracing::error!(shard = ?key, error = %err, "not opening a Raft shard");
+                            }
+                            continue;
+                        }
                         Err(err) => {
                             tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not open a Raft shard");
                             continue;
@@ -499,11 +553,8 @@ impl EngineShards for RaftShards {
                     .status(key)
                     .is_some_and(|status| status.term == 0 && status.last_index.is_none());
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
-                    let members = brokers
-                        .iter()
-                        .map(|broker| MemberId::new(*broker, 0))
-                        .collect();
-                    self.form(key.clone(), members, assignment.incarnation);
+                    let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
+                    self.form(key.clone(), brokers, assignment.incarnation);
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
@@ -540,6 +591,10 @@ impl EngineShards for RaftShards {
                 None => Dispatch::Unavailable(Reason::OwnerUnavailable(leader.to_string())),
             },
         })
+    }
+
+    fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
+        let _ = self.wake.set(wake);
     }
 
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
