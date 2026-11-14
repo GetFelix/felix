@@ -100,6 +100,7 @@ pub(super) async fn subscribe(
         &publish_ctx.identity,
         &publish_ctx.lane_manager,
         publish_ctx.ingress.as_deref(),
+        publish_ctx.client_endpoints.as_deref(),
         out_ack_tx,
         out_ack_depth,
         ack_throttle_tx,

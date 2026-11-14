@@ -1017,6 +1017,7 @@ mod quorum_wait {
 #[cfg(feature = "raft")]
 mod on_raft {
     use super::*;
+    use crate::serving::quic::handlers::publish::AdmissionPermit;
     use crate::shards::raft::tests as fixture;
     use crate::shards::routing::EngineShards;
 
@@ -1109,6 +1110,316 @@ mod on_raft {
             fixture::delivered(&mut receiver).await,
             (second, Bytes::from_static(b"two"))
         );
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+
+    fn idempotent(
+        handle: &felix_broker::StreamHandle,
+        shard: &crate::shards::ShardKey,
+        term: u64,
+        sequence: u64,
+        payload: &'static [u8],
+    ) -> (PublishJob, Answer) {
+        let (mut job, answer) = job(handle, shard, term, payload, None);
+        job.target = PublishTarget::Idempotent {
+            handle: handle.clone(),
+            shard: Some(shard.clone()),
+            generation: term,
+            fenced: None,
+            producer_id: 9,
+            sequence,
+            reuse: felix_broker::SequenceReuse::Refuse,
+        };
+        (job, answer)
+    }
+
+    /// **Idempotent publishes queued to a Raft shard are written once each,
+    /// in lane order, and a batch queued again is answered with the offset
+    /// its first arrival got.** The producer's batches are queued back to
+    /// back, so each is checked against a log that holds the one before.
+    #[tokio::test]
+    async fn queued_idempotent_publishes_to_a_raft_shard_are_written_once() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let (mut receiver, _guard) = broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await?
+            .into_parts();
+
+        let (zero, first) = idempotent(&handle, &orders, term, 0, b"zero");
+        let (one, second) = idempotent(&handle, &orders, term, 1, b"one");
+        let (again, resent) = idempotent(&handle, &orders, term, 0, b"zero");
+        let (skips, gap) = idempotent(&handle, &orders, term, 3, b"three");
+        for job in [zero, one, again, skips] {
+            publish_ctx.scheduler.send(job).await;
+        }
+
+        let first = first.await?.expect("acknowledged").expect("an offset");
+        let second = second.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(second, first + 1);
+        let resent = resent.await?.expect("answered").expect("an offset");
+        assert_eq!(resent, first, "a re-send got an offset of its own");
+        let err = gap.await?.expect_err("a sequence was skipped");
+        // The broker's own refusal, which the control stream names to the client.
+        assert!(
+            matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::SequenceGap { expected: 2 })
+            ),
+            "{err}"
+        );
+        let (plain, after) = job(&handle, &orders, term, b"plain", None);
+        publish_ctx.scheduler.send(plain).await;
+        let after = after.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(after, second + 1, "a re-send or a refusal took an offset");
+        for (offset, payload) in [(first, &b"zero"[..]), (second, b"one"), (after, b"plain")] {
+            assert_eq!(
+                fixture::delivered(&mut receiver).await,
+                (offset, Bytes::copy_from_slice(payload))
+            );
+        }
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+
+    /// The same job, as read from `conn`.
+    fn read_from(
+        conn: &Arc<ConnLimits>,
+        (mut job, answer): (PublishJob, Answer),
+    ) -> (PublishJob, Answer) {
+        job.admission_permit = Some(AdmissionPermit::of_connection(conn));
+        (job, answer)
+    }
+
+    /// **An idempotent batch waiting for its producer's turn holds up no
+    /// other connection's publish to the shard, and no later publish of its
+    /// own connection passes it.** The wait lasts until the producer's
+    /// batch before is on the log. Held on the lane, it would stop every
+    /// publish to the shard for as long. Let past, a plain publish its
+    /// connection sent after the batch would be committed before it.
+    #[tokio::test]
+    async fn a_batch_waiting_for_its_producers_turn_holds_up_only_its_own_connection() -> Result<()>
+    {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let (mut receiver, _guard) = broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await?
+            .into_parts();
+        let (producer, other) = (ConnLimits::new(&config), ConnLimits::new(&config));
+
+        // The producer's batch before, not yet written.
+        let turn = broker.producer_turn(&handle, 9).await;
+        let (zero, first) = read_from(&producer, idempotent(&handle, &orders, term, 0, b"zero"));
+        let (one, second) = read_from(&producer, idempotent(&handle, &orders, term, 1, b"one"));
+        let (behind, mut kept) = read_from(&producer, job(&handle, &orders, term, b"behind", None));
+        let (plain, passed) = read_from(&other, job(&handle, &orders, term, b"plain", None));
+        for job in [zero, one, behind, plain] {
+            publish_ctx.scheduler.send(job).await;
+        }
+        let passed = tokio::time::timeout(Duration::from_secs(10), passed).await;
+        let passed = passed
+            .expect("held behind another connection's producer")?
+            .expect("acknowledged")
+            .expect("an offset");
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (passed, Bytes::from_static(b"plain"))
+        );
+        assert!(kept.try_recv().is_err(), "passed its connection's batch");
+
+        // The connection's publishes kept the order they were queued in.
+        drop(turn);
+        let first = first.await?.expect("acknowledged").expect("an offset");
+        let second = second.await?.expect("acknowledged").expect("an offset");
+        let kept = kept.await?.expect("acknowledged").expect("an offset");
+        assert_eq!((first, second, kept), (passed + 1, passed + 2, passed + 3));
+
+        // The line is gone with its last job: the next is proposed on the lane.
+        let (after, last) = read_from(&producer, job(&handle, &orders, term, b"after", None));
+        publish_ctx.scheduler.send(after).await;
+        let last = last.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(last, kept + 1);
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+
+    /// **An idempotent batch of several records is refused on a Raft shard
+    /// before anything is written or remembered.** Its records would be an
+    /// entry each, which a leader change can cut anywhere, and a cut batch
+    /// cannot be told from a whole one on its re-send.
+    #[tokio::test]
+    async fn an_idempotent_batch_of_several_records_is_refused_on_raft() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+
+        let (before, first) = job(&handle, &orders, term, b"before", None);
+        let (mut several, refused) = idempotent(&handle, &orders, term, 0, b"a");
+        several.payloads.push(Bytes::from_static(b"b"));
+        // The same sequence, as one record: taken, so the refusal left the
+        // producer no place.
+        let (single, second) = idempotent(&handle, &orders, term, 0, b"a");
+        for job in [before, several, single] {
+            publish_ctx.scheduler.send(job).await;
+        }
+        let first = first.await?.expect("acknowledged").expect("an offset");
+        let err = refused.await?.expect_err("a batch of several was taken");
+        assert!(
+            matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::NotOnEngineStream { .. })
+            ),
+            "{err}"
+        );
+        assert!(err.to_string().contains("more than one record"), "{err}");
+        // Not retryable: the same batch is refused however often it is sent.
+        let client = ClientError::from_anyhow(&err);
+        assert_eq!(client.retry(), felix_wire::RetryClass::Fatal, "{err}");
+        assert_eq!(*client.code(), felix_wire::ErrorCode::InvalidRequest);
+        let second = second.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(second, first + 1, "the refused batch took an offset");
+        let read = broker.read_durable("t1", "ns", "orders", 0, first, 1 << 20);
+        let payloads: Vec<Bytes> = read.await?.into_iter().map(|r| r.payload).collect();
+        assert_eq!(payloads, ["before", "a"]);
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+
+    /// **A batch of several records is refused without waiting for its
+    /// producer's turn, and its connection's later publishes are not queued
+    /// behind it.** Refused at its turn, a batch that is never written
+    /// would hold them up until the producer's batch before is on the log.
+    #[tokio::test]
+    async fn a_refused_idempotent_batch_does_not_wait_for_its_producers_turn() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let conn = ConnLimits::new(&config);
+
+        // The producer's batch before, not yet written.
+        let turn = broker.producer_turn(&handle, 9).await;
+        let (mut several, refused) = read_from(&conn, idempotent(&handle, &orders, term, 0, b"a"));
+        several.payloads.push(Bytes::from_static(b"b"));
+        let (behind, passed) = read_from(&conn, job(&handle, &orders, term, b"behind", None));
+        for job in [several, behind] {
+            publish_ctx.scheduler.send(job).await;
+        }
+        let refused = tokio::time::timeout(Duration::from_secs(10), refused).await;
+        let err = refused
+            .expect("the refusal waited for the producer's turn")?
+            .expect_err("a batch of several was taken");
+        assert!(
+            matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::NotOnEngineStream { .. })
+            ),
+            "{err}"
+        );
+        let passed = tokio::time::timeout(Duration::from_secs(10), passed).await;
+        let passed = passed
+            .expect("held behind a batch that is never written")?
+            .expect("acknowledged")
+            .expect("an offset");
+
+        // The refusal took no place in the producer's line: the sequence
+        // is still its next.
+        drop(turn);
+        let (single, second) = read_from(&conn, idempotent(&handle, &orders, term, 0, b"a"));
+        publish_ctx.scheduler.send(single).await;
+        let second = second.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(second, passed + 1);
         EngineShards::shutdown(&*shards).await;
         Ok(())
     }

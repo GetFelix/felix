@@ -113,3 +113,29 @@ async fn turns_are_per_producer() {
     assert!(b.try_lock().is_ok(), "another producer waited");
     drop(held);
 }
+
+/// Evicted while its turn is held, a producer would get a second lock, and
+/// two of its batches could be checked against the log at once.
+#[test]
+fn a_producer_whose_turn_is_held_is_not_let_go() {
+    let table = ProducerTable::default();
+    let held = table.serialise(0);
+    for producer in 1..=MAX_PRODUCERS as u64 {
+        table.serialise(producer);
+    }
+    // Producer 0 is the coldest, and 1 went in its place.
+    assert!(Arc::ptr_eq(&held, &table.serialise(0)));
+    assert_eq!(table.len(), MAX_PRODUCERS);
+}
+
+#[test]
+fn a_table_grown_by_held_turns_shrinks_once_they_are_given_up() {
+    let table = ProducerTable::default();
+    let held: Vec<_> = (0..MAX_PRODUCERS as u64 + 10)
+        .map(|producer| table.serialise(producer))
+        .collect();
+    assert_eq!(table.len(), MAX_PRODUCERS + 10);
+    drop(held);
+    table.serialise(u64::MAX);
+    assert_eq!(table.len(), MAX_PRODUCERS);
+}

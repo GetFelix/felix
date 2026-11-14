@@ -98,10 +98,8 @@ readme = "README.md"
 # `pub` that is not actually reachable from outside the crate reads as public
 # API and makes the real surface hard to see. Use `pub(crate)`.
 unreachable_pub = "warn"
-# felix-sim seeds tokio's `select!` under `--cfg tokio_unstable`. The control
-# plane's metadata store moves to the segment store under
-# `--cfg felix_segment_store`.
-unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)", "cfg(felix_segment_store)"] }
+# felix-sim seeds tokio's `select!` under `--cfg tokio_unstable`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(tokio_unstable)"] }
 
 [workspace.lints.clippy]
 # One module style: `foo.rs` + `foo/`, never `foo/mod.rs`. `task lint` runs
@@ -113,6 +111,7 @@ anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
+sha2 = "0.10"
 utoipa = "6.0.0"
 # `~1.3`: parsing defaults can change in a minor release, and they decide what
 # a config file means. Moving to 1.4 should be a deliberate bump.
@@ -129,6 +128,8 @@ bytes = "1"
 openraft = { git = "https://github.com/databendlabs/openraft", rev = "30c947ef38e3c1df56bcfeec990bef6b8431a132", default-features = false }
 # One shared router for every group's messages. Same rev as `openraft`.
 openraft-multi = { git = "https://github.com/databendlabs/openraft", rev = "30c947ef38e3c1df56bcfeec990bef6b8431a132" }
+# The tokio runtime the shard groups wrap. Same rev as `openraft`.
+openraft-rt-tokio = { git = "https://github.com/databendlabs/openraft", rev = "30c947ef38e3c1df56bcfeec990bef6b8431a132" }
 uuid = { version = "1", features = ["v4", "serde"] }
 # `test-util` (paused time) is a dev-dependency feature, added per member.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }

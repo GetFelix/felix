@@ -25,10 +25,12 @@ use crate::{ShardKey, ShardKind};
 mod change;
 mod commit;
 mod deliver;
+mod idempotent;
 mod identity;
 mod lease;
 mod membership;
 mod propose;
+mod switch;
 mod written;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
@@ -323,6 +325,7 @@ impl Cluster {
             let command = Command {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
+                producer: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -351,6 +354,7 @@ impl Cluster {
                 member.raft().client_write(Command {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
+                    producer: None,
                     written: None,
                 })
             });
@@ -962,6 +966,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
     let command = Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
+        producer: None,
         written: Some(token),
     };
     let raft = member.raft().clone();
@@ -1005,12 +1010,13 @@ fn a_commands_token_is_not_serialized() {
     let command = Command {
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
+        producer: None,
         written: Some(token),
     };
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
-        ["payload", "timestamp_micros"]
+        ["payload", "producer", "timestamp_micros"]
     );
     let received: Command = serde_json::from_value(sent).expect("json");
     assert!(received.written.is_none());
@@ -1179,11 +1185,24 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
     }
     assert!(!close.is_finished());
     assert_ne!(closing.status().role, Role::Stopped);
-    assert!(!runtime.close(&shard(0)).await, "closed twice");
+
+    // A caller that gave up on its close and tries again waits for the same
+    // stop. Told "no group" now, it would close the log under a member that
+    // can still write.
+    let retried = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.close(&shard(0)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !retried.is_finished(),
+        "a retried close returned while the member was still running"
+    );
 
     release.send(()).expect("release");
-    assert!(close.await.expect("close"));
+    assert!(retried.await.expect("retried close"));
     assert_eq!(closing.status().role, Role::Stopped);
+    assert!(close.await.expect("close"));
     drop(closing);
 
     let log = cluster.logs.remove(&("a".to_string(), 0)).expect("log");
@@ -1389,6 +1408,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
         let command = Command {
             timestamp_micros: 1_700_000_000,
             payload: record.clone(),
+            producer: None,
             written: None,
         };
         last = member
@@ -1450,6 +1470,22 @@ async fn a_log_that_does_not_fsync_on_commit_gets_no_group() {
             .await,
         Err(OpenError::AlreadyOpen)
     ));
+    runtime.shutdown().await;
+}
+
+/// The ticker visits groups in shard order whatever order they opened and
+/// closed in, so a simulation seed replays its run.
+#[tokio::test]
+async fn the_ticker_visits_groups_in_shard_order() {
+    let cluster = Cluster::new(false);
+    let runtime = cluster.runtime("a");
+    for n in [7, 2, 9, 0, 5, 3, 8, 1] {
+        let log = open_log(cluster.root.path(), "a", n, log_config());
+        runtime.open(group(n), 1, log).await.expect("open");
+    }
+    assert!(runtime.close(&shard(5)).await);
+    let want: Vec<_> = [0, 1, 2, 3, 7, 8, 9].map(shard).into();
+    assert_eq!(runtime.ticked_shards(), want);
     runtime.shutdown().await;
 }
 

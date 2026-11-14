@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use felix_storage::DiskLog;
 use felix_storage::raft_copy::{CopyMarks, LogMarkMode};
-use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore};
+use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::storage::RaftLogReader;
 use openraft::type_config::alias::VoteOf;
@@ -367,9 +367,11 @@ impl Group {
         transport: Arc<dyn RaftTransport>,
         timers: Timers,
         host: Option<Arc<dyn EngineHost>>,
+        tail_budget: Arc<TailBudget>,
     ) -> Result<Self, OpenError> {
         let snapshots = SnapshotStore::open(log.dir())?;
-        let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
+        let log =
+            RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
         // It started after the last message it took, so waiting the

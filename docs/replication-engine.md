@@ -3,8 +3,8 @@
 Release 0.8 simplifies Felix around one storage engine, the `felix-storage`
 segment log, and one consensus protocol, Raft through openraft (issue #2167).
 Today shards replicate with a protocol of Felix's own, described in
-[`replication-design.md`](replication-design.md), and the control plane keeps
-its Raft log in redb. This page is the design for the first four tracks of
+[`replication-design.md`](replication-design.md). The control plane kept its
+Raft log in redb until 0.8 and now keeps it on the segment store. This page is the design for the first four tracks of
 that work:
 
 1. **The replication engine interface.** One boundary between the broker and
@@ -12,7 +12,7 @@ that work:
    no change in behaviour.
 2. **Raft log storage on `DiskLog`.** One openraft log adapter over the
    segment store, shared by shard groups and the control plane.
-3. **The control plane on the segment store.** redb goes.
+3. **The control plane on the segment store.** redb goes (done in 0.8).
 4. **Per-shard Raft** behind the engine interface.
 
 Before the bespoke protocol is deleted, Raft must pass a no-regression gate
@@ -313,7 +313,7 @@ engine that writes through `DiskLog` keeps all of them.
 | `install_snapshot` on the state machine | `reset_to` (`disk_log.rs:528`), which also refuses to drop committed records with `BelowCommit`, then catch-up as a rebuild does today. |
 | Term of each entry (`LogId` with `leader_id_std::LeaderId`) | A generation field in every record's header, added in segment version 9 (see "Format version 9" under Decisions). The generation list in `disk_log/epochs.rs` stays a hint for finding truncation points and is never read as the term. |
 | `save_vote` / `read_vote` (`Vote` with its `committed` flag) | Two files, as today: the ballot (`disk_log/ballot.rs`, generation and leader) is written first and the replica state (`replica_state.rs`, generation) second, each by rename (`ballot.rs:250-263`). The open takes the higher generation, so a crash between them never lowers the vote. openraft's `committed` flag on the vote is a new field in the ballot file, which bumps the ballot format (see Format version 9). Storage errors reach openraft as `io::Error`. |
-| `save_committed` / `read_committed` | The commit offset in `replica_state.rs` (`advance_commit_offset`, `disk_log.rs:740`). |
+| `save_committed` / `read_committed` | The commit offset in `replica_state.rs` (`save_committed`, `disk_log.rs:1500`), written at most once a second on a Raft log. |
 
 The offset is the Raft index: one record is one entry. The startup scan, the
 torn-tail rule and the derived indexes keep working as they do; version 9
@@ -450,7 +450,9 @@ shard is the same under either engine, and it follows from that one error:
   leader of the poisoned shard steps down, the broker stays ready for its
   healthy shards, and the poisoned log shows in metrics and status. The log
   stays poisoned until the broker restarts; `docs/durable-storage.md` says
-  when a restart is safe.
+  when a restart is safe. A per-shard Raft copy does not come back with
+  that log: it restarts as a new copy with an empty log
+  (`docs/per-shard-raft.md`, "Group and member identity").
 
 On the hybrid, a poisoned process attests no trusted copy to a fence, and a
 promotion does not let it continue as leader, so another copy takes over
@@ -764,9 +766,9 @@ each one, as it does at a generation-start record today.
 
 ### One log adapter for shard groups and the control plane
 
-The control plane already runs openraft (0.9) for its metadata, on redb
-(`services/felix-controlplane-service/src/raft/store.rs`). Felix will have one
-Raft log storage, not two: a single `RaftLogStorage` adapter over `DiskLog`,
+The control plane runs openraft for its metadata, on this adapter since 0.8
+(`services/felix-controlplane-service/src/raft/store.rs`; it was on redb
+before). Felix has one Raft log storage, not two: a single `RaftLogStorage` adapter over `DiskLog`,
 used by every shard group and by the control plane, tested once.
 
 - **Where it lives.** In `felix-storage`, as a `raft_log` module behind a
@@ -779,8 +781,8 @@ used by every shard group and by the control plane, tested once.
   term in its header. The control plane's log has no subscribers, but using
   the same kinds keeps one code path.
 - **One set of tests.** openraft's storage conformance suite
-  (`openraft::testing::Suite`, run today against redb in
-  `services/felix-controlplane-service/src/raft/store/tests.rs:44`) runs
+  (`openraft::testing::Suite`, run in
+  `services/felix-controlplane-service/src/raft/store/tests.rs`) runs
   against the adapter, alongside `felix-storage`'s existing torn-tail,
   power-loss and fault-injection tests.
   The suite drives a whole store, so it runs in full only once purge and
@@ -793,11 +795,11 @@ used by every shard group and by the control plane, tested once.
   crash may leave of the log, the vote and the snapshot, and what the
   committed index read back may be. See "One engine: Raft on the segment
   log" in [`docs/formal/README.md`](formal/README.md).
-- **Truncation is allowed.** `store.rs` says the segment store forbids
-  truncating an uncommitted suffix. It does not: records are never rewritten
+- **Truncation is allowed.** The redb store's comments said the segment
+  store forbids truncating an uncommitted suffix. It does not: records are never rewritten
   in place, but dropping a suffix above the commit offset is a supported
   operation (`disk_log.rs:1361`, and "Divergence and truncation" in
-  `replication-design.md`). That comment is corrected when the adapter lands.
+  `replication-design.md`).
 
 ### openraft version
 
@@ -1398,15 +1400,12 @@ and does not pass or fail on them. See the gate below.
 ### 7. The control plane starts fresh and refuses an old redb directory
 
 **Decision.** No migration. A control plane that finds a redb store in its
-data directory refuses to start. The message names the file and says to move
-it aside, or to start from a snapshot export.
+data directory refuses to start. The message names the file, says nothing
+was changed, and says to keep the group on 0.7 or start it over.
 
 **Safety.** The check runs before anything writes to the directory: before
-`DiskLog` opens there, because opening creates files. Today the store is opened
-with redb's `Database::create`
-(`services/felix-controlplane-service/src/raft/store.rs:120`), which creates
-the file if it is missing. The new open path tests for that file first and
-returns the error with the directory untouched. A test checks that the
+`DiskLog` opens there, because opening creates files. The open path tests
+for the file first and returns the error with the directory untouched. A test checks that the
 directory's listing is identical before and after the refusal. redb also holds
 the control plane's cluster id claim and its vote-withheld flag
 (`store.rs:83`, `:103`). Both move to small rename-into-place files with the
@@ -1414,10 +1413,20 @@ vote, so a fresh start does not lose the rule that a wiped member does not vote.
 
 **Performance.** One file-existence check at start.
 
+**As built (0.8).** The refusal is `decide_start` in
+`felix-storage/src/metadata_store.rs`, run before the store is opened, and
+`tests/raft_runtime.rs` starts the service on a directory v0.7.1 wrote and
+checks that nothing changed. The cluster id claim and the vote-withheld
+flag are in the member file. The message points at the docs-site upgrades
+page, which says to keep the group on 0.7 or start it over on empty
+directories; there is no snapshot export.
+
 **Proposed change.** `metadata-raft-design.md`
 ("[Upgrading an existing cluster](metadata-raft-design.md#upgrading-an-existing-cluster)")
-proposes a separate tool that converts a stopped member's redb store. The
-refusal above stays. Until that is decided, this decision stands.
+proposes a separate tool that converts a stopped member's redb store
+([#2234](https://github.com/GetFelix/felix/issues/2234)). The refusal
+above stays either way. The tool is not planned for 0.8, so this decision
+stands.
 
 ## Control-plane storage on the segment log
 
@@ -1448,17 +1457,18 @@ of durability rules (fsync modes, `F_FULLFSYNC`, torn-tail repair).
   append, the vote, and a snapshot. The first is a record (checksummed, with
   a torn tail repaired on open), the other two are rename-into-place files.
   Nothing needs a multi-key transaction.
-- **Migration.** None. Felix is alpha, so a fresh start is acceptable: an
-  existing control-plane data directory is not read. Operators start the control plane
-  fresh, or import a snapshot export (the import path in
-  `metadata-raft-design.md` reads one). A control plane that finds a redb
-  file refuses to start, before it writes anything, with a message saying so
-  (Decisions, 7). A conversion tool is proposed in `metadata-raft-design.md`
-  and not yet decided.
+- **Migration.** None in 0.8. Felix is alpha, so a fresh start is
+  acceptable: an existing control-plane data directory is not read, and
+  operators start the group over (no shipped tool writes a snapshot export
+  to import). A control plane that finds a redb file refuses to start,
+  before it writes anything, with a message saying so (Decisions, 7). A
+  conversion tool is proposed in `metadata-raft-design.md`
+  ([#2234](https://github.com/GetFelix/felix/issues/2234)).
 
 ### Why redb was chosen, and why that no longer holds
 
-`store.rs` and `metadata-raft-design.md` ("Library") give two reasons for redb.
+The redb store and `metadata-raft-design.md` ("Library") gave two reasons
+for redb.
 
 **"The segment store's never-rewritten rule forbids Raft truncation."** It
 does not, today. The rule is that bytes are never rewritten in place, so
@@ -1734,8 +1744,8 @@ none of which touch the engine:
 3. The `raft_log` adapter in `felix-storage`, passing openraft's storage
    suite, with no users yet.
 4. The control plane switches from redb to the adapter, with snapshots as
-   files and a refusal to start on an old redb directory.
-5. Remove redb from the workspace.
+   files and a refusal to start on an old redb directory (done, 0.8).
+5. Remove redb from the workspace (done, 0.8).
 
 The shard Raft prototype then uses the same adapter.
 

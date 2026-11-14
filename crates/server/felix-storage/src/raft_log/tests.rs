@@ -132,7 +132,7 @@ fn membership(term: u64, index: u64) -> TestEntry {
 
 /// Store `entries` at the tail, each run of one term in one segment. Stands
 /// in for the write side until it lands.
-pub(super) async fn store(raft: &RaftLog<Types, Codec>, entries: &[TestEntry]) -> io::Result<()> {
+pub(crate) async fn store(raft: &RaftLog<Types, Codec>, entries: &[TestEntry]) -> io::Result<()> {
     let log = raft.disk_log();
     for run in
         entries.chunk_by(|a, b| a.log_id.committed_leader_id() == b.log_id.committed_leader_id())

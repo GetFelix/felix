@@ -66,7 +66,7 @@ where
             let cached = if log.is_closed() {
                 None
             } else {
-                self.shared.tail.lock().range(cuts, next, end)
+                self.shared.tail.range(cuts, next, end)
             };
             if let Some(records) = cached {
                 #[cfg(test)]
