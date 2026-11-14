@@ -118,7 +118,10 @@ impl<E: Engine + 'static> PeerRequestHandler for BrokerPeerHandler<E> {
             | InternalMessage::ReplicateRebuild(_)
             | InternalMessage::Fence(_)
             | InternalMessage::ReplicateFetch(_)
-            | InternalMessage::PreVote(_)) => self.engine.handle(sender, caller, request).await,
+            | InternalMessage::PreVote(_)
+            | InternalMessage::SealFence(_)
+            | InternalMessage::SealAck(_)
+            | InternalMessage::FromCopy(_)) => self.engine.handle(sender, caller, request).await,
             // Responses have no business arriving as requests, and a broker that
             // answered one would be inventing a request that was never made.
             other => InternalMessage::ForwardPublishError(ForwardPublishError {

@@ -10,6 +10,8 @@ mod eligibility;
 mod lag;
 mod quorum;
 mod rebuild;
+#[cfg(feature = "raft")]
+mod seal;
 mod shipping;
 pub(crate) mod trimmed_history;
 mod writers;
@@ -48,6 +50,8 @@ struct ScriptedFollower {
     rebuilds: Mutex<Vec<u64>>,
     /// What this follower said it can do, when it said.
     capabilities: Option<PeerCapabilities>,
+    /// The copy each request wrapped in `FromCopy` named.
+    copies: Mutex<Vec<[u8; 16]>>,
 }
 
 impl ScriptedFollower {
@@ -60,6 +64,7 @@ impl ScriptedFollower {
             offered: Mutex::new(Vec::new()),
             rebuilds: Mutex::new(Vec::new()),
             capabilities: None,
+            copies: Mutex::new(Vec::new()),
         }
     }
 
@@ -115,6 +120,13 @@ impl PeerRequester for ScriptedFollower {
         _addr: SocketAddr,
         message: InternalMessage,
     ) -> std::result::Result<InternalMessage, PeerError> {
+        let message = match message {
+            InternalMessage::FromCopy(stamped) => {
+                self.copies.lock().expect("lock").push(stamped.copy);
+                *stamped.message
+            }
+            message => message,
+        };
         match message {
             InternalMessage::ReplicateRecords(batch)
             | InternalMessage::ReplicateMarkedRecords(batch) => {

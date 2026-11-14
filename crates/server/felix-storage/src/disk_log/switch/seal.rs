@@ -22,9 +22,11 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::{DiskLog, SideRange, SwitchBase, digest, side_holds};
-use crate::disk_log::GenerationCheck;
+use crate::disk_log::append::WriteIf;
+use crate::disk_log::{GenerationCheck, LogInner};
 use crate::io::sync_dir;
 use crate::log::{
     AppendOnlyLog, Epoch, FsyncMode, LogRecord, Offset, ReadRange, RecordMark, WrittenBy,
@@ -147,6 +149,11 @@ impl DiskLog {
         }
         let inner = Arc::clone(&self.inner);
         felix_common::blocking::spawn(move || {
+            // `close` sets the flag under this lock: once it has, the
+            // directory may already be another log's.
+            let _persisted = inner.replica_persisted.lock();
+            inner.check_open()?;
+            inner.check_not_poisoned()?;
             let mut held = inner.switch_seal.lock();
             if let Some(refused) = other_sealer(*held, generation, sealer) {
                 return Ok(Err(refused));
@@ -177,10 +184,10 @@ impl DiskLog {
     /// since: an unsealed promotion above it reopens the shard as a hybrid
     /// shard, and nothing else does. There is no timeout.
     ///
-    /// Retention still runs while a promise holds. A copy that trims its
-    /// base before its member starts is refused as a voter and starts as a
-    /// learner: safe, but a seal whose voters trimmed cannot switch, so the
-    /// caller holds retention for a shard it seals.
+    /// Retention and head trims hold while a promise holds, so a copy keeps
+    /// the start it answered the seal's fence with. The side logs are not
+    /// held: one that moves past its range in the record makes the copy
+    /// fail the check and start as a learner.
     pub fn seal_promise(&self) -> Option<SealPromise> {
         let promise = (*self.inner.switch_seal.lock())?;
         (self.accepted_generation() <= promise.generation).then_some(promise)
@@ -239,6 +246,10 @@ impl DiskLog {
                 }));
             }
         }
+        let side_ranges = (
+            SideRange::of(dead_letters.0, dead_letters.1).await?,
+            SideRange::of(cursors.0, cursors.1).await?,
+        );
         // The side logs' tails count only once they are on disk, as N does.
         dead_letters.0.sync().await?;
         cursors.0.sync().await?;
@@ -251,17 +262,39 @@ impl DiskLog {
             offset,
             start,
             digest: digest(self, start, offset).await?,
-            dead_letters: SideRange::of(dead_letters.0, dead_letters.1).await?,
-            cursors: SideRange::of(cursors.0, cursors.1).await?,
+            dead_letters: side_ranges.0,
+            cursors: side_ranges.1,
         };
         let record = base.record(now_micros());
+        pause_point(PauseAt::Marked).await;
         if !self.append_seal_record(offset, &base, record).await? {
+            if !self.promise_still(promise.generation) {
+                return Ok(Err(SealRefused::NoPromise));
+            }
             return Err(invalid(format!(
                 "{}: the tail moved from {offset} while the seal was claimed",
                 self.label()
             )));
         }
         crash_point(2)?;
+        // A side write or a compaction that slipped past the quiesce would
+        // leave the record naming ranges the log no longer holds.
+        for (log, range) in [
+            (dead_letters.0, &base.dead_letters),
+            (cursors.0, &base.cursors),
+        ] {
+            if !side_holds(log, range).await? {
+                return Ok(Err(SealRefused::SideDiffers {
+                    label: log.label().to_string(),
+                }));
+            }
+        }
+        pause_point(PauseAt::Written).await;
+        // A later generation accepted while the record was written reopened
+        // the shard: nothing may be reported from this seal.
+        if !self.promise_still(promise.generation) {
+            return Ok(Err(SealRefused::NoPromise));
+        }
         Ok(Ok(base))
     }
 
@@ -274,6 +307,12 @@ impl DiskLog {
     /// below the seal's start, and holds the leader's records from there,
     /// and each side log holds the leader's range and nothing past it. A
     /// copy that already holds the record answers again.
+    ///
+    /// The digest reads every record from the seal's start, so it is taken
+    /// once per seal in a process: a repeat of a seal whose digest matched
+    /// runs every other check and skips that read. A promised copy takes
+    /// its records only from the sealer and is never rebuilt, so what
+    /// matched once still does.
     pub async fn ack_seal(
         &self,
         record: &LogRecord,
@@ -301,19 +340,10 @@ impl DiskLog {
         // The side logs are checked as they are on disk.
         dead_letters.sync().await?;
         cursors.sync().await?;
-        if tail == base.offset + 1 && self.holds_seal_record(record).await? {
-            // Answered before; the side logs must still be the leader's.
-            for (log, range) in [(dead_letters, &base.dead_letters), (cursors, &base.cursors)] {
-                if !side_holds(log, range).await? {
-                    return Ok(Err(SealRefused::SideDiffers {
-                        label: log.label().to_string(),
-                    }));
-                }
-            }
-            self.sync().await?;
-            return Ok(Ok(()));
-        }
-        if tail != base.offset {
+        // Answered before, or the record arrived some other way: every check
+        // below still runs, so holding N proves nothing on its own.
+        let held = tail == base.offset + 1 && self.holds_seal_record(record).await?;
+        if !held && tail != base.offset {
             return Ok(Err(SealRefused::EndsAt {
                 tail,
                 offset: base.offset,
@@ -326,8 +356,12 @@ impl DiskLog {
                 start: base.start,
             }));
         }
-        if digest(self, base.start, base.offset).await? != base.digest {
-            return Ok(Err(SealRefused::DigestDiffers));
+        if *self.inner.seal_matched.lock() != Some(base) {
+            count_digest();
+            if digest(self, base.start, base.offset).await? != base.digest {
+                return Ok(Err(SealRefused::DigestDiffers));
+            }
+            *self.inner.seal_matched.lock() = Some(base);
         }
         for (log, range) in [(dead_letters, &base.dead_letters), (cursors, &base.cursors)] {
             if !side_holds(log, range).await? {
@@ -336,6 +370,10 @@ impl DiskLog {
                 }));
             }
         }
+        if held {
+            self.sync().await?;
+            return Ok(self.lapsed_refusal(base.generation));
+        }
         let sent = crate::log::AppendRecord {
             payload: record.payload.clone(),
             timestamp_micros: record.timestamp_micros,
@@ -343,17 +381,28 @@ impl DiskLog {
             publisher: None,
             headers: None,
         };
+        pause_point(PauseAt::Checked).await;
         if !self.append_seal_record(base.offset, &base, sent).await? {
+            // The promise moved while the checks ran, or the tail did.
+            if let Err(refused) = self.lapsed_refusal(base.generation) {
+                return Ok(Err(refused));
+            }
             return Ok(Err(SealRefused::EndsAt {
                 tail: self.tail_offset().await?,
                 offset: base.offset,
             }));
         }
-        Ok(Ok(()))
+        pause_point(PauseAt::Written).await;
+        // A later generation accepted while this ran reopened the shard, so
+        // the record is no acknowledgement of the seal.
+        Ok(self.lapsed_refusal(base.generation))
     }
 
     /// Append `record` at exactly `offset`, stamped with the seal's
-    /// generation, and sync. False when the tail is elsewhere.
+    /// generation, and sync. False, and nothing written, when the tail is
+    /// elsewhere or the promise to the seal's generation no longer holds:
+    /// the promise is checked under the lock a later generation is accepted
+    /// under, held across the write, so the record never lands after one.
     async fn append_seal_record(
         &self,
         offset: Offset,
@@ -364,12 +413,21 @@ impl DiskLog {
             generation: base.generation,
             start_offset: offset,
         }]);
-        let Some(pending) = self
-            .append_pending_at(offset, std::slice::from_ref(&record), writers)
-            .await?
-        else {
+        let written = Self::write_batch(
+            Arc::clone(&self.inner),
+            vec![record],
+            WriteIf::Sealing {
+                offset,
+                generation: base.generation,
+            },
+            None,
+            writers,
+        )
+        .await?;
+        let Ok(written) = written else {
             return Ok(false);
         };
+        let pending = written.pending;
         self.commit(&pending).await?;
         // The acknowledgement and the report rest on N being on disk, not on
         // the commit's policy.
@@ -381,6 +439,20 @@ impl DiskLog {
             )));
         }
         Ok(true)
+    }
+
+    /// The promise to `generation` still holds: no later generation was
+    /// accepted since it was read.
+    fn promise_still(&self, generation: u64) -> bool {
+        self.inner.promises_seal(generation)
+    }
+
+    fn lapsed_refusal(&self, generation: u64) -> std::result::Result<(), SealRefused> {
+        if self.promise_still(generation) {
+            Ok(())
+        } else {
+            Err(SealRefused::NoPromise)
+        }
     }
 
     async fn holds_seal_record(&self, record: &LogRecord) -> Result<bool> {
@@ -400,6 +472,9 @@ impl DiskLog {
     async fn mark_claimed(&self, promise: SealPromise) -> Result<()> {
         let inner = Arc::clone(&self.inner);
         felix_common::blocking::spawn(move || {
+            let _persisted = inner.replica_persisted.lock();
+            inner.check_open()?;
+            inner.check_not_poisoned()?;
             let mut held = inner.switch_seal.lock();
             if *held != Some(promise) {
                 return Err(invalid(format!(
@@ -417,6 +492,19 @@ impl DiskLog {
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+}
+
+impl LogInner {
+    /// The promise to the seal at `generation` holds: it was taken and no
+    /// later generation was accepted since. Stable while the caller holds
+    /// `replica_persisted`, which every promise and every accepted
+    /// generation is written under.
+    pub(in crate::disk_log) fn promises_seal(&self, generation: u64) -> bool {
+        self.switch_seal
+            .lock()
+            .is_some_and(|promise| promise.generation == generation)
+            && self.accepted_generation.load(Ordering::Acquire) <= generation
     }
 }
 
@@ -507,3 +595,50 @@ fn crash_point(step: u8) -> Result<()> {
 fn crash_point(_: u8) -> Result<()> {
     Ok(())
 }
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`DiskLog::ack_seal`] digested the shard's records.
+    static DIGESTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_digest() {
+    DIGESTS.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(not(test))]
+fn count_digest() {}
+
+/// Where a test may hold a claim or an acknowledgement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseAt {
+    /// An acknowledgement's checks passed; its record is not written yet.
+    Checked,
+    /// A claim is marked; its record is not written yet.
+    Marked,
+    /// The record is on disk.
+    Written,
+}
+
+#[cfg(test)]
+type Pause = (PauseAt, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
+
+#[cfg(test)]
+thread_local! {
+    /// Where a claim or an acknowledgement waits for a test to accept a
+    /// later generation: (where, reached, resume).
+    static PAUSE: std::cell::RefCell<Option<Pause>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+async fn pause_point(at: PauseAt) {
+    let pause = PAUSE.with(|pause| pause.borrow_mut().take_if(|pause| pause.0 == at));
+    if let Some((_, reached, resume)) = pause {
+        reached.notify_one();
+        resume.notified().await;
+    }
+}
+
+#[cfg(not(test))]
+async fn pause_point(_: PauseAt) {}

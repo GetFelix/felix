@@ -12,10 +12,19 @@
 mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::net::SocketAddr;
 
 use felix_storage::StorageId;
+use felix_storage::disk_log::DiskLog;
+use felix_storage::disk_log::GenerationCheck;
 use felix_storage::disk_log::switch::SwitchBase;
-use felix_storage::log::Offset;
+use felix_storage::disk_log::switch::seal::SealRefused;
+use felix_storage::log::{AppendOnlyLog, Offset, ReadRange};
+use felix_wire::internal::{
+    Fence, InternalMessage, ReplicaLog, SealAck, SealFence, SealStarts, ShardRef,
+};
+
+use crate::peer::PeerRequester;
 
 /// Where a copy's three logs start: the shard's, its dead letters' and its
 /// cursors'.
@@ -113,8 +122,14 @@ impl SealRound {
     }
 
     /// The leader appended the record naming `base`, which is on its disk.
+    /// A record naming other starts than the answers did is not this
+    /// round's and counts for nothing.
     pub fn claimed(&mut self, base: SwitchBase) {
-        if self.base.is_none() && base.generation == self.generation {
+        let starts = self.starts();
+        let names_starts = base.start == starts.log
+            && base.dead_letters.start == starts.dead_letters.min(base.dead_letters.end)
+            && base.cursors.start == starts.cursors.min(base.cursors.end);
+        if self.base.is_none() && base.generation == self.generation && names_starts {
             self.base = Some(base);
             self.acks.insert(self.own.0.clone(), self.own.1);
         }
@@ -156,5 +171,183 @@ impl SealRound {
 
     fn majority(&self, count: usize) -> bool {
         2 * count > self.set.len()
+    }
+
+    /// One pass of the round as its leader runs it: promise the seal on its
+    /// own copy, fence each copy of `peers` that has not answered, claim the
+    /// record at `N` once [`Self::may_claim`] allows, then send the record
+    /// to each copy that has not acknowledged it, and report once a
+    /// majority holds it. `shard` is the stream shard at the seal's
+    /// generation. Called again until it reports or gives up; a follower
+    /// still catching up to `N` acknowledges on a later pass.
+    ///
+    /// A leader that finds its own claim already made, by an earlier run
+    /// whose count is gone, abandons the round: one record per generation,
+    /// so the control plane seals again at a later one.
+    pub async fn step<R: PeerRequester>(
+        &mut self,
+        requester: &R,
+        shard: &ShardRef,
+        peers: &[(String, SocketAddr)],
+        logs: SealLogs<'_>,
+        quiesced: bool,
+    ) -> felix_storage::Result<SealProgress> {
+        if self.abandoned {
+            return Ok(SealProgress::Abandoned);
+        }
+        if self.base.is_none() {
+            match self.promise_own(logs.log).await? {
+                Ok(()) => {}
+                Err(why) => return Ok(self.give_up(why)),
+            }
+            for (node, addr) in peers {
+                if self.starts.contains_key(node) || !self.set.contains(node) {
+                    continue;
+                }
+                let fence = InternalMessage::SealFence(SealFence {
+                    fence: Fence {
+                        correlation_id: 0,
+                        shard: shard.clone(),
+                        log: ReplicaLog::Stream,
+                        election: None,
+                    },
+                    sealer: self.own.1.to_bytes(),
+                });
+                if let Ok(InternalMessage::SealFenceOk(ok)) =
+                    requester.request(node, *addr, fence).await
+                {
+                    self.answered(node, ok.starts.into());
+                }
+            }
+            if !self.may_claim(quiesced) {
+                return Ok(SealProgress::Waiting);
+            }
+            let starts = self.starts();
+            match logs
+                .log
+                .claim_seal(
+                    self.own.1,
+                    starts.log,
+                    (logs.dead_letters, starts.dead_letters),
+                    (logs.cursors, starts.cursors),
+                )
+                .await?
+            {
+                Ok(base) => self.claimed(base),
+                // Any refusal may come after the claim's mark, which uses
+                // up the generation.
+                Err(why) => return Ok(self.give_up(why)),
+            }
+        }
+        let Some(base) = self.base else {
+            return Ok(SealProgress::Waiting);
+        };
+        let record = logs
+            .log
+            .read_range_with_trims(ReadRange {
+                start: base.offset,
+                max_bytes: 1,
+            })
+            .await?
+            .into_iter()
+            .find(|record| record.offset == base.offset);
+        let Some(record) = record else {
+            return Ok(self.give_up(SealRefused::NotASeal));
+        };
+        for (node, addr) in peers {
+            if self.acks.contains_key(node) || !self.set.contains(node) {
+                continue;
+            }
+            let ack = InternalMessage::SealAck(SealAck {
+                correlation_id: 0,
+                shard: shard.clone(),
+                sealer: self.own.1.to_bytes(),
+                offset: record.offset,
+                timestamp_micros: record.timestamp_micros,
+                payload: record.payload.clone(),
+            });
+            if let Ok(InternalMessage::SealAckOk(ok)) = requester.request(node, *addr, ack).await {
+                self.acked(node, StorageId::from_bytes(ok.copy));
+            }
+        }
+        // A later generation this copy accepted since the claim reopened
+        // the shard: nothing may be reported from this seal.
+        if logs
+            .log
+            .seal_promise()
+            .is_none_or(|promise| promise.generation != self.generation)
+        {
+            return Ok(self.give_up(SealRefused::NoPromise));
+        }
+        Ok(self
+            .report()
+            .map_or(SealProgress::Waiting, SealProgress::Reported))
+    }
+
+    /// The leader's own promise, taken once per round. A claim already
+    /// made at this generation is an earlier run's.
+    async fn promise_own(
+        &mut self,
+        log: &DiskLog,
+    ) -> felix_storage::Result<std::result::Result<(), SealRefused>> {
+        if let Some(promise) = log.seal_promise()
+            && promise.generation == self.generation
+        {
+            if promise.claimed {
+                return Ok(Err(SealRefused::Claimed {
+                    generation: self.generation,
+                }));
+            }
+            if promise.sealer == self.own.1 {
+                return Ok(Ok(()));
+            }
+        }
+        match log
+            .promise_seal(self.generation, &self.own.0, self.own.1)
+            .await?
+        {
+            Ok(GenerationCheck::Raised | GenerationCheck::Current) => Ok(Ok(())),
+            Ok(_) => Ok(Err(SealRefused::NoPromise)),
+            Err(why) => Ok(Err(why)),
+        }
+    }
+
+    fn give_up(&mut self, why: SealRefused) -> SealProgress {
+        self.abandon();
+        SealProgress::Refused(why)
+    }
+}
+
+/// The seal leader's three logs for the shard.
+#[derive(Clone, Copy)]
+pub struct SealLogs<'a> {
+    pub log: &'a DiskLog,
+    pub dead_letters: &'a DiskLog,
+    pub cursors: &'a DiskLog,
+}
+
+/// Where a pass of [`SealRound::step`] left the round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SealProgress {
+    /// Not yet: too few answers, a write still in flight, or too few
+    /// copies holding the record. Run another pass.
+    Waiting,
+    /// A majority holds the record: send this to the control plane.
+    Reported(SealReport),
+    /// The round is given up, for this reason. Nothing is reported from
+    /// it; the control plane seals again at a later generation, which ends
+    /// every copy's promise.
+    Refused(SealRefused),
+    /// Given up earlier.
+    Abandoned,
+}
+
+impl From<SealStarts> for LogStarts {
+    fn from(starts: SealStarts) -> Self {
+        Self {
+            log: starts.log,
+            dead_letters: starts.dead_letters,
+            cursors: starts.cursors,
+        }
     }
 }

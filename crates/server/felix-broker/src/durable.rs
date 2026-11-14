@@ -432,6 +432,12 @@ impl StreamLog {
         Self { log }
     }
 
+    /// The log underneath, for the switch's seal steps, which work on the
+    /// storage log directly.
+    pub fn disk_log(&self) -> &DiskLog {
+        &self.log
+    }
+
     /// Write a publish batch and return its offsets *before* waiting for
     /// durability, with its range claimed in `order`.
     ///
