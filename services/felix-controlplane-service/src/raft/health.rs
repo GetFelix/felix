@@ -9,9 +9,8 @@ impl RaftHandle {
     /// it unfit to serve. Small on purpose: metadata writes are rare, the
     /// only healthy lag is the handful of entries in flight between append
     /// and apply, and a member further behind is serving a past that
-    /// callers cannot detect. (Startup replay is handled separately — a
-    /// node does not finish starting until it has re-applied everything it
-    /// had committed.)
+    /// callers cannot detect. After a restart the replay gate covers the
+    /// rest ([`RaftHandle::caught_up`]).
     const READY_APPLY_LAG_MAX: u64 = 32;
 
     /// How stale a leader's last quorum acknowledgement may be before
@@ -33,6 +32,7 @@ impl RaftHandle {
         if !self.may_vote.load(std::sync::atomic::Ordering::SeqCst) {
             return Err("started without raft state; catching up before serving".to_string());
         }
+        self.caught_up()?;
         let metrics = self.raft.metrics().borrow_watched().clone();
         let Some(leader) = metrics.current_leader else {
             return Err("no raft leader is known to this instance".to_string());
@@ -72,6 +72,28 @@ impl RaftHandle {
         Ok(())
     }
 
+    /// Whether this member has applied everything it may have served before
+    /// it restarted. Reads and readiness wait for it.
+    ///
+    /// The saved committed index can trail what the member applied by about
+    /// a second of writes, so the startup replay alone can leave it
+    /// serving an older state than it showed before a crash. Its log tail
+    /// holds every entry it applied, so once the applied index reaches the
+    /// tail, or the end of a log a leader cut back below the tail, the
+    /// member is at least where it was. Committed entries are never cut, so
+    /// a cut log still holds all it applied. Unavailable beats stale.
+    pub fn caught_up(&self) -> Result<(), String> {
+        let gate = &self.replay_gate;
+        if gate.tail.is_none() || gate.open.load(std::sync::atomic::Ordering::Acquire) {
+            return Ok(());
+        }
+        let metrics = self.raft.metrics().borrow_watched().clone();
+        gate.check(
+            metrics.last_log_index,
+            metrics.last_applied.map(|id| id.index),
+        )
+    }
+
     /// Publish this member's consensus position as gauges, once a second,
     /// until `shutdown`. The names an operator's dashboard needs to answer
     /// "who leads, and is everyone keeping up" — per-instance series, no
@@ -109,9 +131,10 @@ impl RaftHandle {
     }
 }
 
-/// The first term of a store converted from redb. Terms it copied are below
-/// this and every term after the conversion is at or above it
-/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster").
+/// The first term of a store a conversion from redb would write: copied
+/// terms below it, every later term at or above it
+/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster"; no
+/// conversion tool ships yet, #2234).
 const CONVERTED_TERM_BASE: u64 = 1 << 62;
 
 /// A term as it is shown: one at or past [`CONVERTED_TERM_BASE`] with that
@@ -120,6 +143,50 @@ const CONVERTED_TERM_BASE: u64 = 1 << 62;
 /// is unchanged.
 pub(super) fn shown_term(term: u64) -> u64 {
     term.checked_sub(CONVERTED_TERM_BASE).unwrap_or(term)
+}
+
+/// A read refused because this member is still applying the log tail it had
+/// before a restart ([`RaftHandle::caught_up`]). Retryable.
+#[derive(Debug, thiserror::Error)]
+#[error("this member is catching up after a restart: {0}")]
+pub struct Replaying(pub(crate) String);
+
+/// After a restart, the log tail past the saved committed index, which the
+/// member must apply before it serves ([`RaftHandle::caught_up`]).
+pub(super) struct ReplayGate {
+    /// `None` when the saved index already covers the whole log.
+    tail: Option<u64>,
+    /// Latched once reached, so a later truncation cannot close it again.
+    open: std::sync::atomic::AtomicBool,
+}
+
+impl ReplayGate {
+    pub(super) fn new(committed_floor: Option<u64>, log_tail: Option<u64>) -> Self {
+        let tail = log_tail.filter(|tail| *tail > committed_floor.unwrap_or(0));
+        Self {
+            tail,
+            open: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    /// Opens the gate once `applied` reaches the tail, or the end of a log
+    /// a leader cut back below it.
+    pub(super) fn check(&self, last_log: Option<u64>, applied: Option<u64>) -> Result<(), String> {
+        let Some(tail) = self.tail else {
+            return Ok(());
+        };
+        // No log index yet means openraft has not reported its first
+        // metrics; reading that as an empty log would open the gate at 0.
+        let target = last_log.map_or(tail, |last| tail.min(last));
+        let applied = applied.unwrap_or(0);
+        if applied < target {
+            return Err(format!(
+                "restarted: applied {applied} of a log tail at {target}; waiting for a leader to commit it"
+            ));
+        }
+        self.open.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
 }
 
 #[cfg(test)]

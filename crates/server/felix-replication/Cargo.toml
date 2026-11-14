@@ -17,7 +17,7 @@ publish = false
 # The per-shard Raft runtime (`src/raft.rs`): many openraft groups on one
 # broker, driven by one ticker. No release enables it, and nothing in the
 # broker calls it yet. See docs/per-shard-raft.md.
-raft = ["dep:imbl", "dep:openraft", "dep:openraft-multi", "felix-storage/raft", "bytes/serde", "serde/rc"]
+raft = ["dep:imbl", "dep:openraft", "dep:openraft-multi", "dep:openraft-rt-tokio", "dep:rand", "felix-storage/raft", "bytes/serde", "serde/rc"]
 # Entry points for the libFuzzer targets in `fuzz/`. Not an API.
 fuzzing = ["raft"]
 # Test-only entry points, such as opening a Raft member with no copy
@@ -42,8 +42,11 @@ imbl = { workspace = true, optional = true }
 metrics = { workspace = true }
 openraft = { workspace = true, optional = true, features = ["tokio-rt", "serde"] }
 openraft-multi = { workspace = true, optional = true }
+openraft-rt-tokio = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 quinn = { workspace = true }
+# openraft's draws (`src/raft/draws.rs`); the major version openraft uses.
+rand = { version = "0.10", default-features = false, features = ["std", "thread_rng"], optional = true }
 rcgen = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
