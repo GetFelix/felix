@@ -1021,7 +1021,10 @@ restart too, whatever the routing view says by then.
 The commit offset is written behind the advance that raised it, so no batch or
 replication pass waits on this file. Under `FsyncMode::OnCommit` the write
 starts at once, and one write in flight carries every advance made while it
-runs, so a busy shard writes it far less often than once per batch. Under
+runs, so a busy shard writes it far less often than once per batch. A Raft
+log is the exception: its commit index moves on almost every entry, so it is
+written at most once a second whatever the mode, and after a crash it can read
+back up to about a second older than what the log had committed. Under
 `Periodic` and `None` it is written at most once a second, as its records are
 written behind too. In every mode it is written with a raised generation and at
 shutdown, and a write that fails is retried once a second until it lands,
@@ -1158,12 +1161,10 @@ local build can finish while a receive is in flight. The open deletes a
 The control plane's metadata store keeps one small file beside its Raft log
 and its snapshot. It says which cluster the store belongs to, whether the
 member's vote is withheld, and carries two marks the upgrade from redb
-uses. No release build of the control plane runs on this store. It is built
-in only with `--cfg felix_segment_store`, which CI sets to test it; the
-design is in
+uses. The control plane runs on this store from 0.8; the design is in
 [metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store).
 
-In that build the snapshot's metadata is JSON: the last log id as a term
+The snapshot's metadata is JSON: the last log id as a term
 and an index, and the last membership with the id of its entry. The data is
 the state machine's bytes as they are. A membership entry's payload in the
 log is the same JSON membership.
@@ -1257,9 +1258,8 @@ the open. Read as "no file", it would forget a record that another member's
 vote depends on. A failed write of this file or of the member file stops
 every later change of both.
 
-On redb the same values are the `forming`, `formed` and `reached` keys of
-the store's meta table. There the log is in the same file, so the reached
-flag is kept in step but a blank log beside it cannot happen.
+Releases that kept the store in redb held the same values as the
+`forming`, `formed` and `reached` keys of its meta table.
 
 ### `lock`: one holder at a time
 
