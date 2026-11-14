@@ -28,8 +28,9 @@ pub use node::{
 };
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, Readmitted, ReplicaReport,
-    ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind,
-    ShardState, ShardValidationError,
+    SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
+    ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch,
+    ShardValidationError,
 };
 pub(crate) use shard::{
     Learning, ShardOwner, check_elected_generation, first_generation, generation_at_least,

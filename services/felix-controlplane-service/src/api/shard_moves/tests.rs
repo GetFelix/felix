@@ -85,6 +85,7 @@ impl Fixture {
                 previous_generation: None,
                 readmitted: Default::default(),
                 placed: None,
+                switch: None,
             })
             .await
             .expect("assign")

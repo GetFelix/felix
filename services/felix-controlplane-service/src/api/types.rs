@@ -603,6 +603,37 @@ pub struct ConfirmedShardAssignmentResponse {
     pub assignment: Option<RoutedShardAssignment>,
 }
 
+/// A seal leader's report of its shard's seal.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SealReportRequest {
+    pub key: crate::model::ShardKey,
+    pub report: crate::model::SealReport,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SealReportResponse {
+    /// This report is the one recorded for the seal. False when the seal no
+    /// longer stands.
+    pub accepted: bool,
+}
+
+/// A seal leader giving up the seal ordered at `generation`.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SealGiveUpRequest {
+    pub key: crate::model::ShardKey,
+    pub generation: u64,
+    /// Why, for the control plane's log.
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct SealGiveUpResponse {
+    /// This request gave the seal up. False when none stood at that
+    /// generation.
+    pub given_up: bool,
+}
+
 /// Several shards to read as `GET /v1/shard-assignments/confirmed` reads one.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct ConfirmedShardAssignmentsRequest {

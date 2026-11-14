@@ -42,6 +42,7 @@ mod resources;
 mod revocations;
 mod shards;
 mod streams;
+mod switch;
 mod tenants;
 
 pub(crate) use nodes::FleetRule;
@@ -726,6 +727,30 @@ impl ControlPlaneStore for InMemoryStore {
             own_leader_set,
         )
         .await
+    }
+
+    async fn seal_shard(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+    ) -> StoreResult<crate::store::AssignmentWrite> {
+        self.apply_seal_shard(key, expected_generation).await
+    }
+
+    async fn accept_seal_report(
+        &self,
+        key: &ShardKey,
+        report: crate::model::SealReport,
+    ) -> StoreResult<crate::store::AssignmentWrite> {
+        self.apply_accept_seal_report(key, report).await
+    }
+
+    async fn give_up_seal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+    ) -> StoreResult<crate::store::AssignmentWrite> {
+        self.apply_give_up_seal(key, generation).await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {

@@ -288,6 +288,7 @@ async fn a_dead_destination_unfences_through_the_store() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("fenced");

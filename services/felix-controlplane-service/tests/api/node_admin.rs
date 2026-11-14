@@ -454,6 +454,7 @@ async fn seed_shards(store: &InMemoryStore) {
                 previous_generation: None,
                 readmitted: Default::default(),
                 placed: None,
+                switch: None,
             })
             .await
             .expect("assign");
@@ -586,6 +587,7 @@ async fn shard_assignments_carry_the_streams_routing() {
                 previous_generation: None,
                 readmitted: Default::default(),
                 placed: None,
+                switch: None,
             })
             .await
             .expect("assign");

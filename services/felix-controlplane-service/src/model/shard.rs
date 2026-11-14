@@ -288,6 +288,11 @@ pub struct ShardAssignment {
     /// metadata level 31, which has no complete record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placed: Option<PlacedInEpoch>,
+    /// The shard's switch to Raft, once a seal was ordered: see
+    /// [`ShardSwitch`]. Store-owned like `generation`; whatever a caller
+    /// passes is replaced. Under Raft it needs metadata level 33.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch: Option<ShardSwitch>,
 }
 
 /// A stream or cache at one incarnation. An import marks every one it
@@ -1343,6 +1348,9 @@ pub(crate) fn check_elected_generation(current: u64, elected: u64) -> Result<(),
     }
     Ok(())
 }
+
+mod switch;
+pub use switch::{SealOrderError, SealReport, SealReportError, SealedSideLog, ShardSwitch};
 
 #[cfg(test)]
 mod tests;

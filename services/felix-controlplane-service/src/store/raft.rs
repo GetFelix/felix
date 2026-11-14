@@ -131,6 +131,11 @@ const PLACED_LEVEL: u16 = 31;
 /// stream and cache creates until it is recorded.
 const IDENTITY_LEVEL: u16 = 32;
 
+/// The metadata level whose members record a shard's switch to Raft
+/// (`ShardAssignment::switch`): the seal order, the one report accepted for
+/// it, and the give-up.
+const SWITCH_LEVEL: u16 = 33;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -339,6 +344,20 @@ impl RaftStore {
             .map_err(StoreError::Unexpected)?;
         let result = decode_result(&bytes).map_err(StoreError::from)?;
         result.map_err(StoreError::from)
+    }
+
+    /// Propose a switch command. Refused below [`SWITCH_LEVEL`], before it
+    /// reaches the log: a member that could not apply it would keep a
+    /// hybrid shard where the others hold a sealed or switched one.
+    async fn propose_switch(&self, command: MetaCommand) -> StoreResult<AssignmentWrite> {
+        debug_assert_eq!(command.version(), SWITCH_LEVEL);
+        match self.propose(command).await? {
+            MetaResponse::Assignment { assignment } => Ok(AssignmentWrite::Written(assignment)),
+            MetaResponse::StaleAssignment { current_generation } => Ok(AssignmentWrite::Stale {
+                current: current_generation,
+            }),
+            _ => Err(unexpected_shape("assignment")),
+        }
     }
 
     async fn propose_for_keys(&self, command: MetaCommand) -> StoreResult<TenantSigningKeys> {
@@ -1032,6 +1051,38 @@ impl ControlPlaneStore for RaftStore {
             }),
             _ => Err(unexpected_shape("assignment")),
         }
+    }
+
+    async fn seal_shard(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::SealShard {
+            key: key.clone(),
+            expected_generation,
+        })
+        .await
+    }
+
+    async fn accept_seal_report(
+        &self,
+        key: &ShardKey,
+        report: crate::model::SealReport,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::AcceptSealReport {
+            key: key.clone(),
+            report,
+        })
+        .await
+    }
+
+    async fn give_up_seal(&self, key: &ShardKey, generation: u64) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::GiveUpSeal {
+            key: key.clone(),
+            generation,
+        })
+        .await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {

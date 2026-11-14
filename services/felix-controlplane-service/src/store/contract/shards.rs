@@ -57,6 +57,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     }
 }
 
@@ -147,6 +148,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_node_leading_a_shard_cannot_be_deleted(store).await;
     a_node_replicating_a_shard_cannot_be_deleted(store).await;
     a_snapshot_and_the_changes_after_it_lose_nothing(store).await;
+    super::switch::run_switch_contract(store).await;
     a_cache_shard_and_a_stream_shard_of_the_same_name_coexist(store).await;
     a_cache_shard_is_bounded_by_the_cache_not_the_stream(store).await;
     an_unknown_cache_is_rejected(store).await;
@@ -217,6 +219,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     }
 }
 
@@ -336,6 +339,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -1739,6 +1743,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     for shard in 0..2 {
         store
@@ -2026,6 +2031,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -2143,6 +2149,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

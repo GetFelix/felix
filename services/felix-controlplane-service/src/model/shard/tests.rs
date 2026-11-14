@@ -26,6 +26,7 @@ fn assignment() -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     }
 }
 

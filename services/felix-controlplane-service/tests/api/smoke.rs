@@ -1198,6 +1198,30 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn seal_shard(
+        &self,
+        _key: &ShardKey,
+        _expected_generation: u64,
+    ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn accept_seal_report(
+        &self,
+        _key: &ShardKey,
+        _report: felix_controlplane_service::model::SealReport,
+    ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn give_up_seal(
+        &self,
+        _key: &ShardKey,
+        _generation: u64,
+    ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
     async fn get_shard_assignment(&self, _key: &ShardKey) -> StoreResult<ShardAssignment> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }

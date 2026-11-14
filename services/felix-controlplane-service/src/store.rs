@@ -370,6 +370,46 @@ pub trait ControlPlaneStore: Send + Sync {
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
     ) -> StoreResult<AssignmentWrite>;
+    /// Order the seal that starts a stream shard's switch to Raft, if the
+    /// shard is still at `expected_generation`: its leader and set are
+    /// named again at the next generation with a seal order
+    /// ([`crate::model::ShardSwitch`]). The leader fences as for any
+    /// promotion but leaves the shard closed, and reports the seal.
+    ///
+    /// [`StoreError::Conflict`] when the shard cannot be sealed
+    /// ([`ShardAssignment::can_seal`]). Not fenced by the placement token:
+    /// it starts no move, and a placement write planned from an older read
+    /// is stale. Under Raft it needs metadata level 33 on every member, and
+    /// is refused below it.
+    async fn seal_shard(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+    ) -> StoreResult<AssignmentWrite>;
+    /// Record `report` as the shard's switch to Raft: its engine, its base
+    /// and its voters, in one write. A compare-and-swap on the seal order:
+    /// it lands only while the order of `report.generation` stands at the
+    /// shard's generation with no report recorded, so one report wins a
+    /// generation and a seal that was given up never switches the shard.
+    /// The write keeps the generation, the seal's.
+    ///
+    /// [`AssignmentWrite::Stale`] when the seal no longer stands. The report
+    /// already recorded, sent again, is answered as written.
+    /// [`StoreError::Conflict`] for a report whose voters cannot be the
+    /// shard's ([`crate::model::SealReport::names_voters_of`]). Level 33,
+    /// as for [`Self::seal_shard`].
+    async fn accept_seal_report(
+        &self,
+        key: &ShardKey,
+        report: crate::model::SealReport,
+    ) -> StoreResult<AssignmentWrite>;
+    /// Give up the seal standing at `generation`: the shard's leader and
+    /// set are named again at the next generation without a seal order,
+    /// which opens the hybrid again. The same compare as
+    /// [`Self::accept_seal_report`], so a give-up never lands beside a
+    /// recorded report. [`AssignmentWrite::Stale`] when no seal stands at
+    /// `generation`. Level 33.
+    async fn give_up_seal(&self, key: &ShardKey, generation: u64) -> StoreResult<AssignmentWrite>;
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
     /// The assignment for `key`, read no earlier than every write
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a

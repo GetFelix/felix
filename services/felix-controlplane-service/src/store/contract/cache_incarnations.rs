@@ -478,6 +478,7 @@ fn assignment(name: &str) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     }
 }
 
