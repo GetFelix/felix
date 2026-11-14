@@ -281,7 +281,7 @@ impl Router {
         match &answer {
             Ok(Err(Refused::Unreachable(_))) | Err(_) => self.reach.lost(&to.broker, sent_at),
             // The broker is up, but this group's member is not open there.
-            Ok(Err(Refused::NoSuchMember(_) | Refused::Stopped(..))) => {
+            Ok(Err(Refused::NoSuchMember(_) | Refused::OtherCopy(..) | Refused::Stopped(..))) => {
                 self.reach.answered(&to.broker);
                 self.refusals.refused(&to.broker);
             }
