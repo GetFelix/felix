@@ -26,6 +26,7 @@ mod commit;
 mod deliver;
 mod identity;
 mod lease;
+mod membership;
 mod propose;
 mod written;
 
