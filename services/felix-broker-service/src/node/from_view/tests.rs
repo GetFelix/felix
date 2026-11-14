@@ -365,3 +365,23 @@ fn a_directory_that_records_no_group_waits() {
     .expect("remove");
     assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::NoGroup));
 }
+
+/// A control plane without a metadata group (the in-memory store) has no
+/// group to record; the mark that it was asked is enough to start from the
+/// view.
+#[test]
+fn a_directory_checked_against_a_control_plane_without_a_group_starts() {
+    let (dir, _) = qualifying();
+    std::fs::remove_file(
+        dir.path()
+            .join(crate::cluster::controlplane_group::FILE_NAME),
+    )
+    .expect("remove");
+    std::fs::write(
+        dir.path()
+            .join(crate::cluster::controlplane_group::NO_GROUP_FILE),
+        "",
+    )
+    .expect("mark");
+    ask(dir.path(), ME, &reported()).expect("qualifies");
+}
