@@ -67,6 +67,8 @@ mod retention;
 mod sealed;
 mod segments;
 mod set;
+#[cfg(feature = "raft")]
+pub mod switch;
 mod sync;
 
 pub use producers::ProducerSequence;

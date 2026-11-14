@@ -339,6 +339,16 @@ where
     }
 }
 
+/// Write `dir`'s purged id: the log starts after `index`, whose entry is
+/// of generation `generation`. For a directory no log has open.
+pub(crate) fn store_purged(
+    dir: &std::path::Path,
+    index: Offset,
+    generation: u64,
+) -> io::Result<()> {
+    purged::store(dir, &purged::Purged { index, generation })
+}
+
 /// The last entry `log` holds as a Raft log, or the purged id when it holds
 /// none above it. What a member opening the directory would report as its
 /// last log id.
