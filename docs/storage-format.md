@@ -1988,8 +1988,11 @@ Each registration this directory records moves the binding on: when the
 record is bound to the incarnation just before the new one, under the same
 `registered_at_millis` and the id the directory has now, it is rewritten
 with the new incarnation before the registration is recorded. A registration
-from another directory, or from a release that does not write the binding,
-leaves a gap, and the record is not credited again.
+from another directory leaves a gap, and the record is not credited again.
+A release that does not write the binding registers without moving it, so
+the incarnation is one past the bound one. That one registration still
+credits, because that release ran from this directory under the same id;
+the second one leaves the gap, and credit stops.
 
 A start removes a record it does not credit, one naming another id than the
 directory's (a crash between the record and the id), and one that does not

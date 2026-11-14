@@ -659,7 +659,7 @@ fn registered_directory() -> (tempfile::TempDir, StorageId) {
 /// reports the three things `record_readmitted` asks for. The deferred
 /// restore check decides the same once it has the record.
 #[test]
-fn a_rotation_during_a_run_mints_the_id_while_only_this_directory_registers() {
+fn a_rotation_during_a_run_reports_minted_and_readmits_while_only_this_directory_registers() {
     let (root, before) = registered_directory();
     let root = root.path();
     // The copies here were lost: the node had registered another directory.
@@ -704,8 +704,10 @@ fn a_rotation_during_a_run_mints_the_id_while_only_this_directory_registers() {
 
 /// **A registration this directory did not bind ends the credit.** A release
 /// that does not write the binding registers under the same id and node
-/// record, so only the incarnation shows it: one step is what a crash before
-/// the rebind leaves, two means a run here that the record does not cover.
+/// record, so only the incarnation shows it. One step is reachable only by
+/// one such undated registration, or by a gate rotation racing
+/// `record_dated_registration` (a crash before the rebind rotates again
+/// instead); two means a run here that the record does not cover.
 #[test]
 fn an_incarnation_past_the_next_one_gets_no_credit() {
     let (root, _) = registered_directory();
@@ -780,8 +782,10 @@ fn a_rotation_record_for_an_id_never_taken_is_removed() {
     let log = felix_storage::log::LogConfig::default();
     let (id, rotated, _, kept) =
         start_run(root, &log, Some(&dated(before, 1)), None).expect("restart");
-    assert!(rotated || (id == before && !kept.minted), "{kept:?}");
-    assert!(rotation_record(root).is_none_or(|rotation| rotation.to == id));
+    assert!(!rotated, "the clean stop names the id");
+    assert_eq!(id, before);
+    assert!(!kept.minted, "{kept:?}");
+    assert_eq!(rotation_record(root), None);
 }
 
 /// **A rotation record that does not decode is removed and credits
@@ -830,4 +834,32 @@ fn a_start_that_rotated_keeps_its_rotation_record() {
     assert!(rotated && kept.minted);
     assert_eq!(kept.rotation.map(|rotation| rotation.to), Some(id));
     assert_eq!(rotation_record(root), kept.rotation);
+}
+
+/// **An uncredited rotation record is removed from a simulated directory
+/// too.** The record lives only in the simulator's memory, so a check of the
+/// real disk would leave it there.
+#[cfg(feature = "sim")]
+#[test]
+fn an_uncredited_rotation_record_is_removed_under_the_simulator() {
+    let root = std::env::temp_dir().join(format!(
+        "felix-sim-uncredited-rotation-{}",
+        std::process::id()
+    ));
+    felix_storage::sim_fs::register_root(&root);
+    let log = felix_storage::log::LogConfig::default();
+    start_run(&root, &log, None, None).expect("first run");
+    register(&root, 1);
+    let after = rotate_mid_run(&root, 7);
+    assert!(!root.exists(), "the directory is only in memory");
+
+    let added_again = Registered {
+        registered_at_millis: Some(REGISTERED_AT + 1),
+        ..dated(after, 1)
+    };
+    let (_, kept) = restart(&root, Some(&added_again));
+    let left = rotation_record(&root);
+    felix_storage::sim_fs::unregister_root(&root);
+    assert!(!kept.minted);
+    assert_eq!(left, None);
 }

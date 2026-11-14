@@ -289,12 +289,9 @@ fn last_rotation(
         let checked = registered.is_some_and(|r| r.storage_id.is_some());
         rotation.to == id && (rotated || !checked || credits(Some(*rotation), registered))
     });
-    // Also clears a record that does not decode.
-    if kept.is_none()
-        && root
-            .join(felix_storage::run_state::ROTATION_FILE_NAME)
-            .exists()
-    {
+    // Also clears a record that does not decode. Removing is a no-op when
+    // there is none, and goes through the storage fs a simulation keeps.
+    if kept.is_none() {
         felix_storage::run_state::forget_rotation(root)
             .with_context(|| format!("remove the rotation record under {}", root.display()))?;
     }
