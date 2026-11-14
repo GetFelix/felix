@@ -21,7 +21,7 @@ Counted at the QUIC publish handlers and the broker's publish workers. A publish
 
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
-| `felix_publish_requests_total` | counter | `result` | Publish requests by result. A batch is one request. The base rate and error ratio for the publish path. |
+| `felix_publish_requests_total` | counter | `result` | Publish requests by result. A batch is one request. The base rate and error ratio for the publish path. `unacked_failed` counts an unacknowledged publish that was `accepted` into the queue and then not written, for example because the shard moved while it waited. |
 | `felix_publish_bytes_total` | counter | - | Payload bytes of `ok` and `accepted` publish requests. |
 | `felix_publish_latency_ms` | histogram | `mode` | Time from receiving a publish to answering it, in milliseconds. Telemetry build only. |
 | `felix_broker_publish_claim_jobs` | histogram | - | Publishes folded into one durable claim. Near 1 means the lanes are not backing up and nothing is being batched. |

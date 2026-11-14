@@ -1928,7 +1928,16 @@ arrive and answered at its commit, for every consistency level and fsync
 policy. It does not enter the hybrid's write fence and does not need this
 broker's lease: the term is what holds the shard. A publish routed at a
 term the broker no longer serves is refused with nothing written. Readers
-at every level are bound by the commit index. A forwarded publish is
+at every level are bound by the commit index.
+
+A publish nobody waits on takes the same path: one sent with no
+acknowledgement asked for, or one acknowledged when it was queued
+(`FELIX_ACK_ON_COMMIT=0` on a `Leader` stream). It is proposed and delivered
+at its commit like any other. If the term moved while it waited in the
+queue it is dropped, since there is nobody to tell, and counted in
+`felix_publish_requests_total{result="unacked_failed"}`, or in
+`felix_broker_acked_publishes_dropped_total` if it was acknowledged on
+enqueue. A forwarded publish is
 checked against the term the owner serves now, not the one the sender saw.
 
 A `Quorum` publisher on a stream that does not fsync on commit is answered
