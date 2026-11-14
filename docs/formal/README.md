@@ -610,6 +610,21 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
+| `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
+| `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
+| `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
+| `FelixRaftBatchRewrite.cfg` | the re-send of a cut batch is written whole (#2516) | violate `BatchExactlyOnce`: the held prefix is in the log twice |
+| `FelixRaftBatchRewriteOrder.cfg` | the same, checked for order | violate `BatchInOrder` |
+| `FelixRaftBatchForgetsCut.cfg` | a purge past a cut batch drops it from the table snapshot | violate `BatchExactlyOnce`: the member takes the re-send as new |
+| `FelixRaftBatchForgetsCutPlace.cfg` | the same, checked one step earlier | violate `ProducerPlaceAgrees`: two members place one re-send differently |
+| `FelixRaftBatchTableAtApply.cfg` | the leader's table reads committed entries only; no change of leader | violate `BatchExactlyOnce`: a send that arrives while the first is in flight is written too |
+| `FelixRaftBatchHeldBeforeCommit.cfg` | a send is answered as held while its pieces are uncommitted | violate `BatchExactlyOnce`: a batch is acknowledged with nothing committed |
+| `FelixRaftBatchReachFinish.cfg` | witness: a cut batch is finished by its re-send and acknowledged | violate `NeverFinishesACut` |
+| `FelixRaftBatchReachFinishOverTail.cfg` | witness: a new leader finishes a cut batch while the held pieces it took over are uncommitted. The code never does this, since it serves a term only once every earlier entry is applied; the model allows more | violate `NeverFinishesOverTail` |
+| `FelixRaftBatchReachRefusal.cfg` | witness: a member that purged past a cut batch refuses its re-send | violate `NeverRefuses` |
+| `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
+| `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
+| `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
 | `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.8M distinct states) |
@@ -636,15 +651,15 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftIdentityRootRestoreCaught.cfg` | witness: a restored root is caught and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreSameRunCaught.cfg` | witness: with no restart, a root restored in its own run is caught by the root sequence and rotated | violate `NeverRotates` |
 | `FelixRaftIdentityRootRestoreNoWitnessCaught.cfg` | witness: the same with no run witness, so the control plane's copy of the sequence caught it | violate `NeverRotates` |
-| `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree`, `CommitNeverLowers` (137K distinct states). With one term `LeaderCompleteness` has no earlier term to check, and with one write `OffsetNeverReused` has one record |
-| `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the election, log and commit checks (2.7M distinct states). With no write the Acked, Offset and Delivered checks have nothing to hold |
+| `FelixRaftPlacement.cfg` | `FelixRaftPlacement.tla`: three voters and a spare broker, one term, one write, one move by the control plane (a learner entry and a `change_membership` call), no lost disk, every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedOnDisk`, `OffsetNeverReused`, `DeliveredAgree`, `CommitNeverLowers` (534K distinct states). With one term `LeaderCompleteness` has no earlier term to check, and with one write `OffsetNeverReused` has one record |
+| `FelixRaftPlacementFailover.cfg` | the same with two terms and no write: a new leader finishes the move or acts on the target again | pass the election, log and commit checks (7.8M distinct states). With no write the Acked, Offset and Delivered checks have nothing to hold |
 | `FelixRaftPlacementFull.cfg` | the same with two terms and the write | pass the same (39.3M distinct states, 160 minutes on a CI runner); not registered, checked nightly |
-| `FelixRaftPlacementReseat.cfg` | three brokers, two terms: one directory is wiped, the copy takes a new copy id and the leader swaps it in | pass the same (565K distinct states) |
-| `FelixRaftPlacementShrink.cfg` | three brokers, two terms: a seat is removed, three voters become two, and the removed copy is deleted under the rule | pass the same (207K distinct states) |
-| `FelixRaftPlacementMoveWipe.cfg` | the move in one term with one lost directory and the moved copy deleted under the rule | pass the same (1.1M distinct states) |
+| `FelixRaftPlacementReseat.cfg` | three brokers, two terms: one directory is wiped, the copy takes a new copy id and the leader swaps it in | pass the same (347K distinct states) |
+| `FelixRaftPlacementShrink.cfg` | three brokers, two terms: a seat is removed, three voters become two, and the removed copy is deleted under the rule | pass the same (314K distinct states) |
+| `FelixRaftPlacementMoveWipe.cfg` | the move in one term with one lost directory and the moved copy deleted under the rule | pass the same (5.7M distinct states) |
 | `FelixRaftPlacementMoveWipeFull.cfg` | the same with two terms | not registered and not checked yet: unfinished after three hours on a CI runner, at 98M distinct states with 18.5M queued |
-| `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (257K distinct states) |
-| `FelixRaftPlacementStaleFull.cfg` | the same with two terms | pass the same (12.6M distinct states, 49 minutes on a CI runner) |
+| `FelixRaftPlacementStale.cfg` | three brokers, one term, two target changes, and a leader that may act on the replaced target | pass the same (154K distinct states) |
+| `FelixRaftPlacementStaleFull.cfg` | the same with two terms | pass the same (6.4M distinct states, 39 minutes on a CI runner) |
 | `FelixRaftPlacementSameId.cfg` | the metadata group's rejoin with the rule of #2365: three members, three terms, one write, one wipe; the member keeps its id, withholds its vote and is counted by no leader until it votes again | pass the same (2.1M distinct states) |
 | `FelixRaftPlacementSameIdCounted.cfg` | the metadata group as the code is today: a leader counts a withheld member's appends | violate `AckedSurvive`: an acknowledged write is lost. Pinned finding, #2365 |
 | `FelixRaftPlacementSameIdFive.cfg` | five members, two terms, no write, with the rule that a withheld member is not counted: a candidate holds the wiped member's vote and is one short, the member catches up with the older leader, votes again, and votes a second time in that term | violate `OneLeaderPerTerm`: the rule is not enough for five members. Pinned finding, #2365 (1.65M distinct states, 7 min on a laptop) |
@@ -659,14 +674,35 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftPlacementReachReseat.cfg` | witness: a rotated copy is swapped in for its old id | violate `NeverReseats` |
 | `FelixRaftPlacementReachWipedLeads.cfg` | witness: a wiped broker leads again under its new copy id | violate `NeverWipedLeads` |
 | `FelixRaftPlacementReachVotesAgain.cfg` | witness: a member that kept its id through a wipe votes again | violate `NeverVotesAgain` |
-| `FelixRaftPlacementReseatWrites.cfg` | `FelixRaftPlacementReseat.cfg` with two writes, so `OffsetNeverReused` has two records to compare | pass the same (3.5M distinct states) |
+| `FelixRaftPlacementReseatWrites.cfg` | `FelixRaftPlacementReseat.cfg` with two writes, so `OffsetNeverReused` has two records to compare | pass the same (2.2M distinct states) |
 | `FelixRaftPlacementSameIdWrites.cfg` | `FelixRaftPlacementSameId.cfg` with two terms and two writes | pass the same (364K distinct states) |
 | `FelixRaftPlacementNoWithholdOffsets.cfg` | the same with a wiped member that votes at once: a leader elected on its vote gives a delivered record's offset to another record | violate `OffsetNeverReused` |
-| `FelixRaftPlacementShrinkRetain.cfg` | `FelixRaftPlacementShrink.cfg` with `retain = true`: the removed voter stays as a learner | pass the same (242K distinct states) |
+| `FelixRaftPlacementShrinkRetain.cfg` | `FelixRaftPlacementShrink.cfg` with `retain = true`: the removed voter stays as a learner | pass the same (277K distinct states) |
 | `FelixRaftPlacementMoveWipeFailover.cfg` | `FelixRaftPlacementMoveWipe.cfg` with two terms and no write: a leader change during a move with one lost disk | not registered and not checked yet: 14M distinct states and unfinished after ten minutes on a laptop; run through the dispatch |
-| `FelixRaftPlacementReturnWipe.cfg` | three brokers, one term, one lost disk: a seat is removed and one is moved back, the leader on the current target only; the id told to delete is not placed again | pass the same (843K distinct states) |
+| `FelixRaftPlacementReturnWipe.cfg` | three brokers, one term, one lost disk: a seat is removed and one is moved back, the leader on the current target only; the id told to delete is not placed again | pass the same (2.2M distinct states) |
 | `FelixRaftPlacementPlaceDoomed.cfg` | the same where the control plane may place an id it told to delete | violate `AckedOnDisk` |
-| `FelixRaftPlacementStaleWipe.cfg` | `FelixRaftPlacementStale.cfg` with one lost disk, every rule on: a leader on the replaced target gives a copy its vote back after the control plane told its broker to delete it | violate `AckedOnDisk`: an acknowledged write is on no disk. Pinned finding, #2385 |
+| `FelixRaftPlacementStaleWipe.cfg` | `FelixRaftPlacementStale.cfg` with one lost disk, every rule on: a leader may act on a replaced target and the control plane tells a removed copy's broker to delete it. The version rule keeps a stale target from giving a deleted copy its vote back (#2385) | pass the same (4.5M distinct states, 27 minutes on a CI runner) |
+| `FelixRaftPlacementStaleWipeNoVersion.cfg` | the same where a leader acts on a target older than the membership in its log | violate `AckedOnDisk`: the copy gets its vote back, a write is acknowledged with it, the other disk is lost and the deletion takes the last copy (9.2M distinct states, 60 minutes on a CI runner) |
+| `FelixRaftPlacementStampDoomable.cfg` | three voters, one term: a seat is removed, placed back and removed again. The stamp writes the last target's version into the log, so once the group is quiet the removed copy can be told to delete | pass `DroppedIsDoomable` and the safety checks (64K distinct states) |
+| `FelixRaftPlacementStampDoomableNoStamp.cfg` | the same without the stamp: the log keeps the first removal's version, below the last target that named the copy | violate `DroppedIsDoomable`: the copy can never be deleted |
+| `FelixRaftPlacementSingleMove.cfg` | a group of one moves: voter `a`, spare `b`, two terms, one write. `a` grows to `{a, b}`, transfers to `b`, and `b` shrinks to `{b}` | pass the safety checks and `NeverLeadsRemoved` (1.3K distinct states) |
+| `FelixRaftPlacementSingleMoveSelfRemove.cfg` | the same where `a` changes `{a}` to `{b}` itself | violate `NeverLeadsRemoved`: `a` leads a settled membership it is not a voter of |
+| `FelixRaftPlacementTransferMove.cfg` | three voters and a spare, two terms, no write: a seat moves to the spare, and when it is the leader's seat the leader grows, then transfers leadership to a voter of the target | pass the election, log and commit checks and `NeverLeadsRemoved` (8.0M distinct states, 51 minutes on a CI runner) |
+| `FelixRaftPlacementTransferMoveSelfRemove.cfg` | the same where the leader writes a target without itself | violate `NeverLeadsRemoved` |
+| `FelixRaftPlacementReachTransfer.cfg` | witness: in `FelixRaftPlacementTransferMove.cfg` a transfer hands leadership over | violate `NeverTransfers` |
+| `FelixRaftPlacementTransferMoveFull.cfg` | `FelixRaftPlacementTransferMove.cfg` with one write | not registered and not checked yet: unfinished after six hours on a CI runner (issue #2497) |
+| `FelixRaftPlacementRewindSpare.cfg` | `FelixRaftPlacementMoveWipe.cfg` with one restore of the control plane's metadata from a backup while a leader's appended joint entry names the spare broker's copy. The doom waits for every member's report, and a report names the copies in appended entries too | pass the safety checks (30.5M distinct states, 176 minutes on a CI runner); not registered, checked nightly |
+| `FelixRaftPlacementRewindSpareCommitted.cfg` | the same where the doom reads the committed history instead of the reports, and a learner entry takes the target's version | violate `AckedOnDisk`: the spare's copy is told to delete while an appended joint entry still gives it a vote (57 minutes on a CI runner) |
+| `FelixRaftPlacementStaleWipeTwoTerms.cfg` | `FelixRaftPlacementStaleWipe.cfg` with two terms and no write: a new leader can find a stale target's entry | pass the election, log and commit checks (17.3M distinct states, 40 minutes on a build box). With no write the Acked, Offset and Delivered checks have nothing to hold |
+| `FelixRaftPlacementMoveWipeTwoMoves.cfg` | `FelixRaftPlacementMoveWipe.cfg` with a second target change, which can land while the first move's joint entry is uncommitted | expected to pass the same; not registered yet: past 30M distinct states and 45 minutes on a build box, and unfinished after six hours on a CI runner |
+| `FelixRaftPlacementTransferMoveWipe.cfg` | `FelixRaftPlacementTransferMove.cfg` with one lost directory, no write | expected to pass the election, log and commit checks and `NeverLeadsRemoved`; not registered yet: past 34M distinct states and 45 minutes on a build box, and unfinished after six hours on a CI runner. The same with a write is issue #2497 |
+| `FelixRaftPlacementDirectTerms.cfg` | four voters, three terms, two target changes, at least three voters, and openraft 0.10's direct change: one membership entry when every old majority meets every new one. A leader waits for its blank entry to commit before a membership call | expected to pass the election, log and commit checks; not registered yet: past 32M distinct states and 45 minutes on a build box, and unfinished after six hours on a CI runner |
+| `FelixRaftPlacementDirectTermsNoBarrier.cfg` | the same where a leader proposes a membership before its blank entry commits | violate `StateMachineSafety`: an older leader's direct entry overwrites a committed one (20.2M distinct states, 22 minutes on a build box) |
+| `FelixRaftPlacementStaleWipeRewind.cfg` | `FelixRaftPlacementStaleWipe.cfg` with one restore of the control plane's metadata from a backup and two target changes. The restore raises the incarnation, every broker acknowledges it before any target or doom, and a delete is void below the highest incarnation the broker has seen | pass the safety checks (46.9M distinct states, 4 h 35 min on a CI runner). The implementation does not have these rules yet (issue #2529) |
+| `FelixRaftPlacementStaleWipeRewindSameInc.cfg` | the same where the restore keeps the incarnation | violate `AckedOnDisk` at depth 36: a delete told before the restore takes a copy a later target placed again (25.2M distinct states, 3 h 11 min on a CI runner). With one target change it passes, so the bound is two. Issue #2529 tracks the rules the code still lacks |
+| `FelixRaftPlacementStaleWipeRewindNoAck.cfg` | the same where targets and dooms go out before every broker has acknowledged the new incarnation | expected to violate `AckedOnDisk`; not registered yet: unfinished after six hours on a CI runner |
+| `FelixRaftPlacementStaleReturnWipe.cfg` | three brokers, one term, one lost disk: a seat is removed, placed back and removed again, and a leader may act on a replaced target. The doom rule is the report rule above | expected to pass the safety checks; not registered yet: unfinished in a CI dispatch so far |
+| `FelixRaftPlacementStaleReturnWipeAnyVersion.cfg` | the same where a doom ignores the last target version that named the copy | expected to violate `AckedOnDisk` (not registered yet): a leader on the target that placed the copy back gives it its vote again, and the deletion takes a copy that holds an acknowledged write |
 | `FelixRaftPlacementReachAck.cfg` | witness: three brokers whose membership is given at the start elect a leader and acknowledge a write | violate `NeverAcks` |
 | `FelixRaftPlacementForm.cfg` | a first start of the metadata group: three empty members withhold their votes and each forms only when every other member answers empty and has recorded it; two terms, one write, one volume lost after the first commit | pass every check but `OffsetNeverReused`, which one write cannot fail (379K distinct states) |
 | `FelixRaftPlacementFormWaiver.cfg` | the same with one slot waived (`form-without`) and its machine never started: two members form and run as two of three | pass the same (345 distinct states) |
@@ -2945,13 +2981,18 @@ majority when the member votes, so the older leader cannot be confirmed. A
 sure fix gives the wiped member a new id through a membership change, as
 shard groups do, or has it hear from every other member before it votes.
 
-The deletion rule has a gap of its own (#2385). The control plane looks at
-the committed membership once and the broker deletes later. A leader acting
-on a replaced target can give the id its vote back in between, so the
-deletion becomes a second lost disk: `FelixRaftPlacementStaleWipe.cfg`
-loses an acknowledged write with every rule on, and is pinned. A leader held
-to the current target does not (`FelixRaftPlacementReturnWipe.cfg`), and a
-replaced target with no lost disk does not (`FelixRaftPlacementStale.cfg`).
+Deleting a removed copy needs two rules (#2385). A leader acts on no target
+older than the membership in its log, and the control plane dooms a copy only
+on the brokers' membership reports, which name the copies in appended entries
+as well as committed ones. With both, a leader on a replaced target cannot
+give a doomed copy its vote back (`FelixRaftPlacementStaleWipe.cfg` passes).
+Without the version rule it can, and the deletion becomes a second lost disk
+(`FelixRaftPlacementStaleWipeNoVersion.cfg`). A doom read from the committed
+history misses a joint entry that is only appended
+(`FelixRaftPlacementRewindSpareCommitted.cfg`). A restore of the control
+plane's metadata raises the incarnation, and a delete is void below the
+highest incarnation its broker has seen
+(`FelixRaftPlacementStaleWipeRewind.cfg` and its two twins).
 
 `FelixRaftPlacementTwoWipes.cfg` pins the bound instead of a rule: a group of
 three survives one lost disk at a time.
@@ -3856,6 +3897,142 @@ Two trim cases are not modelled either:
 - A retry that sends a floor recomputed since the first copy. The model keeps the first
   floor. This is safe by inspection: a retry that finds its answer in the table is a
   dedup hit, and a dedup hit never raises the floor.
+
+### Idempotent batches on a Raft shard
+
+`FelixRaftBatch.tla` models an idempotent batch of several records on a Raft
+stream shard (#2524). A Raft shard does not take such a batch yet. The model
+is the design the code is being built to, so its configurations cite no tests.
+
+An idempotent batch carries a producer id and a sequence number, and the shard
+must store each of its records once however often the producer sends it. On
+Raft every record is its own log entry, so a batch can be cut: some of its
+entries commit and the rest do not. The model asks what a re-send must do
+then.
+
+What is modelled:
+
+- Each entry of a batch carries a piece mark with the batch's full identity:
+  producer, sequence, the record's position in the batch, and the batch's
+  length.
+- A batch is one message bound to the leader's term. The term and the lease
+  are checked once, so the leader appends every piece or none, at consecutive
+  indexes.
+- The commit is not atomic. A change of leader hands the new leader a prefix
+  of the old leader's uncommitted entries and drops the rest, and the new
+  leader's blank entry follows. A batch with only its first pieces kept is a
+  cut batch.
+- A batch is acknowledged when every piece its message carried has committed
+  under the leader that took it. Otherwise the producer sends it again, at
+  any time, also while its first send is still in flight. A producer starts
+  its next batch only after the one before is acknowledged.
+- The producer table is a function of a member's table snapshot and the log
+  it retains. The leader's includes its uncommitted entries: its own appends
+  and the ones it took over at a change of leader. Per producer it holds the
+  highest sequence seen, how many of its pieces are held, and its length.
+  Pieces only land in order, so a piece at position j means positions 0 to j
+  are held. That is why the count can be read from any suffix of the log.
+- The leader places a send by its table: answered as held when every piece
+  is and the committed log has them all, finished from the first missing
+  position when the batch is cut, written whole when no piece is held, and
+  refused when the table cannot say. Placing and appending are one step:
+  the leader takes one producer's sends in turn and holds the turn until
+  the pieces are appended, so two sends of one batch are never both placed
+  as new.
+- A purge writes the table as of the new base into the table snapshot. A
+  snapshot install gives a member another member's base and table snapshot.
+  So a member can lead with none of a cut batch's held pieces in its log.
+
+What it promises:
+
+- `BatchExactlyOnce`: no (producer, sequence, position) is in the committed
+  log twice, and an acknowledged batch has every position in it.
+- `BatchInOrder`: a producer's records are in the log in sequence and
+  position order, and a batch starts only after the one before it is whole.
+- `ProducerPlaceAgrees`: every member places a batch the way the whole log
+  does, or refuses it. Two members never place one re-send differently,
+  whatever each has purged or installed.
+
+`AtPurge` is what a purge does with a batch that is cut at the new base, and
+two choices are safe. `"refuse"` keeps the sequence and drops the count: the
+member refuses the re-send, and a member that still holds the pieces finishes
+it (`FelixRaftBatch.cfg`). `"keep"` keeps the count too, so any member can
+finish it (`FelixRaftBatchKeepsCut.cfg`). The design uses `"refuse"`, with
+the expired-sequence error. The model shows both are safe and does not weigh
+them: it has no record payloads, so it cannot say whether a member without
+the held records can tell that a re-send repeats the same batch. Nor does it
+follow a producer past that error. A refused producer keeps re-sending the
+same sequence and never starts the next one, so what a producer may do after
+giving a sequence up is not checked.
+
+Each knob drops one rule, and each twin fails:
+
+- `TermBoundBatch = FALSE`: each record is its own message with its own term
+  and lease check (#2472). A lease that lapses and comes back inside the batch
+  refuses some records and takes others. A batch of three lands its first and
+  last records, the table counts it whole by its last position, and the
+  re-send is acknowledged with the middle record missing. No change of leader
+  is needed. The count is read from the highest position, which is only
+  right when pieces land in order, and one message per batch is what keeps
+  them in order.
+- `ResendFinishes = FALSE`: the re-send of a cut batch is written whole
+  (#2516). The held prefix is in the log twice, and out of order.
+- `AtPurge = "forget"`: a purge past a cut batch drops it from the table
+  snapshot. That member, or one that installs its snapshot, takes the re-send
+  as a new batch and writes the held records again.
+- `TableAtAppend = FALSE`: the leader's table reads committed entries only. A
+  send that arrives while the first is in flight is placed as new too. So is
+  a re-send that reaches a new leader before the pieces it took over commit.
+  Either way the records are in the log twice.
+- `HeldAfterCommit = FALSE`: a send is answered as held as soon as the
+  leader's log has every piece. The batch is acknowledged before it commits,
+  and a change of leader can still drop it.
+
+Abstracted: elections, replication and followers' uncommitted tails
+(`FelixRaft.tla` has them; here a change of leader is one step), the lease
+itself, record payloads and producers that expire. A restart with a torn
+tail is not modelled either. It leaves a prefix with no blank entry after it,
+and the table here needs no marker to see a cut, so the model says nothing
+about how the code recognises one. Every member holds the committed log up
+to its tail. Readers see the records of a cut batch
+before it is finished.
+
+A new leader in the model places sends as soon as it leads. The code serves a
+term only once every earlier entry is applied (`raft/deliver.rs`), so it never
+places a send over a tail it took over. The model allows more than the code,
+so its passes still hold for the code. `FelixRaftBatchReachFinishOverTail.cfg`
+and the second case of `FelixRaftBatchTableAtApply.cfg` are behaviour only the
+model has.
+
+What the code has to change. The model describes the producer table as #2524
+will leave it, not as it is today. The code change for #2524 has to make
+these true. "Today" is `origin/main`; "the first storage change" is the branch
+`raft/idem-batch-2524`, which adds batch pieces and cut batches to storage but
+still refuses a batch of several records in `raft/propose.rs`.
+
+1. Every entry of a batch names the batch: producer, sequence, position and
+   length. Today only the first record does (`RecordMark::Opens`); the rest
+   are `Continues`, matched by offset (`log.rs`, `RecordMark::for_batch`). The
+   first storage change adds `RecordMark::Piece` for the later records of a
+   batch on a Raft log.
+2. A leader's blank entry, or any other record, does not abandon a cut batch.
+   Today `ProducerState::observe` drops the open batch on `GenerationStart`
+   and every other mark (`disk_log/producers.rs`). The first storage change
+   keeps it as a cut batch on a Raft log.
+3. The table keeps an unfinished batch per producer, not one per shard.
+   Today `ProducerState` has one `open` batch, and another producer's batch
+   opening drops it. The first storage change keeps one open batch plus a cut
+   batch per producer. It caps the cut batches at `MAX_CUTS` and forgets the
+   producer of the oldest when the cap is passed, which the model, with two
+   producers, never reaches.
+4. A purge keeps a cut batch or refuses its re-send. It never drops it. Today
+   `ProducerState::prune` drops an open batch whose first record is purged,
+   which is `AtPurge = "forget"`. The first storage change keeps a cut batch
+   that cannot be finished while one of its records is still in the log (the
+   `"refuse"` choice). Once the purge passes its last record it still drops
+   it. A re-send is then refused when the producer is unknown and its
+   sequence is not 0, but a cut first batch (sequence 0) is taken as new.
+   That is the `"forget"` case, and the code change has to close it.
 
 ## How CI checks the models
 
