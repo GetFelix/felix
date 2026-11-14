@@ -25,7 +25,7 @@ pub(crate) struct StoredMembership {
     pub(crate) learners: BTreeSet<MemberId>,
 }
 
-const MEMBERSHIP_VERSION: u32 = 1;
+pub(crate) const MEMBERSHIP_VERSION: u32 = 1;
 
 impl StoredMembership {
     pub(crate) fn of(membership: &Membership) -> Self {

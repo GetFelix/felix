@@ -11,8 +11,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{
-    Broker, BrokerError, IdempotentOutcome, IdempotentProposal, ProducerTurn, ProposalCommitted,
-    ProposalFailed, ProposedPublish, PublishOutcome, ReadBound, SequenceReuse, StreamHandle,
+    Broker, BrokerError, IdempotentOutcome, IdempotentProposal, LogDelivery, ProducerTurn,
+    ProposalCommitted, ProposalFailed, ProposedPublish, PublishOutcome, ReadBound, SequenceReuse,
+    StreamHandle,
 };
 use futures::future::BoxFuture;
 use tokio::task::JoinHandle;
@@ -21,6 +22,16 @@ use super::engine::RaftEngine;
 use super::propose::{AckAt, Batch, Record, Sequenced, Unacknowledged};
 use crate::engine::{CommitError, Written};
 use crate::{ShardKey, ShardKind};
+
+/// How soon a follower's delivery from the log that had to wait looks again.
+const LOG_RECHECK: Duration = Duration::from_millis(100);
+
+/// The longest a failing delivery from the log waits before trying again.
+const LOG_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Failed deliveries from the log in a row after which the stream's
+/// subscribers are ended, so their clients resubscribe where the log reads.
+const LOG_FAILURES_TO_END: u32 = 5;
 
 const OTHER_TERM: &str = "the batch was written at a later term than it was admitted at";
 
@@ -209,18 +220,54 @@ impl RaftEngine {
         }))
     }
 
-    /// Kick `stream`'s readers each time `shard`'s commit index moves here:
-    /// held batches the bound now covers are released, and readers waiting
-    /// at the bound for the log (a follower's subscribers, history reads)
-    /// look again. Ends when the group stops or the stream closes. `None`
-    /// when this broker holds no member of the shard.
+    /// Serve `stream`'s readers each time `shard`'s commit index moves here:
+    /// held batches the bound now covers are released, a broker that does
+    /// not lead the shard delivers the newly committed records to its
+    /// subscribers from the log, and readers waiting at the bound (history
+    /// reads) look again. Ends when the group stops or the stream closes.
+    /// `None` when this broker holds no member of the shard.
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
         Some(tokio::spawn(async move {
+            let mut failures = 0u32;
             loop {
                 stream.release_committed();
                 stream.appended().notify_waiters();
-                if !stream.is_active() || commits.changed().await.is_err() {
+                let recheck = match stream.deliver_from_log().await {
+                    Ok(LogDelivery::CaughtUp) => {
+                        failures = 0;
+                        None
+                    }
+                    Ok(LogDelivery::Waiting) => Some(LOG_RECHECK),
+                    Err(err) => {
+                        failures = failures.saturating_add(1);
+                        tracing::warn!(error = %err, failures, "could not deliver a shard's committed records from its log");
+                        // Subscribers left here would wait, told nothing.
+                        if failures == LOG_FAILURES_TO_END {
+                            stream.end_subscribers();
+                        }
+                        if !stream.is_active() {
+                            return;
+                        }
+                        // Not woken early by commits: they keep moving.
+                        let backoff = LOG_RECHECK.saturating_mul(1 << failures.min(6));
+                        tokio::time::sleep(backoff.min(LOG_RETRY_MAX)).await;
+                        continue;
+                    }
+                };
+                if !stream.is_active() {
+                    return;
+                }
+                // A pass that had to wait is not told when it may go on: a
+                // deposed term's batches settle without the commit index
+                // moving.
+                let moved = match recheck {
+                    None => commits.changed().await,
+                    Some(after) => tokio::time::timeout(after, commits.changed())
+                        .await
+                        .unwrap_or(Ok(())),
+                };
+                if moved.is_err() {
                     return;
                 }
             }

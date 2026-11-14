@@ -42,16 +42,24 @@ fn raft_cluster() -> ClusterConfig {
     }
 }
 
-/// The broker that serves the shard: the one whose subscribe is not answered
-/// with a redirect. Only brokers in `among` are asked.
+/// The broker that leads the shard: the one that reports serving its Raft
+/// term. A follower accepts subscribes too, so a subscribe cannot tell them
+/// apart. Waits until exactly one broker in `among` says so, since a deposed
+/// leader's gauge trails by one feed pass. Only brokers in `among` are asked.
 async fn leader_among(cluster: &Cluster, among: &[String]) -> String {
     felix_cluster::wait::until_some(ELECTED_WITHIN, "a broker to lead the shard", || async {
+        let mut leading = Vec::new();
         for node in among {
-            if cluster.subscribe_on(node, STREAM).await.is_ok() {
-                return Some(node.clone());
+            let led = cluster
+                .metric(node, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten();
+            if led.is_some_and(|led| led >= 1.0) {
+                leading.push(node.clone());
             }
         }
-        None
+        (leading.len() == 1).then(|| leading.remove(0))
     })
     .await
     .expect("a leader")
@@ -93,7 +101,7 @@ async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<
 
 /// **A record published through any broker reaches a subscriber, whether
 /// or not its publisher asked for an answer.** The subscriber connects to a
-/// follower, which names the leader, and the client follows it there.
+/// follower, which serves it from its own log.
 #[tokio::test]
 #[serial]
 async fn a_publish_through_any_broker_reaches_a_subscriber() {
@@ -180,6 +188,123 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
         offsets.windows(2).all(|pair| pair[0] < pair[1]),
         "delivered out of order: {offsets:?}"
     );
+}
+
+/// Whether every acknowledged offset has reached the subscriber. A publish
+/// retried after an unknown outcome can leave a record the test never saw
+/// acknowledged, so the counts are not compared.
+fn arrived(acked: &[(u64, Vec<u8>)], seen: &[(u64, Vec<u8>)]) -> bool {
+    acked
+        .iter()
+        .all(|(offset, _)| seen.iter().any(|(got, _)| got == offset))
+}
+
+/// **A follower serves a subscriber, and the subscriber keeps every
+/// acknowledged record across the leader's death.** The reader connects only
+/// to a follower, reads from offset 0, and sees each record at the offset the
+/// leader acknowledged. When the leader is killed and a survivor takes over,
+/// the subscription resumes (or is resumed by offset) with no record missing
+/// and none twice.
+#[tokio::test]
+#[serial]
+async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies() {
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let follower = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .expect("follower")
+        .clone();
+
+    // One connection to the follower alone: it does not follow a redirect, so
+    // a follower that sent the reader to the leader fails the subscribe.
+    let reader = felix_cluster::client::connect(
+        cluster.node(&follower).expect("node").client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("reader");
+    let mut subscription = reader
+        .subscribe_from(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            Some(felix_client::StartPosition::Offset(0)),
+        )
+        .await
+        .expect("subscribe on a follower");
+
+    let mut acked: Vec<(u64, Vec<u8>)> = Vec::new();
+    for i in 0..10 {
+        let payload = format!("before-{i}").into_bytes();
+        acked.push((publish_acked(&cluster, &leader, &payload).await, payload));
+    }
+    let mut seen: Vec<(u64, Vec<u8>)> = Vec::new();
+    while !arrived(&acked, &seen) {
+        let event = tokio::time::timeout(Duration::from_secs(30), subscription.next_event())
+            .await
+            .expect("an event within 30s")
+            .expect("delivery")
+            .expect("the subscription stays open while the leader lives");
+        seen.push((event.offset.expect("offset"), event.payload.to_vec()));
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    leader_among(&cluster, &survivors).await;
+    for i in 0..10 {
+        let payload = format!("after-{i}").into_bytes();
+        acked.push((publish_acked(&cluster, &follower, &payload).await, payload));
+    }
+
+    while !arrived(&acked, &seen) {
+        let next = tokio::time::timeout(Duration::from_secs(30), subscription.next_event())
+            .await
+            .expect("an event within 30s");
+        match next {
+            Ok(Some(event)) => seen.push((event.offset.expect("offset"), event.payload.to_vec())),
+            // The subscription ended with its member's term: resume by offset.
+            Ok(None) | Err(_) => {
+                let from = seen.last().map_or(0, |(offset, _)| offset + 1);
+                subscription = felix_cluster::wait::until_some(
+                    ELECTED_WITHIN,
+                    "a resubscribe to be accepted",
+                    || async {
+                        reader
+                            .subscribe_from(
+                                &cluster.tenant_id,
+                                &cluster.namespace,
+                                STREAM,
+                                Some(felix_client::StartPosition::Offset(from)),
+                            )
+                            .await
+                            .ok()
+                    },
+                )
+                .await
+                .expect("resubscribe");
+            }
+        }
+    }
+
+    assert!(
+        seen.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "a record repeated or arrived out of order: {:?}",
+        seen.iter().map(|(offset, _)| offset).collect::<Vec<_>>()
+    );
+    for (offset, payload) in &acked {
+        assert!(
+            seen.iter()
+                .any(|(got, body)| got == offset && body == payload),
+            "acknowledged record {:?} at offset {offset} never arrived",
+            String::from_utf8_lossy(payload)
+        );
+    }
 }
 
 /// **The leader dies while the control plane is down, and nothing

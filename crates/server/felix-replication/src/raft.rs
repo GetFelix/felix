@@ -37,6 +37,7 @@ mod network;
 mod peer;
 mod propose;
 mod runtime;
+pub mod switch;
 #[cfg(test)]
 mod tests;
 mod ticker;
