@@ -3,7 +3,7 @@
 //! written to a shard that switched.
 use std::collections::BTreeMap;
 
-use super::shards::{assignment, clear, key, seed};
+use super::shards::{CACHE, assignment, clear, key, next_stream, on_streams_of_its_own, seed};
 use crate::model::{
     ElectedLeader, SealReport, SealedSideLog, ShardAssignment, ShardKey, ShardKind, ShardState,
     StreamKey,
@@ -14,6 +14,10 @@ const COPY_X: &str = "000102030405060708090a0b0c0d0e0f";
 const COPY_Y: &str = "101112131415161718191a1b1c1d1e1f";
 
 pub(super) async fn run_switch_contract(store: &dyn ControlPlaneStore) {
+    on_streams_of_its_own(store, run_switch_cases(store)).await;
+}
+
+async fn run_switch_cases(store: &dyn ControlPlaneStore) {
     a_seal_order_names_the_leader_at_the_next_generation(store).await;
     a_seal_is_ordered_only_over_the_generation_read(store).await;
     only_a_settled_stream_shard_is_sealed(store).await;
@@ -204,6 +208,7 @@ async fn only_a_settled_stream_shard_is_sealed(store: &dyn ControlPlaneStore) {
     clear(store).await;
     let mut cache = assignment(0, "broker-x");
     cache.key.kind = ShardKind::Cache;
+    cache.key.stream = CACHE.to_string();
     store
         .put_shard_assignment(cache.clone())
         .await
@@ -546,6 +551,7 @@ async fn nothing_is_written_to_a_switched_shard(store: &dyn ControlPlaneStore) {
         store.get_shard_assignment(&switched.key).await,
         Err(StoreError::NotFound(_))
     ));
+    next_stream();
     seed(store).await;
 }
 

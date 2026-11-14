@@ -19,18 +19,51 @@ const STREAM: &str = "orders";
 const SHARDS: u32 = 4;
 /// Deliberately the stream's name, and deliberately a different shard count:
 /// the two must be distinguished by kind and nothing else.
-const CACHE: &str = "orders";
+pub(super) const CACHE: &str = "orders";
 const CACHE_SHARDS: u32 = 2;
 const _: () = assert!(
     SHARDS > CACHE_SHARDS,
     "the cache must have fewer shards than the stream, or the bound test proves nothing",
 );
 
+tokio::task_local! {
+    /// Which incarnation of the stream this run is on. A stream deleted
+    /// before the fleet finalizes incarnations cannot be created again, so a
+    /// case that deletes one moves the rest of the run to a new name.
+    static STREAM_EPOCH: std::cell::Cell<u32>;
+}
+
+pub(crate) fn stream_name() -> String {
+    match STREAM_EPOCH.try_with(std::cell::Cell::get) {
+        Ok(epoch) if epoch > 0 => format!("{STREAM}-{epoch}"),
+        _ => STREAM.to_string(),
+    }
+}
+
+/// Moves a run on its own stream to a fresh name; the caller seeds it.
+pub(crate) fn next_stream() {
+    let _ = STREAM_EPOCH.try_with(|epoch| epoch.set(epoch.get() + 1));
+}
+
+/// Runs `cases` on streams named apart from the rest of the suite, whose
+/// stream stays put when a case deletes the one it was on.
+pub(crate) async fn on_streams_of_its_own<F: std::future::Future>(
+    store: &dyn ControlPlaneStore,
+    cases: F,
+) -> F::Output {
+    STREAM_EPOCH
+        .scope(std::cell::Cell::new(1), async {
+            seed(store).await;
+            cases.await
+        })
+        .await
+}
+
 pub(crate) fn key(shard: u32) -> ShardKey {
     ShardKey {
         tenant_id: TENANT.to_string(),
         namespace: NAMESPACE.to_string(),
-        stream: STREAM.to_string(),
+        stream: stream_name(),
         shard,
         kind: ShardKind::Stream,
     }
@@ -80,7 +113,7 @@ pub(crate) async fn seed(store: &dyn ControlPlaneStore) {
         .create_stream(Stream {
             tenant_id: TENANT.to_string(),
             namespace: NAMESPACE.to_string(),
-            stream: STREAM.to_string(),
+            stream: stream_name(),
             kind: StreamKind::Stream,
             shards: SHARDS,
             replication_factor: 1,
@@ -149,6 +182,7 @@ pub(crate) async fn clear(store: &dyn ControlPlaneStore) {
             .expect("delete");
     }
     if !switched.is_empty() {
+        next_stream();
         seed(store).await;
     }
 }
@@ -1359,7 +1393,7 @@ async fn a_consistency_change_fences_placement(store: &dyn ControlPlaneStore) {
     let stream_key = StreamKey {
         tenant_id: TENANT.to_string(),
         namespace: NAMESPACE.to_string(),
-        stream: STREAM.to_string(),
+        stream: stream_name(),
     };
     let patch = |consistency: Option<ConsistencyLevel>, durable: Option<bool>| StreamPatchRequest {
         retention: None,
