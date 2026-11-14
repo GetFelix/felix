@@ -1670,7 +1670,9 @@ purge passed its last one) or that went past the 4096 cut batches kept
 whole. Only the producer and the batch's sequence are kept: a re-send of that
 sequence or an older one is refused with `sequence_expired`, even while the
 producer is otherwise unknown, so a cut first batch is not taken as a new
-producer's sequence 0. It goes when the producer opens a batch again.
+producer's sequence 0. A later record of the producer does not lift it, since
+a truncation could still remove that record. It goes when a purge passes a
+later batch of the producer, which is committed by then.
 
 A held batch's `last` is the offset of its last record, which is not
 `first + len - 1` when the batch was finished after a cut. `pieces` is the
@@ -1714,8 +1716,27 @@ batches the oldest is kept only as a `forgotten` entry, and its producer is
 forgotten.
 
 A `forgotten` entry is the one thing that is not a function of the records
-left: a log rebuilt from records alone, because its snapshot is gone or older
-than its first record, no longer refuses that re-send.
+left, and the snapshot is neither flushed nor kept across a truncation. So
+the entries are also saved in their own file, `producers.forgotten`, beside
+the snapshot:
+
+```text
+magic  u32  0x464C5046
+crc    u32  crc32 of the rest
+count  u32  then count × { producer_id u64, sequence u64 }
+```
+
+It is written through a temporary and a rename, and flushed with its
+directory, before a purge unlinks a segment and before a reset drops the
+log. A purge or reset that cannot write it fails and removes nothing. Every
+open and every rebuild after a truncation merges it into the table, keeping
+the higher sequence per producer. A reset forgets every unfinished batch
+with a record below the new base. An unreadable file fails the open: the log
+cannot say what it held.
+
+A member installed from a snapshot knows only the batches forgotten on its
+own log. The table of the member it copied from does not travel with the
+records.
 
 Because pieces name their batch, the same holds for a log read from any
 base: a log pruned to an offset and a copy that starts at that offset

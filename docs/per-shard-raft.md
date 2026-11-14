@@ -2545,7 +2545,9 @@ it holds of the batch:
 - a purge removed every record the log held of it, or the member already
   remembers 4096 other cut batches. The member keeps only the producer and
   the sequence then, and refuses that sequence and older ones, a first
-  batch's sequence 0 included, until the producer opens a batch again;
+  batch's sequence 0 included, until a purge passes a later batch of the
+  producer. It is saved before the purge removes anything, so a restart,
+  a truncation or a reset keeps the refusal;
 - the records it holds of the batch do not follow one another;
 - the re-send has a different number of records than the batch in the log.
 

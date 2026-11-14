@@ -285,7 +285,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[4, 3][..],
+        &[5, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -418,6 +418,18 @@ fn a_layout_3_body_is_refused_by_layout() {
     old[0] = 3;
     let refused = decode_request(old.freeze()).expect_err("refused");
     assert!(refused.to_string().contains("layout 3"), "{refused}");
+}
+
+/// Layout 4 is what a build without the piece entry writes. It would refuse
+/// a piece by its tag in the middle of an append, so it is refused by layout
+/// first.
+#[test]
+fn a_layout_4_body_is_refused_by_layout() {
+    let bytes = encode_request(&every_request()[2]).expect("encode");
+    let mut old = BytesMut::from(&bytes[..]);
+    old[0] = 4;
+    let refused = decode_request(old.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("layout 4"), "{refused}");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does

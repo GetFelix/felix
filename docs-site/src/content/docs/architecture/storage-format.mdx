@@ -578,7 +578,9 @@ This is version 4. A cut batch is one whose writer stopped partway and that
 another record has followed; it is kept so the missing records can finish it
 and so it is never written again whole. Once a purge removes its last record,
 or past 4096 cut batches, only its producer and sequence stay (`forgotten`),
-and its re-send is refused. Versions 1 to 3 are still read. `docs/storage-format.md` in the repository has every
+and its re-send is refused. Those entries are in no record, so they are also
+saved, flushed, in `producers.forgotten` before a purge or a reset removes
+anything, and merged back at every open. Versions 1 to 3 are still read. `docs/storage-format.md` in the repository has every
 field.
 
 An open reads it and replays only the marks after `as_of`. Those are normally

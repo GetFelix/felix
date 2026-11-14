@@ -31,8 +31,8 @@ use crate::{ShardKey, ShardKind};
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
-/// version to a membership.
-const LAYOUT: u8 = 4;
+/// version to a membership, 5 the piece entry.
+const LAYOUT: u8 = 5;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
