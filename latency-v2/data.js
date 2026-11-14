@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794675737212,
+  "lastUpdate": 1794676128054,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -72006,6 +72006,72 @@ window.BENCHMARK_DATA = {
             "range": "376.24",
             "unit": "us",
             "extra": "trials: 5\nmedian: 918.00\nmean: 867.00\nstdev: 376.24\ncv: 43.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b16bc65f5d1746f0f19d09a9baa236e29b49f926",
+          "message": "feat(replication): concurrent Raft reads share read-index rounds (#2535)\n\n* perf(raft): reads share read-index rounds; appends carry up to 4,096 entries (#2329, #2332)\n\nA group asks one read-index round at a time. A read that arrives while a\nround is out waits for the next one, so every round's answer was taken\nafter each read it confirms arrived. Appends to a follower carry up to\n4,096 entries instead of openraft's 300, so 1 KiB records catch up in\nabout 4 MiB per round trip. Adds an Actions benchmark for both.\n\n* fix(raft): a read-round task dropped before it ran frees the group's reads; an abandoned round is not asked (#2329)\n\n* fix(raft): review round: a read whose round task ended times out; read tests fail instead of hanging; docs say read-index rounds do not use the lease (#2329)\n\n* test(raft): the catch-up test's batches name no term\n\n* test(raft): name the read benchmark's trial type\n\n* ci(raft): the read benchmark is dispatch-only and builds the tests with felix-common/sim\n\n* test(raft): the read test's batch names no producer\n\n* fix(raft): a read round that never answers is dropped; append_entries 1024\n\nSpec-Unaffected: bounds a read round and lowers an append size; no protocol state changes.\n\n* docs(raft): append limit is 1,024 entries, with the real memory bound\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-14T17:01:11Z",
+          "tree_id": "aa29040dde10256aaca2e6fe52ff0f25e8a95123",
+          "url": "https://github.com/GetFelix/felix/commit/b16bc65f5d1746f0f19d09a9baa236e29b49f926"
+        },
+        "date": 1794676118472,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 97.40\nstdev: 0.89\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 139,
+            "range": "20.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 148.00\nstdev: 20.22\ncv: 13.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 183,
+            "range": "371.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 183.00\nmean: 435.60\nstdev: 371.13\ncv: 85.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 134.80\nstdev: 0.84\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 286,
+            "range": "45.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 286.00\nmean: 304.80\nstdev: 45.52\ncv: 14.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1961,
+            "range": "637.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1961.00\nmean: 1841.00\nstdev: 637.03\ncv: 34.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
