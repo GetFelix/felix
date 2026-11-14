@@ -944,13 +944,18 @@ entries above it, so its log is cut to the snapshot:
   (16,384) have committed since its last snapshot. openraft checks that
   after each batch of messages, so it needs no tick.
 - Building a snapshot does not hold apply. Between two entries the state
-  machine takes a copy of the state, which costs nothing because the state
-  is kept in persistent maps that share their nodes with the copy. The copy
-  is encoded and written on a blocking thread while apply goes on. A node
-  that apply changes during the build is copied first, so a build costs
-  memory in proportion to what apply changes while it runs. The snapshot
-  is exactly the state as of its last entry, never a mix of that and later
-  writes.
+  machine freezes its maps as they are, without copying them, and the
+  build encodes that frozen copy on a blocking thread. While it does,
+  apply writes to a small overlay of changes (new values, deletes, raised
+  floors) and reads look in the overlay first, then in the frozen maps.
+  When the build is done, the overlay is folded back into the maps a few
+  hundred changes at a time, so neither apply nor reads wait long. The
+  snapshot is exactly the state as of its last entry, never a mix of that
+  and later writes. Between builds there is no overlay, and reads and
+  apply cost what they would without snapshots.
+- A build costs memory for what apply changes while it runs, plus the
+  encoded snapshot. A build that starts while the last one's overlay is
+  still folding finishes the fold first.
 - Encoding a snapshot and parsing one are CPU work. Across all groups on a
   broker, at most half the cores (at least one) do it at once. The rest
   wait, so many groups snapshotting or restarting together do not take
