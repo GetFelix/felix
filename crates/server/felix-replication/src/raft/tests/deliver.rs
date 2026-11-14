@@ -7,8 +7,10 @@ use felix_broker::{
     StreamHandle, StreamMetadata, SubscriptionGuard, SubscriptionReceiver,
 };
 use felix_storage::EphemeralCache;
+use tokio::sync::oneshot;
 
 use super::super::deliver::{Proposed, settled};
+use super::super::propose::Unacknowledged;
 use super::commit::{Led, led};
 use super::propose::cut_after_first;
 use super::*;
@@ -463,9 +465,121 @@ async fn a_leader_publish_is_answered_on_the_lease_and_delivered_at_its_commit()
     led.cluster.stop().await;
 }
 
-/// **Outside the lease a `Leader` publish waits for its commit.** A leader
-/// nobody has answered for a lease may have been replaced, and the new
-/// leader's log does not hold what it writes now.
+/// A `Leader` publish stopped between its write and the lease check.
+struct Held {
+    published: Publishing,
+    /// Fires once the batch is on the leader's log.
+    landed: oneshot::Receiver<()>,
+    /// The lease is asked once this is sent.
+    go: oneshot::Sender<()>,
+}
+
+fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'static [u8]) -> Held {
+    let (on_lease, answered) = oneshot::channel();
+    let (landing, landed) = oneshot::channel();
+    let (go, gone) = oneshot::channel::<()>();
+    let engine = led.engine.clone();
+    let term = Some(led.term);
+    let payload = Bytes::from_static(payload);
+    let proposed = broker.propose_publish(handle, vec![payload.clone()], PATIENCE, |at| {
+        let record = Record {
+            timestamp_micros: at,
+            payload,
+        };
+        let batch = Batch {
+            records: vec![record],
+            ack: AckAt::Flushed,
+            term,
+        };
+        let written = engine.propose_reaching(&shard(0), batch);
+        let written = async move {
+            let written = written.await;
+            let _ = landing.send(());
+            let _ = gone.await;
+            written
+        };
+        let batch = Proposed {
+            shard: shard(0),
+            term,
+            count: 1,
+            timeout: PATIENCE,
+            on_lease: Some(on_lease),
+        };
+        settled(engine, batch, written)
+    });
+    let proposed = proposed.expect("proposed").answer_at(answered);
+    Held {
+        published: tokio::spawn(proposed.complete()),
+        landed,
+        go,
+    }
+}
+
+fn leader_member(led: &Led) -> Arc<super::super::group::Group> {
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    runtime.group(&shard(0)).expect("group")
+}
+
+/// **A `Leader` publish whose term is given up after its write landed is
+/// answered at its commit, not on the lease.** The lease is asked once the
+/// batch is on the log, so a transfer or a higher term seen while it was
+/// being written counts. Asked before the write, the publisher would hold
+/// an acknowledgement from a leader that had already given its term away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_given_up_after_the_write_landed_is_not_answered_on_the_lease() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    leased(&led).await;
+
+    led.cut_followers();
+    let held = publish_held(&led, &broker, &handle, b"mine");
+    held.landed.await.expect("written");
+    leader_member(&led).lease().void_through(led.term);
+    held.go.send(()).expect("held");
+    unanswered(&held.published).await;
+    nothing(&mut receiver).await;
+    assert_eq!(led.status().role, Role::Leader);
+
+    led.heal();
+    let outcome = held.published.await.expect("joined").expect("committed");
+    let offset = led.committed + 1;
+    assert_eq!(outcome.offsets, Some((offset, offset)));
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(offset));
+    led.cluster.stop().await;
+}
+
+/// **A `Leader` publish written across a suspend is answered at its
+/// commit.** The leader's clock stood still while the others may have
+/// elected, so the majority's answer looks newer than it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_publish_written_across_a_suspend_waits_for_its_commit() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    leased(&led).await;
+
+    led.cut_followers();
+    let held = publish_held(&led, &broker, &handle, b"mine");
+    held.landed.await.expect("written");
+    let slept = Duration::from_secs(5);
+    leader_member(&led).lease().suspended_for(slept);
+    held.go.send(()).expect("held");
+    unanswered(&held.published).await;
+    nothing(&mut receiver).await;
+
+    led.heal();
+    let outcome = held.published.await.expect("joined").expect("committed");
+    let offset = led.committed + 1;
+    assert_eq!(outcome.offsets, Some((offset, offset)));
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(offset));
+    led.cluster.stop().await;
+}
+
+/// **A `Leader` publish that is on the leader's log only after the lease
+/// ran out waits for its commit.** A leader nobody has answered for a
+/// lease may have been replaced, and the new leader's log does not hold
+/// what it wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_publish_outside_the_lease_waits_for_its_commit() {
     let mut led = led().await;
@@ -475,27 +589,34 @@ async fn a_leader_publish_outside_the_lease_waits_for_its_commit() {
 
     // Nobody hears the leader and it hears nobody, so it stays leader.
     led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    let held = publish_held(&led, &broker, &handle, b"late");
+    held.landed.await.expect("written");
+    let first = led.committed + 1;
+    assert!(
+        led.status()
+            .flushed
+            .is_some_and(|at| at.index > led.committed)
+    );
     tokio::time::sleep(timers().lease + Duration::from_millis(100)).await;
-    let published = publish_on_lease(&led, &broker, &handle, Bytes::from_static(b"late"));
-    unanswered(&published).await;
+    held.go.send(()).expect("held");
+    unanswered(&held.published).await;
     nothing(&mut receiver).await;
     assert_eq!(led.status().role, Role::Leader);
 
     // The commit answers it, unless the others elected meanwhile.
     led.heal();
-    if let Ok(outcome) = published.await.expect("joined") {
-        let offset = led.committed + 1;
-        assert_eq!(outcome.offsets, Some((offset, offset)));
-        assert_eq!(next(&mut receiver).await.base_offset(), Some(offset));
+    if let Ok(outcome) = held.published.await.expect("joined") {
+        assert_eq!(outcome.offsets, Some((first, first)));
+        assert_eq!(next(&mut receiver).await.base_offset(), Some(first));
     }
     led.cluster.stop().await;
 }
 
-/// **A leader the others have replaced answers no `Leader` publish, though
-/// it has not heard of the new leader and still says it leads.** Its lease
-/// ran out before the others could elect. Answered on its own log, the
-/// publisher would hold an acknowledgement for a record the new leader's
-/// log has already replaced.
+/// **A leader the others replaced after its write landed answers no
+/// `Leader` publish, though it has not heard of the new leader and still
+/// says it leads.** Its lease ran out before the others could elect.
+/// Answered on its own log, the publisher would hold an acknowledgement
+/// for a record the new leader's log has already replaced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_replaced_leader_answers_no_leader_publish() {
     let mut led = led().await;
@@ -503,15 +624,18 @@ async fn a_replaced_leader_answers_no_leader_publish() {
     let (mut receiver, _guard) = subscriber(&broker).await;
     leased(&led).await;
 
+    led.cut_followers();
+    let held = publish_held(&led, &broker, &handle, b"mine");
+    held.landed.await.expect("written");
     let old = led.leader.broker.to_string();
     led.cluster.net.muted.lock().insert(old.clone());
     *led.cluster.net.cut.lock() = HashSet::from([old]);
     let theirs = led.cluster.write(0, b"theirs").await;
+    assert!(theirs > led.committed + 1, "the offset was not taken");
     assert_ne!(led.cluster.elected(0).await, led.leader);
     assert_eq!(led.status().role, Role::Leader, "the old leader heard");
-
-    let published = publish_on_lease(&led, &broker, &handle, Bytes::from_static(b"mine"));
-    unanswered(&published).await;
+    held.go.send(()).expect("held");
+    unanswered(&held.published).await;
 
     led.heal();
     eventually(|| match handle.read_bound() {
@@ -519,12 +643,40 @@ async fn a_replaced_leader_answers_no_leader_publish() {
         _ => None,
     })
     .await;
-    let outcome = published.await.expect("joined");
+    let outcome = held.published.await.expect("joined");
     assert!(
         matches!(outcome, Err(CommitError::LeadershipLost { .. })),
         "{outcome:?}"
     );
     nothing(&mut receiver).await;
+    led.cluster.stop().await;
+}
+
+/// **A batch written at another term than it was admitted at is not
+/// answered on the lease, though the lease holds for the term that wrote
+/// it.** The stream may not be at that term's committed tail, so the
+/// batch is given up, and its publisher must not hear otherwise first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_written_at_another_term_is_not_answered_on_the_lease() {
+    let mut led = led().await;
+    let written = led.propose(1).await;
+    let (on_lease, mut answered) = oneshot::channel();
+    let batch = Proposed {
+        shard: shard(0),
+        term: Some(written.generation + 1),
+        count: 1,
+        timeout: PATIENCE,
+        on_lease: Some(on_lease),
+    };
+    let admitted = led.engine.admit_local_ack(&shard(0), written.generation);
+    admitted.expect("the lease holds");
+    let landed = async move { Ok::<_, Unacknowledged>(written) };
+    let outcome = settled(led.engine.clone(), batch, landed).await;
+    assert!(outcome.is_err(), "settled at another term");
+    assert_eq!(
+        answered.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    );
     led.cluster.stop().await;
 }
 
