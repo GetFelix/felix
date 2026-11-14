@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794616736669,
+  "lastUpdate": 1794618616022,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55328,6 +55328,58 @@ window.BENCHMARK_DATA = {
             "range": "15970.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1248082.28\nmean: 1249476.38\nstdev: 15970.66\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cd93c02a3f33c67ce3118d2d16f7e91b378ff9c0",
+          "message": "ci(sim): the nightly sweep runs Raft group seeds in two modes (#2450) (#2495)\n\n* ci(sim): the nightly sweep runs Raft group seeds in two modes (#2450)\n\nraft and raft-clocks join the opt-in modes: 250 seeds a night each on the\nmoving window, and available to a dispatched run. The build job makes the\nraft_seeds test binary beside the seeds one. scripts/sim-sweep.sh runs one\nRaft seed per process through the raft_seeds batch, sorts a seed whose only\nfinding is stalled apart from history and group findings, and gives\ntask sim:raft-replay as its replay command.\n\n* Review fixes",
+          "timestamp": "2026-11-13T16:21:35-08:00",
+          "tree_id": "2ffddd835d80eb87014aafd30316cb24ebe2590b",
+          "url": "https://github.com/GetFelix/felix/commit/cd93c02a3f33c67ce3118d2d16f7e91b378ff9c0"
+        },
+        "date": 1794618615378,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353911.72,
+            "range": "17155.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353911.72\nmean: 347212.81\nstdev: 17155.32\ncv: 4.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353911.72,
+            "range": "17155.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353911.72\nmean: 347212.81\nstdev: 17155.32\ncv: 4.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80569.03,
+            "range": "5053.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80569.03\nmean: 78304.22\nstdev: 5053.00\ncv: 6.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805690.35,
+            "range": "50530.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805690.35\nmean: 783042.18\nstdev: 50530.03\ncv: 6.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
