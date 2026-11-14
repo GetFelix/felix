@@ -114,6 +114,19 @@ impl Broker {
         }
     }
 
+    /// Whether a stream on an engine takes an idempotent batch of `records`
+    /// records: [`BrokerError::NotOnEngineStream`] for more than one. For a
+    /// caller to refuse the batch before it waits for the producer's turn;
+    /// [`Self::propose_idempotent`] checks it again.
+    pub fn engine_takes_idempotent(records: usize) -> Result<()> {
+        if records > 1 {
+            return Err(BrokerError::NotOnEngineStream {
+                what: SEVERAL_RECORDS,
+            });
+        }
+        Ok(())
+    }
+
     /// [`Self::propose_publish`] for an idempotent producer's batch: the
     /// sequence is checked against the stream's log first, as
     /// [`Self::claim_batch_idempotent`] checks it, and only the producer's
@@ -128,9 +141,14 @@ impl Broker {
     /// producer's marks.
     ///
     /// A batch the log already holds is [`IdempotentProposal::Held`], with
-    /// nothing handed over. Its records may not be committed yet; the
-    /// caller answers once they are. A batch the log holds only the start
-    /// of was abandoned and is written again whole.
+    /// nothing handed over. Its record may not be committed yet; the
+    /// caller answers once it is.
+    ///
+    /// A batch is one record. One of several is refused with
+    /// [`BrokerError::NotOnEngineStream`] before anything is checked or
+    /// written: its records would be an entry each, and a leader change or
+    /// a lapsed lease can cut those anywhere. See `docs/per-shard-raft.md`,
+    /// "Idempotent publishes".
     #[allow(clippy::too_many_arguments)]
     pub fn propose_idempotent<F, E>(
         &self,
@@ -153,6 +171,7 @@ impl Broker {
                 "an idempotent batch was proposed on a stream with no log".to_string(),
             ));
         };
+        Self::engine_takes_idempotent(payloads.len())?;
         let producer_id = turn.producer_id;
         match log.producer_sequence(producer_id, sequence) {
             ProducerSequence::Held {
@@ -172,16 +191,12 @@ impl Broker {
             ProducerSequence::Expired => {
                 return Err(BrokerError::SequenceExpired { sequence });
             }
-            // The rest of an open batch cannot be written in its place: a
-            // batch handed over earlier may land between. Opening the batch
-            // again abandons the start.
-            ProducerSequence::Partial {
-                held, len, digest, ..
-            } => {
-                if payloads.len() != len as usize {
-                    return Err(BrokerError::SequenceExpired { sequence });
-                }
-                reuse.check(sequence, digest, &payloads[..held as usize])?;
+            // Only a batch of several records is ever open, and none is
+            // written here.
+            ProducerSequence::Partial { .. } => {
+                return Err(BrokerError::NotOnEngineStream {
+                    what: SEVERAL_RECORDS,
+                });
             }
             ProducerSequence::Unknown | ProducerSequence::Next => {}
         }
@@ -191,6 +206,10 @@ impl Broker {
         .map(IdempotentProposal::Proposed)
     }
 }
+
+/// What [`Broker::propose_idempotent`] refuses, as
+/// [`BrokerError::NotOnEngineStream`] names it.
+const SEVERAL_RECORDS: &str = "idempotent batches of more than one record";
 
 /// A producer's turn on a stream. While it is held, no other batch of the
 /// producer is checked against the log. See [`Broker::propose_idempotent`].

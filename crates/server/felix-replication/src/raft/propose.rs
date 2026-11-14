@@ -96,7 +96,8 @@ const DISCARDED: &str = "a newer leader discarded the entry";
 const STOPPED: &str = "the shard's group stopped";
 const UNKNOWN: &str = "the entry was not reported written";
 const EMPTY: &str = "the batch held no record";
-const TOO_LONG: &str = "the batch holds more records than a batch can, so nothing was written";
+const SEVERAL: &str =
+    "an idempotent batch of several records is not written on Raft, so nothing was written";
 
 pub(crate) fn lost(detail: &'static str) -> CommitError {
     CommitError::LeadershipLost {
@@ -202,23 +203,18 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     if count == 0 {
         return Err(lost(EMPTY));
     }
-    let mut marks = match producer {
+    let mark = match producer {
         None => None,
+        // Several records would be several entries, and nothing writes
+        // those all or none.
+        Some(_) if count != 1 => return Err(lost(SEVERAL)),
         Some(Sequenced {
             producer_id,
             sequence,
-        }) => {
-            // The opening record says how many records the batch has.
-            let Ok(len) = u32::try_from(count) else {
-                return Err(lost(TOO_LONG));
-            };
-            let opens = ProducerMark::Opens {
-                producer_id,
-                sequence,
-                len,
-            };
-            Some(std::iter::once(opens).chain(std::iter::repeat(ProducerMark::Continues)))
-        }
+        }) => Some(ProducerMark {
+            producer_id,
+            sequence,
+        }),
     };
     let mut bytes = 0;
     let mut commands: Vec<Command> = records
@@ -228,7 +224,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             Command {
                 timestamp_micros: record.timestamp_micros,
                 payload: record.payload,
-                producer: marks.as_mut().and_then(Iterator::next),
+                producer: mark,
                 written: None,
             }
         })

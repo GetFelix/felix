@@ -372,6 +372,19 @@ async fn a_producer_keeps_its_sequence_when_its_raft_leader_dies() {
         publish(i).await.expect("published after the failover");
     }
 
+    // A batch of several records is refused, and none of it is written.
+    let several = publisher.publish_idempotent_batch(
+        &cluster.tenant_id,
+        &cluster.namespace,
+        STREAM,
+        vec![record(8), record(9)],
+        producer.producer_id(),
+        8,
+    );
+    let refused = several.await.expect_err("a batch of several was taken");
+    let refused = format!("{refused:#}");
+    assert!(refused.contains("more than one record"), "{refused}");
+
     let owed: Vec<Vec<u8>> = (0..8).map(record).collect();
     let mut held = replay_holding(&cluster, &elected, &owed).await;
     // The harness's own readiness probe may be on the stream too.

@@ -86,21 +86,11 @@ fn every_request() -> Vec<RaftRequest> {
             log_id(2, 8),
             Command {
                 timestamp_micros: 100,
-                payload: Bytes::from_static(b"opens a batch"),
-                producer: Some(ProducerMark::Opens {
+                payload: Bytes::from_static(b"a producer's batch"),
+                producer: Some(ProducerMark {
                     producer_id: 0xA1B2_C3D4_E5F6_0718,
                     sequence: 41,
-                    len: 2,
                 }),
-                written: None,
-            },
-        ),
-        EntryOf::<ShardTypes>::new_normal(
-            log_id(2, 9),
-            Command {
-                timestamp_micros: 100,
-                payload: Bytes::from_static(b"continues it"),
-                producer: Some(ProducerMark::Continues),
                 written: None,
             },
         ),
@@ -232,7 +222,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 5);
+    assert_eq!(read.entries.len(), 4);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -555,29 +545,29 @@ fn a_membership_entry_with_no_voters_is_refused() {
     assert!(refused.to_string().contains("no voters"), "{refused}");
 }
 
-/// A batch's record count is what closes it. One of none would never
-/// close, and every record after it would be read as the producer's.
+/// Tag 4 was a record continuing a batch of several. Nothing sends one, and
+/// read as a plain record it would lose its producer.
 #[test]
-fn an_entry_that_opens_a_batch_of_no_records_is_refused() {
-    let opens = Command {
+fn an_entry_that_continues_a_batch_is_refused() {
+    let record = Command {
         timestamp_micros: 100,
-        payload: Bytes::from_static(b"opens nothing"),
-        producer: Some(ProducerMark::Opens {
-            producer_id: 7,
-            sequence: 0,
-            len: 0,
-        }),
+        payload: Bytes::from_static(b"a record"),
+        producer: None,
         written: None,
     };
     let written = request(Request::Append(AppendEntriesRequest {
         vote: vote(2, true),
         prev_log_id: None,
-        entries: vec![EntryOf::<ShardTypes>::new_normal(log_id(2, 1), opens)],
+        entries: vec![EntryOf::<ShardTypes>::new_normal(log_id(2, 1), record)],
         leader_commit: None,
     }));
-    let bytes = encode_request(&written).expect("encode");
-    let refused = decode_request(bytes).expect_err("refused");
-    assert!(refused.to_string().contains("no records"), "{refused}");
+    let mut bytes = BytesMut::from(&encode_request(&written).expect("encode")[..]);
+    let payload = bytes.windows(8).position(|at| at == b"a record");
+    // The tag, the timestamp and the length come before the payload.
+    let tag = payload.expect("the record") - 4 - 8 - 1;
+    assert_eq!(bytes[tag], 1, "not the entry's tag");
+    bytes[tag] = 4;
+    assert!(decode_request(bytes.freeze()).is_err());
 }
 
 impl RaftRequest {

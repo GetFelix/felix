@@ -1538,17 +1538,19 @@ would have, and the producer carries on. A batch whose leader stopped partway
 through it is finished by the re-send rather than written twice.
 
 A stream shard run by a Raft group (`FELIX_SHARD_ENGINE=raft`) keeps the same
-contract. The producer id and sequence are in each entry, so every member's
-log holds them and a leader elected later answers a re-send from its own log.
-A batch of one record is written exactly once. A batch of several records
-is not written atomically on Raft, and one cut partway is not finished by
-its re-send: the records that were written stay in the stream and the
-re-send writes the whole batch after them, so a consumer can read those
-records twice (#2516). A leader that stops partway leaves the batch's first
-records. A leader that loses its majority's lease partway can leave any of
-them, and when they are not the batch's first, the re-send can be refused with
-`sequence_reused` (#2472). See `docs/per-shard-raft.md`, "Idempotent
-publishes".
+contract for a batch of one record. The producer id and sequence are in the
+record's entry, so every member's log holds them and a leader elected later
+answers a re-send from its own log. The batch is written exactly once.
+
+**A Raft shard refuses an idempotent batch of more than one record.** The
+answer is `invalid_request` with `retry` `fatal` and the message `a stream on
+Raft does not take idempotent batches of more than one record`. Nothing is
+written and the sequence is not used up, so the producer can send the same
+records as batches of one, each under its own sequence. On Raft each record is
+a log entry of its own, and a leader change or a lapsed lease partway through
+a batch could leave some of its records written and not others. A re-send
+could not then be told from a new batch, so the batch is refused whole instead
+(#2524). See `docs/per-shard-raft.md`, "Idempotent publishes".
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch
@@ -1642,7 +1644,8 @@ answers it back in `server_features_hi`, and from then on:
   `publish_window`.
 
 Per-shard order does not depend on answer order: the broker commits each
-shard's publishes in the order it read them. A client must match answers by
+shard's publishes in the order it read them from a stream. That holds for
+plain and idempotent publishes mixed on one stream too. A client must match answers by
 `request_id`, as it does without pipelining. A broker that does not answer the
 bit keeps request order for every publish, and a client that did not offer it
 gets the frames it always got.

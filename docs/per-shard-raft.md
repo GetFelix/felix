@@ -2011,9 +2011,8 @@ written, and a gap, an unknown producer, an expired sequence and a reused
 one are refused with the same errors.
 
 What makes it hold across a leader change is where the sequences live.
-Each record of a producer's batch is an entry that carries the producer's
-mark: the first names the producer, the sequence and the batch's length,
-and the rest say they continue it. The mark is stored in the record and
+A producer's batch is one record, and its entry carries the producer's
+mark: the producer id and the sequence. The mark is stored in the record and
 sent with the entry, so every member's log holds it, and each member
 derives every producer's place from its own log, the same way a hybrid
 replica does (`docs/storage-format.md`, "Producer marks"). A log that a
@@ -2029,7 +2028,7 @@ sequenceDiagram
     A->>B: entries marked producer 7, sequence 4
     Note over A: stops before its answer reaches the producer
     P->>B: producer 7, sequence 4, again
-    B->>B: its log holds sequence 4 at offsets 20 to 21
+    B->>B: its log holds sequence 4 at offset 20
     B-->>P: publish_ok at offset 20, nothing written
     P->>B: producer 7, sequence 5
     B-->>P: publish_ok, written
@@ -2049,35 +2048,65 @@ is safe because of two rules.
   routed at. The producer's next batch is then refused as a gap instead
   of landing ahead of it.
 
-Only the producer's own batches wait for its turn. A batch takes its place
-in its producer's line as it arrives, in the shard's publish order, and
-does the waiting off the shard's publish lane, so other producers' batches
-and plain publishes go ahead meanwhile. One consequence: when a connection
-sends an idempotent batch and then a plain publish to the same shard
-without waiting for the first answer, the plain publish can land first.
+Only the producer's own batches, and what its connection sends behind
+them, wait for its turn. A batch takes its place in its producer's line as
+it arrives, in the shard's publish order. If the turn is taken, the batch
+waits off the shard's publish lane, so other connections' publishes to the
+shard go ahead meanwhile.
+
+The broker commits a shard's publishes in the order it read them from a
+connection (`docs/protocol.md`, "Answers on completion"), and a batch that
+waits must not lose its place to a publish sent after it. So while a
+connection has a batch waiting on a shard, its later publishes to that
+shard, plain or idempotent, queue behind the batch and are proposed in
+order once its turn comes. A queued publish still holds its share of the
+connection's in-flight byte budget, which bounds the queue.
+
+```mermaid
+sequenceDiagram
+    participant C1 as Connection 1
+    participant C2 as Connection 2
+    participant L as Shard's publish lane
+    participant W as Connection 1's line
+    participant R as openraft
+    C1->>L: producer 7, sequence 5 (sequence 4 not yet on the log)
+    L->>W: waits for producer 7's turn
+    C1->>L: plain publish
+    L->>W: queued behind sequence 5
+    C2->>L: plain publish
+    L->>R: proposed at once
+    Note over R: sequence 4 is written
+    W->>R: sequence 5, then connection 1's plain publish
+```
 
 A batch the log already holds is answered once it is committed. Below the
 read bound it already is. Above it, the leader wrote it in this term and
 the answer waits for that entry's commit, so a re-send is never
 acknowledged ahead of the batch it repeats.
 
-A batch of one record is always written exactly once. A batch of several
-records is not yet: each record is its own entry, because an entry's index
-is its record's offset, so the batch is not written atomically, and two
-things can cut it.
+**A batch of more than one record is refused.** An entry's index is its
+record's offset, so a batch of several records would be several entries,
+and nothing writes those all or none:
 
-- A leader stops with only the start of the batch replicated. The start
-  stays in the stream, and the re-send writes the whole batch after it,
-  so the start's records are in the stream twice. The same happens on the
-  hybrid when a promoted leader holds only the start of a batch (#2516).
-- The leader loses its majority's lease partway. openraft checks the lease
-  for each entry, so any of the batch's records can be the ones written,
-  not only its first (#2472). The publisher is told the batch was written
-  in part. When the records written are the batch's first, the re-send is
-  handled as above. When they are not, the re-send can be refused with
-  `sequence_reused`, because the log's start of the batch is not the
-  start of the re-send, and a record written without the batch's first
-  one is read as continuing whatever batch is open before it.
+- A leader can stop with only the start of the batch replicated. The
+  re-send would write the whole batch after that start, and the start's
+  records would be in the stream twice (#2516).
+- The leader can lose its majority's lease partway. openraft checks the
+  lease for each entry, so any of the batch's records could be the ones
+  written, not only its first (#2472), and the re-send could not be matched
+  to them.
+
+So the leader refuses the batch before it takes the producer's turn or
+writes anything: `invalid_request`, not retryable, "a stream on Raft does
+not take idempotent batches of more than one record". The sequence is not
+used up, and the producer can send the records as batches of one. No entry
+continues another's batch: a member refuses such an entry from a peer, and
+a record of a longer batch in a log is not read as an entry. Taking these batches needs
+one of: a mark that names each record's place in its batch so a re-send
+finishes a cut one, a term-bound write of several entries in openraft, or
+offsets that are not entry indexes. #2524 tracks it, and it has to land
+before a stream that holds data can move from the hybrid to Raft, because
+the hybrid takes these batches.
 
 The publisher id (the principal that published a record, which is not the
 producer id) is still not stored, and a batch with record headers is still
@@ -2088,13 +2117,15 @@ refused.
 > `a_resend_of_an_uncommitted_batch_waits_for_its_commit`,
 > `a_producers_next_batch_is_checked_once_the_one_before_is_written`,
 > `a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap`,
-> `a_resend_of_an_open_batch_is_checked_against_its_start` and
+> `a_batch_of_several_records_is_refused_with_nothing_written`,
+> `a_record_of_a_longer_batch_is_not_a_raft_entry` and
 > `a_batch_resent_to_the_next_leader_is_not_written_again`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
-> `queued_idempotent_publishes_to_a_raft_shard_are_written_once` and
-> `a_batch_waiting_for_its_producers_turn_holds_up_no_other_publish`;
+> `queued_idempotent_publishes_to_a_raft_shard_are_written_once`,
+> `a_batch_waiting_for_its_producers_turn_holds_up_only_its_own_connection` and
+> `an_idempotent_batch_of_several_records_is_refused_on_raft`;
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
 > `a_forward_to_a_raft_leader_commits_through_its_group`.
 

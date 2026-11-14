@@ -2,6 +2,8 @@
 //! publish context every connection derives its own from.
 
 use felix_common::random::HashMap;
+use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +14,7 @@ use parking_lot::Mutex;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio_util::task::TaskTracker;
 
+use super::admission::ConnId;
 use super::direct::first_offset;
 use super::scheduler::{LaneGuard, PublishScheduler};
 use super::{ConnLimits, IdentityKey, PublishAdmission, PublishContext, PublishJob, PublishTarget};
@@ -80,6 +83,7 @@ pub(crate) fn build_tracked_publish_context(
         forward_budget: config.forward_budget(),
         flush_concurrency: config.pub_flush_concurrency.max(1),
         flush_slots: Mutex::new(FlushSlots::default()),
+        waiting: Arc::default(),
         work: work.clone(),
     });
     for (index, partition) in scheduler.partitions().iter().enumerate() {
@@ -140,6 +144,89 @@ pub(crate) fn build_tracked_publish_context(
     }
 }
 
+/// A producer's turn on its way.
+type Turn = std::pin::Pin<Box<dyn Future<Output = felix_broker::ProducerTurn> + Send>>;
+
+/// A connection's publishes to one stream shard.
+type Place = (ConnId, u64);
+
+/// The publishes queued behind an idempotent batch of their own connection
+/// that waits, off its lane, for its producer's turn on a Raft shard.
+///
+/// A queued job keeps its admission permit, so a connection queues no more
+/// here than its byte budget lets it have in flight.
+#[derive(Default)]
+struct Waiting {
+    lines: Mutex<HashMap<Place, VecDeque<PublishJob>>>,
+}
+
+impl Waiting {
+    /// Queue `job` behind the batch its connection has waiting on the
+    /// shard, or hand it back when none is.
+    fn join(&self, place: Place, job: PublishJob) -> Option<PublishJob> {
+        match self.lines.lock().get_mut(&place) {
+            Some(line) => {
+                line.push_back(job);
+                None
+            }
+            None => Some(job),
+        }
+    }
+
+    /// Start a line at `place`. Called on the shard's lane, like `join`.
+    fn open(self: &Arc<Self>, place: Place) -> Line {
+        self.lines.lock().insert(place, VecDeque::new());
+        Line {
+            waiting: Arc::clone(self),
+            place,
+            closed: false,
+        }
+    }
+}
+
+/// One connection's line behind its waiting batch, as the task that
+/// proposes them holds it.
+struct Line {
+    waiting: Arc<Waiting>,
+    place: Place,
+    closed: bool,
+}
+
+impl Line {
+    /// The next job queued, or `None` with the line closed, so the
+    /// connection's next publish is proposed on its lane again.
+    fn next(&mut self) -> Option<PublishJob> {
+        let mut lines = self.waiting.lines.lock();
+        let next = lines.get_mut(&self.place).and_then(VecDeque::pop_front);
+        if next.is_none() {
+            lines.remove(&self.place);
+            self.closed = true;
+        }
+        next
+    }
+}
+
+impl Drop for Line {
+    /// A line left open by a task that ended early would queue the
+    /// connection's publishes to the shard forever.
+    fn drop(&mut self) {
+        if !self.closed {
+            self.waiting.lines.lock().remove(&self.place);
+        }
+    }
+}
+
+/// The line `job` would wait in: its connection's, on its stream shard.
+fn place_of(job: &PublishJob) -> Option<Place> {
+    let connection = job.admission_permit.as_ref()?.connection()?;
+    let (PublishTarget::Resolved { handle, .. } | PublishTarget::Idempotent { handle, .. }) =
+        &job.target
+    else {
+        return None;
+    };
+    Some((connection, handle.id()))
+}
+
 /// What a job does on its lane, and everything it needs to do it.
 ///
 /// Each kind of job holds its lane only as long as order requires, and an
@@ -155,6 +242,7 @@ struct LaneWork {
     forward_budget: Duration,
     flush_concurrency: usize,
     flush_slots: Mutex<FlushSlots>,
+    waiting: Arc<Waiting>,
     work: TaskTracker,
 }
 
@@ -431,7 +519,47 @@ impl LaneWork {
     /// A publish to a shard a Raft group runs. Proposed on the lane, so the
     /// group's order is the lane's, and answered at its commit off the lane.
     /// It never enters the hybrid's fence or touches its log.
-    fn publish_on_raft(self: &Arc<Self>, mut job: PublishJob, lane: LaneGuard) {
+    ///
+    /// An idempotent batch whose producer's turn is taken cannot be
+    /// proposed yet. The lane is not held for that wait: it lasts until the
+    /// producer's batch before is on this broker's log, and every other
+    /// publish to the shard would wait with it. The batch waits off the
+    /// lane instead, and the later publishes of its own connection to the
+    /// shard queue behind it ([`Waiting`]), because a connection's
+    /// publishes to a shard are committed in the order they were read.
+    fn publish_on_raft(self: &Arc<Self>, job: PublishJob, lane: LaneGuard) {
+        let place = place_of(&job);
+        let job = match place {
+            Some(place) => self.waiting.join(place, job),
+            None => Some(job),
+        };
+        let Some((job, turn)) = job.and_then(|job| self.propose_on_raft(job)) else {
+            return;
+        };
+        let this = Arc::clone(self);
+        match place {
+            Some(place) => {
+                let line = self.waiting.open(place);
+                drop(lane);
+                self.work
+                    .spawn(async move { this.propose_in_line(line, job, turn).await });
+            }
+            // A job that names no connection has nothing to queue the
+            // publishes behind it under, so the lane keeps them in order.
+            None => {
+                self.work.spawn(async move {
+                    let turn = turn.await;
+                    this.propose_at_turn(job, turn);
+                    drop(lane);
+                });
+            }
+        }
+    }
+
+    /// Propose `job` to its shard's Raft group and leave its answer to a
+    /// task, or hand it back with the producer's turn it has to wait for.
+    /// The turn's place in the producer's line is already taken.
+    fn propose_on_raft(self: &Arc<Self>, mut job: PublishJob) -> Option<(PublishJob, Turn)> {
         let (handle, shard, term) = match &job.target {
             PublishTarget::Resolved {
                 handle,
@@ -439,15 +567,40 @@ impl LaneWork {
                 generation,
                 ..
             } => (handle, shard, *generation),
-            PublishTarget::Idempotent { shard: Some(_), .. } if job.headers.is_none() => {
-                return self.publish_idempotent_on_raft(job, lane);
-            }
             PublishTarget::Idempotent {
                 handle,
                 shard: Some(shard),
-                generation,
+                producer_id,
                 ..
-            } => (handle, shard, *generation),
+            } => {
+                // Refused here, not at its turn, so a batch that is never
+                // written waits for nothing and holds nothing up.
+                let refused = match job.headers {
+                    Some(_) => Err(felix_broker::BrokerError::NotOnEngineStream {
+                        what: "record headers",
+                    }),
+                    None => Broker::engine_takes_idempotent(job.payloads.len()),
+                };
+                if let Err(err) = refused {
+                    let shard = shard.clone();
+                    settle(
+                        job.response,
+                        job.acked_on_enqueue,
+                        Some(&shard),
+                        Err(err.into()),
+                    );
+                    return None;
+                }
+                let mut turn: Turn = Box::pin(self.broker.producer_turn(handle, *producer_id));
+                // The first poll takes the place in the producer's line.
+                return match futures::FutureExt::now_or_never(turn.as_mut()) {
+                    Some(turn) => {
+                        self.propose_at_turn(job, turn);
+                        None
+                    }
+                    None => Some((job, turn)),
+                };
+            }
             _ => unreachable!("only local publishes with a shard are proposed"),
         };
         let proposed = match job.headers.as_ref() {
@@ -470,7 +623,51 @@ impl LaneWork {
                 }))
                 .map_err(crate::shards::routing::RaftRefusal::into_anyhow),
         };
-        drop(lane);
+        let shard = shard.clone();
+        match proposed {
+            Ok(proposed) => {
+                self.work.spawn(async move {
+                    let result = proposed.complete().await.map_err(Into::into);
+                    settle(job.response, job.acked_on_enqueue, Some(&shard), result);
+                });
+            }
+            Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
+        }
+        None
+    }
+
+    /// Propose an idempotent batch whose producer's `turn` has come, and
+    /// leave its answer to a task.
+    fn propose_at_turn(self: &Arc<Self>, mut job: PublishJob, turn: felix_broker::ProducerTurn) {
+        let PublishTarget::Idempotent {
+            handle,
+            shard: Some(shard),
+            generation,
+            sequence,
+            reuse,
+            ..
+        } = &job.target
+        else {
+            unreachable!("only idempotent publishes with a shard wait for a turn")
+        };
+        let term = *generation;
+        let proposed = self
+            .engine
+            .publish_idempotent_on_raft(
+                &self.broker,
+                handle,
+                shard,
+                term,
+                turn,
+                *sequence,
+                *reuse,
+                std::mem::take(&mut job.payloads),
+                self.quorum_timeout,
+            )
+            .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
+                term,
+            }))
+            .map_err(crate::shards::routing::RaftRefusal::into_anyhow);
         let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
@@ -483,87 +680,26 @@ impl LaneWork {
         }
     }
 
-    /// An idempotent publish to a shard a Raft group runs. The producer's
-    /// turn is asked for on the lane, which puts the batch behind the
-    /// producer's earlier ones. The lane is not held for the wait: that
-    /// lasts until the batch before is on this broker's log, and every
-    /// other publish to the shard would wait with it. A batch that waited
-    /// is proposed off the lane, so a later publish of another kind from
-    /// the same connection can land ahead of it.
-    fn publish_idempotent_on_raft(self: &Arc<Self>, mut job: PublishJob, lane: LaneGuard) {
-        let PublishTarget::Idempotent {
-            handle,
-            producer_id,
-            ..
-        } = &job.target
-        else {
-            unreachable!("only idempotent publishes with a shard are proposed here")
-        };
-        let mut turn = Box::pin(self.broker.producer_turn(handle, *producer_id));
-        // The first poll takes the place in the producer's line.
-        let turn = match futures::FutureExt::now_or_never(turn.as_mut()) {
-            Some(turn) => Ok(turn),
-            None => Err(turn),
-        };
-        let this = Arc::clone(self);
-        let propose = move |job: &mut PublishJob, turn: felix_broker::ProducerTurn| {
-            let PublishTarget::Idempotent {
-                handle,
-                shard: Some(shard),
-                generation,
-                sequence,
-                reuse,
-                ..
-            } = &job.target
-            else {
-                unreachable!("only idempotent publishes with a shard are proposed here")
-            };
-            let term = *generation;
-            this.engine
-                .publish_idempotent_on_raft(
-                    &this.broker,
-                    handle,
-                    shard,
-                    term,
-                    turn,
-                    *sequence,
-                    *reuse,
-                    std::mem::take(&mut job.payloads),
-                    this.quorum_timeout,
-                )
-                .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
-                    term,
-                }))
-                .map_err(crate::shards::routing::RaftRefusal::into_anyhow)
-        };
-        // The producer's turn was free: proposed on the lane, like a plain
-        // publish.
-        let proposed = match turn {
-            Ok(turn) => {
-                let proposed = propose(&mut job, turn);
-                drop(lane);
-                Ok(proposed)
+    /// Propose `job` once its producer's `turn` comes, then what its
+    /// connection queued behind it meanwhile, in the order it was read.
+    async fn propose_in_line(
+        self: &Arc<Self>,
+        mut line: Line,
+        mut job: PublishJob,
+        mut turn: Turn,
+    ) {
+        loop {
+            self.propose_at_turn(job, turn.await);
+            loop {
+                let Some(next) = line.next() else {
+                    return;
+                };
+                if let Some(waits) = self.propose_on_raft(next) {
+                    (job, turn) = waits;
+                    break;
+                }
             }
-            Err(turn) => {
-                drop(lane);
-                Err(turn)
-            }
-        };
-        self.work.spawn(async move {
-            let proposed = match proposed {
-                Ok(proposed) => proposed,
-                Err(turn) => propose(&mut job, turn.await),
-            };
-            let result = match proposed {
-                Ok(proposed) => proposed.complete().await.map_err(Into::into),
-                Err(err) => Err(err),
-            };
-            let shard = match &job.target {
-                PublishTarget::Idempotent { shard, .. } => shard.clone(),
-                _ => None,
-            };
-            settle(job.response, job.acked_on_enqueue, shard.as_ref(), result);
-        });
+        }
     }
 
     /// An ephemeral stream's publish has no flush to wait for, so it runs on

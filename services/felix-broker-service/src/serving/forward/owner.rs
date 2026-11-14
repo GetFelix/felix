@@ -273,6 +273,14 @@ impl ForwardingHandler {
             return error(correlation_id, ErrorCode::UnsupportedKind, err.to_string());
         }
         let records = publish.payloads.len() as u64;
+        if publish.producer.is_some()
+            && let Err(err) = Broker::engine_takes_idempotent(publish.payloads.len())
+        {
+            // Answered like a refused sequence. `UnsupportedKind` would be
+            // read as an owner too old for the request and sent again.
+            metrics::record_served(metrics::OUTCOME_ERROR);
+            return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
+        }
         let Some(term) = self.engine.raft_term(key) else {
             metrics::record_served(metrics::OUTCOME_REFUSED);
             let detail = "this broker stopped leading the shard's Raft group";

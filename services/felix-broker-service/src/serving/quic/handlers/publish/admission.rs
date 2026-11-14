@@ -20,7 +20,34 @@ pub(crate) struct AdmissionPermit {
     pub(super) _global: tokio::sync::OwnedSemaphorePermit,
     /// Keeps the identity's entry alive while its bytes are in flight, so a
     /// stream reopened under the same identity finds the same budget.
-    pub(super) _share: Arc<IdentityLimits>,
+    pub(super) share: Arc<IdentityLimits>,
+}
+
+/// Names a connection for as long as one of its permits is held.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ConnId(usize);
+
+impl AdmissionPermit {
+    /// The connection the job was read from. `None` for a standalone share.
+    pub(crate) fn connection(&self) -> Option<ConnId> {
+        let (conn, _) = self.share.conn.as_ref()?;
+        Some(ConnId(Arc::as_ptr(conn) as usize))
+    }
+}
+
+#[cfg(test)]
+impl AdmissionPermit {
+    /// A permit for no bytes, as a job read from `conn` holds one.
+    pub(crate) fn of_connection(conn: &Arc<ConnLimits>) -> Self {
+        let budget = PublishAdmission::new(1 << 20);
+        let permit = || budget.try_acquire(0).expect("room");
+        Self {
+            _identity: permit(),
+            _conn: permit(),
+            _global: permit(),
+            share: conn.share(IdentityKey::default()),
+        }
+    }
 }
 
 /// Bounds total bytes queued-or-processing across all publishes, independent of the

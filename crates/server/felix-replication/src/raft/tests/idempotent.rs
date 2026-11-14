@@ -121,20 +121,14 @@ async fn a_batch_sent_again_is_answered_and_not_written_again() {
     };
     let first = led.committed + 1;
 
-    let sent = producer.publish(0, &[b"a", b"b"]).await.expect("committed");
-    assert_eq!(
-        (offsets(&sent), sent.duplicate),
-        ((first, first + 1), false)
-    );
-    let again = producer.publish(0, &[b"a", b"b"]).await.expect("answered");
-    assert_eq!(
-        (offsets(&again), again.duplicate),
-        ((first, first + 1), true)
-    );
+    let sent = producer.publish(0, &[b"a"]).await.expect("committed");
+    assert_eq!((offsets(&sent), sent.duplicate), ((first, first), false));
+    let again = producer.publish(0, &[b"a"]).await.expect("answered");
+    assert_eq!((offsets(&again), again.duplicate), ((first, first), true));
     let next = producer.publish(1, &[b"c"]).await.expect("committed");
     assert_eq!(
         (offsets(&next), next.duplicate),
-        ((first + 2, first + 2), false)
+        ((first + 1, first + 1), false)
     );
 
     let refused =
@@ -155,7 +149,7 @@ async fn a_batch_sent_again_is_answered_and_not_written_again() {
     let quiet = quiet.expect("answered");
     assert_eq!(
         (offsets(&quiet), quiet.duplicate),
-        ((first + 2, first + 2), true)
+        ((first + 1, first + 1), true)
     );
     let stranger = broker.producer_turn(&handle, PRODUCER + 1).await;
     let orders = shard(0);
@@ -176,7 +170,7 @@ async fn a_batch_sent_again_is_answered_and_not_written_again() {
     ));
 
     // Nothing but the two batches was written.
-    assert_eq!(log_from(&broker, first).await, ["a", "b", "c"]);
+    assert_eq!(log_from(&broker, first).await, ["a", "c"]);
     led.cluster.stop().await;
 }
 
@@ -272,7 +266,7 @@ async fn a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap() {
         term: led.term + 1,
         ..producer
     };
-    let lost = elsewhere.publish(1, &[b"b", b"c"]).await;
+    let lost = elsewhere.publish(1, &[b"b"]).await;
     assert!(
         matches!(lost, Err(CommitError::LeadershipLost { .. })),
         "{lost:?}"
@@ -284,21 +278,20 @@ async fn a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap() {
     ));
     assert_eq!(log_from(&broker, first).await, ["a"]);
 
-    let again = producer.publish(1, &[b"b", b"c"]).await.expect("committed");
+    let again = producer.publish(1, &[b"b"]).await.expect("committed");
     assert_eq!(
         (offsets(&again), again.duplicate),
-        ((first + 1, first + 2), false)
+        ((first + 1, first + 1), false)
     );
     led.cluster.stop().await;
 }
 
-/// **A re-send of a batch the log holds only the start of has to be that
-/// batch: as many records, and the same ones where the log has them.** It
-/// is then written whole after the start.
+/// **A batch of several records is refused with nothing written, and it
+/// leaves the producer no place.** Its records would be an entry each. A
+/// leader change or a lapsed lease can cut those anywhere, and the re-send
+/// of a cut batch would write records twice or be refused as another batch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_resend_of_an_open_batch_is_checked_against_its_start() {
-    use crate::raft::types::ProducerMark;
-
+async fn a_batch_of_several_records_is_refused_with_nothing_written() {
     let mut led = led().await;
     let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
     let producer = Producer {
@@ -307,48 +300,43 @@ async fn a_resend_of_an_open_batch_is_checked_against_its_start() {
         handle: &handle,
         term: led.term,
     };
-    // What a leader that stops partway leaves: the first two of the
-    // batch's three records, as their entries.
-    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
-    let group = group.expect("group");
-    let marks = [
-        ProducerMark::Opens {
-            producer_id: PRODUCER,
-            sequence: 0,
-            len: 3,
-        },
-        ProducerMark::Continues,
-    ];
-    for (payload, mark) in [b"a", b"b"].into_iter().zip(marks) {
-        let command = Command {
-            timestamp_micros: 1_700_000_000,
-            payload: Bytes::from_static(payload),
-            producer: Some(mark),
-            written: None,
-        };
-        group.raft().client_write(command).await.expect("written");
-    }
     let first = led.committed + 1;
 
-    let shorter = producer.propose(0, &[b"a", b"b"], SequenceReuse::Refuse);
+    let several = producer.propose(0, &[b"a", b"b"], SequenceReuse::Refuse);
     assert!(matches!(
-        shorter.await.map(|_| ()),
-        Err(BrokerError::SequenceExpired { sequence: 0 })
+        several.await.map(|_| ()),
+        Err(BrokerError::NotOnEngineStream { .. })
     ));
-    let other = producer.propose(0, &[b"a", b"x", b"c"], SequenceReuse::Refuse);
-    assert!(matches!(
-        other.await.map(|_| ()),
-        Err(BrokerError::SequenceReused { sequence: 0 })
-    ));
-
-    let sent = producer.publish(0, &[b"a", b"b", b"c"]).await;
-    let sent = sent.expect("committed");
-    assert_eq!(
-        (offsets(&sent), sent.duplicate),
-        ((first + 2, first + 4), false)
-    );
-    assert_eq!(log_from(&broker, first).await, ["a", "b", "a", "b", "c"]);
+    // Sequence 0 is still the producer's first.
+    let sent = producer.publish(0, &[b"a"]).await.expect("committed");
+    assert_eq!((offsets(&sent), sent.duplicate), ((first, first), false));
+    assert_eq!(log_from(&broker, first).await, ["a"]);
     led.cluster.stop().await;
+}
+
+/// **A record of a batch of several is not read out of a Raft log as a
+/// batch of its own.** No Raft stream writes one, and read that way it
+/// would move its producer's place.
+#[test]
+fn a_record_of_a_longer_batch_is_not_a_raft_entry() {
+    use crate::raft::types::ProducerMark;
+    use felix_storage::log::{ProducerBatch, RecordMark};
+
+    let opens = |len| {
+        RecordMark::Opens(ProducerBatch {
+            producer_id: PRODUCER,
+            sequence: 0,
+            len,
+        })
+    };
+    let one = ProducerMark::of_record(opens(1)).expect("a batch of one");
+    assert_eq!(ProducerMark::record_mark(one), opens(1));
+    assert!(ProducerMark::of_record(opens(2)).is_err());
+    assert!(ProducerMark::of_record(RecordMark::Continues).is_err());
+    assert_eq!(
+        ProducerMark::of_record(RecordMark::None).expect("plain"),
+        None
+    );
 }
 
 /// **A batch re-sent to the leader elected after the one that took it is
@@ -368,10 +356,10 @@ async fn a_batch_resent_to_the_next_leader_is_not_written_again() {
             handle: &handle,
             term: led.term,
         };
-        let sent = producer.publish(0, &[b"a", b"b"]).await.expect("committed");
-        assert_eq!(offsets(&sent), (first, first + 1));
+        let sent = producer.publish(0, &[b"a"]).await.expect("committed");
+        assert_eq!(offsets(&sent), (first, first));
         let sent = producer.publish(1, &[b"c"]).await.expect("committed");
-        assert_eq!(offsets(&sent), (first + 2, first + 2));
+        assert_eq!(offsets(&sent), (first + 1, first + 1));
     }
 
     // The leader is cut off, and the others elect one of themselves.
@@ -398,22 +386,16 @@ async fn a_batch_resent_to_the_next_leader_is_not_written_again() {
     let again = producer.publish(1, &[b"c"]).await.expect("answered");
     assert_eq!(
         (offsets(&again), again.duplicate),
-        ((first + 2, first + 2), true)
+        ((first + 1, first + 1), true)
     );
-    let again = producer.publish(0, &[b"a", b"b"]).await.expect("answered");
-    assert_eq!(
-        (offsets(&again), again.duplicate),
-        ((first, first + 1), true)
-    );
+    let again = producer.publish(0, &[b"a"]).await.expect("answered");
+    assert_eq!((offsets(&again), again.duplicate), ((first, first), true));
     let next = producer.publish(2, &[b"d"]).await.expect("committed");
     assert_eq!(
         (offsets(&next), next.duplicate),
         ((blank + 1, blank + 1), false)
     );
-    assert_eq!(
-        log_from(&broker, first).await,
-        ["a", "b", "c", "theirs", "d"]
-    );
+    assert_eq!(log_from(&broker, first).await, ["a", "c", "theirs", "d"]);
     led.heal();
     led.cluster.stop().await;
 }

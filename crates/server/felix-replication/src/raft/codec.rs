@@ -69,7 +69,7 @@ impl EntryCodec<ShardTypes> for ShardCodec {
         Ok(Command {
             timestamp_micros: record.timestamp_micros,
             payload: record.payload,
-            producer: ProducerMark::of_record(record.mark),
+            producer: ProducerMark::of_record(record.mark)?,
             written: None,
         })
     }

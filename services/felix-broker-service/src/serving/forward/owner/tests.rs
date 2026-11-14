@@ -1630,6 +1630,27 @@ mod on_raft {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+        // So is a sequenced batch of several records, with nothing written.
+        let mut several = plain(b"several");
+        several.payloads.push(Bytes::from_static(b"records"));
+        if let Some(producer) = several.producer.as_mut() {
+            producer.sequence += 1;
+        }
+        match handler.apply(several).await {
+            InternalMessage::ForwardPublishError(err) => {
+                // Not `UnsupportedKind`, which the requester answers by
+                // sending the batch again in the older form.
+                assert_eq!(err.code, ErrorCode::StorageFailed);
+                assert!(err.detail.contains("more than one"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => {
+                assert_eq!(ok.offsets(), Some((third.0 + 2, third.0 + 2)));
+            }
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
         EngineShards::shutdown(&*shards).await;
     }
 

@@ -106,9 +106,8 @@ impl RaftEngine {
     /// the broker stopped leading the term would be missed by the check of
     /// its own re-send.
     ///
-    /// A batch of several records is not written atomically. A leader that
-    /// stops partway can leave the start of one committed, and its re-send
-    /// then writes the whole batch after it.
+    /// A batch is one record. One of several is refused with nothing
+    /// written ([`Broker::engine_takes_idempotent`]).
     #[allow(clippy::too_many_arguments)]
     pub fn publish_idempotent(
         &self,
