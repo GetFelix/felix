@@ -171,7 +171,13 @@ struct Shared<K> {
     segment_reads: std::sync::atomic::AtomicU64,
     /// The root's marks for this copy, once [`RaftLog::mark_with`] set them.
     marking: std::sync::OnceLock<Marking>,
+    /// Told how long each vote save took, once [`RaftLog::time_vote_saves`]
+    /// set it.
+    vote_saved: std::sync::OnceLock<VoteSaved>,
 }
+
+/// Called with how long a vote save took, its wait for the disk included.
+pub type VoteSaved = Arc<dyn Fn(std::time::Duration) + Send + Sync>;
 
 /// How this log keeps its marks at the data root.
 struct Marking {
@@ -236,6 +242,7 @@ where
                 #[cfg(test)]
                 segment_reads: std::sync::atomic::AtomicU64::new(0),
                 marking: std::sync::OnceLock::new(),
+                vote_saved: std::sync::OnceLock::new(),
             }),
             types: std::marker::PhantomData,
         })
@@ -266,6 +273,12 @@ where
             batch.batch_from(self.positions(), interval);
         }
         Ok(())
+    }
+
+    /// Call `saved` after every vote save with how long it took. The first
+    /// call sets it; a later one is ignored.
+    pub fn time_vote_saves(&self, saved: VoteSaved) {
+        let _ = self.shared.vote_saved.set(saved);
     }
 
     /// The log's written and flushed positions, as they change.

@@ -28,6 +28,7 @@ use super::network::{
 };
 use super::propose::{self, AckAt, Batch, Proposal};
 use super::runtime::{GroupStatus, OpenError, Role};
+use super::ticker::VoteSaves;
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::engine::{CommitError, EngineHost, Written};
@@ -144,6 +145,26 @@ pub(crate) struct Pace {
     jitter: u64,
     /// The whole hash `jitter` is cut from.
     rank: u64,
+    /// Vote requests this member has sent, and how many are not back yet.
+    /// With both the ticker can tell a round that got its answers and no
+    /// majority from one still waiting on a disk.
+    votes_sent: AtomicU64,
+    votes_out: AtomicU64,
+    /// Set by the ticker when this member lost an election, until the
+    /// group has a leader again.
+    lost: AtomicBool,
+    /// A candidate asked this member for a vote it did not give: a peer
+    /// is in reach, so a retry here is worth more than the others'.
+    asked: AtomicBool,
+}
+
+/// A vote request on its way, for [`Pace::asking`].
+pub(crate) struct Asking<'a>(&'a Pace);
+
+impl Drop for Asking<'_> {
+    fn drop(&mut self) {
+        self.0.votes_out.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 struct Peer {
@@ -175,7 +196,19 @@ impl Pace {
             peers: parking_lot::Mutex::new(Vec::new()),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
             rank: hasher.finish(),
+            votes_sent: AtomicU64::new(0),
+            votes_out: AtomicU64::new(0),
+            lost: AtomicBool::new(false),
+            asked: AtomicBool::new(false),
         }
+    }
+
+    /// This member is asking a peer for its vote. Drop the answer's guard
+    /// when the request is back, answered or not.
+    pub(crate) fn asking(&self) -> Asking<'_> {
+        self.votes_out.fetch_add(1, Ordering::Relaxed);
+        self.votes_sent.fetch_add(1, Ordering::Relaxed);
+        Asking(self)
     }
 
     /// The leader is sending `to` an append. The gap it names is the idle
@@ -297,6 +330,7 @@ impl Pace {
                 gap => gap.min(timers.idle_heartbeat),
             };
             self.promised.store(gap, Ordering::Relaxed);
+            self.lost.store(false, Ordering::Relaxed);
         }
         self.leased.store(gap.is_some(), Ordering::Relaxed);
         self.heard.store(now, Ordering::Relaxed);
@@ -383,7 +417,8 @@ pub(crate) enum Turn {
     None = 0,
     /// Its timer check could start an election and it is not sent one yet.
     Waiting = 1,
-    /// It is sent timer checks and counts as an election in flight.
+    /// It holds a place: it was sent a check that is not answered yet, or
+    /// it stood and its election is not over.
     Admitted = 2,
 }
 
@@ -399,10 +434,14 @@ impl Group {
         config: Arc<Config>,
         transport: Arc<dyn RaftTransport>,
         timers: Timers,
+        vote_saves: Arc<VoteSaves>,
         host: Option<Arc<dyn EngineHost>>,
     ) -> Result<Self, OpenError> {
         let snapshots = SnapshotStore::open(log.dir())?;
         let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
+        log.time_vote_saves(Arc::new(move |took| {
+            vote_saves.saved(timers.now(), took.as_millis() as u64);
+        }));
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
         // It started after the last message it took, so waiting the
@@ -613,6 +652,46 @@ impl Group {
         self.pace.rank
     }
 
+    /// One timer check, waited for until openraft has run it: the term
+    /// this member is then a candidate in, if it is one.
+    pub(crate) async fn probe(&self) -> Option<u64> {
+        self.tick().await;
+        let candidate = self.raft.with_raft_state(|state| {
+            (state.server_state == ServerState::Candidate).then(|| term_of(state.vote_ref()))
+        });
+        candidate.await.ok().flatten()
+    }
+
+    /// How many vote requests this member has sent.
+    pub(crate) fn votes_sent(&self) -> u64 {
+        self.pace.votes_sent.load(Ordering::Relaxed)
+    }
+
+    /// Whether this member has asked for votes since it had sent `sent`
+    /// requests, and every request is back.
+    pub(crate) fn votes_are_back(&self, sent: u64) -> bool {
+        self.votes_sent() > sent && self.pace.votes_out.load(Ordering::Relaxed) == 0
+    }
+
+    /// Whether this member lost an election since its group last had a
+    /// leader.
+    pub(crate) fn lost(&self) -> bool {
+        self.pace.lost.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_lost(&self, lost: bool) {
+        self.pace.lost.store(lost, Ordering::Relaxed);
+    }
+
+    /// Whether a candidate asked this member for a vote it did not give.
+    pub(crate) fn asked(&self) -> bool {
+        self.pace.asked.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn clear_asked(&self) {
+        self.pace.asked.store(false, Ordering::Relaxed);
+    }
+
     /// When the next timer check can matter, after one was just sent.
     ///
     /// A leader's only timer is its heartbeat, at the short gap or the idle
@@ -662,6 +741,7 @@ impl Group {
             match &reply {
                 Reply::Append(Ok(_)) => group.pace.followed(Some(beat)),
                 Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
+                Reply::Vote(_) => group.pace.asked.store(true, Ordering::Relaxed),
                 _ => {}
             }
             Ok(reply)

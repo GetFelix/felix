@@ -282,6 +282,26 @@ async fn storm() {
         at(0.99),
         at(1.0),
     );
+    for (broker, runtime) in BROKERS.iter().rev().zip(survivors.iter().rev()) {
+        println!("{broker}: {:?}", runtime.election_load());
+    }
+    // What the groups without a leader look like, for whoever reads a
+    // run that did not settle.
+    let unled = (0..groups).filter(|n| leader(&survivors, *n).is_none());
+    for n in unled.take(5) {
+        let members = survivors.iter().filter_map(|r| r.status(&shard(n)));
+        let members: Vec<_> = members
+            .map(|status| {
+                (
+                    status.member.broker,
+                    status.role,
+                    status.term,
+                    status.leader,
+                )
+            })
+            .collect();
+        println!("group {n} has no leader: {members:?}");
+    }
     assert!(all_led.is_some(), "not every group was led in {settle:?}");
     for runtime in &survivors {
         runtime.shutdown().await;

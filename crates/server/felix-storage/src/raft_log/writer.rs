@@ -55,6 +55,7 @@ where
         let generation = generation_of(leader_id.term())?;
         let leader = self.shared.codec.encode_node_id(leader_id.node_id());
         let committed = vote.is_committed();
+        let began = std::time::Instant::now();
         self.shared
             .log
             .save_vote(generation, &leader, committed)
@@ -69,6 +70,9 @@ where
                     committed,
                 })
                 .await?;
+        }
+        if let Some(saved) = self.shared.vote_saved.get() {
+            saved(began.elapsed());
         }
         Ok(())
     }

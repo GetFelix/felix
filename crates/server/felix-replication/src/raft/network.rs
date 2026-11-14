@@ -231,6 +231,7 @@ impl Router {
             self.lease.void_through(term_of(transfer.from_leader()));
         }
         let pre_vote = matches!(body, Request::PreVote(_));
+        let _asking = matches!(body, Request::Vote(_)).then(|| self.pace.asking());
         let request = RaftRequest {
             group,
             to: to.clone(),

@@ -66,10 +66,9 @@ pub struct RuntimeConfig {
     pub log_mark: LogMarkMode,
     /// The most groups on this broker that may be in an election at once.
     /// The rest wait their turn, so the vote fsyncs of one round cannot
-    /// outlast the election timeout and set off another. The runtime starts
-    /// below this and moves with how long elections take. 0 takes the
-    /// bound off. See `docs/per-shard-raft.md`, "Many groups electing at
-    /// once".
+    /// outlast the election timeout and set off another. The runtime lowers
+    /// it while this broker's vote saves are slow. 0 takes the bound off.
+    /// See `docs/per-shard-raft.md`, "Many groups electing at once".
     pub elections: usize,
 }
 
@@ -268,11 +267,15 @@ pub struct GroupStatus {
 pub struct ElectionLoad {
     /// Groups counted as in an election.
     pub in_flight: usize,
-    /// Groups that could stand and wait for one in flight to end.
+    /// Groups that could stand and wait for a place.
     pub waiting: usize,
-    /// How many may be in flight now. It moves between 1 and
-    /// [`RuntimeConfig::elections`] with how long elections take.
+    /// How many may be in flight now, not counting the few places kept
+    /// for members that lost an election. It moves between 1 and
+    /// [`RuntimeConfig::elections`] with how long this broker's vote saves
+    /// take.
     pub limit: usize,
+    /// The most that were in flight at once since the ticker started.
+    pub peak: usize,
 }
 
 enum Slot {
@@ -310,6 +313,7 @@ pub(crate) struct Registry {
     /// Times the ticker ended on a panic and was started again.
     pub(crate) ticker_restarts: AtomicU64,
     election_load: parking_lot::Mutex<ElectionLoad>,
+    pub(crate) vote_saves: Arc<super::ticker::VoteSaves>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -413,6 +417,7 @@ impl GroupRuntime {
                     ticked: ArcSwap::default(),
                     ticker_restarts: AtomicU64::new(0),
                     election_load: parking_lot::Mutex::default(),
+                    vote_saves: Arc::default(),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -639,6 +644,7 @@ impl GroupRuntime {
             Arc::clone(&inner.raft),
             Arc::clone(&inner.transport),
             inner.timers,
+            Arc::clone(&registry.vote_saves),
             inner.host.get().cloned(),
         )
         .await?;
@@ -801,6 +807,13 @@ impl GroupRuntime {
     /// disk is slow to take the votes.
     pub fn election_load(&self) -> ElectionLoad {
         *self.inner.registry.election_load.lock()
+    }
+
+    /// The slowest vote save on this broker so far, in milliseconds.
+    #[cfg(test)]
+    pub(crate) fn slowest_vote_save(&self) -> u64 {
+        let saves = &self.inner.registry.vote_saves;
+        saves.slowest_ever.load(Ordering::Relaxed)
     }
 
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {

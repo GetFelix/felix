@@ -1019,7 +1019,9 @@ Rules for the ticker:
 - **Tick concurrently.** `tick()` waits while a group's API channel is full,
   so a loop that awaits each group in turn lets one busy group delay the
   rest. The ticker polls all of an interval's ticks together in its own task.
-  It spawns nothing per tick.
+  It spawns nothing per tick, but for a tick that may start an election:
+  that one holds a place under the broker's bound until openraft has run
+  it, so it runs on a task of its own, at most one per place.
 - **Drop, never queue.** A tick still waiting when the next interval starts
   is dropped. openraft reads the clock when it handles a tick, so a late tick
   sends one heartbeat and a dropped tick loses nothing. Each group counts its
@@ -1032,13 +1034,16 @@ Rules for the ticker:
   when its election timeout could have run out, counted from the last
   message openraft accepted from the current leader, not from any
   heartbeat, so a stale leader's heartbeats cannot keep a follower
-  unticked. After an append that is the leader lease plus the shortest
-  election timeout, less one heartbeat: 2.8 s. A follower that keeps
-  hearing its leader is not ticked at all. A group with no leader is due
-  every interval, and is ticked when the broker's bound on elections
-  lets it ("Many groups electing at once"). The ticker does not read every group's due time every
-  interval either: anything but a tick moves a due time at least one
-  heartbeat ahead, so a group found not due is left alone for that long.
+  unticked. After an append that is openraft's leader lease plus the
+  shortest election timeout, less one heartbeat: 2.8 s. openraft's leader
+  lease is the longest election timeout, 2 s. It is not the read lease,
+  `RuntimeConfig::lease`. A follower that keeps hearing its leader is not
+  ticked at all. A group with no leader is due every interval, and is
+  ticked when the broker's bound on elections lets it ("Many groups
+  electing at once"). The ticker does not read every group's due time
+  every interval either: anything but a tick moves a due time at least
+  one heartbeat ahead, so a group found not due is left alone for that
+  long.
 - **Slower idle timers.** Decided (issue #2167), and built. A leader that
   has sent no entry for the idle time heartbeats at the idle interval, and
   its followers wait longer before they may stand. Any entry brings the
@@ -1093,8 +1098,8 @@ Nothing is negotiated. Each side acts only on what it has seen:
   idle. It travels in Felix's envelope around the Raft message, not in
   the message.
 - A follower that takes the message waits by that gap. At the short gap
-  the ticker leaves it alone for the shortest election timeout, as before.
-  At the idle gap it leaves it alone for three idle intervals, plus a
+  the ticker leaves it alone until openraft could let it stand, 2.8 s
+  after an append ("Only due groups" above). At the idle gap it leaves it alone for three idle intervals, plus a
   spread per member so the followers do not stand in the same tick. Two
   lost heartbeats therefore start no election. openraft's own timeout
   still applies on top, so the wait is the longer of the two.
@@ -1162,16 +1167,23 @@ So a broker bounds how many of its groups are in an election at once. A
 member stands only when the ticker sends it a timer check, and the ticker
 decides who gets one:
 
-- A member whose check could have it stand is sent checks only while
-  fewer than the limit are in an election on this broker. The others wait,
-  unchecked, in the order they came due. With nothing else in flight a
-  member is checked in the interval it comes due, so a group that loses
-  its leader alone elects as fast as it did without the bound.
-- A member counts as in an election from its first check until it leads,
-  takes an append from a leader, or votes for another candidate.
-- No member counts for longer than two election timeouts (4 s). After
-  that it goes to the back of the queue. A member that cannot win, because
-  its peers are out of reach, therefore does not keep the others out.
+- A member whose check could have it stand is sent one only while a
+  place is free. The others wait, unchecked, in the order they came due.
+- A check takes a place until openraft has run it. openraft picks the
+  moment a member stands, 3 to 4 s after it last heard its leader, so
+  most checks find the timeout not yet passed. That member gives the
+  place back and goes to the end of the queue. A member that stood keeps
+  its place, and is sent no more checks, until its election is over.
+- An election is over when the member leads, takes an append from a
+  leader, or votes for another candidate. It is also over when the member
+  lost: every vote request it sent has come back and it does not lead, or
+  one shortest election timeout (1 s) has passed since it stood. After
+  that openraft would let it stand again, so the round is over either
+  way.
+- A member that lost waits apart from the others until its group has a
+  leader again. These members take turns on places of their own: one for
+  every eight of the limit, and at least one. A member that a candidate
+  asked for a vote it did not give goes first, since a peer is in reach.
 - Members that come due in the same interval are ordered by a hash of the
   group and the member. Two brokers that lost the same leader then go
   through their groups in different orders, and seldom stand for the same
@@ -1179,61 +1191,85 @@ decides who gets one:
 - A leader's heartbeat check is never held back, nor is a learner's. A
   follower that hears its leader is sent no check at all.
 
-The limit follows the disk. It starts at 8 and rises by one for every
-election that ends, up to `RuntimeConfig::elections` (64). It is halved
-when a round took more than half the shortest election timeout, and when
-a member is seen to stand a second time, because its first round
-outlasted the timeout. It is halved at most once in 4 s and never below 1.
-On a fast disk the limit is at 64 within a few intervals. On a slow one it
-settles where a round of votes fits inside the timeout. Setting
-`elections` to 0 takes the bound off.
+The limit follows the disk and nothing else. It starts at
+`RuntimeConfig::elections` (64). The runtime times every vote save on the
+broker, its wait for the disk included. When one took more than a quarter
+of the shortest election timeout (250 ms), the limit is cut to what would
+have fitted: at a limit of 64 and a save of 1 s it becomes 16. A save
+that was already queued when the limit was cut counts only if it was
+slower still. Each election that ends raises the limit by one, back up
+to 64. A vote split or a group that
+cannot win says nothing about the disk and does not move the limit.
+Setting `elections` to 0 takes the bound off.
 
 Holding a check back is as safe as dropping one ("Drop, never queue"):
 openraft still decides whether a member may stand, and reads the clock
 when the check runs. The bound changes only when a group gets its turn.
-The group placed last waits for the ones ahead of it. With every peer in
-reach an election ends within an interval or two, so 2,000 groups at a
-limit of 64 take about 3 s to pass. On a slow disk the wait is the time
-the disk needs for the votes. The longest wait is when members cannot win:
-each holds its place for 4 s, so the last of `n` waiting members is
-checked within `n / limit * 4` seconds.
+How long a group waits for its turn:
+
+- A group that loses its leader alone does not wait. Its member is sent a
+  check every interval from the moment openraft could let it stand.
+- With many groups, a member waits for the ones ahead of it that have not
+  lost. With every peer in reach an election takes a place for an
+  interval or two, so 2,000 groups at a limit of 64 pass in about 2 s.
+  On a slow disk the wait is the time the disk needs for the votes.
+- A group that cannot win, because no quorum of its members is in reach,
+  takes one of those places once, for one lost round: two or three
+  intervals when its peers refuse the request, and at most 1 s when they
+  do not answer at all. After that it is in nobody's way. So `n` such
+  groups ahead of a group that can win cost it at most `n / limit` lost
+  rounds in all, however long they stay without a quorum.
+- A member that lost and can win now, because a peer came back, waits
+  for a retry place. It goes first if the peer asked it for a vote.
+  Otherwise it waits behind the other members that lost: with `r` retry
+  places, at most `n / r` lost rounds.
 
 `GroupRuntime::election_load()` reports how many groups are in an election,
-how many wait, and the limit. The first two are also the gauges
-`felix_broker_raft_elections_in_flight` and
-`felix_broker_raft_elections_waiting`.
+how many wait, the limit, and the most that were in an election at once.
+The first two are also the gauges `felix_broker_raft_elections_in_flight`
+and `felix_broker_raft_elections_waiting`.
 
 Measured with three runtimes in one process, each group on all three, the
 broker that leads every group shut down
 (`crates/server/felix-replication/tests/raft_election_storm.rs`). The slow
-disks are modelled: every fsync takes 5 ms longer and only so many run at
-once. These are development measurements from one build machine (32 vCPU,
-local NVMe, optimised build). The nightly `Raft idle groups` workflow runs
-the same test.
+disks are modelled: every fsync takes some milliseconds longer and only so
+many run at once. These are development measurements from one build
+machine (32 vCPU, local NVMe, optimised build). The nightly `Raft idle
+groups` workflow runs the same test.
 
 | Groups, disk | Without the bound | With it |
 | --- | --- | --- |
-| 2,000, local NVMe | all led in 7.1 s, 2,446 election rounds | 10.0 s, 2,171 rounds |
-| 2,000, 20 ms per fsync, any number at once | 9.6 s, 2,858 rounds | 17.1 s, 2,232 rounds |
-| 2,000, 5 ms per fsync, 16 at once (3,200 a second) | 44 led after 240 s | all led in 18.9 s |
-| 2,000, 5 ms per fsync, 4 at once (800 a second) | 8 led after 240 s | all led in 50.4 s |
-| 200, 10 ms per fsync, one at a time (100 a second) | none led after 240 s | all led in 39.8 s |
-| 1, local NVMe | 3.3 s | 3.3 s |
+| 1, local NVMe | led in 3.4 s | 3.0 s |
+| 300, local NVMe, four runs | all led in 5.4, 5.4, 8.2 and 18.3 s | 5.9, 6.1, 7.3 and 8.5 s |
+| 2,000, local NVMe, two runs with the bound | 6.7 s, 2,390 election rounds | 6.4 s, 2,239 rounds, and 10.1 s, 2,337 rounds |
+| 2,000, 20 ms per fsync, any number at once | 9.9 s, 2,807 rounds | 22.0 s, 2,417 rounds |
+| 2,000, 5 ms per fsync, 16 at once (3,200 a second) | 56 led after 120 s | all led in 18.2 s |
+| 2,000, 5 ms per fsync, 4 at once (800 a second) | 13 led after 120 s | all led in 54.1 s |
+| 200, 10 ms per fsync, one at a time (100 a second) | 1 led after 120 s | all led in 47.4 s |
 
 An election round is a term some member started. One round per group is
 the least there can be, and the rest are vote splits and timeouts that
-ran out. On the disks that can only take so many fsyncs a second, the
-time with the bound is close to what the disk needs for the votes and
-first entries of every group on two brokers. On a disk that takes any
-number of fsyncs at once there is no loop to stop, and the bound costs a
-few seconds at 2,000 groups: the groups take turns where they would have
-stood together. One group, or a few, is not slowed.
+ran out. A single group stands 3 to 4 s after its leader is lost, at a
+moment openraft picks, with or without the bound. At 300 groups the runs
+differ by more than the bound does: what decides them is how many votes
+split. The same shows at 2,000 groups, where the slower run with the
+bound had votes split up to five times in a group, and a member whose
+vote split waits for one of the retry places. On the disks that can only take so many fsyncs a second, the time
+with the bound is close to what the disk needs for the votes and first
+entries of every group on two brokers.
+
+The bound costs time on a disk that is slow but takes any number of
+fsyncs at once: 22.0 s against 9.9 s at 2,000 groups. A vote save there
+takes longer than 250 ms without waiting behind any other, so the limit
+falls (to 16 on one broker in that run) though standing together would
+have done no harm. The runtime cannot tell that disk from a narrow one by
+the time a save takes.
 
 The first election of a newly formed group is not bounded. A member told
 its group's first members stands at once, without a check, so forming
 many groups in one moment starts one round as large as the caller asked
 for. Every round after it goes through the ticker. 2,000 groups formed at
-once on three brokers were all led in 4.8 s on local NVMe. A member that
+once on three brokers were all led in 4.6 s on local NVMe. A member that
 starts with its own committed vote on disk also stands at once, and is
 not bounded either.
 
