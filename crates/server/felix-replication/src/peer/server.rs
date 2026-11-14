@@ -24,6 +24,7 @@ use felix_wire::internal::{
     Pong, RaftAnswer, ReplicateError,
 };
 use futures::FutureExt;
+use futures::future::BoxFuture;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
@@ -107,10 +108,15 @@ pub trait PeerRequestHandler: Send + Sync + 'static {
 ///
 /// Given to [`PeerServer::with_raft`]. A listener without one does not offer
 /// [`PeerCapabilities::RAFT`], so no peer sends it a Raft message.
-#[async_trait::async_trait]
 pub trait RaftHandler: Send + Sync + 'static {
-    /// Answer one `Raft` frame's body with the body of its `RaftAnswer`.
-    async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes;
+    /// Take one `Raft` frame's body. The future answers it with the body of
+    /// its `RaftAnswer`.
+    ///
+    /// The listener calls this as it reads each frame and runs the futures
+    /// side by side, so the order of the calls is the order the frames
+    /// arrived in on a stream and the order the futures run in is not. A
+    /// handler that needs the first does that part of its work in the call.
+    fn answer(&self, body: bytes::Bytes) -> BoxFuture<'static, bytes::Bytes>;
 }
 
 /// Answers every forwarded request with `Unavailable`.
@@ -765,10 +771,11 @@ async fn serve_connection(
                         });
                         continue;
                     }
-                    // Raft messages are answered as they finish. openraft
-                    // matches each answer to its own call and never relies
-                    // on a stream's order, and an append can wait out an
-                    // fsync that a vote or heartbeat behind it should not.
+                    // Raft messages are answered as they finish: an append
+                    // can wait out an fsync that a vote, a heartbeat or
+                    // another group's append behind it should not. A leader
+                    // does rely on one group's appends being taken in the
+                    // order it sent them, which the handler sees to.
                     InternalMessage::Raft(call) => {
                         let (Some(raft), Ok(running)) =
                             (offered.raft.clone(), Arc::clone(&rafts).try_acquire_owned())
@@ -794,11 +801,13 @@ async fn serve_connection(
                         // refusal clears the sender's waiter.
                         let deadline = super::raft_deadline(&call.body);
                         let send = Arc::clone(&send);
+                        let correlation_id = call.correlation_id;
+                        // Taken on the loop, in the order the frames came.
+                        let answer = raft.answer(call.body);
                         app.spawn(async move {
                             let _running = running;
-                            let correlation_id = call.correlation_id;
                             answer_out_of_order(&send, offered_by, async move {
-                                match tokio::time::timeout(deadline, raft.answer(call.body)).await {
+                                match tokio::time::timeout(deadline, answer).await {
                                     Ok(body) => InternalMessage::RaftAnswer(RaftAnswer {
                                         correlation_id,
                                         body,

@@ -955,6 +955,17 @@ impl GroupRuntime {
 
     /// Hand a peer's message to the member it names.
     pub async fn handle(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        self.take(request).await
+    }
+
+    /// [`Self::handle`] in two steps: the call takes the message, and the
+    /// future it returns answers it. A member is handed its appends in the
+    /// order they were taken, so a transport that reads messages in order
+    /// and answers them in tasks of their own calls this as it reads.
+    pub fn take(
+        &self,
+        request: RaftRequest,
+    ) -> impl Future<Output = Result<RaftReply, Refused>> + Send + 'static + use<> {
         let RaftRequest {
             group,
             to,
@@ -963,17 +974,18 @@ impl GroupRuntime {
             body,
             ..
         } = request;
-        match self.inner.registry.get(&group.shard) {
+        let taken = match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
-                member.handle(body, beat, report).await.map(RaftReply)
+                Ok(member.take(body, beat, report))
             }
             Some(member) if member.id == group && member.member.broker == to.broker => {
                 let copy = member.member.copy;
                 Err(Refused::OtherCopy(Box::new(Addressee { group, to }), copy))
             }
             _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
-        }
+        };
+        async move { taken?.await.map(RaftReply) }
     }
 
     /// This broker's member of `shard`'s group, if it has one.

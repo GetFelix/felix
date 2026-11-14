@@ -338,8 +338,22 @@ impl PeerConnection {
                 1 + self.forward_cursor.fetch_add(1, Ordering::Relaxed) % self.per_class
             }
             LaneClass::Replication => {
-                1 + self.per_class
-                    + self.replication_cursor.fetch_add(1, Ordering::Relaxed) % self.per_class
+                // A leader keeps several appends of a group on their way
+                // at once and needs them to arrive in the order they left,
+                // which only one stream keeps.
+                let group = match &message {
+                    InternalMessage::Raft(call) => super::super::raft_group(&call.body),
+                    _ => None,
+                };
+                let pick = match group {
+                    Some(group) => {
+                        let mut hasher = std::hash::DefaultHasher::new();
+                        std::hash::Hash::hash(group, &mut hasher);
+                        std::hash::Hasher::finish(&hasher) as usize
+                    }
+                    None => self.replication_cursor.fetch_add(1, Ordering::Relaxed),
+                };
+                1 + self.per_class + pick % self.per_class
             }
         };
         let stream = self.lanes[lane].current();
@@ -468,9 +482,10 @@ impl Drop for PeerConnection {
 /// Which of a connection's streams a request goes on.
 ///
 /// Forwards wait on a quorum, and a quorum waits on replication, so the two
-/// never share a stream. Nothing relies on a stream's order for anything but
-/// framing: the replication driver keeps at most one exchange outstanding per
-/// follower and log, so round-robin within a class cannot reorder a shard.
+/// never share a stream. The replication driver keeps at most one exchange
+/// outstanding per follower and log, so round-robin within a class cannot
+/// reorder a shard. Raft appends do rely on a stream's order, and every
+/// append of one group goes on the same one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaneClass {
     /// The handshake, fences, tail fetches, pre-votes, pings, and Raft

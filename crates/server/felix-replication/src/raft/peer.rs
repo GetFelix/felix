@@ -7,6 +7,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
 use felix_wire::internal::{InternalMessage, PeerCapabilities, RaftCall};
+use futures::future::BoxFuture;
 
 use super::network::{RaftReply, RaftRequest, RaftTransport, Refused};
 use super::runtime::GroupRuntime;
@@ -88,16 +89,20 @@ where
     }
 }
 
-#[async_trait]
 impl RaftHandler for GroupRuntime {
-    async fn answer(&self, body: Bytes) -> Bytes {
-        let reply = match wire::decode_request(body) {
-            Ok(request) => self.handle(request).await,
-            Err(err) => Err(Refused::Unreachable(format!(
-                "the message does not read: {err}"
-            ))),
-        };
-        wire::encode_reply(&reply)
+    fn answer(&self, body: Bytes) -> BoxFuture<'static, Bytes> {
+        // Read and taken here, so an append has its place in its group's
+        // order before the listener reads the next frame.
+        let taken = wire::decode_request(body).map(|request| self.take(request));
+        Box::pin(async move {
+            let reply = match taken {
+                Ok(answer) => answer.await,
+                Err(err) => Err(Refused::Unreachable(format!(
+                    "the message does not read: {err}"
+                ))),
+            };
+            wire::encode_reply(&reply)
+        })
     }
 }
 

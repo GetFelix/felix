@@ -62,6 +62,8 @@ pub(crate) struct Group {
     root: Option<MarkLog>,
     /// The brokers on which this group's member refused this one's calls.
     refusals: Arc<Refusals>,
+    /// The order this member's appends were taken in.
+    appends: Arrivals,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -529,6 +531,7 @@ impl Group {
             reports,
             root,
             refusals,
+            appends: Arrivals::default(),
             positions,
             commits,
             copy,
@@ -671,32 +674,43 @@ impl Group {
     /// persists the append or vote either way, and a follower that keeps
     /// answering past the sender's deadline would otherwise stand for
     /// election while it still hears its leader.
-    pub(crate) async fn handle(
+    ///
+    /// An append claims its place in this call, not in the future it
+    /// returns: openraft is handed appends in the order they were taken,
+    /// whichever of their futures runs first. A leader keeps several on
+    /// their way at once, and one that overtook the append ahead of it
+    /// would be answered with a conflict at entries the leader has been
+    /// told are held.
+    pub(crate) fn take(
         self: &Arc<Self>,
         body: Request,
         beat: u64,
         report: bool,
-    ) -> Result<Reply, Refused> {
+    ) -> impl Future<Output = Result<Reply, Refused>> + Send + 'static + use<> {
+        let turn = matches!(body, Request::Append(_)).then(|| self.appends.arrive());
         let group = Arc::clone(self);
-        let handled = tokio::spawn(async move {
-            let reply = group.answer(body, report).await?;
-            match &reply {
-                Reply::Append(Ok(_)) => group.pace.followed(Some(beat)),
-                Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
-                _ => {}
+        async move {
+            let member = Arc::clone(&group);
+            let handled = tokio::spawn(async move {
+                let reply = member.answer(body, report, turn).await?;
+                match &reply {
+                    Reply::Append(Ok(_)) => member.pace.followed(Some(beat)),
+                    Reply::Vote(vote) if vote.vote_granted => member.pace.voted(),
+                    _ => {}
+                }
+                Ok(reply)
+            });
+            match handled.await {
+                Ok(reply) => reply,
+                Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
+                Err(err) => Err(Refused::Stopped(
+                    Box::new(Addressee {
+                        group: group.id.clone(),
+                        to: group.member.clone(),
+                    }),
+                    err.to_string(),
+                )),
             }
-            Ok(reply)
-        });
-        match handled.await {
-            Ok(reply) => reply,
-            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-            Err(err) => Err(Refused::Stopped(
-                Box::new(Addressee {
-                    group: self.id.clone(),
-                    to: self.member.clone(),
-                }),
-                err.to_string(),
-            )),
         }
     }
 
@@ -704,7 +718,12 @@ impl Group {
     /// the report goes out as soon as the entries are written, while
     /// openraft's answer waits for their fsync. An answer that is ready
     /// first says more, and the report is dropped.
-    async fn answer(&self, body: Request, report: bool) -> Result<Reply, Refused> {
+    async fn answer(
+        &self,
+        body: Request,
+        report: bool,
+        turn: Option<Turn>,
+    ) -> Result<Reply, Refused> {
         use openraft::entry::RaftEntry;
         use openraft::vote::RaftLeaderId;
         let asked = match &body {
@@ -719,9 +738,9 @@ impl Group {
             _ => None,
         };
         let Some((leader, last)) = asked else {
-            return self.dispatch(body).await;
+            return self.dispatch(body, turn).await;
         };
-        let answer = self.dispatch(body);
+        let answer = self.dispatch(body, turn);
         let tell = self.tell_written(leader, last);
         tokio::pin!(answer, tell);
         let mut told = false;
@@ -777,7 +796,7 @@ impl Group {
         let _ = tokio::time::timeout(deadline, self.transport.send(request)).await;
     }
 
-    async fn dispatch(&self, body: Request) -> Result<Reply, Refused> {
+    async fn dispatch(&self, body: Request, turn: Option<Turn>) -> Result<Reply, Refused> {
         let stopped = |reason: String| {
             let member = Addressee {
                 group: self.id.clone(),
@@ -815,9 +834,23 @@ impl Group {
         match body {
             Request::Append(rpc) => {
                 self.lease.named(term_of(&rpc.vote));
-                self.raft
-                    .append_entries(rpc)
-                    .await
+                let mut turn = turn;
+                if let Some(turn) = &mut turn {
+                    turn.reached().await;
+                }
+                let appended = self.raft.append_entries(rpc);
+                tokio::pin!(appended);
+                // The first poll puts the append in the core's queue, or
+                // in line for it, and that line is kept in order. The next
+                // append may go then; waiting for the answer would hold it
+                // back for this one's fsync.
+                let queued = futures::poll!(appended.as_mut());
+                drop(turn);
+                let answer = match queued {
+                    std::task::Poll::Ready(answer) => answer,
+                    std::task::Poll::Pending => appended.await,
+                };
+                answer
                     .map(Reply::Append)
                     .map_err(|err| stopped(err.to_string()))
             }
@@ -1605,5 +1638,38 @@ async fn read_round(raft: Raft<ShardTypes, Machine>, stop: CancellationToken) ->
             Round::QuorumNotEnough
         }
         Err(RaftError::Fatal(_)) => Round::Stopped,
+    }
+}
+
+/// The order one member's appends were taken in. Each waits for the one
+/// taken before it to be handed to openraft, or given up.
+#[derive(Default)]
+struct Arrivals {
+    last: parking_lot::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
+
+/// One append's place in [`Arrivals`]. Dropping it lets the next go.
+struct Turn {
+    ahead: Option<tokio::sync::oneshot::Receiver<()>>,
+    _behind: tokio::sync::oneshot::Sender<()>,
+}
+
+impl Arrivals {
+    fn arrive(&self) -> Turn {
+        let (behind, next) = tokio::sync::oneshot::channel();
+        Turn {
+            ahead: self.last.lock().replace(next),
+            _behind: behind,
+        }
+    }
+}
+
+impl Turn {
+    /// Returns once the append ahead has gone, whether it was handed over
+    /// or dropped.
+    async fn reached(&mut self) {
+        if let Some(ahead) = self.ahead.take() {
+            let _ = ahead.await;
+        }
     }
 }

@@ -181,11 +181,12 @@ async fn a_silent_peer_times_out() {
 #[tokio::test]
 async fn raft_calls_do_not_take_the_budget_pings_need() {
     struct Slow;
-    #[async_trait::async_trait]
     impl crate::peer::RaftHandler for Slow {
-        async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            body
+        fn answer(&self, body: bytes::Bytes) -> futures::future::BoxFuture<'static, bytes::Bytes> {
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                body
+            })
         }
     }
     let config = PeerTransportConfig {
@@ -248,13 +249,14 @@ fn raft_call(body: bytes::Bytes) -> InternalMessage {
 /// everything else at once.
 struct StuckGroup;
 
-#[async_trait::async_trait]
 impl crate::peer::RaftHandler for StuckGroup {
-    async fn answer(&self, body: bytes::Bytes) -> bytes::Bytes {
-        if body[6] == 0 || body[1] == crate::peer::RAFT_APPEND_ENTRIES {
-            std::future::pending::<()>().await;
-        }
-        body
+    fn answer(&self, body: bytes::Bytes) -> futures::future::BoxFuture<'static, bytes::Bytes> {
+        Box::pin(async move {
+            if body[6] == 0 || body[1] == crate::peer::RAFT_APPEND_ENTRIES {
+                std::future::pending::<()>().await;
+            }
+            body
+        })
     }
 }
 

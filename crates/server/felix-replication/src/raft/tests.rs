@@ -30,6 +30,7 @@ mod idempotent;
 mod identity;
 mod lease;
 mod membership;
+mod pipeline;
 mod propose;
 mod read;
 mod root;
@@ -133,6 +134,11 @@ struct Net {
     appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
     lose_answers: std::sync::atomic::AtomicBool,
+    /// What happens to appends that carry entries, by their count.
+    disorder: parking_lot::Mutex<Option<Disorder>>,
+    entry_appends: std::sync::atomic::AtomicU32,
+    /// Appends with entries a member answered with a conflict.
+    conflicts: std::sync::atomic::AtomicU32,
 }
 
 impl Net {
@@ -150,6 +156,26 @@ impl Net {
                 .get_or_insert_with(std::time::Instant::now);
         }
     }
+}
+
+impl Net {
+    /// Start `disorder`, and count conflicts from here.
+    fn disorder(&self, disorder: Disorder) {
+        *self.disorder.lock() = Some(disorder);
+        self.conflicts
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Disorder {
+    /// Taken in the order sent, as a listener reads them off one stream,
+    /// and every other one's task starts late.
+    LateTasks,
+    /// Every other one arrives late, behind the one sent after it.
+    LateArrivals,
+    /// Every fifth is lost, and those behind it arrive.
+    Lost,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -250,10 +276,41 @@ impl RaftTransport for Net {
             _ => None,
         };
         let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
+        let entries = matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty());
+        let late = Duration::from_millis(3);
+        let nth = match entries {
+            true => self.entry_appends.fetch_add(1, Relaxed),
+            false => 0,
+        };
+        let disorder = (*self.disorder.lock()).filter(|_| entries);
+        match disorder {
+            Some(Disorder::Lost) if nth % 5 == 4 => {
+                // Noticed late, as a timeout is: those behind are answered.
+                tokio::time::sleep(late * 3).await;
+                return Err(Refused::Unreachable("lost".into()));
+            }
+            Some(Disorder::LateArrivals) if nth % 2 == 0 => tokio::time::sleep(late).await,
+            _ => {}
+        }
         let answer = match runtime {
-            Some(runtime) => runtime.handle(request).await,
+            Some(runtime) => {
+                let answer = runtime.take(request);
+                if matches!(disorder, Some(Disorder::LateTasks)) && nth % 2 == 0 {
+                    tokio::time::sleep(late).await;
+                }
+                answer.await
+            }
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
+        let conflict = matches!(
+            &answer,
+            Ok(RaftReply(super::network::Reply::Append(Err(
+                openraft::raft::AppendError::Conflict { .. }
+            ))))
+        );
+        if entries && conflict {
+            self.conflicts.fetch_add(1, Relaxed);
+        }
         if unheard {
             return Err(Refused::Unreachable("the answer was lost".into()));
         }

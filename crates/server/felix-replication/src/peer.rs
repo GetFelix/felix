@@ -33,6 +33,21 @@ pub use server::{PeerRequestHandler, PeerServer, RaftHandler, UnavailableHandler
 /// heartbeat or vote on the control stream never waits behind its records.
 pub(crate) const RAFT_APPEND_ENTRIES: u8 = 2;
 
+/// The group a Raft body is for, as its bytes: three names, the shard, its
+/// kind and the epoch, after the six-byte header (see `raft/wire.rs`). The
+/// pool sends every append of one group on one stream, so they arrive in
+/// the order they left. `None` for a body too short to name one.
+pub(crate) fn raft_group(body: &[u8]) -> Option<&[u8]> {
+    const HEADER: usize = 6;
+    const SHARD_KIND_EPOCH: usize = 4 + 1 + 8;
+    let mut end = HEADER;
+    for _ in 0..3 {
+        let len = body.get(end..end + 2)?;
+        end += 2 + usize::from(u16::from_be_bytes([len[0], len[1]]));
+    }
+    body.get(HEADER..end + SHARD_KIND_EPOCH)
+}
+
 /// The longest a listener works on one Raft message, whatever its sender
 /// names, so a peer cannot pin a permit with a long deadline.
 pub(crate) const RAFT_MAX_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
