@@ -17,7 +17,7 @@ use crate::serving::quic::handlers::subscribe::conn_counts::{
     connection_subscriber_register, connection_subscriber_unregister,
 };
 use crate::serving::quic::handlers::subscribe::egress::EgressBytes;
-use crate::serving::quic::handlers::subscribe::feeder::lagged_frame;
+use crate::serving::quic::handlers::subscribe::feeder::{encode_lagged, lagged_frame};
 use crate::serving::quic::handlers::subscribe::lane::{
     ConnectionCommand, LaneCommand, LaneDelivery, LaneRuntimeConfig, LaneSubscriber,
     WriterLaneManager,
@@ -390,16 +390,31 @@ pub(super) async fn run_connection_writer(
                             // which may have lowered the resume point. Nothing
                             // after a shed was written, so `ended` would hide a
                             // hole and an older `lagged` would skip records.
-                            // Any other last frame (a revocation) says why the
+                            // A move resumes at its own offset, so a lag
+                            // outranks it as in the feeder. Any other last
+                            // frame (a revocation, a deletion) says why the
                             // subscription ended and is kept.
+                            let kind = last.as_ref().map(last_frame_kind);
                             let last = if shedding.contains(&subscriber_id)
-                                && last.as_ref().is_some_and(is_ended_or_lagged)
-                            {
+                                && matches!(
+                                    kind,
+                                    Some(
+                                        LastKind::Ended
+                                            | LastKind::Lagged
+                                            | LastKind::Moved
+                                    )
+                                ) {
                                 drop_accounts
                                     .get(&subscriber_id)
                                     .and_then(|account| account.resume_from())
                                     .and_then(|resume_from| {
-                                        lagged_frame(subscriber_id, resume_from)
+                                        // One lag, one count: the feeder
+                                        // counted its own lagged frame.
+                                        if kind == Some(LastKind::Lagged) {
+                                            encode_lagged(subscriber_id, resume_from)
+                                        } else {
+                                            lagged_frame(subscriber_id, resume_from)
+                                        }
                                     })
                             } else {
                                 last
@@ -598,16 +613,20 @@ pub(super) async fn run_connection_writer(
     }
 }
 
-/// Whether `frame` is a `subscription_ended` or `subscription_lagged`, the
-/// last frames a writer drop can make wrong.
-fn is_ended_or_lagged(frame: &Bytes) -> bool {
-    felix_wire::Frame::decode(frame.clone())
-        .and_then(felix_wire::Message::decode)
-        .is_ok_and(|message| {
-            matches!(
-                message,
-                felix_wire::Message::SubscriptionEnded { .. }
-                    | felix_wire::Message::SubscriptionLagged { .. }
-            )
-        })
+#[derive(PartialEq, Eq)]
+enum LastKind {
+    Ended,
+    Lagged,
+    Moved,
+    Other,
+}
+
+/// Which last frames a writer drop can make wrong.
+fn last_frame_kind(frame: &Bytes) -> LastKind {
+    match felix_wire::Frame::decode(frame.clone()).and_then(felix_wire::Message::decode) {
+        Ok(felix_wire::Message::SubscriptionEnded { .. }) => LastKind::Ended,
+        Ok(felix_wire::Message::SubscriptionLagged { .. }) => LastKind::Lagged,
+        Ok(felix_wire::Message::ShardMoved { .. }) => LastKind::Moved,
+        _ => LastKind::Other,
+    }
 }

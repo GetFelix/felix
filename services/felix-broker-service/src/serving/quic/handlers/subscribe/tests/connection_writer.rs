@@ -936,7 +936,7 @@ async fn a_writer_drop_after_the_feeder_chose_lagged_lowers_resume_from() -> Res
         subscription_id: 1,
         resume_from: 5,
     };
-    writer_drop_replaces_last(Some(5), lagged, lagged_from_2()).await
+    writer_drop_replaces_last(Some(5), lagged, lagged_from_2(), 0).await
 }
 
 /// The bounded half of the above: the feeder saw the subscription reach its
@@ -948,7 +948,7 @@ async fn a_writer_drop_after_the_feeder_chose_ended_sends_lagged() -> Result<()>
         subscription_id: 1,
         end: 3,
     };
-    writer_drop_replaces_last(None, ended, lagged_from_2()).await
+    writer_drop_replaces_last(None, ended, lagged_from_2(), 1).await
 }
 
 /// A revocation says why the subscription ended; a writer drop does not
@@ -959,7 +959,22 @@ async fn a_writer_drop_keeps_a_revoked_last_frame() -> Result<()> {
     let revoked = felix_wire::Message::decode(felix_wire::Frame::decode(
         crate::serving::quic::handlers::subscribe::revoked_frame(0)?,
     )?)?;
-    writer_drop_replaces_last(None, revoked.clone(), revoked).await
+    writer_drop_replaces_last(None, revoked.clone(), revoked, 0).await
+}
+
+/// A move resumes at its own offset, which would skip what the writer
+/// shed, so the lag outranks it as it does in the feeder.
+#[tokio::test]
+#[serial]
+async fn a_writer_drop_after_the_feeder_chose_a_move_sends_lagged() -> Result<()> {
+    let moved = felix_wire::Message::ShardMoved {
+        subscription_id: 1,
+        resume_from: Some(3),
+        node_id: Some("n2".into()),
+        addr: Some("127.0.0.1:1".into()),
+        generation: 1,
+    };
+    writer_drop_replaces_last(None, moved, lagged_from_2(), 1).await
 }
 
 fn lagged_from_2() -> felix_wire::Message {
@@ -973,7 +988,13 @@ async fn writer_drop_replaces_last(
     queue_drop: Option<u64>,
     feeder_last: felix_wire::Message,
     expected_last: felix_wire::Message,
+    lagged_count: u64,
 ) -> Result<()> {
+    // The feeder counted its own lagged frame, so the writer adds a count
+    // only when it turns another last frame into a lag.
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -1064,6 +1085,12 @@ async fn writer_drop_replaces_last(
         read_last_frame(&mut event_recv, &mut scratch).await?,
         Some(expected_last)
     );
+    let text = rendered.render();
+    let counted = text
+        .lines()
+        .find_map(|line| line.strip_prefix("felix_subscription_lagged_total "))
+        .map_or(0, |n| n.trim().parse::<u64>().unwrap_or(u64::MAX));
+    assert_eq!(counted, lagged_count, "lagged counter in:\n{text}");
 
     drop(tx);
     writer_task.await.context("writer join")?;
