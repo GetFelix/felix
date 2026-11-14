@@ -420,6 +420,16 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
         other.map(|_| ()),
         Err(BrokerError::SequenceReused { sequence: 1 })
     ));
+    // Also for a client that is answered a duplicate on a held batch:
+    // finishing b, c with y, z would write a batch nobody sent.
+    let quiet = producer
+        .propose(1, &[b"w", b"x", b"y", b"z"], SequenceReuse::AnswerDuplicate)
+        .await;
+    assert!(matches!(
+        quiet.map(|_| ()),
+        Err(BrokerError::SequenceReused { sequence: 1 })
+    ));
+    assert_eq!(log_from(&broker, first).await, ["a", "b", "c", "theirs"]);
     let shorter = producer
         .propose(1, &[b"b", b"c", b"d"], SequenceReuse::Refuse)
         .await;

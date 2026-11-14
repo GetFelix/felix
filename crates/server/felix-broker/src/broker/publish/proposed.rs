@@ -15,6 +15,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use felix_storage::CommitTurn;
 use felix_storage::disk_log::ProducerSequence;
+use felix_storage::log::PayloadDigest;
 
 use super::completion::spawn_release;
 use super::{PublishOutcome, SequenceReuse};
@@ -155,8 +156,9 @@ impl Broker {
     /// lease can cut those anywhere.
     ///
     /// A batch the log holds part of (a leader stopped partway) is never
-    /// written again whole. Its start is checked against `payloads` like a
-    /// batch held whole, only the records the log does not hold are handed
+    /// written again whole. A re-send whose start differs from the records
+    /// held is refused with [`BrokerError::SequenceReused`] whatever `reuse`
+    /// is, only the records the log does not hold are handed
     /// to `propose`, and the answer's first offset is the start's. When
     /// the log cannot tell what it holds of the batch, the re-send is
     /// refused with [`BrokerError::SequenceExpired`]. See
@@ -197,7 +199,13 @@ impl Broker {
             if unfinished.len as usize != len || held >= len {
                 return Err(BrokerError::SequenceExpired { sequence });
             }
-            reuse.check(sequence, unfinished.digest, &payloads[..held])?;
+            // Whatever `reuse` says: writing the rest of other payloads
+            // after this start would make one batch of two.
+            match unfinished.digest {
+                Some(start) if start == PayloadDigest::of(&payloads[..held]) => {}
+                Some(_) => return Err(BrokerError::SequenceReused { sequence }),
+                None => return Err(BrokerError::SequenceExpired { sequence }),
+            }
             payloads.drain(..held);
             position = unfinished.held;
             batch_first = Some(first);
