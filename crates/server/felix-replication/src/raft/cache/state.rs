@@ -239,8 +239,7 @@ impl CacheState {
                 if !holds {
                     return Answer::Refused { version: here };
                 }
-                self.remove(key);
-                self.insert(
+                self.put(
                     key,
                     Entry {
                         value: value.clone(),
@@ -270,16 +269,23 @@ impl CacheState {
         }
     }
 
-    fn insert(&mut self, key: &str, entry: Entry) {
+    /// Set `key` to `entry`, replacing any value it had, in one lookup.
+    fn put(&mut self, key: &str, entry: Entry) {
         if let Some(layered) = &mut self.layered {
-            return layered.insert(key, entry);
+            return layered.put(key, entry);
         }
-        if entry.expires_at != 0 {
-            self.tables
-                .expiring
-                .insert((entry.expires_at, key.to_owned()));
+        let expires_at = entry.expires_at;
+        let old = self.tables.entries.insert(key.to_owned(), entry);
+        let old = old.map_or(0, |old| old.expires_at);
+        if old != expires_at {
+            let expiring = &mut self.tables.expiring;
+            if old != 0 {
+                expiring.remove(&(old, key.to_owned()));
+            }
+            if expires_at != 0 {
+                expiring.insert((expires_at, key.to_owned()));
+            }
         }
-        self.tables.entries.insert(key.to_owned(), entry);
     }
 
     fn remove(&mut self, key: &str) {
@@ -468,12 +474,27 @@ impl Layered {
     }
 
     #[cold]
-    fn insert(&mut self, key: &str, entry: Entry) {
-        if entry.expires_at != 0 {
-            self.delta
-                .show_expiring(&self.base, (entry.expires_at, key.to_owned()));
+    fn put(&mut self, key: &str, entry: Entry) {
+        let Self { base, delta } = self;
+        let expires_at = entry.expires_at;
+        // A slot already in the delta holds what the key has now; `None`
+        // there means the base's value is already gone.
+        let old = match delta.entries.get_mut(key) {
+            Some(slot) => slot.replace(entry).map(|old| old.expires_at),
+            None => {
+                delta.entries.insert(key.to_owned(), Some(entry));
+                base.entries.get(key).map(|old| old.expires_at)
+            }
+        };
+        let old = old.unwrap_or(0);
+        if old != expires_at {
+            if old != 0 {
+                delta.hide_expiring(base, (old, key.to_owned()));
+            }
+            if expires_at != 0 {
+                delta.show_expiring(base, (expires_at, key.to_owned()));
+            }
         }
-        self.delta.entries.insert(key.to_owned(), Some(entry));
     }
 
     #[cold]
