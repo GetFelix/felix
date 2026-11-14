@@ -231,9 +231,15 @@ fn start_run(
     let before = before_id.map(|id| id.to_hex());
     // Before `note_replaced`, which may write its marker for this crash.
     let lost = note_lost_copy(root, before.as_deref(), restored, registered)?;
+    // An id a crash here rotated away with every ballot kept is the
+    // directory's own too: a start may rotate twice before one registers.
+    let rotated = felix_storage::run_state::rotated_ids(root)
+        .with_context(|| format!("read the rotated storage ids under {}", root.display()))?;
     let own_id = registered
         .and_then(|r| r.storage_id.as_deref())
-        .is_some_and(|prior| before.as_deref() == Some(prior));
+        .is_some_and(|prior| {
+            before.as_deref() == Some(prior) || rotated.iter().any(|id| id.to_hex() == prior)
+        });
     let kept = Kept {
         promises: begun.rotated && !restored && own_id && !lost,
         // A record from before storage ids cannot tell this directory from a
@@ -322,9 +328,12 @@ impl Kept {
 /// any start since, recorded on disk before it returns. Now when `restored`,
 /// or when `registered` names a storage id other than `before`, the id the
 /// directory had before this start rotated it (`None` for a directory with
-/// none). A directory without the marker that has the replaced-storage one
-/// counts as lost: an older build wrote that one after a crash too, so it
-/// cannot say which it was.
+/// none), and other than one a crash here rotated away with every ballot
+/// kept. That last is a start that rotated and stopped before its new id
+/// registered: the next start finds the old id still registered. A directory
+/// without the marker that has the replaced-storage one counts as lost: an
+/// older build wrote that one after a crash too, so it cannot say which it
+/// was.
 pub(crate) fn note_lost_copy(
     root: &Path,
     before: Option<&str>,
@@ -337,10 +346,16 @@ pub(crate) fn note_lost_copy(
         Some(lost) => lost,
         None => felix_storage::run_state::replaced(root).with_context(context)?,
     };
-    let now = restored
-        || registered
-            .and_then(|r| r.storage_id.as_deref())
-            .is_some_and(|prior| before != Some(prior));
+    let other = match registered.and_then(|r| r.storage_id.as_deref()) {
+        Some(prior) if before != Some(prior) => {
+            let rotated = felix_storage::run_state::rotated_ids(root).with_context(|| {
+                format!("read the rotated storage ids under {}", root.display())
+            })?;
+            !rotated.iter().any(|id| id.to_hex() == prior)
+        }
+        _ => false,
+    };
+    let now = restored || other;
     let lost = earlier || now;
     if marked != Some(lost) {
         felix_storage::run_state::record_lost_copy(root, lost)
