@@ -92,9 +92,9 @@ impl CommitRecord {
         }
         let event = take_bytes(&mut buf)?;
         let count = take_u32(&mut buf)? as usize;
-        // Each operation takes at least nine bytes, so a count past that is a
-        // lie told before any allocation.
-        if count > buf.remaining() / 9 {
+        // A delete takes at least five bytes (kind and key length), so a count
+        // past that is a lie told before any allocation.
+        if count > buf.remaining() / 5 {
             return Err(malformed(format!(
                 "{count} operations in {} bytes",
                 buf.remaining()

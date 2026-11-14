@@ -615,6 +615,7 @@ fn start_group() -> Group {
     let import = encode_command(&MetaCommand::ImportState {
         state: Box::new(exported),
         overwrite: false,
+        mark_unplaced: false,
     });
     let (status, body) = http(
         peer_addrs[0],

@@ -115,7 +115,7 @@ fn network(addr: &str, hold: Arc<Hold>) -> HttpNetwork {
 }
 
 fn log_id(index: u64) -> crate::raft::types::LogId {
-    crate::raft::types::test_log_id(1, 1, index)
+    crate::raft::types::test_log_id(1, index)
 }
 
 /// An append after `prev`, carrying entries up to `last`, with the leader's
@@ -647,4 +647,34 @@ async fn a_late_send_after_stepping_down_leaves_no_hold() {
     assert!(handle.hold.unconfirmed(8));
     until_unmarked(&handle, 8).await;
     handle.shutdown().await.expect("shutdown");
+}
+
+/// The address configured for member 3 can reach member 2. Member 2's level
+/// is no evidence for member 3, so member 3 is not admitted on it.
+#[tokio::test]
+async fn a_level_another_member_reports_admits_nobody() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr").to_string();
+    let router = axum::Router::new().route(
+        &crate::raft::peer_route("standing"),
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({ "last_log_index": 3, "version": 10, "member": 2 }))
+        }),
+    );
+    let server = tokio::spawn(async move { axum::serve(listener, router).await });
+    let dir = tempfile::tempdir().expect("tempdir");
+    let handle = node(dir.path()).await;
+    let refused = handle.admit(3, &addr).await.expect_err("admitted");
+    assert!(
+        refused.to_string().contains("did not report"),
+        "{refused:#}"
+    );
+    handle
+        .admit(2, &addr)
+        .await
+        .expect("member 2 meets the floor");
+    handle.shutdown().await.expect("shutdown");
+    server.abort();
 }

@@ -11,6 +11,13 @@ readme = "README.md"
 # A test harness, not a library anyone consumes from a registry.
 publish = false
 
+[features]
+# The Raft group simulation (`src/raft.rs`). It compiles the per-shard Raft
+# engine, which no release enables, so it stays behind a feature.
+# It opens members with no copy checks and seeds openraft's draws, which
+# only `testing` exposes.
+raft = ["felix-replication/testing"]
+
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
@@ -35,6 +42,9 @@ tracing = { workspace = true }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+# Turns `raft` on for this crate's own tests, so `cargo test` runs the Raft
+# seeds.
+felix-sim = { path = ".", features = ["raft"] }
 tracing-subscriber = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
 

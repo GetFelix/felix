@@ -25,6 +25,7 @@ mod cache;
 mod codec;
 mod commit;
 mod deliver;
+mod draws;
 mod engine;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -32,25 +33,33 @@ pub mod fuzzing;
 mod group;
 mod install;
 mod lead;
+mod lease;
 mod machine;
 mod network;
 mod peer;
 mod propose;
+mod read_rounds;
 mod runtime;
+pub mod switch;
 #[cfg(test)]
 mod tests;
 mod ticker;
 mod types;
 mod wire;
+mod written;
 
-pub use deliver::RaftReads;
+pub use deliver::{IdempotentPublish, RaftReads};
+#[cfg(any(test, feature = "testing"))]
+pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
-pub use propose::{AckAt, Batch, Record};
+pub use propose::{AckAt, Batch, Record, Sequenced};
 pub use runtime::{
-    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, Role, RuntimeConfig,
+    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
+    Role, RuntimeConfig,
 };
 pub use types::{GroupId, MemberId};
 
+pub use felix_storage::raft_copy::LogMarkMode;
 pub use felix_storage::raft_log::{LogPoint, LogPositions};

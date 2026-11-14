@@ -528,6 +528,7 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     pending_set: None,
                     previous_generation: None,
                     readmitted: Default::default(),
+                    placed: None,
                 })
                 .await
                 .expect("assign")

@@ -7,6 +7,9 @@ name: Performance A/B (environment)
 # throughput. perf-pr.yml compares two revisions; this compares two settings of
 # one revision. Sides alternate, and the one that goes first flips each round,
 # so runner drift lands on both. The report is advisory: it never fails the run.
+#
+# Not for FELIX_SHARD_ENGINE: latency-demo runs one in-memory broker with no
+# durable shard, and refuses the setting instead of measuring nothing.
 
 on:
   workflow_dispatch:

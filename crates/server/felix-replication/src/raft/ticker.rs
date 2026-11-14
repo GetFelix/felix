@@ -73,6 +73,7 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
         if registry.trip_ticker.swap(false, Ordering::Relaxed) {
             panic!("tripped by a test");
         }
+        registry.tail_budget.report();
         let due = looks.due(registry.ticked(), &timers);
         tokio::select! {
             biased;

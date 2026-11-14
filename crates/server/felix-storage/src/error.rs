@@ -174,7 +174,7 @@ impl From<Corruption> for StorageError {
 impl StorageError {
     /// Whether this is a flush that failed, however it was wrapped. The log
     /// it happened on must stop: see [`StorageError::Poisoned`].
-    pub(crate) fn is_sync_failure(&self) -> bool {
+    pub fn is_sync_failure(&self) -> bool {
         match self {
             StorageError::SyncFailed(_) => true,
             StorageError::Io(err) | StorageError::Full(err) => crate::io::SyncFailure::is(err),

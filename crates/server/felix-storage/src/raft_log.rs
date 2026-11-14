@@ -34,6 +34,7 @@
 
 mod codec;
 mod flush_queue;
+pub(crate) mod held;
 mod hide;
 mod purged;
 mod reader;
@@ -54,6 +55,7 @@ pub use reader::LogReader;
 pub use snapshot::{
     SnapshotData, SnapshotId, SnapshotStore, StagedSnapshot, StoredReader, StoredSnapshot,
 };
+pub use tail_cache::TailBudget;
 pub use written::{WrittenAt, WrittenToken};
 
 use std::io;
@@ -67,12 +69,13 @@ use openraft::type_config::alias::LogIdOf;
 
 use self::flush_queue::FlushQueue;
 use self::hide::{Bounds, Covering, PastSnapshot};
-use self::tail_cache::TailCache;
+use self::tail_cache::Tail;
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
 use crate::log::{FsyncMode, Offset};
 #[cfg(doc)]
 use crate::log::{LogConfig, RecordMark, UNKNOWN_WRITER};
+use crate::raft_copy::{CopyMarks, LogMarkMode};
 
 /// The openraft type configs this log stores: a log id is a term and an
 /// index, and an entry is openraft's own [`Entry`].
@@ -159,7 +162,7 @@ struct Shared<K> {
     /// empty.
     flushes: FlushQueue,
     /// The newest entries, so replication reads them without the segments.
-    tail: parking_lot::Mutex<TailCache>,
+    tail: Arc<Tail>,
     /// Holds the next paged read after its first page: the read signals the
     /// sender, then waits for the receiver.
     #[cfg(test)]
@@ -167,6 +170,15 @@ struct Shared<K> {
     /// Reads of the segments, as against the tail cache.
     #[cfg(test)]
     segment_reads: std::sync::atomic::AtomicU64,
+    /// The root's marks for this copy, once [`RaftLog::mark_with`] set them.
+    marking: std::sync::OnceLock<Marking>,
+}
+
+/// How this log keeps its marks at the data root.
+struct Marking {
+    marks: CopyMarks,
+    /// The log mark is written with every flush, not in batches.
+    exact: bool,
 }
 
 impl<C, K> Clone for RaftLog<C, K> {
@@ -194,6 +206,12 @@ where
     /// other mode an append's callback fires before the fsync, and Raft
     /// would count toward a quorum an entry that a power cut can still take.
     pub fn new(log: DiskLog, codec: K) -> io::Result<Self> {
+        Self::with_tail_budget(log, codec, TailBudget::process())
+    }
+
+    /// As [`Self::new`], with this log's tail cache counted against `budget`
+    /// instead of the process's. Every log of one broker shares one.
+    pub fn with_tail_budget(log: DiskLog, codec: K, budget: Arc<TailBudget>) -> io::Result<Self> {
         if !log.config().raft_log {
             return Err(invalid(format!(
                 "{} was not opened as a Raft log",
@@ -219,19 +237,57 @@ where
                 }),
                 covering: std::sync::OnceLock::new(),
                 flushes: FlushQueue::default(),
-                tail: parking_lot::Mutex::default(),
+                tail: Tail::new(budget),
                 #[cfg(test)]
                 pause_after_page: parking_lot::Mutex::new(None),
                 #[cfg(test)]
                 segment_reads: std::sync::atomic::AtomicU64::new(0),
+                marking: std::sync::OnceLock::new(),
             }),
             types: std::marker::PhantomData,
         })
     }
 
+    /// Keep this copy's marks at the data root from here on: the vote mark
+    /// is synced before [`RaftLogStorage::save_vote`] returns, and the log
+    /// mark follows the flushed log as `mode` says. Set once, before the
+    /// log is handed to Raft.
+    ///
+    /// [`RaftLogStorage::save_vote`]: openraft::storage::RaftLogStorage::save_vote
+    pub fn mark_with(&self, marks: CopyMarks, mode: LogMarkMode) -> io::Result<()> {
+        let exact = match mode {
+            LogMarkMode::Exact => true,
+            LogMarkMode::Batched(_) => false,
+        };
+        let batch = marks.clone();
+        self.shared
+            .marking
+            .set(Marking { marks, exact })
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{}: the log already keeps marks", self.shared.log.label()),
+                )
+            })?;
+        if let LogMarkMode::Batched(interval) = mode {
+            batch.batch_from(self.positions(), interval);
+        }
+        Ok(())
+    }
+
     /// The log's written and flushed positions, as they change.
     pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.shared.positions.subscribe()
+    }
+
+    /// The first index the log holds or will hold, read live: one past a
+    /// purge that is hidden or on disk, else where the oldest segment starts.
+    pub fn first_index_reader(&self) -> Arc<dyn Fn() -> Offset + Send + Sync>
+    where
+        K: Send + Sync + 'static,
+    {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || shared.first_index())
     }
 
     /// The log underneath.
@@ -298,6 +354,41 @@ where
             last_purged_log_id: purged,
             last_log_id,
         })
+    }
+}
+
+/// Write `dir`'s purged id: the log starts after `index`, whose entry is
+/// of generation `generation`. For a directory no log has open.
+pub(crate) fn store_purged(
+    dir: &std::path::Path,
+    index: Offset,
+    generation: u64,
+) -> io::Result<()> {
+    purged::store(dir, &purged::Purged { index, generation })
+}
+
+/// The last entry `log` holds as a Raft log, or the purged id when it holds
+/// none above it. What a member opening the directory would report as its
+/// last log id.
+pub(crate) async fn last_point(log: &DiskLog) -> io::Result<Option<LogPoint>> {
+    let purged = purged::load(log.dir())?;
+    let first = match purged {
+        Some(purged) => log.base_offset().max(purged.index + 1),
+        None => log.base_offset(),
+    };
+    match log.last_writer().await.map_err(io::Error::other)? {
+        Some((last, writer)) if last >= first => Ok(Some(LogPoint {
+            term: term_at(writer, last)?,
+            index: last,
+        })),
+        _ => purged
+            .map(|purged| {
+                Ok(LogPoint {
+                    term: term_of(Some(purged.generation), purged.index)?,
+                    index: purged.index,
+                })
+            })
+            .transpose(),
     }
 }
 

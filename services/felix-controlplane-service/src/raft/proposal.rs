@@ -31,6 +31,16 @@ impl NoQuorum {
     }
 }
 
+/// What one attempt does with a command.
+enum Proposal {
+    /// Append these bytes.
+    Append(Vec<u8>),
+    /// Refused before the log: answer this without appending.
+    Answer(Vec<u8>),
+    /// Send the command to the leader rather than writing it here.
+    Forward,
+}
+
 impl RaftHandle {
     /// Propose one command and wait until it is committed and applied;
     /// returns the state machine's response.
@@ -79,7 +89,38 @@ impl RaftHandle {
             // Bounded per attempt too: a leader that lost quorum queues
             // proposals forever, and that must become this instance's error,
             // not its hang.
-            let proposal = self.proposal_bytes(&command);
+            let proposal = match self.proposal_bytes(&command).await {
+                Proposal::Append(bytes) => bytes,
+                Proposal::Answer(bytes) => return Ok(bytes),
+                Proposal::Forward => {
+                    match self.known_leader() {
+                        (Some(leader), recorded) if leader != self.id => {
+                            match self.peer_url(Some(leader), recorded.as_deref()) {
+                                Some(base) => match self.forward_to(&base, &command, attempt).await
+                                {
+                                    Ok(bytes) => {
+                                        metrics::counter!(
+                                            "felix_meta_raft_forwarded_proposals_total"
+                                        )
+                                        .increment(1);
+                                        return Ok(bytes);
+                                    }
+                                    Err(fwd_err) => last_refusal = Some(fwd_err),
+                                },
+                                None => {
+                                    last_refusal =
+                                        Some(anyhow::anyhow!("no address for raft leader {leader}"))
+                                }
+                            }
+                        }
+                        // No leader known yet, or this member just became it:
+                        // the next attempt settles here.
+                        _ => last_refusal = Some(anyhow::anyhow!("no raft leader is known")),
+                    }
+                    tokio::time::sleep(RETRY_DELAY.min(remaining)).await;
+                    continue;
+                }
+            };
             match tokio::time::timeout(attempt, self.raft.client_write(Command(proposal))).await {
                 Err(_) => {
                     last_refusal = Some(anyhow::anyhow!("proposal not committed in time"));
@@ -118,13 +159,35 @@ impl RaftHandle {
     /// `command` itself is left alone. If this instance turns out to be
     /// deposed between the check and the write, what gets forwarded carries
     /// no reading of ours and the real leader stamps its own.
-    fn proposal_bytes(&self, command: &[u8]) -> Vec<u8> {
-        if self.is_leader()
-            && let Some(stamped) = self.app.restamp(command, crate::clock::now_millis())
-        {
-            return stamped;
+    ///
+    /// Level-dependent fields are settled here too
+    /// ([`AppStateMachine::settle_for_level`]): a proposal can arrive as raw
+    /// bytes through the peer route, past every check the store makes. Such a
+    /// command is never appended unsettled. Off the leader it is forwarded
+    /// instead of written, because this member could win an election between
+    /// the check and `client_write` and append it as sent.
+    async fn proposal_bytes(&self, command: &[u8]) -> Proposal {
+        let depends_on_level = self.app.depends_on_level(command);
+        if !self.is_leader() {
+            return if depends_on_level {
+                Proposal::Forward
+            } else {
+                Proposal::Append(command.to_vec())
+            };
         }
-        command.to_vec()
+        let stamped = self.app.restamp(command, crate::clock::now_millis());
+        let command = stamped.as_deref().unwrap_or(command);
+        if !depends_on_level {
+            return Proposal::Append(command.to_vec());
+        }
+        let level = self
+            .cluster_version_with_unknown_at(self.app.join_floor())
+            .await;
+        match self.app.settle_for_level(command, level) {
+            Ok(Some(settled)) => Proposal::Append(settled),
+            Ok(None) => Proposal::Append(command.to_vec()),
+            Err(answer) => Proposal::Answer(answer),
+        }
     }
 
     async fn forward_to(&self, base: &str, command: &[u8], budget: Duration) -> Result<Vec<u8>> {

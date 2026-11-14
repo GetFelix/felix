@@ -93,6 +93,37 @@ async fn the_insecure_opt_out_still_checks_the_cluster_id() {
     );
 }
 
+async fn call_as(target: Option<&str>) -> StatusCode {
+    let router = Router::new()
+        .route(&crate::raft::peer_route("vote"), post(|| async { "voted" }))
+        .layer(axum::middleware::from_fn_with_state(7, require_target));
+    let mut request = Request::post(crate::raft::peer_route("vote"));
+    if let Some(target) = target {
+        request = request.header(TARGET_HEADER, target);
+    }
+    router
+        .oneshot(request.body(Body::empty()).expect("request"))
+        .await
+        .expect("response")
+        .status()
+}
+
+/// A member answers a request that names it, or names nobody as a sender
+/// on a build without the header does. One that names another member, or
+/// nothing that reads as an id, gets what an absent member would give.
+#[tokio::test]
+async fn a_request_meant_for_another_member_is_refused() {
+    assert_eq!(call_as(Some("7")).await, StatusCode::OK);
+    assert_eq!(call_as(None).await, StatusCode::OK);
+    for other in ["8", "4294967303", "seven", ""] {
+        assert_eq!(
+            call_as(Some(other)).await,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{other:?}"
+        );
+    }
+}
+
 #[test]
 fn the_token_stays_out_of_debug_output() {
     let rendered = format!("{:?}", security(Some(TOKEN)));

@@ -9,10 +9,12 @@ use crate::store::{
 };
 
 /// `seq_generation`: see [`crate::model::first_generation`].
+/// `start_placed`: see [`put_shard_assignment_if`].
 pub(super) async fn put_shard_assignment(
     store: &InMemoryStore,
     assignment: ShardAssignment,
     seq_generation: bool,
+    start_placed: bool,
 ) -> StoreResult<ShardAssignment> {
     match write_shard_assignment(
         store,
@@ -23,6 +25,7 @@ pub(super) async fn put_shard_assignment(
         None,
         0,
         false,
+        start_placed,
     )
     .await?
     {
@@ -38,7 +41,10 @@ pub(super) async fn put_shard_assignment(
 /// [`crate::store::ControlPlaneStore::put_shard_assignment_at_least`].
 /// `record_previous`: a write landing past the next generation records the
 /// one it replaced ([`ShardAssignment::previous_generation`]); false for a
-/// Raft entry proposed below the level that stores it.
+/// Raft entry proposed below the level that stores it. `start_placed`: a
+/// first assignment starts [`ShardAssignment::placed`]; false for a Raft
+/// entry proposed below the level that stores it.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn put_shard_assignment_if(
     store: &InMemoryStore,
     assignment: ShardAssignment,
@@ -47,6 +53,7 @@ pub(super) async fn put_shard_assignment_if(
     seq_generation: bool,
     at_least: u64,
     record_previous: bool,
+    start_placed: bool,
 ) -> StoreResult<AssignmentWrite> {
     write_shard_assignment(
         store,
@@ -57,6 +64,7 @@ pub(super) async fn put_shard_assignment_if(
         None,
         at_least,
         record_previous,
+        start_placed,
     )
     .await
 }
@@ -110,6 +118,7 @@ pub(super) async fn adopt_elected_leader(
         Some(generation),
         0,
         false,
+        false,
     )
     .await
 }
@@ -118,7 +127,8 @@ pub(super) async fn adopt_elected_leader(
 /// that generation (`Some(None)`: only where there is no assignment).
 /// `elected`: an adoption's generation, written in place of the next one;
 /// only over an assignment below it. `at_least`: written there when it is
-/// above the next one. `record_previous`: see [`put_shard_assignment_if`].
+/// above the next one. `record_previous`, `start_placed`: see
+/// [`put_shard_assignment_if`].
 #[allow(clippy::too_many_arguments)]
 async fn write_shard_assignment(
     store: &InMemoryStore,
@@ -129,6 +139,7 @@ async fn write_shard_assignment(
     elected: Option<u64>,
     at_least: u64,
     record_previous: bool,
+    start_placed: bool,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
 
@@ -240,12 +251,17 @@ async fn write_shard_assignment(
         previous_generation,
         ..assignment
     };
-    let held = state
-        .records
-        .get(&stored.key)
+    let existing = state.records.get(&stored.key);
+    let held = existing
         .map(|existing| existing.readmitted.clone())
         .unwrap_or_default();
     stored.carry_readmitted(&held);
+    // In the same write that names a broker, so it is on the record before
+    // any leader acts on the set.
+    // A shard of a restored stream or cache may have had brokers before
+    // the import that its export does not show.
+    let start_placed = start_placed && !state.unplaced.contains(&stored.key.owner(incarnation));
+    stored.carry_placed(existing, start_placed);
     state.records.insert(stored.key.clone(), stored.clone());
     state.record(op, &stored.key, Some(stored.clone()));
     if fence.is_some() {
@@ -531,6 +547,7 @@ impl InMemoryStore {
             seq_generation,
             0,
             false,
+            false,
         )
         .await
     }
@@ -541,12 +558,14 @@ impl InMemoryStore {
         &self,
         assignment: ShardAssignment,
         seq_generation: bool,
+        start_placed: bool,
     ) -> StoreResult<ShardAssignment> {
-        put_shard_assignment(self, assignment, seq_generation).await
+        put_shard_assignment(self, assignment, seq_generation, start_placed).await
     }
 
     /// [`ControlPlaneStore::put_shard_assignment_if`] from a Raft entry, as
     /// [`Self::apply_put_shard_assignment`].
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn apply_put_shard_assignment_if(
         &self,
         assignment: ShardAssignment,
@@ -555,6 +574,7 @@ impl InMemoryStore {
         seq_generation: bool,
         at_least: u64,
         record_previous: bool,
+        start_placed: bool,
     ) -> StoreResult<AssignmentWrite> {
         put_shard_assignment_if(
             self,
@@ -564,6 +584,7 @@ impl InMemoryStore {
             seq_generation,
             at_least,
             record_previous,
+            start_placed,
         )
         .await
     }

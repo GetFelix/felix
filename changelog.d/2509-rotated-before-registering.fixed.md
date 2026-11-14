@@ -1,0 +1,2 @@
+- A broker whose start rotated its storage id after a crash and then stopped before the new id registered (a port it could not bind, say) no longer comes back counting its directory as a lost copy (#2509).
+  The control plane still names the old id, which `rotated-ids` already records as this directory's own. Counted lost, every copy on the broker answered fences as a non-voter, and a shard whose only other copy was the new leader could not open.

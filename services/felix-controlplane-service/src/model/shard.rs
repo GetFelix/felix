@@ -154,6 +154,17 @@ pub struct ShardKey {
 }
 
 impl ShardKey {
+    /// The stream or cache this shard belongs to, at `incarnation`.
+    pub(crate) fn owner(&self, incarnation: u64) -> ShardOwner {
+        ShardOwner {
+            kind: self.kind,
+            tenant_id: self.tenant_id.clone(),
+            namespace: self.namespace.clone(),
+            name: self.stream.clone(),
+            incarnation,
+        }
+    }
+
     /// The stream this shard belongs to, or `None` if it belongs to a cache.
     pub fn stream_key(&self) -> Option<StreamKey> {
         (self.kind == ShardKind::Stream).then(|| StreamKey {
@@ -219,8 +230,8 @@ pub struct ShardAssignment {
     /// The incarnation of the stream this assignment is for, read from the
     /// stream when the assignment is written; whatever a caller passes is
     /// replaced. Stored with it, so a change replayed after the stream was
-    /// created anew still names the stream it was written for. 0 for a cache,
-    /// and for a stream from before incarnations.
+    /// created anew still names the stream it was written for. The same for a
+    /// cache. 0 for one from before incarnations.
     #[serde(default, skip_serializing_if = "is_zero_incarnation")]
     pub incarnation: u64,
     /// The storage identity the replica report a failover was decided on named
@@ -270,6 +281,98 @@ pub struct ShardAssignment {
     /// level 30.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readmitted: Vec<Readmitted>,
+    /// Every broker placed for the shard's group in its group epoch: see
+    /// [`PlacedInEpoch`]. Store-owned like `generation`: started by the
+    /// shard's first assignment and grown by every later write; whatever a
+    /// caller passes is replaced. `None` for a shard first assigned below
+    /// metadata level 31, which has no complete record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placed: Option<PlacedInEpoch>,
+}
+
+/// A stream or cache at one incarnation. An import marks every one it
+/// restores, and their shards never start a [`PlacedInEpoch`] record.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ShardOwner {
+    pub(crate) kind: ShardKind,
+    pub(crate) tenant_id: String,
+    pub(crate) namespace: String,
+    pub(crate) name: String,
+    pub(crate) incarnation: u64,
+}
+
+/// Every broker the control plane has placed for a shard's group in one
+/// group epoch, voter or learner, including brokers a later write removed
+/// (`docs/per-shard-raft.md`, "Re-forming a group").
+///
+/// A removed voter's disk can hold the newest acknowledged records, so the
+/// re-form command lists and reads every broker on it. The record only
+/// grows within an epoch: a broker is added by the write that first names
+/// it, which is before its leader sends it anything, and no write takes one
+/// off. A re-form starts the next epoch's record ([`Self::next_epoch`]).
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct PlacedInEpoch {
+    /// The group epoch the record is for. 0 until a re-form.
+    pub epoch: u64,
+    /// The brokers, by node id.
+    pub brokers: BTreeSet<String>,
+}
+
+impl PlacedInEpoch {
+    /// The brokers on the record that neither answered the command nor are
+    /// declared dead. While any is left the group's re-form is blocked: a
+    /// broker that does not answer is never read as empty.
+    pub fn unaccounted(
+        &self,
+        answered: &BTreeSet<String>,
+        dead: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        self.brokers
+            .iter()
+            .filter(|broker| !answered.contains(*broker) && !dead.contains(*broker))
+            .cloned()
+            .collect()
+    }
+
+    /// The brokers in `named` (the voters a copy's newest membership names)
+    /// that are neither on the record nor declared dead. Empty while the
+    /// record is right; anything else blocks the group.
+    pub fn off_record<'a>(
+        &self,
+        named: impl IntoIterator<Item = &'a String>,
+        dead: &BTreeSet<String>,
+    ) -> BTreeSet<String> {
+        named
+            .into_iter()
+            .filter(|broker| !self.brokers.contains(*broker) && !dead.contains(*broker))
+            .cloned()
+            .collect()
+    }
+
+    /// Whether `broker` is the only broker placed in the epoch. A restored
+    /// RF 1 copy starts by itself only then: a shard moved in the epoch has
+    /// a second broker on the record, whose disk can hold newer records.
+    pub fn only(&self, broker: &str) -> bool {
+        self.brokers.len() == 1 && self.brokers.contains(broker)
+    }
+
+    /// The record a re-form writes for the next epoch: every broker on this
+    /// record that is not declared `dead` (the brokers the command lists),
+    /// plus the brokers placed now (`current`). A dead broker that `current`
+    /// no longer names is left off, though the model keeps it placed until
+    /// its removal commits; a dead broker never starts the new epoch.
+    pub fn next_epoch(&self, current: &ShardAssignment, dead: &BTreeSet<String>) -> Self {
+        Self {
+            epoch: self.epoch + 1,
+            brokers: self
+                .brokers
+                .iter()
+                .filter(|broker| !dead.contains(*broker))
+                .chain(current.placed_nodes())
+                .cloned()
+                .collect(),
+        }
+    }
 }
 
 /// A copy whose storage was replaced, shown caught up by the leader of a set
@@ -922,6 +1025,37 @@ impl ShardAssignment {
             })
             .cloned()
             .collect();
+    }
+
+    /// Every broker this assignment places a copy on: leader, replicas, a
+    /// pending set's members, the move's successor or joining follower, and
+    /// learners.
+    pub fn placed_nodes(&self) -> impl Iterator<Item = &String> {
+        self.named_nodes()
+            .chain(self.successor.iter())
+            .chain(self.joining.iter())
+            .chain(self.learners.iter())
+    }
+
+    /// [`Self::placed`] for this write over `previous`: the previous record
+    /// plus every broker this write places. A shard with no assignment yet
+    /// starts one at epoch 0 when `start` is set (the entry was proposed at
+    /// the level that stores it). One with an assignment but no record gets
+    /// none: brokers it placed and removed before are unknown, and a record
+    /// missing them would let a re-form skip their disks.
+    pub(crate) fn carry_placed(&mut self, previous: Option<&ShardAssignment>, start: bool) {
+        let held = match previous {
+            Some(previous) => previous.placed.clone(),
+            None if start => Some(PlacedInEpoch {
+                epoch: 0,
+                brokers: BTreeSet::new(),
+            }),
+            None => None,
+        };
+        self.placed = held.map(|mut record| {
+            record.brokers.extend(self.placed_nodes().cloned());
+            record
+        });
     }
 }
 

@@ -93,22 +93,6 @@ tasks:
   test:stress:
     cmds:
       - "scripts/stress_test.sh felix-storage cache::log_cache::tests::concurrency::a_cancelled_put_is_still_applied 200"
-  # The control plane's metadata group on the segment store instead of redb:
-  # clippy and the package's whole suite (the storage suite, the contract
-  # suites, raft_core, raft_runtime, raft_chaos) with
-  # `--cfg felix_segment_store`. No release sets the cfg, so this is the
-  # only place that side is built. It changes every crate's build, so it
-  # keeps its own target directory.
-  segment-store:check:
-    env:
-      RUSTFLAGS: "--cfg felix_segment_store"
-    cmds:
-      - |
-        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/segment-store" \
-          cargo clippy -p felix-controlplane-service --all-targets -- -D warnings
-      - |
-        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/segment-store" \
-          cargo test -p felix-controlplane-service
   # Replays the seed in FELIX_SIM_SEED exactly. Tokio seeds `select!` only
   # under `--cfg tokio_unstable`, which changes every crate's build, so this
   # keeps its own target directory. A plain `cargo test` replay repeats the
@@ -120,6 +104,18 @@ tasks:
       - |
         CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
           cargo test -p felix-sim --release --test seeds replay -- --nocapture
+  # Runs one Raft group seed (FELIX_SIM_SEED, default 1) the way the nightly
+  # sweep does, so a seed the sweep reports fails the same way here
+  # (docs/simulation.md, "Raft groups"). FELIX_SIM_CLOCKS=bounded skews the
+  # members' timers.
+  sim:raft-replay:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        FELIX_SIM_SEED_START="${FELIX_SIM_SEED:-1}" FELIX_SIM_SEEDS=1 \
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test raft_seeds -- --ignored --exact raft_seeds --nocapture
   # Runs each simulator seed twice in one process and fails on the first
   # event that differs, then the seeds pinned to an issue (`seed_*`).
   # FELIX_SIM_SEEDS and FELIX_SIM_SEED_START pick the seeds the first test
@@ -278,6 +274,8 @@ tasks:
       - "python3 scripts/check_public_docs_refs.py"
       # The spec-pairing check's own tests; Python only, so they run with the rest.
       - "python3 -m unittest scripts/test_check_spec_pairing.py"
+      # Which configurations a pull request model-checks; bash and git only.
+      - "bash scripts/test_check_tla.sh"
       - "python3 -m unittest discover -s scripts/ci"
   docs:felixctl:
     desc: "Regenerate the felixctl command reference page from the clap definitions"

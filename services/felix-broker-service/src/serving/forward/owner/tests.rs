@@ -1543,3 +1543,227 @@ mod quorum_waits {
         }
     }
 }
+
+#[cfg(feature = "raft")]
+mod on_raft {
+    use super::*;
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    /// **A forward to a Raft shard's leader is proposed to its group and
+    /// answered with its offsets at the commit**, whatever generation the
+    /// requester saw. The hybrid here has no route for the shard and its
+    /// fence is closed, so a forward that reached either is refused.
+    #[tokio::test]
+    async fn a_forward_to_a_raft_leader_commits_through_its_group() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key(STREAM, 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let router = Arc::new(ShardRouter::new(
+            LOCAL,
+            "us-west-2",
+            RegionRouter::new("us-west-2".to_string()),
+        ));
+        let ingress = Arc::new(IngressRouter::new(Arc::clone(&router), Arc::default()));
+        ingress.set_engine_shards(Arc::clone(&shards) as Arc<dyn EngineShards>);
+        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        engine.set_raft(Arc::clone(&shards));
+        let handler = ForwardingHandler::new(
+            broker,
+            engine,
+            router,
+            "10.0.0.1:7001".to_string(),
+            Duration::from_secs(10),
+            Credentials::new().auth,
+        );
+
+        let first = match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => ok.offsets().expect("offsets"),
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        };
+        assert_eq!(first.0, first.1);
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => {
+                assert_eq!(ok.offsets(), Some((first.0 + 1, first.0 + 1)));
+            }
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
+
+        // A sequenced forward is written once however often it arrives.
+        let plain = |payload| ForwardPublish {
+            headers: None,
+            ..sequenced(payload)
+        };
+        let third = match handler.apply(plain(b"sequenced")).await {
+            InternalMessage::ForwardPublishOk(ok) => ok.offsets().expect("offsets"),
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        };
+        assert_eq!(third, (first.0 + 2, first.0 + 2));
+        match handler.apply(plain(b"sequenced")).await {
+            InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(third)),
+            other => panic!("expected the first send's answer, got {other:?}"),
+        }
+        // A different batch under the sequence is refused, as on the hybrid.
+        match handler.apply(plain(b"another")).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::StorageFailed);
+                assert!(err.detail.contains("sequence"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => {
+                assert_eq!(ok.offsets(), Some((third.0 + 1, third.0 + 1)));
+            }
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
+
+        // What a Raft stream cannot carry is refused by name.
+        match handler.apply(sequenced(b"headered")).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::UnsupportedKind);
+                assert!(err.detail.contains("record headers"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // So is a sequenced batch of several records, with nothing written.
+        let mut several = plain(b"several");
+        several.payloads.push(Bytes::from_static(b"records"));
+        if let Some(producer) = several.producer.as_mut() {
+            producer.sequence += 1;
+        }
+        match handler.apply(several).await {
+            InternalMessage::ForwardPublishError(err) => {
+                // Not `UnsupportedKind`, which the requester answers by
+                // sending the batch again in the older form.
+                assert_eq!(err.code, ErrorCode::StorageFailed);
+                assert!(err.detail.contains("more than one"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => {
+                assert_eq!(ok.offsets(), Some((third.0 + 2, third.0 + 2)));
+            }
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
+        EngineShards::shutdown(&*shards).await;
+    }
+
+    use felix_replication::peer::pool::{PeerError, PeerRequester};
+    use felix_wire::internal::PeerCapabilities;
+
+    /// A trio's forwarding handlers, as the requester's network.
+    struct Handlers {
+        by_node: HashMap<String, ForwardingHandler>,
+        asked: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl PeerRequester for Handlers {
+        async fn request(
+            &self,
+            node_id: &str,
+            _addr: std::net::SocketAddr,
+            message: InternalMessage,
+        ) -> std::result::Result<InternalMessage, PeerError> {
+            self.asked.lock().expect("lock").push(node_id.to_string());
+            Ok(self.by_node[node_id].handle(message).await)
+        }
+
+        fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+            Some(PeerCapabilities::FORWARD_OFFSETS)
+        }
+
+        async fn capabilities(
+            &self,
+            _node_id: &str,
+            _addr: std::net::SocketAddr,
+        ) -> std::result::Result<PeerCapabilities, PeerError> {
+            Ok(PeerCapabilities::NONE)
+        }
+    }
+
+    /// **A forward sent to a member that does not lead is answered with the
+    /// leader, and the requester follows it there**, where the batch commits.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_forward_to_a_member_that_does_not_lead_is_followed_to_the_leader() {
+        use crate::serving::forward::{ForwardKey, ForwardTarget, forward_publish};
+
+        let (_net, members, leader) = fixture::trio().await;
+        let orders = fixture::key(STREAM, 0);
+        let credentials = Credentials::new();
+        let by_node = members
+            .iter()
+            .map(|member| {
+                let (router, ingress) = fixture::routes(&member.shards);
+                let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+                engine.set_raft(Arc::clone(&member.shards));
+                let handler = ForwardingHandler::new(
+                    Arc::clone(&member.broker),
+                    engine,
+                    router,
+                    fixture::addr_of(member.name).expect("addr").to_string(),
+                    Duration::from_secs(10),
+                    Arc::clone(&credentials.auth),
+                );
+                (member.name.to_string(), handler)
+            })
+            .collect();
+        let handlers = Handlers {
+            by_node,
+            asked: std::sync::Mutex::default(),
+        };
+        let follower = &members[(leader + 1) % members.len()];
+        fixture::until("the follower knows who leads", || {
+            matches!(
+                EngineShards::dispatch(&*follower.shards, &orders, &fixture::addr_of),
+                Some(Dispatch::Forward { .. })
+            )
+        })
+        .await;
+        // A requester whose routes are behind: it still names the follower.
+        let stale = ForwardTarget {
+            node_id: follower.name.to_string(),
+            advertise_addr: fixture::addr_of(follower.name).expect("addr"),
+            generation: 0,
+            incarnation: 0,
+        };
+        let key = ForwardKey {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            stream: STREAM.to_string(),
+            shard: 0,
+        };
+
+        let offsets = forward_publish(
+            &handlers,
+            &stale,
+            &key,
+            AckMode::OnCommit,
+            &credentials.publisher(),
+            vec![Bytes::from_static(b"forwarded")],
+            None,
+            None,
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("forwarded")
+        .expect("offsets");
+
+        assert_eq!(
+            *handlers.asked.lock().expect("lock"),
+            [follower.name, members[leader].name]
+        );
+        let read = members[leader]
+            .broker
+            .read_durable(TENANT, NAMESPACE, STREAM, 0, offsets.0, 1 << 20)
+            .await
+            .expect("read");
+        assert_eq!(&read[0].payload[..], b"forwarded");
+        fixture::stop(&members).await;
+    }
+}

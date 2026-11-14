@@ -72,6 +72,9 @@ impl CacheShard {
             }
             index_snapshot::install(&self.dir).map_err(StorageError::Io)?;
         }
+        // A failed sync here or of the file needs no poison, unlike the log's:
+        // each try writes a new file, and a snapshot a crash lost or left
+        // stale costs a full replay, never a wrong read.
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
         Ok(true)
     }

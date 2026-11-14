@@ -55,6 +55,7 @@ fn vote_for(group: GroupId, to: MemberId) -> RaftRequest {
         group,
         to,
         beat: 0,
+        report: false,
         deadline: std::time::Duration::from_secs(1),
         body: Request::Vote(VoteRequest::new(
             VoteOf::<ShardTypes>::from_leader_id(leader, false),
@@ -374,6 +375,7 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
         let command = Command {
             timestamp_micros: sequence,
             payload: put.encode(),
+            producer: None,
             written: None,
         };
         let written = leader.raft().client_write(command).await.expect("write");

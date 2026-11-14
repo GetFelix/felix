@@ -1196,7 +1196,6 @@ dependencies = [
  "opentelemetry_sdk",
  "rand 0.10.3",
  "rcgen",
- "redb",
  "reqwest",
  "rustls",
  "serde",
@@ -1306,8 +1305,10 @@ dependencies = [
  "metrics-exporter-prometheus",
  "openraft",
  "openraft-multi",
+ "openraft-rt-tokio",
  "parking_lot 0.13.0",
  "quinn",
+ "rand 0.10.3",
  "rcgen",
  "reqwest",
  "rustls",
@@ -1346,6 +1347,7 @@ dependencies = [
  "felix-controlplane-service",
  "felix-replication",
  "felix-router",
+ "felix-sim",
  "felix-storage",
  "felix-wire",
  "parking_lot 0.13.0",
@@ -1377,6 +1379,7 @@ dependencies = [
  "parking_lot 0.13.0",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tracing",
@@ -2542,7 +2545,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "openraft"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
+source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
 dependencies = [
  "anyerror",
  "backoff-series",
@@ -2569,7 +2572,7 @@ dependencies = [
 [[package]]
 name = "openraft-macros"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
+source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
 dependencies = [
  "chrono",
  "proc-macro2",
@@ -2581,7 +2584,7 @@ dependencies = [
 [[package]]
 name = "openraft-multi"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
+source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
 dependencies = [
  "anyerror",
  "openraft",
@@ -2590,7 +2593,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
+source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -2602,7 +2605,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt-tokio"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=30c947ef38e3c1df56bcfeec990bef6b8431a132#30c947ef38e3c1df56bcfeec990bef6b8431a132"
+source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
 dependencies = [
  "futures-util",
  "openraft-rt",
@@ -3142,15 +3145,6 @@ dependencies = [
  "time",
  "x509-parser",
  "yasna",
-]
-
-[[package]]
-name = "redb"
-version = "4.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39178e0a867f9e3eaa6292a4ab1dd3613f2519c5b564341e1e7b29b270736cc4"
-dependencies = [
- "libc",
 ]
 
 [[package]]

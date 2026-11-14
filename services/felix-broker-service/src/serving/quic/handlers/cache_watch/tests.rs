@@ -325,8 +325,8 @@ fn a_replay_delivers_no_change_for_records_that_are_not_data() {
 /// engine it was built with. An engine without marks would release it at once.
 #[tokio::test]
 async fn a_quorum_cache_watch_waits_its_timeout_for_the_mark() {
+    use crate::shards::routing::StreamEngine;
     use crate::test_support::leader::{self, GENERATION, Leader};
-    use felix_replication::engine::Hybrid;
     use felix_replication::quorum::{QuorumError, QuorumMarks};
 
     let leader = Leader::start().await;
@@ -335,7 +335,7 @@ async fn a_quorum_cache_watch_waits_its_timeout_for_the_mark() {
     let gate = CommitGate {
         broker: Arc::clone(&leader.broker),
         key: leader::quorum_cache_key(),
-        engine: Arc::new(Hybrid::new(
+        engine: Arc::new(StreamEngine::new(
             Some(Arc::clone(&marks)),
             Some(Arc::clone(&leader.ingress)),
         )),

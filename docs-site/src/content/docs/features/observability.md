@@ -299,7 +299,7 @@ NUL, or too long), and `not_authorized` one by a token without `stream.publish`
 on the mounted stream. A publish that was not written and nobody was told about
 is counted where it was dropped: `not_owner` (no broker could take it: see
 [MQTT](/features/mqtt/)),
-`record_headers_disabled`, `stream_unavailable` and `reserved_header`. `qos2_unsupported`,
+`record_headers_disabled`, `raft_stream`, `stream_unavailable` and `reserved_header`. `qos2_unsupported`,
 `retain_unsupported`, `topic_alias_invalid` and `receive_maximum_exceeded` are
 publishes the client was not allowed to send. `leadership_lost`, `quorum_timeout`,
 `write_failed` and `forward_unanswered` (a forward to the shard's owner got no
@@ -564,8 +564,12 @@ its tenant and what stopped it:
 
 ```text
 a log of tenant acme is poisoned: a flush of the replica state failed (...)
-reboot the host before restarting the broker; the broker log names each shard
+reboot the host before restarting the broker; the broker log has the details
 ```
+
+A failed flush of one of the broker's own records in the data directory,
+such as its copy-trust record, turns `/ready` false the same way, with a line
+like `a sync of the node record copy-trust failed: (...)`.
 
 A poisoned log refuses writes until the broker restarts, because the
 operating system may have dropped the data the failed flush was meant to

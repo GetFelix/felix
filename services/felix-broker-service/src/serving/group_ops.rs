@@ -631,6 +631,10 @@ fn owned_here(
         shard,
         kind: ShardKind::Stream,
     };
+    publish_ctx
+        .engine
+        .refuse_on_raft(&key, "consumer groups")
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     match dispatch(publish_ctx.ingress.as_deref(), &key) {
         Dispatch::Local { generation } => Ok(Owned {
             key,

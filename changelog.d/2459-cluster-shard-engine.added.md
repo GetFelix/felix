@@ -1,0 +1,1 @@
+The control plane records the cluster's shard engine (`FELIX_SHARD_ENGINE` on the control plane, `hybrid` by default) once, when its metadata group forms, and a broker running a different engine refuses to start (#2459).

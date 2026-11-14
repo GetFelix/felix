@@ -43,6 +43,7 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
     let command = Command {
         timestamp_micros: stamp,
         payload: command.encode(),
+        producer: None,
         written: None,
     };
     let written = member.raft().client_write(command).await.expect("write");
@@ -200,6 +201,7 @@ async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
     let command = |sequence| Command {
         timestamp_micros: 10,
         payload: put("k", b"one", sequence).encode(),
+        producer: None,
         written: None,
     };
     assert!(!group.write_in_term(command(1), term - 1).await);
@@ -376,6 +378,7 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
     let second = Command {
         timestamp_micros: 20,
         payload: put("k", b"two", 2).encode(),
+        producer: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -412,6 +415,7 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
         let command = Command {
             timestamp_micros: index * 10,
             payload: command.encode(),
+            producer: None,
             written: None,
         };
         let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -458,6 +462,7 @@ fn entries(
             let command = Command {
                 timestamp_micros: index * 10,
                 payload: command(index).encode(),
+                producer: None,
                 written: None,
             };
             let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -837,11 +842,9 @@ async fn a_member_behind_the_purge_catches_up_by_snapshot() {
     let member = cluster.runtime(behind).group(&shard(N)).expect("group");
     assert_eq!(member.cache().read().answer(7, 40), Some(Answer::Sum(39)));
     // It was sent the state, not the entries: its own log starts past them.
-    assert!(
-        cluster
-            .purged(behind, N)
-            .is_some_and(|purged| purged > first)
-    );
+    // openraft reports the purge after the install returns, so the agreed
+    // state can be seen first.
+    eventually(|| cluster.purged(behind, N).filter(|purged| *purged > first)).await;
     cluster.stop().await;
 }
 
@@ -884,6 +887,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
             group: group(N),
             to: MemberId::new(behind, 1),
             beat: 0,
+            report: false,
             deadline: Duration::from_secs(10),
             body: super::super::network::Request::Snapshot {
                 vote: vote(term),
@@ -925,6 +929,119 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     cluster.stop().await;
 }
 
+/// A message for `broker`'s member of the cache group.
+fn sent(broker: &str, body: super::super::network::Request) -> RaftRequest {
+    RaftRequest {
+        group: group(N),
+        to: MemberId::new(broker, 1),
+        beat: 0,
+        report: false,
+        deadline: Duration::from_secs(10),
+        body,
+    }
+}
+
+/// **A snapshot installed under another vote ends what the stored vote
+/// lets through**, as a later leader's append does. A member restarts on
+/// its old leader's committed vote and, inside its hold, installs a later
+/// leader's snapshot. Its promise is now to that leader, so the old one's
+/// vote request is dropped like anyone's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_later_leaders_snapshot_ends_what_the_stored_vote_lets_through() {
+    use super::lease::{dropped, stands, vote_of};
+    use openraft::async_runtime::watch::WatchReceiver;
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let last = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, last).await;
+    let old = cluster.elected(N).await;
+    let leading = cluster.runtime(&old.broker).group(&shard(N));
+    let leading = leading.expect("group");
+    let term = leading.status().term;
+    cluster.snapshot(&old.broker, N, last).await;
+    let snapshot = leading.raft().get_snapshot().await.expect("read");
+    let snapshot = snapshot.expect("snapshot");
+    let data = snapshot.snapshot.bytes.clone();
+    drop(leading);
+    cluster.stop().await;
+    cluster.start(false);
+    let mut followers = BROKERS.into_iter().filter(|broker| *broker != &*old.broker);
+    let held = followers.next().expect("a follower");
+    let later = followers.next().expect("another");
+
+    let log = open_log(cluster.root.path(), held, N, log_config());
+    cluster.logs.insert((held.into(), N), log.clone());
+    let runtime = cluster.runtime(held);
+    runtime.open(group(N), 1, log).await.expect("open");
+    let member = runtime.group(&shard(N)).expect("group");
+    assert!(member.holds_votes(), "{held} is not held");
+
+    let vote = vote_of(term + 1, later, true);
+    let whole = super::super::network::Request::Snapshot {
+        vote: vote.clone(),
+        meta: snapshot.meta.clone(),
+        data_len: data.len() as u64,
+        offset: 0,
+        data,
+    };
+    let installed = runtime.handle(sent(held, whole)).await;
+    assert!(installed.is_ok(), "the snapshot was not taken");
+    // openraft publishes the vote after it answers.
+    eventually(|| (member.raft().metrics().borrow_watched().vote == vote).then_some(())).await;
+
+    let asked = runtime.handle(sent(held, stands(term + 2, &old.broker)));
+    assert!(dropped(&asked.await), "the old leader was let through");
+    cluster.stop().await;
+}
+
+/// **A cache shard's snapshot gives the lease up at every piece.** Only
+/// the last piece reaches openraft, so a piece before it must void the
+/// lease here. A sender this member has outvoted names a term at or below
+/// its own and costs it nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_piece_of_a_higher_terms_snapshot_voids_the_lease() {
+    use super::lease::{soon, vote_of};
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let (engine, member) = leading(&cluster).await;
+    let leader = cluster.elected(N).await;
+    let term = member.status().term;
+    let admit = || engine.admit_local_ack(&shard(N), term);
+    soon("the lease never held", || admit().is_ok()).await;
+    let from = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker);
+    let from = from.expect("a follower");
+    let runtime = cluster.runtime(&leader.broker);
+    // The first half of a snapshot of eight bytes.
+    let piece = |term| {
+        let body = super::super::network::Request::Snapshot {
+            vote: vote_of(term, from, true),
+            meta: Default::default(),
+            data_len: 8,
+            offset: 0,
+            data: Bytes::from_static(b"half"),
+        };
+        runtime.handle(sent(&leader.broker, body))
+    };
+
+    let outvoted = piece(term - 1).await;
+    let Ok(RaftReply(super::super::network::Reply::Snapshot(answer))) = outvoted else {
+        panic!("an outvoted sender was not answered");
+    };
+    assert_eq!(answer.vote.leader_id().term(), term);
+    assert_eq!(member.incoming().held(), None);
+    assert!(member.lease().void() < term, "an outvoted sender voided");
+
+    assert!(piece(term + 3).await.is_ok());
+    assert_eq!(member.incoming().held(), Some(4));
+    assert_eq!(member.lease().void(), term + 2);
+    assert!(admit().is_err());
+    cluster.stop().await;
+}
+
 /// A stream's batch is never written to a cache shard: its raw record
 /// would fail to apply on every member and on every restart. It is refused
 /// at the call and again by the publish task, and the group goes on taking
@@ -942,6 +1059,8 @@ async fn a_cache_shard_takes_no_stream_batch_and_a_stream_shard_no_cache_write()
             payload: Bytes::from_static(b"a stream record"),
         }],
         ack: AckAt::Written,
+        term: None,
+        producer: None,
     };
     // Refused at the call: nothing is queued.
     let refused = futures::FutureExt::now_or_never(engine.propose(&shard(N), batch()));
@@ -1003,6 +1122,7 @@ async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
         group: group(N),
         to: MemberId::new(behind, 1),
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(10),
         body: super::super::network::Request::Snapshot {
             vote,
@@ -1047,6 +1167,7 @@ async fn what_a_write_call_per_entry_costs() {
                 let commands = (0..entries).map(|entry| Command {
                     timestamp_micros: 10,
                     payload: put("k", b"value", (mode * ROUNDS + round) * 1_000 + entry).encode(),
+                    producer: None,
                     written: None,
                 });
                 let commands = commands.collect();

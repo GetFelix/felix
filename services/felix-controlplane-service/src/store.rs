@@ -6,6 +6,7 @@
 //! are talking to, so change ordering, conflicts and not-found must behave
 //! the same on each.
 pub mod export;
+pub mod identity;
 pub mod memory;
 pub mod raft;
 
@@ -487,6 +488,14 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()>;
     /// Every suspicion held, fresh or not; the reader judges freshness.
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>>;
+
+    /// The identity the metadata group recorded at formation. The default is
+    /// a backend with no group, which forgets everything at restart.
+    async fn group_identity(&self) -> StoreResult<identity::GroupIdentity> {
+        Ok(identity::GroupIdentity::NoGroup {
+            shard_engine: "hybrid".to_string(),
+        })
+    }
 
     /// Whether placement is paused: it starts no moves of its own, while
     /// moves in flight finish and an operator may still start one. Read by

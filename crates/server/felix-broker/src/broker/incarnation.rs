@@ -508,6 +508,8 @@ impl Broker {
     /// data.
     pub(super) async fn close_incarnation(&self, key: &StreamKey, incarnation: u64) -> Result<()> {
         let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
+        // The provider below closes only the logs it opened.
+        self.close_engine_logs(key, incarnation).await;
         if let Some(storage) = &self.durable_storage {
             storage
                 .close_incarnation(tenant_id, namespace, stream, incarnation)
@@ -533,6 +535,9 @@ impl Broker {
     /// so the delete is finished later. Safe to repeat.
     async fn finish_delete(&self, key: &StreamKey, marker: &StreamMarker) -> Result<()> {
         let through = marker.deleted.unwrap_or(marker.incarnation);
+        // Before any directory goes: a log an engine still had open would
+        // keep writing to deleted files.
+        self.close_engine_logs(key, through).await;
         let (tenant_id, namespace, stream) = (&key.tenant_id, &key.namespace, &key.stream);
         let mut first_error = None;
         let mut note = |outcome: Result<()>| {

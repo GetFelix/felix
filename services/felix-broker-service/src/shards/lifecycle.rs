@@ -2290,6 +2290,7 @@ pub(super) async fn lead_from_tail(
     broker
         .lead_from_tail(&key.tenant_id, &key.namespace, &key.stream, key.shard)
         .await
+        .map(|_| ())
         .map_err(|err| anyhow::Error::new(err).context("move the stream to its log's tail"))
 }
 

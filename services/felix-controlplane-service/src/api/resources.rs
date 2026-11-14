@@ -56,7 +56,7 @@ const ATTEMPTS: usize = 3;
         (status = 403, description = "Missing `stream.manage` or `cache.manage` over an item; nothing created", body = crate::api::types::ErrorResponse),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 409, description = "An item exists with a different configuration, `jump_hash` routing was asked for before the fleet finalized it, or a `mount` overlaps another stream's; nothing created", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`upgrade_in_progress`: a control-plane member has not been upgraded to a release with batch creates. `unavailable`: no quorum committed the write in time, and it may still land", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`upgrade_in_progress`: a control-plane member has not been upgraded to a release with batch creates. `unavailable`: no quorum committed the write in time, and it may still land. `not_ready`: the Raft group has not recorded its identity yet", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_resources(

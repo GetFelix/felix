@@ -272,12 +272,16 @@ async fn an_election_on_another_set_is_named_on_it(store: &dyn ControlPlaneStore
             .await
             .expect("adopt outside"),
     );
+    // The first write naming w puts it on the record of brokers placed.
+    let mut placed = current.placed.clone().expect("a record");
+    placed.brokers.insert("broker-w".to_string());
     assert_eq!(
         outside,
         ShardAssignment {
             leader: "broker-w".to_string(),
             replicas: vec!["broker-x".to_string()],
             generation: at,
+            placed: Some(placed),
             ..current
         }
     );

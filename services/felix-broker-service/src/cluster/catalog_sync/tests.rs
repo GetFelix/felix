@@ -4,6 +4,7 @@ mod apply;
 mod cache_incarnation;
 mod consistency;
 mod fetch;
+mod group;
 mod incarnation;
 mod mounts;
 mod pass;

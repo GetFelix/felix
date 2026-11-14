@@ -124,12 +124,20 @@ the older release in between is not detected.
 **A first start of the metadata Raft group.** Members now record each other
 before any of them votes
 ([forming the group](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#forming-the-group)),
-over a new peer route, `POST /internal/raft/forming`. A group that already
-runs never uses it, so upgrading one needs nothing. A group that has not
+over a new peer route, `POST /internal/raft/v2/forming`. A group that already
+runs never uses it, so upgrading one within a release line needs nothing
+(from 0.7 to 0.8 the group starts over: see
+[Control plane metadata in 0.8](#control-plane-metadata-in-08)). A group that has not
 formed yet needs every control-plane member on a release with the route: a
 member on an older release answers 404, and the others wait and log
 `it runs a build without the forming route`. Start a new cluster with every
 member on the same release.
+
+Members also say which member they are when they answer, and a first start
+counts an empty answer only for the member that gave it. A member on a
+release that predates this is not counted, and the others log
+`its answer does not say which member it is`. A group that already runs is
+not affected here either.
 
 ### Fleet features: on only when an operator finalizes them
 
@@ -736,6 +744,79 @@ of their own: a cluster moves to the newer one once
 single broker from the start, after which an older build cannot read that
 shard's groups.
 
+### A recreated control plane
+
+A Raft control plane picks a random **group id** when its metadata group first
+forms, and keeps it for the life of the group. A broker with durable storage
+writes the group id it first served under into its data directory, in a file
+named `controlplane_group`, and checks it against the control plane every time
+it starts.
+
+A broker refuses to start when:
+
+- its data directory names a different group id. The control plane was
+  recreated (new volumes, or a release whose control plane starts from empty
+  data directories), and the streams this broker holds belong to a catalog
+  that no longer exists. Serving them under the new catalog would mix old
+  records into new streams that happen to reuse a name.
+- its data directory already holds data but names no group id, and the
+  control plane recorded its group id on an empty catalog. That control plane
+  was created fresh, so nothing says which catalog the data belongs to.
+
+If the control plane lost its volumes, first restore its metadata from its
+latest export with `import` (see [backup and restore](/deployment/backup-and-restore/#restoring)).
+An export carries the old group id, so the brokers accept it and keep their
+data. An export taken before group ids existed has none: the control plane
+keeps its new id and adopts brokers that have no group record yet. A broker
+that already names a group needs an export carrying that group's id, so take
+an export after the upgrade records the identity. Otherwise stop the broker,
+wipe its whole data directory, and start it again. It joins as a new, empty broker and takes its
+shards from the others.
+
+A broker that is already running when the control plane is recreated refuses
+the new catalog's snapshots and change-feed pages and stops, with the same
+message, rather than serving its old data under the new catalog. An answer
+that names no group at all, from a control-plane member that has not applied
+the record yet, is skipped and asked for again.
+
+An empty data directory adopts the control plane's group id on its first
+start. A control plane on the in-memory backend has no group, so its brokers
+skip this check.
+
+#### Upgrading an existing cluster to the release that adds the check
+
+Existing broker data directories name no group id, and they keep their data:
+
+1. Upgrade every control-plane member first. The group records its id once
+   all members run the new release (metadata level 32) and a leader exists.
+   Because it already holds streams, it records that the id was taken over an
+   existing catalog. `GET /v1/cluster/identity` then answers with
+   `"adopts_existing": true`. Until every member has reported its version
+   once, stream and cache creates answer `503`.
+   From then on a member cannot roll back to a release before level 32.
+2. Then roll the brokers as usual. Each one finds data and no group id, sees
+   `adopts_existing`, records the group id and starts. Nothing is wiped.
+
+A broker started before the record exists waits for it, logging that it is
+retrying. A control plane that is still on the older release answers 404 and
+the broker logs that it must be upgraded first; a node token without
+`node.view:cluster:*` gets 403 and an error naming that permission. The broker
+keeps retrying in each case and never starts without the check.
+
+### The cluster's shard engine
+
+The same record holds the cluster's **shard engine**, the engine that
+replicates durable stream shards: `hybrid` (the default) or `raft`. The
+control plane takes it from its own `FELIX_SHARD_ENGINE` when the group
+forms and never changes it. Changing `FELIX_SHARD_ENGINE` on the control
+plane later only logs a warning.
+
+A broker running a different engine from the record refuses to start and
+names both. Set the broker's engine to the recorded one. A cluster that should
+run the other engine is created afresh: a new control-plane store and empty
+broker data directories, with `FELIX_SHARD_ENGINE` set on the control plane
+from its first start.
+
 ## Upgrade order
 
 For a release that changes none of the versions above (the ordinary case):
@@ -759,6 +840,50 @@ If it changes `FORMAT_VERSION`, back up first and do not plan to roll back.
 If it adds a fleet feature, the feature stays off after step 2 until you
 finalize it. See the runbook above.
 
+## Control plane metadata in 0.8
+
+0.8 does not upgrade a 0.7 control plane's metadata. There is no in-place
+upgrade and no conversion tool. To move to 0.8, stop the cluster, start the
+control plane and every broker on 0.8 with empty data directories, and recreate
+tenants, namespaces, streams, caches and tokens (steps below).
+
+**Why.** 0.8 keeps the control plane's Raft state (log, vote, snapshot) in
+`store/` under `FELIX_RAFT_DATA_DIR`, on the same storage engine the brokers
+use. 0.7 and earlier kept it in one file, `raft.redb`, in that directory.
+0.8 cannot read that file, and no tool converts it.
+
+**What happens if you start 0.8 on a 0.7 data directory.** The member
+refuses to start and names `raft.redb`. It writes nothing, so starting it on
+0.7 again carries on where it stopped. A 0.8 member also never talks to a
+0.7 one: their peer routes differ, so a mixed group is two partitions, not
+one group.
+
+**What starts over.** Everything the control plane holds: tenants,
+namespaces, streams, caches, consumer checkpoints, signing keys (so every
+issued token stops working) and shard assignments. The brokers' data does
+not carry over either, since the new group knows nothing of the old streams
+and caches. Wipe the brokers too. A broker with `FELIX_NODE_TOKEN` set
+refuses to start on its 0.7 data directory: the directory holds data but names
+no group id, and the new group recorded its id on an empty catalog (see
+[A recreated control plane](#a-recreated-control-plane)). A broker without a
+node token only logs a warning and starts on the old data, so do not rely on
+the refusal.
+
+**How to move a cluster to 0.8.**
+
+1. Stop every client, broker and control-plane member.
+2. Keep the old data directories if you may want to go back.
+3. Start every control-plane member on 0.8 with an empty
+   `FELIX_RAFT_DATA_DIR` and `FELIX_RAFT_INITIAL_CLUSTER_STATE=new`, as for a
+   new cluster.
+4. Start every broker on 0.8 with an empty data directory.
+5. Recreate tenants, namespaces, streams and caches, and issue new tokens.
+
+**Going back.** Stop everything and start 0.7 on the directories kept in
+step 2. Do not start 0.7 on a directory 0.8 wrote: 0.7 does not recognise
+`store/`, creates an empty `raft.redb` beside it and starts as a new member
+([#2424](https://github.com/GetFelix/felix/issues/2424)).
+
 ## Rollback
 
 | Changed | Rollback |
@@ -768,7 +893,8 @@ finalize it. See the runbook above.
 | Internal protocol *kind* | Safe once every broker is back on the old build; see the note on credentialed forwards below |
 | Fleet feature, not finalized | Safe; broker by broker |
 | Fleet feature, finalized | **Not possible** to a build without it; a broker on such a build is refused. Roll back to a build that still has the feature |
-| Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
+| Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream, or the group identity, which the group records as soon as every member runs a release at level 32. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
+| Control plane 0.7 to 0.8 (Raft) | Only to the 0.7 data directories kept before the move; see [Control plane metadata in 0.8](#control-plane-metadata-in-08) |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
 

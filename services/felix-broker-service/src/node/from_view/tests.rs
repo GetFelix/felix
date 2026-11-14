@@ -44,6 +44,7 @@ fn view(storage_id: StorageId, fleet: Vec<String>) -> View {
 fn record(root: &Path, view: &View) {
     felix_storage::controlplane_view::record(root, &serde_json::to_vec(view).expect("encode"))
         .expect("record the view");
+    crate::cluster::controlplane_group::write(root, "group-1").expect("record the group");
 }
 
 const BOOT: Option<BootId> = Some(BootId::from_bytes([3; 16]));
@@ -350,4 +351,37 @@ fn copy_files(from: &Path, to: &Path) {
             std::fs::copy(entry.path(), to.join(entry.file_name())).expect("copy");
         }
     }
+}
+
+/// A directory that was never checked against the control plane has no group
+/// to compare, and only that check can tell a recreated control plane.
+#[test]
+fn a_directory_that_records_no_group_waits() {
+    let (dir, _) = qualifying();
+    std::fs::remove_file(
+        dir.path()
+            .join(crate::cluster::controlplane_group::FILE_NAME),
+    )
+    .expect("remove");
+    assert_eq!(ask(dir.path(), ME, &reported()), Err(Refusal::NoGroup));
+}
+
+/// A control plane without a metadata group (the in-memory store) has no
+/// group to record; the mark that it was asked is enough to start from the
+/// view.
+#[test]
+fn a_directory_checked_against_a_control_plane_without_a_group_starts() {
+    let (dir, _) = qualifying();
+    std::fs::remove_file(
+        dir.path()
+            .join(crate::cluster::controlplane_group::FILE_NAME),
+    )
+    .expect("remove");
+    std::fs::write(
+        dir.path()
+            .join(crate::cluster::controlplane_group::NO_GROUP_FILE),
+        "",
+    )
+    .expect("mark");
+    ask(dir.path(), ME, &reported()).expect("qualifies");
 }

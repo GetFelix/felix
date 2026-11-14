@@ -88,7 +88,7 @@ pub(crate) async fn list_caches(
         (status = 200, description = "Cache already exists with this configuration; nothing changed", body = Cache),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 409, description = "Cache already exists with a different configuration, or a cache of this name was deleted before the fleet finalized `cache_incarnations`", body = crate::api::types::ErrorResponse),
-        (status = 503, description = "`unavailable`: no quorum committed the write in time, and it may still land, so do not blindly retry", body = crate::api::types::ErrorResponse)
+        (status = 503, description = "`unavailable`: no quorum committed the write in time, and it may still land, so do not blindly retry; or `not_ready`: the Raft group has not recorded its identity yet, retry", body = crate::api::types::ErrorResponse)
     )
 )]
 pub(crate) async fn create_cache(
@@ -334,6 +334,7 @@ pub(crate) async fn cache_snapshot(
         items: snapshot.items,
         next_seq: snapshot.next_seq,
         tombstones,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }
 
@@ -366,5 +367,6 @@ pub(crate) async fn cache_changes(
     Ok(Json(CacheChangesResponse {
         items: changes.items,
         next_seq: changes.next_seq,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }

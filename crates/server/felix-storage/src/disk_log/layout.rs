@@ -161,6 +161,38 @@ pub(crate) fn prefix_of(name: &str) -> Option<&str> {
     Some(prefix)
 }
 
+/// Where a parent directory keeps the shard directories a Raft rotation moved
+/// aside. Dotted, so it is never read as a shard.
+pub(crate) const KEPT_DIR: &str = ".kept";
+
+/// The name a rotated-aside copy of the shard directory `name` is kept under
+/// in [`KEPT_DIR`]: `<name>.<copy>`, with `-<n>` after it when `n` is not 0.
+/// A shard directory name holds no `.`, so the first one splits it.
+#[cfg(feature = "raft")]
+pub(crate) fn kept_name(name: &str, copy: u64, n: u32) -> String {
+    match n {
+        0 => format!("{name}.{copy:016x}"),
+        n => format!("{name}.{copy:016x}-{n}"),
+    }
+}
+
+/// The shard directory name and copy id (0 when it had none) a [`KEPT_DIR`]
+/// entry was made from.
+pub(crate) fn kept_of(entry: &str) -> Option<(&str, u64)> {
+    let (name, rest) = entry.split_once('.')?;
+    let (hex, number) = match rest.split_once('-') {
+        Some((hex, number)) => (hex, Some(number)),
+        None => (rest, None),
+    };
+    if name.is_empty() || hex.len() != 16 {
+        return None;
+    }
+    if number.is_some_and(|n| n.is_empty() || !n.bytes().all(|b| b.is_ascii_digit())) {
+        return None;
+    }
+    Some((name, u64::from_str_radix(hex, 16).ok()?))
+}
+
 /// Human-readable shard identifier used in errors, logs and metrics.
 ///
 /// Unlike the directory name this is not required to be unique or

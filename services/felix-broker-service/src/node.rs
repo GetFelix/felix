@@ -24,8 +24,10 @@ mod cache_expiry;
 mod cluster;
 mod from_view;
 mod handoff;
+mod identity;
 mod listeners;
 mod membership;
+mod open_files;
 pub(crate) mod peer_dispatch;
 mod shutdown;
 #[cfg(feature = "sim")]
@@ -98,6 +100,15 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // Before storage opens: every held shard keeps files open.
+    open_files::raise_limit(
+        durable_config
+            .as_ref()
+            .map_or(0, |durable| durable.log.max_open_sealed_segments),
+        durable_config
+            .as_ref()
+            .and_then(|durable| durable.log.sealed_cache.as_ref()),
+    );
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.
@@ -106,6 +117,21 @@ where
         && let Some(peer) = config.peer_transport.as_mut()
     {
         peer.unified_fence = false;
+    }
+    // Before anything opens: a broker asked for Raft shards that came up as
+    // a hybrid one would write a shard its peers run under Raft.
+    let shard_engine = crate::config::shard_engine()?;
+    if shard_engine == crate::config::ShardEngine::Raft {
+        let missing = crate::config::RaftPrerequisites {
+            compiled: cfg!(feature = "raft"),
+            membership: config.membership.is_some(),
+            peer_transport: config.peer_transport.is_some(),
+            durable_storage: durable_config.is_some(),
+        }
+        .missing();
+        if let Some(missing) = missing {
+            anyhow::bail!("FELIX_SHARD_ENGINE=raft is refused: {missing}");
+        }
     }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
@@ -235,6 +261,33 @@ where
         membership::Start::Asked(registered) => (registered, None),
         membership::Start::FromView(view) => (None, Some(*view)),
     };
+    // Before storage opens, and before anything is written under a group:
+    // the directory is refused, or recorded, on what the control plane says.
+    // A start from the view could not ask; `qualify` required a record, or
+    // one saying the control plane had no group, and the catalog sync
+    // compares a record with the snapshots.
+    let group_refused = CancellationToken::new();
+    let group = match (&durable_root, &config.controlplane_url, &view) {
+        // Judged once the control plane answers (`sync::GroupCheck`).
+        (Some(_), _, Some(_)) => None,
+        (Some(root), Some(base_url), None) => tokio::select! {
+            group = identity::admit(&membership_client, base_url, &credential, root) => group?,
+            () = shutdown.as_mut() => {
+                tracing::info!("stopped before the control plane answered; nothing was opened");
+                sync_shutdown.cancel();
+                peer_shutdown.cancel();
+                return Ok(());
+            }
+        },
+        _ => None,
+    };
+    let group = sync::GroupCheck::for_start(
+        durable_root.as_deref(),
+        view.is_some(),
+        group,
+        &membership_client,
+        &group_refused,
+    );
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let own_kept = stored.kept;
     stored.kept = stored.kept.attested(view.is_some());
@@ -304,6 +357,29 @@ where
         storage_id,
         unclean,
     } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks, &engine).await?;
+    // Before the catalog, the view or a peer registers a stream: one
+    // registered earlier would have its shard 0 opened by the broker itself,
+    // beside the log its Raft member opens.
+    if shard_engine == crate::config::ShardEngine::Raft {
+        broker.leave_durable_streams_to_engines();
+    }
+    #[cfg(feature = "raft")]
+    let raft_shards = if shard_engine == crate::config::ShardEngine::Raft {
+        cluster::start_raft_shards(&config, &cluster, &peers, &broker, &engine)?
+    } else {
+        cluster::RaftShards::default()
+    };
+    #[cfg(not(feature = "raft"))]
+    let raft_shards = cluster::RaftShards::default();
+    let raft_shards = cluster::match_engines(
+        &config,
+        &cluster,
+        &peers,
+        &broker,
+        &engine,
+        shard_engine == crate::config::ShardEngine::Raft,
+        raft_shards,
+    );
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config
@@ -473,6 +549,7 @@ where
         &key_store,
         &restore_checked,
         provisional,
+        group,
     );
     sync::spawn_readiness_flip(
         gate_readiness_on_sync,
@@ -558,6 +635,7 @@ where
         // for the shards it leads instead of waiting on it. After a start from
         // the view that lasts until it has registered.
         gate_readiness_on_sync.then_some(&clients),
+        raft_shards.handler,
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -582,6 +660,7 @@ where
         nodes: view.as_ref().map(from_view::nodes).unwrap_or_default(),
         reports_held: view.as_ref().map(|_| restore_checked.clone()),
         leads_after: view.as_ref().map(|_| clients.clone()),
+        engine_shards: raft_shards.engine_shards.clone(),
         sync_shutdown: &sync_shutdown,
     });
 
@@ -634,9 +713,11 @@ where
         credential_refresh,
         shard_tasks,
         sync_shutdown,
+        group_refused,
         controlplane_task,
         controlplane_view,
         storage: shutdown::Storage {
+            engine_shards: raft_shards.engine_shards,
             broker: Arc::clone(&broker),
             run: durable_storage
                 .as_ref()
@@ -645,8 +726,8 @@ where
         metrics_task,
         metrics_shutdown,
     };
-    let membership_rejected = running.wait(shutdown).await;
-    running.drain(membership_rejected).await
+    let stopped = running.wait(shutdown).await;
+    running.drain(stopped).await
 }
 
 /// A v9 segment, or a committed vote, is a format an older build refuses, so

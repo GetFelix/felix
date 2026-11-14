@@ -838,6 +838,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     }
 }
 

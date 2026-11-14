@@ -737,7 +737,8 @@ impl ReplicaHandler {
         else {
             return answer(Some(PreVoteRefusal::UnknownShard));
         };
-        if self.is_learner(&log) {
+        // A sealed copy elects nothing: only the control plane reopens it.
+        if self.is_learner(&log) || (log_kind == felix_broker::LogKind::Stream && sealed(&log)) {
             return answer(Some(PreVoteRefusal::NotVoting));
         }
         if request.set_generation < log.set_generation() {
@@ -945,4 +946,14 @@ pub(super) async fn keep(
             ))
         }
     }
+}
+
+#[cfg(feature = "raft")]
+fn sealed(log: &felix_broker::StreamLog) -> bool {
+    log.disk_log().seal_promise().is_some()
+}
+
+#[cfg(not(feature = "raft"))]
+fn sealed(_: &felix_broker::StreamLog) -> bool {
+    false
 }

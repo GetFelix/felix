@@ -328,7 +328,21 @@ async fn run_smoke(_base: DemoConfig) -> Result<()> {
     anyhow::bail!("--smoke requires telemetry feature");
 }
 
+/// This demo's broker keeps its streams in memory, so it has no durable shard
+/// for an engine to run. Asked for Raft it would measure the same path as a
+/// run that was not, and an A/B of the two would report no difference.
+fn refuse_shard_engine(asked: Option<&str>) -> Result<()> {
+    match asked.map(|engine| engine.trim().to_ascii_lowercase()) {
+        Some(engine) if !matches!(engine.as_str(), "" | "hybrid") => Err(anyhow::anyhow!(
+            "FELIX_SHARD_ENGINE={engine} has no effect here: latency-demo runs one in-memory \
+             broker with no durable stream shard. Compare engines on a cluster of real brokers."
+        )),
+        _ => Ok(()),
+    }
+}
+
 fn main() -> Result<()> {
+    refuse_shard_engine(std::env::var("FELIX_SHARD_ENGINE").ok().as_deref())?;
     // Runtime width is a first-class perf variable here: this harness runs the
     // broker and its clients in one process, so every extra worker thread is
     // another candidate for a cross-core wakeup on the publish/deliver chain.
@@ -2654,6 +2668,18 @@ mod tests {
             received,
             handle,
         }
+    }
+
+    #[test]
+    fn a_run_asked_for_raft_is_refused() {
+        for hybrid in [None, Some(""), Some("hybrid"), Some(" Hybrid ")] {
+            refuse_shard_engine(hybrid).expect("the default engine");
+        }
+        let err = refuse_shard_engine(Some("raft")).expect_err("raft");
+        assert!(
+            format!("{err}").contains("no durable stream shard"),
+            "{err}"
+        );
     }
 
     #[tokio::test(start_paused = true)]

@@ -63,6 +63,7 @@ fn request(body: Request) -> RaftRequest {
         group: group(),
         to: member("b"),
         beat: 2_000,
+        report: false,
         deadline: std::time::Duration::from_millis(200),
         body,
     }
@@ -76,10 +77,23 @@ fn every_request() -> Vec<RaftRequest> {
             Command {
                 timestamp_micros: 99,
                 payload: Bytes::from_static(b"a record"),
+                producer: None,
                 written: None,
             },
         ),
         EntryOf::<ShardTypes>::new_membership(log_id(2, 7), membership()),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 8),
+            Command {
+                timestamp_micros: 100,
+                payload: Bytes::from_static(b"a producer's batch"),
+                producer: Some(ProducerMark {
+                    producer_id: 0xA1B2_C3D4_E5F6_0718,
+                    sequence: 41,
+                }),
+                written: None,
+            },
+        ),
     ];
     vec![
         request(Request::Append(AppendEntriesRequest {
@@ -118,6 +132,19 @@ fn every_request() -> Vec<RaftRequest> {
             member("c"),
             Some(log_id(2, 7)),
         ))),
+        request(Request::Written {
+            from: member("c"),
+            at: LogPoint { term: 2, index: 7 },
+        }),
+        RaftRequest {
+            report: true,
+            ..request(Request::Append(AppendEntriesRequest {
+                vote: vote(2, true),
+                prev_log_id: Some(log_id(2, 7)),
+                entries: vec![EntryOf::<ShardTypes>::new_blank(log_id(2, 8))],
+                leader_commit: None,
+            }))
+        },
     ]
 }
 
@@ -164,6 +191,7 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
                 actual: None,
             },
         )))),
+        Ok(RaftReply(Reply::Written)),
         Err(Refused::Unreachable("down".into())),
         Err(Refused::NoSuchMember(addressee())),
         Err(Refused::Stopped(addressee(), "fatal".into())),
@@ -181,6 +209,7 @@ fn every_request_reads_back_as_written() {
         assert_eq!(read.group, written.group);
         assert_eq!(read.to, written.to);
         assert_eq!(read.beat, written.beat);
+        assert_eq!(read.report, written.report);
         assert_eq!(format!("{read:?}"), format!("{written:?}"));
         assert_eq!(encode_request(&read).expect("encode"), bytes, "{written:?}");
     }
@@ -196,7 +225,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 3);
+    assert_eq!(read.entries.len(), 4);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -229,6 +258,7 @@ fn every_reply_reads_back_as_written() {
             (Ok(RaftReply(Reply::TransferLeader(a))), Ok(RaftReply(Reply::TransferLeader(b)))) => {
                 assert_eq!(a, b)
             }
+            (Ok(RaftReply(Reply::Written)), Ok(RaftReply(Reply::Written))) => {}
             (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
             _ => panic!("an answer read back as another kind"),
         }
@@ -240,7 +270,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[1, 3][..],
+        &[3, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -256,6 +286,8 @@ fn a_vote_matches_its_golden_vector() {
         &[0, 0, 0, 0, 0, 0, 0, 11][..],
         // the beat
         &[0, 0, 0, 0, 0, 0, 0x07, 0xD0][..],
+        // no report asked for
+        &[0][..],
         // the vote: term, voted for, committed
         &[0, 0, 0, 0, 0, 0, 0, 3][..],
         &[0, 1, b'a'][..],
@@ -294,13 +326,71 @@ fn trailing_bytes_and_other_layouts_are_refused() {
     longer.put_u8(0);
     assert!(decode_request(longer.freeze()).is_err());
     let mut other = BytesMut::from(&bytes[..]);
-    other[0] = 2;
+    other[0] = 4;
     assert!(decode_request(other.freeze()).is_err());
 
     let reply = encode_reply(&every_reply()[0]);
     let mut other = BytesMut::from(&reply[..]);
-    other[0] = 2;
+    other[0] = 4;
     assert!(decode_reply(other.freeze()).is_err());
+}
+
+/// A build from before the report byte writes layout 1 with a header one
+/// byte shorter. It is refused by its layout, before any field is read, so
+/// the error names the mismatch instead of a length.
+#[test]
+fn a_layout_1_header_is_refused_by_layout() {
+    let sent = every_request().remove(2);
+    let bytes = encode_request(&sent).expect("encode");
+    // Layout 1 had the same fields up to the beat and no report byte.
+    let mut head = BytesMut::new();
+    put_group(&mut head, &sent.group).expect("group");
+    put_member(&mut head, &sent.to).expect("member");
+    let report_at = 2 + 4 + head.len() + 8;
+    let mut old = bytes.to_vec();
+    old[0] = 1;
+    old.remove(report_at);
+    let refused = decode_request(Bytes::from(old)).expect_err("refused");
+    assert!(
+        refused.to_string().contains("layout 1"),
+        "refused for something else: {refused}"
+    );
+
+    let reply = encode_reply(&every_reply()[0]);
+    let mut old = BytesMut::from(&reply[..]);
+    old[0] = 1;
+    let Err(refused) = decode_reply(old.freeze()) else {
+        panic!("a layout 1 answer was read");
+    };
+    assert!(refused.to_string().contains("layout 1"), "{refused}");
+}
+
+/// A build from before snapshots carried data writes layout 2, whose
+/// snapshot ends at the membership. It is refused by its layout: read as
+/// this one it would only look cut short.
+#[test]
+fn a_layout_2_snapshot_is_refused_by_layout() {
+    let sent = every_request().remove(4);
+    let Request::Snapshot { data, .. } = &sent.body else {
+        panic!("not the snapshot");
+    };
+    let bytes = encode_request(&sent).expect("encode");
+    // The data's length, the piece's offset, its length and its bytes.
+    let mut old = bytes[..bytes.len() - (8 + 8 + 4 + data.len())].to_vec();
+    old[0] = 2;
+    let refused = decode_request(Bytes::from(old)).expect_err("refused");
+    assert!(
+        refused.to_string().contains("layout 2"),
+        "refused for something else: {refused}"
+    );
+
+    let reply = encode_reply(&every_reply()[0]);
+    let mut old = BytesMut::from(&reply[..]);
+    old[0] = 2;
+    let Err(refused) = decode_reply(old.freeze()) else {
+        panic!("a layout 2 answer was read");
+    };
+    assert!(refused.to_string().contains("layout 2"), "{refused}");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does
@@ -355,6 +445,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                 Command {
                     timestamp_micros: 1,
                     payload: record.clone(),
+                    producer: None,
                     written: None,
                 },
             )
@@ -400,6 +491,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                 Command {
                     timestamp_micros: 1,
                     payload: record.clone(),
+                    producer: None,
                     written: None,
                 },
             )
@@ -482,6 +574,31 @@ fn a_membership_entry_with_no_voters_is_refused() {
     let bytes = encode_request(&written).expect("encode");
     let refused = decode_request(bytes).expect_err("refused");
     assert!(refused.to_string().contains("no voters"), "{refused}");
+}
+
+/// Tag 4 was a record continuing a batch of several. Nothing sends one, and
+/// read as a plain record it would lose its producer.
+#[test]
+fn an_entry_that_continues_a_batch_is_refused() {
+    let record = Command {
+        timestamp_micros: 100,
+        payload: Bytes::from_static(b"a record"),
+        producer: None,
+        written: None,
+    };
+    let written = request(Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_normal(log_id(2, 1), record)],
+        leader_commit: None,
+    }));
+    let mut bytes = BytesMut::from(&encode_request(&written).expect("encode")[..]);
+    let payload = bytes.windows(8).position(|at| at == b"a record");
+    // The tag, the timestamp and the length come before the payload.
+    let tag = payload.expect("the record") - 4 - 8 - 1;
+    assert_eq!(bytes[tag], 1, "not the entry's tag");
+    bytes[tag] = 4;
+    assert!(decode_request(bytes.freeze()).is_err());
 }
 
 impl RaftRequest {

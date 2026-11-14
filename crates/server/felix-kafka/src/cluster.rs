@@ -122,6 +122,9 @@ pub enum WriteError {
     QuorumTimeout,
     /// Leadership moved after the write and before a majority held it.
     LeadershipLost,
+    /// The shard's log does not take a Kafka produce, here or on any other
+    /// broker. Nothing was written.
+    Unsupported,
 }
 
 /// A broker's Kafka listener, as clients are told to reach it.

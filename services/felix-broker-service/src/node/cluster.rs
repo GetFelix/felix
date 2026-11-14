@@ -119,6 +119,88 @@ pub(super) struct PeerListener {
     pub(super) prefetch: Option<replication::confirmed::Prefetch>,
 }
 
+/// The Raft shards a broker started with `FELIX_SHARD_ENGINE=raft` runs.
+/// Both absent on every other broker.
+#[derive(Default)]
+pub(super) struct RaftShards {
+    /// Takes its shards out of the routing feed's assignments.
+    pub(super) engine_shards: Option<Arc<dyn shard_routing::EngineShards>>,
+    /// Answers peers' Raft messages on the broker-internal listener.
+    pub(super) handler: Option<Arc<dyn peer::RaftHandler>>,
+}
+
+/// Start the group runtime and hand it this broker's Raft shards. Call it
+/// before the peer listener binds and before the routing feed starts.
+#[cfg(feature = "raft")]
+pub(super) fn start_raft_shards(
+    config: &BrokerConfig,
+    cluster: &Option<ShardState>,
+    peers: &Option<Arc<PeerPool>>,
+    broker: &Arc<Broker>,
+    engine: &Arc<shard_routing::StreamEngine>,
+) -> Result<RaftShards> {
+    use replication::raft::{GroupRuntime, PeerTransport, RuntimeConfig};
+
+    let (Some(membership), Some(pool), Some((router, _, _, _))) =
+        (&config.membership, peers, cluster)
+    else {
+        anyhow::bail!("Raft shards need cluster membership and a peer transport");
+    };
+    let router = Arc::clone(router);
+    let transport = PeerTransport::new(
+        Arc::clone(pool),
+        Arc::new(move |broker: &str| router.node_addr(broker)),
+    );
+    let runtime = GroupRuntime::start(
+        membership.node_id.clone(),
+        RuntimeConfig::default(),
+        Arc::new(transport),
+    )
+    .map_err(|err| anyhow::anyhow!("start the Raft group runtime: {err}"))?;
+    let shards = crate::shards::raft::RaftShards::new(
+        Arc::clone(broker),
+        runtime.clone(),
+        membership.node_id.clone(),
+    );
+    engine.set_raft(Arc::clone(&shards));
+    Ok(RaftShards {
+        engine_shards: Some(shards),
+        handler: Some(Arc::new(runtime)),
+    })
+}
+
+/// Put the engine check in front of `shards` and route by the result: a
+/// durable stream shard placed with a peer on the other engine is refused
+/// here, whichever engine this broker runs. Call it before the routing feed
+/// starts. A broker outside a cluster has no peer to disagree with.
+pub(super) fn match_engines(
+    config: &BrokerConfig,
+    cluster: &Option<ShardState>,
+    peers: &Option<Arc<PeerPool>>,
+    broker: &Arc<Broker>,
+    engine: &Arc<shard_routing::StreamEngine>,
+    raft: bool,
+    mut shards: RaftShards,
+) -> RaftShards {
+    if let (Some(membership), Some(pool), Some((router, _, _, _))) =
+        (&config.membership, peers, cluster)
+    {
+        let router = Arc::clone(router);
+        shards.engine_shards = Some(crate::shards::engine_match::EngineMatch::new(
+            Arc::clone(broker),
+            Arc::clone(pool),
+            Arc::new(move |broker: &str| router.node_addr(broker)),
+            membership.node_id.clone(),
+            raft,
+            shards.engine_shards.take(),
+        ));
+    }
+    if let (Some(ingress), Some(engine_shards)) = (engine.serving(), &shards.engine_shards) {
+        ingress.set_engine_shards(Arc::clone(engine_shards));
+    }
+    shards
+}
+
 /// Bind and serve the broker-internal listener, when this broker is in a
 /// cluster. This is the address `NodeSpec.advertise_addr` names, so it must be
 /// up for peers to reach this node at all.
@@ -138,6 +220,7 @@ pub(super) fn bind_peer_listener(
     controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
     clients: Option<CancellationToken>,
     serving: Option<&CancellationToken>,
+    raft: Option<Arc<dyn peer::RaftHandler>>,
     peer_shutdown: &CancellationToken,
 ) -> Result<PeerListener> {
     Ok(
@@ -184,6 +267,10 @@ pub(super) fn bind_peer_listener(
                 .with_node_incarnation(incarnation);
                 let server = match serving {
                     Some(serving) => server.with_serving(serving.clone()),
+                    None => server,
+                };
+                let server = match raft {
+                    Some(raft) => server.with_raft(raft),
                     None => server,
                 };
                 match &peer_config.tls {
@@ -311,6 +398,8 @@ pub(super) struct ShardTaskDeps<'a, R, L> {
     /// After a start from the view: this broker stands for election only once
     /// cancelled, since peers suspect it until it has registered.
     pub(super) leads_after: Option<CancellationToken>,
+    /// Whoever runs the shards the hybrid does not.
+    pub(super) engine_shards: Option<Arc<dyn shard_routing::EngineShards>>,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
@@ -344,6 +433,7 @@ where
         nodes,
         reports_held,
         leads_after,
+        engine_shards,
         sync_shutdown,
     } = deps;
     match (cluster, link, durable_storage) {
@@ -419,6 +509,9 @@ where
             // fence or a cut-over runs through all three as soon as it is
             // written rather than a tick apart at each hop.
             let assignments_changed = Arc::new(tokio::sync::Notify::new());
+            if let Some(engine_shards) = &engine_shards {
+                engine_shards.wake_with(Arc::clone(&assignments_changed));
+            }
             let routes_changed = Arc::new(tokio::sync::Notify::new());
             // Leaderships the replicas elect, only where this broker checks
             // sets: the routing feed lays them over the control plane's.
@@ -452,6 +545,7 @@ where
                     prefetch,
                     elections,
                     nodes,
+                    engine_shards,
                 },
                 Some(shard_routing::CatalogSource {
                     link: link.clone(),

@@ -60,6 +60,9 @@ pub struct StreamMetadata {
     /// The MQTT topic prefix this stream is mounted at, if any. See
     /// [`Broker::resolve_mount`](crate::Broker::resolve_mount).
     pub mount: Option<String>,
+    /// How many brokers hold each shard, as the control plane has it. `None`
+    /// when it did not say. A Raft group forms only from a set this size.
+    pub replication_factor: Option<u32>,
 }
 
 impl Default for StreamMetadata {
@@ -71,6 +74,7 @@ impl Default for StreamMetadata {
             retention: felix_storage::log::Retention::default(),
             incarnation: 0,
             mount: None,
+            replication_factor: None,
         }
     }
 }

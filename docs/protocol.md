@@ -431,22 +431,26 @@ The last frame on the event stream of a subscription that reached the `end` it
 asked for. The broker finishes the stream after it. Every record below `end` was
 delivered, or holds no event (a skip the event batches already report). It is
 sent only in answer to a `subscribe` that carried `end`, so no other client
-sees it. A stream that closes without it did not reach `end`.
+sees it. A stream that closes without it did not reach `end`. A subscription
+that lost records on the way ends with `subscription_lagged` instead, even when
+the broker had read up to `end`.
 
 ### SubscriptionLagged (server -> client)
 ```
 { "type": "subscription_lagged", "subscription_id": <u64>, "resume_from": <u64> }
 ```
 
-The last frame on the event stream of a durable-stream subscription whose queue
-on the broker dropped records. `resume_from` is the first offset that queue
-dropped, or where a resumed subscription's catch-up ended when the drops before
-that were filled from disk. Nothing at or above it was sent. Below it, a frame
-can still have been dropped after the queue, by the connection writer's queue
-for this subscription (`felix_sub_queue_dropped_total`), which ends nothing and
-is not reported. So a client resumes after the last event it received, and
-from `resume_from` only when it received none; felix-client's
-`ClusterSubscription` and `ShardedSubscription` do that. The broker sends it as
+The last frame on the event stream of a durable-stream subscription that had
+records dropped, either by its queue on the broker or by the connection
+writer's queue for it. `resume_from` is the lowest offset either dropped, or
+where a resumed subscription's catch-up ended when the drops before that were
+filled from disk. Nothing at or above it was sent: once the writer drops a
+frame, it drops every later one for that subscription too, and sends this frame
+in place of whatever would have ended the stream, `subscription_ended`
+included. A client can resume
+from `resume_from`, or after the last event it received, which is never past
+it; felix-client's `ClusterSubscription` and `ShardedSubscription` do the
+latter. The broker sends it as
 soon as the events queued before the drop are written, not when the next
 publish arrives, and finishes the stream after it.
 
@@ -1537,6 +1541,21 @@ leader that restarted all answer a re-send the way the leader that took it
 would have, and the producer carries on. A batch whose leader stopped partway
 through it is finished by the re-send rather than written twice.
 
+A stream shard run by a Raft group (`FELIX_SHARD_ENGINE=raft`) keeps the same
+contract for a batch of one record. The producer id and sequence are in the
+record's entry, so every member's log holds them and a leader elected later
+answers a re-send from its own log. The batch is written exactly once.
+
+**A Raft shard refuses an idempotent batch of more than one record.** The
+answer is `invalid_request` with `retry` `fatal` and the message `a stream on
+Raft does not take idempotent batches of more than one record`. Nothing is
+written and the sequence is not used up, so the producer can send the same
+records as batches of one, each under its own sequence. On Raft each record is
+a log entry of its own, and a leader change or a lapsed lease partway through
+a batch could leave some of its records written and not others. A re-send
+could not then be told from a new batch, so the batch is refused whole instead
+(#2524). See `docs/per-shard-raft.md`, "Idempotent publishes".
+
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch
 is oldest once a shard has more than 4096, and either answers
@@ -1629,7 +1648,8 @@ answers it back in `server_features_hi`, and from then on:
   `publish_window`.
 
 Per-shard order does not depend on answer order: the broker commits each
-shard's publishes in the order it read them. A client must match answers by
+shard's publishes in the order it read them from a stream. That holds for
+plain and idempotent publishes mixed on one stream too. A client must match answers by
 `request_id`, as it does without pipelining. A broker that does not answer the
 bit keeps request order for every publish, and a client that did not offer it
 gets the frames it always got.

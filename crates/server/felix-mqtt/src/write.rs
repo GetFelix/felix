@@ -57,6 +57,8 @@ pub enum Refusal {
     /// The shard's owner checked the connection's token again on a forwarded
     /// publish and refused it: revoked, expired, or no `stream.publish` there.
     NotAuthorized,
+    /// The shard's log does not take an MQTT message, on any broker.
+    Unsupported,
 }
 
 /// Why a batch has no acknowledgement.

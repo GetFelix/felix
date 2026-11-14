@@ -22,6 +22,11 @@ pub(super) enum Refusal {
     /// No view, or one that does not decode or is another node's: a new,
     /// wiped or upgraded directory, or one whose node deregistered.
     NoView,
+    /// The directory records no control-plane metadata group, nor that the
+    /// control plane had none: it has not yet been checked against the control
+    /// plane, and only that check can tell a recreated control plane
+    /// (`crate::cluster::controlplane_group`).
+    NoGroup,
     /// The storage id on disk is not the one the view was registered under:
     /// a new or rotated id the control plane never registered, which must
     /// register before it can act.
@@ -50,6 +55,10 @@ impl std::fmt::Display for Refusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoView => f.write_str("there is no control-plane view for this node"),
+            Self::NoGroup => f.write_str(
+                "the data directory records no control-plane metadata group; the control plane \
+                 has to be asked once before it can start without it",
+            ),
             Self::OtherDirectory {
                 on_disk,
                 registered,
@@ -77,7 +86,9 @@ impl std::fmt::Display for Refusal {
 }
 
 /// The view under `root` for `node_id`, if this directory may start from it:
-/// it is present and this node's, the storage id on disk is the one it was
+/// it is present and this node's, the directory records a control-plane
+/// metadata group or that the control plane had none, the storage id on disk
+/// is the one it was
 /// registered under, it was written after any replaced-storage marker, the
 /// run witness in `witness` names it in `boot`, its fleet finalized
 /// `replica_election`, and `reported` has every feature its fleet finalized.
@@ -91,6 +102,13 @@ pub(super) fn qualify(
     boot: Option<felix_storage::run_state::BootId>,
 ) -> Result<View, Refusal> {
     let view = controlplane_view::read(root, node_id).ok_or(Refusal::NoView)?;
+    // Unreadable reads as none: a start that cannot tell waits.
+    let group = crate::cluster::controlplane_group::read(root)
+        .ok()
+        .flatten();
+    if group.is_none() && !crate::cluster::controlplane_group::checked_without_group(root) {
+        return Err(Refusal::NoGroup);
+    }
     // Unreadable reads as no id: a start that cannot tell waits.
     let on_disk = felix_storage::storage_identity::load(root)
         .ok()

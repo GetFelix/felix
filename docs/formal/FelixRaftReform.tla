@@ -25,7 +25,11 @@
 (*                 the plan showed. Then the control plane writes the next *)
 (*                 epoch by compare-and-swap: the base is the highest last *)
 (*                 log id read, padded with a gap up to the offset floor,  *)
-(*                 and the voters are the copies that hold the base.       *)
+(*                 and the voters are the copies that hold the base. When  *)
+(*                 no copy read holds the floor's log id, the base is the  *)
+(*                 longest log a copy can vouch for, and padded: a copy's  *)
+(*                 whole log if its last log id has the floor's epoch and  *)
+(*                 term, else its log up to the commit index it saved.     *)
 (*   StartEpoch -- members start at the new epoch from the base. Messages  *)
 (*                 carry the epoch.                                        *)
 (*                                                                         *)
@@ -39,7 +43,24 @@
 (* placed in the epoch, and Unplace does not remove one from that record:  *)
 (* a removed voter's disk can hold the newest acknowledged records. The    *)
 (* leader reports its commit offset, and the control plane keeps the       *)
-(* highest as the floor (ReportFloor).                                     *)
+(* highest as the floor (ReportFloor). The floor is a log id: the index    *)
+(* and the epoch and term of the entry there. Every copy keeps its commit  *)
+(* index on disk. It can lag the leader's, never pass it, and a restart    *)
+(* keeps it. A copy refuses an append that would cut its log below it.     *)
+(*                                                                         *)
+(* Why the floor needs the term (issue 2402): the copy left after two      *)
+(* disks are lost can hold an entry of an older term that never committed, *)
+(* at an offset a later leader acknowledged with another record. Its log   *)
+(* reaches the floor's index without holding the floor's entry. Such a log *)
+(* is cut to the commit index a copy saved, since everything up to it is   *)
+(* committed. If any copy read holds the floor's entry, the highest copy   *)
+(* does too, and it agrees with every committed entry up to the floor.     *)
+(*                                                                         *)
+(* A saved commit index can lag, so cutting every log there would lose     *)
+(* records a copy still holds. A log that ends below the floor's index in  *)
+(* an entry of the floor's epoch and term is kept whole: one leader wrote  *)
+(* both entries into one log, so by log matching the copy's log is a       *)
+(* prefix of the log the floor's entry committed in.                       *)
 (*                                                                         *)
 (* A restored copy of a shard with one replica starts by itself            *)
 (* (SelfStart): it is the only placed broker, so no other disk can hold a  *)
@@ -54,8 +75,10 @@
 (*                         later epoch and in the log of every later       *)
 (*                         leader, unless it is a documented loss: at the  *)
 (*                         re-form no disk held it any more, not counting  *)
-(*                         the disks of brokers declared dead. Lost disks  *)
-(*                         and dead brokers are the two ways to get there. *)
+(*                         the disks of brokers declared dead, or no copy  *)
+(*                         held the floor's entry and no disk that held    *)
+(*                         the record could vouch for it. Lost disks and   *)
+(*                         dead brokers are the two ways to get there.     *)
 (*   StateMachineSafety -- no index is committed with two different        *)
 (*                         entries, in one epoch or across epochs, except  *)
 (*                         over a documented loss.                         *)
@@ -68,6 +91,9 @@
 (*   ElectedGroupLeftAlone -- no copy is stopped while a broker leads its  *)
 (*                         epoch: apply skips a group that elected after   *)
 (*                         the plan.                                       *)
+(*   LossNeedsLostDisk  -- a re-form loses a record only if no disk held   *)
+(*                         it. Holds with one term: there a copy can vouch *)
+(*                         for everything it holds.                        *)
 (*   BootIsRecorded     -- the first voters a member has for its epoch are *)
 (*                         the ones the control plane recorded for it.     *)
 (*   PlacedIsRecorded   -- every broker a membership of the current epoch  *)
@@ -93,6 +119,11 @@
 (*   PlacedForgotten    -- the list is the brokers placed now: a broker    *)
 (*                         drops off once the change that removes it       *)
 (*                         commits.                                        *)
+(*   FloorIndexOnly     -- the floor is an offset with no term, and a base *)
+(*                         is never cut (issue 2402).                      *)
+(*   CutToCommit        -- a cut base ends at the saved commit index even  *)
+(*                         on a copy whose last log id has the floor's     *)
+(*                         epoch and term.                                 *)
 (*                                                                         *)
 (* Three constants are not knobs:                                          *)
 (*                                                                         *)
@@ -156,7 +187,9 @@ CONSTANTS
     NoCas,
     SoloPlacedTwo,
     StopNotRechecked,
-    PlacedForgotten
+    PlacedForgotten,
+    FloorIndexOnly,
+    CutToCommit
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -164,7 +197,7 @@ VARIABLES
     term,       \* highest term voted in or heard of, per epoch
     role,
     log,
-    commit,     \* a leader's commit index
+    commit,     \* commit index, saved on each copy's disk
     match,      \* a leader's record of what each voter acknowledged
     retired,    \* the stop marker for the member's epoch
     boot,       \* first voters of the member's epoch, as the control plane recorded them
@@ -174,11 +207,11 @@ VARIABLES
     placed,     \* brokers the control plane has placed for the group
     everPlaced, \* brokers the control plane has placed in the epoch, removed ones too
     dead,       \* brokers declared dead
-    cpFloor,    \* highest commit offset the control plane has stored
+    cpFloor,    \* log id of the highest commit the control plane has stored
     plans,      \* dry runs: epoch, and what each copy read held
-    forms,      \* epochs written: epoch, base, voters
+    forms,      \* epochs written: epoch, base, voters, whether the base was cut
     acked,      \* history: entries committed, by epoch, term and index
-    lost,       \* history: acknowledged entries no live disk held at a re-form
+    lost,       \* history: documented losses at a re-form (see AckedSurvive)
     elected,    \* history: epoch, term, broker
     writes, steps, places, rotations, rejoins, restarts
 
@@ -197,6 +230,7 @@ InitConfig == Simple({<<b, 0>> : b \in InitBrokers})
 Symm == Permutations(InitBrokers \ {ChangeOut, ChangeIn})
 
 Min(a, b) == IF a < b THEN a ELSE b
+Max(a, b) == IF a > b THEN a ELSE b
 
 IsPrefix(s, t) == Len(s) <= Len(t) /\ \A j \in 1..Len(s) : s[j] = t[j]
 
@@ -208,6 +242,17 @@ CommonPrefix(s, t) ==
     IN SubSeq(s, 1, n)
 
 Has(l, x) == x.i <= Len(l) /\ l[x.i] = x.ent
+
+\* A log id: an index, and the epoch and term of the entry there.
+LogId(l, i) == [i |-> i, e |-> l[i].e, t |-> l[i].t]
+NoFloor == [i |-> 0, e |-> 0, t |-> 0]
+\* A gap a later re-form padded up to the floor stands for the floor's entry:
+\* everything up to it is that epoch's base, which is committed.
+HoldsFloor(l) ==
+    \/ cpFloor.i = 0
+    \/ /\ cpFloor.i <= Len(l)
+       /\ \/ LogId(l, cpFloor.i) = cpFloor
+          \/ l[cpFloor.i].k = "gap" /\ l[cpFloor.i].e > cpFloor.e
 
 LastKey(l) == IF Len(l) = 0 THEN <<0, 0>> ELSE <<l[Len(l)].e, l[Len(l)].t>>
 KeyLess(k1, k2) == k1[1] < k2[1] \/ (k1[1] = k2[1] /\ k1[2] < k2[2])
@@ -273,7 +318,7 @@ Init ==
     /\ placed = InitBrokers
     /\ everPlaced = InitBrokers
     /\ dead = {}
-    /\ cpFloor = 0
+    /\ cpFloor = NoFloor
     /\ plans = {}
     /\ forms = {}
     /\ acked = {}
@@ -350,6 +395,11 @@ ProposeChange(l) ==
 \* never cuts entries that agree with the sender.
 Adopt(mine, theirs) == IF IsPrefix(theirs, mine) THEN mine ELSE theirs
 
+\* The log refuses a cut below its saved commit index (BelowCommit), so a
+\* copy takes no append that would make that index name another entry.
+KeepsCommit(b, new) ==
+    new = log[b] \/ Len(CommonPrefix(log[b], new)) >= commit[b]
+
 Replicate(l, f) ==
     /\ l # f
     /\ Leads(l)
@@ -360,13 +410,16 @@ Replicate(l, f) ==
     /\ term[f] <= term[l]
     /\ LET new == Adopt(log[f], log[l])
        IN /\ new # log[f] \/ term[f] # term[l] \/ role[f] # "follower"
-             \/ match[l][f] # Len(log[l])
+             \/ match[l][f] # Len(log[l]) \/ commit[f] < commit[l]
+          /\ KeepsCommit(f, new)
           /\ log' = [log EXCEPT ![f] = new]
+          \* The new log agrees with the leader's up to the leader's commit.
+          /\ commit' = [commit EXCEPT ![f] = Max(commit[f], commit[l])]
           /\ match' = [match EXCEPT ![l][f] =
                         IF Mid(f) \in Voters(Config(l)) THEN Len(log[l]) ELSE @]
     /\ term' = [term EXCEPT ![f] = term[l]]
     /\ role' = [role EXCEPT ![f] = "follower"]
-    /\ UNCHANGED <<ep, cid, commit, retired, boot, msgs, acked, elected>>
+    /\ UNCHANGED <<ep, cid, retired, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters>>
 
 Send(l) ==
@@ -387,6 +440,7 @@ Receive(f, m) ==
     /\ EpochNotChecked \/ m.e = ep[f]
     /\ m.t > term[f] \/ (m.t = term[f] /\ role[f] # "leader")
     /\ Adopt(log[f], m.log) # log[f]
+    /\ KeepsCommit(f, Adopt(log[f], m.log))
     /\ log' = [log EXCEPT ![f] = Adopt(@, m.log)]
     /\ term' = [term EXCEPT ![f] = m.t]
     /\ role' = [role EXCEPT ![f] = "follower"]
@@ -404,7 +458,7 @@ Commit(l, i) ==
     /\ acked' = acked \cup
             {[e |-> ep[l], t |-> term[l], i |-> j, ent |-> log[l][j]] :
                 j \in (commit[l] + 1)..i}
-    /\ cpFloor' = IF Floor = "exact" /\ i > cpFloor THEN i ELSE cpFloor
+    /\ cpFloor' = IF Floor = "exact" /\ i > cpFloor.i THEN LogId(log[l], i) ELSE cpFloor
     /\ UNCHANGED <<ep, cid, term, role, log, match, retired, boot, msgs, elected>>
     /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, dead, plans, forms, lost, counters>>
 
@@ -429,13 +483,15 @@ Restart(b) ==
     /\ UNCHANGED <<cpVars, writes, steps, places, rotations, rejoins>>
 
 \* boot stays: it is not on the disk. The command reads it from the control
-\* plane's record of the epoch (BootIsRecorded).
+\* plane's record of the epoch (BootIsRecorded). The saved commit index is
+\* never past the log kept with it. This is the highest it can be; a lower
+\* one only cuts a base shorter.
 NewCopy(b, kept) ==
     /\ cid' = [cid EXCEPT ![b] = @ + 1]
     /\ log' = [log EXCEPT ![b] = kept]
     /\ term' = [term EXCEPT ![b] = 0]
     /\ role' = [role EXCEPT ![b] = "follower"]
-    /\ commit' = [commit EXCEPT ![b] = 0]
+    /\ commit' = [commit EXCEPT ![b] = Min(@, Len(kept))]
     /\ retired' = [retired EXCEPT ![b] = FALSE]
     /\ UNCHANGED <<ep, match, boot, msgs, acked, elected>>
 
@@ -502,13 +558,13 @@ CpObserve(b) ==
     /\ UNCHANGED brokerVars
     /\ UNCHANGED <<cpEpoch, placed, everPlaced, dead, cpFloor, plans, forms, lost, counters>>
 
-\* The leader's report carries its commit offset.
+\* The leader's report carries the log id of its commit.
 ReportFloor(l) ==
     /\ Floor = "trailing"
     /\ Leads(l)
     /\ ep[l] = cpEpoch
-    /\ commit[l] > cpFloor
-    /\ cpFloor' = commit[l]
+    /\ commit[l] > cpFloor.i
+    /\ cpFloor' = LogId(log[l], commit[l])
     /\ UNCHANGED brokerVars
     /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, dead, plans, forms, lost, counters>>
 
@@ -523,6 +579,15 @@ DeclareDead(b) ==
 
 --------------------------------------------------------------------------------
 \* The command.
+
+\* How much of its log a copy can vouch for as committed when no copy read
+\* holds the floor's entry. A log that ends at or below the floor's index in
+\* an entry of the floor's epoch and term is a prefix of the log that entry
+\* committed in (log matching). Any other log is known only up to the commit
+\* index saved with it.
+Vouches(b) ==
+    IF LastKey(log[b]) = <<cpFloor.e, cpFloor.t>> /\ Len(log[b]) <= cpFloor.i
+    THEN Len(log[b]) ELSE commit[b]
 
 \* The brokers placed in the epoch. Leaving out the removed ones loses what a
 \* removed voter's disk holds when the copies left are empty (PlacedForgotten).
@@ -580,12 +645,14 @@ Gap(e) == [e |-> e, t |-> 0, k |-> "gap", v |-> 0]
 
 \* Offsets up to the floor are not given out again.
 Pad(base, e) ==
-    IF Floor = "none" \/ cpFloor <= Len(base) THEN base
-    ELSE base \o [j \in 1..(cpFloor - Len(base)) |-> Gap(e)]
+    IF Floor = "none" \/ cpFloor.i <= Len(base) THEN base
+    ELSE base \o [j \in 1..(cpFloor.i - Len(base)) |-> Gap(e)]
 
-\* The compare-and-swap is the caller's guard on e.
-WriteEpoch(e, base, voters) ==
-    LET f == [e |-> e + 1, base |-> Pad(base, e + 1), voters |-> voters]
+\* The compare-and-swap is the caller's guard on e. A record is a documented
+\* loss if no disk holds it, or the base was cut and no disk that holds it
+\* can vouch for it.
+WriteEpoch(e, base, voters, cut) ==
+    LET f == [e |-> e + 1, base |-> Pad(base, e + 1), voters |-> voters, cut |-> cut]
     IN /\ f \notin forms
        /\ forms' = forms \cup {f}
        /\ cpEpoch' = e + 1
@@ -594,13 +661,27 @@ WriteEpoch(e, base, voters) ==
        /\ acked' = acked \cup
             {[e |-> e + 1, t |-> 0, i |-> j, ent |-> base[j]] : j \in 1..Len(base)}
        /\ lost' = lost \cup
-            {x \in acked : x.e <= e /\ \A b \in Brokers \ dead : ~Has(log[b], x)}
+            {x \in acked : /\ x.e <= e
+                           /\ \A b \in Brokers \ dead :
+                                \/ ~Has(log[b], x)
+                                \/ cut /\ x.i > Vouches(b)}
+
+\* No copy read holds the floor's entry. Then even the highest log can hold
+\* an uncommitted entry at an offset acknowledged with another record, and
+\* only what a copy can vouch for is kept.
+Cut(S) ==
+    /\ ~FloorIndexOnly
+    /\ Floor # "none"
+    /\ \A b \in S : ~HoldsFloor(log[b])
 
 Reform(p, pick) ==
     LET e == p.e
         S == DOMAIN p.facts
         F == IF PlanNotRechecked THEN p.facts ELSE [b \in S |-> Fact(b)]
-        base == SubSeq(log[pick], 1, F[pick].len)
+        cut == Cut(S)
+        Keep(b) == IF ~cut THEN F[b].len
+                   ELSE Min(IF CutToCommit THEN commit[b] ELSE Vouches(b), F[b].len)
+        base == SubSeq(log[pick], 1, Keep(pick))
         voters == {<<b, F[b].cid>> : b \in {x \in S : IsPrefix(base, log[x])}}
     IN /\ e < MaxEpoch
        /\ IF NoCas THEN e <= cpEpoch ELSE e = cpEpoch
@@ -610,8 +691,10 @@ Reform(p, pick) ==
             /\ \A b \in S : ep[b] = e /\ Fact(b) = p.facts[b]
        /\ ReportNotPromise \/ \A b \in S : retired[b] /\ ep[b] = e
        /\ Len(log[pick]) >= F[pick].len
-       /\ BaseNotHighest \/ \A b \in S : Higher(F[pick], F[b])
-       /\ WriteEpoch(e, base, voters)
+       /\ BaseNotHighest \/
+            IF cut THEN \A b \in S : Keep(b) <= Keep(pick)
+            ELSE \A b \in S : Higher(F[pick], F[b])
+       /\ WriteEpoch(e, base, voters, cut)
        \* Every listed copy is a voter or a learner of the new epoch.
        /\ placed' = placed \cup S
        /\ everPlaced' = placed \cup S
@@ -620,7 +703,8 @@ Reform(p, pick) ==
 
 \* A shard with one replica whose copy rotated and kept records: it is a
 \* re-form of one, without the command. No other broker was placed in the
-\* epoch, so no other disk can hold a newer record.
+\* epoch, so no other disk can hold a newer record, and the copy's log is
+\* a prefix of the one log the shard had. It is never cut.
 SelfStart(b) ==
     /\ SoloPlacedTwo \/ Placed = {b}
     /\ b \notin dead
@@ -629,7 +713,7 @@ SelfStart(b) ==
     /\ \E m \in Voters(Config(b)) :
         Voters(Config(b)) = {m} /\ m[1] = b /\ m[2] < cid[b]
     /\ Len(log[b]) > 0
-    /\ WriteEpoch(cpEpoch, log[b], {Mid(b)})
+    /\ WriteEpoch(cpEpoch, log[b], {Mid(b)}, FALSE)
     /\ everPlaced' = placed
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
     /\ UNCHANGED <<placed, dead, cpFloor, plans, elected, counters>>
@@ -682,7 +766,7 @@ TypeOK ==
     /\ placed \subseteq Brokers
     /\ everPlaced \subseteq Brokers
     /\ dead \subseteq Brokers
-    /\ cpFloor \in Nat
+    /\ cpFloor \in [i : Nat, e : 0..MaxEpoch, t : 0..MaxTerm]
     /\ \A p \in plans : p.e \in 0..MaxEpoch /\ DOMAIN p.facts \subseteq Brokers
     /\ \A b \in Brokers : commit[b] <= Len(log[b])
     /\ lost \subseteq acked
@@ -690,9 +774,10 @@ TypeOK ==
 OneLeaderPerTerm ==
     \A x, y \in elected : x.e = y.e /\ x.t = y.t => x.b = y.b
 
-\* An acknowledged record outlives its epoch. The only loss allowed is the
-\* one the design documents: no disk held it any more, not counting the
-\* disks of brokers declared dead.
+\* An acknowledged record outlives its epoch. The only losses allowed are
+\* the ones the design documents: no live disk held it any more, or the
+\* base was cut and every live disk that held it had it above what that
+\* disk vouches for.
 AckedSurvive ==
     \A x \in acked \ lost :
         /\ \A f \in forms : f.e > x.e => Has(f.base, x)
@@ -715,6 +800,10 @@ NothingLost == lost = {}
 ElectedGroupLeftAlone ==
     [][\A b \in Brokers : (~retired[b] /\ retired'[b]) =>
             \A l \in Brokers : ~(Leads(l) /\ ep[l] = ep[b])]_vars
+
+\* No record is lost while a disk that is not declared dead holds it.
+LossNeedsLostDisk ==
+    [][\A x \in lost' \ lost : \A b \in Brokers \ dead : ~Has(log[b], x)]_vars
 
 BootIsRecorded ==
     \A b \in Brokers :
@@ -756,6 +845,9 @@ NeverSelfStarts ==
 NeverReformsWithoutDead ==
     ~(/\ dead # {}
       /\ \E x \in acked : x.e > 0 /\ x.t > 0)
+
+\* No copy read holds the floor's entry, and the base is cut.
+NeverCuts == \A f \in forms : ~f.cut
 
 \* A base ends below the floor and is padded.
 NeverPads == \A f \in forms : \A j \in 1..Len(f.base) : f.base[j].k # "gap"

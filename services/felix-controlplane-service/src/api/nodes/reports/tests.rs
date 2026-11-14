@@ -29,6 +29,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     }
 }
 
@@ -160,6 +161,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("fenced move");
@@ -304,6 +306,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     };
     for _ in 0..=generation_bumps {
         assignment = store
@@ -760,6 +763,7 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -846,6 +850,7 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -912,6 +917,7 @@ async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() 
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");
@@ -974,6 +980,7 @@ async fn named_y_beside_z() -> (
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            placed: None,
         })
         .await
         .expect("assign");

@@ -132,7 +132,7 @@ serial_test = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 # The tests use the demo signing key; see the `demo` feature.
-felix-broker-service = { path = ".", version = "0.8.0-preview.0", features = ["demo"] }
+felix-broker-service = { path = ".", version = "0.8.0-preview.0", features = ["demo", "raft"] }
 felix-broker = { path = "../../crates/server/felix-broker", version = "0.8.0-preview.0", features = ["fault-injection"] }
 # Some unit tests slow the fsync through `felix_storage::fault`, which a
 # release build (`cargo bench`) only has with this feature.
@@ -155,6 +155,10 @@ demo = []
 # transport and control-plane link, for the deterministic simulator. Off in
 # the release binary.
 sim = []
+# The per-shard Raft engine (`FELIX_SHARD_ENGINE=raft`). In no release yet;
+# see docs/per-shard-raft.md. The tests turn it on through the
+# dev-dependency above.
+raft = ["felix-replication/raft"]
 telemetry = ["felix-client/telemetry", "felix-broker/telemetry"]
 perf_debug = ["felix-broker/perf_debug"]
 

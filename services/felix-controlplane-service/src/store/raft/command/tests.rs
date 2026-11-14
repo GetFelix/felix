@@ -259,6 +259,17 @@ fn restamping_preserves_the_request_id() {
     assert_eq!(request_id_of(&restamped).as_deref(), Some("rid-9"));
 }
 
+/// The identity record needs every member to know the command.
+#[test]
+fn recording_the_cluster_identity_needs_level_32() {
+    let record = MetaCommand::RecordClusterIdentity {
+        group_id: "g".to_string(),
+        shard_engine: "hybrid".to_string(),
+    };
+    assert_eq!(record.version(), 32);
+    assert_eq!(METADATA_VERSION, 32);
+}
+
 /// **`joint_fence` is finalized only where a refusal report is kept.** A
 /// leader whose fence cannot learn the set it leaves is renamed on its
 /// refusal, which members before level 25 drop, so a group below it would
@@ -269,4 +280,21 @@ fn joint_fence_waits_for_the_level_that_keeps_refusals() {
         feature: felix_common::fleet::JOINT_FENCE.name().to_string(),
     };
     assert_eq!(finalize.version(), 25);
+}
+
+/// An escaped spelling of the import op is still an import, so it cannot
+/// slip past the leader's level check.
+#[test]
+fn an_escaped_import_op_is_still_settled() {
+    let escaped = br#"{"v":1,"op":"import\u005fstate","overwrite":true}"#;
+    assert!(depends_on_level(escaped));
+    assert!(settle_for_level(escaped, super::super::PLACED_LEVEL - 1).is_err());
+    let settled = settle_for_level(escaped, super::super::PLACED_LEVEL)
+        .expect("settles at the level")
+        .expect("rewritten");
+    let value: serde_json::Value = serde_json::from_slice(&settled).expect("json");
+    assert_eq!(value["mark_unplaced"], true);
+    assert!(!depends_on_level(
+        br#"{"v":1,"op":"record_node_heartbeat"}"#
+    ));
 }

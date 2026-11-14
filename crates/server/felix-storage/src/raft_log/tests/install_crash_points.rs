@@ -316,7 +316,7 @@ async fn a_cut_at_each_step_of_a_snapshot_install_opens() {
 
             let next = normal(9, 76, "after the snapshot");
             append_flushed(&mut raft, std::slice::from_ref(&next)).await;
-            raft.disk_log().shutdown().await.expect("shutdown");
+            raft.disk_log().close().await.expect("close");
             drop(raft);
             let (raft, state_machine, found) = reopen(&sim, written, &at).await;
             assert_eq!(found, [next], "{at}");

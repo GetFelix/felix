@@ -21,7 +21,7 @@ Counted at the QUIC publish handlers and the broker's publish workers. A publish
 
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
-| `felix_publish_requests_total` | counter | `result` | Publish requests by result. A batch is one request. The base rate and error ratio for the publish path. |
+| `felix_publish_requests_total` | counter | `result` | Publish requests by result. A batch is one request. The base rate and error ratio for the publish path. `unacked_failed` counts an unacknowledged publish that was `accepted` into the queue and whose write was then not confirmed, for example because the shard moved while it waited. Such a request is counted under `accepted` as well. |
 | `felix_publish_bytes_total` | counter | - | Payload bytes of `ok` and `accepted` publish requests. |
 | `felix_publish_latency_ms` | histogram | `mode` | Time from receiving a publish to answering it, in milliseconds. Telemetry build only. |
 | `felix_broker_publish_claim_jobs` | histogram | - | Publishes folded into one durable claim. Near 1 means the lanes are not backing up and nothing is being batched. |
@@ -66,7 +66,7 @@ Per-subscriber queues, the writer lanes behind them and the replay ring. A risin
 | `felix_sub_queue_enqueued_total` | counter | - | Deliveries placed on subscriber queues. |
 | `felix_sub_queue_dequeued_total` | counter | - | Deliveries taken off subscriber queues by the writer. |
 | `felix_sub_queue_dropped_total` | counter | - | Records lost to slow subscribers. A subscriber that is not keeping up loses records instead of slowing the publisher; delivered events carry offsets so the gap is visible. |
-| `felix_subscribe_dropped_total` | counter | - | Records dropped from subscriber queues; moves with `felix_sub_queue_dropped_total`. |
+| `felix_subscribe_dropped_total` | counter | - | Records dropped from subscriber queues, including frames the connection writer sheds over a subscriber's bound; moves with `felix_sub_queue_dropped_total`. Also counted in the subscriber's own dropped total. |
 | `felix_sub_queue_byte_dropped_total` | counter | `bound` | Of the dropped records, those the byte bound turned away, by which `bound` was hit. |
 | `felix_sub_queue_drop_old_emulated_total` | counter | - | Drops under a `DropOld` policy, which the broker implements as `DropNew`. |
 | `felix_sub_queue_len` | gauge | - | Deliveries waiting across subscriber queues. |
@@ -130,6 +130,7 @@ Per-tenant usage. The `tenant` label is capped; once the cap is reached further 
 | `felix_broker_credential_refreshes_total` | counter | `outcome` | Node-credential refreshes, `ok` or `unavailable`. |
 | `felix_broker_credential_rotations_total` | counter | `outcome` | Node credentials adopted from a rotated token file, `ok` or `rejected`. |
 | `felix_broker_principal_revocations_total` | counter | - | Principal revocations this broker applied. |
+| `felix_broker_controlplane_group_mismatch_total` | counter | - | Catalog snapshots refused because they came from another control-plane metadata group than the one this broker's data directory was written under. The broker stops; see [troubleshooting](/reference/troubleshooting/#the-data-directory-belongs-to-another-control-plane). |
 | `felix_revocation_feed_last_success_seconds` | gauge | - | Unix time of the last poll that reached the control plane's revocation feed. A stale value means revocations are not arriving. |
 | `felix_revocation_feed_poll_errors_total` | counter | - | Revocation feed polls that failed. |
 | `felix_jwks_renew_errors_total` | counter | - | Background renewals of a tenant's JWKS that failed. The broker keeps verifying with the keys it has. |
@@ -153,6 +154,7 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_heartbeat_failures_total` | counter | `kind` | Heartbeats that did not land: `rejected` or `unavailable`. |
 | `felix_broker_heartbeat_age_seconds` | gauge | - | Seconds since the last accepted heartbeat. Alert when it nears the control plane's expiry timeout. |
 | `felix_restored_directory_total` | counter | - | Data directories found older than the node's last registration once the control plane answered, after a start from the control-plane view (`FELIX_START_WITHOUT_CONTROLPLANE`). The broker stopped for each. Any increase is a restore that kept its `storage-id`. |
+| `felix_broker_open_file_limit` | gauge | - | The open-file limit the broker runs with, after it raised its soft limit to the hard limit at start. Each held shard keeps up to six files open, and the sealed-segment cache (`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS`, 1,024 by default) up to that many more. See [Open files](/deployment/production/#open-files). |
 | `felix_broker_lease_held` | gauge | - | `1` while this broker may serve the shards it leads. |
 | `felix_broker_lease_expiries_total` | counter | - | Times the lease lapsed. Each is a window in which this broker's shards were unavailable here and not yet reassigned. |
 | `felix_broker_lease_refusals_total` | counter | `boundary` | Requests refused because the lease was invalid. `boundary` is `admission`, `commit` or `ack` for writes and `read` for reads. A non-zero `commit` count means requests were outliving the lease. |
@@ -195,6 +197,9 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_peer_requests_shed_total` | counter | - | Requests refused before sending because the peer was at its in-flight limit. Nothing was attempted. |
 | `felix_broker_peer_request_seconds` | histogram | `outcome` | Round-trip latency of a request to a peer. |
 | `felix_broker_peer_served_total` | counter | `outcome` | Requests this broker served for a peer. |
+| `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
+| `felix_broker_raft_shards_off_placement` | gauge | - | Raft shards open on this broker whose group's voters are not the brokers placement names for the shard. A group keeps the members it formed with, so anything above zero means placement moved, drained or replaced a broker of a Raft shard, which is not supported yet. |
+| `felix_broker_raft_shards_led` | gauge | - | Raft shards whose current term this broker leads and serves writes for. Refreshed every shard feed pass, so it can trail a leader change by a couple of seconds. |
 | `felix_broker_peer_inbound_rejected_total` | counter | `reason` | Inbound peer connections refused: `alpn` or `handshake`. |
 
 ## Replication
@@ -209,6 +214,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
 | `felix_broker_raft_ticker_restarts_total` | counter | - | Times the per-shard Raft ticker ended on a panic and was started again. Any increase is a bug: no Raft group on the broker heartbeats or notices a timeout while the ticker is down. Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_raft_dropped_ticks_total` | counter | - | Timer checks the per-shard Raft ticker dropped because a group had not taken the previous one by the next interval, across every group on the broker. A dropped check loses nothing, since the next one does the same work; a rising count means some group is too busy to look at its timers. Only in builds with the `raft` feature, which no release enables. |
+| `felix_broker_raft_tail_cache_bytes` | gauge | - | Record bytes the Raft logs on the broker hold in memory so replication reads the newest entries without the segments, across the shard groups (the metadata group's log is not counted). Bounded, softly, by `RuntimeConfig::tail_cache_bytes` (256 MiB by default). With several runtimes in one process, the last to report wins. A read the cache cannot serve goes to the segments, so a value at the cap costs reads, not correctness. Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_replication_rebuilds_total` | counter | `outcome` | Follower rebuilds by outcome. |
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
 | `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
@@ -250,6 +256,8 @@ The durable log. Every series is process-wide, not per stream. Compare `felix_st
 | `felix_storage_segment_roll_discarded_total` | counter | - | Prepared segments discarded because the tail moved on before the swap. |
 | `felix_storage_segment_reserve_failed_total` | counter | - | Extensions of an active segment's block reservation that failed. Appends carry on and allocate as they write. |
 | `felix_storage_segment_count` | gauge | - | Segments currently on disk for a shard. |
+| `felix_storage_raft_kept_copies` | gauge | - | Shard directories a Raft rotation moved aside that are still on disk, summed over data roots. Measured in the background after a rotation, a reclaim or a stream delete. |
+| `felix_storage_raft_kept_copy_bytes` | gauge | - | Bytes those directories hold. |
 | `felix_storage_open_sealed_segments` | gauge | - | Sealed segments whose file and index are open, across every log. |
 | `felix_storage_retention_segments_deleted_total` | counter | - | Sealed segments deleted by retention. |
 | `felix_storage_retention_bytes_reclaimed_total` | counter | - | Bytes reclaimed by retention. |
@@ -370,12 +378,12 @@ Present when the control plane runs its metadata Raft group.
 | `felix_meta_raft_last_log_index` | gauge | - | Index of the last log entry. |
 | `felix_meta_raft_last_applied_index` | gauge | - | Index of the last entry applied. A gap to the last log index is apply lag. |
 | `felix_meta_raft_snapshot_index` | gauge | - | Index of the last snapshot. |
-| `felix_meta_raft_snapshot_bytes` | gauge | - | Size of the last snapshot this member built, in bytes. Only a build on the segment store sets it. A follower refuses a snapshot over `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, so alert well before this reaches it; the member logs an error once it passes half. |
+| `felix_meta_raft_snapshot_bytes` | gauge | - | Size of the last snapshot this member built, in bytes. A follower refuses a snapshot over `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, so alert well before this reaches it; the member logs an error once it passes half. |
 | `felix_meta_raft_member_below_floor` | gauge | `member` | `1` while replication to a Raft `member` is held back because its log is below the group's join floor, as after a wiped volume. Clears when the member catches up. |
 | `felix_meta_raft_forwarded_proposals_total` | counter | - | Proposals a follower forwarded to the leader. Informational; forwarding is correct, one hop more. |
 | `felix_meta_raft_deduplicated_proposals_total` | counter | - | Proposals answered from the applied record because a retry carried an id already applied. |
 | `felix_meta_raft_write_timeouts_total` | counter | - | Proposals that ran out their whole budget, which means no leader or no quorum. Alert on this. |
-| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`. |
+| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`: `cluster_id`, `token`, or `target` for a request meant for another member. |
 | `felix_meta_raft_unsupported_commands_total` | counter | - | Commands this member's build does not understand. In a mixed-version group the member's state now differs from a newer leader's. |
 
 ## Clients

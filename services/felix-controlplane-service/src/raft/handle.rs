@@ -10,7 +10,7 @@ use openraft::async_runtime::WatchReceiver;
 
 use super::types::Raft;
 use super::{
-    AppStateMachine, NodeId, PeerSecurity, RaftSettings, RaftStatus, http, network, store,
+    AppStateMachine, NodeId, PeerSecurity, RaftMember, RaftSettings, RaftStatus, network, store,
 };
 
 /// One running member of the metadata Raft group.
@@ -53,18 +53,15 @@ pub struct RaftHandle {
     /// Set by [`RaftHandle::shutdown`]. openraft's metrics keep the last
     /// leader after a stop, so leadership checks read this first.
     pub(super) stopped: Arc<AtomicBool>,
-    /// The snapshot transfer this member is receiving, chunk by chunk
-    /// ([`super::chunks`]).
-    #[cfg(not(felix_segment_store))]
-    pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
     /// The one snapshot install this member runs at a time, ranked by the
     /// sender's vote.
-    #[cfg(felix_segment_store)]
     pub(super) install_slot:
         Arc<felix_storage::raft_log::transfer::InstallSlot<super::types::Vote>>,
     /// The largest snapshot this member accepts.
-    #[cfg(felix_segment_store)]
     pub(super) snapshot_max_bytes: u64,
+    /// Holds reads and readiness after a restart until the node has applied
+    /// its whole log tail ([`RaftHandle::caught_up`]).
+    pub(super) replay_gate: Arc<super::health::ReplayGate>,
 }
 
 /// How long a failed start waits for the node to stop. Short under test so
@@ -116,34 +113,25 @@ impl RaftHandle {
     /// ceremony — that is the point of the data dir — unless it was still
     /// catching up after starting empty, in which case it keeps withholding
     /// its vote.
+    ///
+    /// [`RaftMember::open`] and [`RaftMember::start_node`] are the two
+    /// halves, for a caller that serves the peer listener in between.
     pub async fn start(settings: RaftSettings, app: Arc<dyn AppStateMachine>) -> Result<Self> {
-        // The store is opened, and on the segment store marked as started,
-        // before the node below exists: a node campaigns on its own timer.
-        let opened = store::open_member(&settings, Arc::clone(&app)).await?;
-        let member = opened.member.clone();
-        match Self::start_on(settings, app, opened).await {
-            Ok(handle) => Ok(handle),
-            Err(err) => {
-                // Closed here, or the store stays locked and a retry in this
-                // process is refused as busy.
-                if let Err(close) = member.close().await {
-                    tracing::warn!(error = %close, "close the store after a failed start");
-                }
-                Err(err)
-            }
-        }
+        RaftMember::open(settings, app).await?.start_node().await
     }
 
-    async fn start_on(
+    pub(super) async fn start_on(
         settings: RaftSettings,
         app: Arc<dyn AppStateMachine>,
         opened: store::Opened,
+        versions: Arc<std::sync::Mutex<super::version::Versions>>,
     ) -> Result<Self> {
         let store::Opened {
             log_store,
             state_machine,
             may_vote,
             committed_floor,
+            log_tail,
             member,
         } = opened;
         let config = openraft::Config {
@@ -173,7 +161,6 @@ impl RaftHandle {
         };
         let config = Arc::new(config.validate().context("raft config")?);
 
-        let versions = Arc::default();
         let hold = Arc::new(super::hold::Hold::new(
             Arc::clone(&app),
             Arc::clone(&versions),
@@ -193,13 +180,10 @@ impl RaftHandle {
         .await
         .context("start raft node")?;
 
-        // A restart is a rejoin, and a rejoin is not done until the state
-        // machine holds everything this node had already acknowledged as
-        // committed. Without this wait, a restarted member reports ready —
-        // it knows a leader within a heartbeat — while its store is still
-        // missing entries it committed in its previous life, and requests
-        // routed to it read a world that never existed. The chaos suite
-        // caught exactly that.
+        // Replays locally up to the committed index this node last saved.
+        // That index is saved at most once a second, so the node may have
+        // applied more before it stopped; the replay gate holds reads and
+        // readiness until a leader has committed the rest of the log tail.
         let replayed = Self::replayed(&raft, committed_floor).await;
         #[cfg(test)]
         let replayed = match settings.faults.fail_after_node_start {
@@ -252,19 +236,16 @@ impl RaftHandle {
             versions,
             hold,
             stopped: Arc::default(),
-            #[cfg(not(felix_segment_store))]
-            receiving: Arc::default(),
-            #[cfg(felix_segment_store)]
             install_slot: Arc::default(),
-            #[cfg(felix_segment_store)]
             snapshot_max_bytes: settings.snapshot_max_bytes,
+            replay_gate: Arc::new(super::health::ReplayGate::new(committed_floor, log_tail)),
         };
         tokio::spawn(handle.clone().watch_versions());
         Ok(handle)
     }
 
-    /// Wait until the state machine is back to `committed_floor`, what this
-    /// node had committed before it stopped.
+    /// Wait until the state machine is back to `committed_floor`, the
+    /// committed index this node last saved.
     async fn replayed(raft: &Raft, committed_floor: Option<u64>) -> Result<()> {
         if let Some(floor) = committed_floor {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
@@ -317,11 +298,24 @@ impl RaftHandle {
         Ok(())
     }
 
+    /// This node as the member its peers reach.
+    pub(super) fn peer(&self) -> RaftMember {
+        RaftMember {
+            id: self.id,
+            security: Arc::clone(&self.security),
+            app: Arc::clone(&self.app),
+            state: self.member.clone(),
+            versions: Arc::clone(&self.versions),
+            opened: Arc::default(),
+            node: Arc::new(self.clone().into()),
+        }
+    }
+
     /// Router serving this node's Raft RPCs, peer authentication included.
     /// Serve it on the peer listener only: [`RaftHandle::serve_peers`] does,
     /// with mTLS when configured.
     pub fn rpc_router(&self) -> axum::Router {
-        http::router(self.clone())
+        self.peer().rpc_router()
     }
 
     /// Serve the Raft RPCs on `listener` until `shutdown` fires, over mTLS
@@ -331,19 +325,7 @@ impl RaftHandle {
         listener: tokio::net::TcpListener,
         shutdown: tokio_util::sync::CancellationToken,
     ) -> Result<()> {
-        let router = self.rpc_router();
-        match self.security.server_tls()? {
-            Some(tls) => {
-                crate::server::tls::serve_tls("raft", listener, router, tls, shutdown).await;
-            }
-            None => {
-                axum::serve(listener, router.into_make_service())
-                    .with_graceful_shutdown(async move { shutdown.cancelled().await })
-                    .await
-                    .context("serve raft peer listener")?;
-            }
-        }
-        Ok(())
+        self.peer().serve_peers(listener, shutdown).await
     }
 
     /// The base URL of a member's peer listener: the configured address when

@@ -131,6 +131,23 @@ pub async fn publish_direct(
         generation,
         fenced,
     } = target;
+    if let Some(shard) = &shard
+        && let Some(proposed) = engine.publish_on_raft(
+            broker,
+            &handle,
+            shard,
+            generation,
+            payloads.to_vec(),
+            quorum_timeout,
+        )
+    {
+        let proposed =
+            proposed.map_err(|refused| DirectPublishError::NotWritten(refused.into_anyhow()))?;
+        return proposed
+            .complete()
+            .await
+            .map_err(|err| DirectPublishError::OutcomeUnknown(err.into()));
+    }
     let mut held = fenced;
     let fences = fence::enter_or_keep(&mut held, ingress, shard.as_ref(), generation)
         .map_err(|refused| DirectPublishError::NotWritten(refused.into()))?;

@@ -49,10 +49,9 @@ is the campaign on real processes
 Three terms have one meaning in every row:
 
 - **Served**: 60 s after the heal the shard has exactly one leader, and a
-  `Quorum` write to it is acknowledged. A group that must re-form gets 90 s,
-  counted from when the last of its voters' brokers is reachable again: the
-  re-form time, then the same 60 s. The design gives the re-form time no
-  value yet (#2296). The gate assumes 30 s.
+  `Quorum` write to it is acknowledged. A group that must re-form is
+  judged 60 s after the operator's re-form command finishes. Nothing starts
+  a re-form by itself, so there is no re-form time to bound.
 - **Fails over**: a `Quorum` write to the shard is acknowledged by a new
   leader within 20 s of the kill. This applies only while a majority of the
   shard's voters stays reachable. Without one the shard cannot elect, and
@@ -89,9 +88,9 @@ liveness check of the history campaign is today
 | 18 | The control plane's log across the upgrade | Upgrade test (gap 11) | The same runs as row 16 | A hybrid command committed after the latch applies as a no-op on both builds. A candidate member that replaces one before every member has purged stops, writes nothing and starts again on the bridge build. A snapshot from before the latch is refused. Every member's state is equal at the same applied index, across mixed builds |
 | 19 | Races with the switch and the latch | Sim aimed schedules (gap 12) | A pinned seed each, and 2000 seeds with the schedules on | `placement abandon` before the compare-and-swap makes the switch start over; after it, abandon is refused. A shard created between the operator's check and the latch entry leaves the latch unset and is named, or is a Raft shard |
 | 20 | Two records at one offset on a `Leader` stream | History duplicate-offset nemesis (gap 13) | 20 minutes, three seeds | No QUIC subscriber, Kafka consumer or cache watcher holds two records at one offset |
-| 21 | The redb conversion | The tool's tests (#2234), and inside the upgrade test (gap 11) | A crash at every step of `convert` and of `restore`. One member at a time under traffic | Every acknowledged metadata write is on every member afterwards. A second `convert` after a crashed `restore` refuses. An older binary on a converted directory refuses and changes nothing |
+| 21 | A 0.7 control plane's data directory | `tests/raft_runtime.rs` starts this build on a data directory v0.7.1 wrote. No conversion tool in 0.8 (#2234 is not planned) | Every CI coverage run | This build refuses to start, names `raft.redb` and changes nothing in the directory |
 | 22 | Re-form races | Sim aimed schedules (gap 3) | A pinned seed each, and 2000 seeds with the schedules on | A voter of a newer membership that the control plane does not know is waited for. A voter missing from a forced re-form that comes back under its old id stops, and nothing it sends is accepted. A retired copy whose group elected anyway rotates its copy id and rejoins as a learner |
-| 23 | Power loss under relaxed fsync, one broker and a majority | Sim modes `relaxed-power-loss` and `majority-cut-relaxed` (gap 10) | 2000 seeds, at least 200 with a majority cut | Every copy that lost unsynced bytes rotates its id. A cut majority re-forms and is served. Only records no surviving disk holds are lost |
+| 23 | Power loss under relaxed fsync, one broker and a majority | Sim modes `relaxed-power-loss` and `majority-cut-relaxed` (gap 10) | 2000 seeds, at least 200 with a majority cut | Every copy that lost unsynced bytes rotates its id. After the operator re-form command, a cut majority is served. Only records no surviving disk holds are lost |
 
 Rows 1, 2, 10 and 12 run today on the hybrid. The sim modes of rows 3, 4, 5
 and 23 run too, but they check only part of each row. The modes have no
@@ -349,7 +348,7 @@ it.
 
 Already filed: the metadata group in the history campaign (#2226) and in the
 simulator (#2232), the metadata benchmark (#2224), the conversion tool
-(#2234), the sleep mode (#2239, deferred to v0.9.0), the switch in the simulator (#2242), the
+(#2234, not planned for 0.8), the sleep mode (#2239, deferred to v0.9.0), the switch in the simulator (#2242), the
 upgrade test (#2257) and the groups-per-broker run (#2243).
 
 ## How this maps to the gate workflows

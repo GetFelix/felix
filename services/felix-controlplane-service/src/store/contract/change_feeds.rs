@@ -252,5 +252,6 @@ fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     }
 }

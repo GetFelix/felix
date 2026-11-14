@@ -162,6 +162,11 @@ impl From<WriteError> for Failure {
                         .to_string(),
                 ),
             },
+            // Not retriable: every broker answers the same.
+            WriteError::Unsupported => Self {
+                error: ResponseError::InvalidRequest,
+                message: Some("a stream on Raft does not take Kafka produces".to_string()),
+            },
         }
     }
 }

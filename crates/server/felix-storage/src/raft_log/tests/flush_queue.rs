@@ -107,13 +107,14 @@ async fn a_stopped_flush_task_fails_what_it_held() {
     let first = write(0).await;
     raft.shared
         .flushes
-        .push(&log, first, Box::new(|_| panic!("a callback")));
+        .push(&log, first, Box::new(|_| panic!("a callback")), None);
     let (answered, answer) = tokio::sync::oneshot::channel();
     let second = write(1).await;
     raft.shared.flushes.push(
         &log,
         second,
         Box::new(move |flushed| drop(answered.send(flushed))),
+        None,
     );
     // Queued behind the first two, in a later batch.
     for _ in 0..50 {
@@ -125,6 +126,7 @@ async fn a_stopped_flush_task_fails_what_it_held() {
         &log,
         third,
         Box::new(move |flushed| drop(answered_late.send(flushed))),
+        None,
     );
     drop(held);
 
@@ -152,7 +154,7 @@ async fn an_append_after_the_task_stopped_is_flushed() {
     let first = write(&log, 0).await;
     raft.shared
         .flushes
-        .push(&log, first, Box::new(|_| panic!("a callback")));
+        .push(&log, first, Box::new(|_| panic!("a callback")), None);
     tokio::time::timeout(Duration::from_secs(10), raft.shared.flushes.drained())
         .await
         .expect("the queue never emptied");
@@ -163,6 +165,7 @@ async fn an_append_after_the_task_stopped_is_flushed() {
         &log,
         second,
         Box::new(move |flushed| drop(answered.send(flushed))),
+        None,
     );
     answer.await.expect("answered").expect("flushed");
     assert_eq!(log.durable_offset(), 2);
@@ -192,6 +195,7 @@ fn a_task_dropped_before_it_ran_fails_what_was_sent() {
             &log,
             pending,
             Box::new(move |flushed| drop(answered.send(flushed))),
+            None,
         );
     });
     drop(unpolled);

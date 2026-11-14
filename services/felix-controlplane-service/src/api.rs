@@ -4,6 +4,7 @@ pub mod api_ui;
 pub mod bootstrap;
 pub mod caches;
 pub mod error;
+pub mod identity;
 pub mod namespaces;
 pub mod nodes;
 pub mod openapi;

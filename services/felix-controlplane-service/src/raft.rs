@@ -15,40 +15,35 @@
 //!   outside the log, forwarded there from any member.
 //! - `join` — entering the group at startup: forming it on first boot, or
 //!   catching up without a vote after starting empty.
+//! - `member` — the member before it has a node: what the peer listener
+//!   serves from, so a member answers `standing` without one.
 //! - `waiver` — the operator's `form-without` file, which lets a first
 //!   boot form without a member whose machine is gone for good.
 //! - `health` — whether this member is fit to serve, and its gauges.
-//! - `store` — the Raft log, vote, and current snapshot, in one crash-safe
-//!   redb file per instance. Consensus state is the one thing here that must
-//!   never lie about being on disk.
-//! - `segment_store` — the same on `felix-storage`'s metadata store, in
-//!   place of `store` in a build with `--cfg felix_segment_store`. No
-//!   release sets it.
+//! - `store` — the Raft log, vote, and current snapshot, on `felix-storage`'s
+//!   metadata store. Consensus state is the one thing here that must never
+//!   lie about being on disk.
 //! - `network` / `http` — Raft RPCs as JSON over HTTP between instances,
 //!   on a peer listener of their own, never the public API one.
 //! - `peer` — how that traffic is authenticated: cluster id, peer token,
-//!   optional mTLS.
+//!   optional mTLS, and the member a request is meant for.
 //! - `version` — the command level every member can apply, so nothing
 //!   newer is proposed part-way through a rolling upgrade.
-//! - `wire` — the JSON this member sends and stores, kept in the form
-//!   openraft 0.9 wrote so a group can be upgraded one member at a time.
+//! - `wire` — the JSON this member sends and stores, in Felix's own form
+//!   rather than the library's.
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
-#[cfg(not(felix_segment_store))]
-mod chunks;
 mod handle;
 mod health;
 mod hold;
 mod http;
 mod join;
 mod leader;
+mod member;
 mod network;
 mod peer;
 mod proposal;
-#[cfg(felix_segment_store)]
-mod segment_store;
-#[cfg(not(felix_segment_store))]
 mod store;
 mod types;
 mod version;
@@ -56,26 +51,20 @@ mod waiver;
 mod wire;
 
 pub use handle::RaftHandle;
+pub use health::Replaying;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
-pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
+pub use member::RaftMember;
+pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls, TARGET_HEADER};
 pub use proposal::NoQuorum;
 pub use waiver::form_without;
-
-// One name for whichever store this build runs on.
-#[cfg(felix_segment_store)]
-use segment_store as store;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Where a member's peer routes live. A member on the segment store serves
-/// and calls another prefix than a member on redb, so a request between the
-/// two is a 404 and the two never exchange Raft messages
-/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster").
-#[cfg(not(felix_segment_store))]
-pub const PEER_PREFIX: &str = "/internal/raft";
-#[cfg(felix_segment_store)]
+/// Where a member's peer routes live. Releases that kept the store in redb
+/// served `/internal/raft`, so a request between such a member and this one
+/// is a 404 and the two never exchange Raft messages.
 pub const PEER_PREFIX: &str = "/internal/raft/v2";
 
 /// The path of the peer route `name`, such as `vote`.
@@ -227,6 +216,28 @@ pub trait AppStateMachine: Send + Sync + 'static {
         None
     }
 
+    /// Settle any field of `command` that depends on the group's level
+    /// (`level`, as [`RaftHandle::cluster_version_with_unknown_at`] gives it
+    /// with [`Self::join_floor`]): `Ok(Some(_))` to append a rewrite,
+    /// `Ok(None)` to append it as is, or `Err(response)` to refuse it, in
+    /// which case the write answers `response` without appending anything.
+    /// Called on the leader right before the entry enters the log, like
+    /// [`Self::restamp`], so the entry says explicitly what every member
+    /// applies, whoever proposed it. Asked only for a command
+    /// [`Self::depends_on_level`] names, so others skip the level lookup,
+    /// and such a command is only ever appended after this said so.
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
+        let _ = (command, level);
+        Ok(None)
+    }
+
+    /// Whether `command` has a field [`Self::settle_for_level`] settles.
+    /// Cheap: it runs on every proposal the leader appends.
+    fn depends_on_level(&self, command: &[u8]) -> bool {
+        let _ = command;
+        false
+    }
+
     /// The newest command level this build can apply, reported to peers so
     /// the group knows what every member understands
     /// ([`RaftHandle::cluster_version`]). A member that reports nothing is
@@ -267,6 +278,10 @@ pub struct RaftStatus {
 /// state is current enough to decide from — a deposed leader that has not
 /// heard the news yet fails the check rather than sweeping from stale state.
 #[derive(Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the handle is larger in test builds; made once per process"
+)]
 pub enum LeadershipGate {
     Always,
     Leader(RaftHandle),

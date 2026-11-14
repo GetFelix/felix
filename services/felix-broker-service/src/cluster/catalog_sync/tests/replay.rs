@@ -25,6 +25,7 @@ fn stream(consistency: Option<&str>) -> Stream {
         // incarnations: the delete cannot say which stream it removed.
         incarnation: 0,
         mount: None,
+        replication_factor: None,
     }
 }
 
@@ -71,12 +72,14 @@ fn feed(since: u64) -> StreamChangesResponse {
             .filter(|change| change.seq.is_some_and(|seq| seq >= since))
             .collect(),
         next_seq: 4,
+        group_id: None,
     }
 }
 
 fn router() -> Router {
     router_with(
         || StreamSnapshotResponse {
+            group_id: None,
             items: vec![Stream {
                 incarnation: 5,
                 ..stream(None)
@@ -101,6 +104,7 @@ fn router_with(
                         tenant_id: "t1".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -113,6 +117,7 @@ fn router_with(
                         namespace: "ns".to_string(),
                     }],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -120,6 +125,7 @@ fn router_with(
             "/v1/caches/snapshot",
             get(|| async {
                 Json(CacheSnapshotResponse {
+                    group_id: None,
                     items: vec![],
                     next_seq: 1,
                     tombstones: Vec::new(),
@@ -139,6 +145,7 @@ fn router_with(
                 Json(TenantChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -148,6 +155,7 @@ fn router_with(
                 Json(NamespaceChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -157,6 +165,7 @@ fn router_with(
                 Json(CacheChangesResponse {
                     items: vec![],
                     next_seq: 1,
+                    group_id: None,
                 })
             }),
         )
@@ -215,6 +224,7 @@ async fn a_change_that_always_fails_does_not_replay_the_changes_before_it() -> R
         None,
         None,
         Provisional::default(),
+        None,
     ));
 
     // The first pass deletes the old stream and creates the new one. Waits on
@@ -272,6 +282,7 @@ fn legacy_delete(since: u64) -> StreamChangesResponse {
         .filter(|change| change.seq.is_some_and(|seq| seq >= since))
         .collect(),
         next_seq: 2,
+        group_id: None,
     }
 }
 
@@ -289,6 +300,7 @@ async fn a_delete_naming_no_incarnation_keeps_an_incarnated_stream() -> Result<(
     let storage = felix_broker::DurableStorage::open(dir.path(), config)?;
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
     let recreated = || StreamSnapshotResponse {
+        group_id: None,
         items: vec![Stream {
             incarnation: 7,
             ..stream(None)
@@ -305,6 +317,7 @@ async fn a_delete_naming_no_incarnation_keeps_an_incarnated_stream() -> Result<(
         None,
         None,
         Provisional::default(),
+        None,
     ));
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while broker.stream_incarnation("t1", "ns", "orders").is_none() {
@@ -344,11 +357,13 @@ fn lagging_member(_since: u64) -> StreamChangesResponse {
             deleted_through: None,
         }],
         next_seq: 4,
+        group_id: None,
     }
 }
 
 fn live() -> StreamSnapshotResponse {
     StreamSnapshotResponse {
+        group_id: None,
         items: vec![Stream {
             incarnation: 8,
             ..stream(None)
@@ -376,6 +391,7 @@ async fn a_replayed_create_of_an_older_incarnation_keeps_the_live_stream() -> Re
     let (addr, shutdown_tx, handle) = serve_router(router_with(live, |_| StreamChangesResponse {
         items: vec![],
         next_seq: 10,
+        group_id: None,
     }))
     .await?;
     sync_into(
@@ -454,6 +470,7 @@ async fn a_snapshot_tombstone_deletes_a_stream_missed_while_down() -> Result<()>
     assert!(old.exists());
 
     let recreated = || StreamSnapshotResponse {
+        group_id: None,
         items: vec![Stream {
             incarnation: 9,
             ..stream(None)
@@ -470,6 +487,7 @@ async fn a_snapshot_tombstone_deletes_a_stream_missed_while_down() -> Result<()>
         serve_router(router_with(recreated, |_| StreamChangesResponse {
             items: vec![],
             next_seq: 12,
+            group_id: None,
         }))
         .await?;
     let mut state = SyncState::new();

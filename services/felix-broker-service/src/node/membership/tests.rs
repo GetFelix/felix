@@ -84,6 +84,7 @@ fn qualifying_directory() -> tempfile::TempDir {
         &serde_json::to_vec(&view).expect("encode"),
     )
     .expect("record");
+    crate::cluster::controlplane_group::write(dir.path(), "group-1").expect("record the group");
     std::fs::create_dir_all(witnesses(dir.path())).expect("witness dir");
     felix_storage::run_state::witness::witness(
         dir.path(),

@@ -530,7 +530,6 @@ mod quorum_waits {
     use std::time::{Duration, Instant};
 
     use bytes::Bytes;
-    use felix_replication::engine::Hybrid;
     use felix_replication::quorum::QuorumMarks;
 
     use super::*;
@@ -542,7 +541,7 @@ mod quorum_waits {
     const TIMEOUT: Duration = Duration::from_millis(300);
 
     fn engine(leader: &Leader, marks: &Arc<QuorumMarks>) -> StreamEngine {
-        Hybrid::new(Some(Arc::clone(marks)), Some(Arc::clone(&leader.ingress)))
+        StreamEngine::new(Some(Arc::clone(marks)), Some(Arc::clone(&leader.ingress)))
     }
 
     async fn cache_op(

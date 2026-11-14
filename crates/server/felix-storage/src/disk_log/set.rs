@@ -391,6 +391,7 @@ impl DiskLog {
             // The ballot's writer lock: it serializes writes per shard, so
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
+            inner.hold_between_locks();
             inner.check_not_poisoned()?;
             if let Some((generation, leader)) = &from
                 && let Some(refused) = super::ballot::check(
@@ -819,6 +820,17 @@ pub(super) fn discard_leftovers(dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Remove the set file, synced with the directory. For a directory the
+/// hybrid no longer runs: a Raft member keeps its set in its log.
+#[cfg(feature = "raft")]
+pub(super) fn remove(dir: &Path) -> Result<()> {
+    match crate::fs::remove_file(path_in(dir)) {
+        Ok(()) => crate::io::sync_dir(dir).map_err(StorageError::Io),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(StorageError::Io(err)),
+    }
 }
 
 fn path_in(dir: &Path) -> PathBuf {

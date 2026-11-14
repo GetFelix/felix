@@ -822,7 +822,7 @@ async fn leading_again_waits_for_a_discarded_hold_to_go_idle() {
     match early {
         Ok(led) => led.expect("lead from tail"),
         Err(_) => lead.await.expect("lead from tail"),
-    }
+    };
     assert_eq!(resumes_at(&mut live).await, Some(1));
 }
 

@@ -25,6 +25,7 @@ fn assignment() -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        placed: None,
     }
 }
 
@@ -1022,4 +1023,193 @@ fn a_refusing_giving_up_or_halting_leader_readmits_nothing() {
         readmitting().readmitted_by(&halted, &registered).is_empty(),
         "halted"
     );
+}
+
+fn brokers(names: &[&str]) -> BTreeSet<String> {
+    names.iter().map(|name| format!("broker-{name}")).collect()
+}
+
+/// `assignment()` with `leader` and `replicas` as the set.
+fn set(leader: &str, replicas: &[&str]) -> ShardAssignment {
+    ShardAssignment {
+        leader: format!("broker-{leader}"),
+        replicas: replicas.iter().map(|r| format!("broker-{r}")).collect(),
+        ..assignment()
+    }
+}
+
+/// Writes `sets` in order through `carry_placed`, the first as the shard's
+/// first assignment.
+fn written(sets: Vec<ShardAssignment>) -> ShardAssignment {
+    let mut previous: Option<ShardAssignment> = None;
+    for mut next in sets {
+        next.carry_placed(previous.as_ref(), true);
+        previous = Some(next);
+    }
+    previous.expect("at least one write")
+}
+
+/// The model's `TwoMovesForgotten` trace: {A, B, C} moved to {A, B, D} and
+/// back. D is off every set placed now, but its disk can hold what A and B
+/// acknowledged, so it stays on the record.
+#[test]
+fn a_broker_moved_away_stays_on_the_record() {
+    let mut adding_d = set("a", &["b", "c", "d"]);
+    adding_d.joining = Some("broker-d".to_string());
+    let mut adding_c = set("a", &["b", "d", "c"]);
+    adding_c.joining = Some("broker-c".to_string());
+    let back = written(vec![
+        set("a", &["b", "c"]),
+        adding_d,
+        set("a", &["b", "d"]),
+        adding_c,
+        set("a", &["b", "c"]),
+    ]);
+    assert_eq!(
+        back.placed,
+        Some(PlacedInEpoch {
+            epoch: 0,
+            brokers: brokers(&["a", "b", "c", "d"]),
+        })
+    );
+}
+
+/// A broker is on the record from the write that first names it in any role,
+/// so before a leader acts on the set: a move's successor or joining copy,
+/// a pending set's member, a learner.
+#[test]
+fn every_role_a_write_names_is_recorded() {
+    let mut pending = set("a", &["b"]);
+    pending.pending_set = Some(PendingSet {
+        replicas: vec!["broker-p".to_string()],
+        generation: 3,
+    });
+    pending.learners = ["broker-l".to_string()].into();
+    let mut moving = set("a", &["b", "s"]);
+    moving.successor = Some("broker-s".to_string());
+    let record = written(vec![set("a", &["b"]), pending, moving]).placed;
+    assert_eq!(
+        record.expect("started").brokers,
+        brokers(&["a", "b", "l", "p", "s"])
+    );
+}
+
+/// The store owns the record: what a caller passes is replaced.
+#[test]
+fn a_callers_record_is_replaced() {
+    let mut first = set("a", &["b"]);
+    first.placed = Some(PlacedInEpoch {
+        epoch: 9,
+        brokers: brokers(&["z"]),
+    });
+    let mut previous = written(vec![set("a", &["b", "c"])]);
+    previous.placed.as_mut().expect("started").brokers = brokers(&["a", "b", "c"]);
+    first.carry_placed(Some(&previous), true);
+    assert_eq!(
+        first.placed,
+        Some(PlacedInEpoch {
+            epoch: 0,
+            brokers: brokers(&["a", "b", "c"]),
+        })
+    );
+}
+
+/// Only a first assignment starts a record. A shard assigned before the
+/// level that stores it never gets one, since the brokers it placed and
+/// removed since are unknown, and neither does a first assignment proposed
+/// below that level.
+#[test]
+fn a_record_starts_only_with_the_first_assignment() {
+    let mut first = set("a", &["b"]);
+    first.carry_placed(None, false);
+    assert_eq!(first.placed, None, "proposed below the level");
+
+    let mut next = set("a", &["c"]);
+    next.carry_placed(Some(&first), true);
+    assert_eq!(next.placed, None, "no record to grow");
+}
+
+#[test]
+fn a_broker_that_does_not_answer_blocks_the_group() {
+    let record = PlacedInEpoch {
+        epoch: 0,
+        brokers: brokers(&["a", "b", "c", "d"]),
+    };
+    assert_eq!(
+        record.unaccounted(&brokers(&["a", "b", "c"]), &BTreeSet::new()),
+        brokers(&["d"])
+    );
+    assert!(
+        record
+            .unaccounted(&brokers(&["a", "b", "c"]), &brokers(&["d"]))
+            .is_empty(),
+        "declared dead"
+    );
+}
+
+#[test]
+fn a_voter_off_the_record_is_found() {
+    let record = PlacedInEpoch {
+        epoch: 0,
+        brokers: brokers(&["a", "b", "c"]),
+    };
+    let named = brokers(&["a", "b", "d", "e"]);
+    assert_eq!(record.off_record(&named, &brokers(&["e"])), brokers(&["d"]));
+}
+
+/// A restored RF 1 copy starts by itself only while it is the one broker
+/// the shard was ever placed on in the epoch.
+#[test]
+fn a_shard_moved_in_the_epoch_is_not_alone() {
+    let alone = written(vec![set("a", &[])]).placed.expect("started");
+    assert!(alone.only("broker-a"));
+    assert!(!alone.only("broker-b"));
+
+    let mut moving = set("a", &["b"]);
+    moving.successor = Some("broker-b".to_string());
+    let moved = written(vec![set("a", &[]), moving, set("b", &[])])
+        .placed
+        .expect("started");
+    assert!(!moved.only("broker-b"));
+}
+
+/// The next epoch's record is the brokers on this one that are not dead,
+/// plus the brokers placed now.
+#[test]
+fn a_re_form_starts_the_next_epochs_record() {
+    let record = PlacedInEpoch {
+        epoch: 2,
+        brokers: brokers(&["a", "b", "c", "d"]),
+    };
+    let next = record.next_epoch(&set("a", &["b", "c"]), &BTreeSet::new());
+    assert_eq!(
+        next,
+        PlacedInEpoch {
+            epoch: 3,
+            brokers: brokers(&["a", "b", "c", "d"]),
+        }
+    );
+    let next = record.next_epoch(&set("a", &[]), &brokers(&["b", "c"]));
+    assert_eq!(
+        next.brokers,
+        brokers(&["a", "d"]),
+        "a dead broker no longer placed leaves"
+    );
+    let next = record.next_epoch(&set("a", &["b"]), &brokers(&["b"]));
+    assert!(
+        next.brokers.contains("broker-b"),
+        "a broker placed now stays"
+    );
+}
+
+/// The record serializes, and an assignment without one reads back without
+/// one.
+#[test]
+fn the_record_round_trips_and_is_omitted_when_absent() {
+    let json = serde_json::to_value(assignment()).expect("serialize");
+    assert!(json.get("placed").is_none(), "{json}");
+    let started = written(vec![set("a", &["b"])]);
+    let json = serde_json::to_string(&started).expect("serialize");
+    let back: ShardAssignment = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(back.placed, started.placed);
 }

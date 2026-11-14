@@ -112,6 +112,34 @@ fn retiring_a_stream_takes_every_shard_of_that_incarnation_only() {
         .expect("retire again");
 }
 
+/// A copy a rotation moved aside is no longer a live directory, and the
+/// stream's delete still takes it, for its own incarnation only.
+#[test]
+fn retiring_a_stream_takes_its_kept_copies_of_that_incarnation_only() {
+    let root = tempfile::tempdir().expect("dir");
+    let key = |stream: &str| crate::log::ShardKey {
+        tenant: "t".into(),
+        namespace: "n".into(),
+        stream: stream.into(),
+        shard: 0,
+    };
+    let kept_dir = root.path().join(layout::KEPT_DIR);
+    let make = |stream, incarnation, copy| {
+        let name = layout::incarnation_dir_name(&key(stream), incarnation);
+        let dir = kept_dir.join(format!("{name}.{copy:016x}"));
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    };
+    let gone = [make("s", 0, 5), make("s", 0, 6)];
+    let stays = [make("s", 9, 5), make("s2", 0, 5)];
+
+    DirIndex::default()
+        .retire_stream(root.path(), "t", "n", "s", 0)
+        .expect("retire");
+    assert!(gone.iter().all(|dir| !dir.exists()));
+    assert!(stays.iter().all(|dir| dir.exists()));
+}
+
 #[test]
 fn a_damaged_marker_reads_as_unreadable_and_is_never_taken_as_a_delete() {
     let root = tempfile::tempdir().expect("dir");

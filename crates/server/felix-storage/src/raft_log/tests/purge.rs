@@ -402,3 +402,15 @@ async fn a_purge_that_only_wrote_its_id_reads_as_done() {
         assert_eq!(state(&raft).await.0, Some(purged));
     }
 }
+
+/// The first-index reader follows the purge as readers see it, live.
+#[tokio::test]
+async fn the_first_index_reader_follows_a_purge() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let first = raft.first_index_reader();
+    append_flushed(&mut raft, &thirty()[..12]).await;
+    assert_eq!(first(), 0);
+    raft.purge(log_id(3, 40)).await.expect("purge");
+    assert_eq!(first(), 41);
+}

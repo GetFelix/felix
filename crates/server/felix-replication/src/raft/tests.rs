@@ -25,7 +25,13 @@ use crate::{ShardKey, ShardKind};
 mod cache;
 mod commit;
 mod deliver;
+mod idempotent;
+mod identity;
+mod lease;
 mod propose;
+mod read;
+mod switch;
+mod written;
 
 /// Shards numbered from here are cache shards.
 const CACHE: u32 = 1000;
@@ -97,6 +103,15 @@ struct Net {
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
+    /// Appends to this broker are answered with this vote, as a member
+    /// that has voted for a later candidate answers.
+    higher_vote: parking_lot::Mutex<Option<(String, VoteOf<ShardTypes>)>>,
+    /// While set, every transfer request is lost.
+    lose_transfers: std::sync::atomic::AtomicBool,
+    /// How long an append's answer takes to come back.
+    answer_after: parking_lot::Mutex<Option<Duration>>,
+    /// Appends carrying entries that were handed to a broker.
+    appends: std::sync::atomic::AtomicU64,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -106,6 +121,7 @@ fn sender(request: &Request) -> Option<&str> {
         Request::Vote(rpc) | Request::PreVote(rpc) => &rpc.vote,
         Request::Snapshot { vote, .. } => vote,
         Request::TransferLeader(_) => return None,
+        Request::Written { from, .. } => return Some(&from.broker),
     };
     Some(&vote.leader_id().node_id().broker)
 }
@@ -134,17 +150,39 @@ impl RaftTransport for Net {
         if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
             || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
             || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
+            || (matches!(request.body, Request::TransferLeader(_))
+                && self.lose_transfers.load(Relaxed))
         {
             return Err(Refused::Unreachable("lost".into()));
+        }
+        if matches!(request.body, Request::Append(_))
+            && let Some((to, vote)) = &*self.higher_vote.lock()
+            && to == broker
+        {
+            let higher = openraft::raft::AppendError::HigherVote(vote.clone());
+            return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
         let runtime = match self.cut.lock().contains(broker) {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
-        match runtime {
+        if runtime.is_some()
+            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+        {
+            self.appends.fetch_add(1, Relaxed);
+        }
+        let slow = match request.body {
+            Request::Append(_) => *self.answer_after.lock(),
+            _ => None,
+        };
+        let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
+        };
+        if let Some(slow) = slow {
+            tokio::time::sleep(slow).await;
         }
+        answer
     }
 }
 
@@ -293,6 +331,7 @@ impl Cluster {
             let command = Command {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
+                producer: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -321,6 +360,7 @@ impl Cluster {
                 member.raft().client_write(Command {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
+                    producer: None,
                     written: None,
                 })
             });
@@ -474,6 +514,62 @@ async fn without_the_ticker_no_timeout_is_noticed() {
     cluster.stop().await;
 }
 
+/// The member that forms a group asks the others first. Only answers of
+/// "no vote, no entry" from every one of them let it form; silence does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peers_blank_needs_a_blank_answer_from_every_other_member() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let (a, key) = (cluster.runtime("a"), shard(0));
+    let within = Duration::from_secs(5);
+    a.peers_blank(&key, &members(), within)
+        .await
+        .expect("every member is blank");
+    // The question is a pre-vote: it leaves the members asked as they were.
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, 0, "{status:?}");
+    }
+
+    cluster.net.cut.lock().insert("c".into());
+    match a.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Unanswered(member, _)) => assert_eq!(member, MemberId::new("c", 1)),
+        other => panic!("a silent member counted as blank: {other:?}"),
+    }
+    cluster.net.cut.lock().clear();
+
+    a.initialize(&key, members()).await.expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"record").await;
+    let b = cluster.runtime("b");
+    match b.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Formed(_)) => {}
+        other => panic!("a formed group looked blank: {other:?}"),
+    }
+    cluster.stop().await;
+}
+
+/// A vote alone and an entry alone each mean a group reached the member.
+/// A member can hold a vote and no entry after granting one in an election
+/// that never got as far as an append.
+#[test]
+fn a_vote_or_an_entry_alone_is_not_blank() {
+    use openraft::raft::VoteResponse;
+    use openraft::type_config::alias::LogIdOf;
+    let vote = |term: u64| {
+        let leader = LeaderIdOf::<ShardTypes>::new(term, MemberId::new("a", 1));
+        <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, false)
+    };
+    let answer = |term: u64, entry: bool| {
+        let last = entry.then(|| LogIdOf::<ShardTypes>::new(1_u64.into(), 1));
+        VoteResponse::<ShardTypes>::new(vote(term), last, false)
+    };
+
+    assert!(runtime::blank(&answer(0, false)));
+    assert!(!runtime::blank(&answer(1, false)), "a vote alone");
+    assert!(!runtime::blank(&answer(0, true)), "an entry alone");
+    assert!(!runtime::blank(&answer(1, true)));
+}
+
 /// The ticker asks a group for a timer check only when its timer can have
 /// run out: a leader once per heartbeat, a follower that hears its leader
 /// never.
@@ -526,6 +622,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         idle_after: millis(config.idle_after),
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
+        lease: millis(config.lease),
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -875,6 +972,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
     let command = Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
+        producer: None,
         written: Some(token),
     };
     let raft = member.raft().clone();
@@ -918,12 +1016,13 @@ fn a_commands_token_is_not_serialized() {
     let command = Command {
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
+        producer: None,
         written: Some(token),
     };
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
-        ["payload", "timestamp_micros"]
+        ["payload", "producer", "timestamp_micros"]
     );
     let received: Command = serde_json::from_value(sent).expect("json");
     assert!(received.written.is_none());
@@ -1092,11 +1191,24 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
     }
     assert!(!close.is_finished());
     assert_ne!(closing.status().role, Role::Stopped);
-    assert!(!runtime.close(&shard(0)).await, "closed twice");
+
+    // A caller that gave up on its close and tries again waits for the same
+    // stop. Told "no group" now, it would close the log under a member that
+    // can still write.
+    let retried = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.close(&shard(0)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !retried.is_finished(),
+        "a retried close returned while the member was still running"
+    );
 
     release.send(()).expect("release");
-    assert!(close.await.expect("close"));
+    assert!(retried.await.expect("retried close"));
     assert_eq!(closing.status().role, Role::Stopped);
+    assert!(close.await.expect("close"));
     drop(closing);
 
     let log = cluster.logs.remove(&("a".to_string(), 0)).expect("log");
@@ -1152,8 +1264,8 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.start(true);
     cluster.open(0).await;
 
-    // What each member read back from its log. The old leader's vote is
-    // still its own, so it may lead again at once and add an entry.
+    // What each member read back from its log, before a leader elected
+    // after the restart adds an entry.
     for runtime in cluster.runtimes() {
         let status = eventually(|| {
             runtime
@@ -1250,6 +1362,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         group: group(0),
         to: MemberId::new(behind, 1),
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(1),
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
@@ -1304,6 +1417,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
         let command = Command {
             timestamp_micros: 1_700_000_000,
             payload: record.clone(),
+            producer: None,
             written: None,
         };
         last = member
@@ -1368,6 +1482,22 @@ async fn a_log_that_does_not_fsync_on_commit_gets_no_group() {
     runtime.shutdown().await;
 }
 
+/// The ticker visits groups in shard order whatever order they opened and
+/// closed in, so a simulation seed replays its run.
+#[tokio::test]
+async fn the_ticker_visits_groups_in_shard_order() {
+    let cluster = Cluster::new(false);
+    let runtime = cluster.runtime("a");
+    for n in [7, 2, 9, 0, 5, 3, 8, 1] {
+        let log = open_log(cluster.root.path(), "a", n, log_config());
+        runtime.open(group(n), 1, log).await.expect("open");
+    }
+    assert!(runtime.close(&shard(5)).await);
+    let want: Vec<_> = [0, 1, 2, 3, 7, 8, 9].map(shard).into();
+    assert_eq!(runtime.ticked_shards(), want);
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_member_forms_a_group_only_from_a_set_that_names_it() {
     let mut cluster = Cluster::new(false);
@@ -1401,6 +1531,7 @@ async fn a_message_for_another_member_is_refused() {
         group,
         to,
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(1),
         body: vote(),
     };
@@ -1450,6 +1581,7 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
         group: group(0),
         to: MemberId::new("a", 1),
         beat: 0,
+        report: false,
         deadline: Duration::from_millis(50),
         body: Request::Vote(VoteRequest::new(vote, None)),
     };

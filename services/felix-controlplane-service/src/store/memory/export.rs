@@ -61,7 +61,7 @@ impl InMemoryStore {
             )
         };
 
-        let (shards, shard_changes, placement_token, placement_holder) = {
+        let (shards, shard_changes, placement_token, placement_holder, unplaced) = {
             let state = self.shards.read().await;
             let mut records: Vec<(ShardKey, ShardAssignment)> = state
                 .records
@@ -89,6 +89,7 @@ impl InMemoryStore {
                 ExportedLog::from_log(&state.changes),
                 state.placement.token,
                 state.placement.holder.clone(),
+                state.unplaced.clone(),
             )
         };
 
@@ -127,6 +128,8 @@ impl InMemoryStore {
             cache_tombstones: super::caches::cache_tombstones(self).await,
             deleted_stream_names: super::streams::deleted_stream_names(self).await,
             deleted_cache_names: super::caches::deleted_cache_names(self).await,
+            cluster_identity: self.identity.read().await.clone(),
+            unplaced,
         }
     }
 
@@ -188,6 +191,7 @@ impl InMemoryStore {
         *self.shards.write().await = ShardState {
             records: state.shards.into_iter().collect(),
             changes: state.shard_changes.into_log(capacity),
+            unplaced: state.unplaced,
             placement: PlacementState {
                 token: state.placement_token,
                 holder: state.placement_holder,
@@ -204,6 +208,7 @@ impl InMemoryStore {
         *self.rbac_groupings.write().await = state.rbac_groupings.into_iter().collect();
         *self.auth_bootstrapped.write().await = state.auth_bootstrapped.into_iter().collect();
         *self.moves_paused.write().await = state.moves_paused;
+        *self.identity.write().await = state.cluster_identity;
         *self.replica_reports.write().await = state
             .replica_reports
             .into_iter()
