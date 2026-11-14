@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794650184299,
+  "lastUpdate": 1794651253119,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -71346,6 +71346,72 @@ window.BENCHMARK_DATA = {
             "range": "941.71",
             "unit": "us",
             "extra": "trials: 5\nmedian: 403.00\nmean: 940.00\nstdev: 941.71\ncv: 100.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "578fafaaaedcd07fe9aa6b2ed4e2ddb1d8192db1",
+          "message": "fix(storage): a Raft copy whose log was poisoned restarts as a new copy (#2469) (#2481)\n\n* feat(replication): per-shard Raft copy identity (#2250, part 1)\n\nA Raft member's copy id now lives in its shard directory and is judged\nagainst marks the data root keeps, as FelixRaftIdentity.tla specifies.\n\nfelix-storage gets `raft_copy`:\n- `raft-copy` in the shard directory: the copy id and the storage id it\n  was minted under, written by one rename.\n- `raft-marks` at the data root: per shard, the copy id the marks belong\n  to, the vote mark and the log mark. Writers share one append and fsync,\n  the root sequence rises once per synced write and is recorded in the run\n  witness before any writer returns. A torn tail is cut, damage before a\n  good write fails the open, and the file is rewritten once it is well\n  past the live marks.\n- The gate: a root whose sequence is below the witness's or the control\n  plane's fails and gets a new storage id. A `CopyRoot` opens only from a\n  passed gate.\n- `CopyRoot::open_copy` keeps a directory's copy id, or rotates it when the\n  directory is empty, was minted under another storage id, names another\n  copy than its marks, or holds a vote or log below them. The old directory\n  is kept beside it as `<dir>.kept-<old copy id>`.\n\n`RaftLog::mark_with` syncs the vote mark before `save_vote` returns, and\nthe log mark either before the append's callback (exact) or in batches.\nA truncation lowers the log mark before it cuts.\n\n`GroupRuntime::open_copy` opens a member through the copy root; its member\nid is the broker and the directory's copy id. `RuntimeConfig::log_mark`\npicks exact or batched marks.\n\n* docs(raft): copy identity is built; identity configs cite their tests (#2250)\n\n* fix(raft): review fixes for copy ids and the restore check\n\nA log lowering waits for a mark write in flight, a directory a crash\nleft holding only a copy file is reused rather than kept, the mark name\nis length-prefixed with a fixed kind tag, the GatePassed doctest pins\nE0451, and the exact-mark test proves the mark is synced before the\ncallback.\n\n* raft: the identity code implements FelixRaftIdentity as it stands\n\nSpec-Unaffected: implements the existing FelixRaftIdentity rules; only cfg comments cite the tests\n\n* raft_copy: hold an unchecked root, cancel-safe mark writes, fail appends on a dead batch\n\n- The gate takes the incarnation verdict as an input, as FelixRaftIdentity's\n  `caught` does, and returns Unchecked for a root with marks and no copy of\n  its sequence (a rebooted host, or one with no witness dir). Nothing opens\n  on it until evidence arrives. Behind::rotate rotates the root it checked\n  and records the sequence under the new id.\n- A mark write runs in its own task, so dropping the caller that took a\n  batch no longer answers its co-batched writers before the sync or leaves\n  the writer without its file.\n- A failed batched mark stops the mark log and the batched shards' appends\n  fail from then on, instead of acking past a frozen mark.\n- GroupRuntime::open is test-only (`testing` feature).\n- Docs and the RootRestore cfg evidence say the control-plane side is not\n  built (#2441) and a rebooted host with marks holds until it is.\n\nSpec-Unaffected: the code now takes the same inputs as `caught` in FelixRaftIdentity.tla; the Unchecked hold opens nothing, which only removes behaviours the model allows.\n\n* raft_copy: fail a batch whose taker dies part way; document the unwitnessed rotation hold\n\nA taker that panics or is aborted after taking a batch dropped the writer\nwith no failure recorded, so its co-batched callers returned Ok with no\nfsync and the next write panicked on the missing file. A drop guard now\nfails the writer from that ticket on unless the write finished.\n\n* fix(sim): carry log_mark through the skewed-clock RuntimeConfig\n\n* fix(storage): a Raft copy whose log was poisoned restarts as a new copy (#2469)\n\nThe next open of a poisoned fsync-on-commit log cuts it back to its last\nsync. Once a leader counts a copy's written position (#2233), the cut copy\ncould vote without an acknowledged record, with no power cut.\n\nCopyRoot::open_copy now rotates a directory that holds the poisoned marker,\nbefore the log is opened, and DiskLog::open refuses a directory that holds\nboth a copy file and the marker, so no open can cut the log and remove the\nmarker first.\n\nSpec-Unaffected: FelixRaftIdentity.tla has no failed-flush fault and already allows a rotation on open; this only adds a reason to rotate.\n\n* fix(storage): a copy root watches its root for poison; review fixes (#2469)\n\nCopyRoot::open registers its root with run_state::watch_poison, so a\ncopy whose marker write failed still rotates on restart through the run\nrecord, whatever the caller. watch_poison is idempotent.\n\nDiskLog::fail_flush_past fails only the flush of a given record, so an\nidle flush cannot consume the injected failure in the identity test.\n\nSpec-Unaffected: test hooks and a registration the broker already made; no protocol change.\n\n* test(raft): a poisoned copy's record acknowledged on the written count survives (#2469)\n\nThe identity test now runs the #2469 scenario: R is acknowledged on the\nwritten count by the leader and a follower whose flush then fails, with\nthe third member cut off. With the leader away, the restarted follower and\nthe third member elect nobody, and R commits once the leader is back.\n\nDocs no longer call the written-majority acknowledgement unbuilt, and\n#2444's #2469 notes point at \"A poisoned log\".\n\nSpec-Unaffected: test and docs only.\n\n* test(raft): the failed-flush identity test poisons a process of its own\n\nA poisoned log is counted for the whole process and never cleared. Under\ncargo llvm-cov the lib tests share one process, so once this test had\npoisoned its follower's log the hybrid replica tests attested no trusted\ncopy. The body now runs in a child process.\n\n* fix(replication): identity test batch carries the new term field\n\n* test(replication): idle cpu test batch carries the term field",
+          "timestamp": "2026-11-14T10:09:19Z",
+          "tree_id": "c7cfe540fb10114dfba57bd680274f519533e27d",
+          "url": "https://github.com/GetFelix/felix/commit/578fafaaaedcd07fe9aa6b2ed4e2ddb1d8192db1"
+        },
+        "date": 1794651243542,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 103,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 103.00\nmean: 103.20\nstdev: 1.48\ncv: 1.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 156,
+            "range": "5.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 156.00\nmean: 154.40\nstdev: 5.86\ncv: 3.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 204,
+            "range": "696.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 572.20\nstdev: 696.10\ncv: 121.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "5.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 110.40\nstdev: 5.41\ncv: 4.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 236,
+            "range": "57.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 236.00\nmean: 259.60\nstdev: 57.89\ncv: 22.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 407,
+            "range": "255.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 407.00\nmean: 519.80\nstdev: 255.21\ncv: 49.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
