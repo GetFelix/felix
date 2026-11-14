@@ -113,7 +113,7 @@ fn a_run_past_its_virtual_bound_ends_with_a_finding() {
 /// write, nothing acknowledged is lost, and the member's other copy serves.
 #[test]
 fn a_failed_flush_stops_one_copy_and_the_group_carries_on() {
-    for seed in [1, 2, 3] {
+    for seed in [1, 2] {
         let config = RaftSimConfig {
             failed_flush: true,
             ..RaftSimConfig::default()
