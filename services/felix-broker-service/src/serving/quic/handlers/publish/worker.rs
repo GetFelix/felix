@@ -909,7 +909,17 @@ fn settle(
                 "dropping an unacknowledged publish with record headers"
             );
         }
-        (None, _) => {}
+        // Counted as accepted when it was queued, and nobody is told it
+        // was not written.
+        (None, Err(err)) => {
+            crate::serving::quic::telemetry::count_publish("unacked_failed");
+            tracing::debug!(
+                shard = ?shard,
+                error = %err,
+                "an unacknowledged publish was not written"
+            );
+        }
+        (None, Ok(_)) => {}
     }
 }
 

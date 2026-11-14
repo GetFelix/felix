@@ -1259,7 +1259,10 @@ open:
 - `open(group, copy, log)` starts a member on a shard's log. The log must
   be a Raft log that fsyncs on commit. The member reads its vote, entries
   and membership back from the log, so opening after a restart needs
-  nothing else.
+  nothing else. A Raft log locks its directory while it is open, so a Raft
+  open from another process or a second one in this process cannot open
+  the shard's log under a running member (`docs/storage-format.md`, "Records
+  as Raft entries").
 - `initialize(shard, members)` forms a new group from its first member
   set. A member refuses a set that does not name it. Once a member has
   voted or holds an entry the call does nothing.
@@ -1270,7 +1273,12 @@ open:
 - `close(shard)` stops one member and leaves its log to the caller. The
   shard stays taken until the member has stopped, even if the caller stops
   waiting: an `open` before that is refused as `Closing`, so two members
-  never run on one log. `shutdown()` stops the ticker and every member.
+  never run on one log. A caller that gave up on a close and calls it
+  again waits for the same stop and is told `true`, unless `shutdown()`
+  has taken the member over, which itself waits for the stop. Told "no
+  group" while the member could still write, it might close the log under
+  it.
+  `shutdown()` stops the ticker and every member.
   Neither writes anything: what a member acknowledged is already on disk.
 - `status(shard)` reports the member's role, term, leader, last index,
   committed index, the last entry written and the last entry flushed, and
@@ -1963,9 +1971,21 @@ A publish served here is proposed in the order the shard's publishes
 arrive and answered at its commit, for every consistency level and fsync
 policy. It does not enter the hybrid's write fence and does not need this
 broker's lease: the term is what holds the shard. A publish routed at a
-term the broker no longer serves is refused with nothing written. Readers
-at every level are bound by the commit index. A forwarded publish is
-checked against the term the owner serves now, not the one the sender saw.
+term the broker no longer serves is refused with nothing written. A
+forwarded publish is checked against the term the owner serves now, not the
+one the sender saw. Readers at every level are bound by the commit index.
+
+`FELIX_ACK_ON_COMMIT` does not apply to a shard on Raft. With it set to `0`
+a hybrid `Leader` stream is acknowledged when the publish is queued; a Raft
+shard still answers at the commit, since an answer on enqueue would promise
+a write the term may not live to make.
+
+A publish sent with no acknowledgement asked for takes the same path. It is
+proposed and delivered at its commit like any other. If the term moved while
+it waited in the queue it is dropped, since there is nobody to tell. A
+publish whose write was not confirmed is counted in
+`felix_publish_requests_total{result="unacked_failed"}`. That includes one
+whose commit wait timed out, which may still commit and be delivered.
 
 A `Quorum` publisher on a stream that does not fsync on commit is answered
 at the commit too, not earlier from `await_quorum_ack`. That waits until a
@@ -2201,6 +2221,13 @@ refuses to open it under the other one.
 > `a_refusal_ends_once_the_engines_match`;
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
 > `brokers_on_different_engines_refuse_their_shared_shard`.
+
+A member's log directory is locked while the member is open, so a second
+broker process started on the same data directory cannot open that log
+(`docs/storage-format.md`, "Records as Raft entries").
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `an_open_member_holds_its_log_directory`.
 
 A forwarded publish that reaches a member that does not lead is answered
 with the leader, and the requester sends it there.
@@ -2772,6 +2799,25 @@ slots and grows them on demand.
 The two kinds of number are not the same measure. The design's figures were
 resident memory, and the test counts allocated bytes. Resident memory on
 real brokers, against the hybrid, is still to be measured (#2314).
+
+Each member's log also keeps its newest records in memory, so replication
+reads fresh entries without the segments. A log keeps at most 4 MiB, and the
+shard groups' logs of a broker share one budget, 256 MiB by default
+(`RuntimeConfig::tail_cache_bytes`). While the total is under the budget,
+every log keeps its full 4 MiB, however many groups there are and however
+idle most of them are. When the total goes over, one append runs an eviction
+pass that walks the logs from the one appended to least recently until the
+total is down to seven eighths of the budget. A log that has not appended
+since the previous pass is emptied. A log that has is trimmed from its oldest
+records to half of what it holds, and never below its newest record, so the
+entries replication is about to read stay in memory. Idle groups give up
+their bytes first, and when only busy logs are left they all shrink a little.
+A dropped cache costs a read from the segments and nothing else, and the
+bound is soft: a log whose cache is in use is skipped until the next pass. The metadata group's log is
+not counted; it keeps its own 4 MiB. The gauge
+`felix_broker_raft_tail_cache_bytes` reports the bytes held, and with several
+runtimes in one process the last one to report wins. Without the budget, 2,000
+groups that had each taken 4 MiB of writes would hold 8 GB.
 
 So the memory row is measured twice: idle with three brokers, and with one
 broker killed while publishers write. The 1 GB limit applies to the second.
