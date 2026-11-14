@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794641801879,
+  "lastUpdate": 1794643411166,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70950,6 +70950,72 @@ window.BENCHMARK_DATA = {
             "range": "105.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 402.00\nmean: 439.20\nstdev: 105.62\ncv: 24.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b6bccc30f25ca85cbb862504b69f7da2a82b8921",
+          "message": "feat(controlplane): the segment store is the control plane's only Raft store (#2236) (#2430)\n\n* feat(controlplane): the segment store is the control plane's only Raft store (#2236)\n\nTurn the felix_segment_store switch on for good and delete the redb store,\nits chunked snapshot transfer and the openraft 0.9 wire forms. A member\nthat finds raft.redb refuses to start and writes nothing; there is no\nconversion tool (#2234), so a 0.7 group starts over on empty directories.\n\nThe mixed-version test becomes a refusal test against the released binary.\n\nSpec-Unaffected: no change to the store's rules, only which store the service builds.\n\n* docs(controlplane): peer routes are under /internal/raft/v2\n\nSpec-Unaffected: docs only.\n\n* fix(controlplane): review of #2236: pins, form-without rule, stale docs\n\nPin the peer and stored JSON forms with a golden test, since the 0.9\nfixtures went with redb. form-without uses decide_start instead of its own\ncopy of the rule. Drop redb from the demo lockfiles. Fix the docs and\nchangelog fragments that still described the switch, rolling upgrades\nfrom 0.7, or redb as today's store.\n\nSpec-Unaffected: no change to the store's rules.\n\n* test(controlplane): the refusal says the store cannot be read\n\nSpec-Unaffected: test only.\n\n* test(controlplane): the released binary only forms its group before the refusal\n\nSeeding through the API used this build's peer route, which a v0.7.1\nmember does not serve.\n\nSpec-Unaffected: test only.\n\n* test(cluster): finalize fleet features through the live metadata member; docs: no upgrade from a 0.7 control plane\n\nIn group mode the harness's own store is a placeholder with no brokers, so\nfinalizing through it failed with \"no broker is serving\" and the metadata\nhistory campaign never started (also on main's nightly).\n\nDocs and changelog say plainly that 0.8 does not upgrade a 0.7 control\nplane's metadata and what to do; the conversion tool (#2234) is not planned\nfor 0.8.\n\n* test(controlplane): a restarted member enters the group before its routes serve\n\nServed first, an empty member could grant a vote before it started\nwithholding it, so a leader was elected and the wiped member joined\n(2 of 12 runs on the segment store). The service enters the group before\nserving; the tests now do the same.\n\n* docs: wipe brokers because their 0.7 data is never served or deleted; the refusal says so\n\nThe upgrades page claimed a broker refuses a stream whose incarnation went\nbackwards; incarnations are wall-clock micros, so an unwiped broker keeps\nthe old data forever instead. hybrid-retirement's 0.7 path now matches the\ndecision (no upgrade from 0.7 data). Cites #2438 for the broker guard.\n\nbench: snapshot_build also reports the build with no writer running and\nthe snapshot's size, to separate the build from the writer's effect on it.\n\n* bench: the writer's snapshot waits for the writer's first write\n\nAfter the idle build, openraft builds nothing until something new is\napplied; on the redb base the first write could land after the trigger.\n\n* bench: ask for a snapshot again until one is built\n\nopenraft drops a trigger while the previous snapshot is still being stored,\nwhich takes seconds for a large one on redb.\n\n* docs(bench): why snapshot_build reads higher with a writer on the segment store\n\n* perf(storage): a Raft log saves its committed index at most once a second\n\nThe commit writer rewrote the replica state (create, two fsyncs, rename)\non every advance, and a Raft log's commit index advances on almost every\nentry. The log's own fsyncs queued behind those writes on the same disk,\nwhich put an 8 ms tail on propose/m3/256B/p16. A Raft log's writer now\nwaits out COMMIT_PERSIST_INTERVAL since its last write, as the periodic\nmode already does. After a crash the saved index may be up to a second\nolder, which only shortens the replay a restart waits for.\n\nSpec-Unaffected: the specs do not model when the committed index is written; it may already read back older after a crash.\n\n* docs(bench): why a Raft log saves its committed index once a second\n\nSpec-Unaffected: docs and a code comment only.\n\n* fix(controlplane): a restarted member serves nothing until its log tail is committed\n\nThe committed index is saved at most once a second, so after a crash it can\ntrail what the member applied and served. Replayed only to it, the member\ncould answer \"not found\" for a stream it showed a moment before. Reads now\nanswer 503 and readiness fails until the applied index reaches the log tail\nseen at open, or the end of a log a leader cut back.\n\nAlso: the commit writer rechecks after 10 ms when the replica state is\nlocked instead of waiting a whole interval, the write count in tests is\ntaken before the rename, the compare step waives the one snapshot_build\ncell the writer's progress costs, and the docs say what is guaranteed.\n\nSpec-Unaffected: the specs do not model reads served before a restarted member catches up; the change only withholds them.\n\n* test(cluster): a metadata member catching up after a restart has not converged yet\n\nThe history harness read every member's state with one try and failed the\ncampaign on the read a restarted member now refuses until a leader commits\nits log tail. It waits for it like any other difference, up to its bound.\n\nSpec-Unaffected: test harness only.\n\n* fix(controlplane): the replay gate stays shut until openraft reports its log\n\nBefore the first metrics report both indexes read None, so a readiness probe\nin that window computed a target of 0 and latched the gate open. A missing\nlog index now means the whole tail is still to apply.\n\nAlso: the docs claim only what the gate covers (reads and readiness), say a\nmember removed while down stays unready, and the commit-interval test\ntolerates a runner slow enough to cross an interval.\n\nSpec-Unaffected: the specs do not model reads served before a restarted member catches up.\n\n* docs(controlplane): a catching-up member's 503s, and which brokers refuse a 0.7 data directory\n\n* test(controlplane): the streamed snapshot target test runs unconditionally now the segment store is the only store",
+          "timestamp": "2026-11-13T23:55:34-08:00",
+          "tree_id": "542fd1f40bbe076ac255d81be6793bf236f3377e",
+          "url": "https://github.com/GetFelix/felix/commit/b6bccc30f25ca85cbb862504b69f7da2a82b8921"
+        },
+        "date": 1794643400280,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "7.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 153.60\nstdev: 7.50\ncv: 4.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 205,
+            "range": "410.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 390.60\nstdev: 410.64\ncv: 105.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 273,
+            "range": "495.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 582.80\nstdev: 495.87\ncv: 85.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 198.80\nstdev: 1.10\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 390,
+            "range": "8.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 390.00\nmean: 391.80\nstdev: 8.26\ncv: 2.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 528,
+            "range": "140.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 528.00\nmean: 588.20\nstdev: 140.07\ncv: 23.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
