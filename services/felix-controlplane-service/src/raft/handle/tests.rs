@@ -59,11 +59,11 @@ async fn store_of_a_former_leader(dir: &std::path::Path, peer: &str, vote_withhe
         .collect();
     let membership = Membership::new(vec![BTreeSet::from([1, 2, 3])], nodes).expect("membership");
     let entry = Entry {
-        log_id: test_log_id(5, 1, 0),
+        log_id: test_log_id(5, 0),
         payload: EntryPayload::Membership(membership),
     };
     let vote = Vote::new_committed(5, 1);
-    store::seed(dir, "test-cluster", vote, vec![entry], vote_withheld).await;
+    store::seed(dir, "test-cluster", vote, vec![entry], vote_withheld, None).await;
 }
 
 /// openraft has a restarted leader campaign at once, whatever the election
@@ -236,4 +236,82 @@ async fn a_member_that_may_vote_has_the_reached_flag_from_its_start() {
         );
         handle.shutdown().await.expect("shutdown");
     }
+}
+
+/// A store that applied through index 4 of `voters` and saved only index 1
+/// as committed, as a crash inside the committed index's save interval
+/// leaves it.
+async fn store_with_an_unsaved_tail(dir: &std::path::Path, voters: &[NodeId]) {
+    let nodes: BTreeMap<NodeId, openraft::impls::BasicNode> = voters
+        .iter()
+        .map(|id| {
+            let addr = "127.0.0.1:1".to_string();
+            (*id, openraft::impls::BasicNode { addr })
+        })
+        .collect();
+    let membership =
+        Membership::new(vec![voters.iter().copied().collect()], nodes).expect("membership");
+    let mut entries = vec![Entry {
+        log_id: test_log_id(5, 0),
+        payload: EntryPayload::Membership(membership),
+    }];
+    entries.extend((1..=4).map(|index| Entry {
+        log_id: test_log_id(5, index),
+        payload: EntryPayload::Blank,
+    }));
+    let vote = Vote::new_committed(5, 1);
+    store::seed(
+        dir,
+        "test-cluster",
+        vote,
+        entries,
+        false,
+        Some(test_log_id(5, 1)),
+    )
+    .await;
+}
+
+/// The committed index is saved behind, so after a crash it can trail what
+/// the member applied and served. Replayed only to it, the member would
+/// serve an older state than it showed before; it stays unavailable until
+/// a leader commits its log tail.
+#[tokio::test]
+async fn a_restarted_member_is_not_ready_until_a_leader_commits_its_log_tail() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    store_with_an_unsaved_tail(dir.path(), &[1, 2, 3]).await;
+
+    let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
+        .await
+        .expect("start");
+    // Past several election timeouts: no peer answers, so no leader.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let applied = handle.raft.metrics().borrow_watched().last_applied;
+    assert!(
+        applied.is_some_and(|id| id.index >= 1),
+        "replayed to the saved index: {applied:?}"
+    );
+    let refused = handle.caught_up().expect_err("served below its log tail");
+    assert!(refused.contains("log tail at 4"), "{refused}");
+    assert!(handle.readiness().is_err());
+    handle.shutdown().await.expect("shutdown");
+}
+
+/// The same store as the only voter: it elects itself, commits the tail
+/// with its first entry, and serves again.
+#[tokio::test]
+async fn the_replay_gate_opens_once_the_log_tail_is_committed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    store_with_an_unsaved_tail(dir.path(), &[1]).await;
+
+    let handle = RaftHandle::start(settings(dir.path()), Arc::new(NullApp))
+        .await
+        .expect("start");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while let Err(reason) = handle.caught_up() {
+        assert!(tokio::time::Instant::now() < deadline, "{reason}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let applied = handle.raft.metrics().borrow_watched().last_applied;
+    assert!(applied.is_some_and(|id| id.index >= 4), "{applied:?}");
+    handle.shutdown().await.expect("shutdown");
 }

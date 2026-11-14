@@ -5,6 +5,8 @@
 mod append_and_read;
 mod commit;
 mod conditional;
+#[cfg(feature = "raft")]
+mod dir_lock;
 mod durability;
 #[cfg(feature = "sim")]
 mod flush_failures;
