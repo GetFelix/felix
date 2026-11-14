@@ -1173,8 +1173,7 @@ mod on_raft {
         let (one, second) = idempotent(&handle, &orders, term, 1, b"one");
         let (again, resent) = idempotent(&handle, &orders, term, 0, b"zero");
         let (skips, gap) = idempotent(&handle, &orders, term, 3, b"three");
-        let (plain, after) = job(&handle, &orders, term, b"plain", None);
-        for job in [zero, one, again, skips, plain] {
+        for job in [zero, one, again, skips] {
             publish_ctx.scheduler.send(job).await;
         }
 
@@ -1192,6 +1191,8 @@ mod on_raft {
             ),
             "{err}"
         );
+        let (plain, after) = job(&handle, &orders, term, b"plain", None);
+        publish_ctx.scheduler.send(plain).await;
         let after = after.await?.expect("acknowledged").expect("an offset");
         assert_eq!(after, second + 1, "a re-send or a refusal took an offset");
         for (offset, payload) in [(first, &b"zero"[..]), (second, b"one"), (after, b"plain")] {
@@ -1200,6 +1201,69 @@ mod on_raft {
                 (offset, Bytes::copy_from_slice(payload))
             );
         }
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+
+    /// **An idempotent batch waiting for its producer's turn does not hold
+    /// the shard's lane.** The wait lasts until the producer's batch before
+    /// is on the log. Held on the lane, it would stop every other publish
+    /// to the shard for as long.
+    #[tokio::test]
+    async fn a_batch_waiting_for_its_producers_turn_holds_up_no_other_publish() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let (mut receiver, _guard) = broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await?
+            .into_parts();
+
+        // The producer's batch before, not yet written.
+        let turn = broker.producer_turn(&handle, 9).await;
+        let (zero, first) = idempotent(&handle, &orders, term, 0, b"zero");
+        let (one, second) = idempotent(&handle, &orders, term, 1, b"one");
+        let (plain, passed) = job(&handle, &orders, term, b"plain", None);
+        for job in [zero, one, plain] {
+            publish_ctx.scheduler.send(job).await;
+        }
+        let passed = tokio::time::timeout(Duration::from_secs(10), passed).await;
+        let passed = passed
+            .expect("held behind a producer's turn")?
+            .expect("acknowledged")
+            .expect("an offset");
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (passed, Bytes::from_static(b"plain"))
+        );
+
+        // The producer's own batches kept the order they were queued in.
+        drop(turn);
+        let first = first.await?.expect("acknowledged").expect("an offset");
+        let second = second.await?.expect("acknowledged").expect("an offset");
+        assert_eq!((first, second), (passed + 1, passed + 2));
         EngineShards::shutdown(&*shards).await;
         Ok(())
     }

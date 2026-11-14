@@ -212,17 +212,16 @@ impl StreamEngine {
     ///
     /// The sequence is checked against this broker's log, which holds what
     /// every earlier leader committed, and a batch it already holds is
-    /// answered with where it landed. Waits for the producer's batch before
-    /// to be written here, so call it in the shard's publish order and
-    /// keep that order until it returns.
+    /// answered with where it landed. `turn` is the producer's
+    /// (`Broker::producer_turn`), first polled in the shard's publish order.
     #[allow(clippy::too_many_arguments)]
-    pub async fn publish_idempotent_on_raft(
+    pub fn publish_idempotent_on_raft(
         &self,
         broker: &felix_broker::Broker,
         handle: &felix_broker::StreamHandle,
         shard: &ShardKey,
         term: u64,
-        producer_id: u64,
+        turn: felix_broker::ProducerTurn,
         sequence: u64,
         reuse: felix_broker::SequenceReuse,
         payloads: Vec<bytes::Bytes>,
@@ -230,21 +229,14 @@ impl StreamEngine {
     ) -> Option<Result<RaftIdempotentPublish, RaftRefusal>> {
         #[cfg(feature = "raft")]
         {
-            use felix_replication::raft::Sequenced;
             let raft = self.raft(shard)?;
             // As for a plain publish: only the term the write was routed at.
             if self.raft_term(shard) != Some(term) {
                 return Some(Err(RaftRefusal::NotLeading { term }));
             }
-            let producer = Sequenced {
-                producer_id,
-                sequence,
-            };
-            let proposed = raft
-                .publish_idempotent(
-                    broker, handle, shard, term, producer, payloads, reuse, timeout,
-                )
-                .await;
+            let proposed = raft.publish_idempotent(
+                broker, handle, shard, term, turn, sequence, payloads, reuse, timeout,
+            );
             Some(
                 proposed
                     .map(RaftIdempotentPublish)
@@ -254,15 +246,7 @@ impl StreamEngine {
         #[cfg(not(feature = "raft"))]
         {
             let _ = (
-                broker,
-                handle,
-                shard,
-                term,
-                producer_id,
-                sequence,
-                reuse,
-                payloads,
-                timeout,
+                broker, handle, shard, term, turn, sequence, reuse, payloads, timeout,
             );
             None
         }

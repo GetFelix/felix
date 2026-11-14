@@ -94,30 +94,48 @@ impl Broker {
 }
 
 impl Broker {
+    /// `producer_id`'s turn on the stream, for [`Self::propose_idempotent`].
+    ///
+    /// The future takes its place behind the producer's earlier batches
+    /// when it is first polled, so poll it once in the stream's publish
+    /// order. The rest of the wait needs no order kept, and holds up no
+    /// other producer's batch.
+    pub fn producer_turn(
+        &self,
+        handle: &StreamHandle,
+        producer_id: u64,
+    ) -> impl Future<Output = ProducerTurn> + Send + 'static {
+        let turn = handle.state.producers.serialise(producer_id);
+        async move {
+            ProducerTurn {
+                producer_id,
+                _held: turn.lock_owned().await,
+            }
+        }
+    }
+
     /// [`Self::propose_publish`] for an idempotent producer's batch: the
     /// sequence is checked against the stream's log first, as
     /// [`Self::claim_batch_idempotent`] checks it, and only the producer's
     /// next batch is handed to the engine.
     ///
     /// The log learns a batch when the engine writes it, not when it is
-    /// handed over. So the producer's batches take turns: `propose` is
-    /// given the turn and must drop it once the engine has written the
-    /// batch to this broker's log or given up on it, whether or not the
-    /// future it returns is polled by then. This waits for the turn of the
-    /// producer's batch before. `propose` must store the records with the
+    /// handed over. So the producer's batches take turns: `turn` is the
+    /// producer's ([`Self::producer_turn`]), and `propose` is given it and
+    /// must drop it once the engine has written the batch to this broker's
+    /// log or given up on it, whether or not the future it returns is
+    /// polled by then. `propose` must store the records with the
     /// producer's marks.
     ///
     /// A batch the log already holds is [`IdempotentProposal::Held`], with
     /// nothing handed over. Its records may not be committed yet; the
     /// caller answers once they are. A batch the log holds only the start
     /// of was abandoned and is written again whole.
-    ///
-    /// Call it in the stream's publish order, as [`Self::propose_publish`].
     #[allow(clippy::too_many_arguments)]
-    pub async fn propose_idempotent<F, E>(
+    pub fn propose_idempotent<F, E>(
         &self,
         handle: &StreamHandle,
-        producer_id: u64,
+        turn: ProducerTurn,
         sequence: u64,
         payloads: Vec<Bytes>,
         reuse: SequenceReuse,
@@ -135,8 +153,7 @@ impl Broker {
                 "an idempotent batch was proposed on a stream with no log".to_string(),
             ));
         };
-        let turn = handle.state.producers.serialise(producer_id);
-        let turn = ProducerTurn(turn.lock_owned().await);
+        let producer_id = turn.producer_id;
         match log.producer_sequence(producer_id, sequence) {
             ProducerSequence::Held {
                 first,
@@ -177,7 +194,16 @@ impl Broker {
 
 /// A producer's turn on a stream. While it is held, no other batch of the
 /// producer is checked against the log. See [`Broker::propose_idempotent`].
-pub struct ProducerTurn(#[allow(dead_code)] tokio::sync::OwnedMutexGuard<()>);
+pub struct ProducerTurn {
+    producer_id: u64,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ProducerTurn {
+    pub fn producer_id(&self) -> u64 {
+        self.producer_id
+    }
+}
 
 /// What [`Broker::propose_idempotent`] did with a batch.
 #[must_use = "a proposed publish reports its outcome only through `complete`"]

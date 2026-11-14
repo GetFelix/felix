@@ -555,6 +555,31 @@ fn a_membership_entry_with_no_voters_is_refused() {
     assert!(refused.to_string().contains("no voters"), "{refused}");
 }
 
+/// A batch's record count is what closes it. One of none would never
+/// close, and every record after it would be read as the producer's.
+#[test]
+fn an_entry_that_opens_a_batch_of_no_records_is_refused() {
+    let opens = Command {
+        timestamp_micros: 100,
+        payload: Bytes::from_static(b"opens nothing"),
+        producer: Some(ProducerMark::Opens {
+            producer_id: 7,
+            sequence: 0,
+            len: 0,
+        }),
+        written: None,
+    };
+    let written = request(Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_normal(log_id(2, 1), opens)],
+        leader_commit: None,
+    }));
+    let bytes = encode_request(&written).expect("encode");
+    let refused = decode_request(bytes).expect_err("refused");
+    assert!(refused.to_string().contains("no records"), "{refused}");
+}
+
 impl RaftRequest {
     /// The first `n` entries of an append, with the rest of the request.
     fn clone_append(&self, n: usize) -> RaftRequest {

@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{
-    Broker, BrokerError, IdempotentOutcome, IdempotentProposal, ProposalCommitted, ProposalFailed,
-    ProposedPublish, PublishOutcome, ReadBound, SequenceReuse, StreamHandle,
+    Broker, BrokerError, IdempotentOutcome, IdempotentProposal, ProducerTurn, ProposalCommitted,
+    ProposalFailed, ProposedPublish, PublishOutcome, ReadBound, SequenceReuse, StreamHandle,
 };
 use futures::future::BoxFuture;
 use tokio::task::JoinHandle;
@@ -99,82 +99,82 @@ impl RaftEngine {
     /// batch the log holds is answered with where it landed, once that is
     /// committed, and nothing is written.
     ///
-    /// The producer's batches go in one at a time: this waits until the
-    /// batch before is on this broker's log, which is when the log can
-    /// answer for it. `term` is required. A batch that could still be
-    /// written after the broker stopped leading the term would be missed by
-    /// the check of its own re-send.
+    /// The producer's batches go in one at a time. `turn` is the
+    /// producer's ([`Broker::producer_turn`]), and it is held until the
+    /// batch is on this broker's log, which is when the log can answer for
+    /// it. `term` is required. A batch that could still be written after
+    /// the broker stopped leading the term would be missed by the check of
+    /// its own re-send.
     ///
     /// A batch of several records is not written atomically. A leader that
     /// stops partway can leave the start of one committed, and its re-send
     /// then writes the whole batch after it.
     #[allow(clippy::too_many_arguments)]
-    pub async fn publish_idempotent(
+    pub fn publish_idempotent(
         &self,
         broker: &Broker,
         stream: &StreamHandle,
         shard: &ShardKey,
         term: u64,
-        producer: Sequenced,
+        turn: ProducerTurn,
+        sequence: u64,
         payloads: Vec<Bytes>,
         reuse: SequenceReuse,
         timeout: Duration,
     ) -> Result<IdempotentPublish, BrokerError> {
         let records = payloads.clone();
-        let Sequenced {
-            producer_id,
+        let producer = Sequenced {
+            producer_id: turn.producer_id(),
             sequence,
-        } = producer;
-        let proposal = broker
-            .propose_idempotent(
-                stream,
-                producer_id,
-                sequence,
-                payloads,
-                reuse,
-                timeout,
-                |timestamp_micros, turn| {
-                    let count = records.len() as u64;
-                    let records = records
-                        .into_iter()
-                        .map(|payload| Record {
-                            timestamp_micros,
-                            payload,
-                        })
-                        .collect();
-                    // The answer waits for the commit whatever this says.
-                    // Written is when the log knows the batch, so the
-                    // producer's next one is not held for the fsync.
-                    let batch = Batch {
-                        records,
-                        ack: AckAt::Written,
-                        term: Some(term),
-                        producer: Some(producer),
-                    };
-                    let written = self.propose_reaching(shard, batch);
-                    // On a task of its own, so the turn is given up when
-                    // the batch is written whether or not its publisher
-                    // has started waiting.
-                    let written = tokio::spawn(async move {
-                        let written = written.await;
-                        drop(turn);
-                        written
-                    });
-                    let written = async move {
-                        let stopped = |_| Err(super::propose::stopped().into());
-                        written.await.unwrap_or_else(stopped)
-                    };
-                    settled(
-                        self.clone(),
-                        shard.clone(),
-                        Some(term),
-                        count,
-                        timeout,
-                        written,
-                    )
-                },
-            )
-            .await?;
+        };
+        let proposal = broker.propose_idempotent(
+            stream,
+            turn,
+            sequence,
+            payloads,
+            reuse,
+            timeout,
+            |timestamp_micros, turn| {
+                let count = records.len() as u64;
+                let records = records
+                    .into_iter()
+                    .map(|payload| Record {
+                        timestamp_micros,
+                        payload,
+                    })
+                    .collect();
+                // The answer waits for the commit whatever this says.
+                // Written is when the log knows the batch, so the
+                // producer's next one is not held for the fsync.
+                let batch = Batch {
+                    records,
+                    ack: AckAt::Written,
+                    term: Some(term),
+                    producer: Some(producer),
+                };
+                let written = self.propose_reaching(shard, batch);
+                // On a task of its own, so the turn is given up when
+                // the batch is written whether or not its publisher
+                // has started waiting.
+                let written = tokio::spawn(async move {
+                    let written = written.await;
+                    drop(turn);
+                    written
+                });
+                let written = async move {
+                    let stopped = |_| Err(super::propose::stopped().into());
+                    written.await.unwrap_or_else(stopped)
+                };
+                settled(
+                    self.clone(),
+                    shard.clone(),
+                    Some(term),
+                    count,
+                    timeout,
+                    written,
+                )
+            },
+        )?;
         let timed_out = move || CommitError::TimedOut {
             what: "batch",
             timeout,

@@ -67,23 +67,19 @@ impl Producer<'_> {
         payloads: &[&'static [u8]],
         reuse: SequenceReuse,
     ) -> Result<IdempotentPublish, BrokerError> {
-        let producer = Sequenced {
-            producer_id: PRODUCER,
-            sequence,
-        };
+        let turn = self.broker.producer_turn(self.handle, PRODUCER).await;
         let payloads = payloads.iter().map(|p| Bytes::from_static(p)).collect();
-        self.engine
-            .publish_idempotent(
-                self.broker,
-                self.handle,
-                &shard(0),
-                self.term,
-                producer,
-                payloads,
-                reuse,
-                PATIENCE,
-            )
-            .await
+        self.engine.publish_idempotent(
+            self.broker,
+            self.handle,
+            &shard(0),
+            self.term,
+            turn,
+            sequence,
+            payloads,
+            reuse,
+            PATIENCE,
+        )
     }
 
     async fn publish(
@@ -161,10 +157,7 @@ async fn a_batch_sent_again_is_answered_and_not_written_again() {
         (offsets(&quiet), quiet.duplicate),
         ((first + 2, first + 2), true)
     );
-    let stranger = Sequenced {
-        producer_id: PRODUCER + 1,
-        sequence: 4,
-    };
+    let stranger = broker.producer_turn(&handle, PRODUCER + 1).await;
     let orders = shard(0);
     let unknown = led.engine.publish_idempotent(
         &broker,
@@ -172,12 +165,13 @@ async fn a_batch_sent_again_is_answered_and_not_written_again() {
         &orders,
         led.term,
         stranger,
+        4,
         vec![Bytes::from_static(b"z")],
         SequenceReuse::Refuse,
         PATIENCE,
     );
     assert!(matches!(
-        refused(unknown.await),
+        refused(unknown),
         BrokerError::UnknownProducer { .. }
     ));
 
@@ -251,6 +245,109 @@ async fn a_producers_next_batch_is_checked_once_the_one_before_is_written() {
         assert_eq!((offsets(&outcome), outcome.duplicate), ((at, at), false));
     }
     assert_eq!(log_from(&broker, first).await, ["a", "b", "c", "d"]);
+    led.cluster.stop().await;
+}
+
+/// **A batch refused because this broker does not lead the term it was
+/// routed at is not written, and the producer's next batch is refused as a
+/// gap.** Written at whatever term the broker leads by then, it would be
+/// in the log behind a check that never saw it, and the next batch would
+/// land ahead of a re-send.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap() {
+    let mut led = led().await;
+    let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+    let producer = Producer {
+        engine: &led.engine,
+        broker: &broker,
+        handle: &handle,
+        term: led.term,
+    };
+    let first = led.committed + 1;
+    let sent = producer.publish(0, &[b"a"]).await.expect("committed");
+    assert_eq!(offsets(&sent), (first, first));
+
+    // Routed at a term this broker does not lead.
+    let elsewhere = Producer {
+        term: led.term + 1,
+        ..producer
+    };
+    let lost = elsewhere.publish(1, &[b"b", b"c"]).await;
+    assert!(
+        matches!(lost, Err(CommitError::LeadershipLost { .. })),
+        "{lost:?}"
+    );
+    let next = producer.propose(2, &[b"d"], SequenceReuse::Refuse).await;
+    assert!(matches!(
+        next.map(|_| ()),
+        Err(BrokerError::SequenceGap { expected: 1 })
+    ));
+    assert_eq!(log_from(&broker, first).await, ["a"]);
+
+    let again = producer.publish(1, &[b"b", b"c"]).await.expect("committed");
+    assert_eq!(
+        (offsets(&again), again.duplicate),
+        ((first + 1, first + 2), false)
+    );
+    led.cluster.stop().await;
+}
+
+/// **A re-send of a batch the log holds only the start of has to be that
+/// batch: as many records, and the same ones where the log has them.** It
+/// is then written whole after the start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resend_of_an_open_batch_is_checked_against_its_start() {
+    use crate::raft::types::ProducerMark;
+
+    let mut led = led().await;
+    let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+    let producer = Producer {
+        engine: &led.engine,
+        broker: &broker,
+        handle: &handle,
+        term: led.term,
+    };
+    // What a leader that stops partway leaves: the first two of the
+    // batch's three records, as their entries.
+    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let group = group.expect("group");
+    let marks = [
+        ProducerMark::Opens {
+            producer_id: PRODUCER,
+            sequence: 0,
+            len: 3,
+        },
+        ProducerMark::Continues,
+    ];
+    for (payload, mark) in [b"a", b"b"].into_iter().zip(marks) {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+            producer: Some(mark),
+            written: None,
+        };
+        group.raft().client_write(command).await.expect("written");
+    }
+    let first = led.committed + 1;
+
+    let shorter = producer.propose(0, &[b"a", b"b"], SequenceReuse::Refuse);
+    assert!(matches!(
+        shorter.await.map(|_| ()),
+        Err(BrokerError::SequenceExpired { sequence: 0 })
+    ));
+    let other = producer.propose(0, &[b"a", b"x", b"c"], SequenceReuse::Refuse);
+    assert!(matches!(
+        other.await.map(|_| ()),
+        Err(BrokerError::SequenceReused { sequence: 0 })
+    ));
+
+    let sent = producer.publish(0, &[b"a", b"b", b"c"]).await;
+    let sent = sent.expect("committed");
+    assert_eq!(
+        (offsets(&sent), sent.duplicate),
+        ((first + 2, first + 4), false)
+    );
+    assert_eq!(log_from(&broker, first).await, ["a", "b", "a", "b", "c"]);
     led.cluster.stop().await;
 }
 

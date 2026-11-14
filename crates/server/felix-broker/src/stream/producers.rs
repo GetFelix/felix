@@ -74,18 +74,25 @@ impl ProducerTable {
             producer.last_used = clock;
             return Arc::clone(&producer.turn);
         }
-        if table.producers.len() >= MAX_PRODUCERS
-            && let Some(coldest) = table
+        if table.producers.len() >= MAX_PRODUCERS {
+            // A turn someone holds or waits for stays: a new lock for the
+            // same producer would let two of its batches be checked at
+            // once. Held turns can push the table past its bound, so every
+            // idle producer over it goes, not just one.
+            let mut idle: Vec<(u64, u64)> = table
                 .producers
                 .iter()
-                // A turn someone holds or waits for stays: a new lock for
-                // the same producer would let two of its batches be checked
-                // at once.
                 .filter(|(_, producer)| Arc::strong_count(&producer.turn) == 1)
-                .min_by_key(|(_, producer)| producer.last_used)
-                .map(|(id, _)| *id)
-        {
-            table.producers.remove(&coldest);
+                .map(|(id, producer)| (producer.last_used, *id))
+                .collect();
+            let over = table.producers.len() + 1 - MAX_PRODUCERS;
+            if over < idle.len() {
+                idle.select_nth_unstable(over);
+                idle.truncate(over);
+            }
+            for (_, coldest) in idle {
+                table.producers.remove(&coldest);
+            }
         }
         let turn = Arc::new(tokio::sync::Mutex::new(()));
         table.producers.insert(

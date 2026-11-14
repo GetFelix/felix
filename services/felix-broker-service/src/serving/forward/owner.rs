@@ -286,20 +286,21 @@ impl ForwardingHandler {
         };
         let committed = match publish.producer {
             Some(producer) => {
-                let proposed = self
-                    .engine
-                    .publish_idempotent_on_raft(
-                        &self.broker,
-                        handle,
-                        key,
-                        term,
-                        producer.producer_id,
-                        producer.sequence,
-                        SequenceReuse::Refuse,
-                        publish.payloads,
-                        self.quorum_timeout,
-                    )
+                let turn = self
+                    .broker
+                    .producer_turn(handle, producer.producer_id)
                     .await;
+                let proposed = self.engine.publish_idempotent_on_raft(
+                    &self.broker,
+                    handle,
+                    key,
+                    term,
+                    turn,
+                    producer.sequence,
+                    SequenceReuse::Refuse,
+                    publish.payloads,
+                    self.quorum_timeout,
+                );
                 match proposed {
                     Some(Ok(proposed)) => proposed.complete().await.map_err(|err| {
                         // As on the hybrid: a sequenced forward can be sent

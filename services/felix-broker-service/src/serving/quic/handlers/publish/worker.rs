@@ -483,18 +483,34 @@ impl LaneWork {
         }
     }
 
-    /// An idempotent publish to a shard a Raft group runs. The lane is held
-    /// for the sequence check and the proposal, which wait for the
-    /// producer's batch before to be on this broker's log, so it runs off
-    /// the executor. The commit is not ordered and does not hold the lane.
+    /// An idempotent publish to a shard a Raft group runs. The producer's
+    /// turn is asked for on the lane, which puts the batch behind the
+    /// producer's earlier ones. The lane is not held for the wait: that
+    /// lasts until the batch before is on this broker's log, and every
+    /// other publish to the shard would wait with it. A batch that waited
+    /// is proposed off the lane, so a later publish of another kind from
+    /// the same connection can land ahead of it.
     fn publish_idempotent_on_raft(self: &Arc<Self>, mut job: PublishJob, lane: LaneGuard) {
+        let PublishTarget::Idempotent {
+            handle,
+            producer_id,
+            ..
+        } = &job.target
+        else {
+            unreachable!("only idempotent publishes with a shard are proposed here")
+        };
+        let mut turn = Box::pin(self.broker.producer_turn(handle, *producer_id));
+        // The first poll takes the place in the producer's line.
+        let turn = match futures::FutureExt::now_or_never(turn.as_mut()) {
+            Some(turn) => Ok(turn),
+            None => Err(turn),
+        };
         let this = Arc::clone(self);
-        self.work.spawn(async move {
+        let propose = move |job: &mut PublishJob, turn: felix_broker::ProducerTurn| {
             let PublishTarget::Idempotent {
                 handle,
                 shard: Some(shard),
                 generation,
-                producer_id,
                 sequence,
                 reuse,
                 ..
@@ -503,30 +519,50 @@ impl LaneWork {
                 unreachable!("only idempotent publishes with a shard are proposed here")
             };
             let term = *generation;
-            let proposed = this
-                .engine
+            this.engine
                 .publish_idempotent_on_raft(
                     &this.broker,
                     handle,
                     shard,
                     term,
-                    *producer_id,
+                    turn,
                     *sequence,
                     *reuse,
                     std::mem::take(&mut job.payloads),
                     this.quorum_timeout,
                 )
-                .await
                 .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
                     term,
                 }))
-                .map_err(crate::shards::routing::RaftRefusal::into_anyhow);
-            drop(lane);
+                .map_err(crate::shards::routing::RaftRefusal::into_anyhow)
+        };
+        // The producer's turn was free: proposed on the lane, like a plain
+        // publish.
+        let proposed = match turn {
+            Ok(turn) => {
+                let proposed = propose(&mut job, turn);
+                drop(lane);
+                Ok(proposed)
+            }
+            Err(turn) => {
+                drop(lane);
+                Err(turn)
+            }
+        };
+        self.work.spawn(async move {
+            let proposed = match proposed {
+                Ok(proposed) => proposed,
+                Err(turn) => propose(&mut job, turn.await),
+            };
             let result = match proposed {
                 Ok(proposed) => proposed.complete().await.map_err(Into::into),
                 Err(err) => Err(err),
             };
-            settle(job.response, job.acked_on_enqueue, Some(shard), result);
+            let shard = match &job.target {
+                PublishTarget::Idempotent { shard, .. } => shard.clone(),
+                _ => None,
+            };
+            settle(job.response, job.acked_on_enqueue, shard.as_ref(), result);
         });
     }
 

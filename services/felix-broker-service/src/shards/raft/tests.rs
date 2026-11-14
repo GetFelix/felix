@@ -847,18 +847,19 @@ impl Member {
             .resolve_stream_handle("t1", "ns", "orders", 0)
             .await
             .expect("handle");
+        let turn = self.broker.producer_turn(&handle, 5).await;
         let proposed = self.engine.publish_idempotent_on_raft(
             &self.broker,
             &handle,
             &orders,
             term,
-            5,
+            turn,
             sequence,
             felix_broker::SequenceReuse::Refuse,
             vec![bytes::Bytes::from_static(payload)],
             Duration::from_secs(10),
         );
-        let proposed = proposed.await.expect("a Raft shard").expect("proposed");
+        let proposed = proposed.expect("a Raft shard").expect("proposed");
         let first = proposed.complete().await.expect("committed");
         first.expect("an offset")
     }

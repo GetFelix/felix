@@ -2047,19 +2047,37 @@ is safe because of two rules.
   up on. A batch refused before it is written stays unwritten, because an
   idempotent batch is written only while the broker leads the term it was
   routed at. The producer's next batch is then refused as a gap instead
-  of landing ahead of it. Batches of different producers do not wait for each other.
+  of landing ahead of it.
+
+Only the producer's own batches wait for its turn. A batch takes its place
+in its producer's line as it arrives, in the shard's publish order, and
+does the waiting off the shard's publish lane, so other producers' batches
+and plain publishes go ahead meanwhile. One consequence: when a connection
+sends an idempotent batch and then a plain publish to the same shard
+without waiting for the first answer, the plain publish can land first.
 
 A batch the log already holds is answered once it is committed. Below the
 read bound it already is. Above it, the leader wrote it in this term and
 the answer waits for that entry's commit, so a re-send is never
 acknowledged ahead of the batch it repeats.
 
-The records of a batch are separate entries, so a batch of several records
-is not written atomically. If a leader stops with only the start of a
-batch replicated, the next leader's first entry closes it: the start stays
-in the stream, and the re-send writes the whole batch after it. The same
-happens on the hybrid when a promoted leader holds only the start of a
-batch (#2516). A batch of one record is always written exactly once.
+A batch of one record is always written exactly once. A batch of several
+records is not yet: each record is its own entry, because an entry's index
+is its record's offset, so the batch is not written atomically, and two
+things can cut it.
+
+- A leader stops with only the start of the batch replicated. The start
+  stays in the stream, and the re-send writes the whole batch after it,
+  so the start's records are in the stream twice. The same happens on the
+  hybrid when a promoted leader holds only the start of a batch (#2516).
+- The leader loses its majority's lease partway. openraft checks the lease
+  for each entry, so any of the batch's records can be the ones written,
+  not only its first (#2472). The publisher is told the batch was written
+  in part. When the records written are the batch's first, the re-send is
+  handled as above. When they are not, the re-send can be refused with
+  `sequence_reused`, because the log's start of the batch is not the
+  start of the re-send, and a record written without the batch's first
+  one is read as continuing whatever batch is open before it.
 
 The publisher id (the principal that published a record, which is not the
 producer id) is still not stored, and a batch with record headers is still
@@ -2068,12 +2086,15 @@ refused.
 > `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
 > `a_batch_sent_again_is_answered_and_not_written_again`,
 > `a_resend_of_an_uncommitted_batch_waits_for_its_commit`,
-> `a_producers_next_batch_is_checked_once_the_one_before_is_written` and
+> `a_producers_next_batch_is_checked_once_the_one_before_is_written`,
+> `a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap`,
+> `a_resend_of_an_open_batch_is_checked_against_its_start` and
 > `a_batch_resent_to_the_next_leader_is_not_written_again`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
-> `queued_idempotent_publishes_to_a_raft_shard_are_written_once`;
+> `queued_idempotent_publishes_to_a_raft_shard_are_written_once` and
+> `a_batch_waiting_for_its_producers_turn_holds_up_no_other_publish`;
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
 > `a_forward_to_a_raft_leader_commits_through_its_group`.
 
