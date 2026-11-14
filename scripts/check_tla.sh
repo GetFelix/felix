@@ -1057,6 +1057,8 @@ fi
 # box run checks it. FelixRaftWrittenTerms and FelixRaftWrittenJointFailover
 # did not finish in two hours there (docs/formal/README.md has how far each
 # got).
+# FelixRaftWrittenFailoverPowerCut is not registered: a capped box run
+# checks it (docs/formal/README.md has how far it got).
 # FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a

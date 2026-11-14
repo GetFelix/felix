@@ -181,11 +181,18 @@ cases:
 
 - The shard directory is missing or empty.
 - The storage id rotated: the data root was lost, it failed the restore
-  gate below, or the machine lost power. A copy reports a record written
-  before its fsync, and a leader can acknowledge on those reports, so a
-  broker with Raft copies records every run as relaxed whatever its
-  `FELIX_DURABLE_FSYNC_MODE`, and a power cut rotates the storage id (issue
-  #2423). A process crash alone keeps it: the kernel still has the writes.
+  gate below, or the machine lost power on a run that was relaxed. A run
+  is relaxed when the broker's own `FELIX_DURABLE_FSYNC_MODE` is `periodic`
+  or `none`, or when a copy in the root has ever vouched for a record
+  before its fsync: told a leader it had written one, or, as leader,
+  counted its own unsynced write toward an acknowledgement. Before the
+  first of either, the copy syncs a marker in the data root
+  (`vouched-unsynced`), and the marker is never removed, since a leader
+  may still count what the copy said. A copy under `on_commit` that
+  never vouched was only ever counted for records it had synced, so it
+  keeps its id as a 0.7 broker does (issue #2423). On Linux a process
+  crash alone keeps the id: the kernel still has the writes. Elsewhere,
+  macOS included, a killed relaxed run rotates too.
 - The directory fails the restore check below.
 - The copy's log was poisoned in its last run ("A poisoned log" below).
 
@@ -421,9 +428,12 @@ kernel may have dropped pages, which then read as one. Two cases:
   (`run_state::watch_poison`), so it does not depend on the caller. That
   record is written to
   the same disk without a sync. If both writes are lost and the machine
-  lost power, the start still rotates, since the run was recorded as
-  relaxed. If both are lost and only the process restarted, nothing on
-  disk says a flush failed and the copy keeps its id.
+  lost power, the start rotates if the run was relaxed. A copy that never
+  vouched keeps its id, and loses nothing a peer counted: it was counted
+  only for synced records, and the failed flush acknowledged none. If both
+  are lost and only the process restarted, nothing on disk says a flush
+  failed and the copy keeps its id
+  ([#2558](https://github.com/GetFelix/felix/issues/2558)).
 - **The copy is closed and opened again in the same process.** The
   process does not re-read the run record, so the storage crate remembers
   every directory whose log was poisoned in this process, and opening one
@@ -718,8 +728,8 @@ lost is a record that only brokers declared dead held, and, when no copy
 holds the floor's entry, a record that no copy holding it can vouch for
 (see "Offsets are not reused" below). `plan` marks every
 group where a dead broker was a voter, since those are the groups that may
-have lost something. A process crash does not rotate ids and never needs a
-re-form. A power cut rotates that broker's copy, and its old voter seat
+have lost something. On Linux a process crash does not rotate ids and never
+needs a re-form. A power cut rotates that broker's copy, and its old voter seat
 stays empty until membership changes exist, so a group that loses a
 majority of its voters to power cuts is in the same place as one whose
 voters died.
@@ -1020,8 +1030,10 @@ What the acknowledgement promises, and what it does not
   loses power can be the leader's own. The window is one group-commit
   fsync. The offset is then given to another record, which no subscriber
   saw, because subscribers are fed committed records only.
-- Raft closes that case the way 0.7 does (issue #2423). A broker with
-  Raft copies records every run as relaxed, so after a power cut it comes
+- Raft closes that case the way 0.7 does (issue #2423). A copy syncs a
+  marker in its data root before its first written report leaves, and
+  before it counts its own unsynced write as leader. A root with the
+  marker records every run as relaxed, so after a power cut it comes
   back under a new storage identity, and its copies under new copy ids.
   The old identity no longer votes or counts, so the shard stays closed
   until the copy that holds the record returns, as a 0.7 shard does
@@ -1029,6 +1041,15 @@ What the acknowledgement promises, and what it does not
   `FelixRaftWrittenPowerCut.cfg` checks this with `AckedNeverLost`, and
   `FelixRaftWrittenPowerCutKeeps.cfg` pins the loss when the cut keeps the
   copy.
+- What a site-wide power loss does depends on the mode. In a cluster
+  where every broker is on `on_commit`, a leader acknowledges at its flush
+  or the commit and asks for no written report, so no copy vouches, every
+  broker keeps its id, and the shard reopens with every acknowledged
+  record. Brokers on `periodic` or `none` all rotate, and so does an
+  `on_commit` broker that ever followed a leader on a relaxed mode, since
+  it answered that leader's ask. A shard whose every voter rotated
+  has no voter left and needs a re-form, as a 0.7 shard whose copies all
+  rotated stays closed.
 - The cost is a voter seat. The rotated copy rejoins only through a
   membership change, which per-shard Raft does not make yet, so until then
   a group that lost a seat this way has one fewer broker to lose, as a 0.7
@@ -3088,7 +3109,7 @@ copy before its fsync, and that with no power cut it is never missing.
 Twins that fail: a learner's report counted, a report counted whatever its
 term, one half of a joint configuration taken as enough, and the commit
 index counting written reports. With every rule on and a power cut that
-rotates the broker's copy, as the broker does, `AckedNeverLost` holds
+rotates the broker's copy, as a broker that vouched does, `AckedNeverLost` holds
 (`FelixRaftWrittenPowerCut.cfg`). One expected violation is pinned: the
 same with the copy kept (`FelixRaftWrittenPowerCutKeeps.cfg`), the loss
 "Two signals from one append" describes.

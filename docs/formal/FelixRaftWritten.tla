@@ -47,8 +47,8 @@
 (*                     membership change lose nothing.                     *)
 (*   AckedNeverLost -- the same with no exception. It holds when no broker *)
 (*                     loses power, and with a power cut when the cut      *)
-(*                     rotates the broker's copy (CutRotates, as the       *)
-(*                     broker does: FelixRaftWrittenPowerCut). Without     *)
+(*                     rotates the broker's copy (CutRotates, as a broker  *)
+(*                     that vouched does: FelixRaftWrittenPowerCut). Without *)
 (*                     that it does not, and FelixRaftWrittenPowerCutKeeps *)
 (*                     pins the trace: one copy of the written majority    *)
 (*                     loses the record to a power cut, and the voters     *)
@@ -357,7 +357,9 @@ Crash(s) ==
 \* starts with an empty log and no vote. It never votes, campaigns or
 \* answers as that seat again; adding the new copy needs a membership
 \* change, which this model does not make. The leader keeps whatever it
-\* already heard from the old copy.
+\* already heard from the old copy. The broker rotates only a copy that
+\* vouched for an unsynced record, and rotates it even when the cut took
+\* nothing; this model rotates every cut copy and cuts only unsynced tails.
 PowerCut(s) ==
     /\ used.cuts < MaxPowerCuts
     /\ s \notin gone

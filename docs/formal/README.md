@@ -605,7 +605,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenOtherTermCounts.cfg` | a report counts whatever term its log id carries | violate `AckedHeld` |
 | `FelixRaftWrittenJointOneHalf.cfg` | a majority of either half of a joint configuration is enough | violate `AckedHeld` |
 | `FelixRaftWrittenCommits.cfg` | the commit index counts written reports | violate `CommittedHeld` |
-| `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut that rotates the cut broker's copy (`CutRotates`), as the broker does | pass the same and `AckedNeverLost` (16.8k distinct states) |
+| `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut that rotates the cut broker's copy (`CutRotates`), as a broker whose copy vouched for an unsynced record does | pass the same and `AckedNeverLost` (16.8k distinct states) |
+| `FelixRaftWrittenFailoverPowerCut.cfg` | `CutRotates` at failover bounds: two terms, one write, one process crash, two power cuts | pass the same and `AckedNeverLost`; not registered: TLC_OUTCOME |
 | `FelixRaftWrittenPowerCutKeeps.cfg` | the same with the copy kept: the loss the early acknowledgement would leave open | violate `AckedNeverLost` |
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
@@ -2790,9 +2791,23 @@ leader's own. `FelixRaftWrittenPowerCutKeeps.cfg` pins that as an expected
 violation of `AckedNeverLost`, with every rule on, one power cut, and
 `CutRotates` off.
 
-The broker closes it as the hybrid does (issue #2423). A broker with Raft
-copies records every run as relaxed, so after a power cut it starts under a new
-storage id and each copy under a new copy id. With `CutRotates` the cut broker
+The broker closes it as the hybrid does (issue #2423). A copy syncs a marker
+in its data root before it first tells a leader of an unsynced write, or
+counts its own as leader. A root with the marker, or on a relaxed fsync mode,
+records every run as relaxed, so after a power cut it starts under a new
+storage id and each copy under a new copy id. A copy on `OnCommit` that never
+vouched keeps its id: no leader counted it for a record it had not synced. So
+after a site-wide power loss a cluster with every broker on `OnCommit` keeps
+every voter, and a cluster that acknowledged on written reports rotates
+every copy that vouched.
+
+The model does not track which copies vouched. `CutRotates` rotates every cut
+copy, which is the code's behaviour for a copy that vouched; the model's cut
+only removes an unsynced tail, while the code also rotates a vouched copy
+whose tail was all synced, which removes a voter and adds no behaviour. A
+copy that never vouched is the `CutRotates = FALSE` cut of a copy that no
+report or leader's count named, which the model does not separate from the
+unsafe one. With `CutRotates` the cut broker
 leaves the voter set as that identity: its log is empty, its vote cleared, and
 it never votes, campaigns, answers or counts again. The leader keeps whatever
 it already heard from the old copy. `FelixRaftWrittenPowerCut.cfg` is the same
