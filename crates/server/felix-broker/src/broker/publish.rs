@@ -14,7 +14,8 @@ pub(crate) use completion::{deliver_from_log, spawn_release};
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
 pub use proposed::{
-    IdempotentProposal, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish,
+    IdempotentProposal, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed,
+    ProposedPublish,
 };
 
 use std::sync::Arc;

@@ -2488,7 +2488,8 @@ one are refused with the same errors.
 
 What makes it hold across a leader change is where the sequences live.
 A producer's batch is one record, and its entry carries the producer's
-mark: the producer id and the sequence. The mark is stored in the record and
+mark: the producer id, the sequence, the record's position in the batch and
+the batch's length. The mark is stored in the record and
 sent with the entry, so every member's log holds it, and each member
 derives every producer's place from its own log, the same way a hybrid
 replica does (`docs/storage-format.md`, "Producer marks"). A log that a
@@ -2572,17 +2573,91 @@ and nothing writes those all or none:
   written, not only its first (#2472), and the re-send could not be matched
   to them.
 
-So the leader refuses the batch before it takes the producer's turn or
-writes anything: `invalid_request`, not retryable, "a stream on Raft does
-not take idempotent batches of more than one record". The sequence is not
-used up, and the producer can send the records as batches of one. No entry
-continues another's batch: a member refuses such an entry from a peer, and
-a record of a longer batch in a log is not read as an entry. Taking these batches needs
-one of: a mark that names each record's place in its batch so a re-send
-finishes a cut one, a term-bound write of several entries in openraft, or
-offsets that are not entry indexes. #2524 tracks it, and it has to land
-before a stream that holds data can move from the hybrid to Raft, because
-the hybrid takes these batches.
+So the leader refuses a new batch of several records before it takes the
+producer's turn or writes anything: `invalid_request`, not retryable, "a
+stream on Raft does not take idempotent batches of more than one record".
+The sequence is not used up, and the producer can send the records as
+batches of one.
+
+The first of the two cases is already handled underneath the refusal, so
+that lifting it later is a small step (#2524). Every record of a batch is
+an entry that names the batch and its own position in it
+(`docs/storage-format.md`, "Producer marks"). That is enough for each
+member to know exactly which records of a batch its log holds, even with
+other entries between them.
+
+**A batch cut by a leader change is finished, not written again.** Say a
+leader stops with the first two of a batch's four records replicated. The
+next leader's log holds those two, and its blank entry follows them. Each
+member's log remembers the batch as cut: two of four held. When the
+producer sends the batch again, the leader
+
+1. checks the two records it holds against the start of the re-send, the
+   way it checks a whole batch that is sent again, and refuses a different
+   batch under the same sequence (`sequence_reused`);
+2. writes only records three and four, as pieces of the same batch;
+3. answers with the first record's original offset and the last piece's
+   offset.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant A as Leader A
+    participant B as Leader B, elected later
+    P->>A: producer 7, sequence 4: r0 r1 r2 r3
+    A->>B: r0 at offset 20, r1 at offset 21
+    Note over A: stops
+    Note over B: blank entry at offset 22, sequence 4 is cut at 2 of 4
+    P->>B: producer 7, sequence 4, again: r0 r1 r2 r3
+    B->>B: r0 r1 match what the log holds
+    B->>B: writes r2 at offset 23, r3 at offset 24
+    B-->>P: publish_ok, offsets 20 to 24
+```
+
+Three things follow, and a client has to know them.
+
+- **A reader sees each record once, in order, but not as one run.** The
+  records of a finished batch keep the order the producer gave them. Other
+  records (here the blank entry, which no reader is sent) can lie between
+  the part an earlier leader wrote and the rest.
+- **The start is visible before the batch is acknowledged.** Records the
+  earlier leader committed are delivered when they commit, as on the
+  hybrid. A batch is not an atomic unit for readers.
+- **The answer's offsets are the first and the last record's.** A client
+  must not compute a record's offset as the first offset plus its position.
+
+**A batch the log cannot account for is refused, never rewritten.** The
+re-send is refused with `sequence_expired` when the member cannot tell what
+it holds of the batch:
+
+- its log starts inside the batch (a purge, or a copy that started above
+  the batch's first record), so it holds later records of the batch
+  without the first;
+- a purge removed every record the log held of it, or the member already
+  remembers 4096 other cut batches. The member keeps only the producer and
+  the sequence then, and refuses that sequence and older ones, a first
+  batch's sequence 0 included, until a purge passes a later batch of the
+  producer. It is saved before the purge removes anything, so a restart,
+  a truncation or a reset keeps the refusal;
+- the records it holds of the batch do not follow one another;
+- the re-send has a different number of records than the batch in the log.
+
+Refusing is the only safe answer there. Writing the batch again would put
+the records that are still in the log into the stream a second time. The
+cut batch is remembered for as long as one of its records is in the log,
+and by name after that. A restart keeps it: while records of it are in the
+log, the log's marks rebuild it, and the by-name entry is in a flushed
+`producers.forgotten` file in the log's directory. A member that was caught up by
+copying segments derives it from the records it was sent, since a shard
+group's snapshot carries no records and no producer state, so it does not
+know a cut batch none of whose records it was sent.
+
+What is still missing before the refusal can go is the second case: a
+write of several entries that openraft checks once, so a lapsed lease
+cannot leave a batch with a hole in it (#2472). Until then a batch with a
+hole is one of the cases above that is refused. #2524 tracks the rest, and
+it has to land before a stream that holds data can move from the hybrid to
+Raft, because the hybrid takes these batches.
 
 The publisher id (the principal that published a record, which is not the
 producer id) is still not stored, and a batch with record headers is still
@@ -2594,8 +2669,15 @@ refused.
 > `a_producers_next_batch_is_checked_once_the_one_before_is_written`,
 > `a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap`,
 > `a_batch_of_several_records_is_refused_with_nothing_written`,
-> `a_record_of_a_longer_batch_is_not_a_raft_entry` and
+> `a_record_of_a_batch_names_its_place_in_the_log`,
+> `a_batch_cut_by_a_leader_change_is_finished_by_its_resend` and
 > `a_batch_resent_to_the_next_leader_is_not_written_again`;
+> `crates/server/felix-storage/src/disk_log/producers/tests.rs`,
+> `a_purge_past_a_cut_first_batch_refuses_its_resend`,
+> `a_purge_past_an_open_batch_refuses_its_resend` and
+> `past_the_bound_a_cut_first_batch_is_still_refused`;
+> `crates/server/felix-storage/src/disk_log/tests/producers.rs`,
+> `a_purge_past_a_cut_batch_refuses_its_resend`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
