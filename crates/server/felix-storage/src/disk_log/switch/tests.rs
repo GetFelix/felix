@@ -286,32 +286,17 @@ async fn a_crash_before_the_marker_starts_the_voter_again_with_the_same_result()
     start(&reference, &base).await.expect("voter");
     let expected = files(&reference);
 
-    // Each step as a crash would leave it: the steps before it on disk, and
-    // no marker.
-    for crash_after in 1..=4 {
+    // A crash after each step of the start leaves no marker, so whatever
+    // reads the directory next takes it as the hybrid's and starts the
+    // voter again, which ends where an uninterrupted start does.
+    for crash_after in 1..=6 {
         let dir = root.path().join(format!("crash-{crash_after}"));
         copy(&dir, Below::Stamped, &["a", "b", "c"], &["unacked"]).await;
-        if crash_after >= 1 {
-            check_and_cut(&dir, LABEL, open_config(), &base)
-                .await
-                .expect("check")
-                .expect("a voter");
-        }
-        if crash_after >= 2 {
-            let snapshots = SnapshotStore::open(&dir).expect("snapshots");
-            assert!(snapshots.install(snapshot(&base)).await.expect("install"));
-            snapshots.close().await.expect("close");
-        }
-        if crash_after >= 3 {
-            store_purged(&dir, base.offset, base.generation).expect("purged");
-        }
-        if crash_after >= 4 {
-            write_member_state(&dir, LABEL, &base, SEAL - 1, VOTE_FOR, snapshot(&base))
-                .await
-                .expect("state");
-        }
-        // Unmarked, so not yet a Raft member: whatever reads the directory
-        // next takes it as the hybrid's and starts the voter again.
+        CRASH_AFTER.with(|at| at.set(crash_after));
+        let crashed =
+            start_voter(&dir, LABEL, open_config(), &base, VOTE_FOR, snapshot(&base)).await;
+        CRASH_AFTER.with(|at| at.set(0));
+        assert!(crashed.is_err(), "step {crash_after}");
         assert_eq!(
             engine_marker::switched_base(&dir, LABEL).expect("marker"),
             None,
@@ -328,6 +313,10 @@ async fn a_crash_before_the_marker_starts_the_voter_again_with_the_same_result()
                 term: SEAL - 1,
                 index: n
             })
+        );
+        assert_eq!(
+            log.accepted_vote(),
+            (SEAL, Some(Arc::from(VOTE_FOR)), false)
         );
         log.shutdown().await.expect("shutdown");
     }

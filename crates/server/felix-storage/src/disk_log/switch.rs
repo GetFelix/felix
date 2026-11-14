@@ -250,6 +250,7 @@ pub async fn start_voter(
     if let Err(not) = check_and_cut(dir, label, hybrid, base).await? {
         return Ok(Err(not));
     }
+    crash_point(1)?;
     write_member_state(dir, label, base, term, vote_for, snapshot).await?;
     engine_marker::mark_switched(dir, base.generation, base.offset)?;
     Ok(Ok(()))
@@ -339,9 +340,11 @@ async fn write_member_state(
         )));
     }
     closed.map_err(StorageError::Io)?;
+    crash_point(2)?;
     // After the snapshot: an open refuses a purged id its snapshot does not
     // cover.
     store_purged(dir, base.offset, base.generation).map_err(StorageError::Io)?;
+    crash_point(3)?;
     // The vote is the floor: without it the member would campaign at term
     // 1, below the base, and its entries would compare older than the
     // base's. A vote for itself at the base's term grants nobody else
@@ -355,6 +358,7 @@ async fn write_member_state(
             committed: false,
         },
     )?;
+    crash_point(4)?;
     replica_state::store(
         dir,
         &ReplicaState {
@@ -364,7 +368,30 @@ async fn write_member_state(
             committed_generation: generation,
         },
     )?;
+    crash_point(5)?;
     set::remove(dir)?;
+    crash_point(6)?;
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// The step after which [`start_voter`] stops as a crash would.
+    static CRASH_AFTER: std::cell::Cell<u8> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn crash_point(step: u8) -> Result<()> {
+    if CRASH_AFTER.with(|at| at.get()) == step {
+        return Err(StorageError::Io(io::Error::other(format!(
+            "crashed after step {step}"
+        ))));
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+fn crash_point(_: u8) -> Result<()> {
     Ok(())
 }
 

@@ -102,7 +102,7 @@ async fn switched_cluster() -> (Cluster, SwitchBase) {
                 })
             }
         };
-        switch::start_voter(
+        crate::raft::switch::start_voter(
             &dir,
             "t/ns/orders/0",
             hybrid(),
