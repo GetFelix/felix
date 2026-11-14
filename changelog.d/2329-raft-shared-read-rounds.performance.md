@@ -1,0 +1,2 @@
+- Raft: reads of one shard share read-index rounds. One round is asked at a time, and it confirms every read that arrived before it was asked, instead of one round per read (#2329).
+- Raft: an append to a follower carries up to 4,096 entries instead of openraft's default 300, so a follower behind by small records catches up in fewer round trips. `RuntimeConfig::append_entries` sets it (#2332).

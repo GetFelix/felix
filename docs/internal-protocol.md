@@ -1224,6 +1224,12 @@ answer as a partial acknowledgement and sends the rest next. An append that
 could not arrive in time would be cut the same way on every retry, so a
 follower far behind would never catch up.
 
+Before that cut, an append holds at most 4,096 entries
+(`RuntimeConfig::append_entries`) and the leader reads at most 4 MiB of
+records for one. openraft's default of 300 entries would cap an append of
+1 KiB records at about 300 KB, and a follower behind would take over ten
+times the round trips to catch up.
+
 Raft calls have in-flight budgets per peer of their own
 (`FELIX_INTERNAL_MAX_INFLIGHT` each), so groups waiting on a slow peer cannot
 take the permits its pings and fences need. Appends that carry entries have

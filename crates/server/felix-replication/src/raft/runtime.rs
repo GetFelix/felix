@@ -42,6 +42,11 @@ pub struct RuntimeConfig {
     /// two starts an election.
     pub election_min: Duration,
     pub election_max: Duration,
+    /// Most entries one append to a follower carries. The default fills the
+    /// log reader's 4 MiB page with 1 KiB records, so a follower that is
+    /// behind catches up in fewer round trips. Larger records are bounded
+    /// by bytes: by that page and by `wire::fit`.
+    pub append_entries: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -53,6 +58,7 @@ impl Default for RuntimeConfig {
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
+            append_entries: 4096,
         }
     }
 }
@@ -73,6 +79,7 @@ impl RuntimeConfig {
             heartbeat_interval: millis(self.heartbeat),
             election_timeout_min: millis(self.election_min),
             election_timeout_max: millis(self.election_max),
+            max_payload_entries: self.append_entries,
             // The node ticker runs the timer check. A tick task per group
             // costs most of a core per thousand idle members.
             enable_tick: false,

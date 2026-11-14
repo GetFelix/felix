@@ -1384,6 +1384,19 @@ bound.
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
 
+Reads of one shard share rounds. A group asks one round at a time, and a
+round confirms every read that arrived before it was asked. A read that
+arrives while a round is out waits for the next one, which is asked when
+the current one ends: the round out may have been asked before the reader
+took its value, and its answer would not cover that value. So a burst of
+reads costs two rounds at most, not one each, and a read waits at most the
+rest of one round and one more. The bound above is on that whole wait.
+
+> `crates/server/felix-replication/src/raft/read_rounds/tests.rs`,
+> `a_read_that_arrives_during_a_round_waits_for_the_next_one`, and
+> `crates/server/felix-replication/src/raft/tests/read.rs`,
+> `reads_that_arrive_together_share_read_index_rounds`.
+
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
 page, "openraft version").

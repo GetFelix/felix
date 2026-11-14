@@ -25,6 +25,7 @@ use crate::{ShardKey, ShardKind};
 mod commit;
 mod deliver;
 mod propose;
+mod read;
 mod written;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
@@ -92,6 +93,8 @@ struct Net {
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
+    /// Appends carrying entries that were handed to a broker.
+    appends: std::sync::atomic::AtomicU64,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -137,6 +140,11 @@ impl RaftTransport for Net {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
+        if runtime.is_some()
+            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+        {
+            self.appends.fetch_add(1, Relaxed);
+        }
         match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),

@@ -1,0 +1,86 @@
+name: Raft read and catch-up benchmark
+
+# Two benchmarks of the per-shard Raft runtime, three runtimes in one process
+# (crates/server/felix-replication/src/raft/tests/read.rs):
+# - confirmed reads per second and latency, with a read-index round per read
+#   and with reads sharing rounds, at 1, 16 and 128 concurrent readers;
+# - how long a follower behind by 1 KiB records takes to catch up over a
+#   simulated 1 Gbit/s link, at 300 entries an append and at the runtime's
+#   default.
+# Both sides run in one job, alternating, so runner drift lands on both. A
+# report, not a gate.
+
+on:
+  push:
+    branches: [raft/read-batch-2329]
+  workflow_dispatch:
+    inputs:
+      read_seconds:
+        description: "Seconds per read trial"
+        required: false
+        default: "5"
+      rounds:
+        description: "Rounds; each runs every cell once per side"
+        required: false
+        default: "6"
+      catch_up_records:
+        description: "Records the follower is behind by"
+        required: false
+        default: "50000"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: raft-read-perf-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Raft read and catch-up
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: raft-read-perf
+      - name: Build
+        run: cargo test --locked --release -p felix-replication --lib --no-run
+      - name: Reads
+        env:
+          RAFT_READ_BENCH_SECONDS: ${{ inputs.read_seconds || '5' }}
+          RAFT_READ_BENCH_ROUNDS: ${{ inputs.rounds || '6' }}
+        run: |
+          set -o pipefail
+          cargo test --locked --release -p felix-replication --lib read_index_rounds_benchmark \
+            -- --ignored --nocapture 2>&1 | tee raft-read.log
+      - name: Catch-up
+        if: always()
+        env:
+          RAFT_CATCH_UP_RECORDS: ${{ inputs.catch_up_records || '50000' }}
+          RAFT_CATCH_UP_ROUNDS: ${{ inputs.rounds || '6' }}
+        run: |
+          set -o pipefail
+          cargo test --locked --release -p felix-replication --lib catch_up_benchmark \
+            -- --ignored --nocapture 2>&1 | tee raft-catch-up.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Raft reads"
+            echo
+            grep -h '^|' raft-read.log || echo "no result"
+            echo
+            echo "### Raft catch-up"
+            echo
+            grep -h '^|' raft-catch-up.log || echo "no result"
+          } >> "$GITHUB_STEP_SUMMARY"
