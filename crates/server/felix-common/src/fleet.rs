@@ -239,6 +239,13 @@ pub const ELECTION_REPORTED: &[FleetFeature] = &[PEER_ELECTION, JOINT_FENCE, REP
 /// [`PEER_ELECTION`].
 pub const NON_VOTING: FleetFeature = FleetFeature::new("non_voting");
 
+/// Every broker can run a stream shard on the Raft engine and take part in
+/// its switch from the hybrid: the seal, and a member start from the seal's
+/// base. The control plane orders a seal only once this is finalized. No
+/// build reports it yet, so no shard that holds data can switch
+/// (`docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft").
+pub const SHARD_RAFT: FleetFeature = FleetFeature::new("shard_raft");
+
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.
 pub const MAX_FEATURES: usize = 64;
@@ -299,6 +306,9 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         FOR_JOINT_FENCE
     } else if feature == MAJORITY_ACK.name() || feature == RECORD_GENERATIONS.name() {
         &[GENERATION_START]
+    } else if feature == SHARD_RAFT.name() {
+        // The switch reads each record's term from its header.
+        &[GENERATION_START, RECORD_GENERATIONS]
     } else if feature == LEASE_FREE_READS.name() || feature == FENCED_CACHES.name() {
         BY_FOLLOWERS
     } else {

@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 use super::group::{self, Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::propose::Clock;
+use super::reach::Reach;
 use super::ticker;
 use super::types::{GroupId, MemberId, ShardTypes};
 use crate::driver::WriteFence;
@@ -355,6 +356,8 @@ pub(crate) struct Registry {
     pub(crate) ticker_restarts: AtomicU64,
     /// Shared by every group's log, and read by the ticker for its gauge.
     pub(crate) tail_budget: Arc<TailBudget>,
+    /// The peer brokers this runtime's calls could not reach.
+    pub(crate) reach: Arc<Reach>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -385,7 +388,7 @@ impl Registry {
         self.ticked.store(Arc::new(open));
     }
 
-    fn get(&self, shard: &ShardKey) -> Option<Arc<Group>> {
+    pub(super) fn get(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         match self.slots.read().by_shard.get(shard) {
             Some(Slot::Open(group)) => Some(Arc::clone(group)),
             _ => None,
@@ -437,13 +440,14 @@ impl GroupRuntime {
         config: RuntimeConfig,
         transport: Arc<dyn RaftTransport>,
     ) -> Result<Self, InvalidTimers> {
+        let started = tokio::time::Instant::now();
         Ok(Self {
             inner: Arc::new(Inner {
                 broker: broker.into(),
                 tick: config.tick,
                 log_mark: config.log_mark,
                 timers: Timers {
-                    started: tokio::time::Instant::now(),
+                    started,
                     tick: config.tick.as_millis() as u64,
                     heartbeat: config.heartbeat.as_millis() as u64,
                     idle_heartbeat: config.idle_heartbeat.as_millis() as u64,
@@ -461,6 +465,7 @@ impl GroupRuntime {
                     ticked: ArcSwap::default(),
                     ticker_restarts: AtomicU64::new(0),
                     tail_budget: TailBudget::new(config.tail_cache_bytes),
+                    reach: Arc::new(Reach::new(started, config.heartbeat)),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -703,6 +708,7 @@ impl GroupRuntime {
             inner.timers,
             host,
             Arc::clone(&registry.tail_budget),
+            Arc::clone(&registry.reach),
         )
         .await?;
         let group = Arc::new(group);
@@ -1015,6 +1021,11 @@ impl GroupRuntime {
             .iter()
             .map(|group| (*group.id.shard).clone())
             .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reach(&self) -> &Reach {
+        &self.inner.registry.reach
     }
 
     #[cfg(test)]

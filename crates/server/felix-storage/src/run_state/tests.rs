@@ -824,3 +824,113 @@ fn a_clean_stop_is_not_undone_by_a_late_boot() {
     assert!(!next.rotated);
     assert_eq!(next.id, first.id);
 }
+
+fn dated(registered_at_millis: u64, incarnation: u64) -> Binding {
+    Binding {
+        registered_at_millis,
+        incarnation,
+    }
+}
+
+fn rotate(root: &Path, fresh: u8) -> StorageId {
+    copy_trust::rotate_storage_id(root, [fresh; 16]).expect("rotate")
+}
+
+/// **A rotation is bound to the registration the directory held then, and a
+/// directory with none it can name records it unbound.** The pair is read
+/// only while the registration record names the same incarnation: a build
+/// that does not date registrations moves that record alone.
+#[test]
+fn a_rotation_is_bound_to_the_directorys_registration() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let first = storage_identity::load_or_create(root, || [1; 16])
+        .expect("id")
+        .0;
+
+    let second = rotate(root, 2);
+    let unbound = Rotation {
+        to: second,
+        from: first,
+        bound: None,
+    };
+    assert_eq!(last_rotation(root).expect("read"), Some(unbound));
+
+    record_dated_registration(root, dated(70, 4)).expect("register");
+    let third = rotate(root, 3);
+    let bound = Rotation {
+        to: third,
+        from: second,
+        bound: Some(dated(70, 4)),
+    };
+    assert_eq!(last_rotation(root).expect("read"), Some(bound));
+
+    record_registration(root, 5).expect("an undated registration");
+    assert_eq!(registration_binding(root).expect("read"), None);
+    rotate(root, 4);
+    assert_eq!(
+        last_rotation(root).expect("read").expect("record").bound,
+        None
+    );
+}
+
+/// **Only the registration right after the bound one moves the binding.**
+/// One further on means some registration was not recorded here, as one
+/// from an older release is; another registration time is another node
+/// record; a record under another id is not this directory's rotation.
+#[test]
+fn only_the_next_registration_rebinds_a_rotation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    storage_identity::load_or_create(root, || [1; 16]).expect("id");
+    record_dated_registration(root, dated(70, 4)).expect("register");
+    rotate(root, 2);
+    let bound = || last_rotation(root).expect("read").expect("record").bound;
+
+    record_dated_registration(root, dated(70, 5)).expect("the next one");
+    assert_eq!(bound(), Some(dated(70, 5)));
+    record_dated_registration(root, dated(70, 7)).expect("skips one");
+    assert_eq!(bound(), Some(dated(70, 5)));
+    record_dated_registration(root, dated(71, 6)).expect("another node record");
+    assert_eq!(bound(), Some(dated(70, 5)));
+
+    // The id moved without a record, as a crash between the two leaves it.
+    storage_identity::replace(root, [9; 16]).expect("replace");
+    record_dated_registration(root, dated(70, 6)).expect("under another id");
+    assert_eq!(bound(), Some(dated(70, 5)));
+}
+
+/// **A rotation record that does not decode reads as none**, whichever part
+/// is damaged, so nothing is credited from it.
+#[test]
+fn an_undecodable_rotation_record_reads_as_none() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (to, from) = (
+        StorageId::from_bytes([2; 16]),
+        StorageId::from_bytes([1; 16]),
+    );
+    let ids = format!("last_rotation\n{}\n{}\n", to.to_hex(), from.to_hex());
+    let read = |body: &str| {
+        std::fs::write(root.join(ROTATION_FILE_NAME), body).expect("write");
+        last_rotation(root).expect("read")
+    };
+
+    let whole = format!("{ids}registered_at=70\nincarnation=4\n");
+    let bound = Some(dated(70, 4));
+    assert_eq!(read(&whole), Some(Rotation { to, from, bound }));
+    assert_eq!(read(&ids).expect("from before bindings").bound, None);
+    for damaged in [
+        String::new(),
+        "last_rotation\n".to_owned(),
+        format!("last_rotation\n{}\n", to.to_hex()),
+        format!("{ids}registered_at=70\n"),
+        format!("{ids}registered_at=70\nincarnation=x\n"),
+        format!("{whole}more\n"),
+        whole.replacen("last_rotation", "rotation", 1),
+    ] {
+        assert_eq!(read(&damaged), None, "{damaged:?}");
+    }
+    std::fs::write(root.join(ROTATION_FILE_NAME), [0xff, 0xfe]).expect("write");
+    assert_eq!(last_rotation(root).expect("read"), None);
+}

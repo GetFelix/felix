@@ -148,9 +148,13 @@ impl RaftEngine {
     /// the broker stopped leading the term would be missed by the check of
     /// its own re-send.
     ///
-    /// A batch is one record. One of several is refused with nothing
-    /// written ([`Broker::engine_takes_idempotent`]). It is answered at its
-    /// commit, on a `Leader` stream too: never on the lease.
+    /// A batch is one record. A new one of several is refused with nothing
+    /// written ([`Broker::engine_takes_idempotent`]). One the log already
+    /// holds the start of, which only a leader that stopped partway
+    /// leaves, is finished: the records the log does not hold are written
+    /// as pieces of it, and the answer runs from the start's first offset.
+    /// It is answered at its commit, on a `Leader` stream too: never on
+    /// the lease.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_idempotent(
         &self,
@@ -164,11 +168,7 @@ impl RaftEngine {
         reuse: SequenceReuse,
         timeout: Duration,
     ) -> Result<IdempotentPublish, BrokerError> {
-        let records = payloads.clone();
-        let producer = Sequenced {
-            producer_id: turn.producer_id(),
-            sequence,
-        };
+        let producer_id = turn.producer_id();
         let proposal = broker.propose_idempotent(
             stream,
             turn,
@@ -176,9 +176,16 @@ impl RaftEngine {
             payloads,
             reuse,
             timeout,
-            |timestamp_micros, turn| {
-                let count = records.len() as u64;
-                let records = records
+            |timestamp_micros, turn, owed| {
+                let producer = Sequenced {
+                    producer_id,
+                    sequence,
+                    position: owed.position,
+                    len: owed.len,
+                };
+                let count = owed.payloads.len() as u64;
+                let records = owed
+                    .payloads
                     .into_iter()
                     .map(|payload| Record {
                         timestamp_micros,

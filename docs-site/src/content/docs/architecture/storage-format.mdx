@@ -163,7 +163,7 @@ segment, so damage here is never a torn write. It is always an error.
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
 | 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
-| 28 | 20 or 8 | `tag` | 20 bytes when bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 8 bytes on a trim record: `floor u64` |
+| 28 | 20, 24 or 8 | `tag` | 20 bytes when only bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 24 bytes on a batch piece (bits 31 and 30): the same, then `position u32`. 8 bytes on a trim record: `floor u64` |
 | 28, 36 or 48 | n | body | the payload, opaque bytes; with bit 26, preceded by the key and headers and their `u32` length; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
@@ -192,7 +192,14 @@ every copy of the log says whose it is:
 - **Bit 31** of `payload_len`: the record opens a batch. The 20-byte tag names
   the producer, the batch's sequence, and how many records the batch has.
 - **Bit 30**: the record continues the batch the record before it belongs to.
-- Both set is `RecordFlags`, and neither is an ordinary record.
+- **Bits 31 and 30**, from v9 and only on a Raft log: a batch piece. Its
+  24-byte tag names the producer, the sequence, the batch's length and the
+  record's own position in the batch. A Raft log writes every record after
+  a batch's first this way, because a leader change can put other records
+  between the records of one batch. A piece belongs to its batch wherever it
+  lies, so a batch cut short is finished by its missing pieces and never
+  written twice.
+- Neither is an ordinary record.
 
 Marking every record rather than only the first lets a log tell a batch it
 holds all of from one whose leader stopped partway: a batch is held
@@ -556,11 +563,25 @@ as of the new segment's base offset, once the retired segment is sealed.
  8   8  as_of        u64  the state covers every record below this offset
 16   4  producers    u32
 20   4  body_crc     u32  crc32 over what follows
-24   1  open              1 when a batch is waiting for records, then:
-                          producer_id u64, sequence u64, len u32, first u64, held u32
+24   1  open              1 when a batch is waiting for records, then one `partial`
+     4  cuts         u32  then cuts × partial
+     4  forgotten    u32  then forgotten × { producer_id u64, sequence u64 }
      …  producers × { id u64, last_sequence u64, batches u16,
-                      batches × { first u64, len u32 } }
+                      batches × { first u64, last u64, pieces u32, digest } }
+
+partial = producer_id u64, sequence u64, len u32,
+          has_first u8, first u64, held u32, next u64, pieces u8, digest
+digest  = present u8, value u64
 ```
+
+This is version 4. A cut batch is one whose writer stopped partway and that
+another record has followed; it is kept so the missing records can finish it
+and so it is never written again whole. Once a purge removes its last record,
+or past 4096 cut batches, only its producer and sequence stay (`forgotten`),
+and its re-send is refused. Those entries are in no record, so they are also
+saved, flushed, in `producers.forgotten` before a purge or a reset removes
+anything, and merged back at every open. Versions 1 to 3 are still read. `docs/storage-format.md` in the repository has every
+field.
 
 An open reads it and replays only the marks after `as_of`. Those are normally
 all in the active segment, which recovery scans in full anyway, so a current

@@ -456,6 +456,7 @@ async fn the_startup_lookup_reads_what_registration_gave() {
         assert_eq!(
             lookup().await.expect("lookup"),
             Some(membership::Registered {
+                registered_at_millis: None,
                 root_sequence: None,
                 incarnation: expected,
                 storage_id: storage_id.map(|id| id.to_hex()),

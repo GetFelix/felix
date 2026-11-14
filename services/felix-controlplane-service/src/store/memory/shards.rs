@@ -26,6 +26,7 @@ pub(super) async fn put_shard_assignment(
         0,
         false,
         start_placed,
+        SwitchWrite::Drop,
     )
     .await?
     {
@@ -65,6 +66,7 @@ pub(super) async fn put_shard_assignment_if(
         at_least,
         record_previous,
         start_placed,
+        SwitchWrite::Drop,
     )
     .await
 }
@@ -87,6 +89,13 @@ pub(super) async fn adopt_elected_leader(
         return Ok(AssignmentWrite::Stale {
             current: Some(current.generation),
         });
+    }
+    // Sealed copies refuse hybrid ballots, so no election stands behind
+    // this one; the write below would refuse it too.
+    if current.switched() {
+        return Err(StoreError::Conflict(
+            crate::model::SealOrderError::Switched.to_string(),
+        ));
     }
     let adopted = if elected_set {
         let nodes = store.nodes.read().await;
@@ -119,8 +128,23 @@ pub(super) async fn adopt_elected_leader(
         0,
         false,
         false,
+        SwitchWrite::Drop,
     )
     .await
+}
+
+/// What a write does with the shard's switch record
+/// ([`crate::model::ShardSwitch`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SwitchWrite<'a> {
+    /// An ordinary write. A seal order does not outlive its generation, so
+    /// the write drops it: that is how a seal is given up.
+    Drop,
+    /// Order a seal at the generation this write takes.
+    Order,
+    /// Give up the seal standing at the expected generation, and only
+    /// that, for the node it was ordered from.
+    GiveUp(&'a str),
 }
 
 /// `expected`: `None` writes unconditionally, `Some(generation)` only over
@@ -129,8 +153,12 @@ pub(super) async fn adopt_elected_leader(
 /// only over an assignment below it. `at_least`: written there when it is
 /// above the next one. `record_previous`, `start_placed`: see
 /// [`put_shard_assignment_if`].
+///
+/// No write lands on a shard that switched to Raft: its hybrid generation
+/// is the base every voter started from, and a later one would open the
+/// hybrid again beside the Raft group.
 #[allow(clippy::too_many_arguments)]
-async fn write_shard_assignment(
+pub(super) async fn write_shard_assignment(
     store: &InMemoryStore,
     assignment: ShardAssignment,
     expected: Option<Option<u64>>,
@@ -140,6 +168,7 @@ async fn write_shard_assignment(
     at_least: u64,
     record_previous: bool,
     start_placed: bool,
+    switch: SwitchWrite<'_>,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
 
@@ -204,6 +233,34 @@ async fn write_shard_assignment(
     let mut previous_generation = None;
     let (op, generation) = match state.records.get(&assignment.key) {
         Some(existing) => {
+            match switch {
+                // Its report won the generation, so the give-up lost.
+                SwitchWrite::GiveUp(sealer) => match existing.sealing() {
+                    None => return Ok(AssignmentWrite::Stale { current }),
+                    Some(order) if order.sealer != sealer => {
+                        return Err(super::switch::not_sealer(sealer));
+                    }
+                    Some(_) => {}
+                },
+                SwitchWrite::Drop if existing.switched() => {
+                    return Err(StoreError::Conflict(
+                        crate::model::SealOrderError::Switched.to_string(),
+                    ));
+                }
+                SwitchWrite::Drop => {
+                    if let Some(order) = existing.sealing() {
+                        tracing::warn!(
+                            name = %existing.key.stream,
+                            shard = existing.key.shard,
+                            sealed_at = order.generation,
+                            "a write to a later generation gave up the shard's seal",
+                        );
+                    }
+                }
+                SwitchWrite::Order => existing
+                    .can_seal()
+                    .map_err(|err| StoreError::Conflict(err.to_string()))?,
+            }
             if !existing.state.can_transition_to(assignment.state) {
                 return Err(invalid_shard(
                     crate::model::ShardValidationError::UnsupportedTransition {
@@ -231,8 +288,10 @@ async fn write_shard_assignment(
                     .filter(|_| record_previous);
             (ShardAssignmentChangeOp::Updated, generation)
         }
-        // Only an assignment can be adopted.
-        None if elected.is_some() => return Ok(AssignmentWrite::Stale { current }),
+        // Only an assignment can be adopted, or sealed.
+        None if elected.is_some() || switch != SwitchWrite::Drop => {
+            return Ok(AssignmentWrite::Stale { current });
+        }
         None => (
             ShardAssignmentChangeOp::Assigned,
             crate::model::first_generation(incarnation, state.changes.next_seq, seq_generation),
@@ -251,6 +310,7 @@ async fn write_shard_assignment(
         previous_generation,
         ..assignment
     };
+    stored.switch = (switch == SwitchWrite::Order).then(|| stored.seal_order(generation));
     let existing = state.records.get(&stored.key);
     let held = existing
         .map(|existing| existing.readmitted.clone())
@@ -327,9 +387,17 @@ pub(super) async fn delete_shard_assignment(
     key: &ShardKey,
 ) -> StoreResult<()> {
     let mut state = store.shards.write().await;
-    if state.records.remove(key).is_none() {
-        return Err(StoreError::NotFound("shard assignment".into()));
+    match state.records.get(key) {
+        None => return Err(StoreError::NotFound("shard assignment".into())),
+        // A put would then assign the shard afresh on the hybrid engine.
+        Some(existing) if existing.switched() => {
+            return Err(StoreError::Conflict(
+                "the shard switched to Raft; only deleting its stream removes it".into(),
+            ));
+        }
+        Some(_) => {}
     }
+    state.records.remove(key);
     state.record(ShardAssignmentChangeOp::Unassigned, key, None);
     // Taken under the assignment lock, so a report cannot slip in between.
     store.replica_reports.write().await.remove(key);
@@ -372,7 +440,18 @@ pub(super) async fn previous_shard_assignments(
         std::collections::HashMap::new();
     for change in &state.changes.items {
         let held = last_two.entry(&change.key).or_default();
-        *held = [held[1], change.assignment.as_ref()];
+        // A seal report is recorded in place, at the seal's generation: it
+        // replaces the last change, so the set before the seal stays paired.
+        let in_place = matches!(
+            (held[1], change.assignment.as_ref()),
+            (Some(last), Some(next))
+                if last.generation == next.generation && last.incarnation == next.incarnation
+        );
+        *held = if in_place {
+            [held[0], change.assignment.as_ref()]
+        } else {
+            [held[1], change.assignment.as_ref()]
+        };
     }
     Ok(last_two
         .into_iter()

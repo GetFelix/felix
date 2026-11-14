@@ -34,6 +34,7 @@ use super::network::{
 use super::propose::{
     self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
 };
+use super::reach::{Reach, Refusals};
 use super::read_rounds::ReadRounds;
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
@@ -62,6 +63,8 @@ pub(crate) struct Group {
     /// vouched-unsynced marker is synced before this member's unsynced write
     /// is told to a leader or counted here, so a power cut rotates the copy.
     root: Option<MarkLog>,
+    /// The brokers on which this group's member refused this one's calls.
+    refusals: Arc<Refusals>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -425,6 +428,7 @@ impl Group {
         timers: Timers,
         host: Host,
         tail_budget: Arc<TailBudget>,
+        reach: Arc<Reach>,
     ) -> Result<Self, OpenError> {
         let Host {
             engine: host,
@@ -470,12 +474,15 @@ impl Group {
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new());
+        let refusals = Arc::new(Refusals::new(id.clone()));
         let network = Network {
             router: Router::new(
                 Arc::clone(&transport),
                 Arc::clone(&pace),
                 Arc::clone(&lease),
                 Arc::clone(&reports),
+                reach,
+                Arc::clone(&refusals),
             ),
             group: id.clone(),
         };
@@ -525,6 +532,7 @@ impl Group {
             reports,
             answered: Arc::default(),
             root,
+            refusals,
             positions,
             commits,
             copy,
@@ -596,6 +604,28 @@ impl Group {
     /// grants no vote at first".
     pub(super) fn holds_votes(&self) -> bool {
         self.pace.timers.now() < self.hold.until
+    }
+
+    /// Whether this group's member on `broker` refused the last call to it.
+    pub(crate) fn refused_on(&self, broker: &str) -> bool {
+        self.refusals.holds(broker)
+    }
+
+    /// If this member leads, retry its members on `broker` now rather than
+    /// after openraft's next backoff delay. That broker just answered.
+    pub(crate) async fn retry_now(&self, broker: &str) {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let to: Vec<MemberId> = match &self.raft.metrics().borrow_watched().replication {
+            Some(followers) => followers
+                .keys()
+                .filter(|member| &*member.broker == broker)
+                .cloned()
+                .collect(),
+            None => return,
+        };
+        if !to.is_empty() {
+            let _ = self.raft.trigger().reset_backoff(to).await;
+        }
     }
 
     fn leads(&self) -> bool {
