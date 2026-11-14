@@ -43,7 +43,11 @@ impl EngineHost for Told {
 
 /// Three brokers, each reporting to its own host.
 fn hosted() -> (Cluster, HashMap<&'static str, Arc<Told>>) {
-    let cluster = Cluster::new(true);
+    hosted_with(timers())
+}
+
+fn hosted_with(timers: RuntimeConfig) -> (Cluster, HashMap<&'static str, Arc<Told>>) {
+    let cluster = Cluster::with(timers, true);
     let hosts = BROKERS.map(|broker| {
         let told = Arc::new(Told::default());
         cluster.runtime(broker).set_host(told.clone());
@@ -64,7 +68,11 @@ pub(super) struct Led {
 
 /// A formed group with one committed record, and an engine on its leader.
 pub(super) async fn led() -> Led {
-    let (mut cluster, hosts) = hosted();
+    led_with(timers()).await
+}
+
+pub(super) async fn led_with(timers: RuntimeConfig) -> Led {
+    let (mut cluster, hosts) = hosted_with(timers);
     cluster.form(0).await;
     let committed = cluster.write(0, b"committed").await;
     cluster.committed_everywhere(0, committed).await;

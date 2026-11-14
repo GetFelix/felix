@@ -29,6 +29,7 @@ mod idempotent;
 mod identity;
 mod lease;
 mod propose;
+mod read;
 mod switch;
 mod written;
 
@@ -114,6 +115,8 @@ struct Net {
     heal_after: parking_lot::Mutex<HashMap<String, u32>>,
     /// When the first broker came back that way.
     healed: parking_lot::Mutex<Option<std::time::Instant>>,
+    /// Appends carrying entries that were handed to a broker.
+    appends: std::sync::atomic::AtomicU64,
 }
 
 impl Net {
@@ -189,6 +192,11 @@ impl RaftTransport for Net {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
+        if runtime.is_some()
+            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+        {
+            self.appends.fetch_add(1, Relaxed);
+        }
         let slow = match request.body {
             Request::Append(_) => *self.answer_after.lock(),
             _ => None,

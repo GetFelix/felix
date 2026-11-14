@@ -1914,13 +1914,31 @@ enough. A broker that was deposed and elected again after the read is open
 in a later term, and the value it read can miss a record the leader in
 between committed. A member that does not lead is refused as leadership lost. A majority that does not
 answer within the longest election timeout is a timeout, not a lost
-leadership. If openraft reports a lapsed lease, the engine asks for a
-heartbeat, waits for a majority to answer and asks again within the same
-bound.
+leadership. A read-index round does not use the leader's lease: the pinned
+openraft always asks the core for a fresh quorum confirmation for
+`ReadPolicy::ReadIndex` (`Raft::get_local_read_linearizer` in
+`openraft/src/raft/mod.rs`), so a lapsed lease costs a read that round and
+nothing more. A round that has not answered within the longest election
+timeout is dropped and the next one is asked. openraft reports a lapsed lease to writes only. If a later openraft
+reports one to a read, the engine asks for a heartbeat, waits for a majority
+to answer and asks again within the same bound.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
+
+Reads of one shard share rounds. A group asks one round at a time, and a
+round confirms every read that arrived before it was asked. A read that
+arrives while a round is out waits for the next one, which is asked when
+the current one ends: the round out may have been asked before the reader
+took its value, and its answer would not cover that value. So a burst of
+reads costs two rounds at most, not one each, and a read waits at most the
+rest of one round and one more. The bound above is on that whole wait.
+
+> `crates/server/felix-replication/src/raft/read_rounds/tests.rs`,
+> `a_read_that_arrives_during_a_round_waits_for_the_next_one`, and
+> `crates/server/felix-replication/src/raft/tests/read.rs`,
+> `reads_that_arrive_together_share_read_index_rounds`.
 
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
