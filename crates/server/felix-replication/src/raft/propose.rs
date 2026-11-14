@@ -56,6 +56,20 @@ impl AckAt {
     }
 }
 
+/// When [`super::RaftEngine::publish`] answers the publisher. Subscribers
+/// get the batch at its commit either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerAt {
+    /// When the batch is committed. A `Quorum` stream.
+    Commit,
+    /// Once the batch is on this leader's log as far as its [`AckAt`]
+    /// asks, if the leader lease holds then
+    /// ([`super::RaftEngine::admit_local_ack`]), and at the commit if it
+    /// does not. A `Leader` stream: the batch can still be lost if this
+    /// broker stops leading before it commits.
+    Lease,
+}
+
 /// A publish batch for [`super::RaftEngine::propose`]. It must hold a record.
 #[derive(Debug, Clone)]
 pub struct Batch {

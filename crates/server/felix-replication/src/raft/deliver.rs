@@ -14,10 +14,11 @@ use felix_broker::{
     Broker, BrokerError, ProposalCommitted, ProposalFailed, ProposedPublish, ReadBound,
     StreamHandle,
 };
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::engine::RaftEngine;
-use super::propose::{AckAt, Batch, Record, Unacknowledged};
+use super::propose::{AckAt, AnswerAt, Batch, Record, Unacknowledged};
 use crate::engine::{CommitError, Written};
 use crate::{ShardKey, ShardKind};
 
@@ -31,6 +32,10 @@ impl RaftEngine {
     ///
     /// [`ProposedPublish::complete`] returns at that point, with the
     /// engine's error, or with [`CommitError::TimedOut`] after `timeout`.
+    /// With [`AnswerAt::Lease`] it returns earlier, once the batch is on
+    /// this leader's log, if the leader lease holds then. Delivery does not
+    /// move: such a batch is acknowledged before its commit is known, and
+    /// is lost if this broker stops leading before it commits.
     /// A timeout leaves the batch in its place: it is still delivered if it
     /// commits, and the batches behind it wait for it. Only a lost
     /// leadership or a stopped group gives the place up. Such a batch may
@@ -54,9 +59,12 @@ impl RaftEngine {
         term: Option<u64>,
         payloads: Vec<Bytes>,
         ack: AckAt,
+        answer: AnswerAt,
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let records = payloads.clone();
+        let (on_lease, answered) = oneshot::channel();
+        let on_lease = (answer == AnswerAt::Lease).then_some(on_lease);
         // A leader cut off from its majority is not deposed, and every batch
         // it is handed waits, payload in hand, until the partition heals.
         // Refusing once the oldest has waited out its timeout bounds them.
@@ -71,8 +79,19 @@ impl RaftEngine {
                 .collect();
             let batch = Batch { records, ack, term };
             let written = self.propose_reaching(shard, batch);
-            settled(self.clone(), shard.clone(), term, count, timeout, written)
+            let batch = Proposed {
+                shard: shard.clone(),
+                term,
+                count,
+                timeout,
+                on_lease,
+            };
+            settled(self.clone(), batch, written)
         })?;
+        let proposed = match answer {
+            AnswerAt::Lease => proposed.answer_at(answered),
+            AnswerAt::Commit => proposed,
+        };
         Ok(
             proposed.answer_within(timeout, move || CommitError::TimedOut {
                 what: "batch",
@@ -100,16 +119,31 @@ impl RaftEngine {
     }
 }
 
-/// What the broker is told of a proposed batch of `count` records:
-/// committed and where, or why not and how far it is known written.
+/// A batch handed to the group, as [`settled`] follows it.
+pub(super) struct Proposed {
+    pub(super) shard: ShardKey,
+    pub(super) term: Option<u64>,
+    /// How many records it holds.
+    pub(super) count: u64,
+    pub(super) timeout: Duration,
+    /// Told the batch's end if it may be acknowledged on the lease.
+    pub(super) on_lease: Option<oneshot::Sender<u64>>,
+}
+
+/// What the broker is told of a proposed batch: committed and where, or
+/// why not and how far it is known written.
 pub(super) async fn settled(
     engine: RaftEngine,
-    shard: ShardKey,
-    term: Option<u64>,
-    count: u64,
-    timeout: Duration,
+    batch: Proposed,
     written: impl Future<Output = Result<Written, Unacknowledged>>,
 ) -> Result<ProposalCommitted, ProposalFailed<CommitError>> {
+    let Proposed {
+        shard,
+        term,
+        count,
+        timeout,
+        on_lease,
+    } = batch;
     // A batch written in part or in whole may commit. Readers resuming
     // below its end go to the log, or they would join live above records
     // that are in it.
@@ -123,6 +157,14 @@ pub(super) async fn settled(
     if term.is_some_and(|term| term != written.generation) {
         let moved = super::propose::lost(OTHER_TERM);
         return Err(ProposalFailed::written(moved, written.end));
+    }
+    // The lease is asked only now, with the batch on this log under the
+    // term it names. A refusal leaves the publisher waiting for the commit
+    // below, like a `Quorum` one.
+    if let Some(on_lease) = on_lease
+        && engine.admit_local_ack(&shard, written.generation).is_ok()
+    {
+        let _ = on_lease.send(written.end);
     }
     // The publisher's own wait is bounded by `answer_within`. Delivery is
     // not: a batch skipped here and committed later would reach no live

@@ -2,6 +2,7 @@
 
 use std::io::ErrorKind;
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_broker::SubQueuePolicy;
@@ -682,6 +683,28 @@ pub(crate) fn parse_shard_engine(value: Option<&str>) -> Result<ShardEngine> {
         None | Some("" | "hybrid") => Ok(ShardEngine::Hybrid),
         Some("raft") => Ok(ShardEngine::Raft),
         Some(other) => anyhow::bail!("FELIX_SHARD_ENGINE must be hybrid or raft, not {other:?}"),
+    }
+}
+
+/// `FELIX_SHARD_RAFT_LEASE_MS`: how long after a majority last answered it
+/// a Raft shard's leader still acknowledges a `Leader` stream's publish on
+/// its own log. `None` keeps the group runtime's default. `0` turns that
+/// acknowledgement off, and every publish waits for its commit.
+pub(crate) fn shard_raft_lease() -> Result<Option<Duration>> {
+    parse_shard_raft_lease(std::env::var("FELIX_SHARD_RAFT_LEASE_MS").ok().as_deref())
+}
+
+/// A value that does not parse is refused, never read as the default: an
+/// operator who meant `0` on hosts that pause would keep the lease.
+pub(crate) fn parse_shard_raft_lease(value: Option<&str>) -> Result<Option<Duration>> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(millis) => match millis.parse() {
+            Ok(millis) => Ok(Some(Duration::from_millis(millis))),
+            Err(_) => anyhow::bail!(
+                "FELIX_SHARD_RAFT_LEASE_MS must be a whole number of milliseconds, not {millis:?}"
+            ),
+        },
     }
 }
 

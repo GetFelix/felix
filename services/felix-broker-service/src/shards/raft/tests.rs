@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use felix_broker::StreamMetadata;
+use felix_broker::{ConsistencyLevel, StreamMetadata};
 use felix_replication::raft::{
     AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
 };
@@ -55,11 +55,16 @@ pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
 
 /// [`broker`], with `orders` asking for `replicas` brokers a shard.
 pub(crate) async fn broker_of(root: &Path, replicas: u32) -> Arc<Broker> {
-    broker_at(root, replicas, INCARNATION).await
+    broker_at(root, replicas, INCARNATION, ConsistencyLevel::Leader).await
 }
 
 /// [`broker_of`], with `orders` at `incarnation`.
-async fn broker_at(root: &Path, replicas: u32, incarnation: u64) -> Arc<Broker> {
+async fn broker_at(
+    root: &Path,
+    replicas: u32,
+    incarnation: u64,
+    consistency: ConsistencyLevel,
+) -> Arc<Broker> {
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
         preallocate_segments: false,
@@ -81,6 +86,7 @@ async fn broker_at(root: &Path, replicas: u32, incarnation: u64) -> Arc<Broker> 
                 durable: true,
                 incarnation,
                 replication_factor: Some(replicas),
+                consistency,
                 ..StreamMetadata::default()
             },
         )
@@ -712,10 +718,12 @@ async fn a_publish_on_a_raft_shard_commits_through_its_group() {
     .await
     .expect("published")
     .expect("an offset");
-    assert_eq!(
-        engine.committed_bound(&orders),
-        felix_broker::ReadBound::Committed(first + 2)
-    );
+    // `orders` is a `Leader` stream here, answered inside the lease before
+    // the commit shows.
+    until("the batch commits", || {
+        engine.committed_bound(&orders) == felix_broker::ReadBound::Committed(first + 2)
+    })
+    .await;
     assert_eq!(engine.read_bound(None, &orders).ok(), Some(Some(first + 2)));
 
     // Routed at a term this broker does not serve: nothing is proposed.
@@ -793,16 +801,20 @@ async fn an_open_member_holds_its_log_directory() {
 }
 
 /// Carries Raft messages between the runtimes of one process. A broker
-/// taken out of it is unreachable.
+/// taken out of it, or in `cut`, is unreachable.
 #[derive(Default)]
 pub(crate) struct Loopback {
     runtimes: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
+    cut: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 #[async_trait::async_trait]
 impl RaftTransport for Loopback {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
         let to = request.to().broker.to_string();
+        if self.cut.lock().contains(&to) {
+            return Err(Refused::Unreachable(format!("broker {to} is cut off")));
+        }
         let runtime = self.runtimes.lock().get(&to).cloned();
         match runtime {
             Some(runtime) => runtime.handle(request).await,
@@ -823,14 +835,24 @@ pub(crate) struct Member {
 
 impl Member {
     /// A broker on `net` whose readers are bound the way startup binds them.
+    /// `orders` is a `Quorum` stream.
     async fn start(net: &Arc<Loopback>, name: &'static str) -> Self {
         Self::start_at(net, name, INCARNATION).await
     }
 
     /// [`Self::start`], with `orders` at `incarnation`.
     async fn start_at(net: &Arc<Loopback>, name: &'static str, incarnation: u64) -> Self {
+        Self::start_with(net, name, incarnation, ConsistencyLevel::Quorum).await
+    }
+
+    async fn start_with(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        incarnation: u64,
+        consistency: ConsistencyLevel,
+    ) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        let broker = broker_at(root.path(), 3, incarnation).await;
+        let broker = broker_at(root.path(), 3, incarnation, consistency).await;
         let runtime =
             GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
                 .expect("runtime");
@@ -852,6 +874,17 @@ impl Member {
     }
 
     pub(crate) async fn publish(&self, term: u64, payload: &'static [u8]) -> u64 {
+        let published = self.publish_within(term, payload, Duration::from_secs(10));
+        published.await.expect("published")
+    }
+
+    /// The offset, or `None` when no answer came within `timeout`.
+    async fn publish_within(
+        &self,
+        term: u64,
+        payload: &'static [u8],
+        timeout: Duration,
+    ) -> Option<u64> {
         use crate::serving::direct_publish::publish_direct;
         let orders = key("orders", 0);
         let handle = self
@@ -866,11 +899,19 @@ impl Member {
             target(handle, &orders, term),
             &[bytes::Bytes::from_static(payload)],
             None,
-            Duration::from_secs(10),
+            timeout,
         )
         .await
-        .expect("published")
-        .expect("an offset")
+        .ok()?
+    }
+
+    /// One past the last offset this member knows committed.
+    fn bound(&self) -> u64 {
+        use felix_replication::engine::Engine;
+        match self.engine.committed_bound(&key("orders", 0)) {
+            felix_broker::ReadBound::Committed(bound) => bound,
+            other => panic!("no bound: {other:?}"),
+        }
     }
 }
 
@@ -882,12 +923,17 @@ fn replicated() -> ShardAssignment {
 }
 
 /// Three brokers holding a member each, and the one whose term is served.
+/// `orders` is a `Quorum` stream: a publish is answered at its commit.
 pub(crate) async fn trio() -> (Arc<Loopback>, Vec<Member>, usize) {
+    trio_at(ConsistencyLevel::Quorum).await
+}
+
+async fn trio_at(consistency: ConsistencyLevel) -> (Arc<Loopback>, Vec<Member>, usize) {
     let net = Arc::new(Loopback::default());
     let mut members = Vec::new();
     // The broker that forms the group last, so every member it asks is up.
     for name in BROKERS.iter().rev() {
-        let member = Member::start(&net, name).await;
+        let member = Member::start_with(&net, name, INCARNATION, consistency).await;
         member.shards.take(&mut assignments([replicated()])).await;
         members.push(member);
     }
@@ -1189,4 +1235,165 @@ async fn a_term_led_again_keeps_its_subscribers() {
     let kept = tokio::time::timeout(Duration::from_millis(300), new.recv()).await;
     assert!(kept.is_err(), "the next term's subscriber was ended");
     EngineShards::shutdown(&*shards).await;
+}
+
+/// How long a publish that must wait for a commit nobody can give is
+/// watched before it counts as not answered.
+const UNANSWERED: Duration = Duration::from_millis(400);
+
+/// No member reaches another. A leader stays one, since it hears of no
+/// election, and the others can elect nobody.
+fn cut_all(net: &Loopback) {
+    net.cut.lock().extend(BROKERS.map(String::from));
+}
+
+/// Publish on the leader while no member reaches another, until one is
+/// answered. Returns the leader, its term, the offset and the payload
+/// answered, with everyone still cut off. An attempt that falls outside the
+/// lease is not answered, and may cost the leader its term once the others
+/// are back. It can still commit then, so each attempt has its own payload.
+async fn answered_alone(
+    net: &Loopback,
+    members: &[Member],
+    name: &str,
+) -> (usize, u64, u64, &'static [u8]) {
+    let orders = key("orders", 0);
+    for attempt in 0..40 {
+        let payload: &'static [u8] = format!("{name}-{attempt}").into_bytes().leak();
+        net.cut.lock().clear();
+        // A heartbeat or two, so a majority has answered inside the lease.
+        tokio::time::sleep(timers().heartbeat * 2).await;
+        let leader = served(members).await;
+        let Some(term) = members[leader].shards.leading(&orders) else {
+            continue;
+        };
+        cut_all(net);
+        let answered = members[leader].publish_within(term, payload, UNANSWERED);
+        if let Some(offset) = answered.await {
+            return (leader, term, offset, payload);
+        }
+    }
+    panic!("no publish was answered while the leader reached nobody");
+}
+
+/// The shard takes a publish again on whichever member leads now.
+async fn publishes_again(members: &[Member]) {
+    let orders = key("orders", 0);
+    for _ in 0..40 {
+        let leader = served(members).await;
+        let Some(term) = members[leader].shards.leading(&orders) else {
+            continue;
+        };
+        let answered = members[leader].publish_within(term, b"again", Duration::from_secs(2));
+        if answered.await.is_some() {
+            return;
+        }
+    }
+    panic!("the shard took no publish once its members were back");
+}
+
+/// **A publish to a `Leader` stream is answered on its leader's log inside
+/// the group's lease, before any follower holds it, and its subscribers
+/// get it once it commits.** Mapped to the commit, the level would cost a
+/// round to the followers on every publish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_stream_is_answered_on_its_leaders_log() {
+    let (net, members, _) = trio_at(ConsistencyLevel::Leader).await;
+    let (leader, _, offset, payload) = answered_alone(&net, &members, "l1").await;
+    let leader = &members[leader];
+    assert!(leader.bound() <= offset, "committed with nobody reachable");
+    let subscription = leader.broker.subscribe("t1", "ns", "orders", 0);
+    let (mut receiver, _guard) = subscription.await.expect("subscribe").into_parts();
+    let early = tokio::time::timeout(Duration::from_millis(20), receiver.recv()).await;
+    assert!(early.is_err(), "delivered before its commit: {early:?}");
+
+    // Back before a follower's election timeout, so the leader keeps its
+    // term and commits the record.
+    net.cut.lock().clear();
+    let got = delivered(&mut receiver).await;
+    assert_eq!(got, (offset, bytes::Bytes::from_static(payload)));
+    assert!(leader.bound() > offset);
+    stop(&members).await;
+}
+
+/// **A publish to a `Quorum` stream is not answered while no follower
+/// holds it, lease or no lease.** Answered on the leader's log, a `Quorum`
+/// acknowledgement could be lost with one broker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quorum_stream_is_answered_only_at_its_commit() {
+    let (net, members, leader) = trio().await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"q0").await;
+
+    // Straight after a commit, so the lease holds.
+    cut_all(&net);
+    for _ in 0..3 {
+        let answered = members[leader].publish_within(term, b"q1", UNANSWERED);
+        assert_eq!(answered.await, None, "answered with nobody reachable");
+    }
+    net.cut.lock().clear();
+    publishes_again(&members).await;
+    stop(&members).await;
+}
+
+/// **A leader nobody has answered for several leases answers no publish
+/// to a `Leader` stream, and the shard stays open.** The others may have
+/// elected by then. The group takes no write this late, so the lease is
+/// not what refuses here: its own rules are tested where a write can be
+/// held on the log, in felix-replication's `raft/tests/deliver.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_cut_off_past_its_lease_answers_no_leader_publish() {
+    let (net, members, leader) = trio_at(ConsistencyLevel::Leader).await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    members[leader].publish(term, b"l0").await;
+
+    cut_all(&net);
+    tokio::time::sleep(timers().lease * 4).await;
+    let answered = members[leader].publish_within(term, b"l1", UNANSWERED);
+    assert_eq!(answered.await, None, "answered outside the lease");
+    assert_eq!(members[leader].shards.leading(&orders), Some(term));
+
+    net.cut.lock().clear();
+    publishes_again(&members).await;
+    stop(&members).await;
+}
+
+/// **A record acknowledged on the lease is lost with its leader if no
+/// follower held it, and the next leader answers on a lease of its own.**
+/// The loss is what the `Leader` level allows. The next leader must not
+/// inherit a lease: its own starts with its term.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_acknowledgement_does_not_outlive_its_leader() {
+    let (net, mut members, _) = trio_at(ConsistencyLevel::Leader).await;
+    let (leader, term, lost, lost_payload) = answered_alone(&net, &members, "lost").await;
+
+    let old = members.remove(leader);
+    net.runtimes.lock().remove(old.name);
+    EngineShards::shutdown(&*old.shards).await;
+    net.cut.lock().clear();
+
+    let (next, next_term, kept, kept_payload) = answered_alone(&net, &members, "kept").await;
+    assert!(next_term > term);
+    net.cut.lock().clear();
+    until("the new leader's record commits", || {
+        members[next].bound() > kept
+    })
+    .await;
+    let read = members[next]
+        .broker
+        .read_durable("t1", "ns", "orders", 0, 0, 1 << 20)
+        .await
+        .expect("read");
+    assert!(
+        read.iter()
+            .any(|record| &record.payload[..] == kept_payload)
+    );
+    assert!(
+        read.iter()
+            .all(|record| &record.payload[..] != lost_payload),
+        "offset {lost} was acknowledged by the old leader alone"
+    );
+    stop(&members).await;
 }

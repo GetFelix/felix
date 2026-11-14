@@ -1040,10 +1040,17 @@ failed flush stops the group in openraft, which reaches the publisher as
 openraft's answer.
 
 After `propose` returns, a `Leader` write is acknowledged at once if
-`admit_local_ack` passes and waits for commit if it does not
-(`RaftEngine::await_ack`). See "Acknowledging a write". The publish path
-does not call it yet: `RaftEngine::publish` answers every publisher at
-commit (issue #2436).
+`admit_local_ack` passes and waits for commit if it does not. See
+"Acknowledging a write". `RaftEngine::publish` asks that check for a
+`Leader` stream and answers the publisher when it passes.
+
+An answer given on the lease is given before the commit outcome is known.
+If this broker then stops leading before the batch commits, the publisher
+has been told and the batch may be gone: a later leader that never held it
+replaces it. That is the `Leader` level's contract on Raft, as it is on the
+hybrid. Such a publisher never hears of an unknown outcome, because it was
+already answered. A publisher that needs the outcome uses a `Quorum`
+stream.
 
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
 > `batches_queued_together_go_to_openraft_in_one_call`,
@@ -1484,8 +1491,9 @@ A `Quorum` write is acknowledged when `await_commit` returns: the commit
 index has passed it and the entry there has the term it was written at. On
 a `Periodic` stream it is acknowledged earlier if a majority has written
 it: `await_quorum_ack` is `await_commit` raced with the written count
-("Two signals from one append"). The publish path does not call it yet
-and answers every publisher at the commit. If
+("Two signals from one append"). The publish path does not call
+`await_quorum_ack` yet and answers every `Quorum` publisher at the commit
+("Delivering committed records" says why). If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
@@ -1544,8 +1552,70 @@ passes when all of these hold, read in this order:
 
 `RaftEngine::await_ack(shard, written, timeout)` is the acknowledgement of
 a `Leader` write: it returns at once when the check passes, and otherwise
-when the write is committed. `RaftEngine::publish` does not use it yet
-(issue #2436).
+when the write is committed.
+
+`RaftEngine::publish` makes the same decision for a `Leader` stream
+(`AnswerAt::Lease`). Once `propose` has returned, so the batch is on this
+leader's log as far as the stream's fsync policy asks, and written under
+the term the publish was routed at, it asks `admit_local_ack` once. If the
+check passes the publisher is answered then. If it does not, the publisher
+is answered when the batch has committed and taken its place in the
+delivery order, like a `Quorum` one. The check is not asked again for that
+batch. Subscribers are not part of this: they get the batch at its commit
+whichever way the publisher was answered ("Delivering committed records").
+
+The order matters. The check runs after the write, so anything that ended
+the lease while the batch was being written counts: a term given up, a
+suspend, or a write slow enough that the last majority answer is now a
+lease old. Asked before the write, the check would pass on a lease that
+is gone by the time the publisher is answered.
+
+A leader cut off from its followers rarely gets as far as the check.
+openraft takes no write from a leader no majority has answered for
+`election_max`, and the publish task waits for a heartbeat's answer first
+("Writing through openraft"). Such a publish is not written and not
+answered. The check is what covers the time before that: the lease is
+shorter than `election_max`, and a batch already on its way to the log
+when the leader was cut off still lands.
+
+```mermaid
+sequenceDiagram
+    participant P as Leader publisher
+    participant L as Leader
+    participant F as Followers
+    participant S as Subscribers
+    P->>L: publish(batch)
+    L->>L: write to its log (fsync if the stream asks)
+    L-->>F: append
+    alt the lease holds
+        L->>P: acknowledged
+        F-->>L: a majority holds it: committed
+    else the lease has lapsed, is void, or the broker just woke
+        F-->>L: a majority holds it: committed
+        L->>P: acknowledged
+    end
+    L->>S: delivered, at the commit
+```
+
+The lease is set with `FELIX_SHARD_RAFT_LEASE_MS` (1500 by default). `0`
+turns the local acknowledgement off: the check never passes and every
+`Leader` publish waits for its commit. A broker refuses to start with a
+lease the inequality above does not allow, which with the shipped
+election timeout and drift bound is anything over 1636 ms.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_leader_publish_is_answered_on_the_lease_and_delivered_at_its_commit`,
+> `a_term_given_up_after_the_write_landed_is_not_answered_on_the_lease`,
+> `a_leader_publish_written_across_a_suspend_waits_for_its_commit`,
+> `a_leader_publish_outside_the_lease_waits_for_its_commit`,
+> `a_replaced_leader_answers_no_leader_publish`,
+> `a_batch_written_at_another_term_is_not_answered_on_the_lease` and
+> `a_publish_answered_on_the_lease_and_then_replaced_reaches_no_subscriber`;
+> `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
+> `a_batch_answered_where_it_was_written_is_delivered_only_at_its_commit`;
+> `services/felix-broker-service/src/config/tests/shard_engine.rs`,
+> `the_raft_lease_is_the_default_unless_set` and
+> `a_raft_lease_that_is_not_a_number_is_refused`.
 
 **Giving the lease up.** openraft's role reaches Felix through its
 metrics, a moment after openraft has changed it. In that moment a leader
@@ -1608,18 +1678,19 @@ What an operator can do:
   no `virsh suspend`, and a host-maintenance policy that stops and
   restarts the instance, where the provider offers one, in place of live
   migration. A restart is safe: the lease dies with the process.
-- Where that cannot be had, run with `RuntimeConfig::lease` at zero. The
-  check then never passes, and every `Leader` write waits for its commit
-  like a `Quorum` write. No broker setting exposes the lease yet. Nothing
-  acknowledges on the lease yet either (issue #2436), so no shipped broker
-  is exposed today, and the setting has to exist before one is.
+- Where that cannot be had, set `FELIX_SHARD_RAFT_LEASE_MS=0` on every
+  broker. The check then never passes, and every `Leader` write waits for
+  its commit like a `Quorum` write.
 - `Quorum` streams never use the lease and are not affected.
 
 Under the simulator boottime is the simulator's clock while the
 monotonic side is tokio's, so the two drift apart and the check may
-refuse for good. The simulator's Raft groups never ask the check, since
-nothing acknowledges on the lease yet (issue #2436); before one does,
-both sides must read one clock.
+refuse for good. The simulator's Raft groups never ask the check: they
+publish with `AnswerAt::Commit`, because the history checker takes every
+acknowledged append as committed. Before a simulated publish is answered
+on the lease, both sides must read one clock and the checker must allow a
+`Leader` acknowledgement to be lost across a change of leader (issue
+#2514).
 
 > `crates/server/felix-replication/src/raft/tests/lease.rs`: one test per
 > rule, each named for it. The model is `docs/formal/FelixRaftLease.tla`.
@@ -1806,6 +1877,7 @@ sequenceDiagram
     P->>B: publish(batch)
     B->>R: propose, in the stream's hand-over order
     R-->>B: written at [first, end)
+    Note over P,B: a Leader stream's publisher is answered here while the lease holds
     R-->>B: committed under the term that wrote it
     B->>B: wait for the batch handed over before it
     B->>S: one shared envelope of the publisher's bytes
@@ -1893,9 +1965,15 @@ The broker never appends to that log, and four rules follow from it.
 
 **Batches waiting for a commit are bounded.** A leader cut off from its
 majority is not deposed, and each batch handed to it waits with its payload
-in memory. `propose_publish` refuses a new batch with `ProposalsStalled`
+in memory, whether or not its publisher was answered on the lease. `propose_publish` refuses a new batch with `ProposalsStalled`
 while the oldest unsettled one has waited longer than the publish timeout,
 so what is held is at most one timeout's worth of publishes.
+
+A `Leader` publisher answered on the lease is no longer slowed by its own
+commits. If the followers answer heartbeats but take records slower than
+the leader writes them, the lease holds and the waiting batches grow until
+this bound refuses the next publish with `ProposalsStalled`. A `Quorum`
+publisher in the same spot is only slowed down.
 
 **A reader resuming after a batch that was given up on starts above it.**
 The gap that stands in the batch's place carries the end of what the engine
@@ -1924,9 +2002,13 @@ On a broker that holds a member:
 | has no leader, or leads and is still moving to the tail | answered `shard_unavailable` (`not_ready`), which a client retries |
 
 A publish served here is proposed in the order the shard's publishes
-arrive and answered at its commit, for every consistency level and fsync
-policy. It does not enter the hybrid's write fence and does not need this
-broker's lease: the term is what holds the shard. A publish routed at a
+arrive. On a `Quorum` stream it is answered at its commit, whatever the
+fsync policy. On a `Leader` stream it is answered once it is on this
+leader's log, while the group's leader lease holds, and at its commit
+while it does not ("Acknowledging a write"). Either way its subscribers
+get it at the commit. It does not enter the hybrid's write fence and does
+not need the hybrid's ownership lease on this broker: the term is what
+holds the shard. A publish routed at a
 term the broker no longer serves is refused with nothing written. Readers
 at every level are bound by the commit index. A forwarded publish is
 checked against the term the owner serves now, not the one the sender saw.
@@ -2734,10 +2816,10 @@ and the hybrid is what ships.
 | 1 (#2227) | Engine trait gains `appended`, `Written`, `admit_local_ack`, `opened`, `placement_changed`, implemented by the hybrid. Nothing is removed: `read_skips_lease`, `await_readable` and the rest stay until the hybrid is deleted. Merged | | Additions only. No behaviour change. Existing tests and seeds pass unchanged |
 | 2 (#2229) | Store liveness: disk probe, epochs, per-peer exchange. Deferred to the next release with sleep ("Deferred: sleep and wake"). Nothing in 0.8 reads it | | Not built for 0.8 |
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
-| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. The publish path answers `Leader` writes at commit until it uses the lease (row 11, issue #2436). Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. The lease is row 11. No membership change, no power loss yet |
+| 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. The publish path answers `Leader` writes on the lease (row 11). Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. The lease is row 11. No membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
 | 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced: built (`felix_storage::raft_copy`, `GroupRuntime::open_copy`), except the control plane's copy of the root sequence and the broker opening its groups through them. Not built yet: declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
-| 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait. Built: the vote hold with its exemptions, `admit_local_ack` and `await_ack`, the void, the transfer entry point, the suspend check and the config inequality ("Acknowledging a write"). Not built: the publish path calling it (issue #2436) | 4 | Behind the feature. The model's lease configs passed (#2422) |
+| 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait. Built: the vote hold with its exemptions, `admit_local_ack` and `await_ack`, the void, the transfer entry point, the suspend check and the config inequality ("Acknowledging a write"), and the publish path asking the check for a `Leader` stream (#2436) | 4 | Behind the feature. The model's lease configs passed (#2422) |
 | 6 (#2238) | Cache and counters in one group: state machine, compaction by each member's snapshot, conditional expiry delete, request ids on every write | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |
 | 8 (#2241) | Heartbeat coalescing: the `openraft-multi` pull request, then adopting the release that has it | 3 | Upstream change is additive. Felix adopts it by a version pin |

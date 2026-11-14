@@ -12,6 +12,7 @@
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_wire::AckMode;
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -34,12 +35,21 @@ fn engine(name: &str) -> (String, String) {
 
 /// Three brokers, one shard, each broker a member of its group.
 fn raft_cluster() -> ClusterConfig {
+    raft_cluster_with(StreamSpec::quorum(STREAM, 1, 3))
+}
+
+fn raft_cluster_with(stream: StreamSpec) -> ClusterConfig {
     ClusterConfig {
         nodes: 3,
-        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        streams: vec![stream],
         broker_env: vec![engine("raft")],
         ..Default::default()
     }
+}
+
+/// How many times `held` has `payload`.
+fn copies(held: &[Vec<u8>], payload: &[u8]) -> usize {
+    held.iter().filter(|have| *have == payload).count()
 }
 
 /// The broker that serves the shard: the one whose subscribe is not answered
@@ -212,6 +222,108 @@ async fn a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged() 
     }
 }
 
+/// **A `Leader` stream keeps acknowledging across a lost leader, and loses
+/// at most the tail its old leader acknowledged alone.** A `Leader` publish
+/// is answered on the leader's own log, so a record no follower held yet
+/// goes with the leader. Everything before it stays, once and in order, and
+/// the next leader's acknowledgements are all in its log.
+#[tokio::test]
+#[serial]
+async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowledged() {
+    if !opted_in() {
+        return;
+    }
+    let stream = StreamSpec::replicated(STREAM, 1, 3);
+    let config = raft_cluster_with(stream);
+    let mut cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let mut before = Vec::new();
+    for i in 0..20 {
+        let payload = format!("before-{i}").into_bytes();
+        publish_acked(&cluster, &leader, &payload).await;
+        before.push(payload);
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+    let mut after = Vec::new();
+    for i in 0..20 {
+        let payload = format!("after-{i}").into_bytes();
+        publish_acked(&cluster, &elected, &payload).await;
+        after.push(payload);
+    }
+
+    let held = replay_holding(&cluster, &elected, &after).await;
+    for payload in &after {
+        assert_eq!(copies(&held, payload), 1, "{elected} acknowledged it");
+    }
+    let kept = before
+        .iter()
+        .take_while(|payload| held.contains(payload))
+        .count();
+    for payload in &before[..kept] {
+        assert_eq!(copies(&held, payload), 1, "kept other than once");
+    }
+    for payload in &before[kept..] {
+        assert_eq!(copies(&held, payload), 0, "kept above a lost record");
+    }
+    let order: Vec<&Vec<u8>> = held.iter().filter(|have| before.contains(have)).collect();
+    assert_eq!(order, before[..kept].iter().collect::<Vec<_>>());
+}
+
+/// **A leader of a `Leader` stream that its followers cannot reach
+/// acknowledges nothing the group loses once its lease is over.** The
+/// broker keeps running and still says it leads, while the others elect.
+/// Whatever is acknowledged from then on, by either side, is in the log the
+/// group agrees on after the partition heals. This late the group takes no
+/// write from the old leader, so this is the whole path and not the lease
+/// check alone, which felix-replication's `raft/tests/deliver.rs` covers.
+#[tokio::test]
+#[serial]
+async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease() {
+    if !opted_in() {
+        return;
+    }
+    let stream = StreamSpec::replicated(STREAM, 1, 3);
+    let config = raft_cluster_with(stream);
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let mut owed = vec![b"before".to_vec()];
+    publish_acked(&cluster, &leader, &owed[0]).await;
+
+    cluster.partition_node(&leader).expect("partition");
+    // Longer than the lease (1.5 s) and the longest election timeout (2 s).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for i in 0..3 {
+        let payload = format!("cut-off-{i}").into_bytes();
+        let publish = cluster.publish_via_at(&leader, STREAM, payload.clone());
+        let answered = tokio::time::timeout(Duration::from_secs(3), publish).await;
+        if matches!(answered, Ok(Ok(_))) {
+            owed.push(payload);
+        }
+    }
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+    for i in 0..5 {
+        let payload = format!("theirs-{i}").into_bytes();
+        publish_acked(&cluster, &elected, &payload).await;
+        owed.push(payload);
+    }
+
+    cluster.heal_partitions().expect("heal");
+    let healed = b"healed".to_vec();
+    publish_acked(&cluster, &leader, &healed).await;
+    owed.push(healed);
+    let held = replay_holding(&cluster, &elected, &owed).await;
+    for payload in &owed {
+        let text = String::from_utf8_lossy(payload);
+        assert_eq!(copies(&held, payload), 1, "{elected} holds {text:?}");
+    }
+}
+
 /// **A shard placed on fewer brokers than its stream asks for forms no
 /// group and acknowledges nothing.** The stream asks for three brokers and
 /// the cluster has one, so placement names that one alone. A group of one
@@ -377,5 +489,60 @@ async fn brokers_on_different_engines_refuse_their_shared_shard() {
         metric(&cluster, &hybrid, "felix_storage_append_records_total").await,
         0.0,
         "the hybrid broker appended to a log of its own"
+    );
+}
+
+/// Publish latency on three brokers, one publisher, one record at a time:
+/// a report for the Raft reports workflow, which sets the level and the
+/// lease. `RAFT_LATENCY_LEASE_MS=0` turns the lease off, so a `Leader`
+/// publish waits for its commit as a `Quorum` one does.
+#[tokio::test]
+#[serial]
+#[ignore = "a measurement; run by .github/workflows/raft-idle.yml"]
+async fn report_publish_latency() {
+    if !opted_in() {
+        return;
+    }
+    let var = |name: &str| std::env::var(name).ok();
+    let level = var("RAFT_LATENCY_LEVEL").unwrap_or_else(|| "Leader".into());
+    let lease = var("RAFT_LATENCY_LEASE_MS");
+    let publishes = var("RAFT_LATENCY_PUBLISHES").map_or(2000, |n| n.parse().expect("a count"));
+    let stream = match level.as_str() {
+        "Leader" => StreamSpec::replicated(STREAM, 1, 3),
+        "Quorum" => StreamSpec::quorum(STREAM, 1, 3),
+        other => panic!("RAFT_LATENCY_LEVEL is Leader or Quorum, not {other}"),
+    };
+    let mut config = raft_cluster_with(stream);
+    if let Some(lease) = &lease {
+        let lease = ("FELIX_SHARD_RAFT_LEASE_MS".to_string(), lease.clone());
+        config.broker_env.push(lease);
+    }
+    let (tenant, namespace) = (config.tenant_id.clone(), config.namespace.clone());
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    let leader = leader_among(&cluster, &cluster.node_ids()).await;
+    publish_acked(&cluster, &leader, b"first").await;
+
+    let client = cluster.client_on(&leader).await.expect("client");
+    let publisher = client.publisher().await.expect("publisher");
+    let mut micros = Vec::with_capacity(publishes);
+    // The first tenth warms the connection and the group and is not kept.
+    for i in 0..publishes + publishes / 10 {
+        let payload = vec![0u8; 256];
+        let sent = std::time::Instant::now();
+        publisher
+            .publish(&tenant, &namespace, STREAM, payload, AckMode::PerMessage)
+            .await
+            .expect("acknowledged");
+        if i >= publishes / 10 {
+            micros.push(sent.elapsed().as_micros());
+        }
+    }
+    micros.sort_unstable();
+    let at = |percent: usize| micros[(micros.len() * percent / 100).min(micros.len() - 1)];
+    let lease = lease.as_deref().unwrap_or("default");
+    println!(
+        "raft publish latency: level={level} lease_ms={lease} publishes={publishes} p50_us={} p99_us={}",
+        at(50),
+        at(99)
     );
 }

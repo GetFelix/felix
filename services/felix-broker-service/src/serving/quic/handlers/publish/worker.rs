@@ -429,7 +429,9 @@ impl LaneWork {
     }
 
     /// A publish to a shard a Raft group runs. Proposed on the lane, so the
-    /// group's order is the lane's, and answered at its commit off the lane.
+    /// group's order is the lane's, and answered off the lane: at its commit,
+    /// or for a `Leader` stream once it is on the leader's log inside the
+    /// group's leader lease.
     /// It never enters the hybrid's fence or touches its log.
     fn publish_on_raft(&self, mut job: PublishJob, lane: LaneGuard) {
         let probe_start = std::time::Instant::now();

@@ -477,3 +477,57 @@ async fn a_shard_bounded_at_every_level_with_no_bounds_shows_nothing() {
     handle.bound_every_level();
     assert_eq!(handle.read_bound(), ReadBound::Refused);
 }
+
+/// **A batch answered where it was written is not delivered until the
+/// engine commits it, and is never delivered if the engine gives up on
+/// it.** The answer is the publisher's alone. Joined to the hold at the
+/// answer, subscribers would get records the engine has not committed.
+#[tokio::test]
+async fn a_batch_answered_where_it_was_written_is_delivered_only_at_its_commit() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    let publish = |payload: &'static [u8]| {
+        let engine = Arc::clone(&engine);
+        let (written, answer) = oneshot::channel();
+        let proposed = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(payload), Bytes::from_static(payload)],
+                Duration::MAX,
+                move |_| engine.propose(2),
+            )
+            .expect("handed over");
+        (written, tokio::spawn(proposed.answer_at(answer).complete()))
+    };
+    let (kept, first) = publish(b"kept");
+    let (lost, second) = publish(b"lost");
+    let (unsent, third) = publish(b"late");
+
+    // Answered out of order: each answer is its own publisher's.
+    lost.send(4).expect("waiting");
+    let second = second.await.expect("joined").expect("answered");
+    assert_eq!(second.offsets, Some((2, 3)));
+    kept.send(2).expect("waiting");
+    let first = first.await.expect("joined").expect("answered");
+    assert_eq!(first.offsets, Some((0, 1)));
+    nothing(&mut receiver).await;
+
+    // A sender dropped unsent leaves the answer at the commit.
+    drop(unsent);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!third.is_finished(), "answered with nothing said");
+
+    engine.commit(1, Err("deposed"));
+    engine.commit(2, Ok(()));
+    nothing(&mut receiver).await;
+    engine.commit(0, Ok(()));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(0));
+    assert_eq!(envelope.payloads().len(), 2);
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(4));
+    let third = third.await.expect("joined").expect("committed");
+    assert_eq!(third.offsets, Some((4, 5)));
+    nothing(&mut receiver).await;
+}

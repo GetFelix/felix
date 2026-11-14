@@ -30,7 +30,8 @@ use felix_cluster::history::model::{
 };
 use felix_cluster::history::rng::Rng;
 use felix_replication::raft::{
-    AckAt, GroupId, GroupRuntime, LogPoint, MemberId, RaftEngine, RaftReads, Role, RuntimeConfig,
+    AckAt, AnswerAt, GroupId, GroupRuntime, LogPoint, MemberId, RaftEngine, RaftReads, Role,
+    RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig, ReadRange, RecordMark};
@@ -471,6 +472,9 @@ impl Sim {
             term,
             vec![payload],
             AckAt::Flushed,
+            // The checker takes every acknowledged append as committed
+            // (#2514).
+            AnswerAt::Commit,
             ANSWER,
         );
         let outcome = match proposed {
