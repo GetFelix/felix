@@ -795,10 +795,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
 | `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
 | `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
-| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold (issue #2307, `Group::open` and `Group::dispatch` in `raft/group.rs`) |
 | `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
 | `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
-| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
+| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for campaigning by a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process. As a voter it is still held | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
 | `FelixRaftLeaseReachRestoreLed.cfg` | a witness for `FelixRaftLeaseRestoreLed.cfg` | violate `NeverHoldSkipped`: a restarted broker leads inside its hold |
 | `FelixRaftLeaseRestoreAnyVote.cfg` | the same with the hold skipped for any stored vote | violate `LeaseExclusive`: a follower that answered the leader restarts, campaigns at once, and a voter outside the leader's window elects it |
 | `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (51 distinct states) |
@@ -806,6 +806,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseReachHeldGrant.cfg` | a witness for `FelixRaftLeaseRestoreNamed.cfg` | violate `NeverHeldGrant`: a broker inside its hold grants a vote |
 | `FelixRaftLeaseRestoreNamedAny.cfg` | the same with the stored vote exempting any candidate, not only the leader it names (`HoldExemptsAny`) | violate `LeaseExclusive` |
 | `FelixRaftLeaseRestoreTransferStepDown.cfg` | `FelixRaftLeaseTransferStepDown.cfg` with both restart fast paths, one restart, two terms, no write and `ElectionTimeoutMin` = 1 (the parent has 0, so a stepped-down leader campaigning in the same tick is not checked): a leader that authorized a transfer restarts with its own vote stored and its transfer wiped, and campaigns at once | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.8M distinct states) |
+| `FelixRaftLeaseRestoreTransferThreeTerms.cfg` | `FelixRaftLeaseRestoreTransferStepDown.cfg` with three terms, under the view `RestartView` | pass `LeaseExclusive`, `OneLeaderPerTerm` (2.7M distinct states under the view) |
+| `FelixRaftLeaseRestoreTransferStepDownWrite.cfg` | `FelixRaftLeaseRestoreTransferStepDown.cfg` with one write, under `RestartView` | pass the same and `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (15.3M distinct states under the view) |
+| `FelixRaftLeaseRestoreTransferThreeTermsWrite.cfg` | `FelixRaftLeaseRestoreTransferThreeTerms.cfg` with one write; not registered, run on a build box | pass the same as the two-term one (191M distinct states under the view, 90 minutes on 16 cores) |
+| `FelixRaftLeaseReachRestoreTransferThreeTerms.cfg` | a witness for it, with the second term won on the transfer (`SecondTermByTransfer`) | violate `NeverThirdTermOnHeldGrant`: the transfer's target leads a third term with a voter in that term inside its hold, a held voter having granted a vote, while the leader that started the transfer still leads the first |
+| `FelixRaftLeaseReachRestoreTransferThreeTermsWrite.cfg` | the same with one write | violate `NeverThirdTermLocalAck`: that third-term leader acknowledges the write under its lease |
 | `FelixRaftLeaseRestoreStepDown.cfg` | the same with three terms and no transfer (`ElectionTimeoutMin` = 1 as well): a leader that voided a term restarts with its void wiped and campaigns in a third term | pass `LeaseExclusive`, `OneLeaderPerTerm` (2.6M distinct states) |
 | `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with no drift, lease 2 against an election timeout of 2, the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, `ElectionTimeoutMin` = 1 below the lease, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (3.6M distinct states) |
 | `FelixRaftLeaseReachLeaseAfterVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with two terms | violate the witness `NeverLeaseAfterVoid`: a broker that voided a term passes the check in a later one |
@@ -852,14 +857,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseSleep.cfg` | `FelixRaftLease.cfg` with sleep (issue #2239): up to two wakes not caused by the leader start a vote hold that may end early; ending it ends only the hold, and a sleep answer renews nothing | pass `LeaseExclusive` |
 | `FelixRaftLeaseSleepHoldEndClearsWindow.cfg` | the hold's early end also clears openraft's refusal window | violate `LeaseExclusive` |
 | `FelixRaftLeaseSleepAnswerRenews.cfg` | a sleep answer renews the lease, though the follower's window did not restart | violate `LeaseExclusive` |
-| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody, given that the ask arrives and the hold outlasts the answer | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
-| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader, given that the hold outlasts the leader noticing the new epoch | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
+| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody, given that the ask arrives and the hold outlasts the answer | pass on two rules the design page states and nobody has built (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
+| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader, given that the hold outlasts the leader noticing the new epoch | pass on two rules the design page states and nobody has built (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
 | `FelixRaftSleepAnyState.cfg` | Members fall asleep in any state with no handshake; safety only | pass |
-| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass on two rules the design page states and nobody has built (issue #2310) |
 | `FelixRaftSleepNoWake.cfg` | Neither wake path: the group never elects | violate `QuiescentLed` |
 | `FelixRaftSleepCampaignOnWake.cfg` | A woken follower campaigns without asking | violate `NoNeedlessDeposal` |
 | `FelixRaftSleepRestartNoHold.cfg` | A restarted member ticks at once | violate `NoNeedlessDeposal` |
@@ -3419,9 +3424,9 @@ acknowledged on local durability, as
 [Per-shard Raft](../per-shard-raft.md) ("Acknowledging a write") and
 [The replication engine interface](../replication-engine.md) (Decisions, 5)
 decide it. Its configurations gate the pull request that turns on
-`admit_local_ack`, but their passing does not open the gate yet: the passing
-ones either have no restart or pass on a rule that is not built (issue
-#2307, under "A restarted follower" below).
+`admit_local_ack`. The ones with a restart pass on the node layer's vote
+hold (issue #2307, under "A restarted follower" below), which is built in
+`raft/group.rs`.
 `FelixRaftLeaseRestartRenews` passes on openraft's own start-time renewal,
 but only if `save_vote` is durable when it returns, which waits on the Raft
 engine. The
@@ -3469,9 +3474,11 @@ that never heard the leader. Two rules close it, and the model checks each
 alone:
 
 - The node layer's vote hold (issue #2307): a restarted broker refuses votes
-  for one election timeout from its start, whatever vote it stored.
-  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule.
-  It is not built.
+  for one election timeout from its start, whatever vote it stored (the
+  code holds no member without a stored vote: it has taken no message).
+  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule,
+  and `Group::open` and `Group::dispatch` (`raft/group.rs`) build it, with
+  the two exemptions the `FelixRaftLeaseRestore*` configurations check.
 - openraft 0.10.0's renewal (`RestartRenewsFollowed`): `Engine::startup`
   renews the window for one election timeout when the stored vote is
   committed and another broker's, which is the vote of a follower that took
@@ -3482,8 +3489,8 @@ alone:
   votes that get no window are not ones the lease rests on.
 
 The design does not rest the lease on the engine's rule staying as it is,
-so the gate still waits for the vote hold. Both configurations have one
-restart and two terms.
+so the lease rests on the vote hold. Both configurations have one restart
+and two terms.
 
 **Skipping the hold for a restored leader (pull request 2445).** openraft
 restores a member as leader at a start when its stored vote is its own and
@@ -3491,7 +3498,8 @@ committed. Such a member took no later leader's message, so it promised
 nobody, and its own lease died with the process; the other voters still keep
 their window and their hold. The model keeps that on disk as `led`, and
 `RestoreOwnLead` lets such a member, or the only voter, campaign without the
-hold. It campaigns in a new term rather than resuming the old one, which
+hold. It lifts only the campaign side: `MayGrant` still has the member grant
+no candidate but the one its stored vote names, itself, until the hold ends. It campaigns in a new term rather than resuming the old one, which
 gives it no more than a resumed leader has: no lease until a quorum answers
 again. `FelixRaftLeaseRestoreLed.cfg` passes with three terms and one write,
 and `FelixRaftLeaseReachRestoreLed.cfg` shows the skip is taken.
@@ -3524,11 +3532,29 @@ a third term. Both leave out the write, and the first has two terms and the
 second no transfer, so each finishes in CI; with all of them the run does
 not finish in 40 minutes. Both also set `ElectionTimeoutMin` to 1 where
 `FelixRaftLeaseTransferStepDown.cfg` has 0, so a stepped-down leader that
-campaigns in the same tick is not checked with a restart. Nothing checks a
-restart with a write together with a step-down, a transfer or a void
-(`FelixRaftLeaseRestoreNamed.cfg` has the write but reads the role in sync,
-with no bypass, step-down, transfer or void), nor a restart with a transfer
-in three terms. Issue #2471 tracks both.
+campaigns in the same tick is not checked with a restart.
+
+The write and the third term come back under a view (issue #2471).
+`RestartView` has TLC explore once the states that differ only in what no
+step and no check can tell apart: an answer no newer than the one its leader
+already has, a `TransferLeader` to a broker already past its term, Felix's
+view of the role while the check refuses on it, and `votedFor`, which these
+configurations do not read. The comment on `RestartView` argues each one.
+`FelixRaftLeaseRestoreTransferStepDownWrite.cfg` adds one write to the
+two-term configuration, and `FelixRaftLeaseRestoreTransferThreeTerms.cfg`
+the third term to the one with no write.
+`FelixRaftLeaseReachRestoreTransferThreeTerms.cfg` shows the case the third
+term is for: a transfer's target wins the second term, then leads a third
+with a voter in that term inside its hold, after a held voter granted a
+vote, while the leader that started the transfer still leads the first.
+With both, in
+`FelixRaftLeaseRestoreTransferThreeTermsWrite.cfg`, the run passes but takes
+90 minutes on 16 cores. By its siblings' times that is about ten hours on a
+CI runner, past the nightly job's six, so it is not registered and nothing
+in CI checks it.
+`FelixRaftLeaseReachRestoreTransferThreeTermsWrite.cfg`, which stops at the
+first state where that third-term leader has acknowledged the write under
+its lease, is registered.
 
 **Late metrics, step-down, transfer and suspend (issue #2249).** Felix reads
 openraft's role and `last_quorum_acked` from metrics, which arrive late
@@ -3624,7 +3650,7 @@ has been stalled for a lease does not pass the check. A stalled broker that
 kept asking would lose no record, since it cannot write, but it would keep
 the lease and block the failover.
 
-Two rules here are not in the design page's one-paragraph description. A
+One rule here is not in the design page: the expiry is read on a clock that survives a restart. Two are in the page and not built. A
 vote for another broker waits for the withdrawal, not just the expiry, and a
 withdrawal raises the epoch. Without the second
 (`FelixRaftLeaseStoreResupport.cfg`) a follower withdraws, votes, then
@@ -3653,7 +3679,7 @@ Sleep and wake are deferred to v0.9.0, with the store liveness they rest on
 (decided in issue #2167). Nothing in this section gates 0.8. The configurations stay
 registered so the design keeps its checks until it is built. The design page
 keeps sleep under "Deferred: sleep and wake", and its table "Rules the model found" now
-states the two rules of issue #2310 that this section says the design lacks, with three
+states the two rules of issue #2310, with three
 more the model does not have yet.
 
 `FelixRaftSleep.tla` models one Raft group whose members can be asleep, as
@@ -3700,7 +3726,7 @@ heartbeat follows it.
 
 Knobs, each dropping one rule: `NoLivenessWake`, `NoAudit`, `AcceptUnchecked`,
 `CampaignOnWake`, `LeaderSleepsFirst`, `RestartNoHold`, `HoldTooShort`. Two more drop rules
-the design page does not state yet and the model needs: `HeartbeatKeepsProposal` (a
+that are in the design page but not built, and the model needs: `HeartbeatKeepsProposal` (a
 heartbeat during the handshake does not close the proposal) and `SleepUnsupported` (a
 follower accepts a sleep request from a leader whose broker it does not support). Issue
 #2310 has both. Every passing configuration with a handshake runs with both rules on, and
