@@ -78,12 +78,38 @@
 (* the adapter's fsync rules and FelixRaftIdentity.tla the restores.       *)
 (*                                                                         *)
 (* A removed copy. The control plane tells a broker to delete a copy that  *)
-(* left the target. The rule: only once a committed membership that is not *)
-(* joint has no vote for that id. The deletion is not counted as a fault.  *)
-(* An id told to delete is never placed again. The rule has a gap (issue   *)
-(* 2385): a leader on a replaced target can give the id its vote back      *)
-(* between the control plane's check and the deletion                      *)
-(* (FelixRaftPlacementStaleWipe.cfg).                                      *)
+(* left the target. It decides on the brokers' membership reports, not on  *)
+(* what it believes is committed. A report names every copy in the         *)
+(* broker's committed membership and in every membership entry appended    *)
+(* after it, and counts only once every broker has acknowledged the       *)
+(* current incarnation. The doom waits until some broker reports a committed       *)
+(* membership, not joint, made from a target newer than the last one       *)
+(* naming the copy, and every member of it reports no entry naming the     *)
+(* copy. A learner or joint entry still in a log keeps the copy. An id     *)
+(* told to delete is never placed again while the control plane remembers. *)
+(* A restore from a backup raises the incarnation, and a leader takes no   *)
+(* target from an incarnation older than one it has seen                   *)
+(* (FelixRaftPlacementStaleWipeRewind.cfg,                                 *)
+(* FelixRaftPlacementRewindSpare.cfg).                                     *)
+(*                                                                         *)
+(* Versions. A target's version is <<incarnation, counter>>. It is written *)
+(* into a membership entry only when the entry's voters are that target's: *)
+(* a joint entry towards it, the entry that leaves the joint one, and a    *)
+(* stamp. A learner entry and the leader's growth step keep the version    *)
+(* they had. In openraft the version travels in the membership entry's     *)
+(* node map, as part of the Node value, and a stamp is `change_membership` *)
+(* with `ChangeMembers::SetNodes`, one entry with the same voters, so the  *)
+(* version and the voters it describes are written atomically.             *)
+(*                                                                         *)
+(* A leader the target leaves out grows to the target plus itself, then    *)
+(* hands leadership to a caught-up voter of the target. A live majority of *)
+(* the target can finish a move even when the voters the old and new sets  *)
+(* share are down. Liveness is not checked here; the rule makes the move   *)
+(* possible from every such state.                                         *)
+(*                                                                         *)
+(* Not modelled: an offset here is the entry's index and a wipe empties    *)
+(* the commit index, so the offset a subscriber resumes from after its     *)
+(* broker lost a directory is issue 2402's, not this module's.             *)
 (*                                                                         *)
 (* Checked:                                                                *)
 (*                                                                         *)
@@ -152,6 +178,10 @@
 (*                     2407 (FelixRaftPlacementFormLogWipeUnreached.cfg).  *)
 (*   WaiverExcusesAnswer -- a waived member's answer is skipped too.       *)
 (*   WaiverAnyNumber     -- a waiver may name a majority of the slots.     *)
+(*   DoomOnCommitted     -- a doom reads the committed history instead of  *)
+(*                          the reports, and a learner entry takes the     *)
+(*                          target's version                               *)
+(*                          (FelixRaftPlacementRewindSpareCommitted.cfg).  *)
 (*                                                                         *)
 (* FelixRaftMembership.tla has the twins for a change before the last one  *)
 (* is committed and for a learner that counts.                             *)
@@ -195,6 +225,16 @@ CONSTANTS
     Waived,         \* brokers a `form-without` waiver names: their silence does not block
     Absent,         \* brokers that never start
     EarlyWipes,     \* a directory may be lost before the group has committed an entry
+    Direct,         \* openraft 0.10: one entry when every old majority meets every new one
+    NoBarrier,      \* a leader proposes a membership before its blank entry commits
+    NoVersion,      \* a leader acts on a target older than the membership in its log
+    NoStamp,        \* no entry is written for a newer target with the same voters
+    SelfRemove,     \* a leader writes a membership, not joint, that leaves itself out
+    DoomAnyVersion, \* a doom ignores the last target version that named the copy
+    MaxRewinds,     \* control-plane restores from a backup
+    RewindSameInc,  \* a restore keeps the incarnation
+    NoIncAck,       \* targets and dooms go out before every broker has the incarnation
+    DoomOnCommitted,\* a doom reads the committed history, not reports, and a learner entry takes the target's version
     LogWipes        \* a wipe may take the log and vote alone, keeping the rest
 
 ASSUME FirstBoot => Forming
@@ -223,13 +263,20 @@ VARIABLES
     known,      \* control plane: the copy id each broker last reported
     past,       \* history: targets the control plane replaced
     doomed,     \* control plane: member ids told to delete their directory
+    tver,       \* control plane: the target's counter, risen on every target write
+    inc,        \* control plane: the restore incarnation
+    named,      \* control plane: the last version of a target that named each id
+    ack,        \* each broker's durably acknowledged incarnation
+    told,       \* history: every <<member id, incarnation>> told to delete
+    rep,        \* control plane: each broker's last membership report
+    xfer,       \* the voter a leader is transferring leadership to
     delivered,  \* history: every <<offset, record>> given to a subscriber
     used        \* budgets spent
 
-election == <<role, term, votedFor, granted, elected>>
+election == <<role, term, votedFor, granted, elected, xfer>>
 raft == <<log, commitIdx, match, committed>>
 ident == <<copy, hold, mark, rec, reached>>
-plane == <<target, known, past, doomed>>
+plane == <<target, known, past, doomed, tver, inc, named, ack, told, rep>>
 vars == <<election, raft, ident, plane, delivered, used>>
 
 \* The spare broker is told apart from the first voters, so only those
@@ -246,8 +293,15 @@ MaxOf(S) == CHOOSE x \in S : \A y \in S : y <= x
 Me(s) == <<s, copy[s]>>
 BrokersOf(S) == {m[1] : m \in S}
 
-NoCfg == [old |-> {}, new |-> {}, learners |-> {}]
-InitCfg == [old |-> InitBrokers \X {0}, new |-> InitBrokers \X {0}, learners |-> {}]
+\* A version is <<incarnation, counter>>, compared in that order.
+V0 == <<0, 0>>
+VerGe(a, b) == a[1] > b[1] \/ (a[1] = b[1] /\ a[2] >= b[2])
+VerGt(a, b) == VerGe(a, b) /\ a # b
+
+NoCfg == [old |-> {}, new |-> {}, learners |-> {}, ver |-> V0]
+\* No membership report yet.
+NoRep == [clear |-> {}, ev |-> {}, mem |-> {}]
+InitCfg == [old |-> InitBrokers \X {0}, new |-> InitBrokers \X {0}, learners |-> {}, ver |-> V0]
 Blank(t) == [term |-> t, kind |-> "blank", val |-> 0, cfg |-> NoCfg]
 Record(t, v) == [term |-> t, kind |-> "record", val |-> v, cfg |-> NoCfg]
 Member(t, c) == [term |-> t, kind |-> "member", val |-> 0, cfg |-> c]
@@ -277,10 +331,29 @@ UpToDate(c, s) ==
 Given(l, n) ==
     delivered \cup {<<k, l[k].val>> : k \in {q \in 1..n : l[q].kind = "record"}}
 
-Targets == IF StaleTargets THEN past \cup {target} ELSE {target}
+\* Every broker has durably acknowledged the control plane's incarnation.
+AllAcked == NoIncAck \/ \A s \in Brokers : ack[s] = inc
 
-\* Leaders in S stop leading.
-Deposed(S) == role' = [s \in Brokers |-> IF s \in S THEN "follower" ELSE role[s]]
+\* The current target with its version. It reaches the brokers only once
+\* every broker has acknowledged the incarnation.
+Cur == [set |-> target, ver |-> <<inc, tver>>]
+Targets == (IF StaleTargets THEN past ELSE {}) \cup (IF AllAcked THEN {Cur} ELSE {})
+
+\* The highest incarnation a broker has seen: acknowledged, or in a
+\* membership in its log.
+LogIncs(s) == {log[s][k].cfg.ver[1] : k \in MemberIdxs(s)}
+Seen(s) == Max(ack[s], IF LogIncs(s) = {} THEN 0 ELSE MaxOf(LogIncs(s)))
+
+\* A leader acts on a target no older than the membership it holds, and
+\* not from an incarnation older than one it has seen.
+VerOK(i, T) ==
+    \/ NoVersion
+    \/ VerGe(T.ver, Cfg(i).ver) /\ T.ver[1] >= Seen(i)
+
+\* Leaders in S stop leading, and any transfer they started ends.
+Deposed(S) ==
+    /\ role' = [s \in Brokers |-> IF s \in S THEN "follower" ELSE role[s]]
+    /\ xfer' = [s \in Brokers |-> IF s \in S THEN Nobody ELSE xfer[s]]
 
 Init ==
     /\ role = [s \in Brokers |-> "follower"]
@@ -302,9 +375,16 @@ Init ==
     /\ known = [s \in Brokers |-> 0]
     /\ past = {}
     /\ doomed = {}
+    /\ tver = 0
+    /\ inc = 0
+    /\ named = [m \in Ids |-> V0]
+    /\ ack = [s \in Brokers |-> 0]
+    /\ told = {}
+    /\ rep = [s \in Brokers |-> NoRep]
+    /\ xfer = [s \in Brokers |-> Nobody]
     /\ delivered = {}
     /\ used = [writes |-> 0, calls |-> 0, targets |-> 0, wipes |-> 0, wiped |-> Nobody,
-               deleted |-> FALSE, early |-> FALSE, logOnly |-> FALSE]
+               deleted |-> FALSE, rewinds |-> 0, early |-> FALSE, logOnly |-> FALSE]
 
 ----------------------------------------------------------------------------
 \* Raft.
@@ -320,7 +400,7 @@ Campaign(c) ==
     /\ votedFor' = [votedFor EXCEPT ![c] = c]
     /\ role' = [role EXCEPT ![c] = "candidate"]
     /\ granted' = [granted EXCEPT ![c] = {Me(c)}]
-    /\ UNCHANGED <<elected, raft, ident, plane, delivered, used>>
+    /\ UNCHANGED <<elected, xfer, raft, ident, plane, delivered, used>>
 
 \* The candidate asks the voters of its own configuration, by member id.
 GrantVote(s, c) ==
@@ -344,7 +424,7 @@ BecomeLeader(c) ==
     /\ elected' = elected \cup {<<term[c], Me(c)>>}
     /\ log' = [log EXCEPT ![c] = Append(@, Blank(term[c]))]
     /\ match' = [match EXCEPT ![c] = [m \in Ids |-> 0]]
-    /\ UNCHANGED <<term, votedFor, granted, commitIdx, committed, ident, plane, delivered, used>>
+    /\ UNCHANGED <<term, votedFor, granted, xfer, commitIdx, committed, ident, plane, delivered, used>>
 
 \* A heartbeat: the receiver adopts the leader's term. A member whose vote
 \* is withheld still follows.
@@ -433,6 +513,7 @@ Probe(i, j) ==
 
 AppendRecord(i) ==
     /\ role[i] = "leader"
+    /\ xfer[i] = Nobody
     /\ used.writes < MaxWrites
     /\ log' = [log EXCEPT ![i] = Append(@, Record(term[i], used.writes + 1))]
     /\ used' = [used EXCEPT !.writes = @ + 1]
@@ -441,47 +522,133 @@ AppendRecord(i) ==
 ----------------------------------------------------------------------------
 \* The leader follows the target.
 
+\* The leader has committed an entry of its own term: its blank entry.
+\* openraft refuses a membership change until then.
+OwnCommitted(i) == \E k \in 1..commitIdx[i] : log[i][k].term = term[i]
+
 \* openraft refuses a membership entry while the last one is uncommitted.
 Settled(i) ==
     /\ role[i] = "leader"
     /\ commitIdx[i] >= LastMember(i)
     /\ ~Joint(Cfg(i))
+    /\ NoBarrier \/ OwnCommitted(i)
 
 Propose(i, c) ==
+    /\ xfer[i] = Nobody
     /\ used.calls < MaxCalls
     /\ log' = [log EXCEPT ![i] = Append(@, Member(term[i], c))]
     /\ used' = [used EXCEPT !.calls = @ + 1]
     /\ UNCHANGED <<election, commitIdx, match, committed, ident, plane, delivered>>
 
+\* Every majority of A meets every majority of B.
+Intersects(A, B) ==
+    \A Q1 \in SUBSET A : \A Q2 \in SUBSET B :
+        (Majority(Q1, A) /\ Majority(Q2, B)) => Q1 \cap Q2 # {}
+
+\* The membership `change_membership` writes from c towards the voters S,
+\* made from a target of version v.
+Toward(c, S, v) ==
+    [old |-> IF SkipJoint \/ (Direct /\ Intersects(c.new, S)) THEN S ELSE c.new,
+     new |-> S,
+     learners |-> (c.learners \ S) \cup (IF Retain THEN c.new \ S ELSE {}),
+     ver |-> v]
+
 \* `add_learner` for a member the target names and the membership lacks.
+CanLearn(i, T) == \E m \in T.set : m \notin Members(Cfg(i))
+
 AddLearner(i, m) ==
     /\ Settled(i)
-    /\ \E T \in Targets : m \in T
     /\ m \notin Members(Cfg(i))
-    /\ Propose(i, [Cfg(i) EXCEPT !.learners = @ \cup {m}])
+    /\ \E T \in Targets :
+        /\ m \in T.set
+        /\ VerOK(i, T)
+        /\ Propose(i, [Cfg(i) EXCEPT !.learners = @ \cup {m},
+                                      !.ver = IF DoomOnCommitted THEN T.ver ELSE @])
 
 \* `change_membership` with the whole target. Every new voter is already a
-\* learner, which openraft requires.
+\* learner, which openraft requires. A leader never writes a membership that
+\* leaves itself out: it transfers first.
 Change(i, T) ==
     /\ Settled(i)
     /\ T \in Targets
-    /\ T # Cfg(i).new
-    /\ T \subseteq Members(Cfg(i))
-    /\ LET c == Cfg(i)
-       IN Propose(i, [old |-> IF SkipJoint THEN T ELSE c.new,
-                      new |-> T,
-                      learners |-> (c.learners \ T) \cup (IF Retain THEN c.new \ T ELSE {})])
+    /\ VerOK(i, T)
+    /\ T.set # Cfg(i).new
+    /\ T.set \subseteq Members(Cfg(i))
+    /\ SelfRemove \/ Me(i) \in T.set
+    /\ Propose(i, Toward(Cfg(i), T.set, T.ver))
+
+\* The target leaves the leader out, so the leader first grows to the target
+\* plus itself, then transfers to a voter of the target. Growing first means
+\* a live majority of the target can finish the move when the voters the
+\* old and new sets share are down. Only a membership whose voters are the
+\* target's carries its version, so this one keeps the old version.
+GrowSelf(i, T) ==
+    /\ Settled(i)
+    /\ T \in Targets
+    /\ VerOK(i, T)
+    /\ Me(i) \notin T.set
+    /\ T.set \cup {Me(i)} # Cfg(i).new
+    /\ T.set \subseteq Members(Cfg(i))
+    /\ Propose(i, Toward(Cfg(i), T.set \cup {Me(i)}, Cfg(i).ver))
+
+\* The stamp: a newer target with the same voters is written as
+\* the same membership at the new version, without learners it dropped.
+CanStamp(i, T) ==
+    /\ ~NoStamp
+    /\ VerOK(i, T)
+    /\ T.set = Cfg(i).new
+    /\ VerGt(T.ver, Cfg(i).ver)
+
+Stamp(i, T) ==
+    /\ Settled(i)
+    /\ T \in Targets
+    /\ CanStamp(i, T)
+    /\ Propose(i, [Cfg(i) EXCEPT !.learners = @ \cap T.set, !.ver = T.ver])
 
 \* openraft leaves the joint configuration once its entry is committed. A
-\* new leader that finds one does the same.
+\* new leader that finds one does the same, after its barrier, and only if
+\* it is in the new set; otherwise it transfers.
 LeaveJoint(i) ==
     /\ role[i] = "leader"
+    /\ xfer[i] = Nobody
     /\ Joint(Cfg(i))
     /\ commitIdx[i] >= LastMember(i)
+    /\ NoBarrier \/ OwnCommitted(i)
+    /\ SelfRemove \/ Me(i) \in Cfg(i).new
     /\ log' = [log EXCEPT ![i] = Append(@, Member(term[i], [Cfg(i) EXCEPT !.old = Cfg(i).new]))]
     /\ UNCHANGED <<election, commitIdx, match, committed, ident, plane, delivered, used>>
 
-\* A leader outside the committed new set stops leading.
+\* `transfer_leader` to a caught-up voter j: from a joint membership that
+\* leaves the leader out, to a voter of its new set; from a settled one, to
+\* a voter of both it and a target that leaves the leader out. Writes and
+\* membership calls stop until the transfer ends.
+Transfer(i, j) ==
+    /\ i # j
+    /\ role[i] = "leader"
+    /\ xfer[i] = Nobody
+    /\ match[i][Me(j)] = LastIdx(i)
+    /\ \/ /\ Joint(Cfg(i))
+          /\ commitIdx[i] >= LastMember(i)
+          /\ Me(i) \notin Cfg(i).new
+          /\ Me(j) \in Cfg(i).new
+       \/ /\ Settled(i)
+          /\ \E T \in Targets :
+                /\ VerOK(i, T)
+                /\ Me(i) \notin T.set
+                /\ Me(j) \in Cfg(i).new \cap T.set
+    /\ xfer' = [xfer EXCEPT ![i] = j]
+    /\ UNCHANGED <<role, term, votedFor, granted, elected, raft, ident, plane, delivered, used>>
+
+\* The successor has not taken over within an election timeout: the leader
+\* steps down, and may campaign and win again.
+XferExpire(i) ==
+    /\ role[i] = "leader"
+    /\ xfer[i] # Nobody
+    /\ Deposed({i})
+    /\ UNCHANGED <<term, votedFor, granted, elected, raft, ident, plane, delivered, used>>
+
+\* A leader outside the committed new set stops leading. Without SelfRemove
+\* no leader writes such a set, so this fires only in the SelfRemove twins.
 StepDown(s) ==
     /\ Settled(s)
     /\ Me(s) \notin Voters(Cfg(s))
@@ -491,15 +658,22 @@ StepDown(s) ==
 ----------------------------------------------------------------------------
 \* The control plane.
 
+\* A target write: the counter rises, and the replaced target stays
+\* deliverable when leaders may act on old targets. Nothing goes out before
+\* every broker has acknowledged the incarnation.
 Retarget(T) ==
     /\ used.targets < MaxTargets
+    /\ AllAcked
     /\ target' = T
-    /\ past' = IF StaleTargets THEN past \cup {target} ELSE past
+    /\ tver' = tver + 1
+    /\ named' = [m \in Ids |-> IF m \in T THEN <<inc, tver + 1>> ELSE named[m]]
+    /\ past' = IF StaleTargets THEN past \cup {Cur} ELSE past
+    /\ rep' = [t \in Brokers |-> NoRep]
     /\ used' = [used EXCEPT !.targets = @ + 1]
-    /\ UNCHANGED <<election, raft, ident, known, doomed, delivered>>
+    /\ UNCHANGED <<election, raft, ident, known, doomed, inc, ack, told, delivered>>
 
 \* A move, a drain or a replaced node: seat x goes to broker y. An id the
-\* control plane told to delete is never placed again: `doomed` only grows.
+\* control plane told to delete is never placed again while it remembers.
 CpMove(x, y) ==
     /\ x \in target
     /\ y \notin BrokersOf(target)
@@ -512,29 +686,120 @@ CpRemove(x) ==
     /\ Cardinality(target) > MinVoters
     /\ Retarget(target \ {x})
 
-\* A broker reports the copy id it holds. A seat on it follows the id.
+\* A broker reports the copy id it holds. A seat on it follows the id, which
+\* is a target write.
 CpReport(s) ==
     /\ known[s] # copy[s]
+    /\ s \notin BrokersOf(target) \/ AllAcked
     /\ known' = [known EXCEPT ![s] = copy[s]]
-    /\ target' = IF s \in BrokersOf(target)
-                 THEN {m \in target : m[1] # s} \cup {Me(s)}
-                 ELSE target
-    /\ past' = IF StaleTargets /\ target' # target THEN past \cup {target} ELSE past
-    /\ UNCHANGED <<election, raft, ident, doomed, delivered, used>>
+    /\ IF s \in BrokersOf(target)
+       THEN LET T == {m \in target : m[1] # s} \cup {Me(s)}
+            IN /\ target' = T
+               /\ tver' = tver + 1
+               /\ named' = [m \in Ids |-> IF m \in T THEN <<inc, tver + 1>> ELSE named[m]]
+               /\ past' = IF StaleTargets THEN past \cup {Cur} ELSE past
+               /\ rep' = [t \in Brokers |-> NoRep]
+       ELSE UNCHANGED <<target, tver, named, past, rep>>
+    /\ UNCHANGED <<election, raft, ident, doomed, inc, ack, told, delivered, used>>
 
 CommittedCfgs == {k \in 1..Len(committed) : committed[k].e.kind = "member"}
 LastCommittedCfg ==
     IF CommittedCfgs = {} THEN InitCfg ELSE committed[MaxOf(CommittedCfgs)].e.cfg
 
-\* The control plane tells a broker to delete a copy the target dropped.
-CpDoom(s) ==
+\* A broker's membership report. The control plane dooms on these, never on
+\* what it believes is committed. A report names every member id in the
+\* broker's committed membership and in every membership entry appended
+\* after it, committed or not, and gives the committed membership's version
+\* when that membership is not joint. A broker reports only once every
+\* broker has acknowledged the current incarnation, and a target write or a
+\* restore throws away the reports the control plane has.
+\* The committed membership is the last one at or below the broker's own
+\* commit index. The implementation must report that one, not openraft's
+\* `MembershipState::committed`, which may run ahead of the commit index,
+\* nor the `membership_config` metric, the effective one alone. No
+\* configuration yet pins either alternative (issue 2506).
+ComIdx(t) ==
+    LET ks == {k \in MemberIdxs(t) : k <= commitIdx[t]}
+    IN IF ks = {} THEN 0 ELSE MaxOf(ks)
+ComCfg(t) == IF ComIdx(t) = 0 THEN InitCfg ELSE log[t][ComIdx(t)].cfg
+\* Copies the control plane is waiting to delete.
+Cands == {Me(s) : s \in {b \in Brokers : Me(b) \notin target /\ Me(b) \notin doomed /\ LastIdx(b) > 0}}
+Names(t) ==
+    IF LastIdx(t) = 0 THEN {}
+    ELSE Members(ComCfg(t)) \cup
+         UNION {Members(log[t][k].cfg) : k \in {q \in MemberIdxs(t) : q > ComIdx(t)}}
+\* What a report says about the copies waiting to be deleted: those no entry
+\* names (clear), those the committed membership is evidence for (ev), and
+\* the members of that membership, who must report too (mem).
+Snap(t) ==
+    LET ev == IF LastIdx(t) = 0 \/ Joint(ComCfg(t)) THEN {}
+              ELSE {m \in Cands : m \notin Members(ComCfg(t))
+                                  /\ (DoomAnyVersion \/ VerGt(ComCfg(t).ver, named[m]))}
+    IN [clear |-> {m \in Cands : m \notin Names(t)},
+        ev |-> ev,
+        mem |-> IF ev = {} THEN {} ELSE BrokersOf(Names(t))]
+
+\* The control plane asks for reports while it has a dropped copy to delete.
+Report(t) ==
+    /\ AllAcked
+    /\ Cands # {}
+    /\ rep[t] # Snap(t)
+    /\ rep' = [rep EXCEPT ![t] = Snap(t)]
+    /\ UNCHANGED <<election, raft, ident, target, known, past, doomed, tver, inc, named, ack,
+                   told, delivered, used>>
+
+\* When the control plane may tell s to delete its copy: the target dropped
+\* it, and some broker reports a committed membership that is not joint,
+\* has no place for it, and was made from a target newer than the last one
+\* naming it. Every member of that membership has reported in the current
+\* incarnation, and none names the copy anywhere in its log past what it
+\* has committed. A copy still in an appended learner or joint entry is not
+\* doomed. Brokers that membership left out are not asked: they cannot win
+\* an election against it.
+DoomGuard(s) ==
     /\ Me(s) \notin target
-    /\ Me(s) \notin doomed
     /\ LastIdx(s) > 0
+    /\ AllAcked
     /\ \/ DeleteOnTarget
-       \/ ~Joint(LastCommittedCfg) /\ Me(s) \notin Voters(LastCommittedCfg)
+       \/ /\ DoomOnCommitted
+          /\ ~Joint(LastCommittedCfg)
+          /\ Me(s) \notin Voters(LastCommittedCfg)
+          /\ DoomAnyVersion \/ VerGt(LastCommittedCfg.ver, named[Me(s)])
+       \/ /\ ~DoomOnCommitted
+          /\ \E t0 \in Brokers \ {s} :
+                /\ Me(s) \in rep[t0].ev
+                /\ \A t \in (rep[t0].mem \cup {t0}) \ {s} : Me(s) \in rep[t].clear
+\* The control plane tells a broker to delete a copy the target dropped. The
+\* word carries the incarnation it was given in.
+CpDoom(s) ==
+    /\ Me(s) \notin doomed
+    /\ DoomGuard(s)
     /\ doomed' = doomed \cup {Me(s)}
-    /\ UNCHANGED <<election, raft, ident, target, known, past, delivered, used>>
+    /\ told' = told \cup {<<Me(s), inc>>}
+    /\ UNCHANGED <<election, raft, ident, target, known, past, tver, inc, named, ack, rep,
+                   delivered, used>>
+
+\* The control plane's metadata is restored from a backup taken before any
+\* target change: the first target, nothing doomed. Targets already sent
+\* may still arrive. The restore raises the incarnation.
+CpRewind ==
+    /\ used.rewinds < MaxRewinds
+    /\ target' = InitBrokers \X {0}
+    /\ tver' = 0
+    /\ inc' = IF RewindSameInc THEN inc ELSE inc + 1
+    /\ named' = [m \in Ids |-> IF m \in InitBrokers \X {0} THEN <<inc', 0>> ELSE V0]
+    /\ doomed' = {}
+    /\ rep' = [t \in Brokers |-> NoRep]
+    /\ past' = IF StaleTargets THEN past \cup {Cur} ELSE past
+    /\ used' = [used EXCEPT !.rewinds = @ + 1]
+    /\ UNCHANGED <<election, raft, ident, known, ack, told, delivered>>
+
+\* A broker durably acknowledges the incarnation.
+AckInc(s) ==
+    /\ ack[s] < inc
+    /\ ack' = [ack EXCEPT ![s] = inc]
+    /\ UNCHANGED <<election, raft, ident, target, known, past, doomed, tver, inc, named, told,
+                   rep, delivered, used>>
 
 ----------------------------------------------------------------------------
 \* Losing a directory.
@@ -564,8 +829,9 @@ Wipe(s, whole) ==
                              !.logOnly = ~whole]
     /\ UNCHANGED plane
 
+\* A delete is void below the highest incarnation the broker has seen.
 Delete(s) ==
-    /\ Me(s) \in doomed
+    /\ \E k \in 0..MaxRewinds : <<Me(s), k>> \in told /\ k >= Seen(s)
     /\ LastIdx(s) > 0 \/ term[s] > 0
     /\ Emptied(s, TRUE)
     /\ used' = [used EXCEPT !.deleted = TRUE]
@@ -663,12 +929,15 @@ Next ==
         \/ VoteAgain(s)
         \/ \E m \in Ids : AddLearner(s, m)
         \/ \E T \in Targets : Change(s, T)
+        \/ \E T \in Targets : GrowSelf(s, T)
+        \/ \E T \in Targets : Stamp(s, T)
+        \/ XferExpire(s) \/ AckInc(s) \/ Report(s)
     \/ \E i, j \in Up :
         \/ GrantVote(i, j) \/ Heartbeat(i, j) \/ Replicate(i, j) \/ LearnCommit(i, j) \/ Probe(i, j)
-        \/ AskTarget(i, j)
-    \/ \E x \in target :
-        \/ CpRemove(x)
-        \/ \E y \in Brokers : CpMove(x, y)
+        \/ AskTarget(i, j) \/ Transfer(i, j)
+    \/ CpRewind
+    \/ \E x \in target : CpRemove(x)
+    \/ \E x \in target : \E y \in Brokers : CpMove(x, y)
 
 Spec == Init /\ [][Next]_vars
 
@@ -729,6 +998,37 @@ AckedHeldSurvive ==
 
 AckedOnDisk == \A v \in Acked : \E s \in Brokers : Holds(s, v)
 
+\* A leader never leads a settled membership it is not a voter of.
+NeverLeadsRemoved ==
+    \A s \in Brokers :
+        (role[s] = "leader" /\ commitIdx[s] >= LastMember(s) /\ ~Joint(Cfg(s)))
+            => Me(s) \in Voters(Cfg(s))
+
+\* The leader has nothing left to do for the current target. The guards are
+\* the actions' own, without the call budget.
+Quiet(i) ==
+    /\ Settled(i)
+    /\ Cfg(i) = LastCommittedCfg
+    /\ AllAcked
+    /\ Cfg(i).new = target
+    /\ ~CanLearn(i, Cur)
+    /\ ~CanStamp(i, Cur)
+
+\* Every member of the leader's membership holds just that membership and
+\* has reported it since the last restore.
+Reported(i) ==
+    \A t \in BrokersOf(Members(Cfg(i))) \cup {i} :
+        /\ rep[t] = Snap(t)
+        /\ ack[t] = inc
+        /\ LastIdx(t) = 0 \/ (ComCfg(t) = Cfg(i) /\ Cfg(t) = Cfg(i))
+
+\* Once the group is quiet and its members have reported, every copy the
+\* target dropped can be told to delete. Otherwise it leaks.
+DroppedIsDoomable ==
+    \A i \in Brokers : Quiet(i) /\ Reported(i) =>
+        \A s \in Brokers :
+            (Me(s) \notin target /\ Me(s) \notin doomed /\ LastIdx(s) > 0) => DoomGuard(s)
+
 OffsetNeverReused ==
     \A a, b \in delivered : (a[1] = b[1] \/ a[2] = b[2]) => a = b
 
@@ -750,6 +1050,9 @@ IsMember(e) == e.kind = "member"
 \* A write is acknowledged. With FirstBoot every vote starts withheld, so
 \* this also says members formed.
 NeverAcks == Acked = {}
+
+\* A transfer hands leadership to its successor.
+NeverTransfers == ~\E i \in Brokers : xfer[i] # Nobody /\ role[xfer[i]] = "leader"
 
 \* No member of a first boot forms.
 NobodyForms == \A s \in Brokers : hold[s] = 1

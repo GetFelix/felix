@@ -201,6 +201,7 @@ jobs:
           - FelixShardUnifiedReadmitFull
           - FelixShardUnifiedDropEvidencedFull
           - FelixRaftPlacementFull
+          - FelixRaftPlacementRewindSpare
           - FelixRaftWrittenFailover
     steps:
       - name: Checkout
