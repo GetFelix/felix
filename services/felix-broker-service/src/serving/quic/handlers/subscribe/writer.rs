@@ -390,7 +390,11 @@ pub(super) async fn run_connection_writer(
                             // which may have lowered the resume point. Nothing
                             // after a shed was written, so `ended` would hide a
                             // hole and an older `lagged` would skip records.
-                            let last = if shedding.contains(&subscriber_id) {
+                            // Any other last frame (a revocation) says why the
+                            // subscription ended and is kept.
+                            let last = if shedding.contains(&subscriber_id)
+                                && last.as_ref().is_some_and(is_ended_or_lagged)
+                            {
                                 drop_accounts
                                     .get(&subscriber_id)
                                     .and_then(|account| account.resume_from())
@@ -592,4 +596,18 @@ pub(super) async fn run_connection_writer(
             debug_dequeues = 0;
         }
     }
+}
+
+/// Whether `frame` is a `subscription_ended` or `subscription_lagged`, the
+/// last frames a writer drop can make wrong.
+fn is_ended_or_lagged(frame: &Bytes) -> bool {
+    felix_wire::Frame::decode(frame.clone())
+        .and_then(felix_wire::Message::decode)
+        .is_ok_and(|message| {
+            matches!(
+                message,
+                felix_wire::Message::SubscriptionEnded { .. }
+                    | felix_wire::Message::SubscriptionLagged { .. }
+            )
+        })
 }

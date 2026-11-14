@@ -863,10 +863,18 @@ async fn shed_after_a_writer_drop(ends_on_lag: bool) -> Result<()> {
     assert_eq!(rx.lagged(), Some(2));
     tx.send(ConnectionCommand::Unregister {
         subscriber_id: 1,
-        last: Some(felix_wire::binary::encode_event_batch_bytes(
-            1,
-            &[Bytes::from_static(b"last")],
-        )?),
+        // What the feeder would choose: lagged once the subscription ends at
+        // a drop, which the writer lowers to its own.
+        last: Some(if ends_on_lag {
+            felix_wire::Message::SubscriptionLagged {
+                subscription_id: 1,
+                resume_from: 3,
+            }
+            .encode()?
+            .encode()
+        } else {
+            felix_wire::binary::encode_event_batch_bytes(1, &[Bytes::from_static(b"last")])?
+        }),
     })
     .await
     .context("unregister")?;
@@ -928,7 +936,7 @@ async fn a_writer_drop_after_the_feeder_chose_lagged_lowers_resume_from() -> Res
         subscription_id: 1,
         resume_from: 5,
     };
-    writer_drop_replaces_last(Some(5), lagged).await
+    writer_drop_replaces_last(Some(5), lagged, lagged_from_2()).await
 }
 
 /// The bounded half of the above: the feeder saw the subscription reach its
@@ -940,12 +948,31 @@ async fn a_writer_drop_after_the_feeder_chose_ended_sends_lagged() -> Result<()>
         subscription_id: 1,
         end: 3,
     };
-    writer_drop_replaces_last(None, ended).await
+    writer_drop_replaces_last(None, ended, lagged_from_2()).await
+}
+
+/// A revocation says why the subscription ended; a writer drop does not
+/// turn it into a resume point.
+#[tokio::test]
+#[serial]
+async fn a_writer_drop_keeps_a_revoked_last_frame() -> Result<()> {
+    let revoked = felix_wire::Message::decode(felix_wire::Frame::decode(
+        crate::serving::quic::handlers::subscribe::revoked_frame(0)?,
+    )?)?;
+    writer_drop_replaces_last(None, revoked.clone(), revoked).await
+}
+
+fn lagged_from_2() -> felix_wire::Message {
+    felix_wire::Message::SubscriptionLagged {
+        subscription_id: 1,
+        resume_from: 2,
+    }
 }
 
 async fn writer_drop_replaces_last(
     queue_drop: Option<u64>,
     feeder_last: felix_wire::Message,
+    expected_last: felix_wire::Message,
 ) -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
@@ -1035,10 +1062,7 @@ async fn writer_drop_replaces_last(
     }
     assert_eq!(
         read_last_frame(&mut event_recv, &mut scratch).await?,
-        Some(felix_wire::Message::SubscriptionLagged {
-            subscription_id: 1,
-            resume_from: 2,
-        })
+        Some(expected_last)
     );
 
     drop(tx);
