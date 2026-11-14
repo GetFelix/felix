@@ -25,6 +25,7 @@ use crate::{ShardKey, ShardKind};
 mod commit;
 mod deliver;
 mod identity;
+mod lease;
 mod propose;
 mod written;
 
@@ -93,6 +94,13 @@ struct Net {
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
+    /// Appends to this broker are answered with this vote, as a member
+    /// that has voted for a later candidate answers.
+    higher_vote: parking_lot::Mutex<Option<(String, VoteOf<ShardTypes>)>>,
+    /// While set, every transfer request is lost.
+    lose_transfers: std::sync::atomic::AtomicBool,
+    /// How long an append's answer takes to come back.
+    answer_after: parking_lot::Mutex<Option<Duration>>,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -131,17 +139,34 @@ impl RaftTransport for Net {
         if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
             || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
             || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
+            || (matches!(request.body, Request::TransferLeader(_))
+                && self.lose_transfers.load(Relaxed))
         {
             return Err(Refused::Unreachable("lost".into()));
+        }
+        if matches!(request.body, Request::Append(_))
+            && let Some((to, vote)) = &*self.higher_vote.lock()
+            && to == broker
+        {
+            let higher = openraft::raft::AppendError::HigherVote(vote.clone());
+            return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
         let runtime = match self.cut.lock().contains(broker) {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
-        match runtime {
+        let slow = match request.body {
+            Request::Append(_) => *self.answer_after.lock(),
+            _ => None,
+        };
+        let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
+        };
+        if let Some(slow) = slow {
+            tokio::time::sleep(slow).await;
         }
+        answer
     }
 }
 
@@ -523,6 +548,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         idle_after: millis(config.idle_after),
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
+        lease: millis(config.lease),
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -1149,8 +1175,8 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.start(true);
     cluster.open(0).await;
 
-    // What each member read back from its log. The old leader's vote is
-    // still its own, so it may lead again at once and add an entry.
+    // What each member read back from its log, before a leader elected
+    // after the restart adds an entry.
     for runtime in cluster.runtimes() {
         let status = eventually(|| {
             runtime

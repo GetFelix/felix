@@ -520,6 +520,9 @@ pub(crate) struct Writer {
     last: Option<Vec<u8>>,
     /// The last view could not be written.
     failed: bool,
+    /// A sync of the file failed, so it is not written again in this run: a
+    /// later sync could succeed without making the new file durable.
+    stopped: bool,
 }
 
 impl Writer {
@@ -528,15 +531,16 @@ impl Writer {
             file,
             last: None,
             failed: false,
+            stopped: false,
         }
     }
 
     /// Record `view` if it is new. Returns whether the file was written.
     /// A failed write is logged and tried again with the next view, and the
-    /// file keeps the older one.
+    /// file keeps the older one. A failed sync is not tried again.
     pub(crate) async fn write(&mut self, view: Option<View>) -> bool {
         self.failed = false;
-        let Some(view) = view else {
+        let Some(view) = view.filter(|_| !self.stopped) else {
             return false;
         };
         let body = match serde_json::to_vec(&view) {
@@ -559,6 +563,11 @@ impl Writer {
             Ok(Ok(())) => {
                 self.last = Some(body);
                 true
+            }
+            Ok(Err(err)) if err.is_sync_failure() => {
+                tracing::error!(error = %err, "the control-plane view could not be synced; it is not written again until the broker restarts");
+                self.stopped = true;
+                false
             }
             Ok(Err(err)) => {
                 tracing::warn!(error = %err, "could not write the control-plane view; keeping the older one");

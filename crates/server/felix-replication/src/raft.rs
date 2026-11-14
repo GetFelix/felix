@@ -30,6 +30,7 @@ mod engine;
 pub mod fuzzing;
 mod group;
 mod lead;
+mod lease;
 mod machine;
 mod network;
 mod peer;
