@@ -4,8 +4,12 @@ use felix_wire::internal::InternalMessage;
 
 use super::*;
 
-/// Peers whose listeners offer what the map says. One not in it is down.
-struct Fleet(parking_lot::Mutex<HashMap<String, PeerCapabilities>>);
+/// Peers whose listeners offer what the first map says. One not in it is
+/// down. The second is what each peer said in its latest handshake.
+struct Fleet(
+    parking_lot::Mutex<HashMap<String, PeerCapabilities>>,
+    parking_lot::Mutex<HashMap<String, PeerCapabilities>>,
+);
 
 impl PeerRequester for Fleet {
     async fn request(
@@ -27,6 +31,10 @@ impl PeerRequester for Fleet {
             Some(offered) => Ok(offered),
             None => std::future::pending().await,
         }
+    }
+
+    fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        self.1.lock().get(node_id).copied()
     }
 }
 
@@ -85,7 +93,10 @@ async fn check(raft: bool, fleet: &[(&str, PeerCapabilities)]) -> Arc<EngineMatc
         .collect();
     EngineMatch::new(
         Arc::new(broker),
-        Arc::new(Fleet(parking_lot::Mutex::new(fleet))),
+        Arc::new(Fleet(
+            parking_lot::Mutex::new(fleet),
+            parking_lot::Mutex::default(),
+        )),
         Arc::new(|_: &str| Some(SocketAddr::from(([127, 0, 0, 1], 1)))),
         "broker-a".to_string(),
         raft,
@@ -224,4 +235,22 @@ async fn a_refusal_ends_once_the_engines_match() {
     settled(&check, false).await;
     assert_eq!(pass(&check).await, ["orders", "scratch"]);
     assert_eq!(refusal(&check, "orders"), None);
+}
+
+/// **A peer that has handshaken with this broker is not dialled.** It just
+/// restarted, so the catalog may still hold its old address: a dial there
+/// fails and starts a reconnect backoff that holds up a move onto it.
+#[tokio::test]
+async fn a_peer_with_a_recorded_handshake_is_not_dialled() {
+    // Down as far as a dial goes, so only the handshake can answer.
+    let check = check(false, &[]).await;
+    check
+        .peers
+        .1
+        .lock()
+        .insert("broker-b".to_string(), PeerCapabilities::RAFT);
+    pass(&check).await;
+    assert_eq!(check.engines.lock().get("broker-b"), Some(&true));
+    assert!(check.asking.lock().is_empty(), "broker-b was dialled");
+    assert_eq!(pass(&check).await, ["scratch"]);
 }

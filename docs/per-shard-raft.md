@@ -2079,7 +2079,11 @@ hybrid broker placed in a Raft shard would keep a log of its own that no
 quorum covers, and a Raft group would run short of a member that never
 votes. So each broker asks the peers it shares a durable stream shard with
 which engine they run, and refuses the shard when one answers with the
-other engine, whichever side it is on:
+other engine, whichever side it is on. A peer that has already connected to
+this broker, in either direction, is not asked again: the capabilities it
+sent in its latest handshake are the answer. A broker that restarts asks its
+peers, which connects to them, so they learn its new engine without dialling
+an address the node catalog may not have refreshed yet.
 
 - It closes the shard and stops serving it. Nothing is acknowledged.
 - Every request for it is refused with "the shard's brokers run different
