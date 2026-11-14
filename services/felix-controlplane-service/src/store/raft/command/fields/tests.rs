@@ -200,6 +200,29 @@ fn assignment() -> ShardAssignment {
             epoch: 1,
             brokers: BTreeSet::from([s("b")]),
         }),
+        switch: Some(crate::model::ShardSwitch {
+            generation: 1,
+            sealer: s("b"),
+            sealer_copy: Some(s("0123456789abcdef0123456789abcdef")),
+            report: Some(seal_report()),
+        }),
+    }
+}
+
+fn seal_report() -> crate::model::SealReport {
+    let side = crate::model::SealedSideLog {
+        start: 1,
+        end: 2,
+        digest: "ab".repeat(32),
+    };
+    crate::model::SealReport {
+        generation: 1,
+        offset: 2,
+        start: 1,
+        digest: "ab".repeat(32),
+        dead_letters: side.clone(),
+        cursors: side,
+        voters: any_map(s("0123456789abcdef0123456789abcdef")),
     }
 }
 
@@ -544,6 +567,20 @@ fn commands() -> Vec<MetaCommand> {
             node_id: s("b"),
             heard: root_sequence(),
         },
+        MetaCommand::SealShard {
+            key: shard_key(),
+            expected_generation: 1,
+        },
+        MetaCommand::AcceptSealReport {
+            key: shard_key(),
+            report: seal_report(),
+            sealer: s("b"),
+        },
+        MetaCommand::GiveUpSeal {
+            key: shard_key(),
+            generation: 1,
+            sealer: s("b"),
+        },
         MetaCommand::UpsertIdpIssuer {
             tenant_id: s("t"),
             issuer: issuer(),
@@ -724,6 +761,9 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::SetMovesPaused { .. } => "set_moves_paused",
         MetaCommand::RecordClusterIdentity { .. } => "record_cluster_identity",
         MetaCommand::RecordRootSequence { .. } => "record_root_sequence",
+        MetaCommand::SealShard { .. } => "seal_shard",
+        MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
+        MetaCommand::GiveUpSeal { .. } => "give_up_seal",
         MetaCommand::UpsertIdpIssuer { .. } => "upsert_idp_issuer",
         MetaCommand::DeleteIdpIssuer { .. } => "delete_idp_issuer",
         MetaCommand::AddRbacPolicy { .. } => "add_rbac_policy",

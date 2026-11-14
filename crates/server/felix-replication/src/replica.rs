@@ -1821,8 +1821,9 @@ impl ReplicaHandler {
         });
         // An unknown floor is pinned before the batch's ballot; if that did
         // not happen, nothing says which set is newer. A loss with no floor
-        // counts from 0 only when this start minted the storage id: every set
-        // naming that id came after the loss. An older id (a directory swapped
+        // counts from 0 only when the storage id is minted
+        // (`QuorumMarks::set_minted_storage`): every set naming that id came
+        // after the loss. An older id (a directory swapped
         // back without a rotation) may be named by sets from before the loss,
         // and nothing here says which, so it gets no credit.
         let unkept = trust.unkept(&name);

@@ -632,13 +632,7 @@ where
         durable_storage.as_ref().map(|storage| storage.root()),
         view_file.clone(),
         view.as_ref().map(|_| {
-            let marks = Arc::clone(&quorum_marks);
-            membership::deferred_check(&restore_checked, own_kept, move |kept| {
-                // Readmits first: setting kept is what lets a readmission
-                // count (`QuorumMarks::knows_kept_ballots`).
-                marks.set_readmits(kept.readmits);
-                marks.set_kept_ballots(kept.ballots);
-            })
+            membership::deferred_attest(&restore_checked, own_kept, Arc::clone(&quorum_marks))
         }),
         // Set once the Raft data root opens through the restore gate.
         root_sequence,

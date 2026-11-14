@@ -432,6 +432,32 @@ impl MetadataStateMachine {
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
+            MetaCommand::SealShard {
+                key,
+                expected_generation,
+            } => store
+                .apply_seal_shard(&key, expected_generation)
+                .await
+                .map(assignment_written)
+                .map_err(Into::into),
+            MetaCommand::AcceptSealReport {
+                key,
+                report,
+                sealer,
+            } => store
+                .apply_accept_seal_report(&key, report, &sealer)
+                .await
+                .map(assignment_written)
+                .map_err(Into::into),
+            MetaCommand::GiveUpSeal {
+                key,
+                generation,
+                sealer,
+            } => store
+                .apply_give_up_seal(&key, generation, &sealer)
+                .await
+                .map(assignment_written)
+                .map_err(Into::into),
             MetaCommand::TakePlacementLease { holder } => {
                 let lease = store.take_placement_lease(&holder).await;
                 Ok(MetaResponse::PlacementLease {

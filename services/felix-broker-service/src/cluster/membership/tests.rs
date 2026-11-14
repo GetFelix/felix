@@ -887,6 +887,7 @@ async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
     // seen here can only come from the lease.
     let client = crate::cluster::controlplane_client::build().expect("client");
     let registration = Registration {
+        registered_at_millis: None,
         node_id: "broker-a".to_string(),
         token: crate::cluster::credential::NodeCredential::new("a-node-token"),
         incarnation: 0,
@@ -1114,6 +1115,7 @@ async fn the_lookup_reads_the_registration() {
             .await
             .expect("lookup"),
         Some(Registered {
+            registered_at_millis: None,
             root_sequence: lookup_root(),
             incarnation: 7,
             storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
@@ -1365,6 +1367,7 @@ async fn the_bounded_lookup_tells_down_from_refusing() {
     assert_eq!(
         bounded,
         Bounded::Answered(Some(Registered {
+            registered_at_millis: None,
             root_sequence: lookup_root(),
             incarnation: 3,
             storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
@@ -1394,6 +1397,7 @@ fn a_directory_behind_the_control_plane_is_a_restore() {
     let dir = tempfile::tempdir().expect("dir");
     let id = directory(dir.path(), 2);
     let registered = Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
@@ -1430,6 +1434,7 @@ fn a_directory_the_control_plane_registered_is_current() {
     let dir = tempfile::tempdir().expect("dir");
     let id = directory(dir.path(), 5);
     let registered = Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
@@ -1450,6 +1455,7 @@ fn a_node_registered_under_another_id_is_replaced() {
     let dir = tempfile::tempdir().expect("dir");
     let id = directory(dir.path(), 5);
     let registered = Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
@@ -1475,6 +1481,7 @@ async fn a_replacement_judged_through_the_view_file_stops_its_writer() {
     let id = directory(dir.path(), 5);
     let view = ViewFile::new(dir.path().to_path_buf());
     let registered = Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
@@ -1605,6 +1612,7 @@ async fn a_current_directory_registers_once_the_check_passes() {
     assert_eq!(
         *passed.lock().expect("lock"),
         vec![Some(Registered {
+            registered_at_millis: None,
             root_sequence: None,
             incarnation: 5,
             storage_id: Some(id.to_hex()),

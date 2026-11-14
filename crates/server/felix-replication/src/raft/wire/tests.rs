@@ -89,6 +89,22 @@ fn every_request() -> Vec<RaftRequest> {
                 producer: Some(ProducerMark {
                     producer_id: 0xA1B2_C3D4_E5F6_0718,
                     sequence: 41,
+                    position: 0,
+                    len: 1,
+                }),
+                written: None,
+            },
+        ),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 9),
+            Command {
+                timestamp_micros: 101,
+                payload: Bytes::from_static(b"a piece of a batch"),
+                producer: Some(ProducerMark {
+                    producer_id: 0xA1B2_C3D4_E5F6_0718,
+                    sequence: 42,
+                    position: 2,
+                    len: 5,
                 }),
                 written: None,
             },
@@ -225,7 +241,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 4);
+    assert_eq!(read.entries.len(), 5);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -270,7 +286,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[4, 3][..],
+        &[5, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -403,6 +419,18 @@ fn a_layout_3_body_is_refused_by_layout() {
     old[0] = 3;
     let refused = decode_request(old.freeze()).expect_err("refused");
     assert!(refused.to_string().contains("layout 3"), "{refused}");
+}
+
+/// Layout 4 is what a build without the piece entry writes. It would refuse
+/// a piece by its tag in the middle of an append, so it is refused by layout
+/// first.
+#[test]
+fn a_layout_4_body_is_refused_by_layout() {
+    let bytes = encode_request(&every_request()[2]).expect("encode");
+    let mut old = BytesMut::from(&bytes[..]);
+    old[0] = 4;
+    let refused = decode_request(old.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("layout 4"), "{refused}");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does

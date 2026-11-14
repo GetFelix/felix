@@ -15,6 +15,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use felix_storage::CommitTurn;
 use felix_storage::disk_log::ProducerSequence;
+use felix_storage::log::PayloadDigest;
 use tokio::sync::oneshot;
 
 use super::completion::spawn_release;
@@ -75,6 +76,7 @@ impl Broker {
                 answer_early: false,
                 answer_at: None,
                 answer_within: None,
+                batch_first: None,
             });
         }
         let timestamp_micros = crate::append_time_now();
@@ -96,6 +98,7 @@ impl Broker {
                 handed.turn,
             ))),
             answer_within: None,
+            batch_first: None,
         })
     }
 }
@@ -124,7 +127,7 @@ impl Broker {
     /// Whether a stream on an engine takes an idempotent batch of `records`
     /// records: [`BrokerError::NotOnEngineStream`] for more than one. For a
     /// caller to refuse the batch before it waits for the producer's turn;
-    /// [`Self::propose_idempotent`] checks it again.
+    /// [`Self::propose_idempotent`] refuses a new one too.
     pub fn engine_takes_idempotent(records: usize) -> Result<()> {
         if records > 1 {
             return Err(BrokerError::NotOnEngineStream {
@@ -144,28 +147,39 @@ impl Broker {
     /// producer's ([`Self::producer_turn`]), and `propose` is given it and
     /// must drop it once the engine has written the batch to this broker's
     /// log or given up on it, whether or not the future it returns is
-    /// polled by then. `propose` must store the records with the
-    /// producer's marks.
+    /// polled by then.
+    ///
+    /// `propose` is also given the records to write ([`OwedRecords`]) and
+    /// must store each with the producer's id, the sequence, its place in
+    /// the batch and the batch's length.
     ///
     /// A batch the log already holds is [`IdempotentProposal::Held`], with
     /// nothing handed over. Its record may not be committed yet; the
     /// caller answers once it is.
     ///
-    /// A batch is one record. One of several is refused with
-    /// [`BrokerError::NotOnEngineStream`] before anything is checked or
-    /// written: its records would be an entry each, and a leader change or
-    /// a lapsed lease can cut those anywhere. See `docs/per-shard-raft.md`,
-    /// "Idempotent publishes".
+    /// A new batch is one record. One of several is refused with
+    /// [`BrokerError::NotOnEngineStream`] before anything is written: its
+    /// records would be an entry each, and a leader change or a lapsed
+    /// lease can cut those anywhere.
+    ///
+    /// A batch the log holds part of (a leader stopped partway) is never
+    /// written again whole. A re-send whose start differs from the records
+    /// held is refused with [`BrokerError::SequenceReused`] whatever `reuse`
+    /// is, only the records the log does not hold are handed
+    /// to `propose`, and the answer's first offset is the start's. When
+    /// the log cannot tell what it holds of the batch, the re-send is
+    /// refused with [`BrokerError::SequenceExpired`]. See
+    /// `docs/per-shard-raft.md`, "Idempotent publishes".
     #[allow(clippy::too_many_arguments)]
     pub fn propose_idempotent<F, E>(
         &self,
         handle: &StreamHandle,
         turn: ProducerTurn,
         sequence: u64,
-        payloads: Vec<Bytes>,
+        mut payloads: Vec<Bytes>,
         reuse: SequenceReuse,
         stalled_after: Duration,
-        propose: impl FnOnce(u64, ProducerTurn) -> F,
+        propose: impl FnOnce(u64, ProducerTurn, OwedRecords) -> F,
     ) -> Result<IdempotentProposal<E>>
     where
         F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
@@ -178,40 +192,80 @@ impl Broker {
                 "an idempotent batch was proposed on a stream with no log".to_string(),
             ));
         };
-        Self::engine_takes_idempotent(payloads.len())?;
         let producer_id = turn.producer_id;
-        match log.producer_sequence(producer_id, sequence) {
-            ProducerSequence::Held {
-                first,
-                last,
-                digest,
-            } => {
-                reuse.check(sequence, digest, &payloads)?;
-                return Ok(IdempotentProposal::Held { first, last });
-            }
-            ProducerSequence::Unknown if sequence != 0 => {
-                return Err(BrokerError::UnknownProducer { producer_id });
-            }
-            ProducerSequence::Gap { expected } => {
-                return Err(BrokerError::SequenceGap { expected });
-            }
-            ProducerSequence::Expired => {
+        let len = payloads.len();
+        let mut position = 0;
+        let mut batch_first = None;
+        // Asked first: the log's place for the producer does not count a
+        // batch it holds only part of, and would call this one new.
+        if let Some(unfinished) = log.producer_unfinished(producer_id, sequence) {
+            let held = unfinished.held as usize;
+            let Some(first) = unfinished.first else {
+                return Err(BrokerError::SequenceExpired { sequence });
+            };
+            if unfinished.len as usize != len || held >= len {
                 return Err(BrokerError::SequenceExpired { sequence });
             }
-            // Only a batch of several records is ever open, and none is
-            // written here.
-            ProducerSequence::Partial { .. } => {
-                return Err(BrokerError::NotOnEngineStream {
-                    what: SEVERAL_RECORDS,
-                });
+            // Whatever `reuse` says: writing the rest of other payloads
+            // after this start would make one batch of two.
+            match unfinished.digest {
+                Some(start) if start == PayloadDigest::of(&payloads[..held]) => {}
+                Some(_) => return Err(BrokerError::SequenceReused { sequence }),
+                None => return Err(BrokerError::SequenceExpired { sequence }),
             }
-            ProducerSequence::Unknown | ProducerSequence::Next => {}
+            payloads.drain(..held);
+            position = unfinished.held;
+            batch_first = Some(first);
+        } else {
+            match log.producer_sequence(producer_id, sequence) {
+                ProducerSequence::Held {
+                    first,
+                    last,
+                    digest,
+                } => {
+                    reuse.check(sequence, digest, &payloads)?;
+                    return Ok(IdempotentProposal::Held { first, last });
+                }
+                ProducerSequence::Unknown if sequence != 0 => {
+                    return Err(BrokerError::UnknownProducer { producer_id });
+                }
+                ProducerSequence::Gap { expected } => {
+                    return Err(BrokerError::SequenceGap { expected });
+                }
+                // An open batch is unfinished, and the producer's turn
+                // keeps one from opening between the two looks.
+                ProducerSequence::Expired | ProducerSequence::Partial { .. } => {
+                    return Err(BrokerError::SequenceExpired { sequence });
+                }
+                ProducerSequence::Unknown | ProducerSequence::Next => {}
+            }
+            // After the look: a multi-record batch the log holds whole is
+            // still answered as held.
+            Self::engine_takes_idempotent(len)?;
         }
-        self.propose_publish(handle, payloads, stalled_after, |timestamp_micros| {
-            propose(timestamp_micros, turn)
-        })
-        .map(IdempotentProposal::Proposed)
+        let owed = OwedRecords {
+            payloads: payloads.clone(),
+            position,
+            len: len as u32,
+        };
+        let mut proposed =
+            self.propose_publish(handle, payloads, stalled_after, |timestamp_micros| {
+                propose(timestamp_micros, turn, owed)
+            })?;
+        proposed.batch_first = batch_first;
+        Ok(IdempotentProposal::Proposed(proposed))
     }
+}
+
+/// The records [`Broker::propose_idempotent`] hands to the engine: a whole
+/// batch, or the rest of one the log holds the start of.
+pub struct OwedRecords {
+    pub payloads: Vec<Bytes>,
+    /// The first record's place in the producer's batch. Zero for a whole
+    /// batch.
+    pub position: u32,
+    /// Records in the producer's whole batch.
+    pub len: u32,
 }
 
 /// What [`Broker::propose_idempotent`] refuses, as
@@ -294,6 +348,9 @@ pub struct ProposedPublish<E: Send + 'static> {
     answer_early: bool,
     answer_at: Option<oneshot::Receiver<u64>>,
     answer_within: Option<AnswerWithin<E>>,
+    /// Where the batch starts when these records are only the rest of it:
+    /// the first offset of the start an earlier leader wrote.
+    batch_first: Option<u64>,
 }
 
 type AnswerWithin<E> = (Duration, Box<dyn FnOnce() -> E + Send>);
@@ -334,7 +391,10 @@ impl<E: Send + 'static> ProposedPublish<E> {
     /// Wait until the batch is committed and queued for delivery behind
     /// every batch handed over before it, or until [`Self::answer_at`]
     /// says it may be answered. Reports its offsets and no subscribers:
-    /// the fanout runs after this returns.
+    /// the fanout runs after this returns. The offsets of a batch finished
+    /// after a leader stopped partway run from the start's first record to
+    /// the last one written now, and are not one run: other records lie
+    /// between its pieces.
     pub async fn complete(mut self) -> std::result::Result<PublishOutcome, E> {
         let Some(finishing) = self.finishing.as_mut() else {
             return Ok(PublishOutcome {
@@ -369,7 +429,8 @@ impl<E: Send + 'static> ProposedPublish<E> {
                 }
             }
         };
-        match answered {
+        let batch_first = self.batch_first;
+        let outcome = match answered {
             Ok(outcome) => {
                 self.finishing = None;
                 outcome
@@ -379,7 +440,13 @@ impl<E: Send + 'static> ProposedPublish<E> {
                 subscribers: 0,
                 offsets: Some(offsets),
             }),
-        }
+        };
+        outcome.map(|mut outcome| {
+            if let (Some(first), Some((_, last))) = (batch_first, outcome.offsets) {
+                outcome.offsets = Some((first, last));
+            }
+            outcome
+        })
     }
 }
 

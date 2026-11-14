@@ -114,6 +114,9 @@ struct NodeView {
 #[derive(Debug, Deserialize)]
 struct NodeStatusView {
     incarnation: u64,
+    /// Absent from a control plane that does not send it.
+    #[serde(default)]
+    registered_at_millis: Option<u64>,
     lifecycle: String,
     /// Absent from a broker that registered before storage ids.
     #[serde(default)]
@@ -131,6 +134,9 @@ struct RootSequenceBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registered {
     pub incarnation: u64,
+    /// When the node record was created. Deleting the node and adding it
+    /// again starts `incarnation` over, under a new time.
+    pub registered_at_millis: Option<u64>,
     /// The data directory's identity it registered with, as 32 lowercase
     /// hex digits. `None` from a broker that predates storage ids.
     pub storage_id: Option<String>,
@@ -196,6 +202,9 @@ pub struct Registration {
     /// This process's incarnation. Sent with every heartbeat so one delayed
     /// past a restart is rejected instead of counted for its successor.
     pub incarnation: u64,
+    /// When the control plane created the node record; see
+    /// [`Registered::registered_at_millis`].
+    pub registered_at_millis: Option<u64>,
     pub heartbeat_interval_ms: u64,
     /// The fleet features enabled as of this registration.
     pub fleet_features: BTreeSet<String>,
@@ -334,6 +343,7 @@ pub async fn register(
         node_id: config.node_id.clone(),
         token: credential.clone(),
         incarnation: registered.node.status.incarnation,
+        registered_at_millis: registered.node.status.registered_at_millis,
         heartbeat_interval_ms: registered.heartbeat_interval_ms,
         fleet_features: registered.fleet_features,
         root: RootSequenceSlot::default(),
@@ -413,6 +423,7 @@ async fn lookup(
         .and_then(|held| StorageId::from_hex(&held.storage_id).map(|id| (id, held.sequence)));
     Ok(Some(Registered {
         incarnation: detail.node.status.incarnation,
+        registered_at_millis: detail.node.status.registered_at_millis,
         storage_id: detail.node.status.storage_id,
         root_sequence,
     }))
@@ -910,7 +921,12 @@ pub(crate) fn spawn_with(
                     return;
                 }
                 if let Some(root) = &record_in {
-                    record_registration(root, registration.incarnation).await;
+                    record_registration(
+                        root,
+                        registration.incarnation,
+                        registration.registered_at_millis,
+                    )
+                    .await;
                 }
                 consecutive_failures.store(0, Ordering::Release);
                 adopt_fleet(&fleet, &registration.fleet_features);
@@ -1230,10 +1246,26 @@ impl RuntimePulse {
 /// `incarnation`, so a later start can tell this directory from an older
 /// copy of it. A failure is logged and not retried: the next start then reads
 /// the directory as older and rotates its id, which is safe.
-async fn record_registration(root: &std::path::Path, incarnation: u64) {
+///
+/// A registration the control plane dated also moves the directory's
+/// rotation record on to it, which is what keeps a rotated id's readmission
+/// credit across this registration (`node::storage::credits`).
+async fn record_registration(
+    root: &std::path::Path,
+    incarnation: u64,
+    registered_at_millis: Option<u64>,
+) {
+    use felix_storage::run_state;
     let root = root.to_path_buf();
-    let written = felix_common::blocking::spawn(move || {
-        felix_storage::run_state::record_registration(&root, incarnation)
+    let written = felix_common::blocking::spawn(move || match registered_at_millis {
+        Some(registered_at_millis) => run_state::record_dated_registration(
+            &root,
+            run_state::Binding {
+                registered_at_millis,
+                incarnation,
+            },
+        ),
+        None => run_state::record_registration(&root, incarnation),
     })
     .await;
     match written {

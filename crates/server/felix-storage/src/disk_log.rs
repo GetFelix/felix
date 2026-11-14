@@ -75,7 +75,7 @@ mod set;
 pub mod switch;
 mod sync;
 
-pub use producers::ProducerSequence;
+pub use producers::{ProducerSequence, UnfinishedBatch};
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
 pub use set::{Member, Membership, ReplicaSet};
@@ -389,6 +389,17 @@ impl DiskLog {
         self.inner.producers.lock().classify(producer_id, sequence)
     }
 
+    /// `producer_id`'s batch `sequence` if this log holds part of it and
+    /// not all: its writer stopped partway. [`Self::producer_sequence`] does
+    /// not count a batch another record has cut, so a writer that finishes
+    /// one asks this first. See [`UnfinishedBatch`].
+    pub fn producer_unfinished(&self, producer_id: u64, sequence: u64) -> Option<UnfinishedBatch> {
+        self.inner
+            .producers
+            .lock()
+            .unfinished(producer_id, sequence)
+    }
+
     /// The sequence `producer_id` owes next in this log, or `None` when the
     /// log holds no batch from it.
     pub fn producer_next_sequence(&self, producer_id: u64) -> Option<u64> {
@@ -657,6 +668,13 @@ impl DiskLog {
             segments.check_open()?;
             operation.forget_all_offloaded(&mut manifest)?;
             let rewound = (|| {
+                // Saved before the records go. A batch the log held part of
+                // below the new base stays refused.
+                {
+                    let mut producers = operation.producers.lock();
+                    producers.forget_before(base_offset);
+                    operation.store_forgotten(&producers)?;
+                }
                 segments.reset_to(base_offset)?;
                 segments.active_mut().sync()?;
                 operation.note_rewound(&segments)?;
@@ -1221,8 +1239,12 @@ impl DiskLog {
         }
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
-        let producer_state =
-            producers::rebuild(&epochs_dir, &segments, Some(&recovered.active_marks))?;
+        let (producer_state, forgotten_saved) = producers::rebuild(
+            &epochs_dir,
+            &segments,
+            Some(&recovered.active_marks),
+            config.raft_log,
+        )?;
         let active_has_trims = recovered
             .active_marks
             .iter()
@@ -1287,6 +1309,7 @@ impl DiskLog {
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
+            forgotten_saved: Mutex::new(forgotten_saved),
             head: Mutex::new(head),
             head_pending: std::sync::atomic::AtomicBool::new(true),
             head_floor: AtomicU64::new(0),
@@ -2007,6 +2030,8 @@ struct LogInner {
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,
+    /// What `producers.forgotten` holds on disk. Taken under `producers`.
+    forgotten_saved: Mutex<felix_common::random::HashMap<u64, u64>>,
     /// The log's trim records and the floor they set. Taken under `segments`
     /// when both are held.
     head: Mutex<head::Head>,
@@ -2302,7 +2327,8 @@ impl LogInner {
     }
 
     /// Save a snapshot taken by [`Self::snapshot`]. Failing costs a longer
-    /// open later, so it is logged rather than returned.
+    /// open later, so it is logged rather than returned: everything in it
+    /// can be read back from the records, or is in the forgotten file.
     fn store_snapshot(&self, snapshot: Snapshot) {
         // Held so a close cannot land between the check and the write.
         let segments = self.segments.read();
@@ -2344,10 +2370,12 @@ impl LogInner {
         producers::discard(&self.dir).map_err(StorageError::Io)?;
         crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
-        let state = producers::rebuild(&self.dir, segments, None)?;
+        let (state, saved) = producers::rebuild(&self.dir, segments, None, self.config.raft_log)?;
         self.batch_open
             .store(state.is_open(), std::sync::atomic::Ordering::Release);
-        *self.producers.lock() = state;
+        let mut producers = self.producers.lock();
+        *producers = state;
+        *self.forgotten_saved.lock() = saved;
         Ok(())
     }
 }

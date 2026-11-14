@@ -686,6 +686,7 @@ Four properties:
    - *Node records* under the durable root: the storage id, `run-state`,
      the registration, `head-trimmed`, `record-headers`,
      `record-generations`, `replaced-storage`, `lost-copy`, `rotated-ids`,
+     `last-rotation`, `registered-at`,
      `copy-trust`, `copy-trust-kept`, `run-token`, `controlplane.view`
      (written or removed), the stream incarnation markers under `.streams/`,
      and moving a deleted stream's directory into `.deleted/`. There is no

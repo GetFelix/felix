@@ -174,6 +174,7 @@ fn a_directory_older_than_the_last_registration_rotates_the_storage_id() {
 
 fn registered_as(id: Option<StorageId>) -> Registered {
     Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 0,
         storage_id: id.map(|id| id.to_hex()),
@@ -273,6 +274,7 @@ fn only_a_crash_on_a_directory_that_lost_nothing_keeps_its_promises() {
     felix_storage::run_state::record_registration(root.path(), 2).expect("record");
     mark_clean_stop(root.path(), id).expect("clean stop");
     let restored = |id: StorageId| Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
@@ -340,6 +342,7 @@ fn only_a_crash_that_keeps_every_ballot_records_the_id_it_rotated() {
     felix_storage::run_state::record_registration(root.path(), 2).expect("record");
     mark_clean_stop(root.path(), id).expect("clean stop");
     let restored = Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
@@ -422,6 +425,7 @@ fn only_a_directory_that_never_lost_a_ballot_attests_kept_ballots() {
     let (id, _, _, _) = start_run(root.path(), &relaxed, None, None).expect("first run");
     felix_storage::run_state::record_registration(root.path(), 2).expect("record");
     let restored = Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
@@ -482,6 +486,7 @@ fn a_start_from_the_view_attests_no_kept_ballot() {
         ballots: true,
         readmits: true,
         minted: true,
+        rotation: None,
         deferred: false,
     };
     assert!(kept.attested(false).ballots && kept.attested(false).readmits);
@@ -538,9 +543,11 @@ fn a_checked_start_from_the_view_attests_its_own_kept_ballots() {
         ballots: true,
         readmits: false,
         minted: false,
+        rotation: None,
         deferred: true,
     };
     let record = |storage_id: Option<&str>| Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: storage_id.map(str::to_owned),
@@ -633,4 +640,271 @@ fn every_run_witnesses_the_directory_anew() {
     // A restore of what the first run left is not.
     std::fs::write(&token, &first).expect("restore");
     assert!(!witnessed(root.path(), Some(shm.path()), boot));
+}
+
+/// The node record every rotation test registers under.
+const REGISTERED_AT: u64 = 70;
+
+fn dated(id: StorageId, incarnation: u64) -> Registered {
+    Registered {
+        registered_at_millis: Some(REGISTERED_AT),
+        root_sequence: None,
+        incarnation,
+        storage_id: Some(id.to_hex()),
+    }
+}
+
+/// Record a registration at `incarnation` as membership does.
+fn register(root: &Path, incarnation: u64) {
+    let registration = felix_storage::run_state::Binding {
+        registered_at_millis: REGISTERED_AT,
+        incarnation,
+    };
+    felix_storage::run_state::record_dated_registration(root, registration).expect("register");
+}
+
+/// Rotate the id as the Raft restore gate does mid-run, then stop cleanly.
+fn rotate_mid_run(root: &Path, fresh: u8) -> StorageId {
+    let id = felix_storage::run_state::copy_trust::rotate_storage_id(root, [fresh; 16])
+        .expect("rotate at open");
+    mark_clean_stop(root, id).expect("clean stop");
+    id
+}
+
+/// A restart that does not rotate: the clean stop names the id.
+fn restart(root: &Path, registered: Option<&Registered>) -> (StorageId, Kept) {
+    let log = felix_storage::log::LogConfig::default();
+    let (id, rotated, _, kept) = start_run(root, &log, registered, None).expect("restart");
+    assert!(!rotated, "the clean stop names the id");
+    (id, kept)
+}
+
+fn rotation_record(root: &Path) -> Option<felix_storage::run_state::Rotation> {
+    felix_storage::run_state::last_rotation(root).expect("read the rotation record")
+}
+
+/// A directory on its first id, registered at incarnation 1.
+fn registered_directory() -> (tempfile::TempDir, StorageId) {
+    let root = tempfile::tempdir().expect("tempdir");
+    let log = felix_storage::log::LogConfig::default();
+    let (before, _, _, _) = start_run(root.path(), &log, None, None).expect("first run");
+    register(root.path(), 1);
+    (root, before)
+}
+
+/// **A rotation during a run mints the id the next start runs under**
+/// (#2546). The Raft restore gate rotates the id mid-run and the clean stop
+/// names the new one, so the restart does not rotate again; while the node
+/// registers only from this directory, no set from before the rotation
+/// names that id, and a lost copy there is readmitted from 0: the start
+/// reports the three things `record_readmitted` asks for. The deferred
+/// restore check decides the same once it has the record.
+// The `restart` helper relies on Linux boot-id behaviour, so these run on Linux only.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rotation_during_a_run_reports_minted_and_readmits_while_only_this_directory_registers() {
+    let (root, before) = registered_directory();
+    let root = root.path();
+    // The copies here were lost: the node had registered another directory.
+    let other = StorageId::from_bytes([9; 16]);
+    restart(root, Some(&dated(other, 1)));
+    assert_eq!(
+        felix_storage::run_state::lost_copy(root).expect("marker"),
+        Some(true)
+    );
+
+    let after = rotate_mid_run(root, 7);
+    let (id, kept) = restart(root, Some(&dated(before, 1)));
+    assert_eq!(id, after);
+    assert_eq!(
+        felix_storage::run_state::lost_copy(root).expect("marker"),
+        Some(true),
+        "still a lost copy"
+    );
+    assert!(
+        kept.minted && kept.readmits && !kept.ballots,
+        "lost, minted and readmitting is what counts a readmission from 0: {kept:?}"
+    );
+
+    // The registration under the new id moves the binding on.
+    register(root, 2);
+    let (_, kept) = restart(root, Some(&dated(after, 2)));
+    assert!(kept.minted, "it names the minted id, one registration on");
+
+    // A start from the view decides once the restore check has the record.
+    let (_, kept) = restart(root, None);
+    assert!(!kept.minted);
+    assert!(kept.checked(Some(&dated(after, 2))).minted);
+    assert!(!kept.checked(Some(&dated(after, 4))).minted);
+
+    // The control plane names neither id: sets from before may name this one.
+    let (_, kept) = restart(root, Some(&dated(other, 2)));
+    assert!(!kept.minted);
+    assert_eq!(rotation_record(root), None);
+    let (_, kept) = restart(root, Some(&dated(after, 2)));
+    assert!(!kept.minted, "the record went with that");
+}
+
+/// **A registration this directory did not bind ends the credit.** A release
+/// that does not write the binding registers under the same id and node
+/// record, so only the incarnation shows it. One step is reachable only by
+/// one such undated registration, or by a gate rotation racing
+/// `record_dated_registration` (a crash before the rebind rotates again
+/// instead); two means a run here that the record does not cover.
+// The `restart` helper relies on Linux boot-id behaviour, so this runs on Linux only.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_incarnation_past_the_next_one_gets_no_credit() {
+    let (root, _) = registered_directory();
+    let root = root.path();
+    let after = rotate_mid_run(root, 7);
+
+    // As an older release records a registration: the incarnation alone.
+    felix_storage::run_state::record_registration(root, 2).expect("register");
+    let (_, kept) = restart(root, Some(&dated(after, 2)));
+    assert!(kept.minted, "the next incarnation");
+
+    felix_storage::run_state::record_registration(root, 3).expect("register");
+    let (_, kept) = restart(root, Some(&dated(after, 3)));
+    assert!(!kept.minted, "two on, with no rebind");
+    assert_eq!(rotation_record(root), None);
+}
+
+/// **Deleting the node and adding it again ends the credit.** The new node
+/// record starts its incarnation over, so it can reach the bound one again;
+/// only the registration time tells the two apart.
+#[test]
+fn a_node_added_again_gets_no_credit() {
+    let (root, _) = registered_directory();
+    let root = root.path();
+    let after = rotate_mid_run(root, 7);
+
+    let added_again = Registered {
+        registered_at_millis: Some(REGISTERED_AT + 1),
+        ..dated(after, 1)
+    };
+    let (_, kept) = restart(root, Some(&added_again));
+    assert!(!kept.minted);
+    assert_eq!(rotation_record(root), None);
+}
+
+/// **A rotation with no binding is never credited**: the directory had no
+/// dated registration when it rotated, or the control plane sends no
+/// registration time, so nothing ties the record to the node's history.
+#[test]
+fn an_unbound_rotation_gets_no_credit() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let log = felix_storage::log::LogConfig::default();
+    let (before, _, _, _) = start_run(root.path(), &log, None, None).expect("first run");
+    rotate_mid_run(root.path(), 7);
+    assert!(rotation_record(root.path()).is_some_and(|rotation| rotation.bound.is_none()));
+    let (_, kept) = restart(root.path(), Some(&registered_as(Some(before))));
+    assert!(!kept.minted);
+    assert_eq!(rotation_record(root.path()), None);
+
+    // Bound, but the control plane does not date the node record.
+    let (root, before) = registered_directory();
+    rotate_mid_run(root.path(), 7);
+    let undated = Registered {
+        registered_at_millis: None,
+        ..dated(before, 1)
+    };
+    let (_, kept) = restart(root.path(), Some(&undated));
+    assert!(!kept.minted);
+}
+
+/// **A crash between the rotation record and the id leaves no credit.** The
+/// record names an id the directory never took, and a start removes it.
+#[test]
+fn a_rotation_record_for_an_id_never_taken_is_removed() {
+    let (root, before) = registered_directory();
+    let root = root.path();
+    rotate_mid_run(root, 7);
+    // The id file as the crash left it: still the old one.
+    felix_storage::storage_identity::replace(root, before.to_bytes()).expect("put back");
+    mark_clean_stop(root, before).expect("clean stop");
+
+    let log = felix_storage::log::LogConfig::default();
+    let (id, rotated, _, kept) =
+        start_run(root, &log, Some(&dated(before, 1)), None).expect("restart");
+    assert!(!rotated, "the clean stop names the id");
+    assert_eq!(id, before);
+    assert!(!kept.minted, "{kept:?}");
+    assert_eq!(rotation_record(root), None);
+}
+
+/// **A rotation record that does not decode is removed and credits
+/// nothing.**
+#[test]
+fn an_undecodable_rotation_record_is_removed() {
+    let (root, before) = registered_directory();
+    let root = root.path();
+    rotate_mid_run(root, 7);
+    let record = root.join(felix_storage::run_state::ROTATION_FILE_NAME);
+    std::fs::write(&record, "last_rotation\nnot an id\n").expect("damage");
+
+    let (_, kept) = restart(root, Some(&dated(before, 1)));
+    assert!(!kept.minted);
+    assert!(!record.exists());
+}
+
+/// **Two rotations before a registration leave no credit.** The record
+/// holds only the last one, and the control plane still names the id before
+/// the first, which that record does not mention.
+#[test]
+fn a_second_rotation_before_registering_gets_no_credit() {
+    let (root, before) = registered_directory();
+    let root = root.path();
+    rotate_mid_run(root, 7);
+    let after = rotate_mid_run(root, 8);
+
+    let (id, kept) = restart(root, Some(&dated(before, 1)));
+    assert_eq!(id, after);
+    assert!(!kept.minted);
+    assert_eq!(rotation_record(root), None);
+}
+
+/// **A start that rotated the id keeps the record it just wrote**, whatever
+/// id the control plane names: the registration that follows is what the
+/// record is judged against.
+#[test]
+fn a_start_that_rotated_keeps_its_rotation_record() {
+    let (root, _) = registered_directory();
+    let root = root.path();
+    // The node registered another directory since: this one is restored.
+    let other = StorageId::from_bytes([9; 16]);
+    let log = felix_storage::log::LogConfig::default();
+    let (id, rotated, _, kept) =
+        start_run(root, &log, Some(&dated(other, 2)), None).expect("restored");
+    assert!(rotated && kept.minted);
+    assert_eq!(kept.rotation.map(|rotation| rotation.to), Some(id));
+    assert_eq!(rotation_record(root), kept.rotation);
+}
+
+/// **An uncredited rotation record is removed from a simulated directory
+/// too.** The record lives only in the simulator's memory, so a check of the
+/// real disk would leave it there.
+#[cfg(feature = "sim")]
+#[test]
+fn an_uncredited_rotation_record_is_removed_under_the_simulator() {
+    let root = std::env::temp_dir().join(format!(
+        "felix-sim-uncredited-rotation-{}",
+        std::process::id()
+    ));
+    felix_storage::sim_fs::register_root(&root);
+    let log = felix_storage::log::LogConfig::default();
+    start_run(&root, &log, None, None).expect("first run");
+    register(&root, 1);
+    let after = rotate_mid_run(&root, 7);
+    assert!(!root.exists(), "the directory is only in memory");
+
+    let added_again = Registered {
+        registered_at_millis: Some(REGISTERED_AT + 1),
+        ..dated(after, 1)
+    };
+    let (_, kept) = restart(&root, Some(&added_again));
+    let left = rotation_record(&root);
+    felix_storage::sim_fs::unregister_root(&root);
+    assert!(!kept.minted);
+    assert_eq!(left, None);
 }

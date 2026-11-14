@@ -422,6 +422,7 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign the new shard");

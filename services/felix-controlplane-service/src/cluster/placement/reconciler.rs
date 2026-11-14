@@ -123,6 +123,9 @@ pub(super) struct PlannedPass {
     /// Placements that take an assigned shard to a node that held no copy of
     /// it: the failovers [`FAILOVERS_PER_PASS`] limits.
     unseeded: HashSet<ShardKey>,
+    /// Shards whose engine is Raft. The store takes no placement for them,
+    /// so the pass skips them rather than spend its failover budget.
+    switched: HashSet<ShardKey>,
     /// For each placement that promotes a follower, the storage identities
     /// the report it was decided on named, read from the same positions.
     fence_storage: HashMap<ShardKey, BTreeMap<String, String>>,
@@ -429,6 +432,11 @@ pub(super) async fn plan_pass(
         .iter()
         .map(|assignment| (&assignment.key, assignment))
         .collect();
+    let switched = existing
+        .iter()
+        .filter(|assignment| assignment.switched())
+        .map(|assignment| assignment.key.clone())
+        .collect();
     let unseeded = plan
         .to_place()
         .filter(|(key, leader, _)| {
@@ -467,6 +475,7 @@ pub(super) async fn plan_pass(
         read,
         staged,
         unseeded,
+        switched,
         fence_storage,
         registered,
         learning,
@@ -654,9 +663,14 @@ pub(super) async fn apply_pass(
     }
 
     let mut failovers = 0;
+    let mut switched = 0;
     for (key, leader, replicas) in plan.to_place() {
         if outcome.fenced {
             break;
+        }
+        if pass.switched.contains(key) {
+            switched += 1;
+            continue;
         }
         if pass.unseeded.contains(key) {
             if failovers == FAILOVERS_PER_PASS {
@@ -713,6 +727,12 @@ pub(super) async fn apply_pass(
         }
     }
 
+    if switched > 0 {
+        tracing::info!(
+            shards = switched,
+            "shards that switched to Raft are not placed here",
+        );
+    }
     if outcome.deferred > 0 {
         tracing::info!(
             deferred = outcome.deferred,

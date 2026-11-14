@@ -10,7 +10,7 @@
 
 use bytes::Bytes;
 
-use crate::log::{Offset, ProducerBatch, RecordMark};
+use crate::log::{BatchPiece, Offset, ProducerBatch, RecordMark};
 use crate::{Corruption, CorruptionKind};
 
 /// `"FLSG"` — **F**e**L**ix **S**e**g**ment. Identifies a segment data file.
@@ -94,6 +94,9 @@ pub const RECORD_HEADER_LEN: u64 = 28;
 pub const GENERATION_HEADER_LEN: u64 = RECORD_HEADER_LEN + 8;
 /// Bytes a record opening a producer batch carries after its header.
 pub const PRODUCER_TAG_LEN: u64 = 20;
+/// Bytes a batch piece carries after its header: the producer tag and the
+/// record's position.
+pub const PIECE_TAG_LEN: u64 = 24;
 /// Bytes a trim record carries after its header: the floor.
 pub const TRIM_TAG_LEN: u64 = 8;
 /// Bytes occupied by an index file header.
@@ -300,6 +303,9 @@ pub enum RecordKind {
     Opens,
     /// Bit 30: continues the producer batch before it.
     Continues,
+    /// Bits 31 and 30, from v9: a later record of a producer batch, and the
+    /// 24-byte piece tag follows.
+    Piece,
     /// Bit 29: a leader's generation-start record.
     GenerationStart,
     /// Bit 28: an atomic commit.
@@ -319,6 +325,7 @@ impl RecordKind {
     pub fn tag_len(self) -> u64 {
         match self {
             Self::Opens => PRODUCER_TAG_LEN,
+            Self::Piece => PIECE_TAG_LEN,
             Self::Trim => TRIM_TAG_LEN,
             Self::Plain
             | Self::Continues
@@ -342,6 +349,7 @@ const FLAG_TRIM: u32 = FLAG_GENERATION_START | FLAG_COMMIT;
 const FLAG_MEMBERSHIP: u32 = FLAG_CONTINUES_BATCH | FLAG_GENERATION_START;
 const FLAG_COUNTER_DELTA: u32 = FLAG_CONTINUES_BATCH | FLAG_COMMIT;
 const FLAG_COUNTER_CHECKPOINT: u32 = FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
+const FLAG_PIECE: u32 = FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH;
 const KIND_MASK: u32 =
     FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
 const FLAG_PUBLISHER: u32 = 1 << 27;
@@ -385,6 +393,7 @@ pub fn record_len(body_len: usize, mark: &RecordMark) -> u64 {
 pub fn record_len_in(body_len: usize, mark: &RecordMark, version: u16) -> u64 {
     let tag = match mark {
         RecordMark::Opens(_) => PRODUCER_TAG_LEN,
+        RecordMark::Piece(_) => PIECE_TAG_LEN,
         RecordMark::Trim { .. } => TRIM_TAG_LEN,
         RecordMark::None
         | RecordMark::Continues
@@ -454,6 +463,7 @@ impl RecordHeader {
             FLAG_GENERATION_START => RecordKind::GenerationStart,
             FLAG_COMMIT => RecordKind::Commit,
             FLAG_TRIM if version >= TRIM_VERSION => RecordKind::Trim,
+            FLAG_PIECE if version >= GENERATION_VERSION => RecordKind::Piece,
             FLAG_MEMBERSHIP if version >= GENERATION_VERSION => RecordKind::Membership,
             FLAG_COUNTER_DELTA if version >= GENERATION_VERSION => RecordKind::CounterDelta,
             FLAG_COUNTER_CHECKPOINT if version >= GENERATION_VERSION => {
@@ -500,9 +510,10 @@ impl RecordHeader {
     pub fn check_version(&self, version: u16) -> DecodeResult<()> {
         let needs = match self.kind {
             RecordKind::Trim => TRIM_VERSION,
-            RecordKind::Membership | RecordKind::CounterDelta | RecordKind::CounterCheckpoint => {
-                GENERATION_VERSION
-            }
+            RecordKind::Piece
+            | RecordKind::Membership
+            | RecordKind::CounterDelta
+            | RecordKind::CounterCheckpoint => GENERATION_VERSION,
             _ => 0,
         };
         if version < needs {
@@ -525,6 +536,7 @@ impl RecordHeader {
             RecordKind::Plain => 0,
             RecordKind::Opens => FLAG_OPENS_BATCH,
             RecordKind::Continues => FLAG_CONTINUES_BATCH,
+            RecordKind::Piece => FLAG_PIECE,
             RecordKind::GenerationStart => FLAG_GENERATION_START,
             RecordKind::Commit => FLAG_COMMIT,
             RecordKind::Trim => FLAG_TRIM,
@@ -589,6 +601,7 @@ pub fn encode_record_at(
         RecordMark::None => 0,
         RecordMark::Opens(_) => FLAG_OPENS_BATCH,
         RecordMark::Continues => FLAG_CONTINUES_BATCH,
+        RecordMark::Piece(_) => FLAG_PIECE,
         RecordMark::GenerationStart => FLAG_GENERATION_START,
         RecordMark::Commit => FLAG_COMMIT,
         RecordMark::Trim { .. } => FLAG_TRIM,
@@ -610,12 +623,19 @@ pub fn encode_record_at(
     // read the payload it describes.
     let header_crc = crc32(&[&out[start..start + crc_at]]);
     out.extend_from_slice(&header_crc.to_be_bytes());
-    let mut tag = [0u8; PRODUCER_TAG_LEN as usize];
+    let mut tag = [0u8; PIECE_TAG_LEN as usize];
     let tag: &[u8] = match mark {
         RecordMark::Opens(batch) => {
             tag[0..8].copy_from_slice(&batch.producer_id.to_be_bytes());
             tag[8..16].copy_from_slice(&batch.sequence.to_be_bytes());
             tag[16..20].copy_from_slice(&batch.len.to_be_bytes());
+            &tag[..PRODUCER_TAG_LEN as usize]
+        }
+        RecordMark::Piece(piece) => {
+            tag[0..8].copy_from_slice(&piece.producer_id.to_be_bytes());
+            tag[8..16].copy_from_slice(&piece.sequence.to_be_bytes());
+            tag[16..20].copy_from_slice(&piece.len.to_be_bytes());
+            tag[20..24].copy_from_slice(&piece.position.to_be_bytes());
             &tag
         }
         RecordMark::Trim { floor } => {
@@ -758,6 +778,12 @@ pub(crate) fn decode_record_after(
             len: read_u32(tag, 16),
         }),
         RecordKind::Continues => RecordMark::Continues,
+        RecordKind::Piece => RecordMark::Piece(BatchPiece {
+            producer_id: read_u64(tag, 0),
+            sequence: read_u64(tag, 8),
+            len: read_u32(tag, 16),
+            position: read_u32(tag, 20),
+        }),
         RecordKind::GenerationStart => RecordMark::GenerationStart,
         RecordKind::Commit => RecordMark::Commit,
         RecordKind::Trim => RecordMark::Trim {

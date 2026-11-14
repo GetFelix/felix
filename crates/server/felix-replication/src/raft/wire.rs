@@ -31,8 +31,8 @@ use crate::{ShardKey, ShardKind};
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
-/// version to a membership.
-const LAYOUT: u8 = 4;
+/// version to a membership, 5 the piece entry.
+const LAYOUT: u8 = 5;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
@@ -458,6 +458,11 @@ const ENTRY_RECORD: u8 = 1;
 /// A record that is an idempotent producer's batch: the producer id and the
 /// sequence come before the record.
 const ENTRY_SEQUENCED: u8 = 3;
+/// A record of an idempotent producer's batch of several: the producer id,
+/// the sequence, the record's position and the batch's length come before
+/// the record. A batch of one keeps [`ENTRY_SEQUENCED`], so its frames are
+/// the ones a build without this tag reads.
+const ENTRY_PIECE: u8 = 4;
 
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {
     put_log_id(buf, &entry.log_id);
@@ -470,10 +475,24 @@ fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> 
                 Some(ProducerMark {
                     producer_id,
                     sequence,
+                    position: 0,
+                    len: 1,
                 }) => {
                     buf.put_u8(ENTRY_SEQUENCED);
                     buf.put_u64(producer_id);
                     buf.put_u64(sequence);
+                }
+                Some(ProducerMark {
+                    producer_id,
+                    sequence,
+                    position,
+                    len,
+                }) => {
+                    buf.put_u8(ENTRY_PIECE);
+                    buf.put_u64(producer_id);
+                    buf.put_u64(sequence);
+                    buf.put_u32(position);
+                    buf.put_u32(len);
                 }
             }
             buf.put_u64(command.timestamp_micros);
@@ -492,11 +511,19 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
     let log_id = take_log_id(buf)?;
     Ok(match take_u8(buf)? {
         0 => EntryOf::<ShardTypes>::new_blank(log_id),
-        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED) => {
+        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE) => {
             let producer = match tag {
                 ENTRY_SEQUENCED => Some(ProducerMark {
                     producer_id: take_u64(buf)?,
                     sequence: take_u64(buf)?,
+                    position: 0,
+                    len: 1,
+                }),
+                ENTRY_PIECE => Some(ProducerMark {
+                    producer_id: take_u64(buf)?,
+                    sequence: take_u64(buf)?,
+                    position: take_u32(buf)?,
+                    len: take_u32(buf)?,
                 }),
                 _ => None,
             };

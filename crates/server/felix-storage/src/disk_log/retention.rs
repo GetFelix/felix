@@ -182,10 +182,7 @@ impl LogInner {
         }
         let removed = {
             let mut segments = self.segments.write();
-            let removed = segments.remove_head(&chosen)?;
-            if !removed.is_empty() {
-                self.note_head_removed(segments.base_offset());
-            }
+            let removed = self.remove_head(&mut segments, &chosen)?;
             outcome.base_offset = segments.base_offset();
             removed
         };
@@ -356,11 +353,7 @@ impl LogInner {
                 })
                 .map(|descriptor| descriptor.id)
                 .collect();
-            let removed = segments.remove_head(&chosen)?;
-            if !removed.is_empty() {
-                self.note_head_removed(segments.base_offset());
-            }
-            removed
+            self.remove_head(&mut segments, &chosen)?
         };
         for descriptor in &removed {
             #[cfg(test)]
@@ -376,13 +369,47 @@ impl LogInner {
         Ok(removed)
     }
 
-    /// Forget the producer batches and trim records below `base`, once the
-    /// segments holding them are out of the list. Called holding the
-    /// `segments` write lock.
-    fn note_head_removed(&self, base: crate::log::Offset) {
-        self.producers.lock().prune(base);
+    /// Take `chosen` off the head of the list, then forget the producer
+    /// batches and trim records below the new base.
+    ///
+    /// The forgotten batches are saved first, from a pruned copy, because a
+    /// batch forgotten here is in no record once the files go. A failed save
+    /// changes nothing, so the pass can be retried. A producer evicted past
+    /// [`super::producers::MAX_CUTS`] earlier is saved here too, by whichever
+    /// purge comes next: until then only memory refuses its re-send.
+    fn remove_head(
+        &self,
+        segments: &mut super::segments::SegmentSet,
+        chosen: &[crate::log::SegmentId],
+    ) -> Result<Vec<crate::log::SegmentDescriptor>> {
+        segments.check_open()?;
+        let Some(base) = segments.base_after_head(chosen) else {
+            return Ok(Vec::new());
+        };
+        let mut producers = self.producers.lock();
+        let mut pruned = producers.clone();
+        pruned.prune(base);
+        self.store_forgotten(&pruned)?;
+        let removed = segments.remove_head(chosen)?;
+        *producers = pruned;
+        drop(producers);
         let mut head = self.head.lock();
         head.prune_below(base);
         self.publish_head(&head);
+        Ok(removed)
+    }
+
+    /// Save the forgotten batches if the file does not have them. Called
+    /// holding the `producers` lock.
+    pub(super) fn store_forgotten(
+        &self,
+        producers: &super::producers::ProducerState,
+    ) -> Result<()> {
+        let mut saved = self.forgotten_saved.lock();
+        if *saved != *producers.forgotten() {
+            super::producers::store_forgotten(&self.dir, producers.forgotten())?;
+            saved.clone_from(producers.forgotten());
+        }
+        Ok(())
     }
 }

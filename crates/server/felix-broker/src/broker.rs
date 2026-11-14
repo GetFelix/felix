@@ -31,7 +31,7 @@ pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use mounts::MountedStream;
 pub use publish::{
     ClaimedPublish, IdempotentClaim, IdempotentOutcome, IdempotentProposal, LogDelivery,
-    ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish, PublishOutcome,
+    OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish, PublishOutcome,
     RECORD_SEQUENCE_WRAP, SequenceReuse,
 };
 pub use read::ReadPage;
