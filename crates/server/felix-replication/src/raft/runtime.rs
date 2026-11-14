@@ -137,6 +137,10 @@ impl RuntimeConfig {
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
             log_stage_capacity: Some(1),
+            // One entry per record and one AppendEntries in flight per
+            // follower, so this bounds how fast a backlog drains. About
+            // 1 MiB per message at 1 KiB records.
+            max_payload_entries: 1024,
             ..Config::default()
         }
         .validate()

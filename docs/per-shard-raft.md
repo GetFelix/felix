@@ -1454,6 +1454,15 @@ request CI with the rest of the `raft` feature's tests. Run it by hand with
 `RAFT_MEMORY_TRACE=<bytes>` makes the test print the call sites of the live
 allocations of at least that size.
 
+### Replication batch size
+
+Each record is one log entry, and a leader keeps one AppendEntries in flight
+per follower. The entries one message may carry therefore set how fast a
+follower's backlog drains. Felix sets `max_payload_entries` to 1,024, up from
+openraft's default of 300. At 1 KiB records a message is about 1 MiB, which
+bounds the memory one in-flight message holds. In the measurement on #2532 it
+cut delivery p99 about threefold.
+
 ## Heartbeat coalescing
 
 Without coalescing, each leader sends each follower one empty
