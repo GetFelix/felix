@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794622469631,
+  "lastUpdate": 1794623060420,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55484,6 +55484,58 @@ window.BENCHMARK_DATA = {
             "range": "12957.26",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1200160.37\nmean: 1199788.89\nstdev: 12957.26\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c1c7783355f451e5591bc98e40a50b9028808158",
+          "message": "fix(broker): a start that rotated before registering leaves the next start its ballots (#2509) (#2511)\n\n* fix(broker): a start that rotated before registering leaves the next start its ballots (#2509)\n\nA start that rotated the storage id after a crash and exited before the new\nid registered left the old id registered. The next start compared that id\nwith the rotated one, marked the directory lost for good, and every copy on it\nanswered fences as a non-voter. A shard whose only other copy was the new\nleader could then never open. The registered id is one rotated-ids already\nrecords as this directory's own, so it is no evidence of a loss.\n\n* fix(broker): a second rotation before registering keeps the ballots too (#2509)\n\nThe registered id may be one an earlier crash here rotated away when two\nstarts rotate before either registers. rotated-ids names it, so the start\ncounts it as the directory's own for kept ballots and promises, as the lost\ncheck already does.",
+          "timestamp": "2026-11-13T18:11:38-08:00",
+          "tree_id": "567ef96960b616db8a15f60c644c8e761e86e1dd",
+          "url": "https://github.com/GetFelix/felix/commit/c1c7783355f451e5591bc98e40a50b9028808158"
+        },
+        "date": 1794623059763,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 743927.13,
+            "range": "58638.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 743927.13\nmean: 735920.75\nstdev: 58638.01\ncv: 7.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 743927.13,
+            "range": "58638.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 743927.13\nmean: 735920.75\nstdev: 58638.01\ncv: 7.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 174610.23,
+            "range": "1444.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 174610.23\nmean: 174823.48\nstdev: 1444.02\ncv: 0.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1746102.27,
+            "range": "14440.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1746102.27\nmean: 1748234.81\nstdev: 14440.20\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
