@@ -20,25 +20,20 @@
 //! - `waiver` — the operator's `form-without` file, which lets a first
 //!   boot form without a member whose machine is gone for good.
 //! - `health` — whether this member is fit to serve, and its gauges.
-//! - `store` — the Raft log, vote, and current snapshot, in one crash-safe
-//!   redb file per instance. Consensus state is the one thing here that must
-//!   never lie about being on disk.
-//! - `segment_store` — the same on `felix-storage`'s metadata store, in
-//!   place of `store` in a build with `--cfg felix_segment_store`. No
-//!   release sets it.
+//! - `store` — the Raft log, vote, and current snapshot, on `felix-storage`'s
+//!   metadata store. Consensus state is the one thing here that must never
+//!   lie about being on disk.
 //! - `network` / `http` — Raft RPCs as JSON over HTTP between instances,
 //!   on a peer listener of their own, never the public API one.
 //! - `peer` — how that traffic is authenticated: cluster id, peer token,
 //!   optional mTLS, and the member a request is meant for.
 //! - `version` — the command level every member can apply, so nothing
 //!   newer is proposed part-way through a rolling upgrade.
-//! - `wire` — the JSON this member sends and stores, kept in the form
-//!   openraft 0.9 wrote so a group can be upgraded one member at a time.
+//! - `wire` — the JSON this member sends and stores, in Felix's own form
+//!   rather than the library's.
 //! - `types` — the openraft type configuration. Commands and responses are
 //!   opaque bytes at this layer; their meaning belongs to the application
 //!   state machine (#338 gives them theirs).
-#[cfg(not(felix_segment_store))]
-mod chunks;
 mod handle;
 mod health;
 mod hold;
@@ -49,9 +44,6 @@ mod member;
 mod network;
 mod peer;
 mod proposal;
-#[cfg(felix_segment_store)]
-mod segment_store;
-#[cfg(not(felix_segment_store))]
 mod store;
 mod types;
 mod version;
@@ -59,27 +51,20 @@ mod waiver;
 mod wire;
 
 pub use handle::RaftHandle;
+pub use health::Replaying;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
 pub use member::RaftMember;
 pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls, TARGET_HEADER};
 pub use proposal::NoQuorum;
 pub use waiver::form_without;
 
-// One name for whichever store this build runs on.
-#[cfg(felix_segment_store)]
-use segment_store as store;
-
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Where a member's peer routes live. A member on the segment store serves
-/// and calls another prefix than a member on redb, so a request between the
-/// two is a 404 and the two never exchange Raft messages
-/// (`docs/metadata-raft-design.md`, "Upgrading an existing cluster").
-#[cfg(not(felix_segment_store))]
-pub const PEER_PREFIX: &str = "/internal/raft";
-#[cfg(felix_segment_store)]
+/// Where a member's peer routes live. Releases that kept the store in redb
+/// served `/internal/raft`, so a request between such a member and this one
+/// is a 404 and the two never exchange Raft messages.
 pub const PEER_PREFIX: &str = "/internal/raft/v2";
 
 /// The path of the peer route `name`, such as `vote`.
@@ -293,6 +278,10 @@ pub struct RaftStatus {
 /// state is current enough to decide from — a deposed leader that has not
 /// heard the news yet fails the check rather than sweeping from stale state.
 #[derive(Clone)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "the handle is larger in test builds; made once per process"
+)]
 pub enum LeadershipGate {
     Always,
     Leader(RaftHandle),

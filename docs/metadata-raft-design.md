@@ -150,7 +150,7 @@ majority for a fact that is stale seconds later. The leader keeps the last
 heartbeat per node in memory, aged on its monotonic clock, and answers a
 heartbeat only after a read-index round confirms it still leads, so a
 partitioned ex-leader cannot extend a broker's lease. A follower forwards
-heartbeats to the leader (`/internal/raft/leader`). If the leader is an older
+heartbeats to the leader (`/internal/raft/v2/leader`). If the leader is an older
 build without that route, the follower falls back to the old log command.
 A member that has shut down stops counting itself as leader, even though
 openraft still names it, and refuses leader-only requests at once, so the
@@ -239,9 +239,9 @@ has already been purged up to the newer one, so on restart the member would
 need entries it no longer has, and it would refuse to start.
 
 So a snapshot is written only if its last log index is past the stored one's.
-The check and the write are one redb transaction, and redb runs one write at a
-time, so nothing can land in between. A snapshot's metadata and data are
-written in that one transaction, so a crash never leaves half of one. A
+The check and the write happen under one lock in the snapshot store, so
+nothing can land in between. A snapshot's metadata and data are one file,
+renamed into place, so a crash never leaves half of one. A
 received snapshot also never moves the applied state backwards. If one ever
 arrived behind what the member has applied, the member stops with an error
 rather than apply the entries in between a second time.
@@ -274,12 +274,12 @@ returns. `tests/raft_chaos.rs` reproduces exactly that.
 
 A member that starts with no Raft state therefore withholds its vote: it
 refuses vote requests and does not stand for election. It asks its peers
-(`GET /internal/raft/standing`) which case it is in:
+(`GET /internal/raft/v2/standing`) which case it is in:
 
 - **The group exists**: some peer's log is past the initial membership
   entry. The member follows the leader like a learner: it takes the log or a
   snapshot but has no vote. It asks the leader for its last log index
-  (`GET /internal/raft/catch-up-target`, answered only after a read-index
+  (`GET /internal/raft/v2/catch-up-target`, answered only after a read-index
   round confirms the leadership) and votes again once it has applied that
   far. Readiness keeps it out of rotation until then.
 - **First boot**: every configured member answers and is empty, *and* the
@@ -360,7 +360,7 @@ sequenceDiagram
 
 1. **Mark.** Every member has answered empty and none names this member. It
    writes a *forming mark* to its own store.
-2. **Record.** It sends `POST /internal/raft/forming` with its id and the
+2. **Record.** It sends `POST /internal/raft/v2/forming` with its id and the
    ids of the group to every member that answered. Each one writes the id to
    its own store and syncs it before it answers. A member records whatever
    its own state is: formed, empty or still withholding its vote. It refuses
@@ -1045,25 +1045,22 @@ leader's snapshot as in
 
 ## Moving to the segment store
 
-**Status: built behind a switch that no release turns on.**
-`felix-storage` has the member file, the lock, the snapshot file, the purge
-rule and `MetadataStore::open`, which checks the start rules below. The
-control plane runs on them only in a build with
-`RUSTFLAGS="--cfg felix_segment_store"`: the standard leader id, the state
-machine on the snapshot file, the peer routes under their new prefix and
-the started mark. CI builds and tests that side
-(`task segment-store:check`). Every release build is without the switch,
-and there is no conversion tool yet. So everything above still describes
-what runs: openraft with its log, vote and snapshot in one redb file. This
-section is the plan to move that state onto `felix-storage`, so a Felix
-node has one storage engine (issue
-[#2167](https://github.com/GetFelix/felix/issues/2167)).
+**Status: done for new clusters; no conversion.** The control plane runs
+on `felix-storage`'s metadata store: the member file, the lock, the
+snapshot file, the purge rule and `MetadataStore::open`, which checks the
+start rules below, with the standard leader id and every peer route under
+`/internal/raft/v2`. redb is gone from the service. The conversion tool
+below was not built and is not planned for 0.8
+([#2234](https://github.com/GetFelix/felix/issues/2234)), so a member that finds a `raft.redb` refuses to start and an
+existing group starts over
+([replication-engine.md, decision 7](replication-engine.md#7-the-control-plane-starts-fresh-and-refuses-an-old-redb-directory)).
+This section is the design, conversion included, for a Felix node with one
+storage engine (issue [#2167](https://github.com/GetFelix/felix/issues/2167)).
 
-The switch is a compiler cfg and not a Cargo feature. The two stores
-exclude each other, because the leader id is part of the type every Raft
-call uses, and `--all-features`, which the lint and coverage runs pass,
-would turn a feature on.
-The reasons, and the answer to "the segment store cannot truncate", are in
+The move was first built behind a compiler cfg, `--cfg felix_segment_store`,
+that no release set, so CI could run both stores side by side. The reasons
+for leaving redb, and the answer to "the segment store cannot truncate",
+are in
 [replication-engine.md](replication-engine.md#control-plane-storage-on-the-segment-log).
 
 The log goes through the `raft_log` adapter in `felix-storage`, the same
@@ -1074,11 +1071,13 @@ covers what the control plane adds on top of it.
 
 Four things must hold through the move:
 
-1. No committed metadata is lost, including across the upgrade of an
-   existing cluster.
+1. No committed metadata is lost silently. With the conversion tool below,
+   none is lost across the upgrade of an existing cluster. Without it, as
+   shipped, a member refuses a redb directory and the operator starts the
+   group over by hand.
 2. Members never diverge. Where a rule cannot be kept, a member stops.
-3. Brokers and clients see no change. Everything stays behind the store
-   traits.
+3. Brokers and clients see no change in a running group. Everything stays
+   behind the store traits. (Starting a group over is a change they see.)
 4. No benchmark cell gets worse than redb.
 
 ### What is stored, and where
@@ -1204,11 +1203,23 @@ member holds one copy of the snapshot then, at most the cap. The transfer
 fails only when no bytes move for 30 s.
 
 **Start.** Open the log, read the snapshot, restore it, and let openraft
-apply the log up to the committed index. The member stays out of rotation
-until it has applied everything it had committed before it stopped, as
-today.
+apply the log up to the committed index it last saved. That index is
+written at most once a second, behind the write path, so after a crash it
+may be up to a second behind what the member had applied and served. When
+the log holds entries past it, the member answers reads with 503 and stays
+out of rotation until it has applied up to its log tail, or to the end of a
+log a leader cut back. Those entries are applied only once a leader commits
+them, and committed entries are never cut, so its reads never show an
+older state than it showed before the crash. A member removed from the group
+while it was down gets no leader to commit its tail, so it stays unready
+until it is added back or its data directory is wiped.
 
 ### openraft 0.9 to 0.10
+
+This step ran on redb and is history since the move: the redb store, the
+0.9 forms, their fixtures and the chunked snapshots are gone, and a 0.8
+member neither reads a 0.9 member's store nor talks to it. What follows is
+how that step was made safe.
 
 The workspace pins openraft 0.10 exactly, and the control plane runs that
 pin: today one commit just past 0.10.0, and `=0.10.1` once that is released
@@ -1234,12 +1245,17 @@ nothing a 0.9 member reads has changed:
 - **Snapshots still travel in chunks, with a snapshot id.** 0.10 sends a
   snapshot in one piece and has no snapshot id. The network layer cuts the
   piece into the 0.9 chunk requests on the way out and joins them on the
-  way in (`raft/chunks.rs`), and names the transfer by the snapshot's last
+  way in (`raft/chunks.rs`, removed with redb in 0.8), and names the transfer by the snapshot's last
   log id. A 0.9 leader can then bring a lagging 0.10 member up to date, and
   the reverse. A transfer that fails part-way starts again from the first
   chunk.
 - **The stored snapshot meta keeps its id field**, so a 0.9 binary started
   on a store a 0.10 binary wrote still parses it.
+
+The way back closed when the upgrade finished. Once every member had
+reported the new build's metadata level, the group recorded its identity
+(level 32), and a 0.9 member refused a store that held it. A member could
+go back while the upgrade was still under way, and not after.
 
 Chunks and the snapshot id go away with the new peer prefix, in the store
 step, where no 0.9 member can be on the other end.
@@ -1281,18 +1297,30 @@ Behaviour that changed, and what pins each:
   success when that is short of what was sent, so a leader on either version
   never counts the rest as stored.
 
-The mixed-version test (`tests/raft_runtime.rs`) runs this build next to the
-v0.7.1 binary in one group of three. A 0.9 leader sends a lagging 0.10
-member a snapshot. The other two members are upgraded. The third is then
+The mixed-version test (`tests/raft_runtime.rs`) ran the 0.10 build next to
+the v0.7.1 binary in one group of three. A 0.9 leader sent a lagging 0.10
+member a snapshot. The other two members were upgraded while the third was
+down, so the group had not yet recorded its identity. The third was then
 rolled back to v0.7.1 on a store the new build installed and built snapshots
-in, and a 0.10 leader sends it a snapshot. CI downloads the released binary
-for it (`scripts/fetch-released-controlplane.sh`).
+in, and a 0.10 leader sent it a snapshot. The test left with redb: a 0.8
+member and a 0.7 member never share a group or a store, so the same file now
+checks that this build refuses a data directory v0.7.1 wrote. CI downloads
+the released binary for it (`scripts/fetch-released-controlplane.sh`).
 
 Leadership transfer on drain comes after the store has switched. Pre-vote
 (`Config::enable_pre_vote`, off unless set) stays off; see the open
 questions.
 
 ### Upgrading an existing cluster
+
+**Not built.** 0.8 ships without the conversion tool. A member that finds
+`raft.redb` refuses to start and writes nothing, and the docs-site upgrades
+page tells operators to start the group over. What follows is the design
+for the tool, kept for
+[#2234](https://github.com/GetFelix/felix/issues/2234), which is not planned
+for 0.8. The service already
+keeps its side of it: the start rule from names and the member file, the
+converted and started marks, and the term display.
 
 A member's redb store is converted by a tool, one member at a time, while
 that member is stopped. The service itself never reads redb: a control
@@ -1384,20 +1412,18 @@ empty (configuration rejects an empty `FELIX_RAFT_CLUSTER_ID`). The write
 changes nothing the check reads. Without a stub the older binary would find
 no store and come up as a new, empty member.
 
-**What a build without the switch does with `store/`.** It refuses to
-start, before it creates `raft.redb` or writes anything, and the error names
-`--cfg felix_segment_store`. `felix-controlplane raft form-without` refuses
-the directory too. A directory that a build with the switch created from
-scratch has `store/` and no `raft.redb`. Without the check, a build without
-the switch would create an empty `raft.redb` there and start as a new
+**What a redb build does with `store/`.** A directory the new store
+created from scratch has `store/` and no `raft.redb`. A redb build that
+does not check would create an empty `raft.redb` there and start as a new
 member. Restart every member that way and the group forms again with no
-metadata. A build without the switch cannot read the member file, so it
-cannot tell a rolled-back store from a live one, and it refuses any
-`store/`:
+metadata. So a redb build must refuse any `store/` before it writes: it
+cannot read the member file, so it cannot tell a rolled-back store from a
+live one. Released 0.7 builds do not check yet
+([#2424](https://github.com/GetFelix/felix/issues/2424) backports the
+check).
 
-- A directory created by a build with the switch has no way back to redb.
-  Keep running it on a build with the switch, or wipe it and let the member
-  rejoin.
+- A directory created by the new store has no way back to redb. Keep
+  running it on 0.8, or wipe it and let the member rejoin.
 - A converted directory goes back through `rollback` or `restore`, which
   move `store/` aside. A `restore` that stopped part way is finished by
   running it again.
@@ -1488,13 +1514,13 @@ or earlier upgrades through 0.8.
 - The adapter is the `raft_log` module of `felix-storage`, compiled only
   with the crate's `raft` feature. The feature is off by default and brings
   in openraft as an optional dependency.
-- The control plane turns the feature on, today only in a build with
-  `--cfg felix_segment_store`. `felix-broker` never does.
+- The control plane turns the feature on. `felix-broker` never does.
 - openraft types stay inside `felix-storage::raft_log`, the per-shard
   runtime in `felix-replication`'s `src/raft/` (behind that crate's own
   `raft` feature) and the control plane's `src/raft/`. The store traits and
   handlers never see them.
-- redb moves to the conversion tool's crate, then leaves the workspace.
+- redb has left the workspace. A conversion tool would bring it back in
+  its own crate only.
 
 Cargo merges features across one build. The simulator and the cluster
 harness depend on both the broker and the control plane, so a workspace
@@ -1526,7 +1552,7 @@ fsynced, including a rename whose directory was not fsynced.
 | An append, after the fsync | The entries | Kept. A new leader keeps or truncates them, as Raft does. |
 | A truncation | The cut is on disk before any later append is reported flushed | A cut tail never comes back under a committed id (`TruncateNotDurable`). |
 | A vote save | The old vote or the new one | The higher of the two files is read, so the vote never goes down (`VoteNeverLowers`). |
-| Saving the committed index | An index that may be past the recovered log | Lowered to the log's end at open. An entry at that index with another term stops the member (issue [#2221](https://github.com/GetFelix/felix/issues/2221)). |
+| Saving the committed index | An index that may be past the recovered log, or up to a second behind: it is written at most once a second, off the write path | Lowered to the log's end at open. A lower one is a lower replay floor, so reads and readiness wait until a leader commits the log tail. An entry at that index with another term stops the member (issue [#2221](https://github.com/GetFelix/felix/issues/2221)). |
 | A snapshot build or install | The old snapshot or the new one; maybe a temporary file | The temporary file is deleted. The log still holds everything after the stored snapshot. |
 | A purge | Entries removed up to some point at or before the stored snapshot. Entries a purge hid past the snapshot are back. | The log starts at or before the snapshot's next index and has no gap. Entries at or below the snapshot are not applied. |
 | A write of the member file | The old file or the new one | The vote-withheld flag is durable before the member acts on it, as today. |
@@ -1718,13 +1744,13 @@ is the umbrella.
 
 | Piece | Issue | State |
 | --- | --- | --- |
-| Raft core: seam, redb log/vote/snapshot store, HTTP transport, group lifecycle | [#337](https://github.com/GetFelix/felix/issues/337) | **Landed**: `services/felix-controlplane-service/src/raft/`. The store passes openraft's own storage conformance suite; group tests cover election, replication, restart-as-rejoin, wiped-volume rebuild by snapshot, and learner-first growth. Nothing serves metadata from it yet. |
+| Raft core: seam, log/vote/snapshot store (redb until 0.8), HTTP transport, group lifecycle | [#337](https://github.com/GetFelix/felix/issues/337) | **Landed**: `services/felix-controlplane-service/src/raft/`. The store passes openraft's own storage conformance suite; group tests cover election, replication, restart-as-rejoin, wiped-volume rebuild by snapshot, and learner-first growth. Nothing serves metadata from it yet. |
 | Metadata state machine | [#338](https://github.com/GetFelix/felix/issues/338) | **Landed**: `store/raft/command.rs` (the versioned, API-shaped command set) and `store/raft/state_machine.rs` (`MetadataStateMachine`, the in-memory store behind the seam). The determinism harness applies a full-coverage script to two machines and requires byte-identical snapshots; a real three-node group settles eight concurrent bootstraps by log order alone with byte-identical replicas. Landing it surfaced and fixed real iteration-order leaks: multi-node expiry and cascading deletes published change events in HashMap order. Nothing serves API traffic from it yet. |
 | Store backend, forwarding, read semantics | [#339](https://github.com/GetFelix/felix/issues/339) | **Landed**: `store/raft.rs` (`RaftStore`), the third backend behind the store traits: reads from local applied state, writes proposed through the seam with follower→leader forwarding inside it, sweep and placement gated to the leader by a linearizable read-index check, and `StorageBackend::Raft` selectable via `FELIX_RAFT_NODE_ID` / `FELIX_RAFT_DATA_DIR` / `FELIX_RAFT_PEERS`. Passes the same node/shard contract suites as memory; a binary-level test serves the HTTP API with no database and keeps its metadata across a restart. Finding recorded below. Probes are minimal (leader-known) until #341. |
 | Postgres migration | [#340](https://github.com/GetFelix/felix/issues/340) | **Removed**: the Postgres backend and its export are gone, and Raft is the only production backend. The `ImportState` command (used-store guard, `overwrite`) remains for the tests; no shipped tool proposes it. |
 | Probes, packaging, configuration | [#341](https://github.com/GetFelix/felix/issues/341) | **Landed**: readiness answers from consensus state (leader known, apply-lag bounded, and a leader counts only while a quorum has acknowledged it within 5s; a quorumless leader leaves rotation, proven by test); liveness stays process-local. Timings are tunable (`FELIX_RAFT_HEARTBEAT_MS`, `FELIX_RAFT_ELECTION_TIMEOUT_MIN/MAX_MS`, snapshot/write knobs) with unworkable combinations refused at startup. Consensus position ships as `felix_meta_raft_*` gauges plus forwarded-proposal and write-timeout counters. Kubernetes shape documented on the docs-site page. Known fact below. |
-| The segment store behind a build-time switch | [#2230](https://github.com/GetFelix/felix/issues/2230) | **Landed, off in every release**: with `--cfg felix_segment_store` the group runs on `felix-storage`'s metadata store (`raft/segment_store.rs`) with the standard leader id, snapshots streamed in one request to a file with a size cap and one install at a time ([#2364](https://github.com/GetFelix/felix/issues/2364)), and every peer route under `/internal/raft/v2`. That build passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos` in CI, beside the redb build. `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. Still to come before the switch is turned on: the conversion tool, the simulator and history modes, and the perf gate. |
-| openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed**: the type config, storage traits and network moved to 0.10. The peer and stored formats are Felix's own and unchanged from 0.9 (`raft/wire.rs`), snapshots still travel in chunks (`raft/chunks.rs`), and a group of v0.7.1 and current members exchanges snapshots both ways and survives a rollback (`tests/raft_runtime.rs`). The redb baseline benchmark for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
+| The segment store, then the only store | [#2230](https://github.com/GetFelix/felix/issues/2230), [#2236](https://github.com/GetFelix/felix/issues/2236) | **Landed in 0.8**: the group runs on `felix-storage`'s metadata store (`raft/store.rs`) with the standard leader id, snapshots streamed in one request to a file with a size cap and one install at a time ([#2364](https://github.com/GetFelix/felix/issues/2364)), and every peer route under `/internal/raft/v2`. It passes openraft's storage suite, the contract suites, `raft_core`, `raft_runtime` and `raft_chaos`. redb, its chunked snapshots and the 0.9 wire forms are gone; a `raft.redb` in the data directory is refused (`tests/raft_runtime.rs` starts this build on a directory v0.7.1 wrote). `scripts/check-openraft-containment.sh` keeps openraft out of `felix-broker`. No conversion tool ([#2234](https://github.com/GetFelix/felix/issues/2234)). |
+| openraft 0.10 on redb | [#2225](https://github.com/GetFelix/felix/issues/2225) | **Landed, then superseded**: the move to 0.10 kept the peer and stored formats of 0.9 so a group could roll through it; the redb store and those forms left with the move to the segment store. The redb baseline for the perf gate is [#2224](https://github.com/GetFelix/felix/issues/2224). |
 | Chaos and conformance | [#342](https://github.com/GetFelix/felix/issues/342) | **Landed** in `tests/raft_chaos.rs`: three real binaries, no database, broker-shaped traffic and metadata writes flowing while every member is SIGTERM-restarted, the leader is SIGKILLed, the leader is frozen (SIGSTOP) past several elections and thawed, and a follower's volume is wiped. Verdict per run: zero failed calls, election gaps bounded, and **every acknowledged write present on every member** once each has applied a later marker write. That was the completion signal, and it was met. It caught four real bugs before landing (below). A second test wipes the *leader* while the only other holder of a write is frozen, the case in which a wiped member voting from an empty log loses that write ([above](#rejoining-after-a-lost-volume)). |
 
 One deliberate deviation from the sketch above, made while landing #337: the
@@ -1734,12 +1760,13 @@ entries that must never be acknowledged and then lost) is the last place
 Felix should be inventive, and openraft's storage suite now enforces the
 semantics against the real store on every test run.
 
-That choice is planned to change:
-[Moving to the segment store](#moving-to-the-segment-store) puts this log on
+That choice changed in 0.8:
+[Moving to the segment store](#moving-to-the-segment-store) put this log on
 `felix-storage`'s `DiskLog`, through one Raft log adapter shared with the
-shard replication engine. Until that lands, redb is what runs.
+shard replication engine, and redb is gone.
 
-Every redb commit fsyncs, so the store runs its writes on tokio's blocking
+No fsync of the store runs on an async worker: the log flushes on its own
+thread, and the snapshot and member files are written on tokio's blocking
 pool. Run inline, a slow disk held an async worker for the whole flush, and
 other tasks queued on that worker waited with it: RPC handlers, timers, and
 on a one-worker runtime everything else. Under disk load that cost an

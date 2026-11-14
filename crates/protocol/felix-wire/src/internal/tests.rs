@@ -13,6 +13,7 @@ mod framing;
 mod golden;
 mod raft;
 mod replicate;
+mod seal;
 
 use bytes::{BufMut, Bytes, BytesMut};
 

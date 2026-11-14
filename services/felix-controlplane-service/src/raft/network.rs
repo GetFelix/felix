@@ -1,9 +1,7 @@
 //! Raft RPCs to peers: JSON over each member's peer listener.
 //!
-//! The wire format is Felix's ([`super::wire`]): on redb, the requests and
-//! responses openraft 0.9 serialized, snapshots in chunks included, so
-//! members on either side of the 0.10 upgrade talk to each other. On the
-//! segment store a snapshot is streamed in one request. A peer's refusal
+//! The wire format is Felix's ([`super::wire`]). A snapshot is streamed in
+//! one request. A peer's refusal
 //! comes back as the `Err` half of its answer and is reported as
 //! `Unreachable`, like a transport failure that will not fix itself.
 //!
@@ -14,8 +12,6 @@
 use std::future::Future;
 use std::time::Duration;
 
-#[cfg(not(felix_segment_store))]
-use futures_util::FutureExt;
 use openraft::OptionalSend;
 use openraft::errors::{NetworkError, RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::network::v2::RaftNetworkV2;
@@ -28,7 +24,6 @@ use openraft::raft::{
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-#[cfg(felix_segment_store)]
 use felix_storage::raft_log::transfer;
 
 use super::hold::Hold;
@@ -148,7 +143,6 @@ impl std::error::Error for PeerRefused {}
 /// The client's own timeout is sized for a heartbeat. A snapshot is bounded
 /// by its progress instead ([`transfer::Progress`]), so this only has to be
 /// longer than any transfer that keeps moving.
-#[cfg(felix_segment_store)]
 const NO_TOTAL_LIMIT: Duration = Duration::from_secs(7 * 24 * 3600);
 
 /// Keep error messages to one readable line, whatever the peer sent.
@@ -271,7 +265,6 @@ fn refused(err: serde_json::Value) -> RPCError<TypeConfig> {
 
 /// A snapshot request's body: the head, the data a piece at a time, then
 /// the crc, in `transfer`'s framing. Each piece counts as progress.
-#[cfg(felix_segment_store)]
 fn snapshot_body(
     head: &wire::SnapshotHead,
     data: super::types::SnapshotData,
@@ -417,7 +410,6 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
     /// receiver takes longer than `transfer::install_bound` after the last.
     /// openraft does not enforce `option`'s ttl itself, and a fixed one
     /// would cut a large snapshot that is still moving.
-    #[cfg(felix_segment_store)]
     async fn full_snapshot(
         &mut self,
         vote: Vote,
@@ -459,42 +451,6 @@ impl RaftNetworkV2<TypeConfig> for HttpNetwork {
             return Ok(SnapshotResponse::new(theirs));
         }
         self.acknowledged(last);
-        Ok(SnapshotResponse::new(vote))
-    }
-
-    /// Sent as the chunk requests a 0.9 member understands. Any failure ends
-    /// the transfer, and openraft starts it again from the first chunk.
-    #[cfg(not(felix_segment_store))]
-    async fn full_snapshot(
-        &mut self,
-        vote: Vote,
-        snapshot: Snapshot,
-        cancel: impl Future<Output = ReplicationClosed> + OptionalSend + 'static,
-        _option: RPCOption,
-    ) -> Result<SnapshotResponse<TypeConfig>, StreamingError<TypeConfig>> {
-        self.hold_back()?;
-        let meta = wire::SnapshotMeta::from(&snapshot.meta);
-        let data = snapshot.snapshot.into_inner();
-        let mut cancel = std::pin::pin!(cancel);
-        for chunk in super::chunks::cut((&vote).into(), &meta, &data, super::chunks::CHUNK) {
-            if let Some(closed) = cancel.as_mut().now_or_never() {
-                return Err(closed.into());
-            }
-            let done = chunk.done;
-            let response: wire::InstallSnapshotResponse = self
-                .send("install-snapshot", &chunk)
-                .await
-                .map_err(streaming)?;
-            let theirs = Vote::from(response.vote);
-            // A member that has moved on to a newer leader says so, and the
-            // rest of the snapshot is of no use to it.
-            if theirs > vote {
-                return Ok(SnapshotResponse::new(theirs));
-            }
-            if done {
-                self.acknowledged(meta.last_log_id.map(|log_id| log_id.index));
-            }
-        }
         Ok(SnapshotResponse::new(vote))
     }
 

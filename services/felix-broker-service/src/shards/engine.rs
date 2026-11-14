@@ -105,6 +105,31 @@ impl RaftPublish {
     }
 }
 
+/// An idempotent batch on its way to an answer from a Raft shard.
+#[cfg(feature = "raft")]
+pub struct RaftIdempotentPublish(felix_replication::raft::IdempotentPublish);
+
+#[cfg(feature = "raft")]
+impl RaftIdempotentPublish {
+    /// Wait for the commit of the batch, or of the one the log already
+    /// held under its sequence. Returns the first record's offset.
+    pub async fn complete(self) -> Result<Option<u64>, CommitError> {
+        let idempotent = self.0.complete().await?;
+        Ok(idempotent.outcome.offsets.map(|(first, _)| first))
+    }
+}
+
+/// What an idempotent publish waits on when no Raft group can run a shard.
+#[cfg(not(feature = "raft"))]
+pub enum RaftIdempotentPublish {}
+
+#[cfg(not(feature = "raft"))]
+impl RaftIdempotentPublish {
+    pub async fn complete(self) -> Result<Option<u64>, CommitError> {
+        match self {}
+    }
+}
+
 impl StreamEngine {
     /// Whether a Raft group runs `shard` on this broker.
     pub fn on_raft(&self, shard: &ShardKey) -> bool {
@@ -176,6 +201,53 @@ impl StreamEngine {
         #[cfg(not(feature = "raft"))]
         {
             let _ = (broker, handle, shard, term, payloads, timeout);
+            None
+        }
+    }
+}
+
+impl StreamEngine {
+    /// Propose an idempotent producer's batch to `shard`'s Raft group, at
+    /// the `term` routing answered. `None` when the hybrid runs the shard.
+    ///
+    /// The sequence is checked against this broker's log, which holds what
+    /// every earlier leader committed, and a batch it already holds is
+    /// answered with where it landed. `turn` is the producer's
+    /// (`Broker::producer_turn`), first polled in the shard's publish order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_idempotent_on_raft(
+        &self,
+        broker: &felix_broker::Broker,
+        handle: &felix_broker::StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        turn: felix_broker::ProducerTurn,
+        sequence: u64,
+        reuse: felix_broker::SequenceReuse,
+        payloads: Vec<bytes::Bytes>,
+        timeout: Duration,
+    ) -> Option<Result<RaftIdempotentPublish, RaftRefusal>> {
+        #[cfg(feature = "raft")]
+        {
+            let raft = self.raft(shard)?;
+            // As for a plain publish: only the term the write was routed at.
+            if self.raft_term(shard) != Some(term) {
+                return Some(Err(RaftRefusal::NotLeading { term }));
+            }
+            let proposed = raft.publish_idempotent(
+                broker, handle, shard, term, turn, sequence, payloads, reuse, timeout,
+            );
+            Some(
+                proposed
+                    .map(RaftIdempotentPublish)
+                    .map_err(RaftRefusal::Broker),
+            )
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = (
+                broker, handle, shard, term, turn, sequence, reuse, payloads, timeout,
+            );
             None
         }
     }

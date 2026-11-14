@@ -25,7 +25,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::group::Pace;
 use super::machine::Machine;
-use super::types::{Command, ShardTypes};
+use super::types::{Command, ProducerMark, ShardTypes};
 use crate::engine::{CommitError, Written};
 
 /// One record of a batch to write.
@@ -64,6 +64,19 @@ pub struct Batch {
     /// The term the caller was admitted at. The batch is written only
     /// while this member leads that term. `None` takes any term.
     pub term: Option<u64>,
+    /// Set when the batch is an idempotent producer's.
+    pub producer: Option<Sequenced>,
+}
+
+/// An idempotent producer's batch: whose it is and its sequence. The
+/// records are stored with both, so every member's log can answer a
+/// re-send of the batch. The caller checks the sequence against the
+/// leader's log before proposing, and proposes the producer's next batch
+/// only once this one is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sequenced {
+    pub producer_id: u64,
+    pub sequence: u64,
 }
 
 /// A drain takes no batch that would bring it past this many payload bytes
@@ -83,6 +96,8 @@ const DISCARDED: &str = "a newer leader discarded the entry";
 const STOPPED: &str = "the shard's group stopped";
 const UNKNOWN: &str = "the entry was not reported written";
 const EMPTY: &str = "the batch held no record";
+const SEVERAL: &str =
+    "an idempotent batch of several records is not written on Raft, so nothing was written";
 
 pub(crate) fn lost(detail: &'static str) -> CommitError {
     CommitError::LeadershipLost {
@@ -178,11 +193,29 @@ pub(crate) struct Waiting<W = WrittenAt> {
 /// last record each carry one, because one record's index says nothing
 /// certain about another's.
 pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
-    let Batch { records, ack, term } = batch;
+    let Batch {
+        records,
+        ack,
+        term,
+        producer,
+    } = batch;
     let count = records.len();
     if count == 0 {
         return Err(lost(EMPTY));
     }
+    let mark = match producer {
+        None => None,
+        // Several records would be several entries, and nothing writes
+        // those all or none.
+        Some(_) if count != 1 => return Err(lost(SEVERAL)),
+        Some(Sequenced {
+            producer_id,
+            sequence,
+        }) => Some(ProducerMark {
+            producer_id,
+            sequence,
+        }),
+    };
     let mut bytes = 0;
     let mut commands: Vec<Command> = records
         .into_iter()
@@ -191,6 +224,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             Command {
                 timestamp_micros: record.timestamp_micros,
                 payload: record.payload,
+                producer: mark,
                 written: None,
             }
         })

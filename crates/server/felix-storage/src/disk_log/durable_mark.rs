@@ -127,6 +127,14 @@ pub(crate) fn poison_file_name() -> &'static str {
     "poisoned"
 }
 
+/// Whether `dir` holds a poison marker, readable or not. Unlike
+/// [`load_poison`], a marker that cannot be looked for is an error: a Raft
+/// copy is judged on this, and a guess of "none" would let it keep its id.
+#[cfg(feature = "raft")]
+pub(crate) fn left_poisoned(dir: &Path) -> std::io::Result<bool> {
+    crate::fs::try_exists(dir.join(poison_file_name()))
+}
+
 /// The poison marker's mode byte for each fsync mode. Zero is a marker that
 /// does not say, which is read as a relaxed mode.
 const POISON_MODE_NONE: u8 = 1;

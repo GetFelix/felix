@@ -154,7 +154,7 @@ impl ControlPlane {
     }
 
     /// Start the control plane as a real three-member metadata Raft group,
-    /// each member on its own redb directory, behind one address. Members
+    /// each member on its own data directory, behind one address. Members
     /// are killed, partitioned and restarted through [`Self::group`].
     pub(crate) async fn start_group(tenant_id: &str, liveness: NodeLivenessConfig) -> Result<Self> {
         crate::cluster::capture_control_plane();

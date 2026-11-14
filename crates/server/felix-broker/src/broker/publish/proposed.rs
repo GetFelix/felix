@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_storage::CommitTurn;
+use felix_storage::disk_log::ProducerSequence;
 
-use super::PublishOutcome;
 use super::completion::spawn_release;
+use super::{PublishOutcome, SequenceReuse};
 use crate::broker::Broker;
 use crate::broker::shards::StreamHandle;
 use crate::error::{BrokerError, Result};
@@ -90,6 +91,147 @@ impl Broker {
             answer_within: None,
         })
     }
+}
+
+impl Broker {
+    /// `producer_id`'s turn on the stream, for [`Self::propose_idempotent`].
+    ///
+    /// The future takes its place behind the producer's earlier batches
+    /// when it is first polled, so poll it once in the stream's publish
+    /// order. The rest of the wait needs no order kept, and holds up no
+    /// other producer's batch.
+    pub fn producer_turn(
+        &self,
+        handle: &StreamHandle,
+        producer_id: u64,
+    ) -> impl Future<Output = ProducerTurn> + Send + 'static {
+        let turn = handle.state.producers.serialise(producer_id);
+        async move {
+            ProducerTurn {
+                producer_id,
+                _held: turn.lock_owned().await,
+            }
+        }
+    }
+
+    /// Whether a stream on an engine takes an idempotent batch of `records`
+    /// records: [`BrokerError::NotOnEngineStream`] for more than one. For a
+    /// caller to refuse the batch before it waits for the producer's turn;
+    /// [`Self::propose_idempotent`] checks it again.
+    pub fn engine_takes_idempotent(records: usize) -> Result<()> {
+        if records > 1 {
+            return Err(BrokerError::NotOnEngineStream {
+                what: SEVERAL_RECORDS,
+            });
+        }
+        Ok(())
+    }
+
+    /// [`Self::propose_publish`] for an idempotent producer's batch: the
+    /// sequence is checked against the stream's log first, as
+    /// [`Self::claim_batch_idempotent`] checks it, and only the producer's
+    /// next batch is handed to the engine.
+    ///
+    /// The log learns a batch when the engine writes it, not when it is
+    /// handed over. So the producer's batches take turns: `turn` is the
+    /// producer's ([`Self::producer_turn`]), and `propose` is given it and
+    /// must drop it once the engine has written the batch to this broker's
+    /// log or given up on it, whether or not the future it returns is
+    /// polled by then. `propose` must store the records with the
+    /// producer's marks.
+    ///
+    /// A batch the log already holds is [`IdempotentProposal::Held`], with
+    /// nothing handed over. Its record may not be committed yet; the
+    /// caller answers once it is.
+    ///
+    /// A batch is one record. One of several is refused with
+    /// [`BrokerError::NotOnEngineStream`] before anything is checked or
+    /// written: its records would be an entry each, and a leader change or
+    /// a lapsed lease can cut those anywhere. See `docs/per-shard-raft.md`,
+    /// "Idempotent publishes".
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_idempotent<F, E>(
+        &self,
+        handle: &StreamHandle,
+        turn: ProducerTurn,
+        sequence: u64,
+        payloads: Vec<Bytes>,
+        reuse: SequenceReuse,
+        stalled_after: Duration,
+        propose: impl FnOnce(u64, ProducerTurn) -> F,
+    ) -> Result<IdempotentProposal<E>>
+    where
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
+        E: Send + 'static,
+    {
+        let Some(log) = &handle.state.durable else {
+            return Err(BrokerError::Storage(
+                "an idempotent batch was proposed on a stream with no log".to_string(),
+            ));
+        };
+        Self::engine_takes_idempotent(payloads.len())?;
+        let producer_id = turn.producer_id;
+        match log.producer_sequence(producer_id, sequence) {
+            ProducerSequence::Held {
+                first,
+                last,
+                digest,
+            } => {
+                reuse.check(sequence, digest, &payloads)?;
+                return Ok(IdempotentProposal::Held { first, last });
+            }
+            ProducerSequence::Unknown if sequence != 0 => {
+                return Err(BrokerError::UnknownProducer { producer_id });
+            }
+            ProducerSequence::Gap { expected } => {
+                return Err(BrokerError::SequenceGap { expected });
+            }
+            ProducerSequence::Expired => {
+                return Err(BrokerError::SequenceExpired { sequence });
+            }
+            // Only a batch of several records is ever open, and none is
+            // written here.
+            ProducerSequence::Partial { .. } => {
+                return Err(BrokerError::NotOnEngineStream {
+                    what: SEVERAL_RECORDS,
+                });
+            }
+            ProducerSequence::Unknown | ProducerSequence::Next => {}
+        }
+        self.propose_publish(handle, payloads, stalled_after, |timestamp_micros| {
+            propose(timestamp_micros, turn)
+        })
+        .map(IdempotentProposal::Proposed)
+    }
+}
+
+/// What [`Broker::propose_idempotent`] refuses, as
+/// [`BrokerError::NotOnEngineStream`] names it.
+const SEVERAL_RECORDS: &str = "idempotent batches of more than one record";
+
+/// A producer's turn on a stream. While it is held, no other batch of the
+/// producer is checked against the log. See [`Broker::propose_idempotent`].
+pub struct ProducerTurn {
+    producer_id: u64,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl ProducerTurn {
+    pub fn producer_id(&self) -> u64 {
+        self.producer_id
+    }
+}
+
+/// What [`Broker::propose_idempotent`] did with a batch.
+#[must_use = "a proposed publish reports its outcome only through `complete`"]
+pub enum IdempotentProposal<E: Send + 'static> {
+    /// The log already holds the batch at these offsets, inclusive. Nothing
+    /// was handed to the engine.
+    Held { first: u64, last: u64 },
+    /// The batch was new and is on its way.
+    Proposed(ProposedPublish<E>),
 }
 
 /// Where an engine committed a proposed batch.

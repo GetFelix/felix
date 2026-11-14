@@ -821,6 +821,17 @@ pub(super) fn discard_leftovers(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Remove the set file, synced with the directory. For a directory the
+/// hybrid no longer runs: a Raft member keeps its set in its log.
+#[cfg(feature = "raft")]
+pub(super) fn remove(dir: &Path) -> Result<()> {
+    match crate::fs::remove_file(path_in(dir)) {
+        Ok(()) => crate::io::sync_dir(dir).map_err(StorageError::Io),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 fn path_in(dir: &Path) -> PathBuf {
     dir.join(FILE_NAME)
 }

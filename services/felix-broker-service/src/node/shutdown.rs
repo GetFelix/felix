@@ -78,7 +78,8 @@ pub(super) enum Stopped {
     Signal,
     /// The control plane refused this node's registration.
     MembershipRejected,
-    /// The control plane is another metadata group than the data directory's.
+    /// The data directory cannot be served under the control plane's metadata
+    /// group, or could not be checked against it.
     WrongGroup,
 }
 
@@ -464,11 +465,12 @@ impl Running {
 
         budget.report();
         if stopped == Stopped::WrongGroup {
-            tracing::error!("broker stopped: the control plane is another metadata group");
+            tracing::error!(
+                "broker stopped: the control plane's metadata group refused this data directory"
+            );
             return Err(anyhow::anyhow!(
-                "the control plane is a different metadata group than this data directory was \
-                 written under (logged above). {}",
-                crate::cluster::controlplane_group::RECOVER
+                "this data directory cannot be served under the control plane's metadata group; \
+                 the reason and what to do are logged above"
             ));
         }
         if membership_rejected {

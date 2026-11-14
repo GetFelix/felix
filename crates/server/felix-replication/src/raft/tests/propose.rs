@@ -33,12 +33,14 @@ fn batch(payloads: &[&'static [u8]], ack: AckAt) -> Batch {
         records: records.collect(),
         ack,
         term: None,
+        producer: None,
     }
 }
 
 fn admitted(term: u64, payloads: &[&'static [u8]]) -> Batch {
     Batch {
         term: Some(term),
+        producer: None,
         ..batch(payloads, AckAt::Flushed)
     }
 }
@@ -314,6 +316,7 @@ fn a_drain_stops_at_its_bounds() {
             .collect(),
         ack: AckAt::Written,
         term: None,
+        producer: None,
     };
     // The batches each drain takes.
     let drains = |batches: Vec<Batch>| {
@@ -547,6 +550,7 @@ async fn a_token_does_not_leave_with_an_append() {
     let command = Command {
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
+        producer: None,
         written: Some(token),
     };
     let leads = LeaderIdOf::<ShardTypes>::new(3, MemberId::new("a", 1));
@@ -667,6 +671,7 @@ pub(super) async fn cut_after_first(
     let command = |payload: &&'static [u8]| Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(payload),
+        producer: None,
         written: None,
     };
     let (first, rest) = payloads.split_first().expect("a record");
@@ -731,6 +736,7 @@ fn a_drain_takes_batches_admitted_at_one_term() {
     for term in [Some(4), Some(4), Some(5), None, None] {
         let one = Batch {
             term,
+            producer: None,
             ..batch(&[b"r"], AckAt::Written)
         };
         let (proposal, wait) = split(one).expect("split");

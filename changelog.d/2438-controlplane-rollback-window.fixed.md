@@ -1,0 +1,1 @@
+- The upgrade docs now say that a Raft control-plane member cannot be rolled back below a metadata level the group has used: once every member runs a release at metadata level 32, the group records its identity and a release before level 32 refuses the store. From 0.8 no release before level 32 reads the control plane's store at all (#2438, #2236).

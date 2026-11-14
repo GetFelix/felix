@@ -135,6 +135,18 @@ pub(crate) fn checked_without_group(root: &Path) -> bool {
     root.join(NO_GROUP_FILE).is_file()
 }
 
+fn remove_mark(root: &Path) -> Result<()> {
+    let path = root.join(NO_GROUP_FILE);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err).with_context(|| format!("remove {}", path.display())),
+    }
+    std::fs::File::open(root)
+        .and_then(|dir| dir.sync_all())
+        .with_context(|| format!("sync {}", root.display()))
+}
+
 fn write_file(root: &Path, name: &str, contents: &str) -> Result<()> {
     std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
     let path = root.join(name);
@@ -286,6 +298,8 @@ pub(crate) fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> 
         Verdict::Skip | Verdict::Matches => Ok(stored),
         Verdict::Adopt => {
             write(root, current)?;
+            // The record supersedes the mark; a later start reads only the record.
+            remove_mark(root)?;
             tracing::info!(
                 group_id = current,
                 adopts_existing = identity.adopts_existing,
@@ -302,10 +316,26 @@ pub(crate) fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> 
 /// pages to.
 #[derive(Debug, Clone)]
 pub(crate) struct Guard {
-    /// The group this directory is recorded under.
-    pub(crate) stored: String,
-    /// Cancelled when an answer names another group: the broker stops.
+    /// The group this directory is recorded under, or `None` when it was
+    /// checked against a control plane with no group ([`NO_GROUP_FILE`]).
+    pub(crate) stored: Option<String>,
+    /// Cancelled when an answer names a group this directory is not under:
+    /// the broker stops.
     pub(crate) refused: CancellationToken,
+}
+
+/// The guard for a directory checked against the control plane: its record,
+/// or, under the no-group mark, no group. `None` for a directory never
+/// checked, which only a broker without a control plane has.
+pub(crate) fn guard(
+    root: &Path,
+    stored: Option<String>,
+    refused: CancellationToken,
+) -> Option<Guard> {
+    if stored.is_none() && !checked_without_group(root) {
+        return None;
+    }
+    Some(Guard { stored, refused })
 }
 
 /// An answer named a group other than the one this directory is under.
@@ -313,6 +343,22 @@ pub(crate) struct Guard {
 #[error("{}", other_group_message(.stored, .current))]
 pub(crate) struct Mismatch {
     pub(crate) stored: String,
+    pub(crate) current: String,
+}
+
+/// An answer named a group while this directory was checked against a
+/// control plane with none: the control plane was replaced by one with a
+/// group, which never saw this directory's data. Not applied; the broker
+/// stops so the next start asks the control plane, and [`admit`] judges the
+/// directory.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "the control plane's {what} names metadata group {current} but this data directory was \
+     checked against a control plane with no group; not applied. Restart the broker: its next \
+     start checks the directory against group {current}"
+)]
+pub(crate) struct Grouped {
+    pub(crate) what: &'static str,
     pub(crate) current: String,
 }
 
@@ -333,21 +379,27 @@ pub(crate) struct Unclaimed {
 #[derive(Debug)]
 pub(crate) enum Refusal {
     Mismatch(Mismatch),
+    Grouped(Grouped),
     Unclaimed(Unclaimed),
 }
 
 impl Guard {
     /// Whether an answer (`what`) claiming `claim` may be applied.
     pub(crate) fn check(&self, claim: Option<&str>, what: &'static str) -> Result<(), Refusal> {
-        match claim {
-            Some(current) if current == self.stored => Ok(()),
-            Some(current) => Err(Refusal::Mismatch(Mismatch {
-                stored: self.stored.clone(),
+        match (self.stored.as_deref(), claim) {
+            (Some(stored), Some(current)) if current == stored => Ok(()),
+            (None, None) => Ok(()),
+            (Some(stored), Some(current)) => Err(Refusal::Mismatch(Mismatch {
+                stored: stored.to_owned(),
                 current: current.to_owned(),
             })),
-            None => Err(Refusal::Unclaimed(Unclaimed {
+            (None, Some(current)) => Err(Refusal::Grouped(Grouped {
                 what,
-                stored: self.stored.clone(),
+                current: current.to_owned(),
+            })),
+            (Some(stored), None) => Err(Refusal::Unclaimed(Unclaimed {
+                what,
+                stored: stored.to_owned(),
             })),
         }
     }
