@@ -1417,7 +1417,7 @@ mod on_raft {
         assert!(matches!(hello, Some(Message::EventStreamHello { .. })));
 
         members[leader].publish(term, b"one").await;
-        members[leader].publish(term, b"two").await;
+        let second = members[leader].publish(term, b"two").await;
 
         for expected in [&b"one"[..], b"two"] {
             let frame = tokio::time::timeout(
@@ -1442,6 +1442,25 @@ mod on_raft {
             redirected(&ingress).is_none()
         })
         .await;
+        // The follower has delivered the leader's first two records before
+        // its reader joins, so the reader's first record is the third. Its
+        // cursor tail would not say so: that follows the member's log, which
+        // holds a record before it is delivered.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let from = felix_broker::StartPosition::Offset(second);
+            let probe = follower
+                .broker
+                .subscribe_from("t1", "ns", "orders", 0, from);
+            if !probe.await.expect("probe").backlog.is_empty() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the follower never delivered the second record"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
         let (mut receiver, _guard) = {
             let subscription = follower.broker.subscribe("t1", "ns", "orders", 0).await;
             subscription.expect("subscribe").into_parts()
@@ -1454,13 +1473,10 @@ mod on_raft {
         );
         let third = members[leader].publish(term, b"three").await;
         let fourth = members[leader].publish(term, b"four").await;
-        // The follower joined at what it had applied, which can trail the
-        // leader's first two records.
-        let mut next = fixture::delivered(&mut receiver).await;
-        while next.0 < third {
-            next = fixture::delivered(&mut receiver).await;
-        }
-        assert_eq!(next, (third, Bytes::from_static(b"three")));
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (third, Bytes::from_static(b"three"))
+        );
         assert_eq!(
             fixture::delivered(&mut receiver).await,
             (fourth, Bytes::from_static(b"four"))

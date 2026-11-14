@@ -225,8 +225,9 @@ impl Broker {
         }
         // Marked before asking, with the pass locked out: a deposal that
         // lands after the answer clears the mark, and is not overwritten.
-        // A stale term's retry clears only a mark it set itself, never one
-        // a later term holds.
+        // An earlier term's deposal cannot clear it in between, since
+        // `follow_engine_log` takes the pass lock too. A stale term's retry
+        // clears only a mark it set itself, never one a later term holds.
         let marked = state.engine_log && !state.leads_engine_log.swap(true, Ordering::AcqRel);
         let led = still_led();
         if !led && marked {
@@ -238,6 +239,10 @@ impl Broker {
     /// This broker stopped leading a shard on its engine's log: its
     /// subscribers are served from the log again, once the batches the
     /// deposed term was handed have settled. A no-op for any other shard.
+    ///
+    /// Waits for a term that is opening in [`Self::lead_from_tail_if`] to be
+    /// answered first, so the mark is never cleared between that term
+    /// setting it and being told it leads.
     pub async fn follow_engine_log(
         &self,
         tenant_id: &str,
@@ -245,14 +250,21 @@ impl Broker {
         stream: &str,
         shard: u32,
     ) {
-        if let Some(state) = self
+        let state = self
             .topics
             .read()
             .await
             .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
-        {
-            state.leads_engine_log.store(false, Ordering::Release);
-        }
+            .cloned();
+        let Some(state) = state.filter(|state| state.engine_log) else {
+            return;
+        };
+        // A pass stuck on a full `Block` subscriber holds the lock. The
+        // caller ends the deposed term's subscribers next, so the pass is
+        // told to end that one now.
+        let _wanted = LeadWanted::new(&state);
+        let _pass = state.log_pass.lock().await;
+        state.leads_engine_log.store(false, Ordering::Release);
     }
 
     pub(super) async fn get_stream_state(
@@ -672,8 +684,8 @@ impl Broker {
     }
 }
 
-/// Counts a caller waiting to lead a stream on its engine's log, for as
-/// long as it lives. See `StreamState::leads_wanted`.
+/// Counts a caller waiting to lead a stream on its engine's log, or to stop
+/// leading it, for as long as it lives. See `StreamState::leads_wanted`.
 struct LeadWanted<'a>(&'a StreamState);
 
 impl<'a> LeadWanted<'a> {

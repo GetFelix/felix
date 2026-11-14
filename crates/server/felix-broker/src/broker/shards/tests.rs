@@ -816,6 +816,147 @@ mod engine_log {
         quiet(&mut receiver).await;
     }
 
+    /// **A committed batch released as its term is deposed is not appended
+    /// above offsets a reader who joined after the deposal still needs.**
+    /// Whether the broker still leads is decided with the append, under the
+    /// lock a reader registers under. Decided before it, the release appends
+    /// above the failed batch's offset and that reader never gets its record.
+    #[tokio::test]
+    async fn a_batch_released_across_a_deposal_is_left_to_the_log() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        assert!(
+            broker
+                .lead_from_tail("t1", "ns", "orders", 0)
+                .await
+                .expect("lead")
+        );
+        // Fails while the term still leads, with nothing committed: the
+        // sequence stays at its offset.
+        let unknown = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"a")],
+                Duration::MAX,
+                |_| async {
+                    Err::<ProposalCommitted, _>(ProposalFailed {
+                        error: (),
+                        written_end: Some(1),
+                    })
+                },
+            )
+            .expect("handed over");
+        assert!(unknown.complete().await.is_err());
+        settled(&handle).await;
+        assert_eq!(handle.tail_seq(), 0);
+
+        // Both entries committed after all. The second batch's release is
+        // held just before its append, still led.
+        append(&log, &["a"], 7).await;
+        append(&log, &["b"], 8).await;
+        *bound.0.lock() = ReadBound::Committed(2);
+        handle.state.stall_release.set(true);
+        let behind = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"b")],
+                Duration::MAX,
+                |_| async {
+                    Ok::<_, ProposalFailed<()>>(ProposalCommitted {
+                        end: 2,
+                        skipped_before: 0,
+                    })
+                },
+            )
+            .expect("handed over");
+        behind.complete().await.expect("committed");
+        for _ in 0..500 {
+            if handle.state.stall_release.holds() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(handle.state.stall_release.holds(), "no release to hold");
+
+        // The deposal, and a reader that joins after it.
+        broker.follow_engine_log("t1", "ns", "orders", 0).await;
+        broker
+            .end_subscriptions("t1", "ns", "orders", 0, None)
+            .await;
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        handle.state.stall_release.set(false);
+        settled(&handle).await;
+
+        let pass = handle.deliver_from_log().await.expect("pass");
+        assert_eq!(pass, LogDelivery::CaughtUp);
+        assert_eq!(batch(&mut receiver).await, (0, 0, payloads(&["a"])));
+        assert_eq!(batch(&mut receiver).await, (1, 0, payloads(&["b"])));
+        quiet(&mut receiver).await;
+    }
+
+    /// **An earlier term's deposal cannot clear the mark of a term that is
+    /// opening.** Its clear waits for the opening term to be answered. Let
+    /// in between the mark and the answer, it would leave a led stream
+    /// unmarked, delivering from the log beside the leader's own batches.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_earlier_terms_deposal_waits_for_an_opening_term() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 2).await;
+        let (broker, _bound) = broker(ReadBound::Committed(2)).await;
+        let broker = Arc::new(broker);
+        let handle = open(&broker, &log).await;
+        assert!(
+            broker
+                .lead_from_tail("t1", "ns", "orders", 0)
+                .await
+                .expect("lead")
+        );
+
+        // The first term's deposal runs just as the next term has marked the
+        // stream. The next term opens once that deposal is done with.
+        let ended = Arc::new(AtomicBool::new(false));
+        let (deposal, deposed) = std::sync::mpsc::channel();
+        let still_led = {
+            let (broker, ended) = (Arc::clone(&broker), Arc::clone(&ended));
+            move || {
+                let done = Arc::clone(&ended);
+                let _ = deposal.send(tokio::spawn(async move {
+                    broker.follow_engine_log("t1", "ns", "orders", 0).await;
+                    done.store(true, Ordering::Release);
+                }));
+                let patience = std::time::Instant::now() + Duration::from_millis(300);
+                while !ended.load(Ordering::Acquire) && std::time::Instant::now() < patience {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                ended.load(Ordering::Acquire)
+            }
+        };
+        let mut opened = broker
+            .lead_from_tail_if("t1", "ns", "orders", 0, still_led)
+            .await
+            .expect("lead");
+        deposed.recv().expect("spawned").await.expect("deposal");
+        // Told no, the term asks again, as its caller does.
+        if !opened {
+            opened = broker
+                .lead_from_tail_if("t1", "ns", "orders", 0, || true)
+                .await
+                .expect("lead");
+        }
+        assert!(opened);
+        assert!(
+            handle.state.leads_engine_log.load(Ordering::Acquire),
+            "a term opened on a stream not marked as led"
+        );
+    }
+
     /// **A deposal that lands as the term opens leaves the stream followed.**
     /// The mark is set before the term is asked about, so a deposal after
     /// the answer clears it rather than being overwritten.
