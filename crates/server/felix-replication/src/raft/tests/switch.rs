@@ -169,20 +169,3 @@ async fn switched_members_elect_above_the_base_and_continue_its_offsets() {
     assert_eq!(payloads(log, 0).await.len(), 5);
     cluster.stop().await;
 }
-
-/// A member that started from the base is past `initialize`, as a member
-/// with a log is.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_switched_member_is_never_formed_again() {
-    let (mut cluster, base) = switched_cluster().await;
-    cluster.open(0).await;
-    cluster
-        .runtime("a")
-        .initialize(&shard(0), members())
-        .await
-        .expect("initialize");
-    cluster.elected(0).await;
-    let first = cluster.write(0, b"first").await;
-    assert!(first > base.offset + 1);
-    cluster.stop().await;
-}

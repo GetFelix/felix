@@ -2032,11 +2032,15 @@ sequenceDiagram
    A copy that fails any check starts as a learner, with its directory
    untouched. One that passes writes, in this order: the cut above `N`,
    the base snapshot, the purged id, a vote for itself at the base's term,
-   and last the engine marker with the base. The vote is the term floor:
+   the commit at `N`, the removal of the hybrid's replica-set file, and
+   last the engine marker with the base. No retention runs while it does,
+   so a start that crashes and runs again checks the same records. The vote is the term floor:
    without it the member would campaign at term 1, below the base, and its
    entries would compare older than the base's. A crash before the marker
    leaves a directory that is started again from the first step with the
-   same result. The first Raft entry is the blank entry at `N + 1`.
+   same result. The first Raft entry is the blank entry at `N + 1`. This
+   check covers the shard's own log. The dead-letter and group-cursor logs
+   fenced with it get their digest from the seal, which is not built yet.
    `felix_storage::disk_log::switch::start_voter` and
    `felix_replication::raft::switch::start_voter` do this.
 4. **Start the rest as learners.** Every other copy starts empty as a

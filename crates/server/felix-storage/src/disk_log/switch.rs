@@ -152,12 +152,24 @@ fn missing(log: &DiskLog, offset: Offset) -> StorageError {
 }
 
 fn hash_record(hash: &mut Sha256, record: &LogRecord) {
-    hash.update(record.offset.to_be_bytes());
-    hash.update(record.timestamp_micros.to_be_bytes());
-    hash_mark(hash, record.mark);
-    hash_bytes(hash, Some(&record.payload));
-    hash_bytes(hash, record.publisher.as_deref());
-    hash_bytes(hash, record.headers.as_deref().map(|headers| &headers[..]));
+    // Named field by field, so a field added later is a compile error here
+    // rather than a difference the digest misses.
+    let LogRecord {
+        offset,
+        timestamp_micros,
+        checksum: _,
+        payload,
+        mark,
+        publisher,
+        headers,
+        generation: _,
+    } = record;
+    hash.update(offset.to_be_bytes());
+    hash.update(timestamp_micros.to_be_bytes());
+    hash_mark(hash, *mark);
+    hash_bytes(hash, Some(payload));
+    hash_bytes(hash, publisher.as_deref());
+    hash_bytes(hash, headers.as_deref().map(|headers| &headers[..]));
 }
 
 fn hash_mark(hash: &mut Sha256, mark: RecordMark) {
@@ -211,6 +223,9 @@ fn hash_bytes(hash: &mut Sha256, bytes: Option<&[u8]>) {
 /// 5. Remove the hybrid's replica-set file.
 /// 6. Write the engine marker with the base.
 ///
+/// No log may have the directory open: the caller closes the hybrid's
+/// first.
+///
 /// A crash anywhere before 6 leaves an unmarked directory, and calling
 /// this again redoes every step with the same result. A directory already
 /// marked with this base is left as it is. One marked with another base,
@@ -263,8 +278,14 @@ async fn check_and_cut(
     hybrid: LogConfig,
     base: &SwitchBase,
 ) -> Result<std::result::Result<(), NotAVoter>> {
+    // Nothing may delete a segment while the range is read or after it was
+    // checked: a redo after a crash must find what the first pass found.
     let hybrid = LogConfig {
         raft_log: false,
+        retention_bytes: None,
+        retention_age: None,
+        retention_check_interval: std::time::Duration::ZERO,
+        offload: None,
         ..hybrid
     };
     let log = DiskLog::open(dir, label, hybrid)?;
@@ -350,6 +371,16 @@ async fn write_member_state(
     // base's. A vote for itself at the base's term grants nobody else
     // anything, since no candidate stands at that term.
     let generation = crate::raft_log::generation_of(term).map_err(StorageError::Io)?;
+    // A sealed copy accepts no later hybrid generation, so one here means
+    // the copy is not the one that acknowledged the seal.
+    if let Some(held) = ballot::load(dir)?
+        && held.generation > generation
+    {
+        return Err(invalid(format!(
+            "{label}: accepted generation {} above the seal's {generation}",
+            held.generation
+        )));
+    }
     ballot::store(
         dir,
         &Ballot {

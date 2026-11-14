@@ -9,6 +9,7 @@ use bytes::Bytes;
 use tempfile::tempdir;
 
 use super::*;
+use crate::disk_log::{Member, Membership, ReplicaSet};
 use crate::log::{AppendRecord, FsyncMode, ProducerBatch};
 use crate::raft_log::RaftLog;
 use crate::raft_log::tests::{Codec, Types, all, blank, log_id, store};
@@ -92,6 +93,24 @@ async fn copy(dir: &Path, below: Below, payloads: &[&str], tail: &[&str]) -> Off
     log.append(&rest.iter().map(|p| record(p)).collect::<Vec<_>>())
         .await
         .expect("append");
+    log.accept_set(ReplicaSet {
+        current: Membership {
+            generation: 1,
+            members: ["a", "b", "c"]
+                .into_iter()
+                .map(|node| Member {
+                    node: node.to_string(),
+                    storage: None,
+                    learner: false,
+                    wiped: false,
+                })
+                .collect(),
+        },
+        leaving: None,
+        earlier: Vec::new(),
+    })
+    .await
+    .expect("set");
     lead(&log, SEAL).await;
     let seal = log
         .append(&[AppendRecord {
@@ -226,6 +245,7 @@ async fn a_voter_keeps_the_records_below_the_base_and_starts_after_it() {
     let dir = root.path().join("shard");
     let n = copy(&dir, Below::Unstamped, &["a", "b", "c", "d"], &["unacked"]).await;
     let base = base_of(&dir, n).await;
+    assert!(files(&dir).contains(&"replica-set".to_string()));
 
     assert_eq!(start(&dir, &base).await, Ok(()));
     assert_eq!(
@@ -377,10 +397,12 @@ async fn a_copy_that_does_not_hold_the_base_is_not_a_voter_and_is_left_alone() {
         let log = DiskLog::open_at(&starts_late, LABEL, open_config(), 2).expect("open");
         log.shutdown().await.expect("shutdown");
     }
+    let before = files(&starts_late);
     assert_eq!(
         start(&starts_late, &base).await,
         Err(NotAVoter::StartsAbove { first: 2, start: 0 })
     );
+    assert_eq!(files(&starts_late), before);
 }
 
 #[tokio::test]

@@ -1066,7 +1066,7 @@ A directory the hybrid wrote becomes a Raft log only through the switch to
 Raft (`docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft").
 Its marker has a second line, `base <G> <N>`: the seal's generation and the
 offset of its generation-start record. `disk_log::switch::start_voter`
-writes it last, after the member's purged id, snapshot and vote, so a
+writes it last, after the member's snapshot, purged id, vote and commit, so a
 directory with this marker holds all of them and one without it is started
 again from the beginning. A second start from another base is refused. A
 build that predates the line refuses the directory as a newer build's.
