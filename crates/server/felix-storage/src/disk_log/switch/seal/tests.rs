@@ -73,8 +73,7 @@ struct Copy {
 
 impl Copy {
     fn open(dir: &Path, config: LogConfig) -> Self {
-        let open =
-            |kind: &str| DiskLog::open(&dir.join(kind), LABEL, config.clone()).expect("open");
+        let open = |kind: &str| DiskLog::open(dir.join(kind), LABEL, config.clone()).expect("open");
         Self {
             log: open("log"),
             dead_letters: open("dead-letters"),
