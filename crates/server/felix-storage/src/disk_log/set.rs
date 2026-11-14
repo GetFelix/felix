@@ -391,6 +391,7 @@ impl DiskLog {
             // The ballot's writer lock: it serializes writes per shard, so
             // the file only ever moves forward in generation.
             let _persisted = inner.replica_persisted.lock();
+            inner.hold_between_locks();
             inner.check_not_poisoned()?;
             if let Some((generation, leader)) = &from
                 && let Some(refused) = super::ballot::check(
