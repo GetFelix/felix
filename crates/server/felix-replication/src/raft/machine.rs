@@ -264,6 +264,8 @@ impl Drop for Held {
         };
         // Usually dropped on the blocking thread that encoded the cut, but
         // a build cancelled before it got there drops it on a runtime one.
+        // Without a runtime it folds here, so it must never be dropped by
+        // a thread that holds the cache lock.
         match tokio::runtime::Handle::try_current() {
             Ok(_) => drop(felix_common::blocking::spawn(fold)),
             Err(_) => fold(),

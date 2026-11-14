@@ -944,13 +944,23 @@ entries above it, so its log is cut to the snapshot:
   (16,384) have committed since its last snapshot. openraft checks that
   after each batch of messages, so it needs no tick.
 - Building a snapshot does not hold apply. Between two entries the state
-  machine takes a copy of the state, which costs nothing because the state
-  is kept in persistent maps that share their nodes with the copy. The copy
-  is encoded and written on a blocking thread while apply goes on. A node
-  that apply changes during the build is copied first, so a build costs
-  memory in proportion to what apply changes while it runs. The snapshot
-  is exactly the state as of its last entry, never a mix of that and later
-  writes.
+  machine freezes its maps as they are, without copying them, and the
+  build encodes the frozen maps on a blocking thread. Meanwhile apply
+  writes to an overlay of changes (new values, deletes, raised floors),
+  and reads look in the overlay first, then in the frozen maps. When the
+  build is done, the overlay is folded back into the maps a few hundred
+  changes at a time, so apply and reads wait at most one such chunk. The
+  snapshot is exactly the state as of its last entry, never a mix of that
+  and later writes. Between builds there is no overlay, and reads and
+  apply cost what they would without snapshots.
+- The overlay grows with every write applied from the moment the maps are
+  frozen until the build is done, including any wait for a CPU slot (see
+  below). That is the build's memory cost, plus the encoded snapshot.
+- Two cases do work in proportion to the overlay on the state machine's
+  task. A build that starts while the last one's overlay is still folding
+  back finishes that fold first. One that starts while an earlier build
+  still holds the frozen maps copies the overlay. Both are rare: builds
+  are at least `cache_snapshot_every` entries apart.
 - Encoding a snapshot and parsing one are CPU work. Across all groups on a
   broker, at most half the cores (at least one) do it at once. The rest
   wait, so many groups snapshotting or restarting together do not take

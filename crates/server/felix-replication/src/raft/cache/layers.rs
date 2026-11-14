@@ -10,6 +10,7 @@
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::iter::Peekable;
+use std::ops::Bound;
 
 use super::state::{Answer, Entry, Producer};
 
@@ -30,19 +31,77 @@ pub(super) struct Tables {
 pub(super) struct Delta {
     /// `None` hides the base's value.
     pub(super) entries: BTreeMap<String, Option<Entry>>,
-    /// `false` hides the base's member.
-    pub(super) expiring: BTreeMap<(u64, String), bool>,
+    /// Members the base does not have.
+    pub(super) expiring: BTreeSet<(u64, String)>,
+    /// Members of the base that are gone.
+    pub(super) expired: BTreeSet<(u64, String)>,
     /// Counters are never removed, so a sum here simply replaces the base's.
     pub(super) counters: BTreeMap<String, i64>,
     /// Each producer touched since the cut: its floor, and the answers
     /// kept since. The base's answers below that floor are dropped.
     pub(super) producers: BTreeMap<u64, Producer>,
+    /// Every base member up to here is in `expired`, so a walk of the set
+    /// starts after it. Expiry removes members from the front, and without
+    /// this each walk during a build would step over all of them.
+    pub(super) hidden_through: Option<(u64, String)>,
 }
 
 impl Delta {
+    /// Add `member` to the expiring set.
+    pub(super) fn show_expiring(&mut self, base: &Tables, member: (u64, String)) {
+        if base.expiring.contains(&member) {
+            self.expired.remove(&member);
+            self.unhide(base, &member);
+        } else {
+            self.expiring.insert(member);
+        }
+    }
+
+    /// Remove `member` from the expiring set.
+    pub(super) fn hide_expiring(&mut self, base: &Tables, member: (u64, String)) {
+        if !base.expiring.contains(&member) {
+            self.expiring.remove(&member);
+            return;
+        }
+        self.expired.insert(member);
+        let from = match &self.hidden_through {
+            Some(through) => Bound::Excluded(through),
+            None => Bound::Unbounded,
+        };
+        let mut through = None;
+        for member in base
+            .expiring
+            .range::<(u64, String), _>((from, Bound::Unbounded))
+        {
+            if !self.expired.contains(member) {
+                break;
+            }
+            through = Some(member);
+        }
+        if let Some(through) = through {
+            self.hidden_through = Some(through.clone());
+        }
+    }
+
+    /// `member` of the base is no longer hidden, or is about to join it.
+    fn unhide(&mut self, base: &Tables, member: &(u64, String)) {
+        if self
+            .hidden_through
+            .as_ref()
+            .is_some_and(|through| member <= through)
+        {
+            self.hidden_through = base
+                .expiring
+                .range::<(u64, String), _>((Bound::Unbounded, Bound::Excluded(member)))
+                .next_back()
+                .cloned();
+        }
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
             && self.expiring.is_empty()
+            && self.expired.is_empty()
             && self.counters.is_empty()
             && self.producers.is_empty()
     }
@@ -58,21 +117,32 @@ impl Delta {
                     None => base.entries.remove(&key),
                 };
                 1
-            } else if let Some((member, present)) = self.expiring.pop_first() {
-                match present {
-                    true => base.expiring.insert(member),
-                    false => base.expiring.remove(&member),
-                };
+            } else if let Some(member) = self.expired.pop_first() {
+                base.expiring.remove(&member);
+                1
+            } else if let Some(member) = self.expiring.pop_first() {
+                self.unhide(base, &member);
+                base.expiring.insert(member);
                 1
             } else if let Some((key, sum)) = self.counters.pop_first() {
                 base.counters.insert(key, sum);
                 1
-            } else if let Some((producer, delta)) = self.producers.pop_first() {
-                let cost = 1 + delta.answers.len();
-                let known = base.producers.entry(producer).or_default();
-                known.raise(delta.floor);
-                known.answers.extend(delta.answers);
-                cost
+            } else if let Some(mut delta) = self.producers.first_entry() {
+                // A producer's answers move a chunk at a time too: one that
+                // never raises its floor can have many.
+                let known = base.producers.entry(*delta.key()).or_default();
+                known.raise(delta.get().floor);
+                let mut moved = 0;
+                while moved < left
+                    && let Some((sequence, answer)) = delta.get_mut().answers.pop_first()
+                {
+                    known.answers.insert(sequence, answer);
+                    moved += 1;
+                }
+                if delta.get().answers.is_empty() {
+                    delta.remove();
+                }
+                moved.max(1)
             } else {
                 return false;
             };
@@ -141,12 +211,24 @@ impl<'a> Layers<'a> {
 
     /// Every entry that expires, by when.
     pub(super) fn expiring(&self) -> impl Iterator<Item = &'a (u64, String)> + use<'a> {
-        let delta = self.delta.into_iter().flat_map(|delta| &delta.expiring);
-        overlay(
-            self.base.expiring.iter().map(|member| (member, &())),
-            delta.map(|(member, present)| (member, present.then_some(&()))),
+        let from = match self.delta.and_then(|delta| delta.hidden_through.as_ref()) {
+            Some(through) => Bound::Excluded(through),
+            None => Bound::Unbounded,
+        };
+        let delta = self.delta;
+        let base = self
+            .base
+            .expiring
+            .range::<(u64, String), _>((from, Bound::Unbounded))
+            .filter(move |member| delta.is_none_or(|delta| !delta.expired.contains(*member)));
+        let added = delta.into_iter().flat_map(|delta| &delta.expiring);
+        // The two never share a member: the delta only adds what the base
+        // lacks.
+        zip(
+            base.map(|member| (member, ())),
+            added.map(|member| (member, ())),
         )
-        .map(|(member, ())| member)
+        .map(|(member, _, _)| member)
     }
 
     pub(super) fn counter(&self, key: &str) -> Option<i64> {

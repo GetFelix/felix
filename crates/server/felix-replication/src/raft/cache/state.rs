@@ -270,10 +270,7 @@ impl CacheState {
             }
             Maps::Layered { base, delta } => {
                 if let Some(member) = expires {
-                    match base.expiring.contains(&member) {
-                        true => delta.expiring.remove(&member),
-                        false => delta.expiring.insert(member, true),
-                    };
+                    delta.show_expiring(base, member);
                 }
                 delta.entries.insert(key.to_owned(), Some(entry));
             }
@@ -304,11 +301,7 @@ impl CacheState {
                 if let Some(entry) = removed
                     && entry.expires_at != 0
                 {
-                    let member = (entry.expires_at, key.to_string());
-                    match base.expiring.contains(&member) {
-                        true => delta.expiring.insert(member, false),
-                        false => delta.expiring.remove(&member),
-                    };
+                    delta.hide_expiring(base, (entry.expires_at, key.to_string()));
                 }
             }
         }

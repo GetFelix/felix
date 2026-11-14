@@ -739,6 +739,42 @@ fn expiry_during_a_build_walks_both_layers() {
     assert_eq!(state.next_expiry(), Some(5));
 }
 
+/// Expiry skips the base members a build removed from the front, and
+/// still finds one that is put back with the same expiry.
+#[test]
+fn expiry_during_a_build_finds_a_front_member_put_back() {
+    let before: Vec<_> = ["a", "b", "c", "d"]
+        .iter()
+        .enumerate()
+        .map(|(at, key)| {
+            put_with(
+                key,
+                "v",
+                10 + at as u64,
+                Condition::None,
+                request(1, at as u64 + 1),
+            )
+        })
+        .collect();
+    let state = layered_like_plain(
+        &before,
+        &[
+            delete("a", None, request(1, 5)),
+            delete("b", None, request(1, 6)),
+            delete("c", None, request(1, 7)),
+            put_with("a", "w", 10, Condition::None, request(1, 8)),
+            delete("d", None, request(1, 9)),
+            put_with("c", "w", 12, Condition::None, request(1, 10)),
+        ],
+    );
+    let due: Vec<_> = state
+        .due(u64::MAX, 10)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(due, ["a", "c"]);
+}
+
 /// A cut taken while an earlier one still holds the base shares the base
 /// and copies the delta; one taken while a fold is part way finishes the
 /// fold first. Each stays as of its own entry.
