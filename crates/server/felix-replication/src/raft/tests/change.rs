@@ -421,9 +421,15 @@ async fn a_change_through_a_joint_keeps_its_version_in_both_entries() {
     let (change, at) = stalled_in_the_joint(&cluster, &leader).await;
     assert_eq!(at.expect("an entry").index, before + 1);
 
-    // Answers are heard again: the joint commits, and openraft leaves it.
+    // Answers are heard again: the joint commits and is left, by openraft's
+    // second step or by the leader's driver, whichever is first. The other
+    // finds the log moved and writes nothing.
     cluster.net.lose_answers.store(false, Relaxed);
-    change.await.expect("joined").expect("change");
+    let changed = change.await.expect("joined");
+    assert!(
+        matches!(changed, Ok(()) | Err(StepError::Moved)),
+        "{changed:?}"
+    );
     let want = settled(&BROKERS, &[], 2);
     everywhere(&cluster, &want).await;
     let after = basis(&leader).await;
@@ -434,7 +440,8 @@ async fn a_change_through_a_joint_keeps_its_version_in_both_entries() {
 }
 
 /// The leader that wrote the joint is replaced before it commits. The new
-/// leader reads the joint, and its version, from its own log and leaves it.
+/// leader reads the joint, and its version, from its own log and leaves it
+/// before it is told any target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_leader_leaves_the_joint_it_finds() {
     let (mut cluster, old) = one_voter().await;
@@ -452,14 +459,12 @@ async fn a_new_leader_leaves_the_joint_it_finds() {
     assert_eq!(change.await.expect("joined"), Err(StepError::NotLeader));
     assert!(old.membership_basis().await.is_none());
 
-    let found = basis(&new).await;
-    assert!(found.committed && found.term > term);
-    assert_eq!((found.at, &found.membership), (at, &joint()));
-
-    new.leave_joint(&found).await.expect("leave");
+    // Nobody asks: the new leader's driver leaves the joint, with no
+    // target told.
     let want = settled(&BROKERS, &[], 2);
     everywhere(&cluster, &want).await;
     let after = basis(&new).await;
+    assert!(after.term > term);
     assert_eq!(after.membership, want);
     assert_eq!(
         after.at.expect("an entry").index,

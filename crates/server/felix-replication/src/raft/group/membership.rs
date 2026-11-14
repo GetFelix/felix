@@ -126,14 +126,11 @@ impl Group {
     /// member no longer leads that term: the successor was picked from
     /// that term's log.
     pub(crate) async fn transfer_in(&self, term: u64, to: MemberId) -> Option<u64> {
-        let leads = self.raft.with_raft_state(|state| {
-            let leads = state.server_state == ServerState::Leader;
-            leads.then(|| state.vote_ref().leader_id().term())
-        });
-        if leads.await.ok().flatten() != Some(term) {
-            return None;
-        }
-        self.transfer(to).await
+        // The term is checked in the read that gives up the lease, so a
+        // later term this member won meanwhile is never closed.
+        let term = self.transfer_starting_in(Some(term)).await?;
+        let _ = self.raft.trigger().transfer_leader(to).await;
+        Some(term)
     }
 
     /// Add `member` as a learner. It takes no vote.

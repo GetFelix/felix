@@ -1,8 +1,9 @@
 //! Makes a group's membership match the control plane's target, on the
 //! member that leads it. One task per group looks at the leader's log and
 //! the newest target, takes the one step `next_step` names, and looks
-//! again. Nothing is kept between looks but the term a transfer was asked
-//! in, so a new leader or a restart resumes from the log. See
+//! again. What it keeps between looks only paces it (the term a transfer
+//! was asked in, retry counts), so a new leader or a restart resumes from
+//! the log. See
 //! `docs/per-shard-raft.md`, "Membership".
 
 use std::collections::BTreeSet;
@@ -177,6 +178,9 @@ pub(crate) enum Pass {
     Refused(StepError),
     /// A rule every membership keeps would be, or was, broken.
     Broken(String),
+    /// A rule was broken earlier in this term. Nothing more is written
+    /// in it.
+    Halted,
     /// The group's core has stopped.
     Closed,
 }
@@ -194,6 +198,17 @@ pub(crate) struct Driver<M> {
     halted: Option<u64>,
     /// Looks in a row that changed nothing.
     idle_looks: u32,
+    /// Where the log and the other members stood at the last look. A
+    /// learner that is behind but moving is not stuck.
+    mark: Option<(u64, u64, u64)>,
+    /// Transfers asked since the last write or the last new target. Each
+    /// closes the shard for up to an election timeout, so a transfer that
+    /// never lands is paced like any other retry.
+    transfers: u32,
+    last_transfer: Option<tokio::time::Instant>,
+    /// A step that timed out: the term, the entry it was decided on and
+    /// the voters then. Checked when its entry shows up.
+    unchecked: Option<(u64, Basis)>,
     progress: Reported,
 }
 
@@ -212,6 +227,10 @@ impl<M: Member> Driver<M> {
             transfer: None,
             halted: None,
             idle_looks: 0,
+            mark: None,
+            transfers: 0,
+            last_transfer: None,
+            unchecked: None,
             progress: Reported(progress),
         }
     }
@@ -223,9 +242,26 @@ impl<M: Member> Driver<M> {
         };
         let basis = &look.basis;
         if self.halted == Some(basis.term) {
-            return Pass::Broken("a membership rule was broken in this term".into());
+            return Pass::Halted;
         }
         let me = self.member.me().clone();
+        // A step that timed out may have been written since.
+        if let Some((term, before)) = self.unchecked.take()
+            && term == basis.term
+        {
+            if before.at == basis.at {
+                self.unchecked = Some((term, before));
+            } else if let Err(broken) = kept(&me, &before, basis) {
+                self.halted = Some(basis.term);
+                return Pass::Broken(broken);
+            }
+        }
+        let moved: u64 = look.replication.matched.values().sum();
+        let mark = Some((basis.term, basis.at.map_or(0, |at| at.index), moved));
+        if self.mark != mark {
+            self.mark = mark;
+            self.idle_looks = 0;
+        }
         let transferring = self.transfer == Some(basis.term);
         let view = view(&me, &look, transferring, self.lag_threshold);
         let step = (self.decide)(&view, target);
@@ -242,9 +278,15 @@ impl<M: Member> Driver<M> {
                 };
             }
             Step::Transfer(to) => {
+                let recent = |at: tokio::time::Instant| at.elapsed() < self.retry.stuck;
+                if self.transfers >= self.retry.attempts && self.last_transfer.is_some_and(recent) {
+                    return Pass::Waiting(Wait::NoSuccessor);
+                }
                 return match self.member.transfer(basis.term, to).await {
                     Some(term) => {
                         self.transfer = Some(term);
+                        self.transfers = self.transfers.saturating_add(1);
+                        self.last_transfer = Some(tokio::time::Instant::now());
                         metrics::counter!(STEPS_TOTAL, "step" => kind).increment(1);
                         Pass::Stepped
                     }
@@ -263,10 +305,16 @@ impl<M: Member> Driver<M> {
             Step::LeaveJoint => self.timed(self.member.leave_joint(basis)).await,
         };
         match written {
-            None => Pass::Slow,
+            None => {
+                self.unchecked = Some((basis.term, basis.clone()));
+                Pass::Slow
+            }
             Some(Ok(())) => {
                 metrics::counter!(STEPS_TOTAL, "step" => kind).increment(1);
-                match self.kept(&me, basis).await {
+                self.transfers = 0;
+                let after = self.member.look().await;
+                let after = after.filter(|after| after.basis.term == basis.term);
+                match after.map_or(Ok(()), |after| kept(&me, basis, &after.basis)) {
                     Ok(()) => Pass::Stepped,
                     Err(broken) => {
                         self.halted = Some(basis.term);
@@ -295,34 +343,6 @@ impl<M: Member> Driver<M> {
         tokio::time::timeout(self.retry.step, step).await.ok()
     }
 
-    /// What the step just written left in the log, checked against the two
-    /// rules the writers keep: this leader is a voter of every set, and no
-    /// voter that left stayed as a learner (#2498).
-    async fn kept(&self, me: &MemberId, before: &Basis) -> Result<(), String> {
-        let Some(after) = self.member.look().await else {
-            return Ok(());
-        };
-        let after = after.basis;
-        if after.term != before.term {
-            return Ok(());
-        }
-        let sets = after.membership.get_joint_config();
-        if !sets.iter().all(|voters| voters.contains(me)) {
-            return Err(format!(
-                "this leader wrote {}, which leaves it out",
-                after.membership
-            ));
-        }
-        let voters: BTreeSet<MemberId> = after.membership.voter_ids().collect();
-        let left = before.membership.voter_ids();
-        let mut left = left.filter(|voter| !voters.contains(voter));
-        let learners: BTreeSet<MemberId> = after.membership.learner_ids().collect();
-        match left.find(|voter| learners.contains(voter)) {
-            Some(voter) => Err(format!("{voter} left the voters and was kept as a learner")),
-            None => Ok(()),
-        }
-    }
-
     /// Record what `pass` came to. Returns how long to wait before the
     /// next look, or `None` to wait for the target or the term to change.
     pub(crate) fn after(&mut self, pass: &Pass) -> Option<Duration> {
@@ -339,6 +359,13 @@ impl<M: Member> Driver<M> {
                     _ => MembershipProgress::Idle,
                 });
                 return None;
+            }
+            Pass::Halted => return None,
+            Pass::Stepped if self.transfers >= self.retry.attempts => {
+                self.progress.set(MembershipProgress::Stuck(
+                    "transfers asked did not go through".into(),
+                ));
+                return Some(Duration::ZERO);
             }
             Pass::Stepped => {
                 self.idle_looks = 0;
@@ -365,7 +392,7 @@ impl<M: Member> Driver<M> {
             Pass::Waiting(wait) => format!("waiting: {wait:?}"),
         };
         self.idle_looks = self.idle_looks.saturating_add(1);
-        if self.idle_looks > self.retry.attempts {
+        if self.idle_looks > self.retry.attempts || self.transfers >= self.retry.attempts {
             self.progress.set(MembershipProgress::Stuck(stalled));
             return Some(self.retry.stuck);
         }
@@ -377,8 +404,15 @@ impl<M: Member> Driver<M> {
         Some(doubled.min(self.retry.cap))
     }
 
-    /// A new target or a new term starts the count again.
-    fn woken(&mut self) {
+    /// A new target starts every count again.
+    fn retargeted(&mut self) {
+        self.idle_looks = 0;
+        self.transfers = 0;
+    }
+
+    /// A new term starts the count of idle looks again. Transfers asked
+    /// are still counted: each one that fails ends in a new term.
+    fn led(&mut self) {
         self.idle_looks = 0;
     }
 }
@@ -423,18 +457,17 @@ pub(crate) async fn run<M: Member>(
                 if changed.is_err() {
                     break;
                 }
-                driver.woken();
+                driver.retargeted();
             }
             changed = lead.changed() => {
                 if changed.is_err() {
                     break;
                 }
-                driver.woken();
+                driver.led();
             }
             () = waited => {}
         }
     }
-    driver.progress.set(MembershipProgress::Idle);
 }
 
 fn view(me: &MemberId, look: &Look, transferring: bool, lag_threshold: u64) -> View {
@@ -458,6 +491,27 @@ fn view(me: &MemberId, look: &Look, transferring: bool, lag_threshold: u64) -> V
         commit_index: basis.commit_index,
         matched: look.replication.matched.clone(),
         lag_threshold,
+    }
+}
+
+/// What a step left in the log, checked against the two rules the writers
+/// keep: the leader is a voter of every set, and no voter that left stayed
+/// as a learner (#2498).
+fn kept(me: &MemberId, before: &Basis, after: &Basis) -> Result<(), String> {
+    let sets = after.membership.get_joint_config();
+    if !sets.iter().all(|voters| voters.contains(me)) {
+        return Err(format!(
+            "this leader wrote {}, which leaves it out",
+            after.membership
+        ));
+    }
+    let voters: BTreeSet<MemberId> = after.membership.voter_ids().collect();
+    let left = before.membership.voter_ids();
+    let mut left = left.filter(|voter| !voters.contains(voter));
+    let learners: BTreeSet<MemberId> = after.membership.learner_ids().collect();
+    match left.find(|voter| learners.contains(voter)) {
+        Some(voter) => Err(format!("{voter} left the voters and was kept as a learner")),
+        None => Ok(()),
     }
 }
 
@@ -496,6 +550,13 @@ fn kind(step: &Step) -> &'static str {
 
 /// The group's progress, published and counted in the broker's gauges.
 struct Reported(Arc<watch::Sender<MembershipProgress>>);
+
+impl Drop for Reported {
+    /// A driver that is gone drives nothing, however it ended.
+    fn drop(&mut self) {
+        self.set(MembershipProgress::Idle);
+    }
+}
 
 impl Reported {
     fn set(&self, now: MembershipProgress) {

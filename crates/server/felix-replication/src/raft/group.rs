@@ -970,10 +970,17 @@ impl Group {
     /// this member leads, before it returns that term. `None` if it leads
     /// none.
     pub(crate) async fn transfer_starting(&self) -> Option<u64> {
+        self.transfer_starting_in(None).await
+    }
+
+    /// [`Self::transfer_starting`], and nothing is given up unless the
+    /// term this member leads is `only`, when one is named.
+    pub(super) async fn transfer_starting_in(&self, only: Option<u64>) -> Option<u64> {
         // Asked of the core, in the queue a transfer request goes through.
-        let leads = self.raft.with_raft_state(|state| {
+        let leads = self.raft.with_raft_state(move |state| {
             let leads = state.server_state == ServerState::Leader;
-            leads.then(|| state.vote_ref().leader_id().term())
+            let term = state.vote_ref().leader_id().term();
+            (leads && only.is_none_or(|only| only == term)).then_some(term)
         });
         let leads = leads.await.ok().flatten();
         if let Some(term) = leads {

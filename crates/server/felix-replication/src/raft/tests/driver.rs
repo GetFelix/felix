@@ -134,7 +134,11 @@ impl Member for Arc<Fake> {
         log.leads.then(|| Look {
             basis: Basis {
                 term: log.term,
-                at: None,
+                // Moves with every write, as the entry's position does.
+                at: Some(openraft::LogId::new(
+                    log.term.into(),
+                    log.written.len() as u64,
+                )),
                 membership: log.membership.clone(),
                 committed: true,
                 own_term_committed: true,
@@ -288,7 +292,7 @@ async fn no_membership_without_its_leader_is_written() {
     // Nothing more in this term, whatever the decision says now.
     driver.decide = crate::raft::membership::next_step;
     let pass = driver.pass(Some(&target(&["a", "b"], 3))).await;
-    assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
+    assert_eq!(pass, Pass::Halted);
     assert_eq!(fake.written(), []);
 
     // Leaving a joint is a write too.
@@ -316,7 +320,7 @@ async fn a_voter_kept_as_a_learner_stops_the_driver() {
     assert_eq!(driver.after(&pass), None);
     assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
     let pass = driver.pass(Some(&target(&["a", "b", "c"], 3))).await;
-    assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
+    assert_eq!(pass, Pass::Halted);
     assert_eq!(fake.written().len(), 1);
 
     // A new term starts clean.
@@ -386,6 +390,68 @@ async fn a_step_that_does_not_commit_is_looked_at_again() {
     assert!(driver.after(&pass).is_some());
 }
 
+async fn reported(progress: &mut Progress, want: MembershipProgress) {
+    let seen = progress.wait_for(|now| *now == want);
+    let waited = tokio::time::timeout(Duration::from_secs(3600), seen).await;
+    waited
+        .expect("the progress was never reported")
+        .expect("the driver");
+}
+
+/// A step that timed out is not checked when it is dropped, so it is
+/// checked when its entry shows up.
+#[tokio::test(start_paused = true)]
+async fn a_step_that_commits_late_is_still_checked() {
+    let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
+    fake.log.lock().hangs = true;
+    let (mut driver, _progress) = driving(&fake);
+    let goal = target(&["a", "b"], 2);
+    assert_eq!(driver.pass(Some(&goal)).await, Pass::Slow);
+
+    // Still not written: nothing to check yet.
+    assert_eq!(driver.pass(Some(&goal)).await, Pass::Slow);
+    // Written late, with the voter that left kept as a learner.
+    {
+        let mut log = fake.log.lock();
+        log.hangs = false;
+        log.membership = settled(&["a", "b"], &["c"], 2);
+        let late = log.membership.clone();
+        log.written.push(late);
+    }
+    let pass = driver.pass(Some(&goal)).await;
+    assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
+    assert_eq!(driver.pass(Some(&goal)).await, Pass::Halted);
+}
+
+/// Every transfer closes the shard for up to an election timeout, so a
+/// successor that never takes over is not asked without end.
+#[tokio::test(start_paused = true)]
+async fn transfers_that_never_land_are_paced_and_reported() {
+    let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
+    let (mut driver, progress) = driving(&fake);
+    let goal = target(&["b", "c"], 2);
+    let retry = Retry::default();
+
+    for term in 1..=u64::from(retry.attempts) {
+        fake.log.lock().term = term;
+        let pass = driver.pass(Some(&goal)).await;
+        assert_eq!(pass, Pass::Stepped, "term {term}");
+        driver.after(&pass);
+    }
+    assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
+    // Elected again at once: no transfer is asked yet.
+    fake.log.lock().term += 1;
+    let pass = driver.pass(Some(&goal)).await;
+    assert_eq!(pass, Pass::Waiting(Wait::NoSuccessor));
+    assert_eq!(driver.after(&pass), Some(retry.stuck));
+    assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
+    assert_eq!(fake.log.lock().transfers.len(), retry.attempts as usize);
+
+    tokio::time::sleep(retry.stuck).await;
+    assert_eq!(driver.pass(Some(&goal)).await, Pass::Stepped);
+    assert_eq!(fake.written(), []);
+}
+
 #[allow(clippy::field_reassign_with_default)]
 fn leading(term: u64) -> Lead {
     let mut lead = Lead::default();
@@ -410,16 +476,14 @@ async fn a_deposed_leader_writes_nothing_more() {
     assert_eq!(fake.written(), []);
     assert_eq!(*progress.borrow(), MembershipProgress::Idle);
 
-    // Elected, it takes the first step and is deposed before the second.
+    // Elected, it is deposed before its first step is written.
     fake.log.lock().refusals.push_back(StepError::NotLeader);
     fake.log.lock().leads = true;
     lead.send_replace(leading(1));
-    let stepped = progress.wait_for(|now| *now == MembershipProgress::Converging);
-    stepped.await.expect("progress");
+    reported(&mut progress, MembershipProgress::Converging).await;
     fake.log.lock().leads = false;
     lead.send_replace(Lead::default());
-    let idle = progress.wait_for(|now| *now == MembershipProgress::Idle);
-    idle.await.expect("progress");
+    reported(&mut progress, MembershipProgress::Idle).await;
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(fake.written(), []);
 
@@ -427,8 +491,7 @@ async fn a_deposed_leader_writes_nothing_more() {
     fake.log.lock().term = 2;
     fake.log.lock().leads = true;
     lead.send_replace(leading(2));
-    let settled_at = progress.wait_for(|now| *now == MembershipProgress::Settled);
-    settled_at.await.expect("progress");
+    reported(&mut progress, MembershipProgress::Settled).await;
     assert_eq!(
         fake.written().last(),
         Some(&settled(&["a", "b", "c"], &[], 2))
@@ -648,18 +711,20 @@ async fn a_removal_is_finished_under_a_leader_change() {
     let leader = leader_of(&cluster).await;
     let lead = leader.member.broker.to_string();
     drop(leader);
-    let stays = BROKERS
-        .into_iter()
-        .find(|broker| *broker != lead)
-        .expect("a follower");
+    let mut followers = BROKERS.into_iter().filter(|broker| *broker != lead);
+    let stays = followers.next().expect("a follower");
+    let leaves = followers.next().expect("a follower");
     let watch = Watch::start(&cluster, set(&BROKERS));
 
     cluster.net.muted.lock().insert(lead.clone());
     cluster.net.cut.lock().insert(lead.clone());
+    // Only the member the target drops can ask for a vote, so it is the
+    // one elected, and it has to hand over before the removal.
+    cluster.net.muted.lock().insert(stays.into());
     let kept = [&*lead, stays];
     tell_all(&cluster, &target(&kept, 2));
     let next = cluster.elected(0).await;
-    assert_ne!(&*next.broker, lead);
+    assert_eq!(&*next.broker, leaves);
 
     // The new set needs the old leader's answer to commit.
     cluster.net.muted.lock().clear();

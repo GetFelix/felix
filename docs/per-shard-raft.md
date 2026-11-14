@@ -2230,8 +2230,9 @@ tests that tell it a target directly.
 
 The driver works in looks. On each look it reads, from the leader's own
 log, the latest membership, whether that entry is committed, whether an
-entry of its own term is committed, and how far each other member's log
-reaches. It asks the decision for one step, takes it, and looks again:
+entry of its own term is committed. From openraft's replication progress
+it reads how far each other member's log reaches, which only decides when
+a learner is promoted and who can take a transfer. It asks the decision for one step, takes it, and looks again:
 
 ```mermaid
 flowchart TD
@@ -2249,7 +2250,8 @@ flowchart TD
     wait --> look
 ```
 
-Nothing is kept between looks except the term a transfer was asked in. A
+What the driver keeps between looks only paces it: the term a transfer
+was asked in and its retry counts. A
 new leader, or the same broker after a restart, starts from what its log
 holds: it leaves a joint membership it finds before it reads the target,
 and otherwise does nothing until it is told one.
@@ -2273,23 +2275,32 @@ differently:
 | openraft refused the membership itself (an unknown member, for example), or the step would take the version back | Reports the group stuck and stops until the target or the term changes. Asking again would change nothing |
 
 The wait starts at 50 ms and doubles up to 5 seconds. After eight looks in
-a row that changed nothing, the group is reported stuck and the driver
-looks only every 30 seconds. A learner that never catches up, or a
-transfer with no caught-up successor, ends there: the group keeps serving
-with the membership it has, and the control plane can send another
-target. A new target, or a new term, starts the count again.
+a row in which nothing moved (no new membership entry, no member's log
+further along), the group is reported stuck and the driver looks only
+every 30 seconds. A learner that is behind but still catching up is not
+stuck. One that stops, or a move with no caught-up successor, ends there:
+the group keeps serving with the membership it has, and the control plane
+can send another target. A new target, or a new term, starts the count
+again.
+
+Transfers are counted separately, because each one closes the shard for
+writes until the next term opens. After eight transfers that did not go
+through, the group is reported stuck and the next transfer is asked no
+sooner than 30 seconds after the last. A written step or a new target
+starts that count again.
 
 **The two rules, checked again.** The decision never names a set without
 the leader, and the step writers refuse one. The driver checks a third
 time before it writes, and after every write it reads the membership back
-and checks that it is a voter of every set and that no voter that left is
+(for a step that timed out, when its entry shows up) and checks that it is a voter of every set and that no voter that left is
 still a learner. If either check fails, the driver writes nothing more in
 that term and reports the group stuck, with the reason in the broker's log
 at error level. That is a bug, not an operating condition.
 
-**Deposal.** A leader that is deposed takes no further step: every step
+**Deposal.** A leader that is deposed takes no further step: every write
 carries the term it was decided in, and openraft writes nothing for a term
-this member no longer leads. The driver then waits to be elected again. It
+this member no longer leads. A transfer is asked only if the member still
+leads the term its successor was picked in. The driver then waits to be elected again. It
 ends when the member is closed.
 
 **What to watch.** `GroupRuntime::status` reports the leader's progress
