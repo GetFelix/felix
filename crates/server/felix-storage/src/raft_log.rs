@@ -34,6 +34,7 @@
 
 mod codec;
 mod flush_queue;
+pub(crate) mod held;
 mod hide;
 mod purged;
 mod reader;
@@ -270,6 +271,16 @@ where
     /// The log's written and flushed positions, as they change.
     pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.shared.positions.subscribe()
+    }
+
+    /// The first index the log holds or will hold, read live: one past a
+    /// purge that is hidden or on disk, else where the oldest segment starts.
+    pub fn first_index_reader(&self) -> Arc<dyn Fn() -> Offset + Send + Sync>
+    where
+        K: Send + Sync + 'static,
+    {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || shared.first_index())
     }
 
     /// The log underneath.

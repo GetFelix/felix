@@ -166,6 +166,44 @@ impl PeerPool {
         Ok(self.connection(node_id, addr).await?.capabilities())
     }
 
+    /// What `node_id`'s listener offered on a live connection this pool
+    /// holds, without dialling or waiting on a dial in progress.
+    pub(crate) fn connected_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        let peer = self.peers.lock().get(node_id).cloned()?;
+        let state = peer.state.try_lock().ok()?;
+        state
+            .connections
+            .iter()
+            .find(|connection| connection.is_live())
+            .map(|connection| connection.capabilities())
+    }
+
+    /// What `node_id` can do, over a connection dialled for the question
+    /// and closed after. A connection left in the pool would be the one a
+    /// later request takes, and after the peer restarts it looks live until
+    /// its idle timeout.
+    pub(crate) async fn probe_capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerCapabilities, PeerError> {
+        if self.shutdown.is_cancelled() {
+            return Err(PeerError::ShuttingDown);
+        }
+        if let Some(partition) = &self.partition
+            && partition.blocks(node_id)
+        {
+            return Err(PeerError::Unavailable {
+                node_id: node_id.to_string(),
+                detail: "partitioned from this broker (fault injection)".to_string(),
+            });
+        }
+        let connection = self.dial(node_id, addr).await?;
+        let offered = connection.capabilities();
+        connection.close("capabilities answered");
+        Ok(offered)
+    }
+
     /// The storage identity and incarnation `node_id` gave in its
     /// handshake, dialling it if there is no connection yet.
     pub(crate) async fn identity(
@@ -515,6 +553,25 @@ pub trait PeerRequester: Sync {
         None
     }
 
+    /// What `node_id`'s listener offered on a live connection this broker
+    /// opened to it, without dialling. `None` when there is none, or one is
+    /// being set up right now.
+    fn connected_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+        None
+    }
+
+    /// What `node_id` can do, asked over a connection of its own that is
+    /// closed after: nothing is pooled, and a failure starts no reconnect
+    /// backoff for the requests that follow.
+    fn probe_capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<PeerCapabilities, PeerError>> + Send
+    {
+        self.capabilities(node_id, addr)
+    }
+
     /// Whether this broker offers `ELECTION`, so may send set fields to a
     /// peer that offered it too. A requester that cannot tell does not.
     fn offers_election(&self) -> bool {
@@ -582,6 +639,19 @@ impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
         T::recorded_capabilities(self, node_id)
     }
 
+    fn connected_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        T::connected_capabilities(self, node_id)
+    }
+
+    fn probe_capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<PeerCapabilities, PeerError>> + Send
+    {
+        T::probe_capabilities(self, node_id, addr)
+    }
+
     fn offers_election(&self) -> bool {
         T::offers_election(self)
     }
@@ -631,6 +701,18 @@ impl PeerRequester for PeerPool {
 
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         self.known.get(node_id)
+    }
+
+    fn connected_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        PeerPool::connected_capabilities(self, node_id)
+    }
+
+    async fn probe_capabilities(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<PeerCapabilities, PeerError> {
+        PeerPool::probe_capabilities(self, node_id, addr).await
     }
 
     fn offers_election(&self) -> bool {

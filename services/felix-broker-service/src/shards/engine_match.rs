@@ -85,8 +85,27 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
     /// Ask `peer` which engine it runs, off the pass: a peer that is down
     /// must not slow the feed. Every pass asks again, so a peer not reached
     /// yet is learnt once it is up, and one that restarted on the other
-    /// engine is noticed. Until a peer answers, its shards are served.
-    fn ask(&self, peer: &str) {
+    /// engine is noticed once a connection to it is open again. Until a peer
+    /// answers, its shards are served.
+    ///
+    /// The ask dials a connection of its own and closes it, and a peer whose
+    /// engine is known is not dialled again unless it is `refused`: a live
+    /// pooled connection to it answers, and without one the last answer
+    /// stands. A pooled dial would leave a connection that looks live for an
+    /// idle timeout after the peer restarts, and a failed one a reconnect
+    /// backoff, and either would hold up a move onto the restarted peer.
+    ///
+    /// A refused peer is dialled on every pass because nothing else reaches
+    /// it: its shards are closed here, so no request pools a connection to
+    /// it, and without the dial a peer fixed by a restart stays refused.
+    fn ask(&self, peer: &str, refused: bool) {
+        if let Some(offered) = self.peers.connected_capabilities(peer) {
+            learn(&self.engines, &self.wake, peer.to_string(), offered);
+            return;
+        }
+        if !refused && self.engines.lock().contains_key(peer) {
+            return;
+        }
         let Some(addr) = (self.addresses)(peer) else {
             return;
         };
@@ -97,16 +116,11 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
         let (asking, wake) = (Arc::clone(&self.asking), Arc::clone(&self.wake));
         let name = peer.to_string();
         tokio::spawn(async move {
-            let answer = tokio::time::timeout(ASK_WITHIN, peers.capabilities(&name, addr)).await;
+            let answer =
+                tokio::time::timeout(ASK_WITHIN, peers.probe_capabilities(&name, addr)).await;
             asking.lock().remove(&name);
-            let Ok(Ok(offered)) = answer else {
-                return;
-            };
-            let raft = offered.contains(PeerCapabilities::RAFT);
-            if engines.lock().insert(name, raft) != Some(raft)
-                && let Some(wake) = wake.get()
-            {
-                wake.notify_one();
+            if let Ok(Ok(offered)) = answer {
+                learn(&engines, &wake, name, offered);
             }
         });
     }
@@ -122,6 +136,21 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
 
     fn engine_name(raft: bool) -> &'static str {
         if raft { "raft" } else { "hybrid" }
+    }
+}
+
+/// Record which engine `peer` runs, and run a pass if that changed.
+fn learn(
+    engines: &parking_lot::Mutex<HashMap<String, bool>>,
+    wake: &std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+    peer: String,
+    offered: PeerCapabilities,
+) {
+    let raft = offered.contains(PeerCapabilities::RAFT);
+    if engines.lock().insert(peer, raft) != Some(raft)
+        && let Some(wake) = wake.get()
+    {
+        wake.notify_one();
     }
 }
 
@@ -152,8 +181,13 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
                 .iter()
                 .map(|assignment| assignment.key.clone())
                 .collect();
+            let odd: HashSet<String> = if self.any_refused.load(Ordering::Acquire) {
+                self.refused.lock().values().cloned().collect()
+            } else {
+                HashSet::default()
+            };
             for peer in &peers {
-                self.ask(peer);
+                self.ask(peer, odd.contains(peer));
             }
 
             let mut refused = HashMap::default();
