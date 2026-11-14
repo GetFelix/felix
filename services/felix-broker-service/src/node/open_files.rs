@@ -25,6 +25,11 @@ const SOCKET_RESERVE: u64 = 1024;
 const MIN_SEALED_SLOTS: usize = 16;
 const EXPECTED_SHARDS: u64 = 2_000;
 
+/// macOS's `OPEN_MAX` (`sys/syslimits.h`), which the `libc` crate does not
+/// export: the soft limit it always accepts.
+#[cfg(target_os = "macos")]
+const OPEN_MAX: u64 = 10_240;
+
 /// Raise the soft open-file limit to the hard one, and report what the
 /// broker is left with. Never lowers it and never fails the start: a
 /// broker with few shards runs fine under a small limit.
@@ -114,7 +119,7 @@ fn ceiling() -> u64 {
     if rc == 0 && value > 0 {
         value as u64
     } else {
-        libc::OPEN_MAX as u64
+        OPEN_MAX
     }
 }
 
@@ -163,8 +168,8 @@ fn raise() -> Result<(u64, u64), (u64, io::Error)> {
         // The ceiling is a guess on some systems; fall back to the one
         // number macOS always accepts.
         #[cfg(target_os = "macos")]
-        let result = if result.is_err() && wanted > libc::OPEN_MAX as u64 {
-            set_soft(&limit, (libc::OPEN_MAX as u64).max(before))
+        let result = if result.is_err() && wanted > OPEN_MAX {
+            set_soft(&limit, OPEN_MAX.max(before))
         } else {
             result
         };
