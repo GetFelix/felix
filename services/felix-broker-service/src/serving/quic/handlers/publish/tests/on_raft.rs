@@ -22,8 +22,20 @@ struct Leader {
 /// A broker leading `orders` shard 0 on Raft, wired as a cluster member is:
 /// routes that ask the Raft shards first, and executors behind the queue.
 async fn leader(ack_durable_on_commit: bool) -> Leader {
+    leader_of(
+        ack_durable_on_commit,
+        felix_broker::ConsistencyLevel::Leader,
+    )
+    .await
+}
+
+/// [`leader`], with `orders` at `consistency`.
+async fn leader_of(
+    ack_durable_on_commit: bool,
+    consistency: felix_broker::ConsistencyLevel,
+) -> Leader {
     let root = tempfile::tempdir().expect("tempdir");
-    let broker = fixture::broker(root.path()).await;
+    let broker = fixture::broker_at(root.path(), 1, fixture::INCARNATION, consistency).await;
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
@@ -213,11 +225,13 @@ async fn an_unacknowledged_publish_to_a_raft_shard_is_delivered() {
     EngineShards::shutdown(&*leader.shards).await;
 }
 
-/// **A Raft shard answers at the commit even with `FELIX_ACK_ON_COMMIT=0`.**
-/// An answer on enqueue would promise a write the term may not live to make.
+/// **A `Quorum` stream on Raft answers at the commit even with
+/// `FELIX_ACK_ON_COMMIT=0`.** An answer on enqueue would promise a write the
+/// term may not live to make. A `Leader` stream may be answered on the
+/// lease, which is after the write but before the commit.
 #[tokio::test]
-async fn a_raft_shard_answers_at_the_commit_with_ack_on_commit_off() {
-    let mut leader = leader(false).await;
+async fn a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off() {
+    let mut leader = leader_of(false, felix_broker::ConsistencyLevel::Quorum).await;
     let orders = fixture::key("orders", 0);
     let before = leader.committed(&orders);
 

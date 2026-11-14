@@ -58,8 +58,8 @@ pub(crate) async fn broker_of(root: &Path, replicas: u32) -> Arc<Broker> {
     broker_at(root, replicas, INCARNATION, ConsistencyLevel::Leader).await
 }
 
-/// [`broker_of`], with `orders` at `incarnation`.
-async fn broker_at(
+/// [`broker_of`], with `orders` at `incarnation` and `consistency`.
+pub(crate) async fn broker_at(
     root: &Path,
     replicas: u32,
     incarnation: u64,
