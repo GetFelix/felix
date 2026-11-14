@@ -513,17 +513,19 @@ async fn a_reader_resumes_on_another_member_by_offset() {
 
     // Written while the reader is away.
     let b = led.cluster.write(0, b"b").await;
+    // The cursor tail follows the member's log, which holds the record before
+    // it is committed and delivered, so the wait is on the ring having it.
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    loop {
-        let tail = broker_two.cursor_tail("t", "ns", "orders", 0).await;
-        if tail.expect("tail").next_seq() == b + 1 {
-            break;
+    let resumed = loop {
+        let resumed =
+            broker_two.subscribe_from("t", "ns", "orders", 0, StartPosition::Offset(a + 1));
+        let resumed = resumed.await.expect("resumed");
+        if !resumed.backlog.is_empty() {
+            break resumed;
         }
         assert!(tokio::time::Instant::now() < deadline, "never delivered");
         tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let resumed = broker_two.subscribe_from("t", "ns", "orders", 0, StartPosition::Offset(a + 1));
-    let resumed = resumed.await.expect("resumed");
+    };
     assert!(resumed.history.is_none(), "the ring held the record");
     let backlog: Vec<(u64, Bytes)> = resumed
         .backlog
