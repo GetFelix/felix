@@ -4,15 +4,18 @@
 //! a sealed copy take no local write.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use felix_storage::StorageId;
 use parking_lot::Mutex;
 use reqwest::StatusCode;
 
-use super::seal::{Followers, follower, holding, logs_of, seal_fence, sealing_broker};
+use super::seal::{
+    Followers, follower, holding, holding_records, logs_of, seal_fence, sealing_broker,
+};
 use super::*;
 use crate::controlplane_link::LinkResponse;
-use crate::sealing::{SealOrder, SealOrders, SealTo, Sealing};
+use crate::sealing::{SealOrder, SealOrders, SealPace, SealTo, Sealing};
 
 const SEAL: u64 = 5;
 const LEADER: &str = "broker-a";
@@ -25,6 +28,8 @@ fn copy() -> StorageId {
 struct Orders {
     continues: bool,
     quiet: AtomicBool,
+    /// Also order a seal of a cache shard, which is given up unrun.
+    and_a_cache: bool,
 }
 
 impl Orders {
@@ -32,17 +37,30 @@ impl Orders {
         Arc::new(Self {
             continues,
             quiet: AtomicBool::new(quiet),
+            and_a_cache: false,
         })
     }
 }
 
 impl SealOrders for Orders {
     fn orders(&self) -> Vec<SealOrder> {
-        vec![SealOrder {
+        let stream = SealOrder {
             key: crate::driver::watch_key(&key()),
             generation: SEAL,
             continues: self.continues,
-        }]
+        };
+        let cache = SealOrder {
+            key: crate::ShardKey {
+                kind: crate::ShardKind::Cache,
+                ..stream.key.clone()
+            },
+            ..stream.clone()
+        };
+        let mut orders = vec![stream];
+        if self.and_a_cache {
+            orders.push(cache);
+        }
+        orders
     }
 
     fn quiesced(&self, _key: &crate::ShardKey) -> bool {
@@ -230,6 +248,26 @@ fn leader_sealing<'a>(
             storage_id: Some(copy()),
         },
     )
+    .with_pace(NO_WAIT)
+}
+
+/// Every pass runs every round: nothing waits between passes.
+const NO_WAIT: SealPace = SealPace {
+    retry: Duration::ZERO,
+    resend: Duration::ZERO,
+    deadline: Duration::from_secs(600),
+};
+
+/// The deadline the give-up tests run under.
+const DEADLINE: Duration = Duration::from_secs(1);
+
+fn calls_of(control_plane: &ControlPlane, call: &str) -> Vec<serde_json::Value> {
+    control_plane
+        .calls()
+        .into_iter()
+        .filter(|(sent, _)| *sent == call)
+        .map(|(_, body)| body)
+        .collect()
 }
 
 fn both<'a>(b: &'a ReplicaHandler, c: &'a ReplicaHandler) -> Followers<'a> {
@@ -441,6 +479,168 @@ async fn a_refused_report_is_given_up_and_another_sealers_is_dropped() {
     let mut sealing = leader_sealing(&leader, both(&b, &c), &orders, &control_plane);
     assert!(sealing.pass().await.is_none());
     assert_eq!(control_plane.calls().len(), 1);
+}
+
+/// **A round whose followers never take the fence is given up at its
+/// deadline.** Two of three copies do not offer the seal (down looks the
+/// same from here), so no majority ever answers and nothing is claimed.
+/// The leader holds its control-plane lease throughout, so nobody else
+/// would end the round: without the deadline the shard stays closed.
+#[tokio::test]
+async fn a_round_no_majority_answers_is_given_up_at_its_deadline() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let leader = sealing_broker(&root.path().join("a"));
+    holding(&leader).await;
+    let (b_broker, b) = follower(&root.path().join("b"), 2).await;
+    let (_c_broker, c) = follower(&root.path().join("c"), 3).await;
+    let orders = Orders::new(true, true);
+    let control_plane = ControlPlane::answering([]);
+    let without = Followers {
+        nodes: vec![
+            ("broker-b", &b, PeerCapabilities::NONE),
+            ("broker-c", &c, PeerCapabilities::NONE),
+        ],
+    };
+    let mut sealing =
+        leader_sealing(&leader, without, &orders, &control_plane).with_pace(SealPace {
+            deadline: DEADLINE,
+            ..NO_WAIT
+        });
+
+    assert!(sealing.pass().await.is_some());
+    assert!(sealing.pass().await.is_some());
+    assert!(
+        control_plane.calls().is_empty(),
+        "given up before the deadline"
+    );
+
+    tokio::time::sleep(DEADLINE).await;
+    assert!(
+        sealing.pass().await.is_some(),
+        "the give-up went unanswered"
+    );
+    let sent = control_plane.calls();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].0, "seal-give-up");
+    assert_eq!(sent[0].1["generation"], SEAL);
+    assert!(
+        sent[0].1["reason"]
+            .as_str()
+            .is_some_and(|why| why.contains("no majority")),
+        "{sent:?}"
+    );
+    assert_eq!(tail(&leader).await, 3, "claimed without a majority");
+    assert_eq!(tail(&b_broker).await, 3);
+    let [log, _, _] = logs_of(&leader).await;
+    assert!(
+        log.disk_log().holds_seal(),
+        "only a later generation ends the promise"
+    );
+
+    control_plane
+        .answers
+        .lock()
+        .push_back((StatusCode::OK, serde_json::json!({"given_up": true})));
+    assert!(sealing.pass().await.is_none());
+    assert!(sealing.pass().await.is_none());
+    assert_eq!(control_plane.calls().len(), 2, "the round ran on");
+}
+
+/// **A round whose followers refuse the record every pass is given up at
+/// its deadline.** Both followers took the fence, so the leader claimed,
+/// but their copies differ from its own and neither acknowledges. Asking
+/// again changes nothing.
+#[tokio::test]
+async fn a_round_no_majority_acknowledges_is_given_up_at_its_deadline() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let leader = sealing_broker(&root.path().join("a"));
+    holding(&leader).await;
+    let differing = async |dir: std::path::PathBuf, copy: u8| {
+        let broker = sealing_broker(&dir);
+        holding_records(&broker, ["a", "b", "x"]).await;
+        let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], SEAL))
+            .with_local_storage(StorageId::from_bytes([copy; 16]));
+        (broker, handler)
+    };
+    let (b_broker, b) = differing(root.path().join("b"), 2).await;
+    let (c_broker, c) = differing(root.path().join("c"), 3).await;
+    let orders = Orders::new(true, true);
+    let control_plane = ControlPlane::answering([]);
+    let mut sealing =
+        leader_sealing(&leader, both(&b, &c), &orders, &control_plane).with_pace(SealPace {
+            deadline: DEADLINE,
+            ..NO_WAIT
+        });
+
+    assert!(sealing.pass().await.is_some());
+    assert!(sealing.pass().await.is_some());
+    assert_eq!(tail(&leader).await, 4, "a majority took the fence");
+    assert!(
+        control_plane.calls().is_empty(),
+        "given up before the deadline"
+    );
+
+    tokio::time::sleep(DEADLINE).await;
+    assert!(
+        sealing.pass().await.is_some(),
+        "the give-up went unanswered"
+    );
+    let sent = control_plane.calls();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].0, "seal-give-up");
+    assert!(
+        sent[0].1["reason"]
+            .as_str()
+            .is_some_and(|why| why.contains("no majority")),
+        "{sent:?}"
+    );
+    assert_eq!(tail(&b_broker).await, 3, "a differing copy took the record");
+    assert_eq!(tail(&c_broker).await, 3, "a differing copy took the record");
+    assert!(calls_of(&control_plane, "seal-report").is_empty());
+}
+
+/// **Each round keeps its own time.** One order's give-up went unanswered
+/// and waits out its resend; the other's round retries at once. The quick
+/// one must not drag the slow one along: a report or a give-up sent on
+/// every retry would use up its refusals in a second.
+#[tokio::test]
+async fn a_round_retrying_does_not_make_another_resend_early() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let leader = sealing_broker(&root.path().join("a"));
+    holding(&leader).await;
+    let (_b_broker, b) = follower(&root.path().join("b"), 2).await;
+    let (_c_broker, c) = follower(&root.path().join("c"), 3).await;
+    let orders = Arc::new(Orders {
+        continues: true,
+        quiet: AtomicBool::new(false),
+        and_a_cache: true,
+    });
+    let control_plane = ControlPlane::answering([]);
+    let mut sealing =
+        leader_sealing(&leader, both(&b, &c), &orders, &control_plane).with_pace(SealPace {
+            resend: Duration::from_secs(600),
+            ..NO_WAIT
+        });
+
+    for _ in 0..5 {
+        let wait = sealing.pass().await.expect("the stream's round is short");
+        assert_eq!(wait, Duration::ZERO, "the next pass waits on the resend");
+    }
+    assert_eq!(tail(&leader).await, 3);
+    let gave_up = calls_of(&control_plane, "seal-give-up");
+    assert_eq!(gave_up.len(), 1, "resent on the other round's retries");
+    assert_eq!(gave_up[0]["key"]["kind"], "cache");
+
+    // The stream's round still runs on every pass.
+    orders.quiet.store(true, Ordering::SeqCst);
+    let wait = sealing
+        .pass()
+        .await
+        .expect("both wait on the control plane");
+    assert!(wait > Duration::from_secs(500), "{wait:?}");
+    assert_eq!(tail(&leader).await, 4);
+    assert_eq!(calls_of(&control_plane, "seal-report").len(), 1);
+    assert_eq!(calls_of(&control_plane, "seal-give-up").len(), 1);
 }
 
 /// **A sealed copy's cursors and dead letters take no local write.** The

@@ -59,14 +59,14 @@ pub(super) struct CacheShard {
 /// The local writes to one shard: puts, deletes, expiries and compaction.
 /// Records a replica stores from its leader are not counted.
 pub(super) struct LocalWrites {
-    in_flight: AtomicUsize,
+    in_flight: Arc<AtomicUsize>,
     held: Box<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl LocalWrites {
     pub(super) fn new(held: Box<dyn Fn() -> bool + Send + Sync>) -> Self {
         Self {
-            in_flight: AtomicUsize::new(0),
+            in_flight: Arc::new(AtomicUsize::new(0)),
             held,
         }
     }
@@ -82,10 +82,11 @@ impl LocalWrites {
     }
 }
 
-/// One local write or compaction pass under way.
-pub(super) struct LocalWrite<'a>(&'a AtomicUsize);
+/// One local write or compaction pass under way. Owned, so it can travel
+/// with the write onto the task that finishes it.
+pub(super) struct LocalWrite(Arc<AtomicUsize>);
 
-impl Drop for LocalWrite<'_> {
+impl Drop for LocalWrite {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::SeqCst);
     }
@@ -94,12 +95,12 @@ impl Drop for LocalWrite<'_> {
 impl CacheShard {
     /// Enter a local write or a compaction pass, refused while the shard is
     /// held. Keep the guard until the write has applied.
-    pub(super) fn enter_local(&self) -> Result<LocalWrite<'_>> {
+    pub(super) fn enter_local(&self) -> Result<LocalWrite> {
         // Counted before the check, as a write fence counts: whoever sets
         // the hold and then sees nothing in flight cannot miss a write that
         // got in.
         self.local.in_flight.fetch_add(1, Ordering::SeqCst);
-        let entered = LocalWrite(&self.local.in_flight);
+        let entered = LocalWrite(Arc::clone(&self.local.in_flight));
         if self.local.held() {
             return Err(StorageError::Sealed(self.label.clone()));
         }

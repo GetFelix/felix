@@ -2168,7 +2168,9 @@ broker reads it like this (`shards/lifecycle.rs`, `Phase::Sealed`, and
   seal's record is the one that starts `G`. Nothing is acknowledged to a
   client at `G`.
 - The leader runs one round per shard and generation, one pass every
-  50 ms, and keeps shipping so its followers reach `N - 1`.
+  50 ms, and keeps shipping so its followers reach `N - 1`. Each round keeps
+  its own time, and rounds of different shards run side by side (up to
+  eight), so a slow copy of one shard does not delay another's round.
 - It runs the round only if this process was serving generation `G - 1`.
   Such a leader holds every acknowledged record. Any other leader (one
   that restarted, or was promoted straight to `G`) would first have to take
@@ -2182,6 +2184,15 @@ broker reads it like this (`shards/lifecycle.rs`, `Phase::Sealed`, and
   the claim already made, it sends `POST /v1/nodes/{node_id}/seal-give-up`
   until that is answered. A report the control plane keeps refusing with a
   conflict is given up the same way after about ten seconds.
+- A round has a deadline: `FELIX_SEAL_DEADLINE_MS`, 30 seconds by default,
+  counted from when the broker first sees the order. If no majority holds
+  the record by then, the leader gives the round up. This covers the cases
+  nothing else ends: the leader is healthy and keeps its control-plane
+  lease, but too few followers are up or offer the seal, or a follower's
+  copy differs and it refuses the record on every pass. Without the
+  deadline the shard would stay closed, with retention held, for as long
+  as that lasted. A round that reaches its majority on the pass that
+  crosses the deadline still reports.
 - It never reopens the shard, on a timer or otherwise. The shard opens
   again only when the control plane writes a later generation without a
   seal, which goes through the ordinary fence.

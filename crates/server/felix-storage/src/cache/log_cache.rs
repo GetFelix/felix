@@ -214,7 +214,9 @@ impl LogCache {
     ) -> Result<ConditionalWrite> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
-        let _local = shard.enter_local()?;
+        // Moved into the staging task and then the staged write: a cancelled
+        // caller must not make the shard look quiet before the append.
+        let local = shard.enter_local()?;
         let expires_at_millis = ttl.map_or(0, |ttl| now_millis() + ttl.as_millis() as u64);
         let op = CacheOp::Put {
             key: key.to_string(),
@@ -295,6 +297,7 @@ impl LogCache {
                     bytes,
                     observer,
                     _in_flight: in_flight,
+                    _local: local,
                 })))
             }
         })
@@ -512,7 +515,8 @@ impl LogCache {
     ) -> Result<Deleted> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
-        let _local = shard.enter_local()?;
+        // Travels with the write, as in `put_entry`.
+        let local = shard.enter_local()?;
         let op = CacheOp::Delete {
             key: key.to_string(),
         };
@@ -589,6 +593,7 @@ impl LogCache {
                     bytes,
                     observer,
                     _in_flight: in_flight,
+                    _local: local,
                 });
                 Ok(Ok(staged))
             }

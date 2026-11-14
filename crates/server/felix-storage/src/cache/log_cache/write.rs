@@ -12,7 +12,7 @@ use std::sync::Arc;
 use parking_lot::Mutex as SyncMutex;
 
 use super::CacheOp;
-use super::shard::{CacheShard, KeyInFlight, ShardState};
+use super::shard::{CacheShard, KeyInFlight, LocalWrite, ShardState};
 use crate::Result;
 use crate::cache::{CacheChange, CacheObserver};
 use crate::commit_order::CommitTurn;
@@ -31,6 +31,9 @@ pub(super) struct StagedWrite {
     pub(super) change: CacheChange,
     pub(super) observer: Observer,
     pub(super) _in_flight: KeyInFlight,
+    /// Counts the write as under way until it has applied, whichever task
+    /// applies it.
+    pub(super) _local: LocalWrite,
 }
 
 impl StagedWrite {

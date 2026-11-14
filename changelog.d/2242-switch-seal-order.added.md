@@ -5,4 +5,7 @@
   `seal-give-up` instead of running a round twice. A sealed copy's cursor
   and dead-letter logs take no local write and are not compacted. A shard
   whose report was accepted stays closed for the hybrid; starting its Raft
-  member comes next. Assignments without the field are unchanged.
+  member comes next. Assignments without the field are unchanged. A round
+  that reaches no majority within `FELIX_SEAL_DEADLINE_MS` (30 seconds by
+  default) is given up, so a shard is not left closed behind copies that do
+  not answer.

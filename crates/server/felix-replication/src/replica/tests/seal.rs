@@ -71,8 +71,13 @@ fn timed(first: u64, payloads: &[Bytes]) -> ReplicateRecords {
 /// Fill `broker`'s three logs for the shard as generation 4's leader
 /// shipped them: `a b c`, one dead letter and one cursor.
 pub(super) async fn holding(broker: &Arc<Broker>) {
+    holding_records(broker, ["a", "b", "c"]).await;
+}
+
+/// As [`holding`], with `stream` as the stream log's three records.
+pub(super) async fn holding_records(broker: &Arc<Broker>, stream: [&str; 3]) {
     let handler = ReplicaHandler::new(Arc::clone(broker), router_with(&[LOCAL], 4));
-    let stream = ["a", "b", "c"].map(|value| Bytes::copy_from_slice(value.as_bytes()));
+    let stream = stream.map(|value| Bytes::copy_from_slice(value.as_bytes()));
     for (log, payloads) in [
         (felix_broker::LogKind::Stream, stream.to_vec()),
         (

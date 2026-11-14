@@ -5,8 +5,10 @@
 //! [`SealRound`](crate::seal::SealRound) across passes, claims only once the
 //! shard is quiet, sends the one report, and tells the control plane when
 //! the round is given up. It never reopens the shard: only a later
-//! generation from the control plane does. See "The seal on the hybrid side"
-//! in `docs/per-shard-raft.md`.
+//! generation from the control plane does. A round that reaches no majority
+//! by its deadline is given up too, so a closed shard is not left waiting
+//! on copies that will not answer. See "The seal on the hybrid side" in
+//! `docs/per-shard-raft.md`.
 //!
 //! A build without the Raft engine cannot seal. It keeps the shard closed
 //! and gives every order up, so the control plane moves on.
@@ -18,7 +20,9 @@ use felix_broker::Broker;
 use felix_common::random::HashMap;
 use felix_router::ShardRouter;
 use felix_storage::StorageId;
+use futures::StreamExt;
 use serde::Deserialize;
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::controlplane_link::ControlPlaneLink;
@@ -33,6 +37,61 @@ const SEAL_RETRY: Duration = Duration::from_millis(50);
 /// How soon a report or a give-up the control plane did not answer is sent
 /// again.
 const SEND_RETRY: Duration = Duration::from_millis(500);
+
+/// How long a round may run without a majority holding the seal's record.
+/// A healthy round ends within a pass or two; this only has to outlast a
+/// follower catching up to the record.
+const DEFAULT_DEADLINE: Duration = Duration::from_secs(30);
+
+/// The shortest deadline taken from the environment: less would give up
+/// rounds that only needed a second pass.
+const MIN_DEADLINE: Duration = Duration::from_secs(1);
+
+/// How many rounds run at once in a pass, so one shard's slow copy does not
+/// hold up the others.
+const CONCURRENT_ROUNDS: usize = 8;
+
+/// How a seal leader paces its rounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SealPace {
+    /// How soon a round short of its report runs again.
+    pub retry: Duration,
+    /// How soon a report or a give-up the control plane did not answer is
+    /// sent again.
+    pub resend: Duration,
+    /// How long a round may go, from when this broker first saw its order,
+    /// without a majority holding the seal's record. Past it the round is
+    /// given up, so the control plane promotes a later generation instead
+    /// of leaving the shard closed.
+    pub deadline: Duration,
+}
+
+impl Default for SealPace {
+    fn default() -> Self {
+        Self {
+            retry: SEAL_RETRY,
+            resend: SEND_RETRY,
+            deadline: DEFAULT_DEADLINE,
+        }
+    }
+}
+
+impl SealPace {
+    /// The default pace, with the deadline from `FELIX_SEAL_DEADLINE_MS`
+    /// when it is set, at least one second.
+    pub fn from_env() -> Self {
+        let deadline = std::env::var("FELIX_SEAL_DEADLINE_MS")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .map_or(DEFAULT_DEADLINE, |millis| {
+                Duration::from_millis(millis).max(MIN_DEADLINE)
+            });
+        Self {
+            deadline,
+            ..Self::default()
+        }
+    }
+}
 
 /// A seal the control plane ordered on a shard this broker leads.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,6 +146,19 @@ enum Stage {
     Done,
 }
 
+impl Stage {
+    /// Whether the round is still short of its report: the stages the
+    /// deadline ends.
+    fn short(&self) -> bool {
+        match self {
+            Stage::Starting => true,
+            #[cfg(feature = "raft")]
+            Stage::Sealing(_) => true,
+            Stage::Reporting(..) | Stage::GivingUp(_) | Stage::Done => false,
+        }
+    }
+}
+
 enum Step {
     /// Wait for the next pass.
     Stay(Stage),
@@ -97,6 +169,12 @@ enum Step {
 struct Round {
     generation: u64,
     stage: Stage,
+    /// When this broker first saw the order. The deadline counts from it.
+    since: Instant,
+    /// When the round next has something to do: `None` once it is done.
+    /// Each round has its own, so one that retries often does not make
+    /// another resend early.
+    due: Option<Instant>,
 }
 
 #[derive(Deserialize)]
@@ -119,6 +197,7 @@ pub struct Sealing<R, L> {
     router: Arc<ShardRouter>,
     orders: Arc<dyn SealOrders>,
     to: SealTo<L>,
+    pace: SealPace,
     /// One round per shard and generation. Kept, once it has reported or
     /// given up, for as long as the order stands, so nothing runs twice.
     rounds: HashMap<crate::ShardKey, Round>,
@@ -138,12 +217,18 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
             router,
             orders,
             to,
+            pace: SealPace::default(),
             rounds: HashMap::default(),
         }
     }
 
-    /// One pass over every order. Returns how soon the next is wanted, or
-    /// `None` when no round has work left.
+    pub fn with_pace(mut self, pace: SealPace) -> Self {
+        self.pace = pace;
+        self
+    }
+
+    /// One pass over every order whose round is due. Returns how soon the
+    /// next is wanted, or `None` when no round has work left.
     pub async fn pass(&mut self) -> Option<Duration> {
         let orders = self.orders.orders();
         self.rounds.retain(|key, round| {
@@ -151,47 +236,86 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
                 .iter()
                 .any(|order| order.key == *key && order.generation == round.generation)
         });
-        let mut again = None;
+        let now = Instant::now();
+        let mut due = Vec::new();
         for order in orders {
-            let mut stage = self
+            let waits = self
                 .rounds
-                .remove(&order.key)
-                .map_or(Stage::Starting, |round| round.stage);
-            loop {
-                let step = match stage {
-                    Stage::Starting => self.start(&order).await,
-                    #[cfg(feature = "raft")]
-                    Stage::Sealing(round) => self.seal(&order, round).await,
-                    Stage::Reporting(report, refused) => self.report(&order, report, refused).await,
-                    Stage::GivingUp(reason) => self.give_up(&order, reason).await,
-                    Stage::Done => Step::Stay(Stage::Done),
-                };
-                match step {
-                    Step::Next(next) => stage = next,
-                    Step::Stay(stayed) => {
-                        stage = stayed;
-                        break;
-                    }
+                .get(&order.key)
+                .is_some_and(|round| round.due.is_none_or(|due| due > now));
+            if waits {
+                continue;
+            }
+            let round = self.rounds.remove(&order.key).unwrap_or(Round {
+                generation: order.generation,
+                stage: Stage::Starting,
+                since: now,
+                due: Some(now),
+            });
+            due.push((order, round));
+        }
+        let advanced: Vec<(crate::ShardKey, Round)> = {
+            let this = &*self;
+            let running: Vec<_> = due
+                .into_iter()
+                .map(|(order, round)| this.advance(order, round))
+                .collect();
+            futures::stream::iter(running)
+                .buffer_unordered(CONCURRENT_ROUNDS)
+                .collect()
+                .await
+        };
+        self.rounds.extend(advanced);
+        let now = Instant::now();
+        self.rounds
+            .values()
+            .filter_map(|round| round.due)
+            .map(|due| due.saturating_duration_since(now))
+            .min()
+    }
+
+    /// Run one round as far as it goes now.
+    async fn advance(&self, order: SealOrder, round: Round) -> (crate::ShardKey, Round) {
+        let Round {
+            mut stage, since, ..
+        } = round;
+        loop {
+            let step = match stage {
+                Stage::Starting => self.start(&order).await,
+                #[cfg(feature = "raft")]
+                Stage::Sealing(round) => self.seal(&order, round).await,
+                Stage::Reporting(report, refused) => self.report(&order, report, refused).await,
+                Stage::GivingUp(reason) => self.give_up(&order, reason).await,
+                Stage::Done => Step::Stay(Stage::Done),
+            };
+            match step {
+                Step::Next(next) => stage = next,
+                // Checked after the pass, so a round that reaches its
+                // majority on the pass that crosses the deadline reports.
+                Step::Stay(stayed) if stayed.short() && since.elapsed() >= self.pace.deadline => {
+                    stage = Stage::GivingUp(format!(
+                        "no majority held the seal's record within {:?}",
+                        self.pace.deadline
+                    ));
+                }
+                Step::Stay(stayed) => {
+                    stage = stayed;
+                    break;
                 }
             }
-            let wait = match stage {
-                Stage::Done => None,
-                Stage::Reporting(..) | Stage::GivingUp(_) => Some(SEND_RETRY),
-                _ => Some(SEAL_RETRY),
-            };
-            again = match (again, wait) {
-                (Some(a), Some(b)) => Some(std::cmp::min::<Duration>(a, b)),
-                (a, b) => a.or(b),
-            };
-            self.rounds.insert(
-                order.key.clone(),
-                Round {
-                    generation: order.generation,
-                    stage,
-                },
-            );
         }
-        again
+        let due = match stage {
+            Stage::Done => None,
+            Stage::Reporting(..) | Stage::GivingUp(_) => Some(Instant::now() + self.pace.resend),
+            _ => Some(Instant::now() + self.pace.retry),
+        };
+        let round = Round {
+            generation: order.generation,
+            stage,
+            since,
+            due,
+        };
+        (order.key, round)
     }
 
     #[cfg(not(feature = "raft"))]
@@ -537,7 +661,10 @@ where
 {
     tokio::spawn(async move {
         loop {
-            let wait = sealing.pass().await.unwrap_or(idle.min(IDLE_MAX));
+            // Never longer than the idle read, whatever the rounds wait
+            // for: a new order must not sit behind a resend.
+            let idle = idle.min(IDLE_MAX);
+            let wait = sealing.pass().await.map_or(idle, |wait| wait.min(idle));
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = tokio::time::sleep(wait) => {}

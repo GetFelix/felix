@@ -62,6 +62,58 @@ async fn a_local_write_under_way_is_not_quiet() {
     assert!(cache.local_writes_quiet(T, NS, C, 0));
 }
 
+/// **A cancelled caller's write still counts until it lands.** The append
+/// runs on its own task, so a put whose caller went away before it took an
+/// offset is still coming. A seal that saw the shard quiet then would name a
+/// tail the write moves afterwards.
+#[tokio::test]
+async fn a_cancelled_callers_write_is_not_quiet_until_it_lands() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (cache, held) = holdable(dir.path()).await;
+    cache
+        .put_checked(T, NS, C, 0, "k", Bytes::from_static(b"v"), None)
+        .await
+        .expect("put");
+    let shard = cache.shard(T, NS, C, 0).expect("shard");
+    let log = cache.shard_log(T, NS, C, 0).await.expect("log");
+    let tail = log.tail_offset().await.expect("tail");
+
+    // The staging task waits on the state lock; its caller gives up.
+    let state = shard.state.lock().await;
+    let put = cache.put_checked(T, NS, C, 0, "k", Bytes::from_static(b"w"), None);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), put)
+            .await
+            .is_err(),
+        "the put finished under the state lock",
+    );
+    let delete = cache.delete_checked(T, NS, C, 0, "k");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), delete)
+            .await
+            .is_err(),
+        "the delete finished under the state lock",
+    );
+    held.store(true, Ordering::SeqCst);
+    assert!(
+        !cache.local_writes_quiet(T, NS, C, 0),
+        "quiet with two appends still to come",
+    );
+
+    drop(state);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !cache.local_writes_quiet(T, NS, C, 0) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the writes never ended");
+    assert_eq!(log.tail_offset().await.expect("tail"), tail + 2);
+    // Quiet under the hold: the tail stays where it is.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(log.tail_offset().await.expect("tail"), tail + 2);
+}
+
 /// **A held shard is not compacted.** A pass rolls the log, copies records
 /// to the tail and trims the head: the start and the tail a seal named
 /// would both move.

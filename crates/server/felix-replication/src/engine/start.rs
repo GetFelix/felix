@@ -163,7 +163,8 @@ impl<S: ShardServing + ?Sized + 'static> Hybrid<S> {
                         held: to.held.clone(),
                         storage_id: to.storage_id,
                     },
-                ),
+                )
+                .with_pace(crate::sealing::SealPace::from_env()),
                 interval,
                 shutdown.clone(),
             ));
