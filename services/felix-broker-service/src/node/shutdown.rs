@@ -436,7 +436,7 @@ impl Running {
                 budget.unfinished(),
                 felix_storage::disk_log::any_log_poisoned(),
             ) {
-                if let Err(err) = super::storage::mark_clean_stop(root, *id) {
+                if let Err(err) = record_clean_stop(root, *id) {
                     tracing::error!(error = %err, "could not record a clean stop; the next start takes a new storage id");
                 }
             } else {
@@ -513,6 +513,18 @@ const NO_STORE_WRITES: [&str; 4] = [
     // The view is replaced whole by a rename, and holds no record.
     "controlplane_view",
 ];
+
+/// Record a clean stop of the run that began on `root` under `id`. A rotation
+/// during the run (the Raft restore gate, a deferred restore check) already
+/// distrusted every copy, so the record names the id the directory has now:
+/// under the old one the next start would read a crash and rotate again.
+fn record_clean_stop(root: &std::path::Path, id: StorageId) -> Result<()> {
+    let current = felix_storage::storage_identity::load(root)
+        .ok()
+        .flatten()
+        .unwrap_or(id);
+    super::storage::mark_clean_stop(root, current)
+}
 
 /// Whether a stop may be recorded as clean: every store flushed, no drain
 /// step that may write cut short, and no log poisoned during the run.

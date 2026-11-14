@@ -39,6 +39,14 @@ pub enum RootOpened {
         witness: Option<u64>,
         control_plane: Option<u64>,
     },
+    /// The root's storage id is `storage_id`, not the `registered` one this
+    /// run started under, as after a rotation whose mark log then failed to
+    /// open. Nothing in it is opened: the caller stops the broker, as for
+    /// [`RootOpened::Rotated`].
+    NotRegistered {
+        storage_id: StorageId,
+        registered: StorageId,
+    },
     /// `stop` fired first.
     Stopped,
 }
@@ -58,6 +66,14 @@ impl std::fmt::Debug for RootOpened {
                 .field("sequence", sequence)
                 .field("witness", witness)
                 .field("control_plane", control_plane)
+                .finish(),
+            Self::NotRegistered {
+                storage_id,
+                registered,
+            } => f
+                .debug_struct("NotRegistered")
+                .field("storage_id", storage_id)
+                .field("registered", registered)
                 .finish(),
             Self::Stopped => f.write_str("Stopped"),
         }
@@ -87,7 +103,9 @@ impl RootReport {
 
 /// Run the gate on `root` until it opens, and open the root for members.
 ///
-/// `restored` is the start's incarnation verdict. `control_plane` asks the
+/// `restored` is the start's incarnation verdict. `registered` is the
+/// storage id this run registered under; a root under any other is not
+/// opened ([`RootOpened::NotRegistered`]). `control_plane` asks the
 /// control plane for its copy of this node's root sequence; `None` is no
 /// copy, whether it holds none or did not answer. A root behind a copy is
 /// given a new storage id and not opened ([`RootOpened::Rotated`]). A root
@@ -101,6 +119,7 @@ pub async fn open_root<F, Fut>(
     root: &Path,
     witness_dir: Option<&Path>,
     restored: bool,
+    registered: StorageId,
     mut control_plane: F,
     retry: Duration,
     stop: &CancellationToken,
@@ -109,6 +128,8 @@ where
     F: FnMut() -> Fut,
     Fut: Future<Output = Option<ControlPlaneCopy>>,
 {
+    // Set here so the series exists on a broker that is never held.
+    metrics::gauge!(ROOT_HELD).set(0.0);
     let mut held = false;
     let opened = loop {
         let copy = tokio::select! {
@@ -119,6 +140,7 @@ where
             root.to_path_buf(),
             witness_dir.map(Path::to_path_buf),
             restored,
+            registered,
             copy,
         )
         .await
@@ -163,6 +185,11 @@ where
     Ok(opened)
 }
 
+/// A root whose rotation fails once the new id is written, for tests.
+#[cfg(test)]
+pub(super) static FAIL_AFTER_ROTATION: std::sync::Mutex<Option<PathBuf>> =
+    std::sync::Mutex::new(None);
+
 enum Judged {
     Open(GatePassed),
     Rotated(RootOpened),
@@ -175,9 +202,21 @@ async fn judge(
     root: PathBuf,
     witness_dir: Option<PathBuf>,
     restored: bool,
+    registered: StorageId,
     control_plane: Option<ControlPlaneCopy>,
 ) -> io::Result<Judged> {
     tokio::task::spawn_blocking(move || {
+        // A rotation that failed after writing the new id leaves a root
+        // that passes at sequence 0 under an id nobody registered.
+        if let Some(storage_id) =
+            felix_storage::storage_identity::load(&root).map_err(io::Error::other)?
+            && storage_id != registered
+        {
+            return Ok(Judged::Rotated(RootOpened::NotRegistered {
+                storage_id,
+                registered,
+            }));
+        }
         let gate = check(
             &root,
             Evidence {
@@ -192,6 +231,10 @@ async fn judge(
                 let (sequence, witness, control_plane) =
                     (behind.root, behind.witness, behind.control_plane);
                 let passed = behind.rotate(felix_common::random::uuid_v4().into_bytes())?;
+                #[cfg(test)]
+                if FAIL_AFTER_ROTATION.lock().expect("hook").as_deref() == Some(root.as_path()) {
+                    return Err(io::Error::other("injected failure after the rotation"));
+                }
                 Ok(Judged::Rotated(RootOpened::Rotated {
                     storage_id: passed.storage_id(),
                     sequence,

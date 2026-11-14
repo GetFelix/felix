@@ -278,6 +278,8 @@ impl RootSequence {
             if held.storage_id == heard.storage_id {
                 held.sequence < heard.sequence
             } else {
+                // Not the sequence: a rotation starts the mark log over at 0,
+                // and the gate compares a root only with a copy under its id.
                 held.incarnation < heard.incarnation
             }
         })

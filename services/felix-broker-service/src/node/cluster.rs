@@ -187,6 +187,8 @@ pub(super) struct RaftRoot<L> {
     pub(super) restore_checked: CancellationToken,
     pub(super) link: Option<L>,
     pub(super) node_id: String,
+    /// The storage id this run registers under.
+    pub(super) storage_id: felix_storage::StorageId,
     pub(super) credential: Option<NodeCredential>,
     /// Set once the root opens, for the heartbeat.
     pub(super) slot: crate::cluster::membership::RootSequenceSlot,
@@ -240,6 +242,7 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
                 &on.root,
                 on.witness.as_deref(),
                 false,
+                on.storage_id,
                 control_plane,
                 ROOT_RETRY,
                 &on.stop,
@@ -265,6 +268,21 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
                         "this data root is behind a copy of its root sequence, as a restored \
                          snapshot is; gave it a new storage id and stopping, so it starts again \
                          under the new id and every Raft copy in it rejoins as a new member",
+                    );
+                    on.rotated.cancel();
+                    return;
+                }
+                Ok(RootOpened::NotRegistered {
+                    storage_id,
+                    registered,
+                }) => {
+                    tracing::error!(
+                        root = %on.root.display(),
+                        storage_id = %storage_id,
+                        registered = %registered,
+                        "this data root's storage id is not the one this run registered under, \
+                         as after a rotation that failed part way; stopping, so it starts again \
+                         under the new id",
                     );
                     on.rotated.cancel();
                     return;

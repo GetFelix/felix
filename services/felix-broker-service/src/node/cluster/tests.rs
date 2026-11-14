@@ -124,6 +124,7 @@ async fn the_raft_root_opens_after_the_restore_check_and_reaches_the_heartbeat()
             // Answers 503: the control plane has no copy to give.
             link: Some(FakeLink::default()),
             node_id: "broker-a".to_string(),
+            storage_id,
             credential: Some(NodeCredential::new("token".to_string())),
             slot: slot.clone(),
             stop: stop.clone(),
@@ -209,6 +210,7 @@ async fn a_raft_root_behind_the_control_plane_rotates_and_stops_the_broker() {
             restore_checked,
             link: Some(link),
             node_id: "broker-a".to_string(),
+            storage_id,
             credential: Some(NodeCredential::new("token".to_string())),
             slot: slot.clone(),
             stop: stop.clone(),
@@ -223,6 +225,74 @@ async fn a_raft_root_behind_the_control_plane_rotates_and_stops_the_broker() {
         .expect("an id");
     assert_ne!(now, storage_id, "the root kept its storage id");
     assert_eq!(slot.read(), None, "the rotated root reached the heartbeat");
+    let orders = raft::key("orders", 0);
+    members
+        .take(&mut raft::assignments([raft::assigned(
+            orders.clone(),
+            raft::INCARNATION,
+        )]))
+        .await;
+    assert!(members.engine_for(&orders).is_none(), "a member opened");
+    stop.cancel();
+    members.shutdown().await;
+}
+
+/// **A root under a storage id this run did not register under stops the
+/// broker instead of opening.** That is the root a rotation leaves when it
+/// fails after writing the new id: the gate passes it at sequence 0, and the
+/// retry must not open members the control plane never heard of.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_root_under_an_unregistered_storage_id_stops_the_broker() {
+    use crate::cluster::membership::RootSequenceSlot;
+    use crate::shards::raft::tests as raft;
+    use crate::shards::routing::EngineShards;
+    use crate::test_support::fake_link::FakeLink;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = raft::broker(root.path()).await;
+    let (registered, _) =
+        felix_storage::storage_identity::load_or_create(root.path(), || [7; 16]).expect("id");
+    // The rotation's id write, with nothing after it.
+    let on_disk = felix_storage::run_state::copy_trust::rotate_storage_id(root.path(), [8; 16])
+        .expect("rotate");
+    let members = raft::held_shards(&broker);
+    let shards = RaftShards {
+        engine_shards: None,
+        handler: None,
+        members: Some(Arc::clone(&members)),
+    };
+    let (restore_checked, stop, rotated) = (
+        CancellationToken::new(),
+        CancellationToken::new(),
+        CancellationToken::new(),
+    );
+    restore_checked.cancel();
+    let slot = RootSequenceSlot::default();
+    open_raft_root(
+        &shards,
+        RaftRoot {
+            root: root.path().to_path_buf(),
+            witness: None,
+            restore_checked,
+            // Answers 503: no copy, so the gate alone would pass the root.
+            link: Some(FakeLink::default()),
+            node_id: "broker-a".to_string(),
+            storage_id: registered,
+            credential: Some(NodeCredential::new("token".to_string())),
+            slot: slot.clone(),
+            stop: stop.clone(),
+            rotated: rotated.clone(),
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(10), rotated.cancelled())
+        .await
+        .expect("the broker was not told to stop");
+    assert_eq!(
+        felix_storage::storage_identity::load(root.path()).expect("id"),
+        Some(on_disk)
+    );
+    assert_eq!(slot.read(), None, "the root reached the heartbeat");
     let orders = raft::key("orders", 0);
     members
         .take(&mut raft::assignments([raft::assigned(

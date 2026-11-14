@@ -20,10 +20,10 @@ fn opened(opened: RootOpened) -> CopyRoot {
 /// A root with a storage id whose marks have been written: one copy opened
 /// and a vote saved, so its sequence is above 0.
 async fn root_with_marks(dir: &Path) -> (StorageId, u64) {
-    storage_identity::load_or_create(dir, || [1; 16]).expect("id");
+    let (id, _) = storage_identity::load_or_create(dir, || [1; 16]).expect("id");
     let stop = CancellationToken::new();
     let copies = opened(
-        open_root(dir, None, false, || async { None }, RETRY, &stop)
+        open_root(dir, None, false, id, || async { None }, RETRY, &stop)
             .await
             .expect("open"),
     );
@@ -63,6 +63,7 @@ async fn a_root_nothing_vouches_for_waits_for_the_control_plane() {
             dir.path(),
             None,
             false,
+            id,
             || {
                 let n = asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 async move {
@@ -87,14 +88,14 @@ async fn a_root_nothing_vouches_for_waits_for_the_control_plane() {
 #[tokio::test]
 async fn a_held_root_opens_nothing_before_the_stop() {
     let dir = tempfile::tempdir().expect("dir");
-    root_with_marks(dir.path()).await;
+    let (id, _) = root_with_marks(dir.path()).await;
     let stop = CancellationToken::new();
     let stopper = stop.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(200)).await;
         stopper.cancel();
     });
-    let held = open_root(dir.path(), None, false, || async { None }, RETRY, &stop)
+    let held = open_root(dir.path(), None, false, id, || async { None }, RETRY, &stop)
         .await
         .expect("open");
     assert!(matches!(held, RootOpened::Stopped), "{held:?}");
@@ -113,6 +114,7 @@ async fn a_root_behind_the_control_plane_rotates_and_is_not_opened() {
         dir.path(),
         None,
         false,
+        id,
         || async move {
             Some(ControlPlaneCopy {
                 storage_id: id,
@@ -140,11 +142,20 @@ async fn a_root_behind_the_control_plane_rotates_and_is_not_opened() {
         Some(storage_id)
     );
 
-    // The restart: the control plane has no copy under the new id yet.
+    // The restart registers under the new id; the control plane has no copy
+    // under it yet.
     let copies = opened(
-        open_root(dir.path(), None, false, || async { None }, RETRY, &stop)
-            .await
-            .expect("reopen"),
+        open_root(
+            dir.path(),
+            None,
+            false,
+            storage_id,
+            || async { None },
+            RETRY,
+            &stop,
+        )
+        .await
+        .expect("reopen"),
     );
     assert_eq!(opened_id(&copies), storage_id);
     assert_eq!(copies.mark_log().sequence(), 0);
@@ -159,4 +170,49 @@ async fn a_root_behind_the_control_plane_rotates_and_is_not_opened() {
         .expect("open copy");
     assert!(opened.rotation.is_some(), "the old copy kept its id");
     opened.log.close().await.expect("close");
+}
+
+/// **A rotation that fails after writing the new id is not retried into an
+/// open.** The retry finds the root at sequence 0 under the new id, which
+/// passes the gate, but this run registered under the old one: it must stop
+/// the broker as the rotation would have, not open members under an id the
+/// control plane never heard of.
+#[tokio::test]
+async fn a_rotation_that_fails_after_the_id_is_written_does_not_open_on_retry() {
+    let dir = tempfile::tempdir().expect("dir");
+    let (id, sequence) = root_with_marks(dir.path()).await;
+    let stop = CancellationToken::new();
+    let behind = || async move {
+        Some(ControlPlaneCopy {
+            storage_id: id,
+            sequence: sequence + 1,
+        })
+    };
+    *super::super::root::FAIL_AFTER_ROTATION
+        .lock()
+        .expect("hook") = Some(dir.path().to_path_buf());
+    let failed = open_root(dir.path(), None, false, id, behind, RETRY, &stop).await;
+    *super::super::root::FAIL_AFTER_ROTATION
+        .lock()
+        .expect("hook") = None;
+    assert!(failed.is_err(), "{failed:?}");
+    let rotated_to = storage_identity::load(dir.path())
+        .expect("id")
+        .expect("an id");
+    assert_ne!(
+        rotated_to, id,
+        "the injected failure came before the id write"
+    );
+
+    // The caller's retry, still under the id it registered.
+    let retried = open_root(dir.path(), None, false, id, behind, RETRY, &stop)
+        .await
+        .expect("retry");
+    match retried {
+        RootOpened::NotRegistered {
+            storage_id,
+            registered,
+        } => assert_eq!((storage_id, registered), (rotated_to, id)),
+        other => panic!("the retry did not stop: {other:?}"),
+    }
 }

@@ -252,9 +252,13 @@ When the gate finds a root behind while the broker runs, it rotates the
 storage id, logs that it is stopping, and stops the broker, as the
 deferred restore check does for a restored directory. This run registered
 under the old id and its hybrid copies stop being trusted with the
-rotation, so it must not go on serving. The restart registers under the
-new id, which the control plane treats as a replaced directory, and every
-Raft copy on the root rejoins as a new member.
+rotation, so it must not go on serving. A clean stop is recorded under the
+new id, so the restart keeps it instead of rotating again. The restart
+registers under the new id, which the control plane treats as a replaced
+directory, and every Raft copy on the root rejoins as a new member. A
+root found under any id other than the one the run registered, as a
+rotation that failed after writing the id leaves it, stops the broker the
+same way and never opens.
 
 **The root sequence.** The incarnation and the run token change once per
 start. A root put back from a backup taken during the run it interrupts

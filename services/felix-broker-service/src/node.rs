@@ -425,6 +425,7 @@ where
                 restore_checked: restore_checked.clone(),
                 link: link.clone(),
                 node_id: membership.node_id.clone(),
+                storage_id,
                 credential: credential.clone(),
                 slot: root_sequence.clone(),
                 stop: sync_shutdown.clone(),
