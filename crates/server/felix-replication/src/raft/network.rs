@@ -242,7 +242,7 @@ impl Router {
             self.lease.void_through(term_of(transfer.from_leader()));
         }
         let pre_vote = matches!(body, Request::PreVote(_));
-        let (action, from) = kind_and_sender(&body);
+        let late = late_is_timeout(&body);
         let request = RaftRequest {
             group,
             to: to.clone(),
@@ -269,31 +269,35 @@ impl Router {
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),
             Ok(Err(refused)) => Err(Unreachable::new(&refused).into()),
-            // openraft backs off a stream to a member it calls unreachable
-            // and keeps doing so until a call succeeds. A late answer is not
-            // a dead peer, so it is reported as the timeout it is.
-            Err(_) => Err(RPCError::Timeout(Timeout {
-                action,
-                id: from,
-                target: to,
-                timeout: option.hard_ttl(),
-            })),
+            Err(elapsed) => match late {
+                Some((action, id)) => Err(RPCError::Timeout(Timeout {
+                    action,
+                    id,
+                    target: to,
+                    timeout: option.hard_ttl(),
+                })),
+                None => Err(Unreachable::new(&elapsed).into()),
+            },
         }
     }
 }
 
-/// The kind of call `body` is and the member that sent it, for a
-/// [`Timeout`].
-fn kind_and_sender(body: &Request) -> (RPCTypes, MemberId) {
+/// The kind and sender of a call whose late answer is reported as a
+/// [`Timeout`], or `None` if it stays [`Unreachable`].
+///
+/// openraft backs off a stream to an unreachable member until a call
+/// succeeds, but a timed-out append is resent at once and a timed-out
+/// snapshot piece restarts the snapshot from its first byte. The follower
+/// is still working on what it was sent, so those stay unreachable. Only
+/// calls that carry no data, heartbeats and votes, are timeouts.
+fn late_is_timeout(body: &Request) -> Option<(RPCTypes, MemberId)> {
     use openraft::vote::RaftLeaderId;
     let (action, vote) = match body {
-        Request::Append(rpc) => (RPCTypes::AppendEntries, &rpc.vote),
+        Request::Append(rpc) if rpc.entries.is_empty() => (RPCTypes::AppendEntries, &rpc.vote),
         Request::Vote(rpc) | Request::PreVote(rpc) => (RPCTypes::Vote, &rpc.vote),
-        Request::Snapshot { vote, .. } => (RPCTypes::InstallSnapshot, vote),
-        Request::TransferLeader(transfer) => (RPCTypes::TransferLeader, transfer.from_leader()),
-        Request::Written { from, .. } => return (RPCTypes::AppendEntries, from.clone()),
+        _ => return None,
     };
-    (action, vote.leader_id().node_id().clone())
+    Some((action, vote.leader_id().node_id().clone()))
 }
 
 pub(crate) fn term_of(vote: &VoteOf<ShardTypes>) -> u64 {

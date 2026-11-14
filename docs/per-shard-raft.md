@@ -1418,12 +1418,14 @@ follower's stream again, and only a call that succeeds clears the wait.
 How a failure counts depends on its kind:
 
 - `Unreachable` turns the wait on at once. The router answers it when the
-  transport refused the message: no connection, no `RAFT` capability, or
-  no such member.
+  transport refused the message (no connection, no `RAFT` capability, or
+  no such member), and when an append with entries or a snapshot piece
+  passed its deadline with no answer.
 - `Timeout` counts for little: eleven in a row turn the wait on. The
-  router answers it when the call's deadline (one heartbeat for an append)
-  passed with no answer. A follower that answers late on a loaded broker
-  is alive and has usually taken the entries.
+  router answers it only for a heartbeat or a vote that passed its
+  deadline. openraft resends a timed-out append at once and restarts a
+  timed-out snapshot from its first byte, while the follower is still
+  working on the first, so calls that carry data stay `Unreachable`.
 
 openraft's default delays are 200, 400 and 800 ms, then 1 s each, and a
 heal does not cut a wait short. A follower back from a cut of a second or

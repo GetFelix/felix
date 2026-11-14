@@ -1623,28 +1623,34 @@ impl RaftTransport for Silent {
     }
 }
 
-/// A call whose deadline passes is a timeout. openraft backs a stream off
-/// for up to a second after an unreachable member, but not after one
+fn silent_router() -> super::network::Router {
+    let transport: Arc<dyn RaftTransport> = Arc::new(Silent);
+    let lease = super::lease::Lease::new(timers().lease);
+    let reports = Arc::new(super::written::Reports::new());
+    super::network::Router::new(transport, Arc::new(pace().0), Arc::new(lease), reports)
+}
+
+fn led_by_a() -> VoteOf<ShardTypes> {
+    let leads = LeaderIdOf::<ShardTypes>::new(3, MemberId::new("a", 1));
+    <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true)
+}
+
+/// A heartbeat whose deadline passes is a timeout. openraft backs a stream
+/// off after an unreachable member until a call succeeds, but not after one
 /// timeout (#2543).
 #[tokio::test(start_paused = true)]
 async fn an_answer_past_the_deadline_is_a_timeout() {
     use openraft::error::RPCError;
     use openraft_multi::GroupRouter;
-    let transport: Arc<dyn RaftTransport> = Arc::new(Silent);
-    let lease = super::lease::Lease::new(timers().lease);
-    let reports = Arc::new(super::written::Reports::new());
-    let router =
-        super::network::Router::new(transport, Arc::new(pace().0), Arc::new(lease), reports);
-    let leads = LeaderIdOf::<ShardTypes>::new(3, MemberId::new("a", 1));
     let rpc = openraft::raft::AppendEntriesRequest::<ShardTypes> {
-        vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
+        vote: led_by_a(),
         prev_log_id: None,
         entries: Vec::new(),
         leader_commit: None,
     };
     let deadline = Duration::from_millis(200);
     let option = openraft::network::RPCOption::new(deadline);
-    let sent = router
+    let sent = silent_router()
         .append_entries(MemberId::new("b", 1), group(0), rpc, option)
         .await;
     match sent {
@@ -1655,6 +1661,60 @@ async fn an_answer_past_the_deadline_is_a_timeout() {
         }
         other => panic!("not a timeout: {:?}", other.err()),
     }
+}
+
+/// An append with entries or a snapshot piece whose deadline passes is
+/// unreachable. openraft resends a timed-out append at once and restarts a
+/// timed-out snapshot from its first byte, while the follower is still
+/// working on the first (#2543).
+#[tokio::test(start_paused = true)]
+async fn data_past_the_deadline_is_unreachable() {
+    use openraft::entry::RaftEntry;
+    use openraft::error::{RPCError, StreamingError};
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+    use openraft_multi::GroupRouter;
+    let router = silent_router();
+    let option = || openraft::network::RPCOption::new(Duration::from_millis(200));
+    let rpc = openraft::raft::AppendEntriesRequest::<ShardTypes> {
+        vote: led_by_a(),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_blank(
+            LogIdOf::<ShardTypes>::new(3_u64.into(), 1),
+        )],
+        leader_commit: None,
+    };
+    let sent = router
+        .append_entries(MemberId::new("b", 1), group(0), rpc, option())
+        .await;
+    assert!(
+        matches!(sent, Err(RPCError::Unreachable(_))),
+        "{:?}",
+        sent.err()
+    );
+
+    let snapshot = openraft::storage::Snapshot {
+        meta: Default::default(),
+        snapshot: super::machine::SnapshotData {
+            bytes: Bytes::from_static(b"state"),
+            restored: None,
+        },
+    };
+    let closed = std::future::pending::<openraft::error::ReplicationClosed>();
+    let sent = router
+        .full_snapshot(
+            MemberId::new("b", 1),
+            group(0),
+            led_by_a(),
+            snapshot,
+            closed,
+            option(),
+        )
+        .await;
+    assert!(
+        matches!(sent, Err(StreamingError::Unreachable(_))),
+        "{:?}",
+        sent.err()
+    );
 }
 
 /// A follower back from a cut takes the entries it missed within about a
