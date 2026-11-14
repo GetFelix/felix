@@ -284,6 +284,13 @@ pub(super) enum WriteIf {
     },
     /// The batch must start at exactly this offset.
     At(Offset),
+    /// The batch is a switch seal's record: it must start at exactly
+    /// `offset`, and the promise to the seal at `generation` must still hold.
+    #[cfg(feature = "raft")]
+    Sealing {
+        offset: Offset,
+        generation: u64,
+    },
 }
 
 impl LogInner {
@@ -309,6 +316,12 @@ impl LogInner {
         if gone() {
             return Ok(Err(self.segments.read().tail_offset()));
         }
+        // A later generation is accepted under this lock, so none lands
+        // between the promise check below and the record. Taken before
+        // `segments`, which its other holders read.
+        #[cfg(feature = "raft")]
+        let _accepting =
+            matches!(condition, WriteIf::Sealing { .. }).then(|| self.replica_persisted.lock());
         let mut segments = self.segments.write();
         if segments.would_roll_within(records, self.roll_pending()) {
             // A refused record must not leave the log on a newer version.
@@ -336,6 +349,10 @@ impl LogInner {
                 sequence,
             } => self.batch_open_at_tail(&segments, producer_id, sequence),
             WriteIf::At(offset) => segments.tail_offset() == offset,
+            #[cfg(feature = "raft")]
+            WriteIf::Sealing { offset, generation } => {
+                segments.tail_offset() == offset && self.promises_seal(generation)
+            }
         };
         if !holds {
             return Ok(Err(segments.tail_offset()));

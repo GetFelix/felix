@@ -22,9 +22,11 @@ mod tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use super::{DiskLog, SideRange, SwitchBase, digest, side_holds};
-use crate::disk_log::GenerationCheck;
+use crate::disk_log::append::WriteIf;
+use crate::disk_log::{GenerationCheck, LogInner};
 use crate::io::sync_dir;
 use crate::log::{
     AppendOnlyLog, Epoch, FsyncMode, LogRecord, Offset, ReadRange, RecordMark, WrittenBy,
@@ -265,6 +267,9 @@ impl DiskLog {
         };
         let record = base.record(now_micros());
         if !self.append_seal_record(offset, &base, record).await? {
+            if !self.promise_still(promise.generation) {
+                return Ok(Err(SealRefused::NoPromise));
+            }
             return Err(invalid(format!(
                 "{}: the tail moved from {offset} while the seal was claimed",
                 self.label()
@@ -283,7 +288,7 @@ impl DiskLog {
                 }));
             }
         }
-        pause_point().await;
+        pause_point(PauseAt::Written).await;
         // A later generation accepted while the record was written reopened
         // the shard: nothing may be reported from this seal.
         if !self.promise_still(promise.generation) {
@@ -375,20 +380,28 @@ impl DiskLog {
             publisher: None,
             headers: None,
         };
+        pause_point(PauseAt::Checked).await;
         if !self.append_seal_record(base.offset, &base, sent).await? {
+            // The promise moved while the checks ran, or the tail did.
+            if let Err(refused) = self.lapsed_refusal(base.generation) {
+                return Ok(Err(refused));
+            }
             return Ok(Err(SealRefused::EndsAt {
                 tail: self.tail_offset().await?,
                 offset: base.offset,
             }));
         }
-        pause_point().await;
+        pause_point(PauseAt::Written).await;
         // A later generation accepted while this ran reopened the shard, so
         // the record is no acknowledgement of the seal.
         Ok(self.lapsed_refusal(base.generation))
     }
 
     /// Append `record` at exactly `offset`, stamped with the seal's
-    /// generation, and sync. False when the tail is elsewhere.
+    /// generation, and sync. False, and nothing written, when the tail is
+    /// elsewhere or the promise to the seal's generation no longer holds:
+    /// the promise is checked under the lock a later generation is accepted
+    /// under, held across the write, so the record never lands after one.
     async fn append_seal_record(
         &self,
         offset: Offset,
@@ -399,12 +412,21 @@ impl DiskLog {
             generation: base.generation,
             start_offset: offset,
         }]);
-        let Some(pending) = self
-            .append_pending_at(offset, std::slice::from_ref(&record), writers)
-            .await?
-        else {
+        let written = Self::write_batch(
+            Arc::clone(&self.inner),
+            vec![record],
+            WriteIf::Sealing {
+                offset,
+                generation: base.generation,
+            },
+            None,
+            writers,
+        )
+        .await?;
+        let Ok(written) = written else {
             return Ok(false);
         };
+        let pending = written.pending;
         self.commit(&pending).await?;
         // The acknowledgement and the report rest on N being on disk, not on
         // the commit's policy.
@@ -421,8 +443,7 @@ impl DiskLog {
     /// The promise to `generation` still holds: no later generation was
     /// accepted since it was read.
     fn promise_still(&self, generation: u64) -> bool {
-        self.seal_promise()
-            .is_some_and(|promise| promise.generation == generation)
+        self.inner.promises_seal(generation)
     }
 
     fn lapsed_refusal(&self, generation: u64) -> std::result::Result<(), SealRefused> {
@@ -470,6 +491,19 @@ impl DiskLog {
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+}
+
+impl LogInner {
+    /// The promise to the seal at `generation` holds: it was taken and no
+    /// later generation was accepted since. Stable while the caller holds
+    /// `replica_persisted`, which every promise and every accepted
+    /// generation is written under.
+    pub(in crate::disk_log) fn promises_seal(&self, generation: u64) -> bool {
+        self.switch_seal
+            .lock()
+            .is_some_and(|promise| promise.generation == generation)
+            && self.accepted_generation.load(Ordering::Acquire) <= generation
     }
 }
 
@@ -575,24 +609,33 @@ fn count_digest() {
 #[cfg(not(test))]
 fn count_digest() {}
 
+/// Where a test may hold a claim or an acknowledgement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PauseAt {
+    /// An acknowledgement's checks passed; its record is not written yet.
+    Checked,
+    /// The record is on disk.
+    Written,
+}
+
 #[cfg(test)]
-type Pause = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
+type Pause = (PauseAt, Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);
 
 #[cfg(test)]
 thread_local! {
-    /// Where a claim or an acknowledgement waits, once its record is on
-    /// disk, for a test to accept a later generation: (reached, resume).
+    /// Where a claim or an acknowledgement waits for a test to accept a
+    /// later generation: (where, reached, resume).
     static PAUSE: std::cell::RefCell<Option<Pause>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
-async fn pause_point() {
-    let pause = PAUSE.with(|pause| pause.borrow_mut().take());
-    if let Some((reached, resume)) = pause {
+async fn pause_point(at: PauseAt) {
+    let pause = PAUSE.with(|pause| pause.borrow_mut().take_if(|pause| pause.0 == at));
+    if let Some((_, reached, resume)) = pause {
         reached.notify_one();
         resume.notified().await;
     }
 }
 
 #[cfg(not(test))]
-async fn pause_point() {}
+async fn pause_point(_: PauseAt) {}

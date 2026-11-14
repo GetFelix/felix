@@ -5,6 +5,7 @@
   bootstraps and election ballots, and keeps its log from retention. A
   leader's batch that crossed its own promise is retried instead of fencing
   the follower, a seal acknowledgement on a large log is checked off the
-  request and digested once, and a later generation's rebuild is not refused
-  by an older promise. No
+  request and digested once, a copy that accepted a later generation during
+  that check writes no record for the older seal, and a later generation's
+  rebuild is not refused by an older promise. No
   existing frame changes, and nothing starts a seal yet.

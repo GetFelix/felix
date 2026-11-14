@@ -309,6 +309,34 @@ async fn a_later_generations_rebuild_passes_the_promise() {
     assert!(later.seal_promise(&shard).await.is_none());
 }
 
+/// **So is a later generation's bootstrap of the stream log.**
+#[tokio::test]
+async fn a_later_generations_bootstrap_passes_the_promise() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, _sealed) = promised(dir.path()).await;
+    let later = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], SEAL + 1))
+        .with_local_storage(StorageId::from_bytes([2; 16]))
+        .with_stickiness(std::time::Duration::ZERO);
+    let shard = batch(SEAL + 1, 0, &[]).shard;
+    assert!(later.seal_promise(&shard).await.is_some());
+
+    let bootstrap = later
+        .bootstrap(
+            SENDER,
+            ReplicateBootstrap {
+                correlation_id: 1,
+                shard: shard.clone(),
+                base_offset: 0,
+            },
+            felix_broker::LogKind::Stream,
+        )
+        .await;
+    if let InternalMessage::ReplicateError(err) = &bootstrap {
+        assert!(!err.detail.contains("sealed"), "{err:?}");
+    }
+    assert!(later.seal_promise(&shard).await.is_none());
+}
+
 fn election_fence(generation: u64, candidate: bool) -> Fence {
     let member = |node: &str| SetMember {
         node_id: node.to_string(),
@@ -808,12 +836,15 @@ async fn a_finished_check_is_not_acknowledged_once_the_promise_ended() {
 
     let running = handler.seal_ack(SENDER, ack.clone()).await;
     assert_eq!(refusal(&running).code, ErrorCode::Unavailable);
+    // The check's own result, not the tail: a generation taken before the
+    // check ends is refused by the check itself.
     for _ in 0..500 {
-        if log.tail_offset().await.expect("tail") == ack.offset + 1 {
+        if handler.seal_acks.finished() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+    assert!(handler.seal_acks.finished());
     assert_eq!(log.tail_offset().await.expect("tail"), ack.offset + 1);
     log.accept_generation(SEAL + 1, Some("broker-a"))
         .await

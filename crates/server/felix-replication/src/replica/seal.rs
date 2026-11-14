@@ -43,6 +43,15 @@ pub(super) struct SealAcks {
     pub(super) started: Arc<std::sync::atomic::AtomicUsize>,
 }
 
+#[cfg(test)]
+impl SealAcks {
+    /// A check has its result and no request has read it yet.
+    pub(super) fn finished(&self) -> bool {
+        let checks = self.checks.lock();
+        checks.values().any(|check| check.done.borrow().is_some())
+    }
+}
+
 impl Default for SealAcks {
     fn default() -> Self {
         Self {

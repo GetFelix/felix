@@ -723,11 +723,30 @@ async fn a_repeated_acknowledgement_digests_the_records_once() {
     assert_eq!(digests(), before + 2);
 }
 
-fn pause() -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+fn pause(at: PauseAt) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
     let reached = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
-    PAUSE.with(|pause| *pause.borrow_mut() = Some((Arc::clone(&reached), Arc::clone(&resume))));
+    PAUSE.with(|pause| {
+        *pause.borrow_mut() = Some((at, Arc::clone(&reached), Arc::clone(&resume)));
+    });
     (reached, resume)
+}
+
+#[tokio::test]
+async fn a_seal_replaced_during_the_checks_leaves_no_record() {
+    let root = tempdir().expect("tempdir");
+    let (_leader, follower, seal) = sealed(root.path()).await;
+    let (reached, resume) = pause(PauseAt::Checked);
+    let (acked, ()) = tokio::join!(follower.ack(&seal, sealer()), async {
+        reached.notified().await;
+        assert_eq!(
+            follower.promise(SEAL + 1, sealer()).await,
+            GenerationCheck::Raised
+        );
+        resume.notify_one();
+    });
+    assert_eq!(acked, Err(SealRefused::NoPromise));
+    assert_eq!(follower.log.tail_offset().await.expect("tail"), seal.offset);
 }
 
 #[tokio::test]
@@ -739,7 +758,7 @@ async fn an_acknowledgement_is_refused_if_a_later_generation_lands_meanwhile() {
     follower.promise(SEAL, sealer()).await;
     let base = leader.claim(0).await.expect("claimed");
     let seal = leader.record_at(base.offset).await;
-    let (reached, resume) = pause();
+    let (reached, resume) = pause(PauseAt::Written);
     let (acked, ()) = tokio::join!(follower.ack(&seal, sealer()), async {
         reached.notified().await;
         follower
@@ -757,7 +776,7 @@ async fn a_claim_is_refused_if_a_later_generation_lands_meanwhile() {
     let root = tempdir().expect("tempdir");
     let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a", "b"]).await;
     leader.promise(SEAL, sealer()).await;
-    let (reached, resume) = pause();
+    let (reached, resume) = pause(PauseAt::Written);
     let (claimed, ()) = tokio::join!(leader.claim(0), async {
         reached.notified().await;
         leader

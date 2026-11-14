@@ -2419,7 +2419,10 @@ that fsyncs on commit, and the leader's count and report:
   answers once the record is on disk. The digest reads the whole range, so
   the check runs apart from the request that asked for it: a request that
   cannot wait is told to ask again, and the next one finds the check
-  running or done.
+  running or done. The promise is checked again as the record is written,
+  under the lock a later generation is accepted under, so a copy that
+  accepted a later generation while it digested writes no record for the
+  older seal.
 - *The report.* The leader counts acknowledgements by copy id and reports
   `(G, N)`, the base and the copy ids once a majority holds `N`. A leader
   that restarted before it reported has lost its count and reports
