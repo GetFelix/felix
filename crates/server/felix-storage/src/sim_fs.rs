@@ -178,6 +178,15 @@ pub fn file_len(root: &Path, path: &Path) -> io::Result<Option<u64>> {
     }
 }
 
+/// Whether the entry `name` directly under `root` is on the device, so that
+/// a power cut now keeps it.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn entry_is_durable(root: &Path, name: &str) -> io::Result<bool> {
+    Ok(tree(root)?.root_entry_is_durable(name.as_ref()))
+}
+
 /// The boot of the machine under `root`. It is the same until a power cut
 /// is rebooted, then a new one, so a relaxed run's crash record names a boot
 /// the way it does on a real machine.

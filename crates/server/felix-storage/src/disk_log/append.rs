@@ -719,6 +719,9 @@ impl LogInner {
     /// one, and a later flush failing for the same underlying reason should not
     /// overwrite it.
     pub(super) fn poison(&self, reason: String) {
+        // First: a reopen that finds the log stopped must also find the
+        // directory counted, whatever fails below.
+        super::durable_mark::note_poisoned_dir(self.mark.dir());
         {
             let mut failure = self.failure.lock();
             if failure.is_some() {

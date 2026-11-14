@@ -22,6 +22,10 @@
 //! removes it, so a broker can refuse to join a fleet that has not finalized
 //! `head_trim` without opening every log. See [`record_head_trimmed`].
 //!
+//! `<durable root>/vouched-unsynced` says a Raft copy here told a leader it
+//! had written a record before syncing it, so a machine crash rotates the id
+//! whatever the fsync mode. See [`record_vouched_unsynced`].
+//!
 //! `<durable root>/record-headers` says the same of a record with a key or
 //! headers block (storage format v8) and `record_headers`. See
 //! [`record_headers_stored`].
@@ -90,6 +94,15 @@ const RELAXED: u8 = 1;
 /// process is poisoned. See [`watch_poison`].
 static WATCHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
+/// The boot each directory's run began in, which [`record_vouched_unsynced`]
+/// names in the record of a run that began strict.
+static BEGAN_IN: Mutex<Vec<(PathBuf, Option<BootId>)>> = Mutex::new(Vec::new());
+
+/// Held across a read and rewrite of the record of a run under way, so
+/// [`forget_boot`] or [`mark_clean`] is never undone by a boot written from
+/// an older read. Also keeps writers of the shared temporary file apart.
+static REWRITE: Mutex<()> = Mutex::new(());
+
 /// What the record says about the run before this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LastRun {
@@ -147,6 +160,15 @@ pub struct Begun {
     pub rotated: bool,
 }
 
+/// Whether a run under `fsync_mode` acknowledges records before they are
+/// synced, so that a machine crash of it must rotate the storage id. True
+/// under `Periodic` and `None`. A run under `OnCommit` is relaxed too once a
+/// Raft copy in the directory has vouched for an unsynced record, which
+/// [`begin`] reads from [`vouched_unsynced`] itself.
+pub fn relaxed(fsync_mode: &crate::log::FsyncMode) -> bool {
+    !matches!(fsync_mode, crate::log::FsyncMode::OnCommit)
+}
+
 /// Start a run on the directory at `root`: read its storage id, give it a new
 /// one when the last run may have lost records it acknowledged or the
 /// directory is older than the node's last registration, then record that a
@@ -183,7 +205,22 @@ pub fn begin(
     }
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
     copy_trust::ensure(root, origin == Origin::Created)?;
-    let last_run = read(root, loaded)?;
+    // A copy that vouched for unsynced records did so after the run's record
+    // was written, so the marker speaks for the last run and for this one.
+    // That run's record gets its boot right after the marker. A record still
+    // without one is a crash in between, which rotates.
+    let vouched = vouched_unsynced(root)?;
+    let relaxed = relaxed || vouched;
+    let last_run = match read(root, loaded)? {
+        LastRun::Crashed {
+            relaxed: false,
+            boot,
+        } if vouched => LastRun::Crashed {
+            relaxed: true,
+            boot,
+        },
+        last_run => last_run,
+    };
     let recorded = read_registration(root)?;
     let restored = origin == Origin::Loaded && recorded.behind(registered);
     // A new id already tells peers to start over. `||` order matters: the
@@ -240,6 +277,11 @@ pub fn begin(
         (false, _) => encode(RUNNING, 0, id).to_vec(),
     };
     write(root, &record, true)?;
+    {
+        let mut began = BEGAN_IN.lock();
+        began.retain(|(began, _)| began != root);
+        began.push((root.to_path_buf(), boot));
+    }
     Ok(Begun {
         id,
         origin,
@@ -310,6 +352,74 @@ pub fn record_head_trimmed(root: &Path) -> Result<()> {
 /// counts: it is renamed into place whole, and it is never removed.
 pub fn head_trimmed(root: &Path) -> Result<bool> {
     crate::fs::try_exists(root.join(HEAD_TRIMMED_FILE_NAME)).map_err(StorageError::Io)
+}
+
+/// The name, under the durable root, of the marker a Raft copy leaves before
+/// it vouches for a record it has not synced. Not a directory, so shard
+/// discovery passes over it.
+pub const VOUCHED_UNSYNCED_FILE_NAME: &str = "vouched-unsynced";
+
+/// Record, durably, that a Raft copy under `root` is about to tell a leader
+/// it has written a record it has not synced, or to count its own such
+/// write toward an acknowledgement. Call before the first one leaves. Always
+/// written and synced, even over a marker already there: one a crashed
+/// process left may be in the page cache only.
+///
+/// Then the run's record, if it began strict, becomes a relaxed one naming
+/// the boot [`begin`] was given, so a process crash from here on keeps the
+/// id as it does for a run that began relaxed.
+pub fn record_vouched_unsynced(root: &Path) -> Result<()> {
+    write_atomically(root, VOUCHED_UNSYNCED_FILE_NAME, b"written\n", true)?;
+    if let Err(err) = name_boot(root) {
+        tracing::warn!(
+            root = %root.display(),
+            error = %err,
+            "could not name the boot in the run record; a process crash of this run \
+             takes a new storage id"
+        );
+    }
+    Ok(())
+}
+
+/// Make the strict record of the run under way on `root` a relaxed one with
+/// its boot. Only after the marker is synced: the strict record with the
+/// marker rotates on any crash, and without it a machine crash would keep
+/// the id. Not synced, as in [`forget_boot`]: a machine crash rotates under
+/// either record.
+fn name_boot(root: &Path) -> Result<()> {
+    let began = BEGAN_IN
+        .lock()
+        .iter()
+        .find(|(began, _)| began == root)
+        .map(|(_, boot)| *boot);
+    let Some(Some(boot)) = began else {
+        return Ok(());
+    };
+    let _rewrite = REWRITE.lock();
+    let bytes = match crate::fs::read(path_in(root)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    #[cfg(test)]
+    tests::name_boot_read(root);
+    // A record that already lost its boot is relaxed, and keeps none.
+    match decode(&bytes) {
+        Some(Record {
+            state: RUNNING,
+            flags: 0,
+            id,
+            boot: None,
+        }) => write(root, &encode_boot(id, boot), false),
+        _ => Ok(()),
+    }
+}
+
+/// Whether a copy under `root` may have vouched for an unsynced record. The
+/// marker is never removed: a copy that vouched once may have a leader still
+/// counting it, and only a rotation ends that.
+pub fn vouched_unsynced(root: &Path) -> Result<bool> {
+    crate::fs::try_exists(root.join(VOUCHED_UNSYNCED_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The record-headers marker's name under the durable root. Not a directory,
@@ -555,7 +665,12 @@ pub(crate) fn decode_registration(bytes: &[u8]) -> Option<u64> {
 /// Record that the run under `id` stopped with everything it acknowledged
 /// synced. Only once nothing will write to the directory again.
 pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
-    write(root, &encode(STOPPED, 0, id), true)
+    // A detached vouch may still be naming the boot of this run. The lock is
+    // let go before a failed sync runs `forget_watched`, which takes it too.
+    durable_change(root, FILE_NAME, || {
+        let _rewrite = REWRITE.lock();
+        replace_file(root, FILE_NAME, &encode(STOPPED, 0, id), true)
+    })
 }
 
 /// Record that the run under way on `root` may have lost records it
@@ -571,6 +686,7 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 /// keeps it for that; a crash of the machine rotates anyway. Syncing could
 /// also fail on the very device that just failed a sync.
 pub fn forget_boot(root: &Path) -> Result<()> {
+    let _rewrite = REWRITE.lock();
     let bytes = match crate::fs::read(path_in(root)) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
