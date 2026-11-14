@@ -635,3 +635,160 @@ async fn a_crash_after_the_record_leaves_it_and_the_claim() {
         Err(SealRefused::Claimed { generation: SEAL })
     );
 }
+
+/// Appends `seal` at its offset as a catch-up batch would, with none of
+/// the acknowledgement's checks.
+async fn store_unchecked(log: &DiskLog, seal: &LogRecord) {
+    let writers = WrittenBy::Writers(vec![Epoch {
+        generation: SEAL,
+        start_offset: seal.offset,
+    }]);
+    let sent = AppendRecord {
+        payload: seal.payload.clone(),
+        timestamp_micros: seal.timestamp_micros,
+        mark: seal.mark,
+        publisher: None,
+        headers: None,
+    };
+    let pending = log
+        .append_pending_at(seal.offset, std::slice::from_ref(&sent), writers)
+        .await
+        .expect("append")
+        .expect("at the tail");
+    log.commit(&pending).await.expect("commit");
+}
+
+#[tokio::test]
+async fn a_follower_that_already_holds_the_record_is_still_checked() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(
+        &root.path().join("leader"),
+        on_commit(),
+        0,
+        &["a", "b", "c", "d"],
+    )
+    .await;
+    let follower = Copy::with(
+        &root.path().join("follower"),
+        on_commit(),
+        0,
+        &["a", "x", "c", "d"],
+    )
+    .await;
+    leader.promise(SEAL, sealer()).await;
+    follower.promise(SEAL, sealer()).await;
+    let base = leader.claim(0).await.expect("claimed");
+    let seal = leader.record_at(base.offset).await;
+    store_unchecked(&follower.log, &seal).await;
+    assert_eq!(
+        follower.ack(&seal, sealer()).await,
+        Err(SealRefused::DigestDiffers)
+    );
+}
+
+#[tokio::test]
+async fn a_repeated_acknowledgement_checks_the_side_logs_again() {
+    let root = tempdir().expect("tempdir");
+    let (_leader, follower, seal) = sealed(root.path()).await;
+    assert_eq!(follower.ack(&seal, sealer()).await, Ok(()));
+    write(&follower.cursors, &["late"]).await;
+    assert!(matches!(
+        follower.ack(&seal, sealer()).await,
+        Err(SealRefused::SideDiffers { .. })
+    ));
+}
+
+fn pause() -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    PAUSE.with(|pause| *pause.borrow_mut() = Some((Arc::clone(&reached), Arc::clone(&resume))));
+    (reached, resume)
+}
+
+#[tokio::test]
+async fn an_acknowledgement_is_refused_if_a_later_generation_lands_meanwhile() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a", "b"]).await;
+    let follower = Copy::with(&root.path().join("follower"), on_commit(), 0, &["a", "b"]).await;
+    leader.promise(SEAL, sealer()).await;
+    follower.promise(SEAL, sealer()).await;
+    let base = leader.claim(0).await.expect("claimed");
+    let seal = leader.record_at(base.offset).await;
+    let (reached, resume) = pause();
+    let (acked, ()) = tokio::join!(follower.ack(&seal, sealer()), async {
+        reached.notified().await;
+        follower
+            .log
+            .accept_generation(SEAL + 1, Some(LEADER))
+            .await
+            .expect("accept");
+        resume.notify_one();
+    });
+    assert_eq!(acked, Err(SealRefused::NoPromise));
+}
+
+#[tokio::test]
+async fn a_claim_is_refused_if_a_later_generation_lands_meanwhile() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a", "b"]).await;
+    leader.promise(SEAL, sealer()).await;
+    let (reached, resume) = pause();
+    let (claimed, ()) = tokio::join!(leader.claim(0), async {
+        reached.notified().await;
+        leader
+            .log
+            .accept_generation(SEAL + 1, Some(LEADER))
+            .await
+            .expect("accept");
+        resume.notify_one();
+    });
+    assert_eq!(claimed, Err(SealRefused::NoPromise));
+}
+
+#[tokio::test]
+async fn a_crash_between_the_ballot_and_the_promise_leaves_no_promise() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("follower");
+    let follower = Copy::with(&dir, on_commit(), 0, &["a", "b"]).await;
+    // The ballot alone, as a crash before the promise file leaves it.
+    follower
+        .log
+        .accept_generation(SEAL, Some(LEADER))
+        .await
+        .expect("accept");
+    follower.shutdown().await;
+    let follower = Copy::open(&dir, on_commit());
+    assert_eq!(follower.log.seal_promise(), None);
+    // The fence's retry finds the ballot and writes the promise.
+    assert_eq!(
+        follower.promise(SEAL, sealer()).await,
+        GenerationCheck::Current
+    );
+    assert!(follower.log.seal_promise().is_some());
+}
+
+#[tokio::test]
+async fn retention_holds_while_a_promise_does() {
+    let root = tempdir().expect("tempdir");
+    let config = LogConfig {
+        segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 120,
+        retention_bytes: Some(crate::segment::SEGMENT_HEADER_LEN + 120),
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        ..on_commit()
+    };
+    let payloads: Vec<String> = (0..24).map(|i| format!("record-{i:02}")).collect();
+    let payloads: Vec<&str> = payloads.iter().map(String::as_str).collect();
+    let copy = Copy::with(root.path(), config, 0, &payloads).await;
+    copy.promise(SEAL, sealer()).await;
+    let outcome = copy.log.enforce_retention_now().await.expect("retention");
+    assert_eq!(outcome.segments_deleted, 0);
+    assert_eq!(copy.log.base_offset(), 0);
+
+    // A later generation ends the promise, and the hold with it.
+    copy.log
+        .accept_generation(SEAL + 1, Some(LEADER))
+        .await
+        .expect("accept");
+    let outcome = copy.log.enforce_retention_now().await.expect("retention");
+    assert!(outcome.segments_deleted > 0);
+}
