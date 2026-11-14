@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794644017385,
+  "lastUpdate": 1794646658733,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -71082,6 +71082,72 @@ window.BENCHMARK_DATA = {
             "range": "336.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 452.00\nmean: 663.40\nstdev: 336.57\ncv: 50.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b44e726e492a83020ab377470905c0d4118e23cb",
+          "message": "test(replication): resident memory after a write burst in the Raft idle run (#2415) (#2521)\n\n* test(replication): resident memory after a write burst in the Raft idle run (#2415)\n\nRAFT_IDLE_BURST_SECS makes every leader take pipelined writes after the\nidle window, then prints resident memory at the end of the burst and once\nthe groups are idle again. The Raft idle groups workflow runs it at 300\ngroups.\n\n* test(replication): the write burst rides out refused writes (#2415)\n\nOn a small machine a loaded leader refuses a write when no majority has\nanswered it lately. The burst waits a moment and goes on, and checks that\nevery group is led once it is over.\n\n* test(replication): bound the write burst and say its memory figure is RSS (#2415)\n\nA burst write gets a 10 s timeout and the workflow step 15 minutes, so a\nwrite that never answers cannot hold the run open. The leader check after\nthe burst waits up to 60 s for elections to finish. The report line, the\nmodule docs and docs/per-shard-raft.md say the figure after the settle\ndelay is resident set size, not live heap.",
+          "timestamp": "2026-11-14T08:49:11Z",
+          "tree_id": "b066a2c8c1aeee240a36f38bb43e76fc1efcb2c3",
+          "url": "https://github.com/GetFelix/felix/commit/b44e726e492a83020ab377470905c0d4118e23cb"
+        },
+        "date": 1794646651844,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 64.80\nstdev: 1.10\ncv: 1.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 88,
+            "range": "2.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 88.60\nstdev: 2.41\ncv: 2.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 150,
+            "range": "106.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 196.20\nstdev: 106.31\ncv: 54.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 81,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 81.00\nmean: 80.40\nstdev: 1.34\ncv: 1.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 174,
+            "range": "7.85",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 177.20\nstdev: 7.85\ncv: 4.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 266,
+            "range": "224.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 383.60\nstdev: 224.97\ncv: 58.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
