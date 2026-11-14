@@ -120,10 +120,8 @@ pub(super) async fn wire_broker(
     // Left unset, which attests nothing, until a deferred restore check sets
     // them.
     if !kept.deferred {
-        quorum_marks.set_readmits(kept.readmits);
-        quorum_marks.set_kept_ballots(kept.ballots);
+        super::membership::attest(quorum_marks, kept);
     }
-    quorum_marks.set_minted_storage(kept.minted);
     if let Some(trust) = &copy_trust {
         quorum_marks.set_copy_trust(Arc::clone(trust));
     }

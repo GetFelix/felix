@@ -442,6 +442,145 @@ pub fn rotated_ids(root: &Path) -> Result<Vec<StorageId>> {
     Ok(decode_rotated_ids(&bytes).unwrap_or_default())
 }
 
+/// The rotation record's name under the durable root: the id the last
+/// rotation gave the directory, the one it had before, and the registration
+/// the directory held then.
+pub const ROTATION_FILE_NAME: &str = "last-rotation";
+const ROTATION_HEADER: &str = "last_rotation\n";
+
+/// The registered-at record's name under the durable root: the node's
+/// registration time beside the incarnation it was read with.
+pub const REGISTERED_AT_FILE_NAME: &str = "registered-at";
+const REGISTERED_AT_HEADER: &str = "registered_at\n";
+
+/// One registration of the node, as the control plane names it. Deleting and
+/// adding the node again starts `incarnation` over under a new
+/// `registered_at_millis`, so only the pair names a registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Binding {
+    pub registered_at_millis: u64,
+    pub incarnation: u64,
+}
+
+impl Binding {
+    fn encode(self) -> String {
+        format!(
+            "registered_at={}\nincarnation={}\n",
+            self.registered_at_millis, self.incarnation
+        )
+    }
+
+    /// The two lines [`Self::encode`] writes, and nothing after them.
+    fn decode<'a>(mut lines: impl Iterator<Item = &'a str>) -> Option<Self> {
+        let registered_at_millis = lines.next()?.strip_prefix("registered_at=")?.parse().ok()?;
+        let incarnation = lines.next()?.strip_prefix("incarnation=")?.parse().ok()?;
+        lines.next().is_none().then_some(Self {
+            registered_at_millis,
+            incarnation,
+        })
+    }
+}
+
+/// The directory's last rotation: [`copy_trust::rotate_storage_id`] gave it
+/// `to` in place of `from` while the directory's registration was `bound`.
+/// `None` when the directory held no registration it could name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rotation {
+    pub to: StorageId,
+    pub from: StorageId,
+    pub bound: Option<Binding>,
+}
+
+/// Record, durably, that the directory is about to rotate from `from` to
+/// `to`. Written before the new id, so a crash in between leaves a record
+/// naming an id the directory never took.
+pub(crate) fn record_rotation(root: &Path, rotation: Rotation) -> Result<()> {
+    let body = format!(
+        "{ROTATION_HEADER}{}\n{}\n{}",
+        rotation.to.to_hex(),
+        rotation.from.to_hex(),
+        rotation.bound.map(Binding::encode).unwrap_or_default()
+    );
+    write_atomically(root, ROTATION_FILE_NAME, body.as_bytes(), true)
+}
+
+/// What [`record_rotation`] recorded under `root`. `None` without the file
+/// or for one that does not decode.
+pub fn last_rotation(root: &Path) -> Result<Option<Rotation>> {
+    let Some(body) = read_text(root, ROTATION_FILE_NAME)? else {
+        return Ok(None);
+    };
+    Ok(body.strip_prefix(ROTATION_HEADER).and_then(|body| {
+        let mut lines = body.lines();
+        let to = StorageId::from_hex(lines.next()?)?;
+        let from = StorageId::from_hex(lines.next()?)?;
+        let mut rest = lines.peekable();
+        let bound = match rest.peek() {
+            None => None,
+            Some(_) => Some(Binding::decode(rest)?),
+        };
+        Some(Rotation { to, from, bound })
+    }))
+}
+
+/// Remove the rotation record under `root`, durably.
+pub fn forget_rotation(root: &Path) -> Result<()> {
+    remove_record(root, ROTATION_FILE_NAME)
+}
+
+/// [`record_registration`] for a registration the control plane dated, which
+/// a rotation can then be bound to ([`registration_binding`]).
+///
+/// The rotation record moves first: one bound to the registration just
+/// before this one, under the id the directory has now, is bound to this
+/// one. A crash before the registration record leaves the directory reading
+/// as older than its registration, which rotates it again.
+pub fn record_dated_registration(root: &Path, registration: Binding) -> Result<()> {
+    if let Some(rotation) = last_rotation(root)?
+        && storage_identity::load(root)? == Some(rotation.to)
+        && rotation.bound.is_some_and(|bound| {
+            bound.registered_at_millis == registration.registered_at_millis
+                && bound.incarnation.checked_add(1) == Some(registration.incarnation)
+        })
+    {
+        record_rotation(
+            root,
+            Rotation {
+                bound: Some(registration),
+                ..rotation
+            },
+        )?;
+    }
+    let body = format!("{REGISTERED_AT_HEADER}{}", registration.encode());
+    write_atomically(root, REGISTERED_AT_FILE_NAME, body.as_bytes(), true)?;
+    record_registration(root, registration.incarnation)
+}
+
+/// The registration the directory under `root` last recorded, if the control
+/// plane dated it. `None` when the registration record names another
+/// incarnation than the registered-at record: a build or a control plane
+/// that does not date registrations registered since.
+pub fn registration_binding(root: &Path) -> Result<Option<Binding>> {
+    let Some(body) = read_text(root, REGISTERED_AT_FILE_NAME)? else {
+        return Ok(None);
+    };
+    let dated = body
+        .strip_prefix(REGISTERED_AT_HEADER)
+        .and_then(|body| Binding::decode(body.lines()));
+    let recorded = read_registration(root)?;
+    Ok(dated.filter(|dated| matches!(recorded, Recorded::At(at) if at == dated.incarnation)))
+}
+
+/// The record `name` under `root` as text. `None` without the file or for
+/// one that is not UTF-8.
+fn read_text(root: &Path, name: &str) -> Result<Option<String>> {
+    match crate::fs::read(root.join(name)) {
+        Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 pub(crate) fn decode_rotated_ids(bytes: &[u8]) -> Option<Vec<StorageId>> {
     let body = std::str::from_utf8(bytes)
         .ok()?

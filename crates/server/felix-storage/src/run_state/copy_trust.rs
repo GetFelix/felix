@@ -412,6 +412,17 @@ static LIVE: Mutex<Vec<std::sync::Weak<CopyTrust>>> = Mutex::new(Vec::new());
 pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
     forget_raft_marks(root)?;
     let next = StorageId::from_bytes(fresh);
+    if let Some(from) = storage_identity::load(root)? {
+        // Bound to the registration the directory holds now, so a later
+        // start can tell whether the node registered elsewhere since.
+        let bound = super::registration_binding(root)?;
+        let rotation = super::Rotation {
+            to: next,
+            from,
+            bound,
+        };
+        super::record_rotation(root, rotation)?;
+    }
     let canonical = canonical(root);
     let live = LIVE
         .lock()

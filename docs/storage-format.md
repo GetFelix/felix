@@ -62,6 +62,8 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
+  last-rotation                              ← the id the last rotation gave the directory, the one before, and the registration then
+  registered-at                              ← the node record's registration time, beside the incarnation
   copy-trust                                 ← which copies a leader vouched for since the id last rotated
   copy-trust-kept                            ← a release that keeps copy-trust ran here
   run-token                                  ← this run's token, which the run witness outside the directory names
@@ -2054,6 +2056,74 @@ leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
 `kept` and the control plane's record names the id from before the crash,
 or one `rotated-ids` names.
 An older release neither reads nor writes the file.
+
+## `last-rotation`: the directory's last rotation
+
+One text file at the durable root, written each time the storage id rotates,
+before the new id, through `last-rotation.tmp`, synced, renamed and the
+directory synced.
+
+```text
+last_rotation
+<the new storage id, 32 hex digits>
+<the id it replaced, 32 hex digits>
+registered_at=<the node record's registered_at_millis>
+incarnation=<the node incarnation>
+```
+
+The last two lines are the binding: the registration the directory held when
+it rotated, read from `registered-at`. They are both there or both absent. A
+directory with no dated registration (a first start, or one registered last
+by a release or a control plane that does not date registrations) writes the
+record without them, and a record without them is never credited.
+
+A rotation during a run (the Raft restore gate, a deferred restore check)
+records the clean stop under the new id, so the next start does not rotate
+again and nothing else says the id is new. A start credits the record, and
+counts a lost copy here from the first set that readmits it, only when all
+of these hold against the control plane's record of the node:
+
+- it names the id the directory rotated from or to;
+- its `registered_at_millis` equals the bound one, so the node was not
+  deleted and added again;
+- its incarnation is the bound one or the next.
+
+Each registration this directory records moves the binding on: when the
+record is bound to the incarnation just before the new one, under the same
+`registered_at_millis` and the id the directory has now, it is rewritten
+with the new incarnation before the registration is recorded. A registration
+from another directory leaves a gap, and the record is not credited again.
+A release that does not write the binding registers without moving it, so
+the incarnation is one past the bound one. That one registration still
+credits, because that release ran from this directory under the same id;
+the second one leaves the gap, and credit stops.
+
+A start removes a record it does not credit, one naming another id than the
+directory's (a crash between the record and the id), and one that does not
+decode. It keeps the record when it rotated the id itself, and when it
+started from the view and has no control plane record yet; the deferred
+restore check then decides by the same rule. A missing file claims nothing,
+which only costs a readmission. An older release neither reads nor writes
+the file.
+
+## `registered-at`: the registration a rotation is bound to
+
+One text file at the durable root, written at each registration the control
+plane dated, before the `registration` record, through `registered-at.tmp`,
+synced, renamed and the directory synced.
+
+```text
+registered_at
+registered_at=<the node record's registered_at_millis>
+incarnation=<the node incarnation>
+```
+
+The control plane keeps `registered_at_millis` for the life of a node record
+and starts the incarnation over when the node is deleted and added again, so
+only the pair names one registration. The file is read only when a rotation
+writes `last-rotation`, and only while `registration` holds the same
+incarnation: a registration that moved `registration` alone leaves the next
+rotation unbound. An older release neither reads nor writes the file.
 
 ## `rotated-ids`: ids a crash rotated away on this directory
 
