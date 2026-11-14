@@ -1865,7 +1865,10 @@ directory was found to replace a copy the node lost: a directory the control
 plane last registered under another id than the one it had before this start
 rotated it (a wipe, or a copy from elsewhere), or one older than the node's
 last registration (a restore). Unlike `replaced-storage` it is not written
-when a crash rotated the directory's own id. It never goes back to `kept`
+when a crash rotated the directory's own id. Nor when the registered id is one
+`rotated-ids` names: a start that rotated the id and stopped before the new
+id registered (a port it could not bind, say) leaves the old id registered for
+the next start, and that id is still this directory's own copy. It never goes back to `kept`
 and is never removed. Anything other than `kept` reads as `lost`. A directory
 without it that has `replaced-storage` counts as `lost`, since older releases
 also wrote that marker after their own crashes.

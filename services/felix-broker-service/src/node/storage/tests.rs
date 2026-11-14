@@ -390,6 +390,37 @@ fn only_a_directory_that_never_lost_a_ballot_attests_kept_ballots() {
     assert!(!kept, "a restored directory");
 }
 
+/// **A start that rotated the id and stopped before the new id registered
+/// leaves the next start its ballots.** The control plane still names the
+/// id the crash rotated away, which is this directory's own copy, not a lost
+/// one. Counting it lost made every copy here a non-voter until a set newer
+/// than the loss readmitted it, which a shard whose other copy is the new
+/// leader cannot open to write.
+#[test]
+fn a_start_that_rotated_before_registering_keeps_its_ballots_next_time() {
+    let log = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        ..Default::default()
+    };
+    let root = tempfile::tempdir().expect("tempdir");
+    let (first, _, _, _) = start_run(root.path(), &log, None, None).expect("first run");
+    let registered = registered_as(Some(first));
+    // A failed fsync, then a kill: the next start rotates.
+    forget_boot(root.path()).expect("forget the boot");
+    let (second, rotated, _, kept) =
+        start_run(root.path(), &log, Some(&registered), None).expect("after the poison");
+    assert!(rotated && kept.ballots);
+    // That start exits before it registers, and the next one starts under
+    // the rotated id with the old one still registered.
+    let (again, rotated, _, kept) =
+        start_run(root.path(), &log, Some(&registered), None).expect("started again");
+    assert_eq!(again, second);
+    assert!(!rotated);
+    assert!(kept.ballots, "the registered id is this directory's own");
+    let lost = felix_storage::run_state::lost_copy(root.path()).expect("read");
+    assert_eq!(lost, Some(false));
+}
+
 /// **A start from the view attests no kept ballot and no readmission**,
 /// whatever the directory says. Its restore check waits for the control
 /// plane, and until then a restored directory reads as one that kept
