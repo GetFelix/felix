@@ -1464,12 +1464,15 @@ mod quorum_waits {
         let marks = Arc::new(QuorumMarks::new());
         let handler = owner(&leader, &credentials, &marks);
 
-        // Judged by the answer, not by an upper bound on the clock: a loaded
-        // runner can stall the storage write around the wait for seconds.
+        // The bound is generous on purpose: a loaded runner can stall the
+        // storage write for seconds, but a wait that re-arms its deadline
+        // would still print the configured timeout and must not pass.
+        let loose = (TIMEOUT * 100).min(Duration::from_secs(30));
         for (what, forwarded) in ops(&credentials) {
             let started = std::time::Instant::now();
             let answer = handler.apply_cache_op(forwarded).await;
             let waited = started.elapsed();
+            assert!(waited < loose, "{what} waited {waited:?}, past {loose:?}");
             let InternalMessage::ForwardCacheError(error) = &answer else {
                 panic!("{what}: {:?}", answer.kind());
             };
@@ -1486,6 +1489,9 @@ mod quorum_waits {
         let cache = leader::quorum_cache_key();
         marks.publish(&cache, GENERATION, 1 << 20);
         marks.counters().publish(&cache, GENERATION, 1 << 20);
+        // Together and within the loose bound: a mark seen only by the 50 ms
+        // recheck, or a re-armed deadline, would blow it.
+        let released = std::time::Instant::now();
         for (what, forwarded) in ops(&credentials) {
             let answer = handler.apply_cache_op(forwarded).await;
             assert!(
@@ -1494,6 +1500,11 @@ mod quorum_waits {
                 answer.kind()
             );
         }
+        let released_in = released.elapsed();
+        assert!(
+            released_in < loose,
+            "the released ops took {released_in:?}, past {loose:?}"
+        );
     }
 
     /// Where the fleet reads by round, a read does not need the lease before

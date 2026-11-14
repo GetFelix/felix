@@ -214,7 +214,8 @@ async fn run(load: Load) {
     let created_in = started.elapsed();
     // The hold starts once half the appended streams serve. Opening and fencing
     // hundreds of new shards can take longer than the hold on a slow runner,
-    // and a hold spent before the load arrives measures nothing.
+    // and a hold spent before the load arrives measures nothing. The slow
+    // shard open itself is tracked in #2555; this test only prints it.
     let serving = tokio::time::timeout(
         felix_cluster::wait::budget(OPEN_BUDGET),
         wait_for_load(&appends, load.appended),
@@ -237,8 +238,9 @@ async fn run(load: Load) {
 
     let report = canary.report(load.renewal_bound);
     let summary = format!(
-        "{load:?}: created in {created_in:.1?}, half serving after {opened_in:.1?}; \
+        "{load:?}: created in {created_in:.1?}, half {} after {opened_in:.1?}; \
          appends {} ok, {} failed; {report}",
+        if serving { "serving" } else { "not serving" },
         appends.ok.load(Ordering::Relaxed),
         appends.failed.load(Ordering::Relaxed),
     );
@@ -270,7 +272,7 @@ async fn wait_for_load(appends: &Appends, appended: usize) {
     }
 }
 
-/// Each broker's open-file limit, so a run that hit EMFILE is told apart from
+/// Each broker's open fds and limit, so a run that hit EMFILE is told apart from
 /// a slow one.
 fn open_file_limits(cluster: &Cluster) -> String {
     let mut out = String::from("open-file limit, per broker:");
@@ -292,7 +294,11 @@ fn open_file_limits(cluster: &Cluster) -> String {
                     })
             })
             .unwrap_or_else(|| "unknown".to_string());
-        out.push_str(&format!("\n[{}] {limit}", node.node_id));
+        let open = node
+            .pid()
+            .and_then(|pid| std::fs::read_dir(format!("/proc/{pid}/fd")).ok())
+            .map_or_else(|| "unknown".to_string(), |dir| dir.count().to_string());
+        out.push_str(&format!("\n[{}] {open} open, limit {limit}", node.node_id));
     }
     out
 }
