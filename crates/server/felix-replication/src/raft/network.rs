@@ -21,6 +21,7 @@ use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use super::group::Pace;
+use super::machine::SnapshotData;
 use super::types::{GroupId, MemberId, ShardTypes};
 
 /// One Raft message for one member of one group. What is in it is this
@@ -233,7 +234,7 @@ fn wrong_reply() -> Unreachable<ShardTypes> {
 }
 
 impl GroupRouter<ShardTypes, GroupId> for Router {
-    type SnapshotData = Vec<u8>;
+    type SnapshotData = SnapshotData;
 
     async fn append_entries(
         &self,
@@ -292,11 +293,11 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
         target: MemberId,
         group_id: GroupId,
         vote: VoteOf<ShardTypes>,
-        snapshot: SnapshotOf<ShardTypes, Vec<u8>>,
+        snapshot: SnapshotOf<ShardTypes, SnapshotData>,
         cancel: impl Future<Output = ReplicationClosed> + Send + 'static,
         option: RPCOption,
     ) -> Result<SnapshotResponse<ShardTypes>, StreamingError<ShardTypes>> {
-        let data = Bytes::from(snapshot.snapshot);
+        let data = snapshot.snapshot.bytes;
         let piece = super::wire::append_budget(option.hard_ttl());
         let sent = async {
             let mut offset = 0;

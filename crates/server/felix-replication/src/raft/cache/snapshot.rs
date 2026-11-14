@@ -54,8 +54,37 @@ fn answer(fields: &mut Fields<'_>) -> io::Result<Answer> {
     })
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Snapshots encoded on this thread, so a test can tell where the
+    /// encoding ran.
+    pub(crate) static ENCODED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times each snapshot's bytes were parsed, by a hash of them.
+/// Parses run on the blocking pool, so a thread-local cannot count them.
+#[cfg(test)]
+static RESTORED: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<u64, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+#[cfg(test)]
+fn digest(data: &[u8]) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    data.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// How many times these exact bytes were parsed in this process.
+#[cfg(test)]
+pub(crate) fn restores_of(data: &[u8]) -> usize {
+    RESTORED.lock().get(&digest(data)).copied().unwrap_or(0)
+}
+
 impl CacheState {
     pub(crate) fn snapshot(&self) -> Bytes {
+        #[cfg(test)]
+        ENCODED.with(|encoded| encoded.set(encoded.get() + 1));
         let mut buf = BytesMut::new();
         buf.put_u8(VERSION);
         buf.put_u64_le(self.time);
@@ -96,6 +125,10 @@ impl CacheState {
     /// as of some entry. Only one that is not may have no data: every
     /// snapshot a cache group builds has some.
     pub(crate) fn restore(data: &Bytes, applied: bool) -> io::Result<Self> {
+        #[cfg(test)]
+        {
+            *RESTORED.lock().entry(digest(data)).or_default() += 1;
+        }
         let mut state = Self::default();
         if data.is_empty() {
             return match applied {

@@ -18,12 +18,12 @@ use tokio_util::sync::CancellationToken;
 
 use bytes::Bytes;
 
-use super::cache::{Answer, CacheCommand, CacheState};
+use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits};
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
-use super::machine::{Cache, Machine};
+use super::machine::{self, Cache, Machine, SnapshotData};
 use super::network::{Addressee, Network, RaftTransport, Refused, Reply, Request, Router};
 use super::propose::{self, Batch, Clock, Proposal, Stamper, Unstamped, Waiting};
 use super::runtime::{GroupStatus, OpenError, Role};
@@ -543,22 +543,29 @@ impl Group {
                         // so one this build cannot read (a newer format, a
                         // bad sender) is refused here and the member keeps
                         // running behind.
-                        let snapshot = Bytes::from(snapshot);
-                        if let Err(err) = CacheState::restore(&snapshot, meta.last_log_id.is_some())
+                        // The state parsed here is the one installed, so
+                        // the bytes are read once.
+                        let bytes = Bytes::from(snapshot);
+                        let restored = match machine::restore(
+                            bytes.clone(),
+                            meta.last_log_id.is_some(),
+                        )
+                        .await
                         {
-                            tracing::warn!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, error = %err, "refused a snapshot this member cannot read");
-                            return Err(Refused::Unreachable(format!(
-                                "a snapshot this member cannot read: {err}"
-                            )));
-                        }
+                            Ok(restored) => restored,
+                            Err(err) => {
+                                tracing::warn!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, error = %err, "refused a snapshot this member cannot read");
+                                return Err(Refused::Unreachable(format!(
+                                    "a snapshot this member cannot read: {err}"
+                                )));
+                            }
+                        };
+                        let snapshot = SnapshotData {
+                            bytes,
+                            restored: Some(restored),
+                        };
                         self.raft
-                            .install_full_snapshot(
-                                vote,
-                                Snapshot {
-                                    meta,
-                                    snapshot: Vec::from(snapshot),
-                                },
-                            )
+                            .install_full_snapshot(vote, Snapshot { meta, snapshot })
                             .await
                             .map(Reply::Snapshot)
                             .map_err(|err| stopped(err.to_string()))

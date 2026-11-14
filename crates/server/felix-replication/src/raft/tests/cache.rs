@@ -130,7 +130,7 @@ async fn a_member_that_installs_a_snapshot_holds_its_state_and_answers() {
         .expect("group");
     let snapshot = leading.raft().get_snapshot().await.expect("read");
     let snapshot = snapshot.expect("snapshot");
-    let data = Bytes::from(snapshot.snapshot.clone());
+    let data = snapshot.snapshot.bytes.clone();
     assert_ne!(state(&cluster, behind), data);
 
     let leads = LeaderIdOf::<ShardTypes>::new(leading.status().term, leader.clone());
@@ -430,7 +430,169 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
         .expect("apply");
     let built = builder.build_snapshot().await.expect("build");
     assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(1));
-    assert_eq!(Bytes::from(built.snapshot), named);
+    assert_eq!(built.snapshot.bytes, named);
+}
+
+/// A cache group's state machine over an empty snapshot store in `dir`.
+async fn cache_machine(
+    dir: &std::path::Path,
+) -> (super::super::machine::Machine, super::super::machine::Cache) {
+    let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
+    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
+    let (machine, _, cache) = opened.expect("open");
+    (machine, cache.expect("a cache group"))
+}
+
+/// The entries `first..=last`, each the command `command` makes for its
+/// index, stamped ten times the index.
+fn entries(
+    first: u64,
+    last: u64,
+    command: impl Fn(u64) -> CacheCommand,
+) -> impl futures::Stream<Item = std::io::Result<openraft::storage::EntryResponder<ShardTypes>>> + Unpin
+{
+    use openraft::entry::RaftEntry;
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+    let entries: Vec<_> = (first..=last)
+        .map(|index| {
+            let command = Command {
+                timestamp_micros: index * 10,
+                payload: command(index).encode(),
+                written: None,
+            };
+            let id = LogIdOf::<ShardTypes>::new(1.into(), index);
+            Ok((EntryOf::<ShardTypes>::new_normal(id, command), None))
+        })
+        .collect();
+    futures::stream::iter(entries)
+}
+
+fn keyed(index: u64, spread: u64) -> CacheCommand {
+    CacheCommand::Put {
+        key: format!("k{}", index % spread),
+        value: Bytes::from(index.to_le_bytes().to_vec()),
+        expires_at: 0,
+        cond: Condition::None,
+        request: request(index),
+    }
+}
+
+/// The state is copied where no entry is being applied and encoded later,
+/// off the state machine's task. Writes that land while the build runs
+/// change the live state and leave the snapshot exactly as of its entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn writes_during_a_snapshot_build_leave_it_exact_at_its_entry() {
+    use super::super::cache::{CacheState, ENCODED};
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    let named_at = 5_000;
+    machine
+        .apply(entries(1, named_at, |index| keyed(index, 2_000)))
+        .await
+        .expect("apply");
+    let named = cache.read().snapshot();
+
+    let encoded = ENCODED.with(std::cell::Cell::get);
+    let mut builder = machine.get_snapshot_builder().await;
+    assert_eq!(
+        ENCODED.with(std::cell::Cell::get),
+        encoded,
+        "the snapshot was encoded on the state machine's task"
+    );
+    // Overwrites every key the snapshot holds, a run at a time: the first
+    // before the build has encoded anything, the rest while it may be.
+    let overwrite = |run: u64| {
+        let first = named_at + 1 + run * 250;
+        entries(first, first + 249, |index| keyed(index, 2_000))
+    };
+    machine.apply(overwrite(0)).await.expect("apply");
+    // The build is polled on this thread, so an encode on the task that
+    // awaits it would count here.
+    let writes = async {
+        for run in 1..20 {
+            machine.apply(overwrite(run)).await.expect("apply");
+        }
+    };
+    let (built, ()) = tokio::join!(builder.build_snapshot(), writes);
+    let built = built.expect("build");
+    assert_eq!(
+        ENCODED.with(std::cell::Cell::get),
+        encoded,
+        "the snapshot was encoded on the task that awaits the build"
+    );
+
+    assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(named_at));
+    // Not assert_eq: the bytes are too many to print.
+    assert!(
+        built.snapshot.bytes == named,
+        "the snapshot holds writes after its entry"
+    );
+    let restored = CacheState::restore(&built.snapshot.bytes, true).expect("restore");
+    assert_ne!(restored, *cache.read(), "the later writes were applied");
+    let stored = machine.get_current_snapshot().await.expect("read");
+    assert!(stored.expect("stored").snapshot.bytes == named);
+}
+
+/// Snapshot encodes and parses share a few blocking threads, however
+/// many groups ask at once, so disk flushes still find the pool free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_work_runs_at_most_its_share_of_the_blocking_pool_at_once() {
+    use super::super::machine::{cpu, cpu_jobs};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let limit = cpu_jobs();
+    let running = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    let jobs: Vec<_> = (0..limit * 4)
+        .map(|_| {
+            let (running, most) = (Arc::clone(&running), Arc::clone(&most));
+            tokio::spawn(cpu(move || {
+                let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                most.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(20));
+                running.fetch_sub(1, Ordering::SeqCst);
+            }))
+        })
+        .collect();
+    for job in jobs {
+        job.await.expect("task").expect("job");
+    }
+    let most = most.load(Ordering::SeqCst);
+    assert!(
+        (1..=limit).contains(&most),
+        "{most} ran at once, limit {limit}"
+    );
+}
+
+/// A member that received a snapshot parsed it to check it can read it.
+/// Install takes that state rather than reading the bytes again.
+#[tokio::test]
+async fn an_install_takes_the_state_the_receiver_parsed() {
+    use super::super::cache::CacheState;
+    use super::super::machine::SnapshotData;
+    use openraft::storage::RaftStateMachine;
+    use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    let mut sent = CacheState::default();
+    sent.apply(1, 10, &put("k", b"one", 1));
+    let mut parsed = sent.clone();
+    parsed.apply(2, 20, &put("k", b"two", 2));
+    let meta = SnapshotMetaOf::<ShardTypes> {
+        last_log_id: Some(LogIdOf::<ShardTypes>::new(1.into(), 2)),
+        last_membership: Default::default(),
+    };
+    let snapshot = SnapshotData {
+        bytes: sent.snapshot(),
+        restored: Some(parsed.clone()),
+    };
+    machine
+        .install_snapshot(&meta, snapshot)
+        .await
+        .expect("install");
+    // Only distinguishable because the two differ; a real receiver hands
+    // in the state its bytes hold.
+    assert_eq!(*cache.read(), parsed);
 }
 
 /// Entries a snapshot covers can leave the log, and no others. A member
@@ -557,7 +719,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     use super::super::install::MAX_SNAPSHOT_BYTES;
     let mut cluster = Cluster::new(true);
     cluster.form(N).await;
-    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    let first = write(&cluster, 10, put("installed-in-pieces", b"one", 1)).await;
     cluster.committed_everywhere(N, first).await;
     let leader = cluster.elected(N).await;
     let behind = *BROKERS
@@ -565,7 +727,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
         .find(|broker| ***broker != *leader.broker)
         .expect("a follower");
     cut_off(&cluster, behind);
-    let last = write(&cluster, 30, put("k", b"two", 2)).await;
+    let last = write(&cluster, 30, put("installed-in-pieces", b"two", 2)).await;
     let leader = cluster.elected(N).await;
     cluster.snapshot(&leader.broker, N, last).await;
     let leading = cluster
@@ -574,7 +736,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
         .expect("group");
     let snapshot = leading.raft().get_snapshot().await.expect("read");
     let snapshot = snapshot.expect("snapshot");
-    let data = Bytes::from(snapshot.snapshot.clone());
+    let data = snapshot.snapshot.bytes.clone();
     let term = leading.status().term;
     let vote = |term| {
         let leads = LeaderIdOf::<ShardTypes>::new(term, leader.clone());
@@ -623,6 +785,8 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     assert!(piece(term, whole, half, data.slice(half..)).await.is_ok());
     assert_eq!(member.incoming().held(), None);
     eventually(|| (state(&cluster, behind) == data).then_some(())).await;
+    // Read once, where it was received; the install takes that state.
+    assert_eq!(super::super::cache::restores_of(&data), 1);
     cluster.stop().await;
 }
 
@@ -696,7 +860,7 @@ async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
     let snapshot = leading.raft().get_snapshot().await.expect("read");
     let snapshot = snapshot.expect("snapshot");
     // What a later build's format looks like to this one.
-    let mut newer = snapshot.snapshot.clone();
+    let mut newer = snapshot.snapshot.bytes.to_vec();
     newer[0] = 2;
     let leads = LeaderIdOf::<ShardTypes>::new(leading.status().term, leader.clone());
     let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true);
@@ -761,4 +925,78 @@ async fn what_a_write_call_per_entry_costs() {
         println!("{entries} entries a drain: a call per entry takes {ratio:.2}x one call");
     }
     cluster.stop().await;
+}
+
+/// How long a snapshot build holds apply on a large state, and what apply
+/// costs. A measurement, run on demand:
+/// `cargo test -p felix-replication --lib snapshot_apply_stall -- --ignored --nocapture`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement, not a check"]
+async fn snapshot_apply_stall() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    use std::time::Instant;
+    const KEYS: u64 = 1_000_000;
+    const RUN: u64 = 10_000;
+    let value = |index: u64| {
+        let mut value = vec![0u8; 256];
+        value[..8].copy_from_slice(&index.to_le_bytes());
+        Bytes::from(value)
+    };
+    let put = |index: u64| CacheCommand::Put {
+        key: format!("key-{:08}", index % KEYS),
+        value: value(index),
+        expires_at: 0,
+        cond: Condition::None,
+        request: request(index),
+    };
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    let started = Instant::now();
+    let mut last = 0;
+    while last < KEYS {
+        machine
+            .apply(entries(last + 1, last + RUN, put))
+            .await
+            .expect("apply");
+        last += RUN;
+    }
+    let filled = started.elapsed();
+    let size = cache.read().snapshot().len();
+
+    let started = Instant::now();
+    let mut builder = machine.get_snapshot_builder().await;
+    let held = started.elapsed();
+    let build = tokio::spawn(async move {
+        let started = Instant::now();
+        builder.build_snapshot().await.expect("build");
+        started.elapsed()
+    });
+    let started = Instant::now();
+    machine
+        .apply(entries(last + 1, last + 1, put))
+        .await
+        .expect("apply");
+    let first = started.elapsed();
+    last += 1;
+    let (mut runs, mut slowest) = (0, std::time::Duration::ZERO);
+    let during = Instant::now();
+    while !build.is_finished() {
+        let started = Instant::now();
+        machine
+            .apply(entries(last + 1, last + RUN, put))
+            .await
+            .expect("apply");
+        slowest = slowest.max(started.elapsed());
+        last += RUN;
+        runs += 1;
+    }
+    let during = during.elapsed();
+    let built = build.await.expect("task");
+    println!(
+        "snapshot_apply_stall: keys={KEYS} snapshot_bytes={size} fill={filled:?} ({:.0} entries/s) \
+         builder_held_apply={held:?} first_apply_after={first:?} build={built:?} \
+         runs_during_build={runs} ({RUN} entries each, slowest {slowest:?}, {:.0} entries/s)",
+        KEYS as f64 / filled.as_secs_f64(),
+        (runs * RUN) as f64 / during.as_secs_f64().max(f64::EPSILON),
+    );
 }

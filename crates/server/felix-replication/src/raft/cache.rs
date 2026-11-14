@@ -20,6 +20,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 pub(crate) use record::{CacheCommand, Request};
 #[cfg(test)]
+pub(crate) use snapshot::{ENCODED, restores_of};
+#[cfg(test)]
 pub(crate) use state::floor;
 pub(crate) use state::{Answer, CacheState, Read, stamp};
 

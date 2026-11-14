@@ -395,7 +395,10 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
     };
     let piece = Duration::from_millis(crate::raft::runtime::SNAPSHOT_PIECE_MILLIS);
     let piece = crate::raft::wire::append_budget(piece);
-    assert!(snapshot.snapshot.len() > piece, "one piece would carry it");
+    assert!(
+        snapshot.snapshot.bytes.len() > piece,
+        "one piece would carry it"
+    );
 
     let group = GroupId::new(shard.clone(), 0);
     brokers[2]

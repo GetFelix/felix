@@ -1,8 +1,7 @@
 //! The projection: what a cache group's applied entries add up to.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use bytes::Bytes;
+use imbl::{OrdMap, OrdSet};
 
 use super::{CacheCommand, Condition, Request};
 
@@ -47,7 +46,7 @@ pub(crate) enum Answer {
 pub(super) struct Producer {
     /// Answers below this sequence were dropped.
     pub(super) floor: u64,
-    pub(super) answers: BTreeMap<u64, Answer>,
+    pub(super) answers: OrdMap<u64, Answer>,
 }
 
 impl Producer {
@@ -55,7 +54,12 @@ impl Producer {
     fn raise(&mut self, floor: u64) {
         if floor > self.floor {
             self.floor = floor;
-            self.answers = self.answers.split_off(&floor);
+            // One removal at a time: imbl's split rebuilds the whole map.
+            while let Some(&(sequence, _)) = self.answers.get_min()
+                && sequence < floor
+            {
+                self.answers.remove(&sequence);
+            }
         }
     }
 }
@@ -78,16 +82,18 @@ pub(crate) enum Read {
 }
 
 // Ordered maps throughout: a snapshot walks them, and two members must
-// write the same bytes.
+// write the same bytes. Persistent ones, so a clone shares every node and
+// costs nothing until one side writes: a snapshot is built from a clone
+// while apply goes on.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct CacheState {
     /// The log's time: the stamp of the last stamped entry applied.
     pub(super) time: u64,
-    pub(super) entries: BTreeMap<String, Entry>,
+    pub(super) entries: OrdMap<String, Entry>,
     /// Every entry that expires, by when.
-    pub(super) expiring: BTreeSet<(u64, String)>,
-    pub(super) counters: BTreeMap<String, i64>,
-    pub(super) producers: BTreeMap<u64, Producer>,
+    pub(super) expiring: OrdSet<(u64, String)>,
+    pub(super) counters: OrdMap<String, i64>,
+    pub(super) producers: OrdMap<u64, Producer>,
 }
 
 /// What the leader stamps its next entry with: its clock, held up to
@@ -276,7 +282,7 @@ impl CacheState {
 
     /// When the first value expires, if any does.
     pub(crate) fn next_expiry(&self) -> Option<u64> {
-        self.expiring.first().map(|(expires_at, _)| *expires_at)
+        self.expiring.get_min().map(|(expires_at, _)| *expires_at)
     }
 
     /// Up to `max` keys whose value has expired on a leader whose clock
