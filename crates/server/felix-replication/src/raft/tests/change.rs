@@ -207,6 +207,39 @@ async fn a_step_decided_on_an_older_membership_writes_nothing() {
     cluster.stop().await;
 }
 
+/// The driver tries a busy step again and reports a refused one, so the
+/// two must not be told as one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_change_in_progress_is_busy_and_an_unknown_member_is_refused() {
+    let (mut cluster, leader) = pair().await;
+    let held = basis(&leader).await;
+    let unknown = leader
+        .change_voters(&held, set(&["a", "b", "d"]), v(2))
+        .await;
+    assert!(matches!(unknown, Err(StepError::Refused(_))), "{unknown:?}");
+
+    // The learner's entry cannot commit while no append arrives.
+    let lost = &cluster.net.lose_appends;
+    lost.store(true, std::sync::atomic::Ordering::Relaxed);
+    let learner = Arc::clone(&leader);
+    let adding = tokio::spawn(async move { learner.add_learner(&held, m("c")).await });
+    let uncommitted = loop {
+        let now = basis(&leader).await;
+        if !now.committed {
+            break now;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let busy = leader
+        .change_voters(&uncommitted, set(&["a", "b", "c"]), v(2))
+        .await;
+    assert!(matches!(busy, Err(StepError::Busy(_))), "{busy:?}");
+
+    lost.store(false, std::sync::atomic::Ordering::Relaxed);
+    adding.await.expect("the step").expect("learner");
+    cluster.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_step_writes_a_membership_without_its_leader() {
     let (mut cluster, leader) = pair().await;

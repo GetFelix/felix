@@ -6,9 +6,6 @@
 //! The decision reads only the leader's log and the newest target, so a new
 //! leader, a restart or a retry resumes with nothing to reconcile.
 
-// The driver that runs these steps against openraft is not built yet.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 

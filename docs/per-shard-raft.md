@@ -2209,9 +2209,94 @@ Two rules hold for every step, whoever asks for it:
 
 The decision of which step comes next (`raft/membership.rs`) follows
 the leader actions of the placement model (`docs/formal/FelixRaftPlacement.tla`
-as #2413 extends it) guard by guard. Nothing runs it yet:
-the driver that reads the target and takes the steps is not built, so no
-broker changes a group's membership today.
+as #2413 extends it) guard by guard.
+
+#### The driver
+
+Each group has one task, the driver (`raft/group/driver.rs`), that makes
+the membership match the target. A broker is told a target with
+`GroupRuntime::retarget`: the voters the group should have, and the
+target's version. It keeps only the newest target it was told, in memory.
+Every member can be told. Only the one that leads acts, and one elected
+later acts on the target it holds.
+
+The control plane does not send targets yet, so no broker changes a
+group's membership in a running cluster today. The driver is exercised by
+tests that tell it a target directly.
+
+The driver works in looks. On each look it reads, from the leader's own
+log, the latest membership, whether that entry is committed, whether an
+entry of its own term is committed, and how far each other member's log
+reaches. It asks the decision for one step, takes it, and looks again:
+
+```mermaid
+flowchart TD
+    look[Look at the log and the target] --> leads{Leads?}
+    leads -- no --> idle[Idle until elected]
+    leads -- yes --> decide[Decide one step]
+    decide -- "membership is the target" --> settled[Settled until a newer target]
+    decide -- "learner behind, entry uncommitted, transfer running" --> wait[Wait, then look again]
+    decide -- "add learner, change voters, stamp, leave joint" --> write[Write on the term and membership decided on]
+    decide -- "target leaves the leader out" --> transfer[Transfer leadership]
+    write -- written --> look
+    write -- "log moved, change in progress" --> wait
+    write -- "membership refused" --> stuck[Stuck until the target or the term changes]
+    transfer --> wait
+    wait --> look
+```
+
+Nothing is kept between looks except the term a transfer was asked in. A
+new leader, or the same broker after a restart, starts from what its log
+holds: it leaves a joint membership it finds before it reads the target,
+and otherwise does nothing until it is told one.
+
+**A move off the leader.** When the target leaves the leader out, the
+leader first adds the new members as learners, then grows the voters to
+the target plus itself, and then hands leadership to a voter the target
+keeps that holds its whole log. The next leader shrinks the voters to the
+target. If the transfer does not go through, openraft ends the term after
+one election timeout. Whoever wins the next election looks again: the old
+leader asks for the transfer again, and never falls back to a change that
+removes itself.
+
+**Refusals.** A step can fail in two ways, and the driver treats them
+differently:
+
+| What happened | What the driver does |
+| --- | --- |
+| The log or the term moved since the look, the leader was deposed, openraft has a change in progress, or nothing of the term is committed yet | Looks again after a wait. The same step can go through later |
+| A step did not commit within 10 seconds | Looks again. The entry stays in the log, and the next look waits for it |
+| openraft refused the membership itself (an unknown member, for example) | Reports the group stuck and stops until the target or the term changes. Asking again would change nothing |
+
+The wait starts at 50 ms and doubles up to 5 seconds. After eight looks in
+a row that changed nothing, the group is reported stuck and the driver
+looks only every 30 seconds. A learner that never catches up, or a
+transfer with no caught-up successor, ends there: the group keeps serving
+with the membership it has, and the control plane can send another
+target. A new target, or a new term, starts the count again.
+
+**The two rules, checked again.** The decision never names a set without
+the leader, and the step writers refuse one. The driver checks a third
+time before it writes, and after every write it reads the membership back
+and checks that it is a voter of every set and that no voter that left is
+still a learner. If either check fails, the driver writes nothing more in
+that term and reports the group stuck, with the reason in the broker's log
+at error level. That is a bug, not an operating condition.
+
+**Deposal.** A leader that is deposed takes no further step: every step
+carries the term it was decided in, and openraft writes nothing for a term
+this member no longer leads. The driver then waits to be elected again. It
+ends when the member is closed.
+
+**What to watch.** `GroupRuntime::status` reports the leader's progress
+as idle, settled, converging or stuck with a reason. Across the broker:
+
+| Metric | Meaning |
+| --- | --- |
+| `felix_broker_raft_membership_converging` | Groups this broker leads that are on the way to their target |
+| `felix_broker_raft_membership_stuck` | Groups this broker leads where no step has gone through. Not zero for long means a target cannot be reached |
+| `felix_broker_raft_membership_steps_total` | Steps written, by `step`: `add_learner`, `change`, `stamp`, `leave_joint`, `transfer` |
+| `felix_broker_raft_membership_refusals_total` | Steps not written, by `kind`: `transient`, `permanent`, or `broken` for a failed rule check |
 
 Only the leader acts, one change at a time, and the steps can be repeated
 safely. A leader that acts on a target the control plane has since replaced

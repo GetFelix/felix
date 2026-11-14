@@ -25,6 +25,7 @@ use crate::{ShardKey, ShardKind};
 mod change;
 mod commit;
 mod deliver;
+mod driver;
 mod identity;
 mod lease;
 mod membership;
