@@ -247,26 +247,35 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     let Some(name) = dir.file_name() else {
         return Ok(false);
     };
-    if !crate::fs::exists(dir) {
+    // Every sync here, the shortcut included, is under the durable root's
+    // stop: a retry after a failed sync finds `dir` gone and `.deleted`
+    // there, and would sync nothing that failed.
+    let retired = crate::run_state::durable_change(root, &name.to_string_lossy(), || {
+        if !crate::fs::exists(dir) {
+            return Ok(false);
+        }
+        let deleted = root.join(DELETED_DIR);
+        create_dir_all_durable(&deleted).map_err(StorageError::Io)?;
+        // Unique even when the same name is retired twice before the first
+        // copy is gone.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let stamp = felix_common::clock::system_time()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or(0);
+        let target = deleted.join(format!(
+            "{}-{stamp}-{}",
+            name.to_string_lossy(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        crate::fs::rename(dir, &target).map_err(StorageError::Io)?;
+        sync_dir(root).map_err(StorageError::Io)?;
+        sync_dir(&deleted).map_err(StorageError::Io)?;
+        Ok(true)
+    })?;
+    if !retired {
         return Ok(false);
     }
-    let deleted = root.join(DELETED_DIR);
-    create_dir_all_durable(&deleted).map_err(StorageError::Io)?;
-    // Unique even when the same name is retired twice before the first copy
-    // is gone.
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let stamp = felix_common::clock::system_time()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_nanos())
-        .unwrap_or(0);
-    let target = deleted.join(format!(
-        "{}-{stamp}-{}",
-        name.to_string_lossy(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    crate::fs::rename(dir, &target).map_err(StorageError::Io)?;
-    sync_dir(root).map_err(StorageError::Io)?;
-    sync_dir(&deleted).map_err(StorageError::Io)?;
     purge_in_background(root.to_path_buf());
     Ok(true)
 }

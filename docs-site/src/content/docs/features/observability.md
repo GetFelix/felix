@@ -564,8 +564,12 @@ its tenant and what stopped it:
 
 ```text
 a log of tenant acme is poisoned: a flush of the replica state failed (...)
-reboot the host before restarting the broker; the broker log names each shard
+reboot the host before restarting the broker; the broker log has the details
 ```
+
+A failed flush of one of the broker's own records in the data directory,
+such as its copy-trust record, turns `/ready` false the same way, with a line
+like `a sync of the node record copy-trust failed: (...)`.
 
 A poisoned log refuses writes until the broker restarts, because the
 operating system may have dropped the data the failed flush was meant to
