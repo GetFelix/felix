@@ -818,7 +818,10 @@ set's generation start, shipped by that set's leader or a later one. With no
 unkept ballot to count from, that needs a start that minted the storage id
 (a wipe, a rotation, or a corrupt id file replaced), so only a set written after the loss can name it.
 A rotation during an earlier run, as the Raft restore gate's, counts while the
-control plane names the id it rotated from or to (`last-rotation`). A
+control plane names the id it rotated from or to and the node has registered
+only from this directory since (`last-rotation` in `docs/storage-format.md`).
+An id written new, after a wipe or in place of a corrupt id file, counts for
+that run only: nothing records it, so a clean restart loses the credit. A
 directory that lost its copies under an older id, as one swapped back after
 the node ran under another, may be named by sets from before the loss, so
 its copies get no readmission. So does a copy not yet readmitted when the

@@ -490,6 +490,16 @@ async fn a_failed_node_record_sync_is_not_retried() {
                 run_state::Rotation {
                     to: StorageId::from_bytes([3; 16]),
                     from: StorageId::from_bytes([2; 16]),
+                    bound: None,
+                },
+            )
+        }),
+        ("registered-at", |root| {
+            run_state::record_dated_registration(
+                root,
+                run_state::Binding {
+                    registered_at_millis: 7,
+                    incarnation: 3,
                 },
             )
         }),

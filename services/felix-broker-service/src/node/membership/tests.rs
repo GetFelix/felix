@@ -280,6 +280,47 @@ async fn a_start_whose_run_rotated_the_id_waits_and_notes_a_replacement() {
     let _ = handle.await;
 }
 
+/// **A passed deferred check tells the quorum marks the id is minted**
+/// (#2546): a start from the view learns it only then, and without it a lost
+/// copy with no recorded floor is never readmitted.
+#[test]
+fn a_passed_deferred_check_sets_the_minted_mark() {
+    use felix_storage::StorageId;
+    use felix_storage::run_state::{Binding, Rotation};
+    let (to, from) = (
+        StorageId::from_bytes([2; 16]),
+        StorageId::from_bytes([1; 16]),
+    );
+    let bound = Binding {
+        registered_at_millis: 70,
+        incarnation: 5,
+    };
+    let own_kept = super::super::storage::Kept {
+        promises: false,
+        ballots: true,
+        readmits: false,
+        minted: false,
+        rotation: Some(Rotation {
+            to,
+            from,
+            bound: Some(bound),
+        }),
+        deferred: true,
+    };
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::new());
+    let checked = CancellationToken::new();
+    let check = deferred_attest(&checked, own_kept, Arc::clone(&marks));
+    assert!(!marks.minted_storage());
+    let record = membership::Registered {
+        registered_at_millis: Some(70),
+        root_sequence: None,
+        incarnation: 5,
+        storage_id: Some(from.to_hex()),
+    };
+    (check.passed)(Some(&record));
+    assert!(marks.minted_storage());
+}
+
 /// **A start from the view attests its kept ballots once the restore check
 /// passes, and not before** (`CountsForgotten`, `TrustsRegistered`). Without
 /// this a copy that started while the control plane was down never counts
@@ -307,6 +348,7 @@ fn a_passed_deferred_check_attests_the_runs_kept_ballots() {
     });
     assert!(attested.lock().expect("lock").is_empty());
     let record = membership::Registered {
+        registered_at_millis: None,
         root_sequence: None,
         incarnation: 5,
         storage_id: Some("00ff".to_owned()),

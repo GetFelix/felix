@@ -387,13 +387,16 @@ impl QuorumMarks {
         self.readmits.get().copied().unwrap_or(false)
     }
 
-    /// Record whether this start minted the directory's storage id, by
-    /// rotating it or creating it. Only the first call counts.
+    /// Record whether no set written before this start names the directory's
+    /// storage id: the start rotated or created it, or a rotation in an
+    /// earlier run did and the node has registered only from this directory
+    /// since. Only the first call counts.
     pub fn set_minted_storage(&self, minted: bool) {
         let _ = self.minted_storage.set(minted);
     }
 
-    pub(crate) fn minted_storage(&self) -> bool {
+    /// What [`Self::set_minted_storage`] recorded; `false` before it.
+    pub fn minted_storage(&self) -> bool {
         self.minted_storage.get().copied().unwrap_or(false)
     }
 
