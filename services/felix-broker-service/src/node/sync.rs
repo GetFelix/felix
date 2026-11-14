@@ -75,7 +75,10 @@ impl GroupCheck {
         match super::identity::admit(&client, base_url, credential, &root).await {
             Ok(stored) => Ok(controlplane_group::guard(&root, stored, refused)),
             Err(err) => {
-                tracing::error!(error = format!("{err:#}"), "refused the data directory");
+                tracing::error!(
+                    error = format!("{err:#}"),
+                    "could not admit the data directory under the control plane's group"
+                );
                 refused.cancel();
                 Err(err)
             }
