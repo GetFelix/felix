@@ -103,6 +103,8 @@ struct Net {
     lose_transfers: std::sync::atomic::AtomicBool,
     /// How long an append's answer takes to come back.
     answer_after: parking_lot::Mutex<Option<Duration>>,
+    /// While set, an append is taken and its answer is lost.
+    lose_answers: std::sync::atomic::AtomicBool,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -161,10 +163,14 @@ impl RaftTransport for Net {
             Request::Append(_) => *self.answer_after.lock(),
             _ => None,
         };
+        let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
         let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
+        if unheard {
+            return Err(Refused::Unreachable("the answer was lost".into()));
+        }
         if let Some(slow) = slow {
             tokio::time::sleep(slow).await;
         }
@@ -1603,6 +1609,12 @@ fn a_membership_round_trips_through_its_record() {
     // layout 1.
     let older = text.replace("\"version\":2", "\"version\":1");
     assert!(ShardCodec.decode_membership(older.as_bytes()).is_err());
+    // Layout 2 always names its version. None is not the zero version.
+    let mut bare: serde_json::Value = serde_json::from_slice(&payload).expect("json");
+    let fields = bare.as_object_mut().expect("an object");
+    fields.remove("target").expect("a target");
+    let bare = bare.to_string();
+    assert!(ShardCodec.decode_membership(bare.as_bytes()).is_err());
 }
 
 #[test]

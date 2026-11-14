@@ -28,7 +28,7 @@ pub(crate) struct StoredMembership {
     /// The version of the target the membership was made from. Layout 1
     /// has none, which reads as the zero version.
     #[serde(default)]
-    pub(crate) target: TargetVersion,
+    pub(crate) target: Option<TargetVersion>,
 }
 
 const MEMBERSHIP_VERSION: u32 = 2;
@@ -41,21 +41,35 @@ impl StoredMembership {
             version: MEMBERSHIP_VERSION,
             voters: membership.get_joint_config().clone(),
             learners: membership.learner_ids().collect(),
-            target: membership.version(),
+            target: Some(membership.version()),
         }
     }
 
     pub(crate) fn membership(self) -> io::Result<Membership> {
-        // A layout 1 payload that names a version was not written by a
-        // build that knew what the field means.
-        let unversioned = self.version == UNVERSIONED && self.target == TargetVersion::default();
-        if self.version != MEMBERSHIP_VERSION && !unversioned {
-            return Err(invalid(format!(
-                "membership layout {} is not one this build reads",
-                self.version
-            )));
-        }
-        Ok(Membership::new(self.voters, self.learners, self.target))
+        // Layout 2 always names a version and layout 1 never does. A
+        // payload that says otherwise was not written by a build that knew
+        // what the field means, and reading a missing version as zero
+        // would let any target pass for newer.
+        let target = match (self.version, self.target) {
+            (MEMBERSHIP_VERSION, Some(target)) => target,
+            (UNVERSIONED, None) => TargetVersion::default(),
+            (MEMBERSHIP_VERSION, None) => {
+                return Err(invalid(
+                    "a layout 2 membership names no target version".into(),
+                ));
+            }
+            (UNVERSIONED, Some(_)) => {
+                return Err(invalid(
+                    "a layout 1 membership names a target version".into(),
+                ));
+            }
+            (other, _) => {
+                return Err(invalid(format!(
+                    "membership layout {other} is not one this build reads"
+                )));
+            }
+        };
+        Ok(Membership::new(self.voters, self.learners, target))
     }
 }
 
