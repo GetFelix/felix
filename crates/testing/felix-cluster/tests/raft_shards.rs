@@ -444,6 +444,10 @@ async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowl
         "{elected} kept all {} acknowledged records: nothing was answered on the lease alone",
         acked.len()
     );
+    assert!(
+        kept.first().is_some_and(|have| have.as_slice() == b"first"),
+        "{elected} lost `first`, acknowledged before the partition with its followers reachable"
+    );
     assert_eq!(
         kept,
         acked[..kept.len()].iter().collect::<Vec<_>>(),

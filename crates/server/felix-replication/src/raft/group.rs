@@ -995,8 +995,9 @@ impl Group {
 
     /// One past the index a reader must have applied before it reads: the
     /// leader's commit index when a majority confirmed that this member
-    /// still leads `term`. The caller waits for the apply under its own
-    /// deadline.
+    /// still leads `term`. `confirm_read` then waits for the apply, bounded
+    /// by `election_max` from its start; the cache read waits under the
+    /// caller's deadline.
     async fn read_index(&self, term: u64) -> Result<u64, CommitError> {
         let lost = |detail| CommitError::LeadershipLost {
             what: "read",
