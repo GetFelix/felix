@@ -11,6 +11,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ use felix_replication::quorum::ShardServing;
 use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
+use futures::StreamExt;
 
 use super::routing::{Dispatch, EngineShards, Reason, Taken};
 use super::watch::ShardAssignment;
@@ -34,6 +36,9 @@ const LEAD_RETRY: Duration = Duration::from_millis(50);
 /// How long the broker that forms a group waits for each other member to
 /// say its log is empty. One that does not is asked again on the next pass.
 const ASK_WITHIN: Duration = Duration::from_secs(5);
+
+/// How many engine markers a pass reads at once.
+const MARKER_READS: usize = 16;
 
 /// Raft shards open here whose group's voters are not the brokers placement
 /// names for the shard.
@@ -64,11 +69,23 @@ pub(crate) struct RaftShards {
     /// Shards not placed here whose directory was found unmarked, by
     /// incarnation: only this module marks one, so it is read once.
     unclaimed: parking_lot::Mutex<HashMap<ShardKey, u64>>,
+    /// Counts the attempts to claim a directory, failed ones too, so a pass
+    /// knows whether a marker it read before taking `open` may have been
+    /// written since.
+    claims: AtomicU64,
     /// Shards already reported as off their placement, so each is logged
     /// once per time it happens.
     off_placement: parking_lot::Mutex<HashSet<ShardKey>>,
-    /// Held across a whole pass and a whole close, so a stream's delete
-    /// never runs between a member's claim of its directory and its open.
+    /// While true, a marker read does not return.
+    #[cfg(test)]
+    stall_reads: tokio::sync::watch::Sender<bool>,
+    #[cfg(test)]
+    reads_under_lock: AtomicU64,
+    #[cfg(test)]
+    marker_reads: AtomicU64,
+    /// Held across a whole pass, after its marker reads, and a whole
+    /// close, so a stream's delete never runs between a member's claim of
+    /// its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
 }
 
@@ -106,7 +123,14 @@ impl RaftShards {
             put_off: parking_lot::Mutex::default(),
             unreadable: parking_lot::Mutex::default(),
             unclaimed: parking_lot::Mutex::default(),
+            claims: AtomicU64::new(0),
             off_placement: parking_lot::Mutex::default(),
+            #[cfg(test)]
+            stall_reads: tokio::sync::watch::Sender::new(false),
+            #[cfg(test)]
+            reads_under_lock: AtomicU64::new(0),
+            #[cfg(test)]
+            marker_reads: AtomicU64::new(0),
             open: tokio::sync::Mutex::default(),
         });
         shards
@@ -153,8 +177,12 @@ impl RaftShards {
             };
             Ok(DiskLog::open(dir, label, config)?)
         })
-        .await
-        .context("open task")??;
+        .await;
+        // Counted once the marker may be on disk, so a read that started
+        // before this saw the old count. A pass dropped mid-claim would skip
+        // it; the only caller awaits `take` to the end.
+        self.claims.fetch_add(1, Ordering::AcqRel);
+        let log = log.context("open task")??;
         let mut member = Member {
             incarnation,
             log,
@@ -202,17 +230,59 @@ impl RaftShards {
         Ok(self.engine.follow_commits(key, handle))
     }
 
-    /// Whether an earlier run of this broker opened a member of `key`. Such
-    /// a member is opened again whatever placement says now: it may be a
-    /// voter its group counts on.
-    ///
-    /// Only an unmarked directory is remembered. A failed read, or a stream
-    /// not yet at `incarnation` here, is read again on the next pass: taken
-    /// for "never opened" for good, it would leave a voter closed.
-    async fn claimed(&self, key: &ShardKey, incarnation: u64) -> bool {
-        if self.unclaimed.lock().get(key) == Some(&incarnation) {
-            return false;
+    /// Read the markers of the shards in `assignments` this pass may have
+    /// to ask [`Self::claimed`] about, before the pass takes `open`: a slow
+    /// or failing read must not hold up the closes and forms that wait on it.
+    async fn read_markers(&self, assignments: &HashMap<ShardKey, ShardAssignment>) -> Reads {
+        // Taken before any read starts, so a claim racing a read is seen.
+        let claims = self.claims.load(Ordering::Acquire);
+        // Taken only to see which members are open: no read runs under it.
+        let held: HashMap<ShardKey, u64> = self
+            .open
+            .lock()
+            .await
+            .iter()
+            .map(|(key, member)| (key.clone(), member.incarnation))
+            .collect();
+        let candidates: Vec<(ShardKey, u64)> = {
+            let unclaimed = self.unclaimed.lock();
+            assignments
+                .iter()
+                .filter(|(key, assignment)| {
+                    key.kind == ShardKind::Stream
+                        && !brokers_of(assignment).contains(self.local.as_str())
+                        && unclaimed.get(*key) != Some(&assignment.incarnation)
+                        && held.get(*key) != Some(&assignment.incarnation)
+                })
+                .map(|(key, assignment)| (key.clone(), assignment.incarnation))
+                .collect()
+        };
+        // Only a durable registered stream reaches `claimed`: any other read
+        // would be thrown away, and made again on every pass.
+        let mut wanted = Vec::with_capacity(candidates.len());
+        for (key, incarnation) in candidates {
+            let metadata = self
+                .broker
+                .stream_metadata(&key.tenant_id, &key.namespace, &key.stream)
+                .await;
+            if metadata.is_some_and(|metadata| metadata.durable) {
+                wanted.push((key, incarnation));
+            }
         }
+        let read = futures::stream::iter(wanted)
+            .map(|(key, incarnation)| async move {
+                #[cfg(test)]
+                self.marker_reads.fetch_add(1, Ordering::Relaxed);
+                let read = self.read_marker(&key, incarnation).await;
+                (key, read)
+            })
+            .buffer_unordered(MARKER_READS)
+            .collect()
+            .await;
+        Reads { claims, read }
+    }
+
+    async fn read_marker(&self, key: &ShardKey, incarnation: u64) -> anyhow::Result<Option<bool>> {
         let (broker, shard) = (Arc::clone(&self.broker), key.clone());
         let read = tokio::task::spawn_blocking(move || -> anyhow::Result<Option<bool>> {
             let Some(storage) = broker.durable_storage() else {
@@ -229,6 +299,38 @@ impl RaftShards {
         .await
         .context("read task")
         .and_then(|read| read);
+        #[cfg(test)]
+        let _ = self
+            .stall_reads
+            .subscribe()
+            .wait_for(|stalled| !stalled)
+            .await;
+        read
+    }
+
+    /// Whether an earlier run of this broker opened a member of `key`. Such
+    /// a member is opened again whatever placement says now: it may be a
+    /// voter its group counts on. Called under `open`, with the reads made
+    /// before it was taken.
+    ///
+    /// Only an unmarked directory is remembered. A failed read, or a stream
+    /// not yet at `incarnation` here, is read again on the next pass: taken
+    /// for "never opened" for good, it would leave a voter closed.
+    async fn claimed(&self, key: &ShardKey, incarnation: u64, reads: &mut Reads) -> bool {
+        if self.unclaimed.lock().get(key) == Some(&incarnation) {
+            return false;
+        }
+        let read = match reads.take(key) {
+            Some(read) => read,
+            // Not read before the lock, or another pass claimed a directory
+            // while the reads ran: an "unmarked" from before that may be
+            // stale.
+            None => {
+                #[cfg(test)]
+                self.reads_under_lock.fetch_add(1, Ordering::Relaxed);
+                self.read_marker(key, incarnation).await
+            }
+        };
         if read.is_ok() {
             self.unreadable.lock().remove(key);
         }
@@ -363,12 +465,41 @@ impl RaftShards {
     }
 
     #[cfg(test)]
+    pub(crate) fn stall_reads(&self, stalled: bool) {
+        self.stall_reads.send_replace(stalled);
+    }
+
+    #[cfg(test)]
     pub(crate) async fn log_of(&self, shard: &ShardKey) -> Option<DiskLog> {
         self.open
             .lock()
             .await
             .get(shard)
             .map(|member| member.log.clone())
+    }
+}
+
+/// The engine markers a pass read before it took `open`.
+struct Reads {
+    /// [`RaftShards::claims`] before the first read started.
+    claims: u64,
+    read: HashMap<ShardKey, anyhow::Result<Option<bool>>>,
+}
+
+impl Reads {
+    /// Drops every read if a directory was claimed after the reads started
+    /// (`claims` is the count now). Called once the pass holds `open`: its
+    /// own claims run under it, after `claimed` for the same key, so they
+    /// cannot make another key's read stale.
+    fn check(&mut self, claims: u64) {
+        if claims != self.claims {
+            self.read.clear();
+        }
+    }
+
+    /// `key`'s read, made at the incarnation the same feed names.
+    fn take(&mut self, key: &ShardKey) -> Option<anyhow::Result<Option<bool>>> {
+        self.read.remove(key)
     }
 }
 
@@ -395,7 +526,9 @@ impl EngineShards for RaftShards {
         assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
     ) -> Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
         Box::pin(async move {
+            let mut reads = self.read_markers(assignments).await;
             let mut open = self.open.lock().await;
+            reads.check(self.claims.load(Ordering::Acquire));
             let mut taken = Taken::new();
             // A member that knows no leader may be cut off, and its commit
             // index has stopped: subscribers served from its log would wait,
@@ -497,7 +630,7 @@ impl EngineShards for RaftShards {
                 let brokers = brokers_of(assignment);
                 if !open.contains_key(key) {
                     if !brokers.contains(self.local.as_str())
-                        && !self.claimed(key, assignment.incarnation).await
+                        && !self.claimed(key, assignment.incarnation, &mut reads).await
                     {
                         continue;
                     }

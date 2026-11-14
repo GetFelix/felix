@@ -361,6 +361,201 @@ async fn a_dropped_member_reopens_after_a_failed_read() {
     shards.runtime.shutdown().await;
 }
 
+/// **A slow marker read holds up no other shard.** A pass reads markers
+/// before it takes the lock that other passes and a deleted stream's close
+/// wait on.
+#[tokio::test]
+async fn a_slow_marker_read_does_not_hold_up_other_shards() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "invoices",
+            StreamMetadata {
+                durable: true,
+                incarnation: INCARNATION,
+                replication_factor: Some(1),
+                ..StreamMetadata::default()
+            },
+        )
+        .await
+        .expect("invoices");
+    let shards = shards(&broker);
+    let (orders, invoices) = (key("orders", 0), key("invoices", 0));
+    let mut elsewhere = assigned(orders.clone(), INCARNATION);
+    elsewhere.leader = "broker-b".to_string();
+    elsewhere.replicas = vec!["broker-b".to_string()];
+
+    shards.stall_reads(true);
+    let slow = tokio::spawn({
+        let shards = Arc::clone(&shards);
+        async move {
+            shards.take(&mut assignments([elsewhere])).await;
+        }
+    });
+    until("the marker read to start", || {
+        shards.stall_reads.receiver_count() > 0
+    })
+    .await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        shards.take(&mut assignments([assigned(invoices.clone(), INCARNATION)])),
+    )
+    .await
+    .expect("a pass waited on another shard's marker read");
+    assert!(shards.runtime.status(&invoices).is_some());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        felix_broker::EngineLogs::close_through(&*shards, "t1", "ns", "invoices", INCARNATION),
+    )
+    .await
+    .expect("a close waited on another shard's marker read");
+    assert!(shards.runtime.status(&invoices).is_none());
+    assert!(!slow.is_finished());
+
+    shards.stall_reads(false);
+    slow.await.expect("the slow pass");
+    assert!(shards.runtime.status(&orders).is_none());
+    shards.runtime.shutdown().await;
+}
+
+/// **A pass's own opens keep its marker reads.** Otherwise a restart that
+/// opens members placed here reads every other marker under the lock.
+#[tokio::test]
+async fn a_pass_that_opens_members_reads_no_marker_under_the_lock() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    // Several on each side, so the pass's map order almost always puts an
+    // open before a check of a shard placed elsewhere.
+    let here: Vec<String> = (0..4).map(|n| format!("here-{n}")).collect();
+    let away: Vec<String> = (0..8).map(|n| format!("away-{n}")).collect();
+    for stream in here.iter().chain(&away) {
+        broker
+            .register_stream(
+                "t1",
+                "ns",
+                stream,
+                StreamMetadata {
+                    durable: true,
+                    incarnation: INCARNATION,
+                    replication_factor: Some(1),
+                    ..StreamMetadata::default()
+                },
+            )
+            .await
+            .expect("stream");
+    }
+    let shards = shards(&broker);
+    let placed = here
+        .iter()
+        .map(|stream| assigned(key(stream, 0), INCARNATION))
+        .chain(away.iter().map(|stream| {
+            let mut elsewhere = assigned(key(stream, 0), INCARNATION);
+            elsewhere.leader = "broker-b".to_string();
+            elsewhere.replicas = vec!["broker-b".to_string()];
+            elsewhere
+        }));
+
+    shards.take(&mut assignments(placed)).await;
+    for stream in &here {
+        assert!(shards.runtime.status(&key(stream, 0)).is_some());
+    }
+    for stream in &away {
+        assert!(shards.runtime.status(&key(stream, 0)).is_none());
+    }
+    assert_eq!(shards.reads_under_lock.load(Ordering::Relaxed), 0);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **Only a durable registered stream's marker is read.** No other shard
+/// reaches the check, so its read would be made again on every pass.
+#[tokio::test]
+async fn no_marker_is_read_for_a_stream_that_cannot_be_a_member() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "memory",
+            StreamMetadata {
+                durable: false,
+                incarnation: INCARNATION,
+                ..StreamMetadata::default()
+            },
+        )
+        .await
+        .expect("memory");
+    let shards = shards(&broker);
+    let elsewhere = |stream: &str| {
+        let mut assignment = assigned(key(stream, 0), INCARNATION);
+        assignment.leader = "broker-b".to_string();
+        assignment.replicas = vec!["broker-b".to_string()];
+        assignment
+    };
+
+    for _ in 0..2 {
+        shards
+            .take(&mut assignments([
+                elsewhere("memory"),
+                elsewhere("unknown"),
+            ]))
+            .await;
+    }
+    assert_eq!(shards.marker_reads.load(Ordering::Relaxed), 0);
+    assert_eq!(shards.reads_under_lock.load(Ordering::Relaxed), 0);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **A marker read as unmarked before a claim is not trusted after it.**
+/// Remembered, it would keep the claimed member closed for good once its
+/// placement dropped this broker.
+#[tokio::test]
+async fn a_marker_claimed_during_a_read_is_read_again() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut elsewhere = assigned(orders.clone(), INCARNATION);
+    elsewhere.leader = "broker-b".to_string();
+    elsewhere.replicas = vec!["broker-b".to_string()];
+
+    shards.stall_reads(true);
+    let slow = tokio::spawn({
+        let shards = Arc::clone(&shards);
+        async move {
+            shards.take(&mut assignments([elsewhere])).await;
+        }
+    });
+    // Read as unmarked; held there while another pass claims the directory.
+    until("the marker to be read", || {
+        shards.stall_reads.receiver_count() > 0
+    })
+    .await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        shards.take(&mut assignments([assigned(orders.clone(), INCARNATION)])),
+    )
+    .await
+    .expect("a pass waited on another pass's marker read");
+    felix_broker::EngineLogs::close_through(&*shards, "t1", "ns", "orders", INCARNATION).await;
+    broker
+        .close_stream_shard("t1", "ns", "orders", 0, None)
+        .await
+        .expect("close the stream");
+    assert!(shards.runtime.status(&orders).is_none());
+
+    shards.stall_reads(false);
+    slow.await.expect("the slow pass");
+    assert!(
+        shards.runtime.status(&orders).is_some(),
+        "a stale unmarked read kept the claimed member closed"
+    );
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// **A led term is not served while the stream could not be moved to the
 /// committed tail.** Here nothing tells the broker what the group committed,
 /// so the move does nothing, and that is not taken for a stream at its tail.
