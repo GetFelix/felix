@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794618612350,
+  "lastUpdate": 1794620088775,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70290,6 +70290,72 @@ window.BENCHMARK_DATA = {
             "range": "439.96",
             "unit": "us",
             "extra": "trials: 5\nmedian: 538.00\nmean: 801.40\nstdev: 439.96\ncv: 54.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "134301918d9b3e4ef9707a29e6eb945f9e1c01c1",
+          "message": "fix(broker): start from the view under a control plane with no group (#2438) (#2504)\n\nThe group check added in #2463 made a start from the control-plane view\nrequire a controlplane_group record. A control plane with no metadata\ngroup (the in-memory backend) answers without one, so admit stored\nnothing and every later start from the view was refused with NoGroup:\nFELIX_START_WITHOUT_CONTROLPLANE never worked against such a control\nplane. The cluster tests a_broker_restarted_while_the_control_plane_is_\ndown_votes and ..._waits_for_it_under_the_unified_fence time out on it.\n\nA start that finds no group now writes controlplane_group_none, and\nqualify accepts it in place of a record. The mark is not data, so a\ngroup formed later on an empty catalog still adopts the directory.\n\nSpec-Unaffected: broker startup check against the control plane; no TLA\nmodel covers it.",
+          "timestamp": "2026-11-13T17:08:48-08:00",
+          "tree_id": "8093f151e38687e3cd0a7606e35b9f85ea52bf78",
+          "url": "https://github.com/GetFelix/felix/commit/134301918d9b3e4ef9707a29e6eb945f9e1c01c1"
+        },
+        "date": 1794620080533,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.40\nstdev: 0.55\ncv: 0.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 119,
+            "range": "13.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 119.00\nmean: 124.60\nstdev: 13.67\ncv: 10.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 147,
+            "range": "672.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 147.00\nmean: 447.40\nstdev: 672.30\ncv: 150.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 85.60\nstdev: 0.89\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 192,
+            "range": "13.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 193.60\nstdev: 13.32\ncv: 6.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 524,
+            "range": "244.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 524.00\nmean: 509.20\nstdev: 244.21\ncv: 47.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
