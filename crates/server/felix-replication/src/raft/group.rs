@@ -983,12 +983,20 @@ impl Group {
     /// shard. Ok only once this member has applied the read index, so a
     /// value the reader takes after this returns has every answered write.
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
-        self.read_index(term).await.map(drop)
+        let patience = Duration::from_millis(self.pace.timers.election_max);
+        let deadline = tokio::time::Instant::now() + patience;
+        let bound = self.read_index(term).await?;
+        let unanswered = CommitError::TimedOut {
+            what: "read",
+            timeout: patience,
+        };
+        self.applied_through(bound - 1, deadline, unanswered).await
     }
 
-    /// [`Self::confirm_read`], and one past the index a reader must have
-    /// applied before it reads: the leader's commit index when a majority
-    /// confirmed it.
+    /// One past the index a reader must have applied before it reads: the
+    /// leader's commit index when a majority confirmed that this member
+    /// still leads `term`. The caller waits for the apply under its own
+    /// deadline.
     async fn read_index(&self, term: u64) -> Result<u64, CommitError> {
         let lost = |detail| CommitError::LeadershipLost {
             what: "read",
@@ -1014,8 +1022,6 @@ impl Group {
             };
             let forward = match round {
                 Ok((read, _)) if **read.committed_leader_id() == term => {
-                    self.applied_through(read.index(), deadline, unanswered)
-                        .await?;
                     return Ok(read.index() + 1);
                 }
                 Ok(_) => {

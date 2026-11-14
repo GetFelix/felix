@@ -374,10 +374,12 @@ async fn a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged() 
 }
 
 /// **A `Leader` stream keeps acknowledging across a lost leader, and loses
-/// at most the tail its old leader acknowledged alone.** A `Leader` publish
-/// is answered on the leader's own log, so a record no follower held yet
-/// goes with the leader. Everything before it stays, once and in order, and
-/// the next leader's acknowledgements are all in its log.
+/// at most the tail its old leader acknowledged alone.** A publisher keeps
+/// publishing while the leader is cut off from its followers, so what the
+/// leader answers on its lease from then on is on its log alone and goes
+/// with it. What the next leader keeps of the acknowledged sequence is a
+/// prefix of it, once and in order, and the next leader's acknowledgements
+/// are all in its log.
 #[tokio::test]
 #[serial]
 async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowledged() {
@@ -389,14 +391,40 @@ async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowl
     let mut cluster = Cluster::start(config).await.expect("start cluster");
     let nodes = cluster.node_ids();
     let leader = leader_among(&cluster, &nodes).await;
-    let mut before = Vec::new();
-    for i in 0..20 {
-        let payload = format!("before-{i}").into_bytes();
-        publish_acked(&cluster, &leader, &payload).await;
-        before.push(payload);
-    }
+    publish_acked(&cluster, &leader, b"first").await;
+
+    // One connection, publishing in order until a publish is not answered:
+    // the first one left waiting for a commit that cannot come.
+    let client = cluster.client_on(&leader).await.expect("client");
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let publishing = tokio::spawn(async move {
+        let publisher = client.publisher().await.expect("publisher");
+        let mut acked = vec![b"first".to_vec()];
+        for i in 0..100_000 {
+            let payload = format!("run-{i}").into_bytes();
+            let publish = publisher.publish(
+                &tenant,
+                &namespace,
+                STREAM,
+                payload.clone(),
+                AckMode::PerMessage,
+            );
+            match tokio::time::timeout(Duration::from_secs(1), publish).await {
+                Ok(Ok(_)) => acked.push(payload),
+                _ => break,
+            }
+        }
+        acked
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cluster.partition_node(&leader).expect("partition");
+    let acked = tokio::time::timeout(Duration::from_secs(30), publishing)
+        .await
+        .expect("the publisher stopped being answered")
+        .expect("publisher task");
 
     cluster.kill_node(&leader).expect("kill the leader");
+    cluster.heal_partitions().expect("heal");
     let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
     let elected = leader_among(&cluster, &survivors).await;
     let mut after = Vec::new();
@@ -410,18 +438,17 @@ async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowl
     for payload in &after {
         assert_eq!(copies(&held, payload), 1, "{elected} acknowledged it");
     }
-    let kept = before
-        .iter()
-        .take_while(|payload| held.contains(payload))
-        .count();
-    for payload in &before[..kept] {
-        assert_eq!(copies(&held, payload), 1, "kept other than once");
-    }
-    for payload in &before[kept..] {
-        assert_eq!(copies(&held, payload), 0, "kept above a lost record");
-    }
-    let order: Vec<&Vec<u8>> = held.iter().filter(|have| before.contains(have)).collect();
-    assert_eq!(order, before[..kept].iter().collect::<Vec<_>>());
+    let kept: Vec<&Vec<u8>> = held.iter().filter(|have| acked.contains(have)).collect();
+    assert!(
+        kept.len() < acked.len(),
+        "{elected} kept all {} acknowledged records: nothing was answered on the lease alone",
+        acked.len()
+    );
+    assert_eq!(
+        kept,
+        acked[..kept.len()].iter().collect::<Vec<_>>(),
+        "what {elected} kept is not a prefix of what was acknowledged"
+    );
 }
 
 /// **A leader of a `Leader` stream that its followers cannot reach

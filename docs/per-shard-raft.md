@@ -1142,6 +1142,13 @@ hybrid. Such a publisher never hears of an unknown outcome, because it was
 already answered. A publisher that needs the outcome uses a `Quorum`
 stream.
 
+Answers can overtake each other. Batch N can miss the lease and wait for
+its commit while N+1, written a moment later, is answered on the lease.
+If the leader is deposed before N commits, N's publisher gets an error
+while N+1's was already acknowledged. That is within the `Leader`
+contract, and the log keeps no hole: N+1 sits after N, so the next leader
+keeps N+1 only if it keeps N.
+
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
 > `batches_queued_together_go_to_openraft_in_one_call`,
 > `a_publisher_that_goes_away_keeps_its_place`,
