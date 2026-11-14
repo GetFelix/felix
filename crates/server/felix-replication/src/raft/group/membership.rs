@@ -73,6 +73,10 @@ pub(crate) enum StepError {
     /// openraft refused the membership itself. Asking again changes
     /// nothing.
     Refused(String),
+    /// The membership is not joint, so there is nothing to leave.
+    NotJoint,
+    /// The step would write a version below the one the membership has.
+    OlderVersion,
     /// The group's core has stopped.
     Closed,
 }
@@ -154,14 +158,16 @@ impl Group {
     ) -> Result<(), StepError> {
         settled(basis)?;
         self.leads_in(&voters)?;
+        not_older(basis, version)?;
         self.change(basis, MembershipEdit::voters(voters, version))
             .await
     }
 
     /// Leave the joint membership `basis` holds for its new voters.
     pub(crate) async fn leave_joint(&self, basis: &Basis) -> Result<(), StepError> {
-        let Some(voters) = basis.membership.get_joint_config().last() else {
-            return Err(StepError::Refused("the membership has no voters".into()));
+        // Leaving a membership that is not joint would append it again.
+        let [_, voters] = basis.membership.get_joint_config().as_slice() else {
+            return Err(StepError::NotJoint);
         };
         self.leads_in(voters)?;
         self.change(basis, MembershipEdit::flatten(voters.clone()))
@@ -178,6 +184,8 @@ impl Group {
     ) -> Result<(), StepError> {
         settled(basis)?;
         let voters = basis.membership.get_joint_config().clone();
+        voters.iter().try_for_each(|set| self.leads_in(set))?;
+        not_older(basis, version)?;
         let stamped = Membership::new(voters, learners, version);
         let written = self
             .raft
@@ -208,6 +216,15 @@ impl Group {
 fn settled(basis: &Basis) -> Result<(), StepError> {
     if basis.membership.get_joint_config().len() > 1 {
         return Err(StepError::Joint);
+    }
+    Ok(())
+}
+
+/// A membership's version never goes back: a leader that took an older
+/// target for a newer one would undo a change the control plane made since.
+fn not_older(basis: &Basis, version: TargetVersion) -> Result<(), StepError> {
+    if version < basis.membership.version() {
+        return Err(StepError::OlderVersion);
     }
     Ok(())
 }

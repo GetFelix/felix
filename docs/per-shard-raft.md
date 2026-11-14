@@ -1338,7 +1338,8 @@ the membership in memory. A shard's state is its log. A membership record's
 payload is JSON: a layout version, the voter sets (two during a joint
 change), the learners, each member as its broker id and copy id, and the
 version of the target the membership was made from ("Membership"). Layout 1
-had no target version and reads as the zero version.
+had no target version and reads as the zero version. A layout 2 record with
+no version is refused, not read as zero.
 
 Two things are left for the pull request that puts stream shards on Raft
 (#2233):
@@ -2206,6 +2207,9 @@ Two rules hold for every step, whoever asks for it:
   leader hands leadership to a voter of the new set first. On a joint
   membership the only step written is leaving it, because any other edit
   would also flatten the joint.
+- **The version never goes back.** A step that would write a version below
+  the one the membership has is refused before openraft is asked, so an
+  older target cannot undo a newer one.
 
 The decision of which step comes next (`raft/membership.rs`) follows
 the leader actions of the placement model (`docs/formal/FelixRaftPlacement.tla`
@@ -2266,7 +2270,7 @@ differently:
 | --- | --- |
 | The log or the term moved since the look, the leader was deposed, openraft has a change in progress, or nothing of the term is committed yet | Looks again after a wait. The same step can go through later |
 | A step did not commit within 10 seconds | Looks again. The entry stays in the log, and the next look waits for it |
-| openraft refused the membership itself (an unknown member, for example) | Reports the group stuck and stops until the target or the term changes. Asking again would change nothing |
+| openraft refused the membership itself (an unknown member, for example), or the step would take the version back | Reports the group stuck and stops until the target or the term changes. Asking again would change nothing |
 
 The wait starts at 50 ms and doubles up to 5 seconds. After eight looks in
 a row that changed nothing, the group is reported stuck and the driver

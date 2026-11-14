@@ -275,11 +275,18 @@ impl<M: Member> Driver<M> {
                 }
             }
             Some(Err(StepError::Closed)) => Pass::Closed,
-            Some(Err(err @ (StepError::Moved | StepError::NotLeader | StepError::Busy(_)))) => {
-                Pass::Again(err)
-            }
+            // Not joint any more: the log moved since the look.
             Some(Err(
-                err @ (StepError::WithoutLeader | StepError::Joint | StepError::Refused(_)),
+                err @ (StepError::Moved
+                | StepError::NotLeader
+                | StepError::NotJoint
+                | StepError::Busy(_)),
+            )) => Pass::Again(err),
+            Some(Err(
+                err @ (StepError::WithoutLeader
+                | StepError::Joint
+                | StepError::OlderVersion
+                | StepError::Refused(_)),
             )) => Pass::Refused(err),
         }
     }
@@ -468,6 +475,9 @@ pub(crate) fn allowed(view: &View, step: &Step) -> Result<(), String> {
             "leaving the joint for {:?} would leave this leader out",
             view.config.new
         )),
+        Step::Stamp { .. } if !view.config.new.contains(me) => {
+            Err("a stamp on voters that leave this leader out".into())
+        }
         Step::Transfer(to) if to == me => Err("a transfer to this leader itself".into()),
         _ => Ok(()),
     }
