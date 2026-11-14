@@ -1300,12 +1300,13 @@ async fn a_quorum_stream_is_answered_only_at_its_commit() {
     stop(&members).await;
 }
 
-/// **Once nobody has answered the leader for a lease, a publish to a
-/// `Leader` stream waits for its commit, and the shard stays open.** The
-/// others may have elected by then, and their log does not hold what this
-/// broker writes now.
+/// **A leader nobody has answered for several leases answers no publish
+/// to a `Leader` stream, and the shard stays open.** The others may have
+/// elected by then. The group takes no write this late, so the lease is
+/// not what refuses here: its own rules are tested where a write can be
+/// held on the log, in felix-replication's `raft/tests/deliver.rs`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_leader_stream_outside_the_lease_waits_for_its_commit() {
+async fn a_leader_cut_off_past_its_lease_answers_no_leader_publish() {
     let (net, members, leader) = trio_at(ConsistencyLevel::Leader).await;
     let orders = key("orders", 0);
     let term = members[leader].shards.leading(&orders).expect("term");

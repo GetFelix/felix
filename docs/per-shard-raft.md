@@ -1556,6 +1556,20 @@ delivery order, like a `Quorum` one. The check is not asked again for that
 batch. Subscribers are not part of this: they get the batch at its commit
 whichever way the publisher was answered ("Delivering committed records").
 
+The order matters. The check runs after the write, so anything that ended
+the lease while the batch was being written counts: a term given up, a
+suspend, or a write slow enough that the last majority answer is now a
+lease old. Asked before the write, the check would pass on a lease that
+is gone by the time the publisher is answered.
+
+A leader cut off from its followers rarely gets as far as the check.
+openraft takes no write from a leader no majority has answered for
+`election_max`, and the publish task waits for a heartbeat's answer first
+("Writing through openraft"). Such a publish is not written and not
+answered. The check is what covers the time before that: the lease is
+shorter than `election_max`, and a batch already on its way to the log
+when the leader was cut off still lands.
+
 ```mermaid
 sequenceDiagram
     participant P as Leader publisher
@@ -1583,8 +1597,11 @@ election timeout and drift bound is anything over 1636 ms.
 
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_leader_publish_is_answered_on_the_lease_and_delivered_at_its_commit`,
+> `a_term_given_up_after_the_write_landed_is_not_answered_on_the_lease`,
+> `a_leader_publish_written_across_a_suspend_waits_for_its_commit`,
 > `a_leader_publish_outside_the_lease_waits_for_its_commit`,
-> `a_replaced_leader_answers_no_leader_publish` and
+> `a_replaced_leader_answers_no_leader_publish`,
+> `a_batch_written_at_another_term_is_not_answered_on_the_lease` and
 > `a_publish_answered_on_the_lease_and_then_replaced_reaches_no_subscriber`;
 > `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
 > `a_batch_answered_where_it_was_written_is_delivered_only_at_its_commit`;

@@ -1,5 +1,8 @@
 name: Raft idle groups
 
+# Also the home of the Raft publish latency report (the `publish-latency` job
+# below), which runs only when a dispatch asks for it.
+#
 # What idle per-shard Raft groups cost one broker in CPU and memory
 # (crates/server/felix-replication/tests/raft_idle_cpu.rs). Two runs:
 # 5,000 groups led by one runtime whose peers are stubs, the worst case for one
@@ -21,6 +24,14 @@ on:
         description: "Groups in the transport run, each with a member on all three runtimes"
         required: false
         default: "1700"
+      report:
+        description: "idle, or publish-latency: RF 3 Leader and Quorum publish p50/p99 with the lease on and off"
+        required: false
+        default: "idle"
+      rounds:
+        description: "Rounds of the publish latency report"
+        required: false
+        default: "3"
 
 permissions:
   contents: read
@@ -35,6 +46,7 @@ env:
 jobs:
   idle:
     name: Raft idle groups
+    if: github.event_name != 'workflow_dispatch' || inputs.report != 'publish-latency'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -74,4 +86,56 @@ jobs:
             echo "### Raft idle groups"
             echo
             grep -hE 'idle groups|test result' raft-idle-stub.log raft-idle-transport.log || echo "no result"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # What a publisher waits for on a three-broker Raft shard, at each level,
+  # with the leader lease on (the default) and off (FELIX_SHARD_RAFT_LEASE_MS=0,
+  # every publish answered at its commit). Real broker processes on loopback
+  # on one shared runner: read the ratio between cells, not the absolute
+  # numbers. The cell that goes first flips each round so drift lands on both.
+  publish-latency:
+    name: Raft publish latency
+    if: github.event_name == 'workflow_dispatch' && inputs.report == 'publish-latency'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: raft-publish-latency
+      - name: Build
+        run: |
+          cargo build --locked --release -p felix-broker-service --bin felix-broker --features raft
+          cargo test --locked --release -p felix-cluster --test raft_shards --no-run
+      - name: Measure
+        env:
+          FELIX_TEST_RAFT_SHARDS: "1"
+          ROUNDS: ${{ inputs.rounds || '3' }}
+        run: |
+          set -o pipefail
+          ulimit -n "$(ulimit -Hn)"
+          for round in $(seq 1 "$ROUNDS"); do
+            if [ $((round % 2)) -eq 1 ]; then leases="0 1500"; else leases="1500 0"; fi
+            for level in Leader Quorum; do
+              for lease in $leases; do
+                RAFT_LATENCY_LEVEL="$level" RAFT_LATENCY_LEASE_MS="$lease" \
+                  cargo test --locked --release -p felix-cluster --test raft_shards \
+                  report_publish_latency -- --ignored --nocapture 2>&1 | tee -a raft-publish-latency.log
+              done
+            done
+          done
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Raft publish latency (RF 3, one publisher, 256-byte records)"
+            echo
+            echo '```'
+            grep -h 'raft publish latency:' raft-publish-latency.log || echo "no result"
+            echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
