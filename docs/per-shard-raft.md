@@ -2089,7 +2089,9 @@ of its own that is closed after, so it leaves nothing behind for other
 requests to that peer to trip over once the peer restarts. Once a peer has
 answered it is not asked again: an open connection to it answers each time,
 and without one its last answer stands. A peer that restarted on the other
-engine is noticed when a connection to it opens again.
+engine is noticed when a connection to it opens again. The exception is a
+peer whose shards are refused: they are closed, so no request opens a
+connection to it, and the broker keeps asking it on every routing pass.
 
 - It closes the shard and stops serving it. Nothing is acknowledged.
 - Every request for it is refused with "the shard's brokers run different
@@ -2099,12 +2101,14 @@ engine is noticed when a connection to it opens again.
   refusing broker's own.
 
 The fix is to set `FELIX_SHARD_ENGINE` the same on every broker and restart
-the odd one. The refusal ends on its own once the peers agree. Streams in
+the odd one. The refusal ends on its own at the first routing pass after
+the restarted broker answers with the matching engine. Streams in
 memory, caches and counters are not checked: they run on the hybrid engine
 everywhere.
 
 A broker asks without waiting for the answer, and asks again on every
-routing pass. A peer that has not answered yet refuses nothing, because a
+routing pass until the peer answers, and after that only while the peer's
+shards are refused. A peer that has not answered yet refuses nothing, because a
 peer that is down says nothing about its engine and waiting for it would
 keep a shard closed through an ordinary outage. When an answer arrives
 that differs, the shard closes at once.
