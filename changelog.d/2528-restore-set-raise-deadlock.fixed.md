@@ -1,1 +1,1 @@
-- `DiskLog::restore_to` now takes the replica-state lock before the segment lock, the order a replica set or ballot write takes them, so a restore running beside a set raise on the same log can no longer deadlock its storage (#2528).
+- `DiskLog::restore_to` now takes the replica-state lock before the segment lock, the order a set raise and a sealing append take them, so a restore running beside a set raise on the same log can no longer deadlock its storage (#2528).

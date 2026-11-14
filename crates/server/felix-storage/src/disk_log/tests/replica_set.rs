@@ -621,17 +621,31 @@ fn a_restore_and_a_set_raise_on_one_log_do_not_deadlock() {
         log.accept_set_keeping_earlier(set_at(1))
             .await
             .expect("accept");
-        // Each holds its first lock long enough for the other to take its own.
+        // The raise holds its first lock long enough for the restore to take its own.
         log.inner
             .hold_between_locks_millis
             .store(300, std::sync::atomic::Ordering::Release);
-        let restore = tokio::spawn({
-            let log = std::sync::Arc::clone(&log);
-            async move { log.restore_to(2).await }
-        });
         let raise = tokio::spawn({
             let log = std::sync::Arc::clone(&log);
             async move { log.accept_set_keeping_earlier(set_at(2)).await }
+        });
+        // Start the restore only once the raise holds `replica_persisted`, so
+        // the old segments-first order always loses the race.
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while log
+                .inner
+                .hold_between_locks_entries
+                .load(std::sync::atomic::Ordering::Acquire)
+                == 0
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the raise never took its lock");
+        let restore = tokio::spawn({
+            let log = std::sync::Arc::clone(&log);
+            async move { log.restore_to(2).await }
         });
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             restore.await.expect("restore task").expect("restore");

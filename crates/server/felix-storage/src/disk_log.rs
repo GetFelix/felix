@@ -1317,6 +1317,8 @@ impl DiskLog {
             #[cfg(test)]
             hold_between_locks_millis: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
+            hold_between_locks_entries: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
             flushes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
@@ -1989,8 +1991,9 @@ struct LogInner {
     /// Tokio's clock, so a simulation decides when to persist on virtual time.
     ///
     /// Lock order: `append_lock`, then `replica_persisted`, then `segments`.
-    /// Ballot and set writes hold this lock and read `segments` without
-    /// `append_lock`, so taking `segments` first and then this one deadlocks.
+    /// The set raise and the sealing append hold this lock and read
+    /// `segments` without `append_lock`, so taking `segments` first and then
+    /// this one deadlocks.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
@@ -2087,6 +2090,9 @@ struct LogInner {
     /// `replica_persisted` and `segments`, so a test can overlap the two.
     #[cfg(test)]
     hold_between_locks_millis: std::sync::atomic::AtomicU64,
+    /// Times the hook above has run, so a test can wait for the first holder.
+    #[cfg(test)]
+    hold_between_locks_entries: std::sync::atomic::AtomicU64,
     /// Set while a stretched inline rollover holds the segment lock.
     #[cfg(test)]
     inline_roll_active: std::sync::atomic::AtomicBool,
@@ -2340,6 +2346,8 @@ impl LogInner {
 impl LogInner {
     #[cfg(test)]
     fn hold_between_locks(&self) {
+        self.hold_between_locks_entries
+            .fetch_add(1, Ordering::Release);
         let millis = self.hold_between_locks_millis.load(Ordering::Acquire);
         std::thread::sleep(std::time::Duration::from_millis(millis));
     }
