@@ -38,6 +38,10 @@ impl Roots {
     }
 }
 
+/// Set in the process that poisons a log for
+/// [`a_copy_whose_flush_failed_does_not_vote_with_the_cut_log`].
+const POISONING_PROCESS: &str = "FELIX_TEST_POISONING_PROCESS";
+
 /// A copy whose directory was wiped comes back under a new id. A request
 /// for the old id is refused, the group still counts the old id as its
 /// voter, and the new copy never votes: the old promise is not made again
@@ -156,8 +160,33 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
 /// so a restart would cut its log back to the last sync, without R. It comes
 /// back under a new copy id instead. With the leader cut off, F1 and F2
 /// cannot elect a leader without R, and once the leader is back R commits.
+///
+/// The body runs in a process of its own. A poisoned log is counted for the
+/// whole process and never forgotten, and the replica tests in this binary
+/// attest no trusted copy once one is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
+    const NAME: &str =
+        "raft::tests::identity::a_copy_whose_flush_failed_does_not_vote_with_the_cut_log";
+    if std::env::var_os(POISONING_PROCESS).is_none() {
+        let output = tokio::task::spawn_blocking(|| {
+            std::process::Command::new(std::env::current_exe().expect("this binary"))
+                .args(["--exact", NAME, "--nocapture"])
+                .env(POISONING_PROCESS, "1")
+                .output()
+                .expect("child")
+        })
+        .await
+        .expect("join");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // "1 passed": a filter that matched nothing also exits 0.
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
     let mut cluster = Cluster::new(true);
     let roots = Roots::new();
     let mut members = BTreeSet::new();
