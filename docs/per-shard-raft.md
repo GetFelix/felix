@@ -2632,8 +2632,7 @@ So the leader refuses a new batch of several records before it writes
 anything: `invalid_request`, not retryable, "a stream on Raft does not take
 idempotent batches of more than one record". The sequence is not used up,
 and the producer can send the records as batches of one. The refusal comes
-at the producer's turn, after the look at the log, on a forwarded batch as
-on one the leader's own clients send. Only the log can tell a new batch
+at the producer's turn, after the look at the log. Only the log can tell a new batch
 from a re-send of one it holds whole or in part, and a re-send is still
 answered, as below.
 

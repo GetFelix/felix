@@ -1704,7 +1704,9 @@ mod on_raft {
             }
         }
 
-        /// Producer 77's batch `sequence` of `payloads`, forwarded.
+        /// Producer 77's batch `sequence` of `payloads`, forwarded with no
+        /// header block. The wire cannot carry that shape yet (#2570), so
+        /// the owner is handed it directly.
         async fn send(&self, sequence: u64, payloads: &[&'static [u8]]) -> InternalMessage {
             let publish = ForwardPublish {
                 payloads: payloads.iter().map(|p| Bytes::from_static(p)).collect(),

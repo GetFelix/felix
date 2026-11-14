@@ -1961,7 +1961,11 @@ last, after the owner if `0x0080` is set too:
 u64 offset
 ```
 
-A batch's offsets are contiguous, so the record at index `i` is at `offset + i`.
+A batch's offsets are contiguous, so the record at index `i` is at `offset + i`,
+with one exception: on a Raft shard, a re-sent idempotent batch that a leader
+change cut short is answered with its first record's original offset, and other
+records can lie between the part written before the cut and the rest. See
+`docs/per-shard-raft.md`, "Idempotent publishes".
 
 An ack carries an offset only if the broker sent it after the batch was
 written. The broker leaves the bit off when it has no offset to give: the stream
