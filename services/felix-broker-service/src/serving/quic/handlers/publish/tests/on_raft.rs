@@ -132,6 +132,17 @@ impl Leader {
         .expect("publish handled");
     }
 
+    /// Where `shard`'s committed records end.
+    fn committed(&self, shard: &crate::shards::ShardKey) -> u64 {
+        use felix_replication::engine::Engine;
+        self.ctx
+            .engine
+            .read_bound(None, shard)
+            .ok()
+            .flatten()
+            .expect("a commit bound")
+    }
+
     async fn acknowledged(&mut self, request_id: u64) {
         let answer = tokio::time::timeout(Duration::from_secs(10), self.out_rx.recv()).await;
         match answer.expect("answered in time").expect("an answer") {
@@ -202,25 +213,34 @@ async fn an_unacknowledged_publish_to_a_raft_shard_is_delivered() {
     EngineShards::shutdown(&*leader.shards).await;
 }
 
-/// **A publish acknowledged when it is queued is proposed to the group
-/// too.** `FELIX_ACK_ON_COMMIT=0` answers before the write, so the job has
-/// no waiter and takes the same path as an unacknowledged one.
+/// **A Raft shard answers at the commit even with `FELIX_ACK_ON_COMMIT=0`.**
+/// An answer on enqueue would promise a write the term may not live to make.
 #[tokio::test]
-async fn a_publish_acknowledged_on_enqueue_reaches_a_raft_shard() {
+async fn a_raft_shard_answers_at_the_commit_with_ack_on_commit_off() {
     let mut leader = leader(false).await;
-    let (mut receiver, _guard) = leader
-        .broker
-        .subscribe("t1", "ns", "orders", 0)
-        .await
-        .expect("subscribe")
-        .into_parts();
+    let orders = fixture::key("orders", 0);
+    let before = leader.committed(&orders);
 
     let batch = records("queued", 4);
     leader.publish_batch(batch.clone(), Some(3)).await;
+    assert!(
+        leader.out_rx.try_recv().is_err(),
+        "answered when it was queued"
+    );
     leader.acknowledged(3).await;
+    let committed = leader.committed(&orders);
+    assert!(
+        committed >= before + batch.len() as u64,
+        "answered at {committed}, before the batch committed"
+    );
 
-    let got = delivered(&mut receiver, batch.len()).await;
-    let payloads: Vec<Bytes> = got.into_iter().map(|(_, payload)| payload).collect();
-    assert_eq!(payloads, batch);
+    leader.publish(b"one", Some(4)).await;
+    assert!(
+        leader.out_rx.try_recv().is_err(),
+        "answered when it was queued"
+    );
+    leader.acknowledged(4).await;
+    let after = leader.committed(&orders);
+    assert!(after > committed, "answered before the record committed");
     EngineShards::shutdown(&*leader.shards).await;
 }

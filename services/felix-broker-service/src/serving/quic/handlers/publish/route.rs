@@ -521,6 +521,20 @@ pub(crate) fn targets_durable(target: &Option<PublishTarget>) -> bool {
     )
 }
 
+/// True when a Raft group runs the shard this publish is written to here.
+///
+/// Such a publish is answered at its commit whatever the ack settings say:
+/// an answer on enqueue would promise a write the term may not live to make.
+pub(crate) fn targets_raft(publish_ctx: &PublishContext, target: &Option<PublishTarget>) -> bool {
+    matches!(
+        target,
+        Some(
+            PublishTarget::Resolved { shard: Some(shard), .. }
+                | PublishTarget::Idempotent { shard: Some(shard), .. }
+        ) if publish_ctx.engine.on_raft(shard)
+    )
+}
+
 /// True when this publish must not be acknowledged until a majority holds it.
 ///
 /// `Quorum` is the stream that said "accepted by this broker is not good

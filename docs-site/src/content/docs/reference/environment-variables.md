@@ -406,6 +406,9 @@ it is queued.
   its cluster lease lapses, before the record is written
 - any other value: logged as a warning, and the default is kept
 
+A shard on Raft (`FELIX_SHARD_ENGINE=raft`) ignores this setting: its publishes
+are always answered after they commit.
+
 **Example**:
 ```bash
 export FELIX_ACK_ON_COMMIT="0"      # opt out: ack on accept

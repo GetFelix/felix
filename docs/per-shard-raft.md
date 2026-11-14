@@ -1930,14 +1930,16 @@ broker's lease: the term is what holds the shard. A publish routed at a
 term the broker no longer serves is refused with nothing written. Readers
 at every level are bound by the commit index.
 
-A publish nobody waits on takes the same path: one sent with no
-acknowledgement asked for, or one acknowledged when it was queued
-(`FELIX_ACK_ON_COMMIT=0` on a `Leader` stream). It is proposed and delivered
-at its commit like any other. If the term moved while it waited in the
-queue it is dropped, since there is nobody to tell, and counted in
-`felix_publish_requests_total{result="unacked_failed"}`, or in
-`felix_broker_acked_publishes_dropped_total` if it was acknowledged on
-enqueue. A forwarded publish is
+`FELIX_ACK_ON_COMMIT` does not apply to a shard on Raft. With it set to `0`
+a hybrid `Leader` stream is acknowledged when the publish is queued; a Raft
+shard still answers at the commit, since an answer on enqueue would promise
+a write the term may not live to make.
+
+A publish sent with no acknowledgement asked for takes the same path. It is
+proposed and delivered at its commit like any other. If the term moved while
+it waited in the queue it is dropped, since there is nobody to tell, and
+counted in `felix_publish_requests_total{result="unacked_failed"}`.
+A forwarded publish is
 checked against the term the owner serves now, not the one the sender saw.
 
 A `Quorum` publisher on a stream that does not fsync on commit is answered
