@@ -2378,9 +2378,8 @@ since the previous pass is emptied. A log that has is trimmed from its oldest
 records to half of what it holds, and never below its newest record, so the
 entries replication is about to read stay in memory. Idle groups give up
 their bytes first, and when only busy logs are left they all shrink a little.
-A dropped cache costs
-a read from the segments and nothing else, and the bound is soft: a log whose
-cache is in use is skipped until the next pass. The metadata group's log is
+A dropped cache costs a read from the segments and nothing else, and the
+bound is soft: a log whose cache is in use is skipped until the next pass. The metadata group's log is
 not counted; it keeps its own 4 MiB. The gauge
 `felix_broker_raft_tail_cache_bytes` reports the bytes held, and with several
 runtimes in one process the last one to report wins. Without the budget, 2,000

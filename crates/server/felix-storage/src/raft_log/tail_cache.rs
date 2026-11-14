@@ -116,21 +116,24 @@ impl TailBudget {
         let since = self
             .last_pass
             .swap(self.clock.load(Ordering::Relaxed), Ordering::Relaxed);
-        let mut victims: Vec<Arc<Tail>> = {
+        // Each log's time is read once: appends move it while this runs,
+        // and a sort whose keys change under it may panic.
+        let mut victims: Vec<(u64, Arc<Tail>)> = {
             let logs = self.logs.lock();
             logs.iter()
                 .filter_map(Weak::upgrade)
                 .filter(|log| !std::ptr::eq(Arc::as_ptr(log), keep) && log.held() > 0)
+                .map(|log| (log.last_append.load(Ordering::Relaxed), log))
                 .collect()
         };
-        victims.sort_by_key(|log| log.last_append.load(Ordering::Relaxed));
+        victims.sort_unstable_by_key(|(appended, _)| *appended);
         let low_water = self.limit - self.limit / 8;
         // Oldest first, so the idle logs are a prefix.
-        for victim in victims {
+        for (appended, victim) in victims {
             if self.held() <= low_water {
                 break;
             }
-            if victim.last_append.load(Ordering::Relaxed) <= since {
+            if appended <= since {
                 victim.free_if_unused(|cache| cache.clear());
             } else {
                 victim.free_if_unused(|cache| cache.trim_to(cache.bytes / 2));
