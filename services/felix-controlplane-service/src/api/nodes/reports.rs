@@ -61,6 +61,26 @@ pub(crate) async fn report_health(
             ref other => api_internal("record node heartbeat", other),
         })?;
 
+    // After the heartbeat was accepted, so a superseded incarnation's report
+    // is never kept. A failure costs only this beat's copy: the next beat
+    // carries the sequence again.
+    if let Some(root) = request.root {
+        let heard = crate::model::RootSequence {
+            storage_id: root.storage_id,
+            sequence: root.sequence,
+            incarnation: request.incarnation,
+        };
+        if let Err(err) = crate::model::validate_storage_id(&heard.storage_id) {
+            tracing::warn!(node_id = %node.node_id, error = %err, "ignored a root sequence under a malformed storage id");
+        } else if let Err(err) = state.store.record_root_sequence(&node.node_id, heard).await {
+            tracing::warn!(
+                node_id = %node.node_id,
+                error = %err,
+                "could not keep this broker's root sequence",
+            );
+        }
+    }
+
     // Lost, it costs a failover the lease's wait, not the heartbeat.
     if !request.suspects.is_empty() {
         let suspicion = crate::model::NodeSuspicion {

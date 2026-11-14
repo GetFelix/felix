@@ -82,6 +82,7 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
     data_dir: Option<&std::path::Path>,
     view: Option<crate::cluster::controlplane_view::ViewFile>,
     restore_check: Option<membership::DeferredCheck>,
+    root: membership::RootSequenceSlot,
     sync_shutdown: &CancellationToken,
 ) -> Option<MembershipTask> {
     match (&config.membership, link) {
@@ -118,6 +119,7 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
                 data_dir.map(std::path::Path::to_path_buf),
                 view,
                 restore_check,
+                root,
                 own_thread,
             ))
         }

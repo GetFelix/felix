@@ -379,7 +379,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// [`StoreError::Conflict`] when the shard cannot be sealed
     /// ([`ShardAssignment::can_seal`]). Not fenced by the placement token:
     /// it starts no move, and a placement write planned from an older read
-    /// is stale. Under Raft it needs metadata level 33 on every member, and
+    /// is stale. Under Raft it needs metadata level 34 on every member, and
     /// is refused below it.
     async fn seal_shard(
         &self,
@@ -400,7 +400,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// [`AssignmentWrite::Stale`] when the seal no longer stands. The report
     /// already recorded, sent again, is answered as written.
     /// [`StoreError::Conflict`] for a report whose voters cannot be the
-    /// shard's ([`crate::model::SealReport::names_voters_of`]). Level 33,
+    /// shard's ([`crate::model::SealReport::names_voters_of`]). Level 34,
     /// as for [`Self::seal_shard`].
     async fn accept_seal_report(
         &self,
@@ -414,7 +414,7 @@ pub trait ControlPlaneStore: Send + Sync {
     /// [`Self::accept_seal_report`], so a give-up never lands beside a
     /// recorded report. [`AssignmentWrite::Stale`] when no seal stands at
     /// `generation`, [`StoreError::Conflict`] when `sealer` is not the node
-    /// the order names. Level 33.
+    /// the order names. Level 34.
     async fn give_up_seal(
         &self,
         key: &ShardKey,
@@ -539,6 +539,33 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()>;
     /// Every suspicion held, fresh or not; the reader judges freshness.
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>>;
+
+    /// The highest root sequence `node_id`'s heartbeats carried, under the
+    /// storage id they carried it for. `None` when none is held, which the
+    /// broker's gate reads as no copy at all, never as a zero.
+    async fn root_sequence(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<crate::model::RootSequence>> {
+        let _ = node_id;
+        Ok(None)
+    }
+    /// Keep `heard` for `node_id` if it moves what is held
+    /// ([`crate::model::RootSequence::moved_by`]). Returns whether it did.
+    /// The default keeps nothing, which leaves a broker that cannot vouch
+    /// for its root by other means holding its Raft groups.
+    async fn record_root_sequence(
+        &self,
+        node_id: &str,
+        heard: crate::model::RootSequence,
+    ) -> StoreResult<bool> {
+        let _ = (node_id, heard);
+        Ok(false)
+    }
+    /// Every root sequence held, by node, for an export.
+    async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
+        Ok(Vec::new())
+    }
 
     /// The identity the metadata group recorded at formation. The default is
     /// a backend with no group, which forgets everything at restart.

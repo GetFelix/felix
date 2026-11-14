@@ -43,7 +43,7 @@ use crate::store::{AssignmentWrite, StoreError};
 /// - 409 `raft_unavailable` until the fleet has finalized `shard_raft`,
 ///   `not_sealable` for a shard that is not active, is moving or already
 ///   switched, and `conflict` when the shard changed under the request or a
-///   control-plane member is below metadata version 33.
+///   control-plane member is below metadata version 34.
 pub(crate) async fn seal_shard(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -122,7 +122,7 @@ pub(crate) async fn seal_shard(
 /// # Errors
 /// - 409 `not_sealer` when the node is not the shard's seal leader,
 ///   `conflict` for a report whose voters cannot be the shard's, or when a
-///   control-plane member is below metadata version 33.
+///   control-plane member is below metadata version 34.
 pub(crate) async fn report_seal(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -177,7 +177,7 @@ pub(crate) async fn report_seal(
 ///
 /// # Errors
 /// - 409 `not_sealer` when the node is not the shard's seal leader, or
-///   `conflict` when a control-plane member is below metadata version 33.
+///   `conflict` when a control-plane member is below metadata version 34.
 pub(crate) async fn give_up_seal(
     State(state): State<AppState>,
     headers: HeaderMap,

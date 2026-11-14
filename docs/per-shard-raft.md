@@ -168,7 +168,10 @@ is new to Raft whatever the storage id says.
 Every Raft request names the member id it is for, and a copy refuses one
 that names another id, an older copy id of its own broker included. Without
 that, a wiped copy would answer a vote request sent to the id it replaced,
-from an empty log (`FelixRaftPlacementAnswerAnyId.cfg`).
+from an empty log (`FelixRaftPlacementAnswerAnyId.cfg`). The refusal names
+the copy id the broker does hold for the group, which is how the broker
+that forms a group learns the others' copy ids. It answers nothing else:
+no vote, no log position.
 
 A member with a new id has never voted. It joins as a learner and the old
 member is removed by a membership change. This is the rule issue #1331 asks
@@ -201,28 +204,61 @@ root sequence, and the control plane's copy (both below). The gate has
 three outcomes:
 
 - **Behind** any of the three: the root gets a new storage id and every
-  copy id in it rotates.
+  copy id in it rotates. A broker that finds this as it opens the root
+  stops, so its restart registers under the new id.
 - **Unchecked:** the root holds marks but there is no copy of its sequence
   to compare against, because the machine rebooted (the witness is gone)
   and the control plane has none. No member opens until evidence arrives.
   A hold acts on evidence, never on silence.
 - **Passed:** otherwise, including a root with no marks yet.
 
-The control plane's copy is not built yet (issue #2441). Until it lands, a
-broker whose machine rebooted holds once its root has marks, and so does
-every start on a host with no witness directory (anything but Linux with
-`/dev/shm`). Brokers that stayed up are not affected, so failover with the
-control plane down still works. What waits is the restarted broker's own
-vote.
+A broker whose machine rebooted has no witness, and neither has any start
+on a host with no witness directory (anything but Linux with `/dev/shm`).
+Its root is judged on the control plane's copy, so it holds while the
+control plane is down or has none. Brokers that stayed up are not
+affected, so failover with the control plane down still works. What waits
+is the restarted broker's own vote.
 
-One more case holds until then. The witness keeps a root's sequence under
-its storage id. If the id changes anywhere but the gate's own rotation (a
-start after a crash or a restore, `felix-broker restore-point`, or a restore the
-cluster's registration reveals), or the broker crashes after the gate
-rotates the id but before it records the witness, the witness has nothing
-under the new id. A root with marks then reads as Unchecked on the next
-start and holds. That is safe, since a hold never lets a copy vote twice,
-but the broker waits for the control plane's copy like a rebooted one.
+**The broker runs the gate after its start.** A broker started with
+`FELIX_SHARD_ENGINE=raft` opens every Raft member through the gate. The
+gate runs in the background once the start's own restore check has
+answered, so a held root does not keep the broker from serving its other
+shards. Until the root passes, no Raft member opens, a request for a Raft
+shard placed here is answered "not ready", and the log says once why the
+root is held. When it passes, the routing feed is woken and the members
+open. A broker that started from its saved control-plane view, with the
+control plane down, has not had its restore check answered yet. Its Raft
+members wait for the control plane too, even with a witness: the check's
+verdict is one of the gate's inputs, and a rotation it makes removes the
+mark log, which must not be open by then.
+
+**A hold that no evidence can end.** A held root reports nothing, so the
+control plane learns a root's sequence only from a broker whose root is
+open. Two starts therefore hold for good. One is a root that wrote its
+first marks and lost its broker before a heartbeat carried them, on a
+machine that then rebooted or has no witness directory. The other is any
+start without a witness while a control-plane member is below metadata
+level 33, since nothing is stored below it; the control plane logs once
+per level that it keeps no root sequence. The broker logs the hold once
+at error level, sets `felix_broker_raft_root_held` to 1, and keeps
+serving its other shards. To end it, stop the broker and run
+`felix-broker rotate-storage-id`: the root starts over under a new
+storage id and its copies come back as new members. That is safe, since a
+hold never lets a copy vote twice, and the rotation gives up only what
+the root could not prove. Ending such a hold without an operator is
+tracked in #2542.
+
+When the gate finds a root behind while the broker runs, it rotates the
+storage id, logs that it is stopping, and stops the broker, as the
+deferred restore check does for a restored directory. This run registered
+under the old id and its hybrid copies stop being trusted with the
+rotation, so it must not go on serving. A clean stop is recorded under the
+new id, so the restart keeps it instead of rotating again. The restart
+registers under the new id, which the control plane treats as a replaced
+directory, and every Raft copy on the root rejoins as a new member. A
+root found under any id other than the one the run registered, as a
+rotation that failed after writing the id leaves it, stops the broker the
+same way and never opens.
 
 **The root sequence.** The incarnation and the run token change once per
 start. A root put back from a backup taken during the run it interrupts
@@ -237,12 +273,23 @@ hold a copy of it:
   before the vote is answered. The witness is in memory, so this adds no
   fsync. For as long as the machine stays up it is exact for votes, and
   for the log it trails by up to one mark interval, like the log mark.
-- **The control plane.** The broker's heartbeat carries the last synced
-  sequence, never one whose write is still in flight, and the control
-  plane stores the highest it has seen for that storage id. The stored
-  value survives a machine restart, a replaced machine and a VM rollback,
-  none of which leave a witness. It is one metadata write per broker per
-  heartbeat in which the sequence changed.
+- **The control plane.** The broker's heartbeat carries the root's storage
+  id and its last synced sequence, never one whose write is still in
+  flight, and the control plane stores the highest it has seen for that
+  storage id, one record per broker. A report under another storage id
+  replaces the record, because a rotation starts the comparison over. The
+  stored value survives a machine restart, a replaced machine and a VM
+  rollback, none of which leave a witness. It is one metadata write per
+  broker per heartbeat in which the sequence changed, and it needs every
+  control-plane member at metadata level 33. Below that nothing is stored,
+  so a rebooted broker holds its root as it would with no copy. The
+  broker reads the value back from its node's detail
+  (`GET /v1/nodes/{node_id}`, `root_sequence`), which a control-plane
+  member answers from what it has applied, so a lagging member widens the
+  window below by its apply lag. A report under another storage id
+  replaces the record only from a later incarnation: one process reports
+  one id, so a late beat of the process before a rotation cannot bring the
+  old id back at a sequence its root has since passed.
 
 The gate fails a root whose sequence is below either copy, and its copy
 ids rotate. A root that is ahead of a copy crashed between the two writes
@@ -267,9 +314,20 @@ What the gate cannot see:
   restore to the copy pass the gate when the control plane returns holding
   7, and the broker votes again in the same term.
 
-So restoring a live snapshot is supported only after an operator command
-that rotates the storage id, and the operations docs say so. See
-Questions, 12.
+So restoring a live snapshot is supported only after the operator command
+that rotates the storage id, `felix-broker rotate-storage-id`, run with the
+broker stopped, and the operations docs say so. See Questions, 12.
+
+**A rotation starts the mark log over.** Every rotation of the storage id,
+by the gate or any other path (a restore, a crash under relaxed fsync, the
+operator command, a deleted `storage-id` file), removes the root's mark log
+before it writes the new id. `open_root` is called only after the start's
+restore check has answered, so no rotation removes a mark log that is
+open. Every shard directory minted under the old id rotates when it opens,
+so the old marks protect nothing. Kept, they would carry a sequence that
+no copy outside the root names under the new id, and the root would be
+held after the next reboot. A crash between the removal and the new id
+leaves the old id with no marks, which rotates every directory too.
 
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
@@ -400,12 +458,12 @@ the backstop. (The engine page says the adapter sets it for every group.
 See Questions, 2.)
 
 A new group is created from a first set that names copy ids. Each broker
-the control plane places the shard on mints its copy id and reports it, and
-the control plane then writes the first member set once. Every member in
-that set calls `initialize` with it, which openraft allows. A member
-initializes only when its own member id is in the set. A copy wiped after
-that has a new id that the set does not name, so it can never initialize a
-second time on an empty log.
+placement names for the shard mints its copy id when its member opens. The
+broker that forms the group asks each of the others which copy it holds
+and whether a group has reached it, and forms the group from the answers
+("Forming a group"). A member initializes only when its own member id is
+in the set. A copy wiped after that has a new id that the set does not
+name, so it can never initialize a second time on an empty log.
 
 **Where it is built.** `felix_storage::raft_copy` keeps the copy file in
 each shard directory and the marks at the data root, in one append-only
@@ -423,12 +481,41 @@ storage id. An unchecked root yields none, so no member opens on it. `GroupRunti
 member that way. The log mark is exact by default (`LogMarkMode::Exact`,
 synced before the flush is reported to Raft) and can be batched
 (`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
-Not built yet (issue #2441): the control plane's copy of the root
-sequence, and the broker opening its Raft groups through all this. Raft
-directories the broker creates before #2441 have no copy file, and #2441
-decides whether they carry over. Until
-the first lands, a root with marks passes only on a witness record, so a
-rebooted host holds.
+`felix_replication::raft::open_root` runs the gate for a broker: it asks
+the control plane for its copy, rotates a root that is behind and returns
+it unopened (`RootOpened::Rotated`, on which the broker stops), and checks
+a held root again every interval until a copy arrives or the broker stops.
+The broker's heartbeat reports the open root through a slot that is set
+when the root opens (`RootSequenceSlot`). The broker opens its root through
+`open_root` and every member through `GroupRuntime::open_copy`
+(`node/cluster.rs`, `shards/raft.rs`). `GroupRuntime::open`, which checks
+nothing and keeps no marks, is compiled only for tests and the simulator.
+
+The broker marks a shard directory as a Raft member's (the `engine` file)
+before the member first opens, so the hybrid engine never opens it. The
+marker is not a record: a directory holding only the marker is a new one,
+and when a directory is rotated into `.kept/` the new directory is marked
+again before its copy file is written.
+
+**Directories from before copy ids are refused.** Builds from before the
+broker opened its members through the gate ran every member as copy 0, with
+a log and no copy file. Opened as a copy, such a directory has no copy
+file and would rotate. Every member of its group is such a directory, so
+all of them would rotate, the group would be left with no voter, and the
+brokers would form it again on empty logs: records the old group
+acknowledged would be gone from the stream with nothing said. Adopting the
+directory as it is would need proof that it was not put back from a copy,
+and it never had marks to give one. So the broker refuses it: a shard
+directory that holds a log and no copy file is not opened, is left
+untouched, and is logged once at error level, and the shard answers "not
+ready". No release ran Raft shards, so only test clusters hold such
+directories. To clear one, delete the stream and create it again, or stop
+every broker that holds the shard and remove the shard's directory on each.
+Removing a copy file by hand is refused the same way; to make a copy start
+over, remove its whole shard directory. A directory from such a build that
+never wrote a segment, a follower that only saved a vote for one, is not
+refused and rotates. That is safe: its group's leader wrote segments and is
+refused, so the group does not form again.
 
 ### Reclaiming kept copies
 
@@ -1334,8 +1421,8 @@ groups a few at a time there.
 
 The runtime is built, in `crates/server/felix-replication/src/raft.rs`,
 behind the `raft` cargo feature of `felix-replication`. No release enables
-the feature and nothing in the broker calls the runtime, so a shipping
-broker is unchanged.
+the feature, and a broker built with it calls the runtime only under
+`FELIX_SHARD_ENGINE=raft`, so a shipping broker is unchanged.
 
 A `GroupRuntime` holds one broker's member of every group it is told to
 open:
@@ -2358,11 +2445,20 @@ Membership changes are not built yet
   shard placed short stays short: create a stream once as many brokers as
   its replication factor are registered.
 - One broker forms the group: the one with the lowest id in the set. It
-  first asks every other member whether a group has reached it, with a Raft
-  pre-vote, which changes nothing on the member asked. It forms the group
-  only when each one answers that it holds no vote and no entry. A member
-  that does not answer, or that holds either, stops it, and it asks again
-  on the next routing pass. The question names the stream's incarnation,
+  first asks every other broker which copy of the shard it holds and
+  whether a group has reached that copy, with Raft pre-votes, which change
+  nothing on the member asked. The first goes to copy id 0, which no copy
+  has, and is refused with the copy id the broker does hold. The second
+  goes to that copy. It forms the group, from its own member and the
+  copies the others named, only when each one answers that it holds no
+  vote and no entry. A broker that does not answer, that has not opened its
+  member yet (its data root may be held by the restore gate), or whose copy
+  holds either, stops it, and it asks again on the next routing pass. If a
+  copy rotates after it answered, the set names its old copy id and not the
+  new one. The new copy is a member no group knows, like any copy wiped
+  after its group formed, and the group runs with one voter that never
+  answers: at three replicas it cannot lose another until membership
+  changes are built. The question names the stream's incarnation,
   so a member still on an older incarnation of the stream (its broker has
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
@@ -2731,7 +2827,7 @@ shard switches. That is one of the `shard_raft` prerequisites.
 **The control plane's record.** The shard's assignment carries a `switch`
 record, which only three writes set. Each is a compare-and-swap on the seal
 order standing at the shard's generation, and each needs every control-plane
-member at metadata level 33.
+member at metadata level 34.
 
 - *The seal order.* `POST /v1/placement/seal/{tenant}/{namespace}/{stream}/{shard}`
   names the shard's leader and set again at the next generation `G`, with
@@ -3793,6 +3889,8 @@ ones settled by the decisions of issue #2167 say so.
     one heartbeat normally, the whole outage when the control plane was
     down while the broker voted. (b) makes safety rest on an operator
     remembering a step every time, and a miss is two leaders in one term.
+    Decided (issue #2441): (a), and the command is
+    `felix-broker rotate-storage-id`.
 
 13. **Is the trailing offset floor enough?** After a majority of a group's
     disks is lost at once, offsets acknowledged since the last floor the

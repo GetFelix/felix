@@ -63,6 +63,9 @@ pub(super) struct Running {
     /// Cancelled by the catalog sync when a snapshot names another
     /// control-plane metadata group.
     pub(super) group_refused: CancellationToken,
+    /// Cancelled when the Raft restore gate gave the data root a new storage
+    /// id, which this run did not register under.
+    pub(super) root_rotated: CancellationToken,
     pub(super) controlplane_task: Option<JoinHandle<()>>,
     /// Writes the control-plane view once more when stopped.
     pub(super) controlplane_view: Option<crate::cluster::controlplane_view::ViewWriter>,
@@ -81,6 +84,9 @@ pub(super) enum Stopped {
     /// The data directory cannot be served under the control plane's metadata
     /// group, or could not be checked against it.
     WrongGroup,
+    /// The Raft restore gate found the data root behind a copy of its root
+    /// sequence and gave it a new storage id.
+    RootRotated,
 }
 
 impl Stopped {
@@ -111,6 +117,7 @@ impl Running {
             () = shutdown => Stopped::Signal,
             () = rejected => Stopped::MembershipRejected,
             () = self.group_refused.cancelled() => Stopped::WrongGroup,
+            () = self.root_rotated.cancelled() => Stopped::RootRotated,
         }
     }
 
@@ -136,6 +143,7 @@ impl Running {
             shard_tasks,
             sync_shutdown,
             group_refused: _,
+            root_rotated: _,
             controlplane_task,
             controlplane_view,
             storage,
@@ -428,7 +436,7 @@ impl Running {
                 budget.unfinished(),
                 felix_storage::disk_log::any_log_poisoned(),
             ) {
-                if let Err(err) = super::storage::mark_clean_stop(root, *id) {
+                if let Err(err) = record_clean_stop(root, *id) {
                     tracing::error!(error = %err, "could not record a clean stop; the next start takes a new storage id");
                 }
             } else {
@@ -473,6 +481,13 @@ impl Running {
                  the reason and what to do are logged above"
             ));
         }
+        if stopped == Stopped::RootRotated {
+            tracing::error!("broker stopped: the data root was given a new storage id");
+            return Err(anyhow::anyhow!(
+                "the data root was behind a copy of its root sequence, as a restored snapshot \
+                 is, and was given a new storage id; start the broker again to register under it"
+            ));
+        }
         if membership_rejected {
             tracing::error!("broker stopped: the control plane refused this node's registration");
             // The refusal itself is logged where it arrived: a wrong identity
@@ -498,6 +513,18 @@ const NO_STORE_WRITES: [&str; 4] = [
     // The view is replaced whole by a rename, and holds no record.
     "controlplane_view",
 ];
+
+/// Record a clean stop of the run that began on `root` under `id`. A rotation
+/// during the run (the Raft restore gate, a deferred restore check) already
+/// distrusted every copy, so the record names the id the directory has now:
+/// under the old one the next start would read a crash and rotate again.
+fn record_clean_stop(root: &std::path::Path, id: StorageId) -> Result<()> {
+    let current = felix_storage::storage_identity::load(root)
+        .ok()
+        .flatten()
+        .unwrap_or(id);
+    super::storage::mark_clean_stop(root, current)
+}
 
 /// Whether a stop may be recorded as clean: every store flushed, no drain
 /// step that may write cut short, and no log poisoned during the run.

@@ -269,10 +269,24 @@ fn recording_the_cluster_identity_needs_level_32() {
     assert_eq!(record.version(), 32);
 }
 
+/// A broker's root sequence needs every member to know the command.
+#[test]
+fn recording_a_root_sequence_needs_level_33() {
+    let record = MetaCommand::RecordRootSequence {
+        node_id: "b".to_string(),
+        heard: crate::model::RootSequence {
+            storage_id: "a".repeat(32),
+            sequence: 1,
+            incarnation: 1,
+        },
+    };
+    assert_eq!(record.version(), 33);
+}
+
 /// A member that cannot apply a switch command would keep a hybrid shard
 /// where the others hold a sealed or switched one.
 #[test]
-fn a_shard_switch_needs_level_33() {
+fn a_shard_switch_needs_level_34() {
     let key = crate::model::ShardKey {
         tenant_id: "t".to_string(),
         namespace: "n".to_string(),
@@ -293,17 +307,17 @@ fn a_shard_switch_needs_level_33() {
         feature: felix_common::fleet::SHARD_RAFT.name().to_string(),
     };
     for command in [seal, give_up, finalize] {
-        assert_eq!(command.version(), 33, "{command:?}");
+        assert_eq!(command.version(), 34, "{command:?}");
         // The leader refuses it below the level, however it was proposed.
         let raw = encode_command(&command);
         let switch = !matches!(command, MetaCommand::FinalizeFleetFeature { .. });
         assert_eq!(depends_on_level(&raw), switch, "{command:?}");
         if switch {
-            assert!(settle_for_level(&raw, 32).is_err(), "{command:?}");
-            assert_eq!(settle_for_level(&raw, 33), Ok(None), "{command:?}");
+            assert!(settle_for_level(&raw, 33).is_err(), "{command:?}");
+            assert_eq!(settle_for_level(&raw, 34), Ok(None), "{command:?}");
         }
     }
-    assert_eq!(METADATA_VERSION, 33);
+    assert_eq!(METADATA_VERSION, 34);
 }
 
 /// **`joint_fence` is finalized only where a refusal report is kept.** A

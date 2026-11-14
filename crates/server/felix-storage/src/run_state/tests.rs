@@ -668,3 +668,30 @@ fn an_unreadable_rotated_ids_record_claims_no_id() {
         );
     }
 }
+
+/// **A deleted `storage-id` starts the Raft mark log over.** Kept, the marks'
+/// sequence would have no copy outside the root under the new id, and the
+/// Raft restore gate would hold the root after the next reboot. A start that
+/// keeps its id keeps the marks.
+#[test]
+fn a_deleted_storage_id_starts_the_raft_marks_over() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let marks = dir.path().join(copy_trust::RAFT_MARKS);
+    begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    std::fs::write(&marks, b"marks").expect("marks");
+    mark_clean(
+        dir.path(),
+        storage_identity::load(dir.path())
+            .expect("id")
+            .expect("an id"),
+    )
+    .expect("clean");
+    begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(marks.exists(), "a start that kept its id dropped the marks");
+
+    std::fs::remove_file(dir.path().join(storage_identity::FILE_NAME)).expect("delete id");
+    let begun = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert_eq!(begun.origin, Origin::Created);
+    assert!(!marks.exists());
+}

@@ -176,6 +176,11 @@ pub fn begin(
     repair_pending: impl FnOnce() -> bool,
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
+    // A deleted storage-id is a rotation too: start the Raft mark log over
+    // before the new id exists, as `copy_trust::rotate_storage_id` does.
+    if storage_identity::load(root)?.is_none() {
+        copy_trust::forget_raft_marks(root)?;
+    }
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
     copy_trust::ensure(root, origin == Origin::Created)?;
     let last_run = read(root, loaded)?;

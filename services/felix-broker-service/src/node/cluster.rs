@@ -127,6 +127,9 @@ pub(super) struct RaftShards {
     pub(super) engine_shards: Option<Arc<dyn shard_routing::EngineShards>>,
     /// Answers peers' Raft messages on the broker-internal listener.
     pub(super) handler: Option<Arc<dyn peer::RaftHandler>>,
+    /// The members, for [`open_raft_root`] to let open.
+    #[cfg(feature = "raft")]
+    members: Option<Arc<crate::shards::raft::RaftShards>>,
 }
 
 /// Start the group runtime and hand it this broker's Raft shards. Call it
@@ -164,9 +167,150 @@ pub(super) fn start_raft_shards(
     );
     engine.set_raft(Arc::clone(&shards));
     Ok(RaftShards {
-        engine_shards: Some(shards),
+        engine_shards: Some(Arc::clone(&shards) as Arc<dyn shard_routing::EngineShards>),
         handler: Some(Arc::new(runtime)),
+        members: Some(shards),
     })
+}
+
+/// How often a data root the restore gate holds is checked again.
+#[cfg(feature = "raft")]
+const ROOT_RETRY: Duration = Duration::from_secs(5);
+
+/// What [`open_raft_root`] judges the data root on.
+#[cfg(feature = "raft")]
+pub(super) struct RaftRoot<L> {
+    pub(super) root: std::path::PathBuf,
+    pub(super) witness: Option<std::path::PathBuf>,
+    /// Cancelled once the start's restore check has answered. A rotation
+    /// that check makes removes the mark log, so the gate waits for it.
+    pub(super) restore_checked: CancellationToken,
+    pub(super) link: Option<L>,
+    pub(super) node_id: String,
+    /// The storage id this run registers under.
+    pub(super) storage_id: felix_storage::StorageId,
+    pub(super) credential: Option<NodeCredential>,
+    /// Set once the root opens, for the heartbeat.
+    pub(super) slot: crate::cluster::membership::RootSequenceSlot,
+    pub(super) stop: CancellationToken,
+    /// Cancelled when the gate gave the root a new storage id: the broker
+    /// stops, so the restart registers under it.
+    pub(super) rotated: CancellationToken,
+}
+
+/// Run the restore gate on the data root, off the start: a root nothing
+/// vouches for is held until the control plane answers with its copy of the
+/// root sequence, and the broker serves its other shards meanwhile. Raft
+/// members open once it passes. A root behind a copy gets a new storage id
+/// and the broker stops. See `docs/per-shard-raft.md`, "The root
+/// sequence".
+#[cfg(feature = "raft")]
+pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftRoot<L>) {
+    use crate::cluster::membership::registered;
+    use felix_storage::raft_copy::ControlPlaneCopy;
+    use replication::raft::{RootOpened, RootReport, open_root};
+
+    let Some(members) = shards.members.clone() else {
+        return;
+    };
+    tokio::spawn(async move {
+        tokio::select! {
+            () = on.stop.cancelled() => return,
+            () = on.restore_checked.cancelled() => {}
+        }
+        // No answer and no record are both no copy.
+        let (link, credential, node_id) = (
+            on.link.as_ref(),
+            on.credential.as_ref(),
+            on.node_id.as_str(),
+        );
+        let control_plane = move || async move {
+            let (storage_id, sequence) = registered(link?, node_id, credential?)
+                .await
+                .ok()??
+                .root_sequence?;
+            Some(ControlPlaneCopy {
+                storage_id,
+                sequence,
+            })
+        };
+        let mut failed = false;
+        let root = loop {
+            // The restore check has answered and rotated a restored root
+            // itself, so the gate is not told of one again.
+            let opened = open_root(
+                &on.root,
+                on.witness.as_deref(),
+                false,
+                on.storage_id,
+                control_plane,
+                ROOT_RETRY,
+                &on.stop,
+            )
+            .await;
+            match opened {
+                Ok(RootOpened::Open(root)) => break Arc::new(root),
+                Ok(RootOpened::Stopped) => return,
+                Ok(RootOpened::Rotated {
+                    storage_id,
+                    sequence,
+                    witness,
+                    control_plane,
+                }) => {
+                    // This run registered under the old id and its hybrid
+                    // copies stopped being trusted with the rotation.
+                    tracing::error!(
+                        root = %on.root.display(),
+                        storage_id = %storage_id,
+                        sequence,
+                        witness = ?witness,
+                        control_plane = ?control_plane,
+                        "this data root is behind a copy of its root sequence, as a restored \
+                         snapshot is; gave it a new storage id and stopping, so it starts again \
+                         under the new id and every Raft copy in it rejoins as a new member",
+                    );
+                    on.rotated.cancel();
+                    return;
+                }
+                Ok(RootOpened::NotRegistered {
+                    storage_id,
+                    registered,
+                }) => {
+                    tracing::error!(
+                        root = %on.root.display(),
+                        storage_id = %storage_id,
+                        registered = %registered,
+                        "this data root's storage id is not the one this run registered under, \
+                         as after a rotation that failed part way; stopping, so it starts again \
+                         under the new id",
+                    );
+                    on.rotated.cancel();
+                    return;
+                }
+                Err(err) => {
+                    if !failed {
+                        tracing::error!(
+                            root = %on.root.display(),
+                            error = %err,
+                            "could not run the Raft restore gate on the data root; no Raft \
+                             member opens until it runs",
+                        );
+                        failed = true;
+                    }
+                    tokio::select! {
+                        () = on.stop.cancelled() => return,
+                        () = tokio::time::sleep(ROOT_RETRY) => {}
+                    }
+                }
+            }
+        };
+        let reported = Arc::clone(&root);
+        on.slot.set(move || {
+            let report = RootReport::of(reported.mark_log());
+            (report.storage_id, report.sequence)
+        });
+        members.set_root(root);
+    });
 }
 
 /// Put the engine check in front of `shards` and route by the result: a

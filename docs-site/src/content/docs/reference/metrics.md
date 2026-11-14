@@ -200,6 +200,7 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
 | `felix_broker_raft_shards_off_placement` | gauge | - | Raft shards open on this broker whose group's voters are not the brokers placement names for the shard. A group keeps the members it formed with, so anything above zero means placement moved, drained or replaced a broker of a Raft shard, which is not supported yet. |
 | `felix_broker_raft_shards_led` | gauge | - | Raft shards whose current term this broker leads and serves writes for. Refreshed every shard feed pass, so it can trail a leader change by a couple of seconds. |
+| `felix_broker_raft_root_held` | gauge | - | `1` while the broker holds its data root because neither the run witness nor the control plane has a copy of its root sequence, so no Raft member on the broker opens, and `0` once the broker starts opening its root otherwise. The log says why once. Anything that stays at `1` needs an operator: see [the root sequence](https://github.com/GetFelix/felix/blob/main/docs/per-shard-raft.md). Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_peer_inbound_rejected_total` | counter | `reason` | Inbound peer connections refused: `alpn` or `handshake`. |
 
 ## Replication

@@ -68,7 +68,8 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
-    crate::store::contract::suspicions::run_suspicion_contract(store).await;
+    crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
+    crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
 }
 
 #[tokio::test]
@@ -4435,7 +4436,58 @@ async fn creates_wait_while_a_member_level_is_unknown() {
     store.create_stream(stream("audit")).await.expect("created");
 }
 
-/// A member below level 33 would refuse a seal order and keep a hybrid
+/// A member below level 33 could not apply the entry, so nothing is kept
+/// and the read stays empty: a broker's gate then has no control-plane copy,
+/// which holds a root rather than passes it. Kept once the member is there.
+#[tokio::test]
+async fn a_root_sequence_is_kept_only_at_level_33() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), ROOT_SEQUENCE_LEVEL - 1).await;
+    let heard = crate::model::RootSequence {
+        storage_id: "a".repeat(32),
+        sequence: 4,
+        incarnation: 1,
+    };
+    assert!(
+        !store
+            .record_root_sequence("broker-a", heard.clone())
+            .await
+            .expect("record")
+    );
+    assert_eq!(store.root_sequence("broker-a").await.expect("read"), None);
+
+    version.store(ROOT_SEQUENCE_LEVEL, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store
+        .record_root_sequence("broker-a", heard.clone())
+        .await
+        .expect("record")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never kept at level 33"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        store.root_sequence("broker-a").await.expect("read"),
+        Some(heard)
+    );
+}
+
+/// The root sequence a group below its level does not keep is logged once
+/// per level, not once per heartbeat.
+#[test]
+fn an_unkept_root_sequence_is_logged_once_per_level() {
+    let logged = OncePerLevel::default();
+    assert!(logged.first_at(32));
+    assert!(!logged.first_at(32));
+    assert!(logged.first_at(31));
+    assert!(logged.first_at(32));
+    assert!(!logged.first_at(32));
+}
+
+/// A member below level 34 would refuse a seal order and keep a hybrid
 /// shard where the others hold a sealed one. So the order, the report and
 /// the give-up are refused before the log while such a member is in the
 /// group, and an entry that reaches the log anyway is refused as it applies.
@@ -4465,7 +4517,7 @@ async fn a_switch_waits_for_every_member_at_its_level() {
 
     let refused = store.seal_shard(&key, active.generation).await;
     assert!(
-        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("version 33")),
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("version 34")),
         "{refused:?}"
     );
     let report = crate::model::SealReport {
@@ -4523,7 +4575,7 @@ async fn a_switch_waits_for_every_member_at_its_level() {
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
         assert!(
-            matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 33")),
+            matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 34")),
             "{command:?}: {result:?}"
         );
     }

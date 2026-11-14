@@ -53,6 +53,7 @@ const UNREACHABLE: u8 = 16;
 const NO_SUCH_MEMBER: u8 = 17;
 const STOPPED: u8 = 18;
 const NO_SNAPSHOTS: u8 = 19;
+const OTHER_COPY: u8 = 20;
 
 /// Most members one voter set or the learners may name. Far more than a
 /// shard's copies; it bounds what a peer can make this broker allocate.
@@ -329,6 +330,11 @@ fn put_reply(buf: &mut BytesMut, reply: &Result<RaftReply, Refused>) -> io::Resu
             buf.put_u8(NO_SNAPSHOTS);
             put_addressee(buf, to)?;
         }
+        Err(Refused::OtherCopy(to, copy)) => {
+            buf.put_u8(OTHER_COPY);
+            put_addressee(buf, to)?;
+            buf.put_u64(*copy);
+        }
     }
     Ok(())
 }
@@ -364,6 +370,10 @@ pub(crate) fn decode_reply(mut buf: Bytes) -> io::Result<Result<RaftReply, Refus
             Err(Refused::Stopped(to, take_str(&mut buf, MAX_REASON_BYTES)?))
         }
         NO_SNAPSHOTS => Err(Refused::NoSnapshots(take_addressee(&mut buf)?)),
+        OTHER_COPY => {
+            let to = take_addressee(&mut buf)?;
+            Err(Refused::OtherCopy(to, take_u64(&mut buf)?))
+        }
         other => return Err(invalid(format!("{other} is not a Raft answer"))),
     };
     expect_empty(&buf)?;

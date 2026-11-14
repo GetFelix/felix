@@ -290,7 +290,7 @@ pub struct ShardAssignment {
     pub placed: Option<PlacedInEpoch>,
     /// The shard's switch to Raft, once a seal was ordered: see
     /// [`ShardSwitch`]. Store-owned like `generation`; whatever a caller
-    /// passes is replaced. Under Raft it needs metadata level 33.
+    /// passes is replaced. Under Raft it needs metadata level 34.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch: Option<ShardSwitch>,
 }

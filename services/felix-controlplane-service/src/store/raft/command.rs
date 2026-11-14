@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 33;
+pub const METADATA_VERSION: u16 = 34;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -495,14 +495,21 @@ pub enum MetaCommand {
         group_id: String,
         shard_engine: String,
     },
+    /// Keep a broker's root sequence if it moves what is held
+    /// (`RootSequence::moved_by`), so a late or repeated entry never lowers
+    /// it. Level 33.
+    RecordRootSequence {
+        node_id: String,
+        heard: crate::model::RootSequence,
+    },
     /// Order the seal that starts a shard's switch to Raft
-    /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 33.
+    /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
         key: ShardKey,
         expected_generation: u64,
     },
     /// Record a seal report as the shard's switch, if its seal still stands
-    /// ([`crate::store::ControlPlaneStore::accept_seal_report`]). Level 33.
+    /// ([`crate::store::ControlPlaneStore::accept_seal_report`]). Level 34.
     AcceptSealReport {
         key: ShardKey,
         report: crate::model::SealReport,
@@ -510,7 +517,7 @@ pub enum MetaCommand {
         sealer: String,
     },
     /// Give up the seal standing at `generation`
-    /// ([`crate::store::ControlPlaneStore::give_up_seal`]). Level 33.
+    /// ([`crate::store::ControlPlaneStore::give_up_seal`]). Level 34.
     GiveUpSeal {
         key: ShardKey,
         generation: u64,
@@ -585,11 +592,11 @@ impl MetaCommand {
                 25
             }
             // Finalizing the Raft engine lets seals be ordered and their
-            // reports recorded, which members before level 33 would refuse.
+            // reports recorded, which members before level 34 would refuse.
             Self::FinalizeFleetFeature { feature }
                 if feature == felix_common::fleet::SHARD_RAFT.name() =>
             {
-                33
+                34
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Writes a generation the store did not pick, which a member
@@ -601,9 +608,11 @@ impl MetaCommand {
             // A member before level 32 would refuse the command and keep no
             // identity.
             Self::RecordClusterIdentity { .. } => 32,
-            // A member before level 33 would refuse these and keep a
+            // A member before level 33 would refuse the command.
+            Self::RecordRootSequence { .. } => 33,
+            // A member before level 34 would refuse these and keep a
             // hybrid shard where the others hold a sealed or switched one.
-            Self::SealShard { .. } | Self::AcceptSealReport { .. } | Self::GiveUpSeal { .. } => 33,
+            Self::SealShard { .. } | Self::AcceptSealReport { .. } | Self::GiveUpSeal { .. } => 34,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
