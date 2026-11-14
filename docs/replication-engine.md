@@ -366,6 +366,29 @@ cut can still take, so an entry could commit on fewer than a majority of
 disks. A flush that fails reaches the callback as an error, which openraft treats as
 fatal for the node.
 
+**A proposer can hear where its entry was written.** openraft answers a
+write only once the entry is applied. A caller that acknowledges earlier
+puts a `WrittenToken` on its command, and the codec hands it over through
+`EntryCodec::written_token`. Once the whole append is written, and before
+the flush, the adapter moves the log's written position and then resolves
+each token with its own entry's index and term. The token lives in memory
+only: the codec does not encode it, so an entry read back, or one a
+follower was sent, has none. An append that fails resolves no token, which
+the caller reads as an unknown outcome. Written is not durable: a power
+cut after the token resolved can take the entry. Only an acknowledgement
+that the stream's fsync policy allows may rest on it. Votes, a follower's
+answer and the commit index wait for the callback. How the publish path
+uses the token is in `per-shard-raft.md`, "Writing through openraft". An
+append reports all of its entries or none: when a later batch of a large
+append fails, the tokens on the batches already written stay unresolved.
+
+> `raft_log/tests/written.rs`,
+> `a_token_resolves_once_written_and_before_the_flush`,
+> `a_token_on_an_append_of_several_batches_resolves_with_its_own_index`,
+> `a_failed_append_resolves_no_token_as_written`,
+> `a_failure_on_a_later_batch_resolves_no_token`, `a_token_is_never_stored`
+> and `a_cut_after_written_and_before_the_flush_can_take_the_entry`.
+
 **One task per log waits for flushes.** An append that has to wait puts
 its callback on the log's flush queue (`raft_log/flush_queue.rs`) and
 returns. One task per log takes everything queued, waits once for the
@@ -560,6 +583,95 @@ opens. Before the install, the follower is on its old snapshot with every
 committed entry. After it, the snapshot is ahead of the log, and openraft's
 startup purges up to it. The purged id is never past the snapshot.
 
+### Sending a snapshot
+
+A snapshot that goes to another member is streamed. The transfer never
+holds it whole in memory on either side, and neither side gives up on a
+transfer that is still moving. What the install holds is up to the group,
+below. The rules live in `felix-storage` (`raft_log::transfer`), so
+every group that sends snapshot data follows them. Only the transport
+differs: the control plane uses one HTTP request on `/internal/raft/v2`.
+A stream shard sends no snapshot body at all. Its state is its log, so a
+member that is behind is sent entries or copied segments
+([per-shard Raft](per-shard-raft.md), "Group runtime").
+
+**The body.** A form byte, the head's length, the data's length, the head,
+the data, then a crc32 of the data:
+
+```text
+form u8 | head_len u32 | data_len u64 | head | data | crc u32
+```
+
+The head belongs to the transport. For the control plane it is JSON
+holding the sender's vote and the snapshot's last log id and membership.
+An unknown form byte is refused, never guessed at. Later changes to the
+body get a new form byte.
+
+**The receiver decides from the head.** It reads at most 64 KiB of head
+before any data, and then, in this order:
+
+1. A sender whose vote is behind this member's gets this member's vote
+   back, and none of its data is read. This check only saves the data's
+   trip. openraft checks the vote again when it installs, and that check
+   is the one that counts.
+2. A data length over the member's cap is refused with 413. The cap is
+   `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, 1 GiB by default.
+3. The member's one install slot is taken. A second sender gets 503 at
+   once instead of waiting with its body open. A sender with a newer vote
+   than the one installing stops that transfer and takes the slot, so a
+   stale leader that trickles bytes cannot hold off the real one.
+
+**The cap comes from configuration, never from `felix-storage`.** The
+shared code takes the cap from its caller on every transfer and has no
+default of its own. A group's cap must be at least the largest snapshot it
+can build, or a learner can never be caught up: for the control plane that
+is `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, and a group whose snapshot carries data
+(such as a cache group) must size its cap from its own configured limits,
+for example the largest cache shard, not from a fixed number.
+
+**The data goes to a file.** `SnapshotStore::begin_receive` writes
+`raft-snapshot.recv` in the stored snapshot's own format while the data
+arrives, keeping the crc as it goes. Bytes past the declared length, a
+missing byte or a wrong crc fail the transfer. When the data is whole, the
+file is synced and read back, and its crc is checked. A commit refuses a
+file that was not read back to its end and checked. The file is then renamed over
+`raft-snapshot`, under the same rule as a local install: a snapshot never
+goes back. A receive that fails or is dropped deletes its file, except one
+dropped while its file is still being created: that file stays until the next
+receive truncates it or the next open deletes it. A crash before the rename
+leaves the old snapshot, and the next open deletes the leftover.
+
+**Memory at install.** A group can read the staged file back whole
+(`StagedSnapshot::read`) or a piece at a time (`StagedSnapshot::next_chunk`).
+The control plane reads it whole, because its state machine restores from
+one byte slice. So it holds one copy of the snapshot at install, up to the
+cap. A group whose state can be larger than memory, such as a cache group,
+must read in pieces. Its peak is then a piece, not the snapshot.
+
+A blocking call that works on the receive file by its name (the create,
+the rename) holds the receive slot itself. A caller that goes away during
+one cannot free the name for the next receive while the call still runs.
+
+A sender reads the stored file the same way, a piece at a time
+(`SnapshotStore::open_current`). It keeps the descriptor it opened, so an
+install that replaces the file meanwhile does not change what it sends. A
+file whose crc does not match fails the send instead of reaching a peer.
+
+**Timeouts follow progress.** A transfer fails when no bytes move for 30 s,
+on either side. After the last byte the receiver gets 30 s plus 1 s per
+16 MiB to install before the sender gives up. A large snapshot that keeps
+moving always lands. openraft passes an install timeout to the network but
+does not enforce it, and the network does not use it.
+
+**Closing the store.** A close tells a receive in flight to stop and waits
+for it to delete its file before the store's lock is let go of. If it does
+not stop within 10 s, the close fails and keeps the lock.
+
+A built snapshot past half the cap is logged as an error, and
+`felix_meta_raft_snapshot_bytes` shows its size. A snapshot over the cap
+can never be installed by a follower, so that has to be visible well before
+it happens.
+
 **Three smaller rules.**
 
 - A command stored as a trim record is refused. A trim sets a floor the
@@ -691,17 +803,25 @@ used by every shard group and by the control plane, tested once.
 
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
-`[workspace.dependencies]` pins one commit of openraft's main branch, two
-changes past the 0.10.0 tag (2026-11-11), because the node ticker needs
-`Trigger::tick()` and that ships in 0.10.1 (`docs/per-shard-raft.md`, "One
-timer for every group"). The two changes are that call and a
-`#[non_exhaustive]` on some name enums. `openraft-multi` is pinned to the
+`[workspace.dependencies]` pins one commit of openraft's main branch,
+`30c947ef38` (2026-11-12), past the 0.10.0 tag, for changes that ship
+in 0.10.1. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
+"One timer for every group"). openraft#2313 (issue #2312) resets a drained
+queue to its start, so an idle member stops touching every page of its
+queues, and openraft#2314 starts those queues at 64 slots instead of
+reserving room for 4,096 commands and 1,024-slot response buffers, so a member's
+resident memory stays small. The others are a `#[non_exhaustive]` on some name enums,
+benchmark changes, and one change to the state-machine worker: it merges
+`Apply` commands that are already queued into one `apply()` call. That
+call still gets the committed entries in log order, each once, with each
+entry's responder, which is all `apply()` in Felix relies on.
+`openraft-multi` is pinned to the
 same commit, and `deny.toml` allows that one git source. `felix-storage` and
 `felix-replication` use the pin behind their `raft` features, and the
 control plane uses it too
 (`services/felix-controlplane-service/Cargo.toml:61`), so the workspace has
 one openraft. The pin goes back to a released version, `=0.10.1`, when that
-is out (#2313). A version change is a reviewed update, never a side effect of
+is out. A version change is a reviewed update, never a side effect of
 refreshing the lockfile.
 
 **Release rule (decided).** A Felix release ships a control plane on 0.10
@@ -1128,19 +1248,19 @@ store becomes a projection of the group log, rebuilt from a snapshot plus the
 log the way the cache index already is (`crates/server/felix-storage/src/cache/log_cache.rs`).
 It does not rise as a second durable log. Cache compaction already copies
 live records forward to the tail (`docs/cache-on-log.md`, "Compaction"). Under
-Raft those copies are entries the leader proposes, and dropping the old
-segments is Raft's purge. A follower no longer compacts on its own. The
-copies cost what they cost today. The gate adds a cache cell with mixed puts
+Raft there are no copies: each member snapshots the state it has applied and
+purges its log behind the snapshot (`docs/per-shard-raft.md`, "Cache and
+counters"). The snapshot rewrites the live state once per snapshot, which is
+what the copies cost today. The gate adds a cache cell with mixed puts
 and counter adds, to measure the fsync count.
 
 Counters need more than a move. A counter record is a signed delta, and
 the counter log compacts deltas into a checkpoint of running sums
 (`crates/server/felix-storage/src/counter_log.rs:1-13`), not into the newest
 record per key as the cache does. Folding them into the cache shard's log
-needs two record kinds in version 9, a counter delta and a counter
-checkpoint, and a compaction rule per kind: the newest record per key for
-cache entries, and one checkpoint holding each key's sum for counters, which
-the leader proposes like any other compaction copy. The counter log was kept
+needs a counter delta record kind in version 9. The sums live in the
+member's snapshot beside the cache records, so the group log needs no
+checkpoint entry. The counter log was kept
 apart so that a build without counters could still read the cache's logs
 (`counter_log.rs:9-13`). Version 9's fleet gate and rollback rule now cover
 that.

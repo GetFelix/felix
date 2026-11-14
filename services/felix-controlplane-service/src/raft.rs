@@ -15,6 +15,8 @@
 //!   outside the log, forwarded there from any member.
 //! - `join` — entering the group at startup: forming it on first boot, or
 //!   catching up without a vote after starting empty.
+//! - `member` — the member before it has a node: what the peer listener
+//!   serves from, so a member answers `standing` without one.
 //! - `waiver` — the operator's `form-without` file, which lets a first
 //!   boot form without a member whose machine is gone for good.
 //! - `health` — whether this member is fit to serve, and its gauges.
@@ -27,7 +29,7 @@
 //! - `network` / `http` — Raft RPCs as JSON over HTTP between instances,
 //!   on a peer listener of their own, never the public API one.
 //! - `peer` — how that traffic is authenticated: cluster id, peer token,
-//!   optional mTLS.
+//!   optional mTLS, and the member a request is meant for.
 //! - `version` — the command level every member can apply, so nothing
 //!   newer is proposed part-way through a rolling upgrade.
 //! - `wire` — the JSON this member sends and stores, kept in the form
@@ -43,6 +45,7 @@ mod hold;
 mod http;
 mod join;
 mod leader;
+mod member;
 mod network;
 mod peer;
 mod proposal;
@@ -57,7 +60,8 @@ mod wire;
 
 pub use handle::RaftHandle;
 pub use leader::{AskLeaderError, LeaderService, NotLeader};
-pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls};
+pub use member::RaftMember;
+pub use peer::{CLUSTER_ID_HEADER, PeerSecurity, PeerTls, TARGET_HEADER};
 pub use proposal::NoQuorum;
 pub use waiver::form_without;
 
@@ -119,6 +123,10 @@ pub struct RaftSettings {
     /// config change rather than a membership change. Empty means the
     /// recorded addresses are used as they are.
     pub peer_addrs: BTreeMap<NodeId, String>,
+    /// The largest snapshot this member accepts from a peer, in bytes. A
+    /// snapshot over it can never be installed here, so building one past
+    /// half of it is logged as an error.
+    pub snapshot_max_bytes: u64,
     #[cfg(test)]
     pub(crate) faults: Faults,
 }
@@ -139,9 +147,12 @@ pub(crate) struct Faults {
     /// Counts the stops a failed start asks for.
     pub(crate) stop_probe: Option<&'static std::sync::atomic::AtomicUsize>,
     /// A member forming the group stops short of `initialize`, as a crash
-    /// there would.
-    pub(crate) stop_before_initialize: bool,
+    /// there would, and counts itself here.
+    pub(crate) stop_before_initialize: Option<&'static std::sync::atomic::AtomicUsize>,
 }
+
+/// 1 GiB: far above any real metadata state.
+pub(crate) const DEFAULT_SNAPSHOT_MAX_BYTES: u64 = 1 << 30;
 
 impl RaftSettings {
     /// Defaults sized for a three-instance metadata group: elections settle
@@ -158,6 +169,7 @@ impl RaftSettings {
             snapshot_logs_since_last: 500,
             logs_kept_behind_snapshot: 100,
             write_timeout: Duration::from_secs(10),
+            snapshot_max_bytes: DEFAULT_SNAPSHOT_MAX_BYTES,
             #[cfg(test)]
             faults: Faults::default(),
         }
@@ -217,6 +229,28 @@ pub trait AppStateMachine: Send + Sync + 'static {
     fn restamp(&self, command: &[u8], now_millis: u64) -> Option<Vec<u8>> {
         let _ = (command, now_millis);
         None
+    }
+
+    /// Settle any field of `command` that depends on the group's level
+    /// (`level`, as [`RaftHandle::cluster_version_with_unknown_at`] gives it
+    /// with [`Self::join_floor`]): `Ok(Some(_))` to append a rewrite,
+    /// `Ok(None)` to append it as is, or `Err(response)` to refuse it, in
+    /// which case the write answers `response` without appending anything.
+    /// Called on the leader right before the entry enters the log, like
+    /// [`Self::restamp`], so the entry says explicitly what every member
+    /// applies, whoever proposed it. Asked only for a command
+    /// [`Self::depends_on_level`] names, so others skip the level lookup,
+    /// and such a command is only ever appended after this said so.
+    fn settle_for_level(&self, command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
+        let _ = (command, level);
+        Ok(None)
+    }
+
+    /// Whether `command` has a field [`Self::settle_for_level`] settles.
+    /// Cheap: it runs on every proposal the leader appends.
+    fn depends_on_level(&self, command: &[u8]) -> bool {
+        let _ = command;
+        false
     }
 
     /// The newest command level this build can apply, reported to peers so

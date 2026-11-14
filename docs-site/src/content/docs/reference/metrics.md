@@ -130,6 +130,7 @@ Per-tenant usage. The `tenant` label is capped; once the cap is reached further 
 | `felix_broker_credential_refreshes_total` | counter | `outcome` | Node-credential refreshes, `ok` or `unavailable`. |
 | `felix_broker_credential_rotations_total` | counter | `outcome` | Node credentials adopted from a rotated token file, `ok` or `rejected`. |
 | `felix_broker_principal_revocations_total` | counter | - | Principal revocations this broker applied. |
+| `felix_broker_controlplane_group_mismatch_total` | counter | - | Catalog snapshots refused because they came from another control-plane metadata group than the one this broker's data directory was written under. The broker stops; see [troubleshooting](/reference/troubleshooting/#the-data-directory-belongs-to-another-control-plane). |
 | `felix_revocation_feed_last_success_seconds` | gauge | - | Unix time of the last poll that reached the control plane's revocation feed. A stale value means revocations are not arriving. |
 | `felix_revocation_feed_poll_errors_total` | counter | - | Revocation feed polls that failed. |
 | `felix_jwks_renew_errors_total` | counter | - | Background renewals of a tenant's JWKS that failed. The broker keeps verifying with the keys it has. |
@@ -208,6 +209,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_halted` | gauge | - | Followers replication has stopped for because their log diverged or this broker was superseded. Any non-zero value needs attention. |
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
 | `felix_broker_raft_ticker_restarts_total` | counter | - | Times the per-shard Raft ticker ended on a panic and was started again. Any increase is a bug: no Raft group on the broker heartbeats or notices a timeout while the ticker is down. Only in builds with the `raft` feature, which no release enables. |
+| `felix_broker_raft_dropped_ticks_total` | counter | - | Timer checks the per-shard Raft ticker dropped because a group had not taken the previous one by the next interval, across every group on the broker. A dropped check loses nothing, since the next one does the same work; a rising count means some group is too busy to look at its timers. Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_replication_rebuilds_total` | counter | `outcome` | Follower rebuilds by outcome. |
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
 | `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
@@ -369,11 +371,12 @@ Present when the control plane runs its metadata Raft group.
 | `felix_meta_raft_last_log_index` | gauge | - | Index of the last log entry. |
 | `felix_meta_raft_last_applied_index` | gauge | - | Index of the last entry applied. A gap to the last log index is apply lag. |
 | `felix_meta_raft_snapshot_index` | gauge | - | Index of the last snapshot. |
+| `felix_meta_raft_snapshot_bytes` | gauge | - | Size of the last snapshot this member built, in bytes. Only a build on the segment store sets it. A follower refuses a snapshot over `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, so alert well before this reaches it; the member logs an error once it passes half. |
 | `felix_meta_raft_member_below_floor` | gauge | `member` | `1` while replication to a Raft `member` is held back because its log is below the group's join floor, as after a wiped volume. Clears when the member catches up. |
 | `felix_meta_raft_forwarded_proposals_total` | counter | - | Proposals a follower forwarded to the leader. Informational; forwarding is correct, one hop more. |
 | `felix_meta_raft_deduplicated_proposals_total` | counter | - | Proposals answered from the applied record because a retry carried an id already applied. |
 | `felix_meta_raft_write_timeouts_total` | counter | - | Proposals that ran out their whole budget, which means no leader or no quorum. Alert on this. |
-| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`. |
+| `felix_meta_raft_peer_rejected_total` | counter | `reason` | Raft peer requests refused, by `reason`: `cluster_id`, `token`, or `target` for a request meant for another member. |
 | `felix_meta_raft_unsupported_commands_total` | counter | - | Commands this member's build does not understand. In a mixed-version group the member's state now differs from a newer leader's. |
 
 ## Clients

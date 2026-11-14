@@ -184,6 +184,7 @@ pub(crate) async fn namespace_snapshot(
     Ok(Json(NamespaceSnapshotResponse {
         items: snapshot.items,
         next_seq: snapshot.next_seq,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }
 
@@ -216,5 +217,6 @@ pub(crate) async fn namespace_changes(
     Ok(Json(NamespaceChangesResponse {
         items: changes.items,
         next_seq: changes.next_seq,
+        group_id: crate::api::identity::group_id(&state).await?,
     }))
 }

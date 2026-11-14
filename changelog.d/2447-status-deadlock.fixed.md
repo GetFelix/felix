@@ -1,0 +1,1 @@
+- Reading a Raft shard member's status can no longer stop its log (#2447). `status` borrowed the member's log positions twice in one expression. An append that published between the two borrows left the caller and every later write of that member waiting on each other for good. Behind the `raft` feature.

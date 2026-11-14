@@ -196,6 +196,10 @@ fn assignment() -> ShardAssignment {
             generation: 1,
             offset: 1,
         }],
+        placed: Some(crate::model::PlacedInEpoch {
+            epoch: 1,
+            brokers: BTreeSet::from([s("b")]),
+        }),
     }
 }
 
@@ -313,6 +317,12 @@ fn exported() -> ExportedState {
     ExportedState {
         deleted_stream_names: vec![stream_key()],
         deleted_cache_names: vec![cache_key()],
+        cluster_identity: Some(crate::store::identity::ClusterIdentity {
+            group_id: s("g"),
+            shard_engine: s("hybrid"),
+            adopts_existing: true,
+        }),
+        unplaced: [shard_key().owner(1)].into(),
         v: 1,
         tenants: vec![(s("t"), tenant())],
         namespaces: vec![(namespace_key(), namespace())],
@@ -424,6 +434,7 @@ fn commands() -> Vec<MetaCommand> {
             incarnations: true,
         },
         MetaCommand::CreateStream {
+            needs_identity: true,
             names: true,
             stream: stream(),
             incarnations: true,
@@ -441,6 +452,7 @@ fn commands() -> Vec<MetaCommand> {
             incarnations: true,
         },
         MetaCommand::CreateCache {
+            needs_identity: true,
             names: true,
             cache: cache(),
             incarnations: true,
@@ -479,6 +491,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::PutShardAssignment {
             seq_generation: true,
             assignment: assignment(),
+            start_placed: true,
         },
         MetaCommand::PutShardAssignmentIf {
             seq_generation: true,
@@ -492,6 +505,7 @@ fn commands() -> Vec<MetaCommand> {
             fence: 1,
             at_least: 3,
             record_previous: true,
+            start_placed: true,
         },
         MetaCommand::AdoptElectedLeader {
             key: shard_key(),
@@ -513,6 +527,10 @@ fn commands() -> Vec<MetaCommand> {
             readmit: true,
         },
         MetaCommand::SetMovesPaused { paused: true },
+        MetaCommand::RecordClusterIdentity {
+            group_id: s("g"),
+            shard_engine: s("hybrid"),
+        },
         MetaCommand::UpsertIdpIssuer {
             tenant_id: s("t"),
             issuer: issuer(),
@@ -578,6 +596,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::ImportState {
             state: Box::new(exported()),
             overwrite: true,
+            mark_unplaced: true,
         },
         MetaCommand::InsertRefreshToken {
             token: refresh_token(),
@@ -612,6 +631,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RegisterNodeInFleet { node: node() },
         MetaCommand::FinalizeFleetFeature { feature: s("f") },
         MetaCommand::CreateResources {
+            needs_identity: true,
             names: true,
             streams: vec![stream()],
             caches: vec![cache()],
@@ -689,6 +709,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::DeleteShardAssignment { .. } => "delete_shard_assignment",
         MetaCommand::RecordReplicaReport { .. } => "record_replica_report",
         MetaCommand::SetMovesPaused { .. } => "set_moves_paused",
+        MetaCommand::RecordClusterIdentity { .. } => "record_cluster_identity",
         MetaCommand::UpsertIdpIssuer { .. } => "upsert_idp_issuer",
         MetaCommand::DeleteIdpIssuer { .. } => "delete_idp_issuer",
         MetaCommand::AddRbacPolicy { .. } => "add_rbac_policy",
@@ -826,6 +847,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     plain.mount = None;
     assert_eq!(
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: plain,
             incarnations: false
@@ -837,6 +859,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     unmounted.mount = None;
     assert_eq!(
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: unmounted,
             incarnations: false
@@ -846,6 +869,7 @@ fn a_command_at_its_defaults_needs_only_its_variant() {
     );
     assert_eq!(
         MetaCommand::CreateStream {
+            needs_identity: false,
             names: false,
             stream: stream(),
             incarnations: false

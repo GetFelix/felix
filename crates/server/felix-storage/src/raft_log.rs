@@ -42,14 +42,19 @@ pub(crate) mod state_file;
 mod tail_cache;
 #[cfg(test)]
 pub(crate) mod tests;
+pub mod transfer;
 mod writer;
+mod written;
 
 pub use codec::EntryCodec;
 /// The leader id in a log id: for this log, the term. Named in the bounds
 /// of everything generic over [`LogTypes`].
 pub use openraft::type_config::alias::CommittedLeaderIdOf;
 pub use reader::LogReader;
-pub use snapshot::{SnapshotId, SnapshotStore, StoredSnapshot};
+pub use snapshot::{
+    SnapshotData, SnapshotId, SnapshotStore, StagedSnapshot, StoredReader, StoredSnapshot,
+};
+pub use written::{WrittenAt, WrittenToken};
 
 use std::io;
 use std::ops::Deref;
@@ -68,6 +73,7 @@ use crate::disk_log::WriterAt;
 use crate::log::{FsyncMode, Offset};
 #[cfg(doc)]
 use crate::log::{LogConfig, RecordMark, UNKNOWN_WRITER};
+use crate::raft_copy::{CopyMarks, LogMarkMode};
 
 /// The openraft type configs this log stores: a log id is a term and an
 /// index, and an entry is openraft's own [`Entry`].
@@ -162,6 +168,15 @@ struct Shared<K> {
     /// Reads of the segments, as against the tail cache.
     #[cfg(test)]
     segment_reads: std::sync::atomic::AtomicU64,
+    /// The root's marks for this copy, once [`RaftLog::mark_with`] set them.
+    marking: std::sync::OnceLock<Marking>,
+}
+
+/// How this log keeps its marks at the data root.
+struct Marking {
+    marks: CopyMarks,
+    /// The log mark is written with every flush, not in batches.
+    exact: bool,
 }
 
 impl<C, K> Clone for RaftLog<C, K> {
@@ -219,9 +234,37 @@ where
                 pause_after_page: parking_lot::Mutex::new(None),
                 #[cfg(test)]
                 segment_reads: std::sync::atomic::AtomicU64::new(0),
+                marking: std::sync::OnceLock::new(),
             }),
             types: std::marker::PhantomData,
         })
+    }
+
+    /// Keep this copy's marks at the data root from here on: the vote mark
+    /// is synced before [`RaftLogStorage::save_vote`] returns, and the log
+    /// mark follows the flushed log as `mode` says. Set once, before the
+    /// log is handed to Raft.
+    ///
+    /// [`RaftLogStorage::save_vote`]: openraft::storage::RaftLogStorage::save_vote
+    pub fn mark_with(&self, marks: CopyMarks, mode: LogMarkMode) -> io::Result<()> {
+        let exact = match mode {
+            LogMarkMode::Exact => true,
+            LogMarkMode::Batched(_) => false,
+        };
+        let batch = marks.clone();
+        self.shared
+            .marking
+            .set(Marking { marks, exact })
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{}: the log already keeps marks", self.shared.log.label()),
+                )
+            })?;
+        if let LogMarkMode::Batched(interval) = mode {
+            batch.batch_from(self.positions(), interval);
+        }
+        Ok(())
     }
 
     /// The log's written and flushed positions, as they change.
@@ -293,6 +336,31 @@ where
             last_purged_log_id: purged,
             last_log_id,
         })
+    }
+}
+
+/// The last entry `log` holds as a Raft log, or the purged id when it holds
+/// none above it. What a member opening the directory would report as its
+/// last log id.
+pub(crate) async fn last_point(log: &DiskLog) -> io::Result<Option<LogPoint>> {
+    let purged = purged::load(log.dir())?;
+    let first = match purged {
+        Some(purged) => log.base_offset().max(purged.index + 1),
+        None => log.base_offset(),
+    };
+    match log.last_writer().await.map_err(io::Error::other)? {
+        Some((last, writer)) if last >= first => Ok(Some(LogPoint {
+            term: term_at(writer, last)?,
+            index: last,
+        })),
+        _ => purged
+            .map(|purged| {
+                Ok(LogPoint {
+                    term: term_of(Some(purged.generation), purged.index)?,
+                    index: purged.index,
+                })
+            })
+            .transpose(),
     }
 }
 

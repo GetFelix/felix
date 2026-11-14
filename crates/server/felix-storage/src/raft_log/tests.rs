@@ -7,11 +7,15 @@ mod flush_queue;
 #[cfg(feature = "sim")]
 mod install_crash_points;
 mod machine;
+mod marks;
 mod purge;
+mod receive;
 mod snapshots;
 mod suite;
 mod tail;
+mod transfer;
 pub(crate) mod writes;
+mod written;
 
 use std::io;
 

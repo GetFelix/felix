@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use super::BootId;
-use crate::{Result, StorageError};
+use crate::{Result, StorageError, StorageId};
 
 /// The token's name under the durable root.
 pub const TOKEN_FILE_NAME: &str = "run-token";
@@ -96,6 +96,49 @@ pub fn witnessed(root: &Path, dir: Option<&Path>, boot: Option<BootId>) -> bool 
         return false;
     };
     std::fs::read(path).is_ok_and(|found| found == expected.as_bytes())
+}
+
+/// Record that the mark log under `root`, with storage id `id`, has synced
+/// through `sequence`. Kept beside the witness, in memory, and left alone by
+/// [`witness`]: the next run on the same boot compares its root with it, so a
+/// root put back from a copy taken during this run is caught. Without `dir`
+/// nothing is recorded. A failure is logged, not returned: the record then
+/// trails the root, and a root ahead of it passes.
+pub fn record_sequence(root: &Path, dir: Option<&Path>, id: StorageId, sequence: u64) {
+    let Some(dir) = dir else {
+        return;
+    };
+    let written = sequence_path(root, dir).and_then(|path| {
+        let body = format!("felix-marks\nid={}\nsequence={sequence}\n", id.to_hex());
+        // Not `with_extension`, which would share the witness's temporary.
+        let mut temporary = path.clone().into_os_string();
+        temporary.push(".tmp");
+        std::fs::write(&temporary, body)
+            .and_then(|()| std::fs::rename(&temporary, &path))
+            .map_err(StorageError::Io)
+    });
+    if let Err(err) = written {
+        tracing::warn!(root = %root.display(), error = %err, "could not record the mark sequence in the run witness");
+    }
+}
+
+/// The storage id and sequence [`record_sequence`] last recorded for
+/// `root`, or `None` when there is none or it does not read.
+pub fn recorded_sequence(root: &Path, dir: Option<&Path>) -> Option<(StorageId, u64)> {
+    let body = std::fs::read_to_string(sequence_path(root, dir?).ok()?).ok()?;
+    let mut lines = body.lines();
+    if lines.next()? != "felix-marks" {
+        return None;
+    }
+    let id = StorageId::from_hex(lines.next()?.strip_prefix("id=")?)?;
+    let sequence = lines.next()?.strip_prefix("sequence=")?.parse().ok()?;
+    Some((id, sequence))
+}
+
+fn sequence_path(root: &Path, dir: &Path) -> Result<PathBuf> {
+    let mut path = witness_path(root, dir)?.into_os_string();
+    path.push(".marks");
+    Ok(PathBuf::from(path))
 }
 
 /// The witness for `root` under `dir`, for this process's user.

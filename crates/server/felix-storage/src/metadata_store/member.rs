@@ -1,6 +1,7 @@
 //! The member file, `member`: which cluster a metadata store belongs to,
 //! whether the member's vote is withheld, and the two marks the upgrade
-//! from redb uses.
+//! from redb uses. The formation file beside it ([`super::formation`]) is
+//! written through the same handle.
 //!
 //! The file is replaced whole: a temporary, an fsync, a rename and a
 //! directory sync, all before a change returns. A crash leaves the old file
@@ -18,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::LOG_DIR;
+use super::formation::{self, Formation};
 use super::lock::{self, StoreLock};
 use crate::disk_log::crash_point;
 use crate::raft_log::state_file;
@@ -80,11 +82,14 @@ impl MemberFile {
             )));
         }
         state_file::remove_temporary(&dir, FILE_NAME)?;
+        state_file::remove_temporary(&dir, formation::FILE_NAME)?;
+        let formation = formation::read(&dir)?;
         Ok(Self {
             shared: Arc::new(Shared {
                 dir,
                 state: parking_lot::Mutex::new(State {
                     member,
+                    formation,
                     failed: false,
                 }),
                 _lock: lock,
@@ -142,6 +147,61 @@ impl MemberFile {
         .await
     }
 
+    /// The formation file as the store holds it.
+    pub fn formation(&self) -> Formation {
+        self.shared.state.lock().formation.clone()
+    }
+
+    /// Set this member's own mark that it set out to form the group, on
+    /// disk before this returns. The mark is never cleared: it goes only
+    /// with the store.
+    pub async fn mark_forming(&self) -> io::Result<()> {
+        self.change_formation(|formation| formation.forming = true)
+            .await
+    }
+
+    /// Record that the member may vote from this store, on disk before
+    /// this returns. Never cleared: a blank log beside it was emptied.
+    pub async fn mark_reached(&self) -> io::Result<()> {
+        self.change_formation(|formation| formation.reached = true)
+            .await
+    }
+
+    /// Record that `member` set out to form the group, on disk before this
+    /// returns.
+    pub async fn record_formed(&self, member: u64) -> io::Result<()> {
+        self.change_formation(move |formation| {
+            formation.formed.insert(member);
+        })
+        .await
+    }
+
+    /// Apply `change` and write the formation file if it changed anything.
+    async fn change_formation(
+        &self,
+        change: impl FnOnce(&mut Formation) + Send + 'static,
+    ) -> io::Result<()> {
+        let shared = Arc::clone(&self.shared);
+        felix_common::blocking::spawn(move || {
+            let mut state = shared.state.lock();
+            shared.writable(&state)?;
+            let mut formation = state.formation.clone();
+            change(&mut formation);
+            if formation == state.formation {
+                return Ok(());
+            }
+            let bytes = formation::encode(&formation)?;
+            if let Err(err) = state_file::store(&shared.dir, formation::FILE_NAME, &[&bytes]) {
+                state.failed = true;
+                return Err(err);
+            }
+            state.formation = formation;
+            Ok(())
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
     /// Apply `change` and write the file if it changed anything.
     async fn change(
         &self,
@@ -150,12 +210,7 @@ impl MemberFile {
         let shared = Arc::clone(&self.shared);
         felix_common::blocking::spawn(move || {
             let mut state = shared.state.lock();
-            if state.failed {
-                return Err(io::Error::other(format!(
-                    "an earlier write of {} failed, so what is on disk is unknown",
-                    shared.dir.join(FILE_NAME).display()
-                )));
-            }
+            shared.writable(&state)?;
             let mut member = state.member.clone();
             change(&mut member, &shared.dir)?;
             if member == state.member {
@@ -185,9 +240,24 @@ struct Shared {
     _lock: StoreLock,
 }
 
+impl Shared {
+    /// A failed fsync leaves the old file or the new one, so no later
+    /// change of either file is written from the copy in memory.
+    fn writable(&self, state: &State) -> io::Result<()> {
+        if !state.failed {
+            return Ok(());
+        }
+        Err(io::Error::other(format!(
+            "an earlier write in {} failed, so what is on disk is unknown",
+            self.dir.display()
+        )))
+    }
+}
+
 #[derive(Debug)]
 struct State {
     member: Member,
+    formation: Formation,
     failed: bool,
 }
 

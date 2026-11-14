@@ -2,8 +2,13 @@
 //! RPC to the local node and answering in Felix's peer format
 //! ([`super::wire`]), the shape [`super::network`] and a member on a release
 //! that ran openraft 0.9 both expect, plus the
-//! proposal route, the leader-only route ([`super::leader`]), and the two a
-//! member uses to enter the group ([`super::join`]).
+//! proposal route, the leader-only route ([`super::leader`]), and the three
+//! a member uses to enter the group ([`super::join`]).
+//!
+//! The router is the member's ([`super::member`]), which may have no Raft
+//! node yet. `standing` answers either way. Every other route answers 503
+//! until the node is attached, so no vote or append is answered by a member
+//! that has not settled how it enters the group.
 //!
 //! Every route is under [`super::PEER_PREFIX`], which differs between a
 //! member on redb and one on the segment store, so neither answers the
@@ -12,18 +17,24 @@
 //! Served on the peer listener only, behind [`super::peer::require_peer`]:
 //! `propose` alone can replace the whole store, so nothing here is reachable
 //! from the public API port or without the cluster's peer credentials.
-use axum::extract::State;
+use axum::extract::{FromRequestParts, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest};
 
-use super::types::{Snapshot, Vote};
-use super::{peer_route, wire};
+#[cfg(felix_segment_store)]
+use felix_storage::raft_log::SnapshotId;
 
-pub(super) fn router(handle: super::RaftHandle) -> Router {
-    let security = std::sync::Arc::clone(&handle.security);
+#[cfg(felix_segment_store)]
+use super::types;
+use super::types::{Snapshot, Vote};
+use super::{RaftHandle, RaftMember, peer_route, wire};
+
+pub(super) fn router(member: RaftMember) -> Router {
+    let security = std::sync::Arc::clone(&member.security);
+    let id = member.id;
     Router::new()
         .route(&peer_route("append-entries"), post(append_entries))
         .route(&peer_route("vote"), post(vote))
@@ -34,17 +45,45 @@ pub(super) fn router(handle: super::RaftHandle) -> Router {
             post(leader_request),
         )
         .route(&peer_route("standing"), get(standing))
+        .route(&peer_route("forming"), post(forming))
         .route(&peer_route("catch-up-target"), get(catch_up_target))
         // Axum's default body limit (2MB) is below openraft's default
         // snapshot chunk (3MB); a snapshot install crossing that line would
         // be refused with a 413 the sender reads as a network fault. Sized
         // to the chunk plus JSON's expansion of binary data.
         .layer(axum::extract::DefaultBodyLimit::max(16 * 1024 * 1024))
-        .with_state(handle)
+        .with_state(member)
+        // Inside the peer check, so only a peer learns which member this is.
+        .layer(axum::middleware::from_fn_with_state(
+            id,
+            super::peer::require_target,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             security,
             super::peer::require_peer,
         ))
+}
+
+/// This member's Raft node. A route that takes it answers 503 while the
+/// member has none, like a member that is not there.
+struct Node(RaftHandle);
+
+impl FromRequestParts<RaftMember> for Node {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        _parts: &mut axum::http::request::Parts,
+        member: &RaftMember,
+    ) -> Result<Self, Response> {
+        match member.node() {
+            Some(node) => Ok(Self(node.clone())),
+            None => Err((
+                StatusCode::SERVICE_UNAVAILABLE,
+                "this member has no raft node yet",
+            )
+                .into_response()),
+        }
+    }
 }
 
 /// A proposal over HTTP: opaque command bytes in, the state machine's
@@ -53,7 +92,7 @@ pub(super) fn router(handle: super::RaftHandle) -> Router {
 /// **any** member — the promise the migration tool leans on. The peer token
 /// is what authorizes it: that token is the cluster-admin credential. 503
 /// only when the bounded write budget runs out: no leader, or no quorum.
-async fn propose(State(handle): State<super::RaftHandle>, body: axum::body::Bytes) -> Response {
+async fn propose(Node(handle): Node, body: axum::body::Bytes) -> Response {
     match handle.write(body.to_vec()).await {
         Ok(bytes) => (StatusCode::OK, bytes).into_response(),
         Err(err) => (StatusCode::SERVICE_UNAVAILABLE, format!("{err:#}")).into_response(),
@@ -62,10 +101,7 @@ async fn propose(State(handle): State<super::RaftHandle>, body: axum::body::Byte
 
 /// A leader-only request forwarded by a follower. 503 from a member that
 /// does not lead, so the sender asks again once it knows who does.
-async fn leader_request(
-    State(handle): State<super::RaftHandle>,
-    body: axum::body::Bytes,
-) -> Response {
+async fn leader_request(Node(handle): Node, body: axum::body::Bytes) -> Response {
     match handle.serve_leader_request(&body).await {
         Some(bytes) => (StatusCode::OK, bytes).into_response(),
         None => (StatusCode::SERVICE_UNAVAILABLE, "not the raft leader").into_response(),
@@ -79,7 +115,7 @@ fn stopped(err: impl std::fmt::Display) -> Response {
 }
 
 async fn append_entries(
-    State(handle): State<super::RaftHandle>,
+    Node(handle): Node,
     Json(rpc): Json<wire::AppendEntriesRequest>,
 ) -> Response {
     let rpc = AppendEntriesRequest {
@@ -112,10 +148,7 @@ async fn append_entries(
 
 /// A member withholding its vote answers like an unreachable one. openraft
 /// would grant from an empty log, which is exactly what must not happen.
-async fn vote(
-    State(handle): State<super::RaftHandle>,
-    Json(rpc): Json<wire::VoteRequest>,
-) -> Response {
+async fn vote(Node(handle): Node, Json(rpc): Json<wire::VoteRequest>) -> Response {
     if !handle.may_vote.load(std::sync::atomic::Ordering::SeqCst) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -135,55 +168,122 @@ async fn vote(
     }
 }
 
+/// Answered with or without a Raft node.
 async fn standing(
-    State(handle): State<super::RaftHandle>,
+    State(member): State<RaftMember>,
     axum::extract::Query(asker): axum::extract::Query<super::version::Asker>,
-) -> Json<super::join::Standing> {
-    handle.note_asker(asker);
-    Json(handle.standing())
+) -> Response {
+    member.note_asker(asker);
+    match member.standing().await {
+        Ok(standing) => Json(standing).into_response(),
+        Err(err) => stopped(err),
+    }
+}
+
+/// A member that set out to form the group asks to be recorded. The record
+/// is on disk before the 204: the member votes once every peer has given
+/// one. 409 for a group other than this member's own.
+async fn forming(Node(handle): Node, Json(forming): Json<super::join::Forming>) -> Response {
+    use super::join::NotRecorded;
+
+    match handle.record_forming(&forming).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(NotRecorded::Refused(why)) => (StatusCode::CONFLICT, why).into_response(),
+        Err(NotRecorded::Failed(err)) => stopped(err),
+    }
 }
 
 /// 503 from anything but a confirmed leader.
-async fn catch_up_target(State(handle): State<super::RaftHandle>) -> Response {
+async fn catch_up_target(Node(handle): Node) -> Response {
     match handle.catch_up_target().await {
         Some(target) => Json(target).into_response(),
         None => StatusCode::SERVICE_UNAVAILABLE.into_response(),
     }
 }
 
-#[cfg(not(felix_segment_store))]
-fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
+/// On the segment store the body is read as a stream, which the router's
+/// body limit does not cover; the transfer's own cap does, from the length
+/// in the head.
+fn install_snapshot_route() -> axum::routing::MethodRouter<RaftMember> {
     post(install_snapshot)
 }
 
-/// A snapshot arrives whole, so this route lifts the router's body limit:
-/// the state is as large as it is, and only a peer with the cluster's
-/// credentials gets this far.
+/// A snapshot streamed in one request (`felix_storage::raft_log::transfer`).
+/// The head is read first, and a stale sender, a length over the cap or a
+/// busy slot is answered before any data is read. The data goes straight
+/// to the receive file, never into memory.
 #[cfg(felix_segment_store)]
-fn install_snapshot_route() -> axum::routing::MethodRouter<super::RaftHandle> {
-    post(install_snapshot).layer(axum::extract::DefaultBodyLimit::disable())
-}
-
-/// A whole snapshot in one request ([`wire::snapshot_body`]).
-#[cfg(felix_segment_store)]
-async fn install_snapshot(
-    State(handle): State<super::RaftHandle>,
-    body: axum::body::Bytes,
-) -> Response {
-    let Some((head, data)) = wire::parse_snapshot_body(&body) else {
-        return (StatusCode::BAD_REQUEST, "not a snapshot request").into_response();
+async fn install_snapshot(Node(handle): Node, body: axum::body::Body) -> Response {
+    let mut incoming =
+        felix_storage::raft_log::transfer::Incoming::new(BodyPieces(body.into_data_stream()));
+    let head = match incoming.head(handle.snapshot_max_bytes).await {
+        Ok(head) => head,
+        Err(err) => return transfer_failed(&err, incoming.received()),
     };
-    let snapshot = Snapshot {
-        meta: head.meta.into(),
-        snapshot: std::io::Cursor::new(data.to_vec()),
+    let data_len = head.data_len;
+    let Some(head) = wire::SnapshotHead::decode(&head.head) else {
+        return (StatusCode::BAD_REQUEST, "not a snapshot head").into_response();
     };
-    // A sender that is no longer the leader this member follows learns so
-    // from the vote in the answer; the library refuses its snapshot.
-    match handle
-        .raft
-        .install_full_snapshot(Vote::from(head.vote), snapshot)
+    let sender = Vote::from(head.vote);
+    let mine = match handle.raft.with_raft_state(|state| *state.vote_ref()).await {
+        Ok(vote) => vote,
+        Err(err) => return stopped(err),
+    };
+    // Advisory: the library checks the vote again when it installs. This
+    // only spares a stale sender's data the trip.
+    if sender < mine {
+        return Json(wire::Reply::Ok(wire::InstallSnapshotResponse {
+            vote: (&mine).into(),
+        }))
+        .into_response();
+    }
+    let Ok(slot) = handle.install_slot.take(sender).await else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "another snapshot install is in progress",
+        )
+            .into_response();
+    };
+    let Some(snapshots) = handle.member.snapshots().await else {
+        return stopped("the store is closed");
+    };
+    let meta = types::SnapshotMeta::from(head.meta.clone());
+    let last = meta.last_log_id.map(|id| SnapshotId {
+        term: *id.leader_id,
+        index: id.index,
+    });
+    let meta_bytes = match serde_json::to_vec(&head.meta) {
+        Ok(bytes) => bytes,
+        Err(err) => return (StatusCode::BAD_REQUEST, err.to_string()).into_response(),
+    };
+    let mut staged = match snapshots
+        .begin_receive(last, meta_bytes.into(), data_len)
         .await
     {
+        Ok(staged) => staged,
+        Err(err) => return stopped(err),
+    };
+    let cancelled = slot.cancelled();
+    let closing = staged.closing();
+    let stop = async {
+        tokio::select! {
+            () = cancelled => {}
+            () = closing => {}
+        }
+    };
+    if let Err(err) = incoming.data(data_len, &mut staged, stop).await {
+        return transfer_failed(&err, incoming.received());
+    }
+    if let Err(err) = staged.finish().await {
+        return stopped(err);
+    }
+    let snapshot = Snapshot {
+        meta,
+        snapshot: types::SnapshotData::Staged(staged),
+    };
+    let installed = handle.raft.install_full_snapshot(sender, snapshot).await;
+    drop(slot);
+    match installed {
         Ok(response) => Json(wire::Reply::Ok(wire::InstallSnapshotResponse {
             vote: (&response.vote).into(),
         }))
@@ -192,11 +292,48 @@ async fn install_snapshot(
     }
 }
 
+/// A request body, as the snapshot receive reads it.
+#[cfg(felix_segment_store)]
+struct BodyPieces(axum::body::BodyDataStream);
+
+#[cfg(felix_segment_store)]
+impl felix_storage::raft_log::transfer::Pieces for BodyPieces {
+    async fn next_piece(&mut self) -> Option<std::io::Result<bytes::Bytes>> {
+        use futures_util::StreamExt;
+
+        let piece = self.0.next().await?;
+        Some(piece.map_err(std::io::Error::other))
+    }
+}
+
+/// A transfer that was refused or broke off, logged with how far it got
+/// so one that keeps failing shows up as such.
+#[cfg(felix_segment_store)]
+fn transfer_failed(
+    err: &felix_storage::raft_log::transfer::TransferError,
+    received: u64,
+) -> Response {
+    use felix_storage::raft_log::transfer::TransferError;
+
+    tracing::warn!(error = %err, received, "snapshot receive failed");
+    let status = match err {
+        TransferError::OverCap { .. } => StatusCode::PAYLOAD_TOO_LARGE,
+        TransferError::Stalled { .. } => StatusCode::REQUEST_TIMEOUT,
+        TransferError::Cancelled | TransferError::Io(_) => StatusCode::SERVICE_UNAVAILABLE,
+        TransferError::UnknownForm(_)
+        | TransferError::HeadTooLarge(_)
+        | TransferError::Short { .. }
+        | TransferError::Trailing
+        | TransferError::Crc => StatusCode::BAD_REQUEST,
+    };
+    (status, err.to_string()).into_response()
+}
+
 /// One chunk of a snapshot, as a 0.9 member sends it. The chunks are joined
 /// here and the library is handed the whole snapshot with the last one.
 #[cfg(not(felix_segment_store))]
 async fn install_snapshot(
-    State(handle): State<super::RaftHandle>,
+    Node(handle): Node,
     Json(chunk): Json<wire::InstallSnapshotRequest>,
 ) -> Response {
     let sender = Vote::from(chunk.vote);
