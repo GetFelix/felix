@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794677289076,
+  "lastUpdate": 1794682171918,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -72138,6 +72138,72 @@ window.BENCHMARK_DATA = {
             "range": "311.61",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1145.00\nmean: 1254.80\nstdev: 311.61\ncv: 24.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "563385188f847db6795960d2ba34fc3103e01450",
+          "message": "spec: membership from placement in FelixRaftPlacement (#2235, #2385) (#2413)\n\n* spec: membership from placement in FelixRaftPlacement (#2235, #2385)\n\n* spec: split Next disjuncts in FelixRaftPlacement so coverage counts each (#2235)\n\n* spec: TransferMove without a write per push, TransferMoveFull with one nightly (#2235)\n\n* spec: doom on membership reports that cover appended entries; versions only on matching memberships; grow then transfer (#2235, #2385)\n\nReview of #2413: a restore could doom a copy an appended joint entry still\ngave a vote. The control plane now dooms on each member's report of its\ncommitted and appended memberships, taken after every broker acknowledged\nthe incarnation. Learner entries and the growth step keep their version.\nA leader the target leaves out grows to target plus itself and transfers,\nso a live majority of the target can finish. New configs: RewindSpare and\nits twin RewindSpareCommitted, StaleWipeTwoTerms, MoveWipeTwoMoves,\nTransferMoveWipe (registered once their runs give the declared outcome).\n\n* spec: reports keep only what a doom reads, and a target write drops them (#2235)\n\nThe full-snapshot report variable made FelixRaftPlacement 60 times slower\nand pushed five configs past 45 minutes. A report now says, for the copies\nwaiting to be deleted, which no entry names and which the committed\nmembership is evidence for.\n\n* spec: shrink timed-out placement configs, register RewindSpareCommitted, README rows (#2235) [WIP: box results pending]\n\n* spec: shrunk placement config headers say what they hold (#2235)\n\n* spec: register the placement configs with measured weights, README rows, changelog (#2235)\n\nWeights come from CI runs where one exists and are guesses from the build\nbox otherwise. TransferMoveFull is left unchecked (issue 2497).\n\n* spec: review fixes: unfinished placement configs wait for a dispatch, report rule stated for the code (#2235)\n\nConfigs that ran past 45 minutes on a build box are not registered until a\ndispatch run gives their declared outcome. The README says expected for\nthem. The spec comment names the commit index as the report's committed\nmembership (issue 2506).\n\n* spec(placement): register StaleWipeRewind and its SameInc twin\n\nRun 43539792533: FelixRaftPlacementStaleWipeRewind passes in 4 h 35 min\non a CI runner; FelixRaftPlacementStaleWipeRewindSameInc violates\nAckedOnDisk at depth 36 in 3 h 11 min, its declared outcome. The other\nfour placement configurations in that run hit the six-hour limit and\nstay unregistered. The code gaps the twin shows are issue #2529.",
+          "timestamp": "2026-11-14T10:44:44-08:00",
+          "tree_id": "e75bd7f04bee7beec7af21436962dae07c400d8f",
+          "url": "https://github.com/GetFelix/felix/commit/563385188f847db6795960d2ba34fc3103e01450"
+        },
+        "date": 1794682163769,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 72,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 72.00\nmean: 72.00\nstdev: 0.71\ncv: 0.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 122,
+            "range": "3.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 123.40\nstdev: 3.78\ncv: 3.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 150,
+            "range": "689.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 456.40\nstdev: 689.06\ncv: 150.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.20\nstdev: 1.10\ncv: 1.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 199,
+            "range": "9.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 193.60\nstdev: 9.76\ncv: 5.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 593,
+            "range": "786.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 593.00\nmean: 1001.20\nstdev: 786.86\ncv: 78.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
