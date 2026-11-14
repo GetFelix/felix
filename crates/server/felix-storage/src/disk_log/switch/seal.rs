@@ -266,6 +266,7 @@ impl DiskLog {
             cursors: side_ranges.1,
         };
         let record = base.record(now_micros());
+        pause_point(PauseAt::Marked).await;
         if !self.append_seal_record(offset, &base, record).await? {
             if !self.promise_still(promise.generation) {
                 return Ok(Err(SealRefused::NoPromise));
@@ -614,6 +615,8 @@ fn count_digest() {}
 enum PauseAt {
     /// An acknowledgement's checks passed; its record is not written yet.
     Checked,
+    /// A claim is marked; its record is not written yet.
+    Marked,
     /// The record is on disk.
     Written,
 }

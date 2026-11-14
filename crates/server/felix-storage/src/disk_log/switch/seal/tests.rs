@@ -790,6 +790,60 @@ async fn a_claim_is_refused_if_a_later_generation_lands_meanwhile() {
 }
 
 #[tokio::test]
+async fn a_claim_whose_promise_moved_before_its_record_writes_nothing() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a", "b"]).await;
+    leader.promise(SEAL, sealer()).await;
+    let (reached, resume) = pause(PauseAt::Marked);
+    let (claimed, ()) = tokio::join!(leader.claim(0), async {
+        reached.notified().await;
+        leader
+            .log
+            .accept_generation(SEAL + 1, Some(LEADER))
+            .await
+            .expect("accept");
+        resume.notify_one();
+    });
+    assert_eq!(claimed, Err(SealRefused::NoPromise));
+    assert_eq!(leader.log.tail_offset().await.expect("tail"), 2);
+}
+
+/// The promise is checked and the record written under one hold of the lock
+/// a later generation is accepted under, so none lands between the two.
+#[tokio::test]
+async fn a_later_generation_waits_for_a_seal_record_being_written() {
+    use crate::disk_log::append::HoldAt;
+    use std::time::Duration;
+
+    let root = tempdir().expect("tempdir");
+    let (_leader, follower, seal) = sealed(root.path()).await;
+    let (release, held) = std::sync::mpsc::channel();
+    *follower.log.inner.hold_next_append.lock() = Some((HoldAt::Write, held));
+    let (acked, ()) = tokio::join!(follower.ack(&seal, sealer()), async {
+        while !follower.log.inner.append_held.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let later = follower.promise(SEAL + 1, sealer());
+        tokio::pin!(later);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut later)
+                .await
+                .is_err(),
+            "a later generation was accepted while the seal's record was being written"
+        );
+        release.send(()).expect("release");
+        assert_eq!(later.await, GenerationCheck::Raised);
+    });
+    // The record went in under the promise; whether the acknowledgement
+    // still reports it depends on when the later generation landed.
+    assert!(matches!(acked, Ok(()) | Err(SealRefused::NoPromise)));
+    assert_eq!(
+        follower.log.tail_offset().await.expect("tail"),
+        seal.offset + 1
+    );
+}
+
+#[tokio::test]
 async fn a_crash_between_the_ballot_and_the_promise_leaves_no_promise() {
     let root = tempdir().expect("tempdir");
     let dir = root.path().join("follower");
