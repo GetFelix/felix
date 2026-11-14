@@ -3142,6 +3142,77 @@ new field, the mode cannot change during a switch without a restart, and a
 cluster on the default must restart every broker on `on_commit` before any
 shard switches. That is one of the `shard_raft` prerequisites.
 
+**The control plane's record.** The shard's assignment carries a `switch`
+record, which only three writes set. Each is a compare-and-swap on the seal
+order standing at the shard's generation, and each needs every control-plane
+member at metadata level 34.
+
+- *The seal order.* `POST /v1/placement/seal/{tenant}/{namespace}/{stream}/{shard}`
+  names the shard's leader and set again at the next generation `G`, with
+  `switch` holding `G`, the leader as the sealer, and the sealer's storage
+  identity. It is refused until the fleet has finalized `shard_raft`,
+  while the shard is not active or a move or a set change is in progress,
+  and while the leader has no registered storage identity, since the report
+  is checked against it. The route names stream shards only. The order
+  stands only at `G`. Ordering again on a sealed shard seals it at `G+1`,
+  which gives up the first seal: its report then loses the compare.
+- *The report.* The seal leader sends its report to
+  `POST /v1/nodes/{node_id}/seal-report`: `G`, `N`, `S`, the digests, the
+  side-log ranges and the copy ids that acknowledged. It is recorded only
+  while the order of `G` stands with no report, so one report wins a
+  generation. The voters must be a majority of the shard's set and include
+  the sealer under the storage identity the order named. The other voters'
+  copy ids are recorded as reported: the digest each one checked before it
+  acknowledged is what proves its copy. The reporting node is part of the
+  compare, so only the broker the order names can win or give up its seal. The write keeps
+  generation `G`, the base's, and from then on the shard's engine is Raft:
+  every later assignment write, adoption of a hybrid election and second
+  seal is refused with a conflict as it applies. So is deleting the
+  assignment alone, which would let the next write assign the shard afresh
+  on the hybrid engine; deleting the stream still removes its shards'
+  assignments. The recorded report sent again by the sealer is answered as
+  accepted, so a lost answer is safe to retry.
+- *The give-up.* A leader whose seal cannot finish (a follower's digest
+  differs, it restarted after its claim, it lost its promise) sends
+  `POST /v1/nodes/{node_id}/seal-give-up`. The shard is named again at
+  the next generation without an order, which ends every copy's promise and
+  opens the hybrid. Any other write to a later generation does the same: a
+  failover away from a seal leader whose lease lapsed gives its seal up.
+  Because the report and the give-up compare on the same order, a give-up
+  never lands beside a recorded report, and a report of a seal that was
+  given up finds nothing to win.
+
+Placement does not know about seals yet. A move, a replacement or a
+rebalance it starts on a sealing shard is a write to a later generation, so
+it gives the seal up; the control plane logs a warning when that happens,
+and the seal can be ordered again. Pause placement
+(`POST /v1/placement/pause`) around a seal to avoid it.
+
+The report is the one assignment change that keeps its generation. A broker
+that follows the change feed must take a change at the generation it holds
+when `switch` differs, and the snapshot pairs the recorded report with the
+set before the seal, as it did the seal order.
+
+An import restores `switch` as the export holds it, like every other
+field of an assignment. Restoring an export taken before a shard switched
+brings back a hybrid record for a shard whose brokers run Raft, so an
+export older than a switch must not be imported over it. Refusing such an
+import is [#2548](https://github.com/GetFelix/felix/issues/2548).
+
+A report for a shard with no standing order is answered `accepted: false`
+and changes nothing, so the control plane never names Raft for a shard
+whose seal it did not order and accept. The seal can be ordered again after
+a give-up; an earlier seal's report still on its way loses the compare.
+
+```mermaid
+stateDiagram-v2
+  [*] --> Hybrid
+  Hybrid --> Sealing: seal order at G
+  Sealing --> Raft: report of G accepted
+  Sealing --> Hybrid: give-up, or any write to a later generation
+  Raft --> [*]
+```
+
 **The seal on the hybrid side.** Three steps on disk, each on a log
 that fsyncs on commit, and the leader's count and report:
 

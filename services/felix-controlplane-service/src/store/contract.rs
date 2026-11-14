@@ -21,3 +21,4 @@ pub(crate) mod root_sequences;
 pub(crate) mod shards;
 pub(crate) mod signing_keys;
 pub(crate) mod suspicions;
+mod switch;

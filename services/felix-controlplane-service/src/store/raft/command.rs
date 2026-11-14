@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 33;
+pub const METADATA_VERSION: u16 = 34;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -502,6 +502,28 @@ pub enum MetaCommand {
         node_id: String,
         heard: crate::model::RootSequence,
     },
+    /// Order the seal that starts a shard's switch to Raft
+    /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
+    SealShard {
+        key: ShardKey,
+        expected_generation: u64,
+    },
+    /// Record a seal report as the shard's switch, if its seal still stands
+    /// ([`crate::store::ControlPlaneStore::accept_seal_report`]). Level 34.
+    AcceptSealReport {
+        key: ShardKey,
+        report: crate::model::SealReport,
+        /// The node reporting, checked against the order as it applies.
+        sealer: String,
+    },
+    /// Give up the seal standing at `generation`
+    /// ([`crate::store::ControlPlaneStore::give_up_seal`]). Level 34.
+    GiveUpSeal {
+        key: ShardKey,
+        generation: u64,
+        /// The node giving up, checked against the order as it applies.
+        sealer: String,
+    },
     /// `TakeRefreshToken` and, when it spends, `InsertRefreshToken` of
     /// `next`, in one entry. Level 9.
     RotateRefreshToken {
@@ -569,6 +591,13 @@ impl MetaCommand {
             {
                 25
             }
+            // Finalizing the Raft engine lets seals be ordered and their
+            // reports recorded, which members before level 34 would refuse.
+            Self::FinalizeFleetFeature { feature }
+                if feature == felix_common::fleet::SHARD_RAFT.name() =>
+            {
+                34
+            }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Writes a generation the store did not pick, which a member
             // before level 21 cannot apply.
@@ -581,6 +610,9 @@ impl MetaCommand {
             Self::RecordClusterIdentity { .. } => 32,
             // A member before level 33 would refuse the command.
             Self::RecordRootSequence { .. } => 33,
+            // A member before level 34 would refuse these and keep a
+            // hybrid shard where the others hold a sealed or switched one.
+            Self::SealShard { .. } | Self::AcceptSealReport { .. } | Self::GiveUpSeal { .. } => 34,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -640,6 +672,9 @@ pub struct HeartbeatSeen {
 }
 
 /// What a command returns, mirroring the store method it stands for.
+// One per applied command, so the size of the assignment variants costs
+// nothing worth a box at every match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MetaResponse {
@@ -907,8 +942,27 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// whose state needs a higher level, such as an export carrying an identity
 /// (level 32), is refused below that level too: an older member would refuse
 /// it at apply while newer ones took it.
+///
+/// A switch command (`seal_shard`, `accept_seal_report`, `give_up_seal`) is
+/// refused below its level and otherwise left as it is: a member that
+/// could not apply it would keep a hybrid shard where the others hold a
+/// sealed or switched one.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
-    if !depends_on_level(command) {
+    let op = op_of(command);
+    if op.as_deref().is_some_and(|op| SWITCH_OPS.contains(&op)) {
+        // One this build cannot decode is left for the apply to answer.
+        return match decode_command_with_level(command) {
+            Ok((_, needs)) if needs > level => {
+                Err(encode_result(&Err(MetaError::Conflict(format!(
+                    "a shard's switch to Raft needs every control-plane member at metadata \
+                     version {needs}, but the group is at {level}; {}",
+                    crate::store::UPGRADE_HINT
+                )))))
+            }
+            _ => Ok(None),
+        };
+    }
+    if op.as_deref() != Some(IMPORT_STATE_OP) {
         return Ok(None);
     }
     let refuse = |needs: u16| {
@@ -934,15 +988,22 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     Ok(settled)
 }
 
-/// Whether `command` is an import, read without decoding the state it
-/// carries. The op is decoded owned, so an escaped spelling still counts.
+/// Whether `command` is an import or a switch command, read without
+/// decoding what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
+    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || SWITCH_OPS.contains(&op.as_str()))
+}
+
+/// The commands of a shard's switch to Raft, by op.
+const SWITCH_OPS: [&str; 3] = ["seal_shard", "accept_seal_report", "give_up_seal"];
+
+/// A command's op. Decoded owned, so an escaped spelling still counts.
+fn op_of(command: &[u8]) -> Option<String> {
     #[derive(Deserialize)]
     struct OpPeek {
         op: Option<String>,
     }
-    serde_json::from_slice::<OpPeek>(command)
-        .is_ok_and(|peek| peek.op.as_deref() == Some(IMPORT_STATE_OP))
+    serde_json::from_slice::<OpPeek>(command).ok()?.op
 }
 
 /// Replace the proposer's clock reading in `command` with `now_millis`.

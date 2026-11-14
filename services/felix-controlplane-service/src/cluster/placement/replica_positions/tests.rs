@@ -696,6 +696,7 @@ fn led_by_a(generation: u64) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     }
 }
 

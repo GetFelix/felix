@@ -2209,6 +2209,9 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move or replacement; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
+| `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
+| `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 
 A listed move has a `step` (`staged`, `fenced`, `replacing` or `restoring`),
 the `reason` it started (`drain`, `balance`, `operator`, `replace` or
@@ -2240,7 +2243,9 @@ where placement would not make it: the destination not registered (404
 `unknown_node`), not live (409 `destination_not_live`), already the leader
 (`already_leader`) or at its `max_shards` cap (`at_capacity`); the shard
 already moving (`already_moving`); its leader down (`leader_unavailable`,
-failover places it); or a move limit reached (`move_limit`). It is held to
+failover places it); or a move limit reached (`move_limit`). A start, a
+cancel and an abandon on a shard that switched to Raft are all refused (409
+`switched`): the control plane no longer places it. It is held to
 the move limits but not to a pause. From there it runs like any other move,
 through the fence and the cut-over, and a timeout abandons it the same way.
 
