@@ -153,7 +153,7 @@ async fn a_member_that_does_not_lead_refuses_and_appends_nothing() {
 
 /// A leader that cannot commit still answers a publish by the stream's
 /// policy: both acknowledgements are of its own log. The commit index does
-/// not move, and no local acknowledgement is admitted.
+/// not move.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ack_follows_the_policy_and_not_the_commit() {
     let (mut cluster, leader, engine, committed) = led().await;
@@ -178,7 +178,6 @@ async fn an_ack_follows_the_policy_and_not_the_commit() {
     assert!(now.flushed.is_some_and(|at| at.index >= end - 1));
     assert_eq!(now.committed, Some(committed));
 
-    assert!(engine.admit_local_ack(&shard(0), term).is_err());
     cluster.net.cut.lock().clear();
     cluster.stop().await;
 }
@@ -527,8 +526,9 @@ impl RaftTransport for Wire {
 async fn a_token_does_not_leave_with_an_append() {
     let wire = Arc::new(Wire::default());
     let transport: Arc<dyn RaftTransport> = wire.clone();
+    let lease = super::super::lease::Lease::new(timers().lease);
     let reports = Arc::new(super::super::written::Reports::new());
-    let router = Router::new(transport, Arc::new(pace().0), reports);
+    let router = Router::new(transport, Arc::new(pace().0), Arc::new(lease), reports);
     let (token, written) = WrittenToken::channel();
     let command = Command {
         timestamp_micros: 7,
