@@ -30,11 +30,16 @@ pub(crate) fn refresh(root: &Path) {
 }
 
 /// Measure `root`'s kept directory once, if nothing has yet in this
-/// process, so copies kept before a restart are counted.
+/// process and no walk is running, so copies kept before a restart are
+/// counted.
 #[cfg(feature = "raft")]
 pub(crate) fn note(root: &Path) {
     let kept = root.join(KEPT_DIR);
-    if !GAUGES.lock().measured.contains_key(&kept) {
+    let seen = {
+        let gauges = GAUGES.lock();
+        gauges.measured.contains_key(&kept) || gauges.running.contains_key(&kept)
+    };
+    if !seen {
         start(kept);
     }
 }
