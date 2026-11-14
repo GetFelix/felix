@@ -435,3 +435,57 @@ async fn a_member_never_starts_from_a_second_base() {
         })
     );
 }
+
+#[tokio::test]
+async fn a_copy_that_accepted_a_later_generation_is_refused_before_anything_is_cut() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    let n = copy(&dir, Below::Stamped, &["a", "b", "c"], &[]).await;
+    let base = base_of(&dir, n).await;
+    // The copy holds the seal's record and the matching range, then took a
+    // later generation and its records above the base.
+    {
+        let log = DiskLog::open(&dir, LABEL, open_config()).expect("open");
+        lead(&log, SEAL + 1).await;
+        log.append(&[record("later")]).await.expect("append");
+        log.shutdown().await.expect("shutdown");
+    }
+    let before = files(&dir);
+
+    assert_eq!(
+        start(&dir, &base).await,
+        Err(NotAVoter::AcceptedAbove {
+            accepted: SEAL + 1,
+            generation: SEAL,
+        })
+    );
+    // Not one byte changed: the later records, no purged id, no snapshot.
+    assert_eq!(files(&dir), before);
+    let log = DiskLog::open(&dir, LABEL, open_config()).expect("open");
+    assert_eq!(payloads(&log, 0).await, ["a", "b", "c", "later"]);
+    log.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn retention_deletes_nothing_between_the_check_and_the_cut() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    // Two segments: retention at one byte would delete the first.
+    let n = copy(&dir, Below::Unstamped, &["a", "b", "c", "d"], &["unacked"]).await;
+    let base = base_of(&dir, n).await;
+    let retained = LogConfig {
+        retention_bytes: Some(1),
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        ..open_config()
+    };
+
+    RETAIN_BETWEEN.with(|at| at.set(true));
+    let started = start_voter(&dir, LABEL, retained, &base, VOTE_FOR, snapshot(&base)).await;
+    RETAIN_BETWEEN.with(|at| at.set(false));
+    assert_eq!(started.expect("start"), Ok(()));
+
+    let log = DiskLog::open(&dir, LABEL, raft()).expect("open as a Raft log");
+    assert_eq!(log.base_offset(), 0);
+    assert_eq!(payloads(&log, 0).await, ["a", "b", "c", "d"]);
+    log.shutdown().await.expect("shutdown");
+}

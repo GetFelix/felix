@@ -2026,9 +2026,10 @@ sequenceDiagram
    is never compared by term, so records whose writer is unknown
    (generation 0) are never Raft entries.
 
-   Before it starts, the copy checks the base again: its log starts at or
-   below `S`, the record at `N` is the seal's generation-start record of
-   generation `G`, and its own digest from `S` to `N` is the recorded one.
+   Before it starts, the copy checks the base again: it accepted no
+   generation above `G`, its log starts at or below `S`, the record at `N`
+   is the seal's generation-start record of generation `G`, and its own
+   digest from `S` to `N` is the recorded one.
    A copy that fails any check starts as a learner, with its directory
    untouched. One that passes writes, in this order: the cut above `N`,
    the base snapshot, the purged id, a vote for itself at the base's term,
