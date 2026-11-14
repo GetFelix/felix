@@ -2,7 +2,6 @@
 
 use bytes::Bytes;
 use felix_broker::StreamLog;
-use felix_storage::disk_log::switch::SwitchBase;
 use felix_storage::log::RecordMark;
 use felix_wire::internal::{
     ErrorCode, FromCopy, InternalMessage, PeerCapabilities, ProducerMark, ReplicaLog,
@@ -278,20 +277,7 @@ async fn ship_batch<R: PeerRequester>(
     // A seal leader ships nothing from its record at `N` on: a follower
     // takes that record only through the seal's acknowledgement, which
     // checks its copy first.
-    let seal = (log_kind == felix_broker::LogKind::Stream)
-        .then(|| log.disk_log().seal_promise())
-        .flatten()
-        .filter(|promise| promise.generation == shard.generation);
-    let seal_end = seal.filter(|promise| promise.claimed).and_then(|promise| {
-        records
-            .iter()
-            .find(|record| {
-                record.mark == RecordMark::GenerationStart
-                    && SwitchBase::from_record(record)
-                        .is_some_and(|base| base.generation == promise.generation)
-            })
-            .map(|record| record.offset)
-    });
+    let (seal, seal_end) = seal_cap(log, shard, log_kind, &records);
     let end = match (end, seal_end) {
         (Some(end), Some(seal_end)) => Some(end.min(seal_end)),
         (end, seal_end) => end.or(seal_end),
@@ -534,7 +520,7 @@ async fn ship_batch<R: PeerRequester>(
             if offered.is_some_and(|offered| offered.contains(PeerCapabilities::SWITCH_SEAL)) =>
         {
             InternalMessage::FromCopy(FromCopy {
-                copy: promise.sealer.to_bytes(),
+                copy: promise,
                 message: Box::new(request),
             })
         }
@@ -889,6 +875,48 @@ fn stamp_set<R: PeerRequester>(
         )
         && offered.is_some_and(|offered| offered.contains(PeerCapabilities::ELECTION)))
     .then_some(generation)
+}
+
+/// The copy id a seal leader's batches carry while its own promise at the
+/// shard's generation holds, and the offset of its record at `N` among
+/// `records` once claimed.
+#[cfg(feature = "raft")]
+fn seal_cap(
+    log: &StreamLog,
+    shard: &ShardRef,
+    log_kind: felix_broker::LogKind,
+    records: &[felix_storage::log::LogRecord],
+) -> (Option<[u8; 16]>, Option<u64>) {
+    use felix_storage::disk_log::switch::SwitchBase;
+    let Some(promise) = (log_kind == felix_broker::LogKind::Stream)
+        .then(|| log.disk_log().seal_promise())
+        .flatten()
+        .filter(|promise| promise.generation == shard.generation)
+    else {
+        return (None, None);
+    };
+    let end = promise
+        .claimed
+        .then(|| {
+            records.iter().find(|record| {
+                record.mark == RecordMark::GenerationStart
+                    && SwitchBase::from_record(record)
+                        .is_some_and(|base| base.generation == promise.generation)
+            })
+        })
+        .flatten()
+        .map(|record| record.offset);
+    (Some(promise.sealer.to_bytes()), end)
+}
+
+#[cfg(not(feature = "raft"))]
+fn seal_cap(
+    _: &StreamLog,
+    _: &ShardRef,
+    _: felix_broker::LogKind,
+    _: &[felix_storage::log::LogRecord],
+) -> (Option<[u8; 16]>, Option<u64>) {
+    (None, None)
 }
 
 fn request_holds_trim(request: &InternalMessage) -> bool {

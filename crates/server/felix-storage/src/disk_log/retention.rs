@@ -273,9 +273,16 @@ impl LogInner {
 
     /// Whether a seal promise holds: no later generation accepted since.
     fn holds_seal(&self) -> bool {
-        self.switch_seal.lock().is_some_and(|promise| {
-            self.accepted_generation.load(Ordering::Acquire) <= promise.generation
-        })
+        #[cfg(feature = "raft")]
+        {
+            self.switch_seal.lock().is_some_and(|promise| {
+                self.accepted_generation.load(Ordering::Acquire) <= promise.generation
+            })
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            false
+        }
     }
 
     /// Cut `chosen` back to the segments, from the head, whose copy the

@@ -16,6 +16,10 @@
 //! established as the current leader: applying first and checking after would
 //! let a fenced leader's bytes reach the disk, and records are never rewritten.
 mod election;
+#[cfg(feature = "raft")]
+mod seal;
+#[cfg(not(feature = "raft"))]
+#[path = "replica/unsealed.rs"]
 mod seal;
 
 pub(crate) use seal::SealedWrite;
@@ -2778,8 +2782,14 @@ async fn accept_sender(
     }
 }
 
+#[cfg(not(feature = "raft"))]
+fn unreachable_seal() -> std::convert::Infallible {
+    unreachable!("only the seal's fence passes a sealer, and this build has none")
+}
+
 /// [`accept_sender`] for the seal's fence: the ballot and then the promise
 /// to the copy `sealer`, both on disk before it returns `None`.
+#[cfg(feature = "raft")]
 async fn promise_sender(
     log: &felix_broker::StreamLog,
     correlation_id: u64,

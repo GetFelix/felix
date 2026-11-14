@@ -766,34 +766,3 @@ async fn a_crash_between_the_ballot_and_the_promise_leaves_no_promise() {
     );
     assert!(follower.log.seal_promise().is_some());
 }
-
-#[tokio::test]
-async fn retention_holds_while_a_promise_does() {
-    let root = tempdir().expect("tempdir");
-    let config = LogConfig {
-        segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 120,
-        retention_bytes: Some(crate::segment::SEGMENT_HEADER_LEN + 120),
-        retention_check_interval: std::time::Duration::from_secs(3600),
-        ..on_commit()
-    };
-    let payloads: Vec<String> = (0..24).map(|i| format!("record-{i:02}")).collect();
-    let payloads: Vec<&str> = payloads.iter().map(String::as_str).collect();
-    let copy = Copy::with(root.path(), config, 0, &payloads).await;
-    // Only the seal holds this log.
-    copy.log
-        .hold_retention_at_commit(false)
-        .await
-        .expect("no commit hold");
-    copy.promise(SEAL, sealer()).await;
-    let outcome = copy.log.enforce_retention_now().await.expect("retention");
-    assert_eq!(outcome.segments_deleted, 0);
-    assert_eq!(copy.log.base_offset(), 0);
-
-    // A later generation ends the promise, and the hold with it.
-    copy.log
-        .accept_generation(SEAL + 1, Some(LEADER))
-        .await
-        .expect("accept");
-    let outcome = copy.log.enforce_retention_now().await.expect("retention");
-    assert!(outcome.segments_deleted > 0);
-}

@@ -158,7 +158,9 @@ impl ReplicaHandler {
         write: SealedWrite,
     ) -> Option<InternalMessage> {
         let promise = self.seal_promise(shard).await?;
-        if write == SealedWrite::Batch && from.is_some_and(|from| promise.admits_batch(from)) {
+        if write == SealedWrite::Batch
+            && from.is_some_and(|from: StorageId| promise.admits_batch(from))
+        {
             return None;
         }
         metrics::record_replicated(metrics::OUTCOME_REFUSED);
