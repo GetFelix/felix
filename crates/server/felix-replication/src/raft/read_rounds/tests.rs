@@ -139,3 +139,41 @@ async fn reads_are_not_stuck_behind_a_round_that_ended_without_an_answer() {
     answer.send(n).expect("waiting");
     assert_eq!(later.answer().await, Some(n));
 }
+
+/// A round every read gave up on before it was asked is not asked.
+#[tokio::test]
+async fn a_round_no_read_waits_for_is_not_asked() {
+    let (scripted, mut asked) = Scripted::new();
+    let first = scripted.enter();
+    let (n, answer) = asked.recv().await.expect("a round started");
+    drop(scripted.enter());
+    answer.send(n).expect("waiting");
+    assert_eq!(first.answer().await, Some(1));
+
+    let read = scripted.enter();
+    let (n, answer) = asked.recv().await.expect("a new round started");
+    answer.send(n).expect("waiting");
+    assert_eq!(read.answer().await, Some(2));
+    assert_eq!(scripted.rounds.asked(), 2);
+}
+
+/// A runtime that shuts down drops the task without running it. Its reads
+/// are told nothing, and a read on a live runtime starts a new task.
+#[test]
+fn a_task_dropped_before_it_ran_does_not_strand_later_reads() {
+    let rounds: Arc<ReadRounds<u64>> = Arc::default();
+    let gone = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    let stranded = rounds.enter(gone.handle(), || async { 1 });
+    drop(gone);
+
+    let live = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("runtime");
+    live.block_on(async {
+        assert_eq!(stranded.answer().await, None);
+        let read = rounds.enter(&tokio::runtime::Handle::current(), || async { 2 });
+        assert_eq!(read.answer().await, Some(2));
+    });
+}

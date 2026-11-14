@@ -63,7 +63,13 @@ impl<A: Clone + Send + Sync + 'static> ReadRounds<A> {
         if !state.running {
             state.running = true;
             drop(state);
-            runtime.spawn(Arc::clone(self).run(round));
+            // Made here, not in the task: a runtime that is shutting down
+            // drops the task without polling it.
+            let reset = Reset {
+                rounds: Arc::clone(self),
+                ended: false,
+            };
+            runtime.spawn(reset.run(round));
         }
         Entered { answer }
     }
@@ -73,30 +79,42 @@ impl<A: Clone + Send + Sync + 'static> ReadRounds<A> {
     pub(crate) fn asked(&self) -> u64 {
         self.asked.load(Ordering::Relaxed)
     }
+}
 
-    async fn run<F, Fut>(self: Arc<Self>, round: F)
+/// The task asking rounds. If it is dropped or panics mid-round, the reads
+/// waiting are told nothing, and the next read starts a new task.
+struct Reset<A> {
+    rounds: Arc<ReadRounds<A>>,
+    /// The task ended with no read waiting, and said so under the lock.
+    ended: bool,
+}
+
+impl<A> Reset<A> {
+    async fn run<F, Fut>(mut self, round: F)
     where
         F: Fn() -> Fut,
         Fut: Future<Output = A>,
     {
-        // If this task is dropped mid-round, the reads waiting are told
-        // nothing, and the next read starts a new task.
-        let mut reset = Reset(Some(&self.state));
+        let rounds = Arc::clone(&self.rounds);
         loop {
             // Taken under the lock, so every read that joined it arrived
             // before it is asked, and none joins a round no task will ask.
             let current = {
-                let mut state = self.state.lock();
+                let mut state = rounds.state.lock();
                 match state.pending.take() {
                     Some(current) => current,
                     None => {
                         state.running = false;
-                        reset.0 = None;
+                        self.ended = true;
                         return;
                     }
                 }
             };
-            self.asked.fetch_add(1, Ordering::Relaxed);
+            // Every read that joined has given up. None can join now.
+            if current.receiver_count() == 0 {
+                continue;
+            }
+            rounds.asked.fetch_add(1, Ordering::Relaxed);
             let answer = round().await;
             current.send_replace(Some(answer));
         }
@@ -112,15 +130,15 @@ impl<A: Clone> Entered<A> {
     }
 }
 
-struct Reset<'a, A>(Option<&'a parking_lot::Mutex<State<A>>>);
-
-impl<A> Drop for Reset<'_, A> {
+impl<A> Drop for Reset<A> {
     fn drop(&mut self) {
-        if let Some(state) = self.0.take() {
-            let mut state = state.lock();
-            state.running = false;
-            state.pending = None;
+        // Another task may be running by now.
+        if self.ended {
+            return;
         }
+        let mut state = self.rounds.state.lock();
+        state.running = false;
+        state.pending = None;
     }
 }
 
