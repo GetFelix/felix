@@ -1079,8 +1079,9 @@ NeverHeldGrant == ~heldGrant
 NeverLeaseAfterVoid ==
     \A b \in Servers : voidTerm[b] > 0 => ~LeaseValid(b)
 
-\* A transfer's target leads a third term on the grant of a voter inside its
-\* hold, while the leader that started the transfer still leads the first.
+\* A transfer's target leads a third term with a voter in that term inside
+\* its hold, a held voter having granted a vote, while the leader that started
+\* the transfer still leads the first. It does not say which vote was held.
 NeverThirdTermOnHeldGrant ==
     ~\E a, b, c \in Servers :
         /\ a # b /\ heldGrant
