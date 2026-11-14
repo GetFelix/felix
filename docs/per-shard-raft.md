@@ -1434,7 +1434,10 @@ own streamed message rather than inside one frame.
 Each group has a small state machine that keeps the last applied entry and
 the membership in memory. A shard's state is its log. A membership record's
 payload is JSON: a layout version, the voter sets (two during a joint
-change) and the learners, each member as its broker id and copy id.
+change), the learners, each member as its broker id and copy id, and the
+version of the target the membership was made from ("Membership"). Layout 1
+had no target version and reads as the zero version. A layout 2 record with
+no version is refused, not read as zero.
 
 Two things are left for the pull request that puts stream shards on Raft
 (#2233):
@@ -2508,9 +2511,56 @@ the id its vote back in between, and the deletion is then a lost disk again
 (`FelixRaftPlacementStaleWipe.cfg`, pinned). The driver needs a rule that
 stops a leader going back to an older target before it is built.
 
+#### What a membership holds, and how a step is written
+
+Every target the control plane writes has a version: its restore
+incarnation, then a counter that rises with each target. A membership entry
+carries the version of the target it was made from, next to its voter sets
+and learners. The version is in the entry itself, so it is committed,
+replicated and kept through a snapshot with the sets it describes, and a new
+leader reads it from its own log. A group formed from its first set starts
+at the zero version, which no target is older than.
+
+The version never changes a vote. Quorums come from the voter sets alone,
+and whether a change needs a joint membership is openraft's answer for
+those sets. The joint membership on the way to a new set already carries
+the new set's version, so a leader that finds a joint does not mistake an
+older target for a newer one.
+
+A leader writes four kinds of step (`raft/group/membership.rs`): add a
+learner, change the voters, leave a joint membership, and write the same
+voters again at a newer version. Each one is sent to openraft with two
+preconditions, the term the leader decided in and the log position of the
+membership it decided on. If either has moved, openraft writes nothing and
+the leader decides again. So two steps decided on the same membership never
+both land, and a leader deposed and elected again does not finish a step it
+decided in its earlier term.
+
+Two rules hold for every step, whoever asks for it:
+
+- **A voter that leaves is dropped from the membership.** It is never kept
+  as a learner. openraft lets a learner go on leading, so a leader kept as a
+  learner would still hold a lease built on acknowledgements from a set it
+  is no longer in (#2498).
+- **No step writes a membership without the leader that writes it.** That
+  covers leaving a joint membership whose new set leaves the leader out. The
+  leader hands leadership to a voter of the new set first. On a joint
+  membership the only step written is leaving it, because any other edit
+  would also flatten the joint.
+- **The version never goes back.** A step that would write a version below
+  the one the membership has is refused before openraft is asked, so an
+  older target cannot undo a newer one.
+
+The decision of which step comes next (`raft/membership.rs`) follows
+the leader actions of the placement model (`docs/formal/FelixRaftPlacement.tla`
+as #2413 extends it) guard by guard. Nothing runs it yet:
+the driver that reads the target and takes the steps is not built, so no
+broker changes a group's membership today.
+
 Only the leader acts, one change at a time, and the steps can be repeated
 safely. A leader that acts on a target the control plane has since replaced
-is safe too: every change goes through a joint configuration. Writes go on during every step, because membership entries and
+is safe too: a change goes through a joint configuration whenever a
+majority of the old voters could miss a majority of the new ones. Writes go on during every step, because membership entries and
 publishes both get their index from openraft. A copy with a new copy id is
 handled by the same loop: the set names the broker, the member id differs,
 so the old member is swapped for a learner with the new id.

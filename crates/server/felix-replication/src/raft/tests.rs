@@ -22,11 +22,13 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod change;
 mod commit;
 mod deliver;
 mod idempotent;
 mod identity;
 mod lease;
+mod membership;
 mod propose;
 mod switch;
 mod written;
@@ -103,6 +105,8 @@ struct Net {
     lose_transfers: std::sync::atomic::AtomicBool,
     /// How long an append's answer takes to come back.
     answer_after: parking_lot::Mutex<Option<Duration>>,
+    /// While set, an append is taken and its answer is lost.
+    lose_answers: std::sync::atomic::AtomicBool,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -161,10 +165,14 @@ impl RaftTransport for Net {
             Request::Append(_) => *self.answer_after.lock(),
             _ => None,
         };
+        let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
         let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
+        if unheard {
+            return Err(Refused::Unreachable("the answer was lost".into()));
+        }
         if let Some(slow) = slow {
             tokio::time::sleep(slow).await;
         }
@@ -1616,22 +1624,45 @@ fn a_membership_round_trips_through_its_record() {
         BTreeSet::from([voter("a"), voter("b"), voter("c")]),
         BTreeSet::from([voter("a"), voter("b"), voter("d")]),
     ];
-    let everyone: BTreeSet<_> = ["a", "b", "c", "d", "e"].map(voter).into();
-    let membership = Membership::new_with_defaults(joint, everyone);
+    let version = TargetVersion {
+        incarnation: 1,
+        counter: 7,
+    };
+    let membership = Membership::new(joint, [voter("e")].into(), version);
 
     let payload = ShardCodec.encode_membership(&membership).expect("encode");
-    assert_eq!(
-        ShardCodec.decode_membership(&payload).expect("decode"),
-        membership
-    );
+    let read = ShardCodec.decode_membership(&payload).expect("decode");
+    assert_eq!(read, membership);
+    assert_eq!(read.version(), version);
     let stored: StoredMembership = serde_json::from_slice(&payload).expect("json");
     assert_eq!(stored.learners, BTreeSet::from([voter("e")]));
 
-    let newer = payload.to_vec();
-    let newer = String::from_utf8(newer)
-        .expect("utf8")
-        .replace("\"version\":1", "\"version\":2");
+    let text = String::from_utf8(payload.to_vec()).expect("utf8");
+    let newer = text.replace("\"version\":2", "\"version\":3");
+    assert_ne!(newer, text);
     assert!(ShardCodec.decode_membership(newer.as_bytes()).is_err());
+    // Layout 1 never held a version, so one that names a version is not
+    // layout 1.
+    let older = text.replace("\"version\":2", "\"version\":1");
+    assert!(ShardCodec.decode_membership(older.as_bytes()).is_err());
+    // Layout 2 always names its version. None is not the zero version.
+    let mut bare: serde_json::Value = serde_json::from_slice(&payload).expect("json");
+    let fields = bare.as_object_mut().expect("an object");
+    fields.remove("target").expect("a target");
+    let bare = bare.to_string();
+    assert!(ShardCodec.decode_membership(bare.as_bytes()).is_err());
+}
+
+#[test]
+fn a_membership_stored_before_versions_reads_as_the_zero_version() {
+    let voter = |broker: &str| MemberId::new(broker, 1);
+    let stored = r#"{"version":1,"voters":[[{"broker":"a","copy":1},{"broker":"b","copy":1}]],"learners":[{"broker":"c","copy":1}]}"#;
+    let read = ShardCodec
+        .decode_membership(stored.as_bytes())
+        .expect("decode");
+    let voters = BTreeSet::from([voter("a"), voter("b")]);
+    let want = Membership::new(vec![voters], [voter("c")].into(), TargetVersion::default());
+    assert_eq!(read, want);
 }
 
 #[test]

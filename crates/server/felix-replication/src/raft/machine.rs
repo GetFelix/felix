@@ -142,6 +142,7 @@ pub(crate) fn base_snapshot(
             version: super::codec::MEMBERSHIP_VERSION,
             voters: vec![voters.clone()],
             learners: std::collections::BTreeSet::new(),
+            target: Some(super::membership::TargetVersion::default()),
         },
     };
     Ok(StoredSnapshot {

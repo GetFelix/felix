@@ -391,7 +391,10 @@ async fn a_majority_of_one_half_of_a_joint_membership_is_not_enough() {
         .lock()
         .extend(others.iter().map(|broker| broker.to_string()));
     let raft = led.group().raft().clone();
-    let new: BTreeSet<MemberId> = [led.leader.clone()].into();
+    let new = crate::raft::types::MembershipEdit::voters(
+        [led.leader.clone()].into(),
+        TargetVersion::default(),
+    );
     let mut change = tokio::spawn(async move { raft.change_membership(new, true).await });
     let group = led.group();
     let joint = || {

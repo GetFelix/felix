@@ -775,7 +775,7 @@ async fn a_restarted_member_alone_in_a_set_not_committed_is_held() {
     led.cluster.net.cut.lock().insert(b.clone());
     let last = led.status().last_index.expect("a log");
     let alone = BTreeSet::from([MemberId::new(&*b, 1)]);
-    let alone = Membership::new_with_defaults(vec![alone], []);
+    let alone = Membership::from(alone);
     let change = AppendEntriesRequest::<ShardTypes> {
         vote: vote_of(led.term, &led.leader.broker, true),
         prev_log_id: Some(LogIdOf::<ShardTypes>::new(led.term.into(), last)),
