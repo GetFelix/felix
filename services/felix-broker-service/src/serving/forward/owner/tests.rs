@@ -1464,33 +1464,34 @@ mod quorum_waits {
         let marks = Arc::new(QuorumMarks::new());
         let handler = owner(&leader, &credentials, &marks);
 
+        // Judged by the answer, not by an upper bound on the clock: a loaded
+        // runner can stall the storage write around the wait for seconds.
         for (what, forwarded) in ops(&credentials) {
             let started = std::time::Instant::now();
             let answer = handler.apply_cache_op(forwarded).await;
             let waited = started.elapsed();
+            let InternalMessage::ForwardCacheError(error) = &answer else {
+                panic!("{what}: {:?}", answer.kind());
+            };
             assert!(
-                matches!(answer, InternalMessage::ForwardCacheError(_)),
-                "{what}: {:?}",
-                answer.kind()
+                error.detail.contains(&format!("within {TIMEOUT:?}")),
+                "{what} did not time out its quorum wait: {}",
+                error.detail
             );
             assert!(waited >= TIMEOUT, "{what} ended early after {waited:?}");
-            assert!(waited < TIMEOUT * 6, "{what} ended late after {waited:?}");
         }
 
+        // Nothing publishes past this mark, so an op still waiting on it
+        // could only time out: an Ok is the release.
         let cache = leader::quorum_cache_key();
         marks.publish(&cache, GENERATION, 1 << 20);
         marks.counters().publish(&cache, GENERATION, 1 << 20);
         for (what, forwarded) in ops(&credentials) {
-            let started = std::time::Instant::now();
             let answer = handler.apply_cache_op(forwarded).await;
             assert!(
                 matches!(answer, InternalMessage::ForwardCacheOk(_)),
                 "{what}: {:?}",
                 answer.kind()
-            );
-            assert!(
-                started.elapsed() < TIMEOUT,
-                "{what} waited though the mark passed"
             );
         }
     }
