@@ -163,6 +163,15 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
     );
 }
 
+/// Whether every acknowledged offset has reached the subscriber. A publish
+/// retried after an unknown outcome can leave a record the test never saw
+/// acknowledged, so the counts are not compared.
+fn arrived(acked: &[(u64, Vec<u8>)], seen: &[(u64, Vec<u8>)]) -> bool {
+    acked
+        .iter()
+        .all(|(offset, _)| seen.iter().any(|(got, _)| got == offset))
+}
+
 /// **A follower serves a subscriber, and the subscriber keeps every
 /// acknowledged record across the leader's death.** The reader connects only
 /// to a follower, reads from offset 0, and sees each record at the offset the
@@ -209,7 +218,7 @@ async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_
         acked.push((publish_acked(&cluster, &leader, &payload).await, payload));
     }
     let mut seen: Vec<(u64, Vec<u8>)> = Vec::new();
-    while seen.len() < acked.len() {
+    while !arrived(&acked, &seen) {
         let event = tokio::time::timeout(Duration::from_secs(30), subscription.next_event())
             .await
             .expect("an event within 30s")
@@ -226,7 +235,7 @@ async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_
         acked.push((publish_acked(&cluster, &follower, &payload).await, payload));
     }
 
-    while seen.len() < acked.len() {
+    while !arrived(&acked, &seen) {
         let next = tokio::time::timeout(Duration::from_secs(30), subscription.next_event())
             .await
             .expect("an event within 30s");
