@@ -99,6 +99,7 @@ impl Copy {
             .promise_seal(generation, LEADER, sealer)
             .await
             .expect("promise")
+            .expect("one sealer")
     }
 
     async fn claim(&self, start: Offset) -> std::result::Result<SwitchBase, SealRefused> {
@@ -413,12 +414,24 @@ async fn the_promise_survives_a_restart_and_only_a_later_generation_ends_it() {
     );
     assert_eq!(
         copy.log
-            .promise_seal(SEAL, "b", other())
+            .promise_seal(SEAL, "b", sealer())
             .await
             .expect("promise"),
-        GenerationCheck::Promised {
+        Ok(GenerationCheck::Promised {
             leader: LEADER.to_string()
-        }
+        })
+    );
+    // The same leader under another copy id, as after a wipe, is a second
+    // sealer at this generation.
+    assert_eq!(
+        copy.log
+            .promise_seal(SEAL, LEADER, other())
+            .await
+            .expect("promise"),
+        Err(SealRefused::PromisedOther {
+            generation: SEAL,
+            sealer: sealer()
+        })
     );
     assert_eq!(copy.log.seal_promise(), Some(promise));
     // An unsealed promotion at a later generation reopens the shard.

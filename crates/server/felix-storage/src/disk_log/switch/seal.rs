@@ -125,29 +125,39 @@ impl DiskLog {
     /// Take the seal's fence: accept `generation` from `leader`, whose copy
     /// is `sealer`, and promise the seal. Both are on disk when this returns
     /// [`GenerationCheck::Raised`] or [`GenerationCheck::Current`], and only
-    /// then may the caller answer. A refusal writes nothing.
+    /// then may the caller answer. Any other check, or a refusal, writes
+    /// nothing.
+    ///
+    /// A promise names one sealing copy per generation: the same leader
+    /// under another copy id, as after a wipe, is refused, so a copy that
+    /// held its records for one sealer never takes another's at that
+    /// generation.
     pub async fn promise_seal(
         &self,
         generation: u64,
         leader: &str,
         sealer: StorageId,
-    ) -> Result<GenerationCheck> {
+    ) -> Result<std::result::Result<GenerationCheck, SealRefused>> {
+        if let Some(refused) = other_sealer(*self.inner.switch_seal.lock(), generation, sealer) {
+            return Ok(Err(refused));
+        }
         let check = self.accept_generation(generation, Some(leader)).await?;
         if !matches!(check, GenerationCheck::Raised | GenerationCheck::Current) {
-            return Ok(check);
+            return Ok(Ok(check));
         }
         let inner = Arc::clone(&self.inner);
         felix_common::blocking::spawn(move || {
             let mut held = inner.switch_seal.lock();
+            if let Some(refused) = other_sealer(*held, generation, sealer) {
+                return Ok(Err(refused));
+            }
             let promise = match *held {
                 // Taken again by a retried fence: keep the claim.
-                Some(promise) if promise.generation == generation && promise.sealer == sealer => {
-                    return Ok(check);
-                }
+                Some(promise) if promise.generation == generation => return Ok(Ok(check)),
                 Some(promise) if promise.generation > generation => {
-                    return Ok(GenerationCheck::Superseded {
+                    return Ok(Ok(GenerationCheck::Superseded {
                         accepted: promise.generation,
-                    });
+                    }));
                 }
                 _ => SealPromise {
                     generation,
@@ -157,7 +167,7 @@ impl DiskLog {
             };
             inner.poison_on_sync_failure("the switch seal", store(&inner.dir, &promise))?;
             *held = Some(promise);
-            Ok(check)
+            Ok(Ok(check))
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -380,6 +390,18 @@ impl DiskLog {
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
+}
+
+fn other_sealer(
+    held: Option<SealPromise>,
+    generation: u64,
+    sealer: StorageId,
+) -> Option<SealRefused> {
+    held.filter(|promise| promise.generation == generation && promise.sealer != sealer)
+        .map(|promise| SealRefused::PromisedOther {
+            generation,
+            sealer: promise.sealer,
+        })
 }
 
 fn now_micros() -> u64 {
