@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794697496351,
+  "lastUpdate": 1794698845032,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57356,6 +57356,58 @@ window.BENCHMARK_DATA = {
             "range": "59916.65",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1231026.00\nmean: 1206721.81\nstdev: 59916.65\ncv: 4.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d7dd69694035c2e71cfc913f305045177fa6d367",
+          "message": "test(broker): the startup lookup returns the registration time (#2568)\n\n#2550 added registered_at_millis to Registered, and the control plane\nfills it in. The test still expected None, so Coverage on main fails\nevery run. It now expects the time the registration returned.",
+          "timestamp": "2026-11-14T15:21:20-08:00",
+          "tree_id": "4a662a327cf0eca7eb780090134a78061bc7371b",
+          "url": "https://github.com/GetFelix/felix/commit/d7dd69694035c2e71cfc913f305045177fa6d367"
+        },
+        "date": 1794698844189,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 484428.98,
+            "range": "31610.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484428.98\nmean: 484588.17\nstdev: 31610.65\ncv: 6.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 484428.98,
+            "range": "31610.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 484428.98\nmean: 484588.17\nstdev: 31610.65\ncv: 6.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116479.2,
+            "range": "748.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116479.20\nmean: 116736.51\nstdev: 748.05\ncv: 0.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1164792.04,
+            "range": "7480.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1164792.04\nmean: 1167365.07\nstdev: 7480.51\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
