@@ -473,7 +473,7 @@ async fn a_start_is_decided_from_names_and_the_converted_mark() {
     std::fs::write(unconverted.path().join(REDB_FILE), b"a group's state").expect("redb");
     let before = listing(unconverted.path());
     let err = decide_start(unconverted.path()).expect_err("redb alone");
-    assert!(err.to_string().contains("conversion tool"), "{err}");
+    assert!(err.to_string().contains("cannot read"), "{err}");
     assert!(err.to_string().contains(REDB_FILE), "{err}");
     assert_eq!(
         listing(unconverted.path()),
@@ -485,7 +485,7 @@ async fn a_start_is_decided_from_names_and_the_converted_mark() {
     store_with(unconverted.path(), false).await;
     let before = listing(unconverted.path());
     let err = decide_start(unconverted.path()).expect_err("no mark");
-    assert!(err.to_string().contains("conversion tool"), "{err}");
+    assert!(err.to_string().contains("cannot read"), "{err}");
     assert_eq!(
         listing(unconverted.path()),
         before,

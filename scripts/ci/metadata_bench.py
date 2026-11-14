@@ -10,7 +10,9 @@ runner drift lands on both. Each metric is the median of its runs. A cell's
 noise band is the spread of the base runs ((max - min) / median), never under
 --floor (10% by default; 30% for tail latencies). HEAD fails a cell only when it is worse than BASE
 by more than the band. A cell HEAD does not report fails: a missing
-measurement is never a pass. Throughput, `ok` and `rounds` are better higher;
+measurement is never a pass. A metric named with --waive is still shown,
+marked "waived", and never fails; each waiver needs a written reason
+(docs/metadata-raft-benchmark.md). Throughput, `ok` and `rounds` are better higher;
 everything else (times, sizes, costs, `failed`, `failed_rounds`) is better lower.
 """
 import argparse
@@ -73,6 +75,8 @@ def compare(args):
         value = statistics.median(head[name])
         worse = worse_by(metric, reference, value)
         verdict = "FAIL" if worse > band else "ok"
+        if verdict == "FAIL" and name in args.waive:
+            verdict = "waived"
         failed |= verdict == "FAIL"
         rows.append((name, reference, value, worse, band, verdict))
     lines = [
@@ -108,6 +112,13 @@ def main():
     cmp_parser.add_argument("--head", nargs="+", required=True)
     cmp_parser.add_argument("--floor", type=float, default=0.10)
     cmp_parser.add_argument("--md")
+    cmp_parser.add_argument(
+        "--waive",
+        action="append",
+        default=[],
+        metavar="'CELL METRIC'",
+        help="a cell metric that is reported but does not fail the compare",
+    )
     cmp_parser.set_defaults(run=compare)
     table_parser = sub.add_parser("table")
     table_parser.add_argument("results", nargs="+")

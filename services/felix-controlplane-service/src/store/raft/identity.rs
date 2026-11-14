@@ -29,11 +29,19 @@ impl RaftStore {
         tokio::spawn(async move {
             let mut delay = RETRY_FIRST;
             loop {
-                if let Some(identity) = store.local().recorded_identity().await {
-                    warn_on_engine_mismatch(&identity, &shard_engine);
-                    return;
-                }
-                if store.handle.confirm_leadership().await {
+                // A member catching up after a restart may have the record in
+                // its unapplied tail, so it waits rather than proposes.
+                let caught_up = match store.local() {
+                    Ok(local) => match local.recorded_identity().await {
+                        Some(identity) => {
+                            warn_on_engine_mismatch(&identity, &shard_engine);
+                            return;
+                        }
+                        None => true,
+                    },
+                    Err(_) => false,
+                };
+                if caught_up && store.handle.confirm_leadership().await {
                     let fresh = ClusterIdentity::generate(&shard_engine);
                     let proposed = MetaCommand::RecordClusterIdentity {
                         group_id: fresh.group_id,
@@ -60,11 +68,13 @@ impl RaftStore {
         })
     }
 
-    pub(super) async fn identity(&self) -> GroupIdentity {
-        match self.local().recorded_identity().await {
+    /// Unavailable while this member catches up after a restart, rather
+    /// than `Pending` for a record still in its unapplied tail.
+    pub(super) async fn identity(&self) -> crate::store::StoreResult<GroupIdentity> {
+        Ok(match self.local()?.recorded_identity().await {
             Some(identity) => GroupIdentity::Recorded(identity),
             None => GroupIdentity::Pending,
-        }
+        })
     }
 }
 
