@@ -9,7 +9,8 @@ mod completion;
 mod per_record;
 mod proposed;
 
-pub(crate) use completion::spawn_release;
+pub use completion::LogDelivery;
+pub(crate) use completion::{deliver_from_log, spawn_release};
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
 pub use proposed::{ProposalCommitted, ProposalFailed, ProposedPublish};

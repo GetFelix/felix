@@ -799,6 +799,13 @@ pub(crate) struct Loopback {
     runtimes: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
 }
 
+impl Loopback {
+    /// Take `broker` out: nothing reaches it from now on.
+    pub(crate) fn forget(&self, broker: &str) {
+        self.runtimes.lock().remove(broker);
+    }
+}
+
 #[async_trait::async_trait]
 impl RaftTransport for Loopback {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
@@ -875,7 +882,7 @@ impl Member {
 }
 
 /// `orders` on three brokers, placed with `broker-a` as leader.
-fn replicated() -> ShardAssignment {
+pub(crate) fn replicated() -> ShardAssignment {
     let mut assignment = assigned(key("orders", 0), INCARNATION);
     assignment.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
     assignment
@@ -1108,9 +1115,9 @@ async fn a_stopped_leader_is_replaced_and_no_acked_record_is_lost() {
     stop(&members).await;
 }
 
-/// **A leader that is deposed lets its subscribers go, and takes none
-/// after.** Fanout comes from the leader's publishes, so a subscriber left
-/// on a deposed broker would wait there and get nothing.
+/// **A leader that is deposed lets its term's subscribers go.** A batch
+/// the term was handed may settle as a gap, which they would read as a
+/// drop. One registering after is served from the log, as a follower's.
 #[tokio::test]
 async fn a_deposed_leader_lets_its_subscribers_go() {
     use crate::serving::quic::handlers::redirect::stopped_serving;
@@ -1139,9 +1146,20 @@ async fn a_deposed_leader_lets_its_subscribers_go() {
         ended.expect("ended in time").is_none(),
         "a record reached a deposed leader's subscriber"
     );
+    // The member still follows a leader, so a reader registering now is
+    // served from the log.
     assert!(
-        stopped_serving(Some(&ingress), &orders).is_some(),
-        "a subscriber registered after the deposal was kept"
+        stopped_serving(Some(&ingress), &orders).is_none(),
+        "a subscriber registered after the deposal was refused"
+    );
+    let (mut later, _later_guard) = {
+        let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+        subscription.expect("subscribe").into_parts()
+    };
+    let kept = tokio::time::timeout(Duration::from_millis(300), later.recv()).await;
+    assert!(
+        kept.is_err(),
+        "a subscriber registered after the deposal was ended"
     );
     EngineShards::shutdown(&*shards).await;
 }

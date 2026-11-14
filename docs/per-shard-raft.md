@@ -968,10 +968,14 @@ them ends: `RaftEngine::publish` hands it to the broker to move the stream's
 offsets, and the publisher gets the bare error, as a `RaftEngine::propose`
 caller does. The batch is not delivered live on the leader, whose
 subscribers see its offsets as a drop. The stream's offsets move past the
-written records, so a reader resuming at one of them is sent to the log
-for it instead of joining live above it. A follower's subscribers read
-them from the log too. The same holds for a batch that was written whole
-and then lost its acknowledgement.
+written records that are already committed, so a reader resuming at one
+of them is sent to the log for it instead of joining live above it. They
+move no further: an uncommitted record can be cut, and the next leader
+can commit a different one at the same offset. On a broker that no
+longer leads, the offsets do not move at all, and its subscribers get
+whatever commits there from the log, which is the only place a follower
+delivers from. The same holds for a batch that was written whole and then
+lost its acknowledgement.
 
 A caller that names no term (`None`) gets the unbound call. The broker
 always names one.
@@ -1847,11 +1851,51 @@ way a held `Quorum` batch is released on the hybrid.
 - `RaftEngine::follow_commits` kicks the stream each time the commit index
   moves here. Held batches the bound now covers are released, and readers
   waiting at the bound for the log look again.
+- On a broker that does not lead, the same kick makes the stream deliver
+  from its member's log (`deliver_from_log`). It reads the records from
+  where the stream stands up to the bound, and never past the log's tail,
+  and hands them to the same append and fan-out a leader's released
+  batches use. Its subscribers get them as they commit, at the offsets the
+  leader acknowledged. The pass waits while the broker still holds a batch
+  it was handed as leader, so a record is never delivered once from the
+  batch and again from the log.
+- Records are grouped into frames by append time, so a follower's frame
+  boundaries can differ from the leader's. Order and offsets are the same.
+- A batch that reaches the stream at offsets the log already delivered is
+  dropped, so a deposed term's batch settling just as the pass reads the
+  same records is not delivered twice.
+- A deposed term's batch that failed with an unknown outcome leaves its
+  offsets to the log. A batch behind it that did commit is dropped too and
+  delivered by the pass, in order, after whatever committed at those
+  offsets. Whether the broker still leads is decided together with the
+  append, under the lock that ending the deposed term's readers takes, so a
+  reader that joins after they are ended either joins above the batch or
+  gets it from the pass.
+- A member that becomes leader finishes the pass first, then marks the
+  stream as led. A deposal clears that mark under the same lock the pass
+  and an opening term hold, so an earlier term's deposal that runs late
+  cannot clear the mark of the term that is opening. If a `Block` subscriber's queue is still full 50 ms after
+  a term asks to open, or after a deposal asks for the lock, the pass stops waiting for it: the subscriber is
+  ended, with the batch counted as its drop, so it knows where to resume. A slow reader never holds up a new term's
+  writes.
+- A pass that keeps failing (a read error on the member's log) backs off,
+  and on the fifth failure in a row ends the stream's subscribers so they
+  resubscribe instead of waiting.
+- A tail-only subscribe on a follower that nobody else reads yet first
+  brings the stream up to what is committed, so it joins there and not at
+  older records. While a pass is already running, it joins where that
+  pass stands and may get the rest of its backlog.
+- A subscribe that asked for event offsets and starts at the latest record
+  joins by offset instead, at the committed end. No pass runs first: the
+  records the pass still delivers below that offset are skipped for it.
 
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_record_a_later_leader_replaced_reaches_no_subscriber`,
 > `a_record_is_delivered_only_once_a_majority_holds_it`,
 > `a_followers_readers_stop_at_what_it_applied`,
+> `a_followers_subscriber_gets_what_its_member_applied`,
+> `an_entry_cut_from_a_deposed_leaders_log_reaches_no_subscriber`,
+> `a_reader_resumes_on_another_member_by_offset`,
 > `a_batch_committed_after_its_timeout_goes_out_before_the_next` and
 > `entries_holding_no_record_reach_subscribers_as_skipped`;
 > `crates/server/felix-broker/src/broker/publish/proposed/tests.rs`,
@@ -1974,21 +2018,52 @@ storage is flushed.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_batch_admitted_at_another_term_is_not_written`.
 
-**Subscribing.** A subscribe to a Raft shard is served on the group's
-leader and nowhere else. The leader serves it on its term alone: the
-broker's lease and the hybrid's fence are not asked. A follower's broker
-holds the log but fans nothing out live, so it answers with a redirect to
-the leader its group elected, the same answer the hybrid gives for a shard
-owned elsewhere (`docs/subscribe-routing.md`). A leader that is deposed
-ends its subscribers, and a subscribe that registers after the deposal is
-refused, so no subscription waits on a broker that receives no publishes.
-Serving a follower's subscribers from its log up to `read_bound` is not
-built (#2454).
+**Subscribing.** A subscribe to a Raft shard is served by any broker whose
+member knows its group's leader. The leader serves it live. A follower
+serves it from its own log, up to what it has applied ("Delivering
+committed records"), so what a follower's subscriber sees is at most what
+that member has committed, and it can trail the leader by the time the
+member takes to hear the commit. A subscriber needs no redirect to read.
+The leader serves on its term alone: the broker's lease and the hybrid's
+fence are not asked.
+
+- A member with no known leader serves no subscriber: a new subscribe is
+  refused with a retryable `not_ready`, and the ones it has are ended on
+  the next feed pass, since a member cut off from its group may be
+  reading a log that group has moved past.
+- A leader that is deposed ends the subscribers of its term, because
+  records it had not seen committed may be replaced, and a gap would read
+  as a drop. They can subscribe again to the same broker, which now serves
+  them from its log. A subscribe that registers after the deposal is kept.
+- A resume offset past the end of a follower's log is answered with a
+  redirect to the leader, with the leader's client address, since the
+  leader may hold records the follower has not received yet. An offset
+  between the follower's applied index and its log's tail is accepted,
+  and waits.
 
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
-> `a_raft_shard_is_subscribed_to_on_its_leader`;
+> `a_raft_shard_is_subscribed_to_on_its_leader_and_followers`,
+> `a_follower_behind_a_resume_offset_redirects_to_its_leader`,
+> `a_member_with_no_leader_serves_no_reader`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_deposed_leader_lets_its_subscribers_go`;
+> `crates/server/felix-broker/src/broker/shards/tests.rs`,
+> `a_follower_delivers_what_is_committed_and_no_further`,
+> `a_follower_waits_for_a_handed_over_batch_to_settle`,
+> `leading_finishes_the_log_and_keeps_its_subscribers`,
+> `a_term_that_ended_is_not_marked_as_led`,
+> `a_follower_far_behind_skips_ahead_only_with_no_subscriber`,
+> `a_batch_the_log_delivered_is_not_delivered_again`,
+> `a_deposed_leaders_failed_batch_leaves_its_offsets_to_the_next_leader`,
+> `a_deposed_leaders_batch_behind_a_failed_one_is_left_to_the_log`,
+> `a_batch_released_across_a_deposal_is_left_to_the_log`,
+> `an_earlier_terms_deposal_waits_for_an_opening_term`,
+> `a_deposal_as_the_term_opens_leaves_the_stream_followed`,
+> `a_full_block_subscriber_does_not_hold_up_a_new_term`,
+> `a_snapshot_ends_readers_where_they_stood` and
+> `a_tail_only_subscriber_joins_at_the_committed_end`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
 > `a_queued_publish_to_a_raft_shard_commits_through_its_group`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/tests/ownership_gate.rs`,

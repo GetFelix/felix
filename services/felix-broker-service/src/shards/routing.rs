@@ -205,6 +205,13 @@ impl IngressRouter {
         self.engine_shards.get()?.dispatch(key, &nodes)
     }
 
+    /// Whether another engine serves `key`'s readers here without leading it.
+    pub(crate) fn engine_serves_reads(&self, key: &ShardKey) -> bool {
+        self.engine_shards
+            .get()
+            .is_some_and(|engine| engine.serves_reads(key))
+    }
+
     /// Hold writes to a moving shard under `hold` rather than refusing them.
     pub fn with_move_hold(mut self, hold: MoveHold) -> Self {
         self.hold = hold;
@@ -842,6 +849,13 @@ pub trait EngineShards: Send + Sync {
         key: &ShardKey,
         nodes: &dyn Fn(&str) -> Option<SocketAddr>,
     ) -> Option<Dispatch>;
+
+    /// Whether `key`'s subscribers and readers are served on this broker
+    /// although it does not lead the shard: from the engine's log, up to
+    /// what the engine committed here.
+    fn serves_reads(&self, _key: &ShardKey) -> bool {
+        false
+    }
 
     /// Hands over the feed's wake, for an engine that learns something
     /// between passes that the next pass must act on.
