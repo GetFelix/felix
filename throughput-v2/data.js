@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794687834177,
+  "lastUpdate": 1794689979315,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57044,6 +57044,58 @@ window.BENCHMARK_DATA = {
             "range": "41599.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1406881.75\nmean: 1396799.05\nstdev: 41599.57\ncv: 2.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "44ddaf3fa2a1d41382065129bb3f95be29ec6605",
+          "message": "deps(replication): openraft at a8d0092bc8, conditional batch writes (#2559)\n\n* deps(replication): openraft at a8d0092bc8, conditional batch writes\n\nPins openraft, openraft-multi and openraft-rt-tokio to upstream a8d0092bc8\n(openraft#2321). client_write_many now takes a WriteOption; the untermed\nbatch path passes WriteOption::default(), the previous behaviour.\n\nSpec-Unaffected: dependency pin and an unchanged call; no protocol change.\n\n* deps(replication): demo lockfiles follow the openraft pin; per-shard-raft names 5c3ad1bc2d as the measured pin",
+          "timestamp": "2026-11-14T12:51:27-08:00",
+          "tree_id": "b434a3da92f97793b4d1981a923f3aa73ee5fa85",
+          "url": "https://github.com/GetFelix/felix/commit/44ddaf3fa2a1d41382065129bb3f95be29ec6605"
+        },
+        "date": 1794689978628,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 343863.41,
+            "range": "6487.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343863.41\nmean: 343195.59\nstdev: 6487.68\ncv: 1.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 343863.41,
+            "range": "6487.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 343863.41\nmean: 343195.59\nstdev: 6487.68\ncv: 1.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80917.44,
+            "range": "713.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80917.44\nmean: 80866.75\nstdev: 713.44\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809174.36,
+            "range": "7134.38",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809174.36\nmean: 808667.47\nstdev: 7134.38\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
