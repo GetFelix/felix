@@ -1086,6 +1086,19 @@ a Raft shard's directory holds an `engine` file with the one line `raft`.
   marker.
 - Any other content is refused by both: a newer build wrote it.
 
+A directory the hybrid wrote becomes a Raft log only through the switch to
+Raft (`docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft").
+Its marker has a second line, `base <G> <N>`: the seal's generation and the
+offset of its generation-start record. `disk_log::switch::start_voter`
+writes it last, after the member's snapshot, purged id, vote and commit, so a
+directory with this marker holds all of them and one without it is started
+again from the beginning. A second start from another base is refused. A
+build that predates the line refuses the directory as a newer build's.
+
+> `crates/server/felix-storage/src/disk_log/switch/tests.rs`,
+> `a_crash_before_the_marker_starts_the_voter_again_with_the_same_result` and
+> `a_member_never_starts_from_a_second_base`.
+
 The hybrid writes no marker, so a directory from before the file existed
 opens as it always did. A metadata store's log is a Raft log with no marker:
 nothing else ever opens its directory.
