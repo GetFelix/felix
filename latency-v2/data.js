@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794622465762,
+  "lastUpdate": 1794623057803,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70422,6 +70422,72 @@ window.BENCHMARK_DATA = {
             "range": "661.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 395.00\nmean: 678.20\nstdev: 661.92\ncv: 97.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c1c7783355f451e5591bc98e40a50b9028808158",
+          "message": "fix(broker): a start that rotated before registering leaves the next start its ballots (#2509) (#2511)\n\n* fix(broker): a start that rotated before registering leaves the next start its ballots (#2509)\n\nA start that rotated the storage id after a crash and exited before the new\nid registered left the old id registered. The next start compared that id\nwith the rotated one, marked the directory lost for good, and every copy on it\nanswered fences as a non-voter. A shard whose only other copy was the new\nleader could then never open. The registered id is one rotated-ids already\nrecords as this directory's own, so it is no evidence of a loss.\n\n* fix(broker): a second rotation before registering keeps the ballots too (#2509)\n\nThe registered id may be one an earlier crash here rotated away when two\nstarts rotate before either registers. rotated-ids names it, so the start\ncounts it as the directory's own for kept ballots and promises, as the lost\ncheck already does.",
+          "timestamp": "2026-11-13T18:11:38-08:00",
+          "tree_id": "567ef96960b616db8a15f60c644c8e761e86e1dd",
+          "url": "https://github.com/GetFelix/felix/commit/c1c7783355f451e5591bc98e40a50b9028808158"
+        },
+        "date": 1794623051208,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 61,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 61.00\nmean: 61.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 84,
+            "range": "2.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 83.80\nstdev: 2.28\ncv: 2.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 120,
+            "range": "131.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 176.00\nstdev: 131.07\ncv: 74.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 78,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 78.00\nmean: 77.80\nstdev: 0.84\ncv: 1.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 162,
+            "range": "15.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 162.00\nmean: 169.20\nstdev: 15.14\ncv: 8.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 248,
+            "range": "329.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 248.00\nmean: 478.60\nstdev: 329.35\ncv: 68.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
