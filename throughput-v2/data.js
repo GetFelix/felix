@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794641472637,
+  "lastUpdate": 1794641805393,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55848,6 +55848,58 @@ window.BENCHMARK_DATA = {
             "range": "79885.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1221453.44\nmean: 1185629.36\nstdev: 79885.20\ncv: 6.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bb3c577f14d2353732e22c10b78cd6bf9d3c2ddf",
+          "message": "test(sim): a failed flush in the Raft group simulation (#2300) (#2515)\n\nThe Raft group simulator gains a failed-flush fault (RaftSimConfig::failed_flush, off by default so existing seeds are unchanged) and a test that a member whose log is poisoned stops that shard while the group elects another leader and its other shards keep serving. Part of #2300.",
+          "timestamp": "2026-11-14T07:32:25Z",
+          "tree_id": "6414349710ee9796b6218fe70f65b719718380b8",
+          "url": "https://github.com/GetFelix/felix/commit/bb3c577f14d2353732e22c10b78cd6bf9d3c2ddf"
+        },
+        "date": 1794641804751,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 508236.08,
+            "range": "43540.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 508236.08\nmean: 522060.81\nstdev: 43540.97\ncv: 8.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 508236.08,
+            "range": "43540.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 508236.08\nmean: 522060.81\nstdev: 43540.97\ncv: 8.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120523.89,
+            "range": "361.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120523.89\nmean: 120428.14\nstdev: 361.49\ncv: 0.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1205238.92,
+            "range": "3614.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1205238.92\nmean: 1204281.42\nstdev: 3614.96\ncv: 0.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
