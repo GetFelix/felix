@@ -81,6 +81,15 @@ fn assigned(key: ShardKey, replicas: &[&str]) -> ShardAssignment {
 /// `broker-a` on `raft` or the hybrid, with the durable stream `orders` and
 /// the in-memory stream `scratch`, beside the peers in `fleet`.
 async fn check(raft: bool, fleet: &[(&str, PeerCapabilities)]) -> Arc<EngineMatch<Fleet>> {
+    check_over(raft, fleet, None).await
+}
+
+/// [`check`] in front of the engine `inner`.
+async fn check_over(
+    raft: bool,
+    fleet: &[(&str, PeerCapabilities)],
+    inner: Option<Arc<dyn EngineShards>>,
+) -> Arc<EngineMatch<Fleet>> {
     // The directory outlives the test: nothing is opened in it.
     let root = tempfile::tempdir().expect("tempdir").keep();
     let storage = felix_broker::DurableStorage::open(&root, Default::default()).expect("storage");
@@ -113,8 +122,45 @@ async fn check(raft: bool, fleet: &[(&str, PeerCapabilities)]) -> Arc<EngineMatc
         Arc::new(|_: &str| Some(SocketAddr::from(([127, 0, 0, 1], 1)))),
         "broker-a".to_string(),
         raft,
-        None,
+        inner,
     )
+}
+
+/// **The feed's wake reaches the engine behind the check.** The Raft engine
+/// wakes the feed when its data root passes the restore gate. Without the
+/// wake its members would wait for the next placement change to open.
+#[tokio::test]
+async fn the_feed_s_wake_is_handed_to_the_engine_behind() {
+    #[derive(Default)]
+    struct Woken(std::sync::OnceLock<Arc<tokio::sync::Notify>>);
+    impl EngineShards for Woken {
+        fn take<'a>(
+            &'a self,
+            _: &'a mut HashMap<ShardKey, ShardAssignment>,
+        ) -> Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
+            Box::pin(async { Taken::new() })
+        }
+        fn dispatch(
+            &self,
+            _: &ShardKey,
+            _: &dyn Fn(&str) -> Option<SocketAddr>,
+        ) -> Option<Dispatch> {
+            None
+        }
+        fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
+            let _ = self.0.set(wake);
+        }
+    }
+    let inner = Arc::new(Woken::default());
+    let check = check_over(true, &[], Some(Arc::clone(&inner) as Arc<dyn EngineShards>)).await;
+    let wake = Arc::new(tokio::sync::Notify::new());
+    check.wake_with(Arc::clone(&wake));
+    assert!(
+        inner
+            .0
+            .get()
+            .is_some_and(|handed| Arc::ptr_eq(handed, &wake))
+    );
 }
 
 /// One pass over `orders` and `scratch`, both shared with `broker-b`.

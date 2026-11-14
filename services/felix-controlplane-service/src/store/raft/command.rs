@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 32;
+pub const METADATA_VERSION: u16 = 33;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -495,6 +495,13 @@ pub enum MetaCommand {
         group_id: String,
         shard_engine: String,
     },
+    /// Keep a broker's root sequence if it moves what is held
+    /// (`RootSequence::moved_by`), so a late or repeated entry never lowers
+    /// it. Level 33.
+    RecordRootSequence {
+        node_id: String,
+        heard: crate::model::RootSequence,
+    },
     /// `TakeRefreshToken` and, when it spends, `InsertRefreshToken` of
     /// `next`, in one entry. Level 9.
     RotateRefreshToken {
@@ -572,6 +579,8 @@ impl MetaCommand {
             // A member before level 32 would refuse the command and keep no
             // identity.
             Self::RecordClusterIdentity { .. } => 32,
+            // A member before level 33 would refuse the command.
+            Self::RecordRootSequence { .. } => 33,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
