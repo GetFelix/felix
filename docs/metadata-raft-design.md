@@ -1252,6 +1252,11 @@ nothing a 0.9 member reads has changed:
 - **The stored snapshot meta keeps its id field**, so a 0.9 binary started
   on a store a 0.10 binary wrote still parses it.
 
+The way back closed when the upgrade finished. Once every member had
+reported the new build's metadata level, the group recorded its identity
+(level 32), and a 0.9 member refused a store that held it. A member could
+go back while the upgrade was still under way, and not after.
+
 Chunks and the snapshot id go away with the new peer prefix, in the store
 step, where no 0.9 member can be on the other end.
 
@@ -1292,12 +1297,15 @@ Behaviour that changed, and what pins each:
   success when that is short of what was sent, so a leader on either version
   never counts the rest as stored.
 
-The mixed-version test (`tests/raft_runtime.rs`) runs this build next to the
-v0.7.1 binary in one group of three. A 0.9 leader sends a lagging 0.10
-member a snapshot. The other two members are upgraded. The third is then
+The mixed-version test (`tests/raft_runtime.rs`) ran the 0.10 build next to
+the v0.7.1 binary in one group of three. A 0.9 leader sent a lagging 0.10
+member a snapshot. The other two members were upgraded while the third was
+down, so the group had not yet recorded its identity. The third was then
 rolled back to v0.7.1 on a store the new build installed and built snapshots
-in, and a 0.10 leader sends it a snapshot. CI downloads the released binary
-for it (`scripts/fetch-released-controlplane.sh`).
+in, and a 0.10 leader sent it a snapshot. The test left with redb: a 0.8
+member and a 0.7 member never share a group or a store, so the same file now
+checks that this build refuses a data directory v0.7.1 wrote. CI downloads
+the released binary for it (`scripts/fetch-released-controlplane.sh`).
 
 Leadership transfer on drain comes after the store has switched. Pre-vote
 (`Config::enable_pre_vote`, off unless set) stays off; see the open

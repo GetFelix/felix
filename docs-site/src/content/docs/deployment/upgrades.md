@@ -793,6 +793,7 @@ Existing broker data directories name no group id, and they keep their data:
    existing catalog. `GET /v1/cluster/identity` then answers with
    `"adopts_existing": true`. Until every member has reported its version
    once, stream and cache creates answer `503`.
+   From then on a member cannot roll back to a release before level 32.
 2. Then roll the brokers as usual. Each one finds data and no group id, sees
    `adopts_existing`, records the group id and starts. Nothing is wiped.
 
@@ -892,7 +893,7 @@ step 2. Do not start 0.7 on a directory 0.8 wrote: 0.7 does not recognise
 | Internal protocol *kind* | Safe once every broker is back on the old build; see the note on credentialed forwards below |
 | Fleet feature, not finalized | Safe; broker by broker |
 | Fleet feature, finalized | **Not possible** to a build without it; a broker on such a build is refused. Roll back to a build that still has the feature |
-| Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
+| Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream, or the group identity, which the group records as soon as every member runs a release at level 32. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
 | Control plane 0.7 to 0.8 (Raft) | Only to the 0.7 data directories kept before the move; see [Control plane metadata in 0.8](#control-plane-metadata-in-08) |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
