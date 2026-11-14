@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794694357365,
+  "lastUpdate": 1794695585660,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57252,6 +57252,58 @@ window.BENCHMARK_DATA = {
             "range": "82717.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1617085.75\nmean: 1583750.04\nstdev: 82717.92\ncv: 5.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "15e9ed99ae32194f26e98281e2befbe0afcbd37c",
+          "message": "fix(replication): retry a peer's Raft streams as soon as it answers again (#2549)\n\n* fix(replication): a late Raft answer is a timeout, and retries cap at a heartbeat (#2543)\n\nRouter::call reported an expired deadline as Unreachable, which arms\nopenraft's replication backoff (200 ms up to 1 s, cleared only by a\nsuccess). It now returns RPCError::Timeout. The runtime also sets\nopenraft's backoff to a quarter heartbeat doubling to one heartbeat, so\na follower back from a cut is sent what it missed within about a\nheartbeat. Election timers are unchanged.\n\nSpec-Unaffected: transport error classification only\n\n* fix(replication): drop an unused import\n\nSpec-Unaffected: transport error classification only\n\n* fix(replication): late data calls stay unreachable; cost the backoff cap (#2543)\n\nA timed-out append with entries is resent with no wait, and a timed-out\nsnapshot piece restarts the snapshot from its first byte, while the\nfollower is still working on the first. Only heartbeats and votes past\ntheir deadline are reported as Timeout now; everything else stays\nUnreachable. The backoff cap at one heartbeat is what fixes the heal.\n\nraft_idle_cpu gains RAFT_IDLE_DEAD=1 to measure a dead peer's cost.\n\nSpec-Unaffected: transport error classification and openraft retry delays; no protocol state or invariant changes.\n\n* fix(replication): retry a peer's Raft streams when it answers again (#2543)\n\nopenraft backs a replication stream off after a refused call, up to 1 s,\nand only a successful call ends the wait. The router now notes which peer\nbrokers its calls failed to reach; the first answer from one afterwards\nhas every leader on this broker cut its streams' waits to that broker\nshort through Trigger::reset_backoff, at most once a heartbeat per broker.\n\nThis replaces the 200 ms backoff cap and the Timeout mapping for late\nheartbeats and votes. The cap cost about 1.6x main's CPU and 1.8x the\ncalls to a dead peer; the backoff is openraft's default again, so a dead\npeer costs what it does on main. The Timeout mapping no longer earns its\nplace: heartbeats are not backed off, and an empty stream append that\narms the backoff is woken by the next answer like any other.\n\nSpec-Unaffected: transport retry pacing only\n\n* fix(replication): retry late-opening groups on their own answer; down only after a streak (#2543)\n\nTrack refusals per group, so a restarted broker's first answers wake only\nthe groups open there, and a late group is retried on its own member's\nfirst answer. A broker counts as down only after its calls keep failing\nfor a heartbeat. Walks are lock-free on the answer path, at most once a\nsecond per broker, one in flight, with resets sent concurrently. Idle\nbrokers are forgotten.\n\n* fix(replication): count another copy's refusal as the group not being open (#2543)",
+          "timestamp": "2026-11-14T14:24:35-08:00",
+          "tree_id": "a13bd0b06e182b3f2b69e0c4687daf39ec89f6c1",
+          "url": "https://github.com/GetFelix/felix/commit/15e9ed99ae32194f26e98281e2befbe0afcbd37c"
+        },
+        "date": 1794695584940,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347127.82,
+            "range": "10519.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347127.82\nmean: 350634.94\nstdev: 10519.97\ncv: 3.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347127.82,
+            "range": "10519.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347127.82\nmean: 350634.94\nstdev: 10519.97\ncv: 3.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79612.06,
+            "range": "5649.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79612.06\nmean: 77233.45\nstdev: 5649.22\ncv: 7.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 796120.56,
+            "range": "56492.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 796120.56\nmean: 772334.49\nstdev: 56492.19\ncv: 7.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
