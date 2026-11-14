@@ -1,8 +1,10 @@
 //! Members opened as copies of their shard directories, through a root that
 //! passed the gate.
 
-use felix_storage::raft_copy::{CopyRoot, Evidence, Gate, RotateReason, check, kept_copies};
-use felix_storage::storage_identity;
+use felix_storage::raft_copy::{
+    ControlPlaneCopy, CopyRoot, Evidence, Gate, RotateReason, check, kept_copies,
+};
+use felix_storage::{run_state, sim_fs, storage_identity};
 use openraft::async_runtime::watch::WatchReceiver;
 
 use super::*;
@@ -46,8 +48,7 @@ impl Roots {
     }
 }
 
-/// Set in the process that poisons a log for
-/// [`a_copy_whose_flush_failed_does_not_vote_with_the_cut_log`].
+/// Set in the process that poisons a log for [`flush_failed_copy`].
 const POISONING_PROCESS: &str = "FELIX_TEST_POISONING_PROCESS";
 
 /// A copy id is minted where the copy is, so the broker that forms a group
@@ -224,6 +225,243 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
     }
 }
 
+/// Start a run on `root`, which is on the simulated filesystem, as a broker
+/// with Raft copies whose own fsync mode is `OnCommit`, and open it as a
+/// copy root. `control_plane` stands in for the control plane's copy of the
+/// root sequence, which a restart compares against.
+fn start_sim_run(root: &Path, mint_from: u64, control_plane: Option<ControlPlaneCopy>) -> CopyRoot {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let relaxed = run_state::relaxed(&log_config().fsync_mode, true);
+    run_state::begin(
+        root,
+        relaxed,
+        None,
+        Some(sim_fs::boot_id(root).expect("boot")),
+        || false,
+        || {
+            let mut id = [0x5A; 16];
+            let n = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            id[8..].copy_from_slice(&n.to_be_bytes());
+            id
+        },
+    )
+    .expect("begin a run");
+    let Gate::Passed(passed) = check(
+        root,
+        Evidence {
+            witness_dir: None,
+            control_plane,
+            restored: false,
+        },
+    )
+    .expect("gate") else {
+        panic!("{} did not pass the gate", root.display());
+    };
+    let next = std::sync::atomic::AtomicU64::new(mint_from);
+    CopyRoot::open(root, passed, move || {
+        next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    })
+}
+
+/// Issue #2423. Every broker's own fsync mode is `OnCommit`, but a Raft copy
+/// reports a record written before its fsync, and the leader counts that for
+/// a relaxed stream. The leader and follower F1 write record R, and R is
+/// acknowledged on the written count while F2 is cut off. Then F1 loses
+/// power before R is synced. Its run was recorded as relaxed, so it boots
+/// under a new storage id and its copy with it. With the leader cut off, F1
+/// and F2 cannot elect a leader without R, and once the leader is back R
+/// commits.
+///
+/// The roots are on the simulated filesystem. The cut lands in R's append on
+/// F1, so R comes back torn and recovery drops it, and whatever F1 writes
+/// after the cut, its log mark included, is lost at the reboot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
+    let dir = tempdir().expect("dir");
+    let root_of = |broker: &str| dir.path().join(broker);
+    let mut roots = HashMap::new();
+    for (n, broker) in BROKERS.iter().enumerate() {
+        sim_fs::register_root(&root_of(broker));
+        roots.insert(
+            *broker,
+            start_sim_run(&root_of(broker), 100 * (n as u64 + 1), None),
+        );
+    }
+    let shard_dir = |broker: &str| root_of(broker).join("shards").join("0");
+    let mut cluster = Cluster::new(true);
+    let mut members = BTreeSet::new();
+    let mut logs = HashMap::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(group(0), &shard_dir(broker), log_config(), &roots[broker])
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.insert(broker, opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let before = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, before).await;
+
+    let leader = cluster.elected(0).await;
+    let engine = RaftEngine::new(cluster.runtime(&leader.broker));
+    let batch = |payload: &'static [u8]| Batch {
+        records: vec![Record {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+        }],
+        ack: AckAt::Written,
+        term: None,
+        producer: None,
+    };
+    // A wait on the written count makes the leader ask for reports.
+    let primed = engine
+        .propose(&shard(0), batch(b"primed"))
+        .await
+        .expect("written");
+    engine
+        .await_quorum_ack(&shard(0), primed, AckAt::Written, PATIENCE)
+        .await
+        .expect("acknowledged");
+    engine
+        .await_commit(&shard(0), primed, PATIENCE)
+        .await
+        .expect("committed");
+    cluster.committed_everywhere(0, primed.end - 1).await;
+
+    let mut followers = BROKERS
+        .iter()
+        .copied()
+        .filter(|broker| *broker != &*leader.broker);
+    let failing = followers.next().expect("a follower");
+    let other = followers.next().expect("another follower");
+    let old = cluster
+        .runtime(failing)
+        .status(&shard(0))
+        .expect("status")
+        .member;
+    let log = logs.remove(failing).expect("log");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while log.durable_offset() < log.tail_offset().await.expect("tail") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never synced"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // What the control plane would hold: the root as of the cut.
+    let held = ControlPlaneCopy {
+        storage_id: roots[failing].storage_id(),
+        sequence: roots[failing].mark_log().sequence(),
+    };
+    let cut = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let cut = Arc::clone(&cut);
+        sim_fs::arm_power_cut(&root_of(failing), 7, move |_, _| {
+            cut.store(true, std::sync::atomic::Ordering::Release);
+        })
+        .expect("arm the cut");
+    }
+    cluster.net.cut.lock().insert(other.into());
+    cluster.net.muted.lock().insert(other.into());
+    let r = engine
+        .propose(&shard(0), batch(b"R"))
+        .await
+        .expect("written");
+    engine
+        .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
+        .await
+        .expect("R acknowledged on the written count");
+    assert!(
+        cut.load(std::sync::atomic::Ordering::Acquire),
+        "the power was not cut in R's append"
+    );
+
+    // F1 boots again.
+    cluster.net.cut.lock().insert(failing.into());
+    assert!(cluster.runtime(failing).close(&shard(0)).await);
+    let _ = log.close().await;
+    drop(roots.remove(failing));
+    assert!(sim_fs::reboot(&root_of(failing)).expect("reboot"));
+    let root = start_sim_run(&root_of(failing), 900, Some(held));
+    let reopened = cluster
+        .runtime(failing)
+        .open_copy(group(0), &shard_dir(failing), log_config(), &root)
+        .await
+        .expect("reopen");
+
+    // The leader goes away and F2 comes back. A copy that kept its id would
+    // elect a leader with F2, and neither holds R.
+    {
+        let mut cut = cluster.net.cut.lock();
+        cut.clear();
+        cut.insert(leader.broker.to_string());
+    }
+    {
+        let mut muted = cluster.net.muted.lock();
+        muted.clear();
+        muted.insert(leader.broker.to_string());
+    }
+    let settle = tokio::time::Instant::now() + 3 * timers().election_max;
+    while tokio::time::Instant::now() < settle {
+        for broker in [failing, other] {
+            let status = cluster.runtime(broker).status(&shard(0));
+            assert!(
+                status.is_none_or(|status| status.role != Role::Leader),
+                "{broker} was elected without R"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // The leader comes back, and R commits where it was written.
+    cluster.net.muted.lock().clear();
+    {
+        let mut cut = cluster.net.cut.lock();
+        cut.clear();
+        cut.insert(failing.into());
+    }
+    let after = cluster.write(0, b"after").await;
+    assert!(after > r.end - 1);
+    for broker in [&*leader.broker, other] {
+        let range = felix_storage::log::ReadRange {
+            start: r.end - 1,
+            max_bytes: 1 << 20,
+        };
+        let records = logs[broker]
+            .read_range_with_trims(range)
+            .await
+            .expect("read");
+        assert_eq!(
+            records.first().map(|record| &record.payload[..]),
+            Some(&b"R"[..]),
+            "{broker} lost R"
+        );
+    }
+    assert_eq!(
+        reopened.rotation.as_ref().map(|rotation| rotation.reason),
+        Some(RotateReason::StorageId)
+    );
+    assert_ne!(reopened.member.copy, old.copy);
+    let status = cluster.runtime(failing).status(&shard(0)).expect("status");
+    assert_eq!(status.role, Role::Learner);
+
+    reopened.log.close().await.ok();
+    cluster.stop().await;
+    for (_, log) in logs {
+        log.close().await.ok();
+    }
+    for broker in BROKERS {
+        sim_fs::unregister_root(&root_of(broker));
+    }
+}
+
 /// Issue #2469. The leader and follower F1 write record R, and R is
 /// acknowledged on the written count while F2 is cut off. F1's flush fails,
 /// so a restart would cut its log back to the last sync, without R. It comes
@@ -235,12 +473,48 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
 /// attest no trusted copy once one is.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
-    const NAME: &str =
-        "raft::tests::identity::a_copy_whose_flush_failed_does_not_vote_with_the_cut_log";
+    flush_failed_copy(
+        "raft::tests::identity::a_copy_whose_flush_failed_does_not_vote_with_the_cut_log",
+        false,
+    )
+    .await;
+}
+
+/// Issue #2475. As above, but the poison marker cannot be written either,
+/// and F1 is reopened in the same process, so no run record rotates it. The
+/// kernel may drop pages a failed fsync left behind: the test cuts F1's
+/// segments back to their length at the last sync before the reopen. F1
+/// still comes back under a new copy id.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_reopened_after_a_failed_flush_and_marker_does_not_vote() {
+    flush_failed_copy(
+        "raft::tests::identity::a_copy_reopened_after_a_failed_flush_and_marker_does_not_vote",
+        true,
+    )
+    .await;
+}
+
+/// The length of every segment file in `dir`.
+fn segment_lengths(dir: &Path) -> Vec<(std::path::PathBuf, u64)> {
+    std::fs::read_dir(dir)
+        .expect("shard dir")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "log"))
+        .map(|path| {
+            let len = std::fs::metadata(&path).expect("segment").len();
+            (path, len)
+        })
+        .collect()
+}
+
+/// The body of the two tests above. `marker_fails` fails the poison marker
+/// write and cuts F1's log back to its last sync before the reopen.
+async fn flush_failed_copy(name: &str, marker_fails: bool) {
     if std::env::var_os(POISONING_PROCESS).is_none() {
-        let output = tokio::task::spawn_blocking(|| {
+        let name = name.to_owned();
+        let output = tokio::task::spawn_blocking(move || {
             std::process::Command::new(std::env::current_exe().expect("this binary"))
-                .args(["--exact", NAME, "--nocapture"])
+                .args(["--exact", &name, "--nocapture"])
                 .env(POISONING_PROCESS, "1")
                 .output()
                 .expect("child")
@@ -329,6 +603,10 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
+    let synced = segment_lengths(&roots.shard_dir(failing));
+    if marker_fails {
+        log.fail_poison_marker();
+    }
     // Only the flush of R fails: an idle flush in between passes and leaves
     // the failure armed.
     log.fail_flush_past(log.tail_offset().await.expect("tail"));
@@ -369,6 +647,19 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
     assert!(cluster.runtime(failing).close(&shard(0)).await);
     // A poisoned log has nothing left to flush, so its close may fail.
     let _ = log.close().await;
+    if marker_fails {
+        assert!(
+            !roots.shard_dir(failing).join("poisoned").exists(),
+            "the marker was written"
+        );
+        for (path, len) in &synced {
+            let file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .expect("segment");
+            file.set_len(*len).expect("cut");
+        }
+    }
     let reopened = cluster
         .runtime(failing)
         .open_copy(

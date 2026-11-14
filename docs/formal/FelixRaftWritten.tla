@@ -46,12 +46,15 @@
 (*                     committed. Process crashes, leader changes and a    *)
 (*                     membership change lose nothing.                     *)
 (*   AckedNeverLost -- the same with no exception. It holds when no broker *)
-(*                     loses power. With one power cut it does not, and    *)
-(*                     FelixRaftWrittenPowerCut pins that trace: one copy  *)
-(*                     of the written majority loses the record to a power *)
-(*                     cut, and the voters that never had it elect with    *)
-(*                     that broker while the remaining copy is not heard.  *)
-(*                     The copy that loses power can be the leader's.      *)
+(*                     loses power, and with a power cut when the cut      *)
+(*                     rotates the broker's copy (CutRotates, as the       *)
+(*                     broker does: FelixRaftWrittenPowerCut). Without     *)
+(*                     that it does not, and FelixRaftWrittenPowerCutKeeps *)
+(*                     pins the trace: one copy of the written majority    *)
+(*                     loses the record to a power cut, and the voters     *)
+(*                     that never had it elect with that broker while the  *)
+(*                     remaining copy is not heard. The copy that loses    *)
+(*                     power can be the leader's.                          *)
 (*   CommittedHeld  -- no broker that could still win an election lacks a  *)
 (*                     committed entry, power cuts or not.                 *)
 (*                                                                         *)
@@ -88,7 +91,8 @@ CONSTANTS
     LearnerCounts,
     OtherTermCounts,
     JointOneHalf,
-    WrittenCommits
+    WrittenCommits,
+    CutRotates
 
 VARIABLES
     role,       \* "follower", "candidate" or "leader"
@@ -104,11 +108,12 @@ VARIABLES
     committed,  \* history: the committed sequence, each entry with the term that committed it
     acked,      \* history: [val, by, joint] for each record acknowledged
     lost,       \* history: the record values a power cut took from each broker
-    used        \* budgets spent: writes, changes, crashes, cuts
+    used,       \* budgets spent: writes, changes, crashes, cuts
+    gone        \* brokers whose copy a power cut rotated (CutRotates)
 
 election == <<role, term, votedFor, granted, elected>>
 raft == <<log, synced, commitIdx, match, committed>>
-vars == <<election, raft, wrote, acked, lost, used>>
+vars == <<election, raft, wrote, acked, lost, used, gone>>
 
 \* Only brokers that every named set treats alike permute.
 Symm == Permutations(InitVoters \cap NewVoters)
@@ -178,22 +183,25 @@ Init ==
     /\ acked = {}
     /\ lost = [s \in Servers |-> {}]
     /\ used = [writes |-> 0, changes |-> 0, crashes |-> 0, cuts |-> 0]
+    /\ gone = {}
 
 \* Only a voter of the configuration it holds campaigns.
 Campaign(c) ==
     /\ role[c] # "leader"
+    /\ c \notin gone
     /\ c \in Voters(Cfg(c))
     /\ term[c] < MaxTerm
     /\ term' = [term EXCEPT ![c] = @ + 1]
     /\ votedFor' = [votedFor EXCEPT ![c] = c]
     /\ role' = [role EXCEPT ![c] = "candidate"]
     /\ granted' = [granted EXCEPT ![c] = {c}]
-    /\ UNCHANGED <<elected, raft, wrote, acked, lost, used>>
+    /\ UNCHANGED <<elected, raft, wrote, acked, lost, gone, used>>
 
 \* A voter compares the candidate's log with its own, unsynced entries
 \* included.
 GrantVote(s, c) ==
     /\ s # c
+    /\ s \notin gone
     /\ role[c] = "candidate"
     /\ s \in Voters(Cfg(c))
     /\ term[s] < term[c]
@@ -202,7 +210,7 @@ GrantVote(s, c) ==
     /\ votedFor' = [votedFor EXCEPT ![s] = c]
     /\ role' = [role EXCEPT ![s] = "follower"]
     /\ granted' = [granted EXCEPT ![c] = @ \cup {s}, ![s] = {}]
-    /\ UNCHANGED <<elected, raft, wrote, acked, lost, used>>
+    /\ UNCHANGED <<elected, raft, wrote, acked, lost, gone, used>>
 
 BecomeLeader(c) ==
     /\ role[c] = "candidate"
@@ -211,14 +219,14 @@ BecomeLeader(c) ==
     /\ elected' = elected \cup {<<term[c], c>>}
     /\ log' = [log EXCEPT ![c] = Append(@, Blank(term[c]))]
     /\ match' = [match EXCEPT ![c] = [t \in Servers |-> 0]]
-    /\ UNCHANGED <<term, votedFor, granted, synced, commitIdx, committed, wrote, acked, lost, used>>
+    /\ UNCHANGED <<term, votedFor, granted, synced, commitIdx, committed, wrote, acked, lost, gone, used>>
 
 AppendRecord(i) ==
     /\ role[i] = "leader"
     /\ used.writes < MaxWrites
     /\ log' = [log EXCEPT ![i] = Append(@, Record(term[i], used.writes + 1))]
     /\ used' = [used EXCEPT !.writes = @ + 1]
-    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost>>
+    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone>>
 
 \* The one change: into the joint configuration, once the previous
 \* membership is committed.
@@ -231,7 +239,7 @@ EnterJoint(i) ==
     /\ log' = [log EXCEPT ![i] = Append(@, Member(term[i],
             [old |-> Cfg(i).new, new |-> NewVoters, learners |-> Cfg(i).learners \ NewVoters]))]
     /\ used' = [used EXCEPT !.changes = @ + 1]
-    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost>>
+    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone>>
 
 \* openraft leaves the joint configuration once its entry is committed. A
 \* new leader that finds one does the same.
@@ -241,7 +249,7 @@ LeaveJoint(i) ==
     /\ commitIdx[i] >= LastMember(i)
     /\ log' = [log EXCEPT ![i] = Append(@, Member(term[i],
             [old |-> Cfg(i).new, new |-> Cfg(i).new, learners |-> Cfg(i).learners]))]
-    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, used>>
+    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone, used>>
 
 \* AppendEntries with one entry after the highest index the two logs agree
 \* on, to a voter or a learner of the leader's configuration. A follower
@@ -250,6 +258,7 @@ Replicate(i, j) ==
     /\ i # j
     /\ role[i] = "leader"
     /\ j \in Members(Cfg(i))
+    /\ j \notin gone
     /\ term[j] <= term[i]
     /\ LET p == Common(i, j)
        IN /\ p < LastIdx(i)
@@ -259,33 +268,35 @@ Replicate(i, j) ==
     /\ votedFor' = [votedFor EXCEPT ![j] = IF term[j] < term[i] THEN i ELSE @]
     /\ role' = [role EXCEPT ![j] = "follower"]
     /\ granted' = [granted EXCEPT ![j] = {}]
-    /\ UNCHANGED <<elected, commitIdx, match, committed, wrote, acked, lost, used>>
+    /\ UNCHANGED <<elected, commitIdx, match, committed, wrote, acked, lost, gone, used>>
 
 Flush(s) ==
     /\ synced[s] < LastIdx(s)
     /\ synced' = [synced EXCEPT ![s] = LastIdx(s)]
-    /\ UNCHANGED <<election, log, commitIdx, match, committed, wrote, acked, lost, used>>
+    /\ UNCHANGED <<election, log, commitIdx, match, committed, wrote, acked, lost, gone, used>>
 
 \* The follower's answer to an append: how far its log matches the
 \* leader's and is fsynced.
 Ack(i, j) ==
     /\ i # j
+    /\ j \notin gone
     /\ role[i] = "leader"
     /\ term[j] = term[i]
     /\ LET p == Min(Common(i, j), synced[j])
        IN /\ p > match[i][j]
           /\ match' = [match EXCEPT ![i][j] = p]
-    /\ UNCHANGED <<election, log, synced, commitIdx, committed, wrote, acked, lost, used>>
+    /\ UNCHANGED <<election, log, synced, commitIdx, committed, wrote, acked, lost, gone, used>>
 
 \* The written report: the id of the sender's last entry, fsynced or not.
 \* Nothing ties it to the sender's vote or to the leader's term.
 Report(i, j) ==
     /\ i # j
+    /\ j \notin gone
     /\ role[i] = "leader"
     /\ LET id == [term |-> LastTerm(j), idx |-> LastIdx(j)]
        IN /\ id # wrote[i][j]
           /\ wrote' = [wrote EXCEPT ![i][j] = id]
-    /\ UNCHANGED <<election, raft, acked, lost, used>>
+    /\ UNCHANGED <<election, raft, acked, lost, gone, used>>
 
 \* The early acknowledgement: a record of the leader's own term that a
 \* majority of the voters has written.
@@ -298,7 +309,7 @@ AckWritten(i) ==
            /\ e.val \notin AckedVals
            /\ WrittenQuorum(Wrote(i, n), Cfg(i))
            /\ acked' = acked \cup {[val |-> e.val, by |-> "written", joint |-> Joint(Cfg(i))]}
-    /\ UNCHANGED <<election, raft, wrote, lost, used>>
+    /\ UNCHANGED <<election, raft, wrote, lost, gone, used>>
 
 \* The commit index counts fsynced copies only, the leader's own included.
 Agree(i, n) ==
@@ -325,7 +336,7 @@ AdvanceCommit(i) ==
                                         [e |-> log[i][have + k], by |-> term[i]]]
                 /\ acked' = acked \cup
                     {[val |-> v, by |-> "commit", joint |-> Joint(Cfg(i))] : v \in new \ AckedVals}
-    /\ UNCHANGED <<election, log, synced, match, wrote, lost, used>>
+    /\ UNCHANGED <<election, log, synced, match, wrote, lost, gone, used>>
 
 Forget(s) ==
     /\ role' = [role EXCEPT ![s] = "follower"]
@@ -338,19 +349,29 @@ Crash(s) ==
     /\ used.crashes < MaxCrashes
     /\ Forget(s)
     /\ used' = [used EXCEPT !.crashes = @ + 1]
-    /\ UNCHANGED <<term, votedFor, elected, log, synced, commitIdx, committed, acked, lost>>
+    /\ UNCHANGED <<term, votedFor, elected, log, synced, commitIdx, committed, acked, lost, gone>>
 
 \* The machine loses power and takes some of the unsynced tail with it.
+\* With CutRotates the broker comes back under a new storage id, so its copy
+\* rotates: the old identity is gone from the voter set and the new copy
+\* starts with an empty log and no vote. It never votes, campaigns or
+\* answers as that seat again; adding the new copy needs a membership
+\* change, which this model does not make. The leader keeps whatever it
+\* already heard from the old copy.
 PowerCut(s) ==
     /\ used.cuts < MaxPowerCuts
+    /\ s \notin gone
     /\ \E n \in {x \in synced[s]..LastIdx(s) : x < LastIdx(s)} :
-        /\ log' = [log EXCEPT ![s] = SubSeq(@, 1, n)]
-        /\ commitIdx' = [commitIdx EXCEPT ![s] = Min(@, n)]
+        /\ log' = [log EXCEPT ![s] = IF CutRotates THEN <<>> ELSE SubSeq(@, 1, n)]
+        /\ commitIdx' = [commitIdx EXCEPT ![s] = IF CutRotates THEN 0 ELSE Min(@, n)]
         /\ lost' = [lost EXCEPT ![s] = @ \cup
                 {log[s][k].val : k \in {x \in (n + 1)..LastIdx(s) : log[s][x].kind = "record"}}]
+    /\ synced' = [synced EXCEPT ![s] = IF CutRotates THEN 0 ELSE @]
+    /\ votedFor' = [votedFor EXCEPT ![s] = IF CutRotates THEN Nobody ELSE @]
+    /\ gone' = IF CutRotates THEN gone \cup {s} ELSE gone
     /\ Forget(s)
     /\ used' = [used EXCEPT !.cuts = @ + 1]
-    /\ UNCHANGED <<term, votedFor, elected, synced, committed, acked>>
+    /\ UNCHANGED <<term, elected, committed, acked>>
 
 Next ==
     \/ \E s \in Servers :
@@ -373,6 +394,7 @@ TypeOK ==
         /\ synced[s] <= LastIdx(s)
         /\ commitIdx[s] <= LastIdx(s)
     /\ AckedVals \subseteq 1..MaxWrites
+    /\ gone \subseteq Servers
     /\ \A a, b \in acked : a.val = b.val => a = b
 
 OneLeaderPerTerm == \A a, b \in elected : a[1] = b[1] => a[2] = b[2]
@@ -399,10 +421,12 @@ Untouched(v) == \A s \in Servers : v \notin lost[s]
 
 \* With the logs as they stand, a later term could elect this broker: it
 \* is a voter of the configuration it holds, and the brokers whose logs are
-\* not ahead of its own make a majority of each voter set.
+\* not ahead of its own make a majority of each voter set. A broker a power
+\* cut rotated neither stands nor votes.
 Electable(s) ==
+    /\ s \notin gone
     /\ s \in Voters(Cfg(s))
-    /\ Quorum({t \in Servers : UpToDate(s, t)}, Cfg(s))
+    /\ Quorum({t \in Servers \ gone : UpToDate(s, t)}, Cfg(s))
 
 CommittedHeld ==
     \A s \in Servers : Electable(s) =>

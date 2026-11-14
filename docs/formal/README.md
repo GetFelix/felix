@@ -605,7 +605,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenOtherTermCounts.cfg` | a report counts whatever term its log id carries | violate `AckedHeld` |
 | `FelixRaftWrittenJointOneHalf.cfg` | a majority of either half of a joint configuration is enough | violate `AckedHeld` |
 | `FelixRaftWrittenCommits.cfg` | the commit index counts written reports | violate `CommittedHeld` |
-| `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut: the loss the early acknowledgement leaves open | violate `AckedNeverLost` |
+| `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut that rotates the cut broker's copy (`CutRotates`), as the broker does | pass the same and `AckedNeverLost` (STATES distinct states) |
+| `FelixRaftWrittenPowerCutKeeps.cfg` | the same with the copy kept: the loss the early acknowledgement would leave open | violate `AckedNeverLost` |
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
@@ -2744,15 +2745,30 @@ leader (`FelixRaftWrittenJointFailover.cfg`) found no violation but did not
 finish; the table above has how far each got. Every twin below, the joint and second-term ones included, fails
 within seconds.
 
-So the loss this acknowledgement leaves open is exactly one: a copy that held
-the record loses power before its fsync, and a majority then elects without a
-copy that still holds it. `FelixRaftWrittenPowerCut.cfg` pins it as an expected
-violation of `AckedNeverLost` with every rule on and one power cut. At three
-voters the leader and one follower hold the record, one of the two loses power,
-and it and the third voter can elect while the last copy is not heard. The
-copy that loses power can be the leader's own. The hybrid does not lose the
-record there: a follower back from a machine crash has a new storage identity
-and is not counted, so the shard waits (issue #2423).
+A power cut is the one way the acknowledgement could lose a record: a copy
+that held the record loses power before its fsync, and a majority then elects
+without a copy that still holds it. At three voters the leader and one follower
+hold the record, one of the two loses power, and it and the third voter elect
+while the last copy is not heard. The copy that loses power can be the
+leader's own. `FelixRaftWrittenPowerCutKeeps.cfg` pins that as an expected
+violation of `AckedNeverLost`, with every rule on, one power cut, and
+`CutRotates` off.
+
+The broker closes it as the hybrid does (issue #2423). A broker with Raft
+copies records every run as relaxed, so after a power cut it starts under a new
+storage id and each copy under a new copy id. With `CutRotates` the cut broker
+leaves the voter set as that identity: its log is empty, its vote cleared, and
+it never votes, campaigns, answers or counts again. The leader keeps whatever
+it already heard from the old copy. `FelixRaftWrittenPowerCut.cfg` is the same
+model with `CutRotates` on, and passes `AckedNeverLost` with the other
+invariants.
+
+That is safety only. The model checks no liveness, and the price shows up
+there: the rotated seat stays empty, because adding the new copy needs a
+membership change that per-shard Raft does not make yet. A group that loses a
+seat this way keeps going on the other two, and one more unreachable voter
+closes the shard until the copy holding the record returns. The hybrid's
+closed shard after the same crash is the same cost.
 
 A failed flush counts as a power cut for that copy. A Raft log whose flush
 failed is cut back to its last sync when it restarts, so it comes back without

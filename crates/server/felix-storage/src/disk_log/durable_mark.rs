@@ -130,9 +130,34 @@ pub(crate) fn poison_file_name() -> &'static str {
 /// Whether `dir` holds a poison marker, readable or not. Unlike
 /// [`load_poison`], a marker that cannot be looked for is an error: a Raft
 /// copy is judged on this, and a guess of "none" would let it keep its id.
+///
+/// A directory poisoned in this process counts even with no marker: the
+/// marker write can fail too, and a reopen before the next start would then
+/// find nothing (#2475).
 #[cfg(feature = "raft")]
 pub(crate) fn left_poisoned(dir: &Path) -> std::io::Result<bool> {
+    if POISONED_DIRS.lock().iter().any(|poisoned| poisoned == dir) {
+        return Ok(true);
+    }
     crate::fs::try_exists(dir.join(poison_file_name()))
+}
+
+/// The directories whose log was poisoned in this process, until a rotation
+/// moves the directory aside. Never cleared otherwise.
+static POISONED_DIRS: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
+
+/// Count `dir` as poisoned for the rest of this process.
+pub(super) fn note_poisoned_dir(dir: &Path) {
+    let mut dirs = POISONED_DIRS.lock();
+    if !dirs.iter().any(|poisoned| poisoned == dir) {
+        dirs.push(dir.to_path_buf());
+    }
+}
+
+/// `dir` now holds a new copy, so its old log's poison no longer applies.
+#[cfg(feature = "raft")]
+pub(crate) fn forget_poisoned_dir(dir: &Path) {
+    POISONED_DIRS.lock().retain(|poisoned| poisoned != dir);
 }
 
 /// The poison marker's mode byte for each fsync mode. Zero is a marker that
@@ -189,6 +214,9 @@ pub(super) struct MarkFile {
     /// Fails the next write of the mark, after its sync succeeded.
     #[cfg(test)]
     pub(super) fail_next_write: std::sync::atomic::AtomicBool,
+    /// Fails every write of the poison marker.
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub(super) fail_poison_marker: std::sync::atomic::AtomicBool,
 }
 
 #[derive(Debug, Default)]
@@ -224,6 +252,8 @@ impl MarkFile {
             state: Mutex::new(MarkState::default()),
             #[cfg(test)]
             fail_next_write: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "fault-injection"))]
+            fail_poison_marker: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -234,6 +264,16 @@ impl MarkFile {
     /// anyway. Syncing could also fail on the device that just failed.
     pub(super) fn record_poison(&self, mode: &FsyncMode) -> std::io::Result<()> {
         use std::io::Write;
+        note_poisoned_dir(&self.dir);
+        #[cfg(any(test, feature = "fault-injection"))]
+        if self
+            .fail_poison_marker
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            return Err(std::io::Error::other(
+                "injected failure to write the poison marker",
+            ));
+        }
         let synced = self.state.lock().synced;
         let bytes = synced.map_or([0u8; MARK_LEN], |mark| Poison::encode(mark, mode));
         let mut file = File::create(self.dir.join(poison_file_name()))?;

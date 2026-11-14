@@ -1,5 +1,5 @@
 //! Which retention hold logs open with, decided from configuration alone.
-use felix_storage::log::RetentionHold;
+use felix_storage::log::{FsyncMode, RetentionHold};
 
 use super::*;
 use crate::config::MembershipConfig;

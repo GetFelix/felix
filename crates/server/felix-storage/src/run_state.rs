@@ -147,6 +147,15 @@ pub struct Begun {
     pub rotated: bool,
 }
 
+/// Whether a run may vouch for records it has not synced, so that a machine
+/// crash of it must rotate the storage id. True under `Periodic` and `None`,
+/// and under any mode when the broker hosts Raft copies: a copy reports a
+/// record written before its fsync, and the leader counts that report for a
+/// relaxed stream whatever this broker's own mode is (#2423).
+pub fn relaxed(fsync_mode: &crate::log::FsyncMode, raft_copies: bool) -> bool {
+    raft_copies || !matches!(fsync_mode, crate::log::FsyncMode::OnCommit)
+}
+
 /// Start a run on the directory at `root`: read its storage id, give it a new
 /// one when the last run may have lost records it acknowledged or the
 /// directory is older than the node's last registration, then record that a
