@@ -123,6 +123,8 @@ fn timers() -> RuntimeConfig {
         election_max: Duration::from_millis(300),
         heartbeat: Duration::from_millis(50),
         tick: Duration::from_millis(10),
+        // Inside the shortest election timeout, as the runtime requires.
+        lease: Duration::from_millis(100),
         ..RuntimeConfig::default()
     }
 }

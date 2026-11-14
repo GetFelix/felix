@@ -647,3 +647,77 @@ async fn the_cut_moves_the_durable_mark_back_to_the_marker() {
     super::recovery::after_poison(dir.path(), "t/ns/s/0", Some(poison)).expect("cut");
     assert_eq!(super::durable_mark::load(dir.path()), Some(poison.mark));
 }
+
+/// A crash after the cut but before `durable.mark` is written leaves nothing
+/// to cut. The next start still moves the mark back.
+#[tokio::test]
+async fn a_crash_before_the_mark_is_written_is_finished_by_the_next_start() {
+    let dir = tempdir().expect("dir");
+    poison_after(&dir, FsyncMode::OnCommit, &["a", "b"]).await;
+    let poison = super::durable_mark::load_poison(dir.path())
+        .expect("marker")
+        .expect("readable");
+    let ahead = super::durable_mark::DurableMark {
+        segment: poison.mark.segment,
+        synced_bytes: poison.mark.synced_bytes + 1_000,
+    };
+    std::fs::write(dir.path().join("durable.mark"), ahead.encode()).expect("mark");
+
+    // The second step is the one after the segment is cut.
+    super::recovery::CUT_STEPS_LEFT.with(|left| left.set(Some(1)));
+    let crashed = super::recovery::after_poison(dir.path(), "t/ns/s/0", Some(poison));
+    super::recovery::CUT_STEPS_LEFT.with(|left| left.set(None));
+    crashed.expect_err("the injected crash did not stop the cut");
+    assert_eq!(super::durable_mark::load(dir.path()), Some(ahead));
+
+    super::recovery::after_poison(dir.path(), "t/ns/s/0", Some(poison)).expect("cut");
+    assert_eq!(super::durable_mark::load(dir.path()), Some(poison.mark));
+}
+
+/// A flush whose caller stops waiting during a failing sync still poisons
+/// the log: the sync's thread records the failure, not the caller.
+#[tokio::test]
+async fn a_failed_flush_poisons_the_log_after_its_caller_gives_up() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    log.append(&records(&["a", "b"])).await.expect("append");
+
+    // Hold the flush thread, so the flush queues behind and is still waiting
+    // when it is dropped.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (holding, started) = std::sync::mpsc::channel::<()>();
+    let holder = {
+        let inner = Arc::clone(&log.inner);
+        tokio::spawn(async move {
+            inner
+                .flusher
+                .run(move || {
+                    let _ = holding.send(());
+                    let _ = held.recv();
+                    Ok(())
+                })
+                .await
+        })
+    };
+    while started.try_recv().is_err() {
+        tokio::task::yield_now().await;
+    }
+    log.inner
+        .fail_next_flush
+        .store(true, std::sync::atomic::Ordering::Release);
+    let flush = Arc::clone(&log.inner).flush();
+    tokio::time::timeout(std::time::Duration::from_millis(200), flush)
+        .await
+        .expect_err("the flush finished behind a held thread");
+    assert!(!log.is_poisoned());
+
+    release.send(()).expect("release");
+    holder.await.expect("holder").expect("held job");
+    // Jobs run in order, so the abandoned flush has run once this has.
+    log.inner.flusher.run(|| Ok(())).await.expect("after");
+    assert!(log.is_poisoned());
+    assert!(dir.path().join("poisoned").exists());
+    log.sync()
+        .await
+        .expect_err("a poisoned log refused the flush");
+}
