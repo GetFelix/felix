@@ -109,6 +109,28 @@ struct Net {
     lose_transfers: std::sync::atomic::AtomicBool,
     /// How long an append's answer takes to come back.
     answer_after: parking_lot::Mutex<Option<Duration>>,
+    /// A cut broker comes back once this many appends that carry entries
+    /// have been refused to it.
+    heal_after: parking_lot::Mutex<HashMap<String, u32>>,
+    /// When the first broker came back that way.
+    healed: parking_lot::Mutex<Option<std::time::Instant>>,
+}
+
+impl Net {
+    fn refused_entries(&self, broker: &str) {
+        let mut heal = self.heal_after.lock();
+        let Some(left) = heal.get_mut(broker) else {
+            return;
+        };
+        *left -= 1;
+        if *left == 0 {
+            heal.remove(broker);
+            self.cut.lock().remove(broker);
+            self.healed
+                .lock()
+                .get_or_insert_with(std::time::Instant::now);
+        }
+    }
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -159,7 +181,11 @@ impl RaftTransport for Net {
             let higher = openraft::raft::AppendError::HigherVote(vote.clone());
             return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
-        let runtime = match self.cut.lock().contains(broker) {
+        let cut = self.cut.lock().contains(broker);
+        if cut && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty()) {
+            self.refused_entries(broker);
+        }
+        let runtime = match cut {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
@@ -1587,6 +1613,105 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
     cluster.stop().await;
 }
 
+/// Never answers.
+struct Silent;
+
+#[async_trait]
+impl RaftTransport for Silent {
+    async fn send(&self, _: RaftRequest) -> Result<RaftReply, Refused> {
+        std::future::pending().await
+    }
+}
+
+/// A call whose deadline passes is a timeout. openraft backs a stream off
+/// for up to a second after an unreachable member, but not after one
+/// timeout (#2543).
+#[tokio::test(start_paused = true)]
+async fn an_answer_past_the_deadline_is_a_timeout() {
+    use openraft::error::RPCError;
+    use openraft_multi::GroupRouter;
+    let transport: Arc<dyn RaftTransport> = Arc::new(Silent);
+    let lease = super::lease::Lease::new(timers().lease);
+    let reports = Arc::new(super::written::Reports::new());
+    let router =
+        super::network::Router::new(transport, Arc::new(pace().0), Arc::new(lease), reports);
+    let leads = LeaderIdOf::<ShardTypes>::new(3, MemberId::new("a", 1));
+    let rpc = openraft::raft::AppendEntriesRequest::<ShardTypes> {
+        vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
+        prev_log_id: None,
+        entries: Vec::new(),
+        leader_commit: None,
+    };
+    let deadline = Duration::from_millis(200);
+    let option = openraft::network::RPCOption::new(deadline);
+    let sent = router
+        .append_entries(MemberId::new("b", 1), group(0), rpc, option)
+        .await;
+    match sent {
+        Err(RPCError::Timeout(timeout)) => {
+            assert_eq!(timeout.id, MemberId::new("a", 1));
+            assert_eq!(timeout.target, MemberId::new("b", 1));
+            assert_eq!(timeout.timeout, deadline);
+        }
+        other => panic!("not a timeout: {:?}", other.err()),
+    }
+}
+
+/// A follower back from a cut takes the entries it missed within about a
+/// heartbeat. Each comes back just after its fourth refused append, when
+/// openraft's default delays would make it wait a second more (#2543).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_healed_cut_commits_within_about_a_heartbeat() {
+    // No follower stands while it is cut.
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(10),
+        election_max: Duration::from_secs(20),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(patient, true);
+    cluster.form(0).await;
+    let before = cluster.write(0, b"committed").await;
+    cluster.committed_everywhere(0, before).await;
+    let leader = cluster.elected(0).await;
+    let member = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+
+    for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
+        cluster.net.heal_after.lock().insert((*broker).into(), 4);
+        cluster.net.cut.lock().insert((*broker).into());
+    }
+    let raft = member.raft().clone();
+    let write = tokio::spawn(async move {
+        raft.client_write(Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(b"after the cut"),
+            producer: None,
+            written: None,
+        })
+        .await
+    });
+    let written = tokio::time::timeout(PATIENCE, write)
+        .await
+        .expect("answered")
+        .expect("task")
+        .expect("committed");
+    let healed = cluster.net.healed.lock().expect("a follower came back");
+    let took = healed.elapsed();
+    assert_eq!(written.log_id.index, before + 1);
+    assert_eq!(
+        leader,
+        cluster.elected(0).await,
+        "the leader changed, so this measured an election"
+    );
+    assert!(
+        took < Duration::from_millis(600),
+        "the first commit after the cut took {took:?}"
+    );
+    cluster.stop().await;
+}
+
 #[test]
 fn the_timers_must_make_sense() {
     assert!(RuntimeConfig::default().raft(ShardKind::Stream).is_ok());
@@ -1619,6 +1744,7 @@ fn the_default_timers_are_the_designs() {
     assert_eq!(raft.election_timeout_max, 2000);
     assert!(!raft.enable_tick);
     assert_eq!(raft.allow_log_reversion, Some(false));
+    assert_eq!(raft.backoff.as_deref(), Some("50ms ..200ms"));
 }
 
 #[test]

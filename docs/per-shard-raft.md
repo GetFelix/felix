@@ -1409,9 +1409,29 @@ how idle groups slow down.
 
 What the runtime sets in openraft: the timers from Questions, 4;
 `enable_tick` off; no snapshot policy for a stream shard, since its records
-leave by retention and never because a snapshot was taken; and
-`allow_log_reversion` off (Questions, 2). Every log is opened with `purge_within`, so a purge
+leave by retention and never because a snapshot was taken;
+`allow_log_reversion` off (Questions, 2); and the retry delays below. Every log is opened with `purge_within`, so a purge
 past the stored snapshot is refused.
+
+When a call to a follower fails, openraft waits before it sends that
+follower's stream again, and only a call that succeeds clears the wait.
+How a failure counts depends on its kind:
+
+- `Unreachable` turns the wait on at once. The router answers it when the
+  transport refused the message: no connection, no `RAFT` capability, or
+  no such member.
+- `Timeout` counts for little: eleven in a row turn the wait on. The
+  router answers it when the call's deadline (one heartbeat for an append)
+  passed with no answer. A follower that answers late on a loaded broker
+  is alive and has usually taken the entries.
+
+openraft's default delays are 200, 400 and 800 ms, then 1 s each, and a
+heal does not cut a wait short. A follower back from a cut of a second or
+two would wait up to a second more before it is sent what it missed. The
+runtime sets the delays to a quarter of a heartbeat, doubling up to one
+heartbeat (50, 100, then 200 ms at the default 200 ms heartbeat), so a heal
+costs about a heartbeat. A dead follower is then called at most twice as
+often as its heartbeats alone call it. Election timers are not affected.
 
 A snapshot must not cost a record either, and a stream shard's snapshot
 holds none. Two settings keep that true until retention is designed:

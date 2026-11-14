@@ -9,8 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use openraft::EntryPayload;
-use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
+use openraft::error::{RPCError, ReplicationClosed, StreamingError, Timeout, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::{RPCOption, RaftNetworkFactory};
 use openraft::raft::{
@@ -18,6 +17,7 @@ use openraft::raft::{
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
 use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
+use openraft::{EntryPayload, RPCTypes};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use felix_storage::raft_log::LogPoint;
@@ -221,7 +221,7 @@ impl Router {
         group: GroupId,
         mut body: Request,
         option: &RPCOption,
-    ) -> Result<Reply, Unreachable<ShardTypes>> {
+    ) -> Result<Reply, RPCError<ShardTypes>> {
         // A transport inside one process hands the message over as it is.
         // A token that went with it would be resolved by the follower's
         // append and tell the publisher the leader had written.
@@ -242,6 +242,7 @@ impl Router {
             self.lease.void_through(term_of(transfer.from_leader()));
         }
         let pre_vote = matches!(body, Request::PreVote(_));
+        let (action, from) = kind_and_sender(&body);
         let request = RaftRequest {
             group,
             to: to.clone(),
@@ -267,10 +268,33 @@ impl Router {
         }
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),
-            Ok(Err(refused)) => Err(Unreachable::new(&refused)),
-            Err(elapsed) => Err(Unreachable::new(&elapsed)),
+            Ok(Err(refused)) => Err(Unreachable::new(&refused).into()),
+            // openraft backs off a stream to a member it calls unreachable
+            // and keeps doing so until a call succeeds. A late answer is not
+            // a dead peer, so it is reported as the timeout it is.
+            Err(_) => Err(RPCError::Timeout(Timeout {
+                action,
+                id: from,
+                target: to,
+                timeout: option.hard_ttl(),
+            })),
         }
     }
+}
+
+/// The kind of call `body` is and the member that sent it, for a
+/// [`Timeout`].
+fn kind_and_sender(body: &Request) -> (RPCTypes, MemberId) {
+    use openraft::vote::RaftLeaderId;
+    use openraft::vote::RaftVote;
+    let (action, vote) = match body {
+        Request::Append(rpc) => (RPCTypes::AppendEntries, &rpc.vote),
+        Request::Vote(rpc) | Request::PreVote(rpc) => (RPCTypes::Vote, &rpc.vote),
+        Request::Snapshot { vote, .. } => (RPCTypes::InstallSnapshot, vote),
+        Request::TransferLeader(transfer) => (RPCTypes::TransferLeader, transfer.from_leader()),
+        Request::Written { from, .. } => return (RPCTypes::AppendEntries, from.clone()),
+    };
+    (action, vote.leader_id().node_id().clone())
 }
 
 pub(crate) fn term_of(vote: &VoteOf<ShardTypes>) -> u64 {
@@ -374,7 +398,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
                     .call(target.clone(), group_id.clone(), body, &option)
                     .await?;
                 let Reply::Snapshot(response) = reply else {
-                    return Err(wrong_reply());
+                    return Err(RPCError::from(wrong_reply()));
                 };
                 // A member that has seen a newer vote takes no more of it.
                 if end == data.len() || response.vote != vote {

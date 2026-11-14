@@ -110,6 +110,13 @@ impl Default for RuntimeConfig {
 /// last piece's answer waits for the install as well.
 pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
 
+/// openraft's retry delays for a stream: a quarter of a heartbeat,
+/// doubling up to one heartbeat.
+pub(super) fn backoff(heartbeat_millis: u64) -> String {
+    let cap = heartbeat_millis.max(1);
+    format!("{}ms ..{cap}ms", (cap / 4).max(1))
+}
+
 fn wall_clock_micros() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     now.map_or(0, |now| now.as_micros() as u64)
@@ -170,6 +177,13 @@ impl RuntimeConfig {
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
             log_stage_capacity: Some(1),
+            // After a refused call openraft sleeps before each retry of a
+            // stream, and only a success clears it. Its default climbs to
+            // 1 s, so a member back from a cut waits up to a second for
+            // entries it could take at once. Capped at a heartbeat, a dead
+            // peer is called at most twice as often as heartbeats alone call
+            // it.
+            backoff: Some(backoff(millis(self.heartbeat))),
             ..Config::default()
         }
         .validate()
