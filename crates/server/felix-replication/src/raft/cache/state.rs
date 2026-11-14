@@ -79,7 +79,8 @@ pub(crate) enum Read {
     },
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
+#[cfg_attr(test, derive(Clone))]
 pub(crate) struct CacheState {
     /// The log's time: the stamp of the last stamped entry applied.
     pub(super) time: u64,
@@ -92,7 +93,8 @@ pub(crate) struct CacheState {
 
 /// A snapshot cut holds `base`, so apply writes to `delta` until the delta
 /// is folded back. See `layers.rs`.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
+#[cfg_attr(test, derive(Clone))]
 struct Layered {
     base: Arc<Tables>,
     delta: Delta,
@@ -329,7 +331,9 @@ impl CacheState {
     /// become a frozen base the cut shares, and writes go to a delta over
     /// it until [`CacheState::fold`] puts them back. Taken while a fold is
     /// unfinished, it finishes it first, or, while an earlier cut still
-    /// holds the base, copies the delta.
+    /// holds the base, copies the delta: both in proportion to the delta,
+    /// which is why a build that need not happen now is deferred while
+    /// the maps are [`layered`](CacheState::layered).
     pub(crate) fn cut(&mut self) -> Cut {
         if let Some(layered) = &mut self.layered
             && !layered.delta.is_empty()
@@ -381,7 +385,6 @@ impl CacheState {
     }
 
     /// Whether the maps are layered: a cut holds them or a fold is due.
-    #[cfg(test)]
     pub(crate) fn layered(&self) -> bool {
         self.layered.is_some()
     }

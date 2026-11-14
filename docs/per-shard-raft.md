@@ -1445,14 +1445,19 @@ entries above it, so its log is cut to the snapshot:
   snapshot is exactly the state as of its last entry, never a mix of that
   and later writes. Between builds there is no overlay, and reads and
   apply cost what they would without snapshots.
-- The overlay grows with every write applied from the moment the maps are
-  frozen until the build is done, including any wait for a CPU slot (see
-  below). That is the build's memory cost, plus the encoded snapshot.
-- Two cases do work in proportion to the overlay on the state machine's
-  task. A build that starts while the last one's overlay is still folding
-  back finishes that fold first. One that starts while an earlier build
-  still holds the frozen maps copies the overlay. Both are rare: builds
-  are at least `cache_snapshot_every` entries apart.
+- The overlay is bounded by what is touched from the moment the maps are
+  frozen until it is folded back: one record per distinct key and counter
+  written, the answers kept for each producer that wrote, and the expiry
+  entries added or removed. A wait for a CPU slot (see below) lengthens
+  that window. That is the build's memory cost, plus the encoded snapshot.
+- The fold runs on its own thread, not the blocking pool, so a pool
+  backed up with disk flushes does not keep the overlay up.
+- A snapshot due while the last build's overlay is still folding back is
+  deferred: taking it would mean finishing the fold, or copying the
+  overlay, on the state machine's task. openraft asks again once another
+  `cache_snapshot_every` entries have committed, and purging the log
+  waits until then. Only a snapshot openraft must have (one it forces)
+  is taken anyway, and pays that cost.
 - Encoding a snapshot and parsing one are CPU work. Across all groups on a
   broker, at most half the cores (at least one) do it at once. The rest
   wait, so many groups snapshotting or restarting together do not take

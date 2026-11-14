@@ -51,6 +51,9 @@ pub(crate) struct Machine {
     /// Held by a test to keep this member from applying.
     #[cfg(test)]
     pub(crate) hold: Arc<tokio::sync::Mutex<()>>,
+    /// Held by a test to keep a fold from starting.
+    #[cfg(test)]
+    pub(crate) fold_hold: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Machine {
@@ -83,6 +86,8 @@ impl Machine {
             cache: cache.clone(),
             #[cfg(test)]
             hold: Arc::default(),
+            #[cfg(test)]
+            fold_hold: Arc::default(),
         };
         Ok((machine, applied, cache))
     }
@@ -269,6 +274,8 @@ pub(crate) struct Builder {
 struct Held {
     cut: Option<Cut>,
     cache: Cache,
+    #[cfg(test)]
+    fold_hold: Arc<tokio::sync::Mutex<()>>,
 }
 
 /// Writes folded per hold of the lock, so apply and reads wait out at most
@@ -279,7 +286,11 @@ impl Drop for Held {
     fn drop(&mut self) {
         drop(self.cut.take());
         let cache = Arc::clone(&self.cache);
+        #[cfg(test)]
+        let fold_hold = Arc::clone(&self.fold_hold);
         let fold = move || {
+            #[cfg(test)]
+            drop(fold_hold.blocking_lock());
             loop {
                 let mut state = cache.write();
                 let more = state.fold(FOLD_CHUNK);
@@ -289,13 +300,31 @@ impl Drop for Held {
                 }
             }
         };
-        // Usually dropped on the blocking thread that encoded the cut, but
-        // a build cancelled before it got there drops it on a runtime one.
-        // Without a runtime it folds here, so it must never be dropped by
-        // a thread that holds the cache lock.
-        match tokio::runtime::Handle::try_current() {
-            Ok(_) => drop(felix_common::blocking::spawn(fold)),
-            Err(_) => fold(),
+        // Its own thread rather than the blocking pool: a pool backed up
+        // with disk flushes would leave the overlay up, and the next
+        // snapshot deferred, for as long as the backlog lasts. Under the
+        // simulator it is a task, so a seed repeats.
+        if felix_common::blocking::on_runtime() && tokio::runtime::Handle::try_current().is_ok() {
+            drop(felix_common::blocking::spawn(fold));
+            return;
+        }
+        let fold = Arc::new(parking_lot::Mutex::new(Some(fold)));
+        let spawned = std::thread::Builder::new()
+            .name("felix-cache-fold".into())
+            .spawn({
+                let fold = Arc::clone(&fold);
+                move || {
+                    if let Some(fold) = fold.lock().take() {
+                        fold();
+                    }
+                }
+            });
+        // No thread to be had: fold here. So this must never be dropped
+        // by a thread that holds the cache lock.
+        if spawned.is_err()
+            && let Some(fold) = fold.lock().take()
+        {
+            fold();
         }
     }
 }
@@ -318,6 +347,29 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
             meta,
             snapshot: SnapshotData::bytes(data),
         })
+    }
+}
+
+impl Machine {
+    /// A builder for the state as of the last applied entry, `cut` being
+    /// the projection's.
+    ///
+    /// The state and the id it is as of are taken in one step, where no
+    /// entry is being applied. Taken when the snapshot is built, the state
+    /// could hold entries past the id, and a member that restored it would
+    /// apply them twice. The cut copies nothing; encoding it is the cost,
+    /// and happens in the build, off this task.
+    fn builder(&self, cut: Option<Cut>) -> Builder {
+        Builder {
+            snapshots: self.snapshots.clone(),
+            state: self.state.clone(),
+            cut: self.cache.as_ref().map(|cache| Held {
+                cut,
+                cache: Arc::clone(cache),
+                #[cfg(test)]
+                fold_hold: Arc::clone(&self.fold_hold),
+            }),
+        }
     }
 }
 
@@ -382,20 +434,28 @@ impl RaftStateMachine<ShardTypes> for Machine {
         applied
     }
 
+    async fn try_create_snapshot_builder(&mut self, force: bool) -> Option<Self::SnapshotBuilder> {
+        // While the last build's overlay is still folding back, a cut would
+        // have to finish the fold on this task, holding apply and reads.
+        // Deferring is safe: openraft asks again `cache_snapshot_every`
+        // entries later and the log is purged later. Only a forced build
+        // (one a follower or a restart needs) takes the cut regardless.
+        let cut = match &self.cache {
+            Some(cache) => {
+                let mut state = cache.write();
+                if !force && state.layered() {
+                    return None;
+                }
+                Some(state.cut())
+            }
+            None => None,
+        };
+        Some(self.builder(cut))
+    }
+
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        // The state and the id it is as of are taken in one step, here,
-        // where no entry is being applied. Taken when the snapshot is built,
-        // the state could hold entries past the id, and a member that
-        // restored it would apply them twice. The cut copies nothing;
-        // encoding it is the cost, and happens in the build, off this task.
-        Builder {
-            snapshots: self.snapshots.clone(),
-            state: self.state.clone(),
-            cut: self.cache.as_ref().map(|cache| Held {
-                cut: Some(cache.write().cut()),
-                cache: Arc::clone(cache),
-            }),
-        }
+        let cut = self.cache.as_ref().map(|cache| cache.write().cut());
+        self.builder(cut)
     }
 
     async fn install_snapshot(
