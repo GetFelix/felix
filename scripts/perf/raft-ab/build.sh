@@ -19,11 +19,14 @@ on() { local b=$1; shift; "$RSSH" "$user@felix-build-$b" "$@"; }
 
 rev="$(git -C "$top" rev-parse HEAD)"
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
-  (cd "$top" && FELIX_BOX=3 "$REMOTE" cargo build --release --features felix-broker-service/raft \
-    -p felix-broker-service --bin felix-broker \
-    -p felix-controlplane-service --bin felix-controlplane \
-    -p felix-loadgen --bin felix-loadgen)
+  # The broker gets its own invocation: next to the other packages,
+  # `--features felix-broker-service/raft` left the Raft engine out of the binary.
+  (cd "$top" && FELIX_BOX=3 "$REMOTE" cargo build --release \
+    -p felix-controlplane-service --bin felix-controlplane -p felix-loadgen --bin felix-loadgen)
+  (cd "$top" && FELIX_BOX=3 "$REMOTE" cargo build --release -p felix-broker-service --features raft --bin felix-broker)
 fi
+on 3 "strings /mnt/build/$lane/target/release/felix-broker | grep -q openraft" \
+  || { echo "!! felix-broker was built without the Raft engine" >&2; exit 1; }
 
 on 3 "set -e; mkdir -p /mnt/build/raft-ab/bin; cd /mnt/build/raft-ab/bin
 cp /mnt/build/$lane/target/release/felix-broker /mnt/build/$lane/target/release/felix-controlplane /mnt/build/$lane/target/release/felix-loadgen .
