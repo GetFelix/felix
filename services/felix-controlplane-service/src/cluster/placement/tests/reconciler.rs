@@ -217,6 +217,89 @@ async fn failovers_to_an_empty_node_are_spread_over_passes() {
     assert!(burst.iter().all(|a| a.leader == "broker-b"));
 }
 
+/// A switched shard takes no placement, so a pass that tried to fail one over
+/// would spend the failover budget on writes the store refuses, and a hybrid
+/// shard behind it would wait.
+#[tokio::test]
+async fn switched_shards_do_not_spend_the_failover_budget() {
+    const COPY: &str = "000102030405060708090a0b0c0d0e0f";
+    let store = cluster(&["broker-a"]).await;
+    // Named so the switched shards come first in the pass.
+    store
+        .create_stream(ephemeral_stream("a-switched", FAILOVERS_PER_PASS as u32))
+        .await
+        .expect("stream");
+    store
+        .create_stream(ephemeral_stream("z-hybrid", 1))
+        .await
+        .expect("stream");
+    reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+
+    for placed in store.list_shard_assignments().await.expect("list") {
+        if placed.key.stream != "a-switched" {
+            continue;
+        }
+        let active = store
+            .put_shard_assignment(ShardAssignment {
+                state: ShardState::Active,
+                member_storage_ids: BTreeMap::from([("broker-a".to_string(), COPY.to_string())]),
+                ..placed
+            })
+            .await
+            .expect("activate");
+        let order = match store
+            .seal_shard(&active.key, active.generation)
+            .await
+            .expect("seal")
+        {
+            crate::store::AssignmentWrite::Written(order) => order,
+            other => panic!("expected a seal, got {other:?}"),
+        };
+        let side = crate::model::SealedSideLog {
+            start: 0,
+            end: 0,
+            digest: "cd".repeat(32),
+        };
+        let report = crate::model::SealReport {
+            generation: order.generation,
+            offset: 0,
+            start: 0,
+            digest: "ab".repeat(32),
+            dead_letters: side.clone(),
+            cursors: side,
+            voters: BTreeMap::from([("broker-a".to_string(), COPY.to_string())]),
+        };
+        store
+            .accept_seal_report(&order.key, report, "broker-a")
+            .await
+            .expect("report");
+    }
+
+    store
+        .set_node_lifecycle("broker-a", NodeLifecycle::Down)
+        .await
+        .expect("down");
+    let mut back = node("broker-b", NodeLifecycle::Live, None);
+    back.spec.advertise_addr = "10.0.0.5:7600".to_string();
+    store.register_node(back).await.expect("node");
+
+    let pass = reconcile_once(&store, &Default::default(), MovePolicy::default()).await;
+    assert_eq!(pass.deferred, 0, "{pass:?}");
+    assert_eq!(pass.failed, 0, "{pass:?}");
+    let assignments = store.list_shard_assignments().await.expect("list");
+    let hybrid = assignments
+        .iter()
+        .find(|a| a.key.stream == "z-hybrid")
+        .expect("hybrid shard");
+    assert_eq!(hybrid.leader, "broker-b");
+    assert!(
+        assignments
+            .iter()
+            .filter(|a| a.key.stream == "a-switched")
+            .all(|a| a.leader == "broker-a" && a.switched())
+    );
+}
+
 #[tokio::test]
 async fn an_empty_cluster_places_nothing_and_says_so() {
     let store = cluster(&[]).await;

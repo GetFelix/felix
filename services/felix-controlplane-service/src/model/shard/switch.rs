@@ -186,7 +186,7 @@ pub enum SealOrderError {
     Moving,
     #[error("the shard already switched to Raft")]
     Switched,
-    #[error("the shard's leader has no registered copy id")]
+    #[error("the shard's leader has no copy id in the assignment's members")]
     NoSealerCopy,
 }
 

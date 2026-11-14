@@ -298,15 +298,40 @@ fn a_shard_switch_needs_level_34() {
         key: key.clone(),
         expected_generation: 1,
     };
+    let side = crate::model::SealedSideLog {
+        start: 0,
+        end: 0,
+        digest: "cd".repeat(32),
+    };
+    let report = MetaCommand::AcceptSealReport {
+        key: key.clone(),
+        report: crate::model::SealReport {
+            generation: 1,
+            offset: 0,
+            start: 0,
+            digest: "ab".repeat(32),
+            dead_letters: side.clone(),
+            cursors: side,
+            voters: Default::default(),
+        },
+        sealer: "b".to_string(),
+    };
     let give_up = MetaCommand::GiveUpSeal {
         key,
         generation: 1,
         sealer: "b".to_string(),
     };
+    // SWITCH_OPS is matched by name, so a renamed command would slip past
+    // the level check without this.
+    let ops: Vec<String> = [&seal, &report, &give_up]
+        .into_iter()
+        .map(|command| op_of(&encode_command(command)).expect("op"))
+        .collect();
+    assert_eq!(ops, SWITCH_OPS);
     let finalize = MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::SHARD_RAFT.name().to_string(),
     };
-    for command in [seal, give_up, finalize] {
+    for command in [seal, report, give_up, finalize] {
         assert_eq!(command.version(), 34, "{command:?}");
         // The leader refuses it below the level, however it was proposed.
         let raw = encode_command(&command);

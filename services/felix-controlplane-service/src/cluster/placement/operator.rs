@@ -107,6 +107,9 @@ pub enum Refused {
     /// A cut-over's set change is pending. It ends on the leader's report, a
     /// timeout or a failover; a cancel ends it, a move cannot.
     SetChangePending,
+    /// The shard's engine is Raft. The control plane no longer places it, so
+    /// there is nothing to move, cancel or give up here.
+    Switched,
 }
 
 impl Refused {
@@ -127,6 +130,7 @@ impl Refused {
             Self::NotStranded => "not_stranded",
             Self::Unplaceable(_) => "unplaceable",
             Self::SetChangePending => "set_change_pending",
+            Self::Switched => "switched",
         }
     }
 }
@@ -172,6 +176,10 @@ impl std::fmt::Display for Refused {
                 f,
                 "a cut-over's replica set change is pending until the leader reports it on both sets"
             ),
+            Self::Switched => write!(
+                f,
+                "this shard switched to Raft; its leader and members are no longer placed by the control plane"
+            ),
         }
     }
 }
@@ -187,6 +195,7 @@ pub fn start_move(
     destination: &str,
 ) -> Result<OperatorStep, Refused> {
     let existing = assignment_of(catalog, key)?;
+    refuse_switched(existing)?;
     let (replication_factor, durable, home) =
         placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
     let node = catalog
@@ -325,6 +334,7 @@ fn zone_impact(
 /// same move again.
 pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep, Refused> {
     let existing = assignment_of(catalog, key)?;
+    refuse_switched(existing)?;
     let (replication_factor, _, _) = placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
     if existing.pending_set.is_some() {
         // Back to the control plane's own set, which a pending change never
@@ -403,6 +413,7 @@ pub fn cancel_move(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
 /// not get them back.
 pub fn abandon_log(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep, Refused> {
     let existing = assignment_of(catalog, key)?;
+    refuse_switched(existing)?;
     placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
     let decide = |abandoned: Option<&ShardKey>| {
         plan_abandoning(
@@ -449,6 +460,15 @@ pub(super) fn moving(assignment: &ShardAssignment) -> bool {
     assignment.successor.is_some()
         || assignment.joining.is_some()
         || assignment.state == ShardState::Draining
+}
+
+/// A switched shard takes no hybrid write, so refuse before deciding one
+/// the store would only reject.
+fn refuse_switched(assignment: &ShardAssignment) -> Result<(), Refused> {
+    if assignment.switched() {
+        return Err(Refused::Switched);
+    }
+    Ok(())
 }
 
 fn assignment_of<'a>(

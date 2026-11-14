@@ -44,7 +44,8 @@ use crate::store::{AssignmentWrite, StoreError};
 /// - 404 when the shard has no assignment.
 /// - 409 `raft_unavailable` until the fleet has finalized `shard_raft`,
 ///   `not_sealable` for a shard that is not active, is moving, already
-///   switched, or led by a node with no registered copy id, and `conflict` when the shard changed under the request or a
+///   switched, or led by a node with no copy id in the assignment's
+///   members, and `conflict` when the shard changed under the request or a
 ///   control-plane member is below metadata version 34.
 pub(crate) async fn seal_shard(
     State(state): State<AppState>,
