@@ -556,7 +556,7 @@ can hold several terms. Truncation is the log's suffix truncation, and a
 vote is saved to the `ballot` file.
 
 A log opened as a Raft log (`LogConfig::raft_log`) differs from a stream log
-in seven ways:
+in eight ways:
 
 - **It fsyncs on commit.** The adapter refuses a log under any other fsync
   mode: a member acknowledges an entry only once it is on disk.
@@ -586,6 +586,19 @@ in seven ways:
   through the adapter's `save_committed`: `advance_commit_offset` is
   refused on a Raft log and `note_commit_offset` does nothing. An offline
   `restore_to` saves the generation of the entry it lowers the offset to.
+- **One open at a time.** The open takes an exclusive, non-blocking `flock`
+  on the log's directory before recovery looks at it, and holds it until
+  the log is closed or its last clone is dropped. A second open fails with
+  "resource busy", whether it comes from the same process, another process,
+  or through a symlink. Only a Raft open takes the lock: stream logs and
+  `felix-log-tool` do not check it yet
+  ([#2488](https://github.com/GetFelix/felix/issues/2488)). The kernel
+  releases the lock when the holder exits, so a crash leaves nothing to
+  clean up. The lock is on the directory itself: no file
+  is added, and no segment file is opened or resized for it. On the
+  simulator's in-memory filesystem the claim is kept in the process, and a
+  simulated crash gives it up. On Linux NFS, `flock` is emulated with
+  byte-range locks, which a directory cannot take, so the open fails there.
 
 A Raft log's directory also holds `raft-purged` and, when its state machine
 keeps a snapshot there, `raft-snapshot`. Both are described below. The log
@@ -1304,8 +1317,8 @@ byte-range locks, which belong to the process: two opens in one process do
 not exclude each other, and closing any descriptor of the file drops the
 lock. Keep the data directory on a local disk.
 
-Per-shard log directories are not locked yet
-([#2344](https://github.com/GetFelix/felix/issues/2344)).
+The store's log is a Raft log, so its directory, `store/log`, is locked
+too, by the log itself ("Records as Raft entries", above).
 
 ### Opening the store
 
