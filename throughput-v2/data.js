@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794670775135,
+  "lastUpdate": 1794671844517,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56524,6 +56524,58 @@ window.BENCHMARK_DATA = {
             "range": "6230.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 978603.22\nmean: 976184.76\nstdev: 6230.94\ncv: 0.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bb09fbc96f136d1a4cb4fd55dc6e61c27649357b",
+          "message": "test(storage): a Raft log's paced commit save survives a power cut (#2533)\n\n* test(storage): a Raft log's paced commit save survives a power cut; docs name the pacing\n\nA Raft log already writes its saved commit at most once a second with a\ntrailing write (#2430). This adds the crash test for a saved commit that is\nbehind, checks that readers of the saved offset never see more than the\nfile holds, and corrects the docs that still described a write per advance\nor a Raft log outside OnCommit.\n\nSpec-Unaffected: tests and docs only.\n\n* test(storage): the paced-save crash test reads the committed id after the cut\n\nSpec-Unaffected: test only.",
+          "timestamp": "2026-11-14T15:50:17Z",
+          "tree_id": "7f5fa7633bbae9c4b0826ccb9c19abb1719b7610",
+          "url": "https://github.com/GetFelix/felix/commit/bb09fbc96f136d1a4cb4fd55dc6e61c27649357b"
+        },
+        "date": 1794671843810,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 556314.17,
+            "range": "19317.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 556314.17\nmean: 556167.60\nstdev: 19317.98\ncv: 3.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 556314.17,
+            "range": "19317.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 556314.17\nmean: 556167.60\nstdev: 19317.98\ncv: 3.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 127413.59,
+            "range": "8455.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 127413.59\nmean: 124050.85\nstdev: 8455.17\ncv: 6.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1274135.89,
+            "range": "84551.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1274135.89\nmean: 1240508.50\nstdev: 84551.67\ncv: 6.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
