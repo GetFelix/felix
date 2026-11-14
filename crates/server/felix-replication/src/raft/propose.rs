@@ -18,7 +18,7 @@ use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
 use openraft::impls::ProgressResponder;
-use openraft::raft::WriteResult;
+use openraft::raft::{WriteOption, WriteResult};
 use openraft::{Raft, ServerState};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -56,6 +56,20 @@ impl AckAt {
             FsyncMode::Periodic { .. } | FsyncMode::None => Self::Written,
         }
     }
+}
+
+/// When [`super::RaftEngine::publish`] answers the publisher. Subscribers
+/// get the batch at its commit either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerAt {
+    /// When the batch is committed. A `Quorum` stream.
+    Commit,
+    /// Once the batch is on this leader's log as far as its [`AckAt`]
+    /// asks, if the leader lease holds then
+    /// ([`super::RaftEngine::admit_local_ack`]), and at the commit if it
+    /// does not. A `Leader` stream: the batch can still be lost if this
+    /// broker stops leading before it commits.
+    Lease,
 }
 
 /// A publish batch for [`super::RaftEngine::propose`]. It must hold a record.
@@ -526,7 +540,9 @@ pub(super) async fn write(
 ) -> Result<BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>, Fatal<ShardTypes>>
 {
     let Some(term) = term else {
-        return raft.client_write_many(commands).await;
+        return raft
+            .client_write_many(commands, WriteOption::default())
+            .await;
     };
     let mut answers = Vec::with_capacity(commands.len());
     for command in commands {

@@ -398,6 +398,44 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
     cluster.stop().await;
 }
 
+/// A read waits for the leader's apply as long as its caller allows, not
+/// for the read-index round's own patience.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_whose_apply_lags_past_the_election_timeout_waits_out_its_own_deadline() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (engine, group) = leading(&cluster).await;
+    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+
+    let held = Arc::clone(&group.apply_hold).lock_owned().await;
+    let second = Command {
+        timestamp_micros: 20,
+        payload: put("k", b"two", 2).encode(),
+        producer: None,
+        written: None,
+    };
+    let raft = group.raft().clone();
+    let writing = tokio::spawn(async move { raft.client_write(second).await.is_ok() });
+    eventually(|| (group.status().committed > Some(first)).then_some(())).await;
+    let reading = tokio::spawn({
+        let engine = engine.clone();
+        async move { engine.cache_read(&shard(N), "k", PATIENCE).await }
+    });
+    tokio::time::sleep(timers().election_max + Duration::from_millis(500)).await;
+    assert!(
+        !reading.is_finished(),
+        "the read gave up while its deadline held"
+    );
+
+    drop(held);
+    assert!(writing.await.expect("task"));
+    let read = reading.await.expect("task");
+    let (value, _) = read.expect("read").expect("a value");
+    assert_eq!(&value[..], b"two");
+    cluster.stop().await;
+}
+
 /// The data of a snapshot is the state as of the entry the snapshot names,
 /// whatever is applied before it is built. With later entries in it, a
 /// member that restored it would apply them twice.
