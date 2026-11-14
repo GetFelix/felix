@@ -595,6 +595,126 @@ async fn an_install_takes_the_state_the_receiver_parsed() {
     assert_eq!(*cache.read(), parsed);
 }
 
+/// Puts, deletes, adds and floor raises over 500 keys, so a build's
+/// writes touch every table.
+fn mixed(index: u64) -> CacheCommand {
+    let key = format!("k{}", index % 500);
+    let request = Request {
+        producer: index % 3,
+        sequence: index,
+        floor: index.saturating_sub(50),
+    };
+    match index % 11 {
+        0 => CacheCommand::Delete {
+            key,
+            version: None,
+            request,
+        },
+        1 => CacheCommand::Add {
+            key,
+            delta: 1,
+            request,
+        },
+        2 => CacheCommand::Put {
+            key,
+            value: Bytes::from(index.to_le_bytes().to_vec()),
+            expires_at: index * 10 + 5_000,
+            cond: Condition::None,
+            request,
+        },
+        _ => keyed(index, 500),
+    }
+}
+
+/// The state a member that applied `mixed` up to `upto` holds.
+fn mixed_upto(upto: u64) -> super::super::cache::CacheState {
+    let mut state = super::super::cache::CacheState::default();
+    for index in 1..=upto {
+        state.apply(index, index * 10, &mixed(index));
+    }
+    state
+}
+
+/// The writes a build let go of are folded back into the live maps.
+async fn folded(cache: &super::super::machine::Cache) {
+    eventually(|| (!cache.read().layered()).then_some(())).await;
+}
+
+/// A build cancelled part way, its encode still running, leaves the
+/// writes made meanwhile folded back once the encode lets go of the cut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_dropped_part_way_folds_back_with_nothing_lost() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    machine
+        .apply(entries(1, 20_000, mixed))
+        .await
+        .expect("apply");
+    let mut builder = machine.get_snapshot_builder().await;
+    let build = tokio::spawn(async move { builder.build_snapshot().await });
+    machine
+        .apply(entries(20_001, 21_000, mixed))
+        .await
+        .expect("apply");
+    build.abort();
+    machine
+        .apply(entries(21_001, 22_000, mixed))
+        .await
+        .expect("apply");
+    folded(&cache).await;
+    assert!(*cache.read() == mixed_upto(22_000), "a write was lost");
+
+    // A builder dropped before it built anything folds back too.
+    let builder = machine.get_snapshot_builder().await;
+    machine
+        .apply(entries(22_001, 23_000, mixed))
+        .await
+        .expect("apply");
+    drop(builder);
+    folded(&cache).await;
+    assert!(*cache.read() == mixed_upto(23_000), "a write was lost");
+}
+
+/// A build taken just as the last one finishes, its fold back possibly
+/// still running, is exact at its own entry, and nothing is lost.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_taken_while_the_last_folds_back_is_exact() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    let mut last = 20_000;
+    machine.apply(entries(1, last, mixed)).await.expect("apply");
+    for _ in 0..5 {
+        let mut first = machine.get_snapshot_builder().await;
+        let writes = async {
+            machine
+                .apply(entries(last + 1, last + 5_000, mixed))
+                .await
+                .expect("apply");
+        };
+        let (built, ()) = tokio::join!(first.build_snapshot(), writes);
+        built.expect("build");
+        drop(first);
+        last += 5_000;
+        let at = last;
+        let mut second = machine.get_snapshot_builder().await;
+        machine
+            .apply(entries(last + 1, last + 1_000, mixed))
+            .await
+            .expect("apply");
+        last += 1_000;
+        let built = second.build_snapshot().await.expect("build");
+        assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(at));
+        assert!(
+            built.snapshot.bytes == mixed_upto(at).snapshot(),
+            "the second build is not the state at its entry"
+        );
+    }
+    folded(&cache).await;
+    assert!(*cache.read() == mixed_upto(last), "a write was lost");
+}
+
 /// Entries a snapshot covers can leave the log, and no others. A member
 /// that restarts after that holds what the purged entries wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

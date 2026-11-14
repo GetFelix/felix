@@ -1,8 +1,11 @@
 //! The projection: what a cache group's applied entries add up to.
 
-use bytes::Bytes;
-use imbl::{OrdMap, OrdSet};
+use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use bytes::Bytes;
+
+use super::layers::{Delta, Layers, Tables};
 use super::{CacheCommand, Condition, Request};
 
 /// A key's value. Its version is the index of the put that wrote it.
@@ -46,20 +49,15 @@ pub(crate) enum Answer {
 pub(super) struct Producer {
     /// Answers below this sequence were dropped.
     pub(super) floor: u64,
-    pub(super) answers: OrdMap<u64, Answer>,
+    pub(super) answers: BTreeMap<u64, Answer>,
 }
 
 impl Producer {
     /// Raise the floor to `floor`, dropping the answers below it.
-    fn raise(&mut self, floor: u64) {
+    pub(super) fn raise(&mut self, floor: u64) {
         if floor > self.floor {
             self.floor = floor;
-            // One removal at a time: imbl's split rebuilds the whole map.
-            while let Some(&(sequence, _)) = self.answers.get_min()
-                && sequence < floor
-            {
-                self.answers.remove(&sequence);
-            }
+            self.answers = self.answers.split_off(&floor);
         }
     }
 }
@@ -81,19 +79,47 @@ pub(crate) enum Read {
     },
 }
 
-// Ordered maps throughout: a snapshot walks them, and two members must
-// write the same bytes. Persistent ones, so a clone shares every node and
-// costs nothing until one side writes: a snapshot is built from a clone
-// while apply goes on.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct CacheState {
     /// The log's time: the stamp of the last stamped entry applied.
     pub(super) time: u64,
-    pub(super) entries: OrdMap<String, Entry>,
-    /// Every entry that expires, by when.
-    pub(super) expiring: OrdSet<(u64, String)>,
-    pub(super) counters: OrdMap<String, i64>,
-    pub(super) producers: OrdMap<u64, Producer>,
+    maps: Maps,
+}
+
+#[derive(Debug, Clone)]
+enum Maps {
+    Live(Tables),
+    /// A snapshot cut holds `base`, so apply writes to `delta` until the
+    /// delta is folded back. See `layers.rs`.
+    Layered {
+        base: Arc<Tables>,
+        delta: Delta,
+    },
+}
+
+impl Default for Maps {
+    fn default() -> Self {
+        Self::Live(Tables::default())
+    }
+}
+
+/// The state as of a snapshot's last entry, held while it is encoded.
+/// Apply goes on meanwhile and does not change it.
+pub(crate) struct Cut {
+    time: u64,
+    base: Arc<Tables>,
+    /// Writes not yet folded into `base` when the cut was taken.
+    delta: Option<Arc<Delta>>,
+}
+
+impl Cut {
+    pub(crate) fn snapshot(&self) -> Bytes {
+        let maps = Layers {
+            base: &self.base,
+            delta: self.delta.as_deref(),
+        };
+        super::snapshot::encode(self.time, maps)
+    }
 }
 
 /// What the leader stamps its next entry with: its clock, held up to
@@ -130,8 +156,8 @@ impl CacheState {
             CacheCommand::Expire { key, version } => {
                 // A key written again since the leader looked keeps its value.
                 if self
-                    .entries
-                    .get(key)
+                    .view()
+                    .entry(key)
                     .is_some_and(|entry| entry.version == *version)
                 {
                     self.remove(key);
@@ -142,7 +168,7 @@ impl CacheState {
                 // The floor stays behind as a tombstone: a copy of an
                 // answered request can commit after the retire, and must
                 // answer forgotten rather than apply again.
-                self.producers.entry(*producer).or_default().raise(*floor);
+                self.producer_mut(*producer).raise(*floor);
                 return None;
             }
             CacheCommand::Put { request, .. }
@@ -154,16 +180,16 @@ impl CacheState {
             sequence,
             floor,
         } = request;
-        if let Some(known) = self.producers.get(&producer) {
-            if let Some(answer) = known.answers.get(&sequence) {
-                return Some(*answer);
+        if let Some(known) = self.view().producer(producer) {
+            if let Some(answer) = known.answer(sequence) {
+                return Some(answer);
             }
             if sequence < known.floor {
                 return Some(Answer::Forgotten);
             }
         }
         let answer = self.write(index, stamp, command);
-        let known = self.producers.entry(producer).or_default();
+        let known = self.producer_mut(producer);
         known.answers.insert(sequence, answer);
         // Never past the request itself, whose answer was just kept.
         known.raise(floor.min(sequence));
@@ -175,14 +201,14 @@ impl CacheState {
     /// snapshot leaves it out, so a member that restored one could not
     /// answer otherwise.
     fn live_version(&self, key: &str, at: u64) -> Option<u64> {
-        let entry = self.entries.get(key)?;
+        let entry = self.view().entry(key)?;
         entry.live(at).then_some(entry.version)
     }
 
     fn write(&mut self, index: u64, stamp: u64, command: &CacheCommand) -> Answer {
         match command {
             CacheCommand::Add { key, delta, .. } => {
-                let sum = self.counters.entry(key.clone()).or_default();
+                let sum = self.counter_mut(key);
                 *sum = sum.saturating_add(*delta);
                 Answer::Sum(*sum)
             }
@@ -203,11 +229,8 @@ impl CacheState {
                     return Answer::Refused { version: here };
                 }
                 self.remove(key);
-                if *expires_at != 0 {
-                    self.expiring.insert((*expires_at, key.clone()));
-                }
-                self.entries.insert(
-                    key.clone(),
+                self.insert(
+                    key,
                     Entry {
                         value: value.clone(),
                         version: index,
@@ -236,12 +259,165 @@ impl CacheState {
         }
     }
 
-    fn remove(&mut self, key: &str) {
-        if let Some(entry) = self.entries.remove(key)
-            && entry.expires_at != 0
-        {
-            self.expiring.remove(&(entry.expires_at, key.to_string()));
+    fn insert(&mut self, key: &str, entry: Entry) {
+        let expires = (entry.expires_at != 0).then(|| (entry.expires_at, key.to_owned()));
+        match &mut self.maps {
+            Maps::Live(tables) => {
+                if let Some(member) = expires {
+                    tables.expiring.insert(member);
+                }
+                tables.entries.insert(key.to_owned(), entry);
+            }
+            Maps::Layered { base, delta } => {
+                if let Some(member) = expires {
+                    match base.expiring.contains(&member) {
+                        true => delta.expiring.remove(&member),
+                        false => delta.expiring.insert(member, true),
+                    };
+                }
+                delta.entries.insert(key.to_owned(), Some(entry));
+            }
         }
+    }
+
+    fn remove(&mut self, key: &str) {
+        match &mut self.maps {
+            Maps::Live(tables) => {
+                if let Some(entry) = tables.entries.remove(key)
+                    && entry.expires_at != 0
+                {
+                    tables.expiring.remove(&(entry.expires_at, key.to_string()));
+                }
+            }
+            Maps::Layered { base, delta } => {
+                let below = base.entries.get(key);
+                let removed = match delta.entries.get_mut(key) {
+                    Some(above) if below.is_some() => above.take(),
+                    Some(_) => delta.entries.remove(key).flatten(),
+                    None => {
+                        if below.is_some() {
+                            delta.entries.insert(key.to_owned(), None);
+                        }
+                        below.cloned()
+                    }
+                };
+                if let Some(entry) = removed
+                    && entry.expires_at != 0
+                {
+                    let member = (entry.expires_at, key.to_string());
+                    match base.expiring.contains(&member) {
+                        true => delta.expiring.insert(member, false),
+                        false => delta.expiring.remove(&member),
+                    };
+                }
+            }
+        }
+    }
+
+    fn counter_mut(&mut self, key: &str) -> &mut i64 {
+        match &mut self.maps {
+            Maps::Live(tables) => tables.counters.entry(key.to_owned()).or_default(),
+            Maps::Layered { base, delta } => delta
+                .counters
+                .entry(key.to_owned())
+                .or_insert_with(|| base.counters.get(key).copied().unwrap_or_default()),
+        }
+    }
+
+    fn producer_mut(&mut self, producer: u64) -> &mut Producer {
+        match &mut self.maps {
+            Maps::Live(tables) => tables.producers.entry(producer).or_default(),
+            // Only the floor is copied: the base's answers stay where they
+            // are, and those below the floor stop counting.
+            Maps::Layered { base, delta } => {
+                delta.producers.entry(producer).or_insert_with(|| Producer {
+                    floor: base.producers.get(&producer).map_or(0, |known| known.floor),
+                    answers: BTreeMap::new(),
+                })
+            }
+        }
+    }
+
+    pub(super) fn view(&self) -> Layers<'_> {
+        match &self.maps {
+            Maps::Live(tables) => Layers {
+                base: tables,
+                delta: None,
+            },
+            Maps::Layered { base, delta } => Layers {
+                base,
+                delta: Some(delta),
+            },
+        }
+    }
+
+    pub(super) fn from_tables(time: u64, tables: Tables) -> Self {
+        Self {
+            time,
+            maps: Maps::Live(tables),
+        }
+    }
+
+    /// The state as it is now, for a snapshot. It takes no copy: the maps
+    /// become a frozen base the cut shares, and writes go to a delta over
+    /// it until [`CacheState::fold`] puts them back. Taken while a fold is
+    /// unfinished, it finishes it first, or, while an earlier cut still
+    /// holds the base, copies the delta.
+    pub(crate) fn cut(&mut self) -> Cut {
+        if let Maps::Layered { base, delta } = &mut self.maps
+            && !delta.is_empty()
+            && Arc::get_mut(base).is_some()
+        {
+            while self.fold(usize::MAX) {}
+        }
+        let time = self.time;
+        match &mut self.maps {
+            Maps::Live(tables) => {
+                let base = Arc::new(std::mem::take(tables));
+                let cut = Cut {
+                    time,
+                    base: Arc::clone(&base),
+                    delta: None,
+                };
+                self.maps = Maps::Layered {
+                    base,
+                    delta: Delta::default(),
+                };
+                cut
+            }
+            Maps::Layered { base, delta } => Cut {
+                time,
+                base: Arc::clone(base),
+                delta: (!delta.is_empty()).then(|| Arc::new(delta.clone())),
+            },
+        }
+    }
+
+    /// Fold up to about `budget` of the writes made since a cut back into
+    /// the base. Does nothing while a cut still holds the base: the last
+    /// one to let go folds. Returns whether there is more to fold.
+    pub(crate) fn fold(&mut self, budget: usize) -> bool {
+        let Maps::Layered { base, delta } = &mut self.maps else {
+            return false;
+        };
+        let Some(tables) = Arc::get_mut(base) else {
+            return false;
+        };
+        if delta.fold_into(tables, budget) {
+            return true;
+        }
+        if let Maps::Layered { base, .. } = std::mem::take(&mut self.maps) {
+            // Unique: checked above, and a cut is only taken under `&mut self`.
+            let tables = Arc::try_unwrap(base).unwrap_or_else(|base| Tables::clone(&base));
+            self.maps = Maps::Live(tables);
+        }
+        false
+    }
+
+    /// Whether the maps are layered: a cut holds them or a fold is due.
+    #[cfg(test)]
+    pub(crate) fn layered(&self) -> bool {
+        matches!(self.maps, Maps::Layered { .. })
     }
 
     /// Read `key` on a leader whose clock says `clock`. The caller has
@@ -250,7 +426,7 @@ impl CacheState {
     /// Expiry is judged at the later of the clock and the log's time, so an
     /// idle group never serves an expired key.
     pub(crate) fn read(&self, key: &str, clock: u64) -> Read {
-        let Some(entry) = self.entries.get(key) else {
+        let Some(entry) = self.view().entry(key) else {
             return Read::Absent;
         };
         if entry.live(clock.max(self.time)) {
@@ -268,21 +444,21 @@ impl CacheState {
     }
 
     pub(crate) fn sum(&self, key: &str) -> Option<i64> {
-        self.counters.get(key).copied()
+        self.view().counter(key)
     }
 
     /// What `request` answered, if it was applied and its answer is kept.
     pub(crate) fn answer(&self, producer: u64, sequence: u64) -> Option<Answer> {
-        self.producers
-            .get(&producer)?
-            .answers
-            .get(&sequence)
-            .copied()
+        self.view().producer(producer)?.answer(sequence)
     }
 
     /// When the first value expires, if any does.
     pub(crate) fn next_expiry(&self) -> Option<u64> {
-        self.expiring.get_min().map(|(expires_at, _)| *expires_at)
+        let first = match &self.maps {
+            Maps::Live(tables) => tables.expiring.first(),
+            Maps::Layered { .. } => self.view().expiring().next(),
+        };
+        first.map(|(expires_at, _)| *expires_at)
     }
 
     /// Up to `max` keys whose value has expired on a leader whose clock
@@ -290,11 +466,53 @@ impl CacheState {
     /// [`CacheCommand::Expire`].
     pub(crate) fn due(&self, clock: u64, max: usize) -> Vec<(String, u64)> {
         let now = clock.max(self.time);
-        self.expiring
-            .iter()
-            .take_while(|(expires_at, _)| *expires_at <= now)
-            .take(max)
-            .map(|(_, key)| (key.clone(), self.entries[key].version))
-            .collect()
+        let maps = self.view();
+        let version = |key: &String| match maps.entry(key) {
+            Some(entry) => entry.version,
+            None => unreachable!("an expiring key {key} has no value"),
+        };
+        let due = |(expires_at, _): &&(u64, String)| *expires_at <= now;
+        match &self.maps {
+            Maps::Live(tables) => tables
+                .expiring
+                .iter()
+                .take_while(due)
+                .take(max)
+                .map(|(_, key)| (key.clone(), version(key)))
+                .collect(),
+            Maps::Layered { .. } => maps
+                .expiring()
+                .take_while(due)
+                .take(max)
+                .map(|(_, key)| (key.clone(), version(key)))
+                .collect(),
+        }
     }
 }
+
+impl PartialEq for CacheState {
+    /// The same contents, however each is laid out.
+    fn eq(&self, other: &Self) -> bool {
+        let (ours, theirs) = (self.view(), other.view());
+        let same_producers = || {
+            let (mut ours, mut theirs) = (ours.producers(), theirs.producers());
+            loop {
+                match (ours.next(), theirs.next()) {
+                    (None, None) => return true,
+                    (Some((a, ours)), Some((b, theirs)))
+                        if a == b
+                            && ours.floor == theirs.floor
+                            && ours.answers().eq(theirs.answers()) => {}
+                    _ => return false,
+                }
+            }
+        };
+        self.time == other.time
+            && ours.entries().eq(theirs.entries())
+            && ours.expiring().eq(theirs.expiring())
+            && ours.counters().eq(theirs.counters())
+            && same_producers()
+    }
+}
+
+impl Eq for CacheState {}

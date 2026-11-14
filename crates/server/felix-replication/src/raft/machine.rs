@@ -22,7 +22,7 @@ use openraft::{EntryPayload, OptionalSend};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, watch};
 
-use super::cache::{CacheCommand, CacheState};
+use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{StoredMembership, invalid};
 use super::commit::Commits;
 use super::types::{Applied, ShardTypes};
@@ -233,9 +233,42 @@ fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
 pub(crate) struct Builder {
     snapshots: SnapshotStore,
     state: State,
-    /// The projection as of `state.last_applied`. A clone that shares the
-    /// live one's nodes, so apply goes on while this is encoded.
-    cache: Option<CacheState>,
+    /// The projection as of `state.last_applied`.
+    cut: Option<Held>,
+}
+
+/// A cut being snapshotted. Let go, it has the writes made since it was
+/// taken folded back into the live maps, off apply.
+struct Held {
+    cut: Option<Cut>,
+    cache: Cache,
+}
+
+/// Writes folded per hold of the lock, so apply and reads wait out at most
+/// one chunk.
+const FOLD_CHUNK: usize = 256;
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        drop(self.cut.take());
+        let cache = Arc::clone(&self.cache);
+        let fold = move || {
+            loop {
+                let mut state = cache.write();
+                let more = state.fold(FOLD_CHUNK);
+                parking_lot::RwLockWriteGuard::unlock_fair(state);
+                if !more {
+                    break;
+                }
+            }
+        };
+        // Usually dropped on the blocking thread that encoded the cut, but
+        // a build cancelled before it got there drops it on a runtime one.
+        match tokio::runtime::Handle::try_current() {
+            Ok(_) => drop(felix_common::blocking::spawn(fold)),
+            Err(_) => fold(),
+        }
+    }
 }
 
 impl RaftSnapshotBuilder<ShardTypes> for Builder {
@@ -246,10 +279,11 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
         // A panic or JoinError in the encode fails the build, which stops
         // the member. A receiver whose parse fails in `Group::dispatch`
         // refuses the snapshot and keeps running.
-        let data = match self.cache.take() {
-            Some(cache) => cpu(move || cache.snapshot()).await?,
-            None => Bytes::new(),
+        let data = match self.cut.take() {
+            Some(held) => cpu(move || held.cut.as_ref().map(Cut::snapshot)).await?,
+            None => None,
         };
+        let data = data.unwrap_or_default();
         store(&self.snapshots, &meta, data.clone()).await?;
         Ok(SnapshotOf::<ShardTypes, SnapshotData> {
             meta,
@@ -323,12 +357,15 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // The state and the id it is as of are taken in one step, here,
         // where no entry is being applied. Taken when the snapshot is built,
         // the state could hold entries past the id, and a member that
-        // restored it would apply them twice. The clone is cheap; encoding
-        // it is not, and happens in the build, off this task.
+        // restored it would apply them twice. The cut copies nothing;
+        // encoding it is the cost, and happens in the build, off this task.
         Builder {
             snapshots: self.snapshots.clone(),
             state: self.state.clone(),
-            cache: self.cache.as_ref().map(|cache| cache.read().clone()),
+            cut: self.cache.as_ref().map(|cache| Held {
+                cut: Some(cache.write().cut()),
+                cache: Arc::clone(cache),
+            }),
         }
     }
 

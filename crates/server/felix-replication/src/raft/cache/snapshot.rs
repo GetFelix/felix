@@ -9,6 +9,7 @@ use std::io;
 
 use bytes::{BufMut, Bytes, BytesMut};
 
+use super::layers::{Layers, Tables};
 use super::state::{Answer, CacheState, Entry, Producer};
 use super::{Fields, invalid, put_key};
 
@@ -81,44 +82,48 @@ pub(crate) fn restores_of(data: &[u8]) -> usize {
     RESTORED.lock().get(&digest(data)).copied().unwrap_or(0)
 }
 
+/// The bytes of a state with time `time` and maps `maps`.
+pub(super) fn encode(time: u64, maps: Layers<'_>) -> Bytes {
+    #[cfg(test)]
+    ENCODED.with(|encoded| encoded.set(encoded.get() + 1));
+    let mut buf = BytesMut::new();
+    buf.put_u8(VERSION);
+    buf.put_u64_le(time);
+    // An expired value is left out. No write or read can tell: each
+    // treats it as absent.
+    let live = || maps.entries().filter(|(_, entry)| entry.live(time));
+    buf.put_u64_le(live().count() as u64);
+    for (key, entry) in live() {
+        put_key(&mut buf, key);
+        buf.put_u64_le(entry.version);
+        buf.put_u64_le(entry.expires_at);
+        buf.put_u32_le(entry.value.len() as u32);
+        buf.put_slice(&entry.value);
+    }
+    buf.put_u64_le(maps.counters().count() as u64);
+    for (key, sum) in maps.counters() {
+        put_key(&mut buf, key);
+        buf.put_i64_le(*sum);
+    }
+    buf.put_u64_le(maps.producers().count() as u64);
+    for (producer, known) in maps.producers() {
+        buf.put_u64_le(*producer);
+        buf.put_u64_le(known.floor);
+        buf.put_u64_le(known.answers().count() as u64);
+        for (sequence, answer) in known.answers() {
+            buf.put_u64_le(*sequence);
+            put_answer(&mut buf, *answer);
+        }
+    }
+    buf.freeze()
+}
+
 impl CacheState {
+    /// The bytes a snapshot of this state holds. A build encodes a
+    /// [`super::Cut`] instead.
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Bytes {
-        #[cfg(test)]
-        ENCODED.with(|encoded| encoded.set(encoded.get() + 1));
-        let mut buf = BytesMut::new();
-        buf.put_u8(VERSION);
-        buf.put_u64_le(self.time);
-        // An expired value is left out. No write or read can tell: each
-        // treats it as absent.
-        let live = || {
-            self.entries
-                .iter()
-                .filter(|(_, entry)| entry.live(self.time))
-        };
-        buf.put_u64_le(live().count() as u64);
-        for (key, entry) in live() {
-            put_key(&mut buf, key);
-            buf.put_u64_le(entry.version);
-            buf.put_u64_le(entry.expires_at);
-            buf.put_u32_le(entry.value.len() as u32);
-            buf.put_slice(&entry.value);
-        }
-        buf.put_u64_le(self.counters.len() as u64);
-        for (key, sum) in &self.counters {
-            put_key(&mut buf, key);
-            buf.put_i64_le(*sum);
-        }
-        buf.put_u64_le(self.producers.len() as u64);
-        for (producer, known) in &self.producers {
-            buf.put_u64_le(*producer);
-            buf.put_u64_le(known.floor);
-            buf.put_u64_le(known.answers.len() as u64);
-            for (sequence, answer) in &known.answers {
-                buf.put_u64_le(*sequence);
-                put_answer(&mut buf, *answer);
-            }
-        }
-        buf.freeze()
+        encode(self.time, self.view())
     }
 
     /// The state a snapshot holds. `applied` says whether the snapshot is
@@ -129,10 +134,9 @@ impl CacheState {
         {
             *RESTORED.lock().entry(digest(data)).or_default() += 1;
         }
-        let mut state = Self::default();
         if data.is_empty() {
             return match applied {
-                false => Ok(state),
+                false => Ok(Self::default()),
                 true => Err(invalid(
                     "a cache snapshot as of an entry has no data".to_string(),
                 )),
@@ -147,7 +151,8 @@ impl CacheState {
         if version != VERSION {
             return Err(invalid(format!("a cache snapshot has version {version}")));
         }
-        state.time = fields.u64()?;
+        let time = fields.u64()?;
+        let mut state = Tables::default();
         for _ in 0..fields.u64()? {
             let key = fields.key()?;
             let entry = Entry {
@@ -179,6 +184,6 @@ impl CacheState {
             state.producers.insert(producer, known);
         }
         fields.end()?;
-        Ok(state)
+        Ok(Self::from_tables(time, state))
     }
 }
