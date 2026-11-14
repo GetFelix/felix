@@ -2366,6 +2366,17 @@ The two kinds of number are not the same measure. The design's figures were
 resident memory, and the test counts allocated bytes. Resident memory on
 real brokers, against the hybrid, is still to be measured (#2314).
 
+Each member's log also keeps its newest records in memory, so replication
+reads fresh entries without the segments. The cache holds at most 4 MiB per
+log, and all the logs of a broker share one budget, 256 MiB by default
+(`RuntimeConfig::tail_cache_bytes`). When many logs hold bytes each one's
+limit is its share of the budget, never below 64 KiB. If the total is still
+over, the logs appended to least recently drop their caches first, which is
+what frees an idle group. A dropped cache costs a read from the segments and
+nothing else. The gauge `felix_broker_raft_tail_cache_bytes` reports the
+bytes held. Without the budget, 2,000 groups that had each taken 4 MiB of
+writes would hold 8 GB.
+
 So the memory row is measured twice: idle with three brokers, and with one
 broker killed while publishers write. The 1 GB limit applies to the second.
 If that run is over, the fix is the upstream ask for fewer tasks per member

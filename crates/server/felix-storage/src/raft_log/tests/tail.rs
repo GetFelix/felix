@@ -1,12 +1,14 @@
 //! The tail cache: the newest entries are read from memory, and a read
 //! never returns an entry the log no longer holds.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use openraft::storage::RaftLogStorage;
 
 use super::writes::append_flushed;
 use super::*;
+use crate::raft_log::TailBudget;
 
 fn segment_reads(raft: &RaftLog<Types, Codec>) -> u64 {
     raft.shared.segment_reads.load(Ordering::Relaxed)
@@ -193,4 +195,30 @@ async fn a_read_from_memory_restarts_when_the_log_is_cut_under_it() {
     raft.disk_log().truncate(2).await.expect("truncate");
     resume.send(()).expect("resume");
     assert_eq!(read.await.expect("join").expect("read"), old[..2]);
+}
+
+/// A log whose cache another log's append emptied still reads every entry,
+/// from the segments, and the one that appended keeps its own in memory.
+#[tokio::test]
+async fn an_evicted_cache_is_read_from_the_segments() {
+    let budget = TailBudget::new(2048);
+    let open_on = |dir: &TempDir, label: &str| {
+        let log = DiskLog::open(dir.path(), label, config()).expect("open");
+        RaftLog::<Types, Codec>::with_tail_budget(log, Codec, Arc::clone(&budget)).expect("log")
+    };
+    let (dir_a, dir_b) = (tempdir().expect("dir"), tempdir().expect("dir"));
+    let (mut a, mut b) = (
+        open_on(&dir_a, "t/ns/raft/0"),
+        open_on(&dir_b, "t/ns/raft/1"),
+    );
+    let entries = commands(1, 0..3, &"x".repeat(400));
+    append_flushed(&mut a, &entries).await;
+    assert_eq!(all(&a).await.expect("read"), entries);
+    assert_eq!(segment_reads(&a), 0, "held in memory before the eviction");
+
+    append_flushed(&mut b, &entries).await;
+    assert_eq!(all(&a).await.expect("read"), entries);
+    assert!(segment_reads(&a) > 0, "a's cache was given up");
+    assert_eq!(all(&b).await.expect("read"), entries);
+    assert_eq!(segment_reads(&b), 0, "b keeps what it just appended");
 }
