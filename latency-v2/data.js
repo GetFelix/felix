@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794676128054,
+  "lastUpdate": 1794677289076,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -72072,6 +72072,72 @@ window.BENCHMARK_DATA = {
             "range": "637.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1961.00\nmean: 1841.00\nstdev: 637.03\ncv: 34.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56b0996c4253c9845f0a2ffdf3ac64352ba8559c",
+          "message": "fix(broker): count connection-writer drops as the subscriber's drops (#2539)\n\n* fix(subscribe): count connection writer drops as the subscriber's drops (#2531)\n\nThe writer's per-subscriber bound moved only felix_sub_queue_dropped_total.\nIt now also records the drop in the subscriber's stats, its lag note and\nfelix_subscribe_dropped_total, by record.\n\n* fix(subscribe): resume from the lowest drop and shed after a writer drop (#2531)\n\nThe connection writer can drop a frame below one the subscriber queue\nalready dropped, so the lag note now keeps the lowest drop, not the\nfirst. Once the writer drops a frame with offsets it sheds every later\ndelivery for that subscriber until it unregisters, so the client never\nsees a hole followed by later records. The last frame still bypasses.\n\nSpec-Unaffected: drop accounting and lag note only; no protocol or ordering change\n\n* fix(subscribe): shed after a writer drop only when the subscription ends at it (#2531)\n\nA subscription that does not end at a drop sees it as an offset jump and\ncarries on, so shedding everything after would starve it.\n\nSpec-Unaffected: drop accounting and lag note only; no protocol or ordering change\n\n* test(subscribe): read the feeder's unregister without a loop (#2531)\n\nSpec-Unaffected: drop accounting and lag note only; no protocol or ordering change\n\n* fix(subscribe): the writer picks the last frame after its own drops (#2531)\n\nThe feeder chose the subscription's last frame before the connection writer\nhad taken its final deliveries, so a writer drop after that could leave a\nlagged frame with a resume offset above the shed records, or an ended frame\nover a hole. The writer now replaces the last frame with subscription_lagged\nfrom the drop account's resume offset whenever it is shedding for the\nsubscriber, and never sends ended over a shed.\n\nA live frame dropped below the catch-up floor now counts as a drop from the\nfloor, so a shedding writer always has a lag to report.\n\nSpec-Unaffected: broker-local delivery framing; no replication or storage state changes.\n\n* fix(subscribe): keep a revoked last frame over a writer shed (#2531)\n\nThe writer swaps only subscription_ended and subscription_lagged for the\nlower lagged frame; a revocation is terminal and tells the client why.\n\nSpec-Unaffected: broker-local delivery framing; no replication or storage state changes.\n\n* fix(subscribe): a writer drop turns a move into a lag, and one lag counts once\n\nWhile the writer is shedding, a shard_moved last frame resumed the client\nat the move's offset and skipped the records the writer dropped. Replace\nit with subscription_lagged at the account's resume point, as the feeder\ndoes. Replacing an already-lagged frame no longer bumps\nfelix_subscription_lagged_total a second time.\n\nSpec-Unaffected: subscriber-side delivery framing, no protocol state change",
+          "timestamp": "2026-11-14T17:21:53Z",
+          "tree_id": "94def9a92cb58688aca38df312d8a291e0c34256",
+          "url": "https://github.com/GetFelix/felix/commit/56b0996c4253c9845f0a2ffdf3ac64352ba8559c"
+        },
+        "date": 1794677278308,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "2.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.00\nstdev: 2.24\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "30.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 219.40\nstdev: 30.88\ncv: 14.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 282,
+            "range": "1083.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 282.00\nmean: 782.40\nstdev: 1083.94\ncv: 138.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 199.60\nstdev: 0.89\ncv: 0.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 445,
+            "range": "20.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 445.00\nmean: 442.00\nstdev: 20.63\ncv: 4.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1145,
+            "range": "311.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1145.00\nmean: 1254.80\nstdev: 311.61\ncv: 24.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
