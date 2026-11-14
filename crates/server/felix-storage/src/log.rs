@@ -101,6 +101,12 @@ pub enum RecordMark {
     Opens(ProducerBatch),
     /// A later record of the batch the record before it belongs to.
     Continues,
+    /// A later record of a producer's batch that names the batch and its
+    /// own place in it, so it belongs to the batch wherever it lies. A Raft
+    /// log writes it in place of [`Self::Continues`]: its batches are an
+    /// entry per record, and a leader change can put other records between
+    /// them. v9 only.
+    Piece(BatchPiece),
     /// A leader's first record at its generation, written before it serves.
     /// It is what lets the leader's quorum mark cover records it inherited;
     /// no reader outside replication ever sees it. The payload is the
@@ -144,6 +150,18 @@ pub struct ProducerBatch {
     pub len: u32,
 }
 
+/// A record of an idempotent producer's batch that is not its first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchPiece {
+    pub producer_id: u64,
+    pub sequence: u64,
+    /// The record's place in the batch, from zero. Never zero: the first
+    /// record is [`RecordMark::Opens`].
+    pub position: u32,
+    /// Records in the whole batch.
+    pub len: u32,
+}
+
 impl RecordMark {
     /// Whether a client reads the record: an event or cache entry, or a
     /// commit record holding one. Generation-start, trim, membership and
@@ -153,7 +171,7 @@ impl RecordMark {
     /// "Record kinds".
     pub fn is_data(&self) -> bool {
         match self {
-            Self::None | Self::Opens(_) | Self::Continues | Self::Commit => true,
+            Self::None | Self::Opens(_) | Self::Continues | Self::Piece(_) | Self::Commit => true,
             Self::GenerationStart
             | Self::Trim { .. }
             | Self::Membership
@@ -166,7 +184,7 @@ impl RecordMark {
     pub fn needs_generation(&self) -> bool {
         matches!(
             self,
-            Self::Membership | Self::CounterDelta | Self::CounterCheckpoint
+            Self::Piece(_) | Self::Membership | Self::CounterDelta | Self::CounterCheckpoint
         )
     }
 

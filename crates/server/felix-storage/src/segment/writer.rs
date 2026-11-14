@@ -352,7 +352,8 @@ impl SegmentWriter {
                 RecordMark::GenerationStart => self.holds_generation_starts(),
                 RecordMark::Commit => self.holds_commits(),
                 RecordMark::Trim { .. } => self.holds_trims(),
-                RecordMark::Membership
+                RecordMark::Piece(_)
+                | RecordMark::Membership
                 | RecordMark::CounterDelta
                 | RecordMark::CounterCheckpoint => self.holds_generations(),
             };

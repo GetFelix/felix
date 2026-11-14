@@ -77,6 +77,12 @@ pub struct Batch {
 pub struct Sequenced {
     pub producer_id: u64,
     pub sequence: u64,
+    /// The place in the producer's batch of the first record handed over.
+    /// Zero for a whole batch. Above zero the records are the rest of a
+    /// batch the log already holds up to there.
+    pub position: u32,
+    /// Records in the producer's whole batch.
+    pub len: u32,
 }
 
 /// A drain takes no batch that would bring it past this many payload bytes
@@ -203,28 +209,43 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     if count == 0 {
         return Err(lost(EMPTY));
     }
-    let mark = match producer {
+    let first = match producer {
         None => None,
         // Several records would be several entries, and nothing writes
-        // those all or none.
-        Some(_) if count != 1 => return Err(lost(SEVERAL)),
+        // those all or none. The rest of a batch the log holds the start
+        // of is let through: each piece names its place, so a log that
+        // gets only some of them knows it and refuses the next re-send.
+        Some(Sequenced { position: 0, .. }) if count != 1 => return Err(lost(SEVERAL)),
+        Some(Sequenced { position, len, .. })
+            if u64::from(position) + count as u64 != u64::from(len) =>
+        {
+            return Err(lost(SEVERAL));
+        }
         Some(Sequenced {
             producer_id,
             sequence,
+            position,
+            len,
         }) => Some(ProducerMark {
             producer_id,
             sequence,
+            position,
+            len,
         }),
     };
     let mut bytes = 0;
     let mut commands: Vec<Command> = records
         .into_iter()
-        .map(|record| {
+        .zip(0u32..)
+        .map(|(record, index)| {
             bytes += record.payload.len();
             Command {
                 timestamp_micros: record.timestamp_micros,
                 payload: record.payload,
-                producer: mark,
+                producer: first.map(|first| ProducerMark {
+                    position: first.position + index,
+                    ..first
+                }),
                 written: None,
             }
         })

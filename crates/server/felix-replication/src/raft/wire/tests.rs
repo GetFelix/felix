@@ -90,6 +90,22 @@ fn every_request() -> Vec<RaftRequest> {
                 producer: Some(ProducerMark {
                     producer_id: 0xA1B2_C3D4_E5F6_0718,
                     sequence: 41,
+                    position: 0,
+                    len: 1,
+                }),
+                written: None,
+            },
+        ),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 9),
+            Command {
+                timestamp_micros: 101,
+                payload: Bytes::from_static(b"a piece of a batch"),
+                producer: Some(ProducerMark {
+                    producer_id: 0xA1B2_C3D4_E5F6_0718,
+                    sequence: 42,
+                    position: 2,
+                    len: 5,
                 }),
                 written: None,
             },

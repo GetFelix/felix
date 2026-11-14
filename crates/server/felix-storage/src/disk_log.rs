@@ -69,7 +69,7 @@ mod segments;
 mod set;
 mod sync;
 
-pub use producers::ProducerSequence;
+pub use producers::{ProducerSequence, UnfinishedBatch};
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
 pub use set::{Member, Membership, ReplicaSet};
@@ -362,6 +362,17 @@ impl DiskLog {
     /// serialises a producer's batches sees each one as soon as it is written.
     pub fn producer_sequence(&self, producer_id: u64, sequence: u64) -> ProducerSequence {
         self.inner.producers.lock().classify(producer_id, sequence)
+    }
+
+    /// `producer_id`'s batch `sequence` if this log holds part of it and
+    /// not all: its writer stopped partway. [`Self::producer_sequence`] does
+    /// not count a batch another record has cut, so a writer that finishes
+    /// one asks this first. See [`UnfinishedBatch`].
+    pub fn producer_unfinished(&self, producer_id: u64, sequence: u64) -> Option<UnfinishedBatch> {
+        self.inner
+            .producers
+            .lock()
+            .unfinished(producer_id, sequence)
     }
 
     /// The sequence `producer_id` owes next in this log, or `None` when the

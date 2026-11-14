@@ -1215,7 +1215,7 @@ fn the_v9_kinds_are_record_flags_before_v9() {
             );
         }
     }
-    for kinds in [0xC0u8, 0xA0, 0x90, 0xB0, 0xD0, 0xE0, 0xF0] {
+    for kinds in [0xA0u8, 0x90, 0xB0, 0xD0, 0xE0, 0xF0] {
         let mut buf = Vec::new();
         encode_record_at(&mut buf, Some(1), 4, 1, b"x", None, None, &RecordMark::None);
         buf[0] |= kinds;
@@ -1230,5 +1230,47 @@ fn the_v9_kinds_are_record_flags_before_v9() {
             ),
             "{kinds:#x}"
         );
+    }
+}
+
+/// A batch piece is bits 31 and 30 with a 24-byte tag, in a v9 segment
+/// only: every older build refuses the bits as `RecordFlags`.
+#[test]
+fn a_batch_piece_round_trips_in_a_v9_segment_only() {
+    let mark = RecordMark::Piece(crate::log::BatchPiece {
+        producer_id: 0x0102_0304_0506_0708,
+        sequence: 9,
+        position: 2,
+        len: 5,
+    });
+    let mut buf = Vec::new();
+    let len = encode_record_at(&mut buf, Some(3), 4, 5, b"body", None, Some(b"p"), &mark);
+    assert_eq!(buf[0] & 0xF0, 0xC0);
+    assert_eq!(
+        len,
+        record_len_in(body_len(4, None, Some(b"p")), &mark, GENERATION_VERSION)
+    );
+    let (decoded, used) = decode_record_in(&buf, GENERATION_VERSION).expect("decode");
+    assert_eq!(used, len);
+    assert_eq!(decoded.header.kind, RecordKind::Piece);
+    assert_eq!(decoded.header.kind.tag_len(), PIECE_TAG_LEN);
+    assert_eq!(decoded.mark, mark);
+    assert_eq!(decoded.payload, Bytes::from_static(b"body"));
+    assert_eq!(decoded.publisher, Some(Bytes::from_static(b"p")));
+    assert!(decoded.header.check_version(GENERATION_VERSION).is_ok());
+
+    let mut old = Vec::new();
+    encode_record(&mut old, 4, 1, b"x", None, None, &mark);
+    for version in OLDEST_READABLE_VERSION..GENERATION_VERSION {
+        assert!(
+            matches!(
+                RecordHeader::decode_in(&old, version)
+                    .expect_err("older")
+                    .kind,
+                CorruptionKind::RecordFlags { .. }
+            ),
+            "at v{version}"
+        );
+        assert!(decoded.header.check_version(version).is_err());
     }
 }

@@ -2,8 +2,8 @@
 //! retention leave behind, and how much of the log an open has to read.
 
 use super::*;
-use crate::disk_log::ProducerSequence;
-use crate::log::{PayloadDigest, RecordMark};
+use crate::disk_log::{ProducerSequence, UnfinishedBatch};
+use crate::log::{BatchPiece, PayloadDigest, ProducerBatch, RecordMark};
 
 /// One idempotent batch, marked as the broker marks it.
 fn marked(producer: u64, sequence: u64, payloads: &[&str]) -> Vec<AppendRecord> {
@@ -387,4 +387,150 @@ async fn a_log_written_before_marks_is_not_read_to_rebuild_producer_state() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.producer_sequence(1, 0), ProducerSequence::Unknown);
     assert_eq!(log.tail_offset().await.expect("tail"), 20);
+}
+
+/// The record at `position` of producer 9's batch `sequence` of `len`,
+/// marked as a Raft log marks it.
+fn piece(sequence: u64, position: u32, len: u32, payload: &str) -> AppendRecord {
+    let mark = match position {
+        0 => RecordMark::Opens(ProducerBatch {
+            producer_id: 9,
+            sequence,
+            len,
+        }),
+        _ => RecordMark::Piece(BatchPiece {
+            producer_id: 9,
+            sequence,
+            position,
+            len,
+        }),
+    };
+    AppendRecord {
+        mark,
+        ..record(payload)
+    }
+}
+
+fn raft_config() -> LogConfig {
+    LogConfig {
+        raft_log: true,
+        ..config(FsyncMode::OnCommit)
+    }
+}
+
+/// A batch another record cut is still known after a restart, whether the
+/// open reads it from the snapshot or from the records, and the pieces it
+/// was owed then finish it.
+#[tokio::test]
+async fn a_cut_batch_is_known_again_after_a_restart() {
+    let dir = tempdir().expect("dir");
+    let cut = Some(UnfinishedBatch {
+        first: Some(0),
+        held: 2,
+        len: 3,
+        digest: digest(&["a", "b"]),
+    });
+    {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+            .await
+            .expect("append");
+        log.append(&records(&["theirs"])).await.expect("append");
+        assert_eq!(log.producer_unfinished(9, 0), cut);
+        log.shutdown().await.expect("shutdown");
+    }
+    for snapshot in [true, false] {
+        if !snapshot {
+            let _ = std::fs::remove_file(snapshot_path(&dir));
+        }
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+        assert_eq!(log.producer_unfinished(9, 0), cut, "snapshot: {snapshot}");
+        assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Unknown);
+        log.shutdown().await.expect("shutdown");
+    }
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    log.append(&[piece(0, 2, 3, "c")]).await.expect("append");
+    assert_eq!(log.producer_unfinished(9, 0), None);
+    assert_eq!(
+        log.producer_sequence(9, 0),
+        ProducerSequence::Held {
+            first: 0,
+            last: 3,
+            digest: digest(&["a", "b", "c"]),
+        }
+    );
+}
+
+/// A log whose head was removed past a cut batch's first record, with a
+/// later record of the batch still in it, knows the batch as one it cannot
+/// finish: a purge, or a copy that starts inside the batch. Forgotten, the
+/// re-send would be taken as a new batch and the records still here
+/// written again. A reopen reads the same from what is left.
+#[tokio::test]
+async fn a_cut_batch_whose_first_record_is_removed_cannot_be_finished() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    log.append(&[piece(0, 0, 3, "a")]).await.expect("append");
+    // Enough to seal the segment the first record is in.
+    let mut tail = 0;
+    for _ in 0..12 {
+        tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset;
+    }
+    // Written by a leader that held the first record, as the rest of it.
+    let second = log.append(&[piece(0, 1, 3, "b")]).await.expect("append");
+    log.append(&records(&["theirs"])).await.expect("append");
+    assert_eq!(
+        log.producer_unfinished(9, 0),
+        Some(UnfinishedBatch {
+            first: Some(0),
+            held: 2,
+            len: 3,
+            digest: digest(&["a", "b"]),
+        })
+    );
+
+    let removed = log.trim_before(tail).await.expect("trim");
+    assert!(!removed.is_empty());
+    let base = log.base_offset();
+    assert!(0 < base && base <= second.first_offset, "base {base}");
+    let headless = Some(UnfinishedBatch {
+        first: None,
+        held: 2,
+        len: 3,
+        digest: None,
+    });
+    assert_eq!(log.producer_unfinished(9, 0), headless);
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    for snapshot in [true, false] {
+        if !snapshot {
+            let _ = std::fs::remove_file(snapshot_path(&dir));
+        }
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+        assert_eq!(
+            log.producer_unfinished(9, 0),
+            headless,
+            "snapshot: {snapshot}"
+        );
+        log.shutdown().await.expect("shutdown");
+    }
+}
+
+/// Only a Raft log writes batch pieces: the hybrid's replication cannot
+/// carry one.
+#[tokio::test]
+async fn a_batch_piece_is_refused_outside_a_raft_log() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let refused = log.append(&[piece(0, 1, 3, "b")]).await;
+    assert!(
+        matches!(refused, Err(StorageError::Unsupported(_))),
+        "{refused:?}"
+    );
 }

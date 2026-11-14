@@ -54,7 +54,7 @@ pub mod timings;
 pub use broker::{
     Appended, AppendedShards, Broker, CacheMetadata, ClaimedPublish, CommittedOffsets,
     ConsistencyLevel, EngineLogs, IdempotentClaim, IdempotentOutcome, IdempotentProposal, LogKind,
-    MountedStream, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish,
+    MountedStream, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish,
     PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse, StreamHandle, StreamMetadata, TrimOutcome,
     TrimStep,
 };
