@@ -518,3 +518,24 @@ async fn a_record_at_the_base_from_another_claim_is_not_the_seal() {
         })
     );
 }
+
+#[tokio::test]
+async fn a_copy_whose_side_log_differs_from_the_seals_is_not_a_voter() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    let n = copy(&dir, Below::Stamped, &["a", "b"], &[]).await;
+    let base = base_of(&dir, n).await;
+    // A cursor the seal leader's log did not hold.
+    let cursors = DiskLog::open(&side_dirs(&dir)[1].0, LABEL, open_config()).expect("open");
+    lead(&cursors, 1).await;
+    cursors.append(&[record("cursor")]).await.expect("append");
+    cursors.shutdown().await.expect("shutdown");
+    let before = files(&dir);
+    assert_eq!(
+        start(&dir, &base).await,
+        Err(NotAVoter::SideDiffers {
+            log: SideLog::Cursors
+        })
+    );
+    assert_eq!(files(&dir), before);
+}

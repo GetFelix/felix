@@ -2038,9 +2038,11 @@ sequenceDiagram
    without it the member would campaign at term 1, below the base, and its
    entries would compare older than the base's. A crash before the marker
    leaves a directory that is started again from the first step with the
-   same result. The first Raft entry is the blank entry at `N + 1`. This
-   check covers the shard's own log. The dead-letter and group-cursor logs
-   fenced with it get their digest from the seal, which is not built yet.
+   same result. The first Raft entry is the blank entry at `N + 1`. The
+   check also covers the dead-letter and group-cursor logs fenced with the
+   shard, against the ranges the seal recorded (see "The seal on the
+   hybrid side" below), and the payload of the record at `N`, which names
+   `S` and every digest.
    `felix_storage::disk_log::switch::start_voter` and
    `felix_replication::raft::switch::start_voter` do this.
 4. **Start the rest as learners.** Every other copy starts empty as a
@@ -2107,6 +2109,39 @@ nor `felix-replication` holds it. So each copy reports its fsync mode as a
 new field, the mode cannot change during a switch without a restart, and a
 cluster on the default must restart every broker on `on_commit` before any
 shard switches. That is one of the `shard_raft` prerequisites.
+
+**The seal on the hybrid side.** Three steps on disk, each on a log
+that fsyncs on commit, and a count around them:
+
+- *The promise.* A copy that takes the seal's fence accepts `G` for the
+  seal leader in its ballot, then writes a `switch-seal` file naming `G`
+  and the sealing copy id, and only then answers. While it holds, the copy
+  takes the shard's records only from that copy id and refuses ballots
+  and rebuild writes. Nothing reopens the shard on a timeout: the promise
+  lapses only when the copy accepts a later generation, which only the
+  control plane's promotion gives it.
+- *The claim.* Once a majority answered and the shard's fence is quiet (no
+  write admitted before the seal is still on its way to an offset), the
+  leader marks the claim in its `switch-seal` file, then appends the
+  generation-start record at `N`. Its payload is the generation, then `S`,
+  the digest of `S..N`, and for each side log the range the leader holds
+  and its digest. `S` and each side log's start are the highest among the
+  copies that answered. The claim mark comes first, so a leader that
+  crashes or loses its tail never appends a second record at `G`; the
+  control plane seals again at a later generation instead.
+- *The acknowledgement.* A follower appends the record at `N` only if its
+  log ends at `N - 1`, starts at or below `S`, matches the digest from
+  `S`, and each side log holds the leader's range and nothing past it. It
+  answers once the record is on disk.
+- *The report.* The leader counts acknowledgements by copy id and reports
+  `(G, N)`, the base and the copy ids once a majority holds `N`. A leader
+  that restarted before it reported has lost its count and reports
+  nothing for that seal.
+
+`DiskLog::promise_seal`, `claim_seal` and `ack_seal` in
+`felix_storage::disk_log::switch::seal` do the disk steps, and
+`felix_replication::seal::SealRound` the count. They are not wired to the
+fence or the wire protocol yet, so nothing seals a shard.
 
 **Only the sealing copy leads.** A follower takes catch-up records for the
 seal only from the copy that sealed. Catch-up batches carry the leader's

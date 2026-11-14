@@ -1062,6 +1062,21 @@ a Raft shard's directory holds an `engine` file with the one line `raft`.
   marker.
 - Any other content is refused by both: a newer build wrote it.
 
+The switch's seal (`docs/per-shard-raft.md`, "The seal on the hybrid side")
+writes two things. Its generation-start record has a longer payload: the
+generation, the four bytes `SEAL`, a version byte (`1`), the seal's start,
+the 32-byte digest of the records from the start to the record, and for the
+dead-letter log and then the group-cursor log a start, an end and a digest,
+149 bytes in all, big-endian. A reader that takes the generation from the
+first eight bytes reads it as before. And each copy that takes the seal
+writes a `switch-seal` file in the shard's directory: the magic `FLSP`, a
+version (`1`), the generation, the sealing copy's 16-byte storage id, a
+claimed flag (`0` or `1`) and a CRC-32 over the rest, 35 bytes. It is
+written as the ballot is (a temporary file, fsync, rename, fsync of the
+directory). One that does not decode fails the open: it cannot be rebuilt.
+
+> `crates/server/felix-storage/src/disk_log/switch/seal/tests.rs`.
+
 A directory the hybrid wrote becomes a Raft log only through the switch to
 Raft (`docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft").
 Its marker has a second line, `base <G> <N>`: the seal's generation and the
