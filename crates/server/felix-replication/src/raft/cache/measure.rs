@@ -319,6 +319,7 @@ async fn cache_back_to_back() {
     let (mut worst_apply, mut worst_ask) = (Duration::ZERO, Duration::ZERO);
     let mut build: Option<tokio::task::JoinHandle<()>> = None;
     let (started, applied_from) = (Instant::now(), last);
+    *super::super::machine::lockstat::T0.lock() = Some(started);
     while started.elapsed() < Duration::from_secs(15) {
         if build.as_ref().is_some_and(|build| build.is_finished()) {
             build.take().expect("build").await.expect("task");
@@ -332,7 +333,11 @@ async fn cache_back_to_back() {
             match builder {
                 Some(mut builder) => {
                     build = Some(tokio::spawn(async move {
-                        builder.build_snapshot().await.expect("build");
+                        super::super::machine::lockstat::event("build");
+                        let snap = builder.build_snapshot().await.expect("build");
+                        super::super::machine::lockstat::event("built");
+                        drop(snap);
+                        super::super::machine::lockstat::event("dropped");
                     }));
                 }
                 None => deferred += 1,
@@ -372,6 +377,9 @@ async fn cache_back_to_back() {
         line.push_str(&h.show(name));
     }
     println!("{line}");
+    *super::super::machine::lockstat::T0.lock() = None;
+    let ev = std::mem::take(&mut *super::super::machine::lockstat::EVENTS.lock());
+    println!("cache_events label={label} keys={keys} {}", ev.join(" "));
 }
 static READ_WAIT: super::super::machine::lockstat::Hist =
     super::super::machine::lockstat::Hist::new();

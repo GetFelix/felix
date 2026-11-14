@@ -82,6 +82,15 @@ pub(crate) mod lockstat {
             )
         }
     }
+    pub(crate) static T0: parking_lot::Mutex<Option<Instant>> = parking_lot::Mutex::new(None);
+    pub(crate) static EVENTS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+    pub(crate) fn event(what: &str) {
+        if let Some(t0) = *T0.lock() {
+            EVENTS
+                .lock()
+                .push(format!("{}@{:.1}", what, t0.elapsed().as_secs_f64() * 1e3));
+        }
+    }
     pub(crate) static APPLY_WAIT: Hist = Hist::new();
     pub(crate) static APPLY_HOLD_STEADY: Hist = Hist::new();
     pub(crate) static APPLY_HOLD_LAYERED: Hist = Hist::new();
@@ -375,6 +384,7 @@ impl Drop for Held {
                 parking_lot::RwLockWriteGuard::unlock_fair(state);
                 lockstat::FOLD_HOLD.add(t1);
                 if !more {
+                    lockstat::event("folded");
                     lockstat::FOLD_TOTAL.add(tf);
                 }
                 if !more {
@@ -500,6 +510,10 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 guard.apply(entry.log_id.index, command.0, &command.1);
                 drop(guard);
                 if layered {
+                    let held = t1.elapsed();
+                    if held.as_micros() >= 1000 {
+                        lockstat::event(&format!("hold{}us", held.as_micros()));
+                    }
                     lockstat::APPLY_HOLD_LAYERED.add(t1)
                 } else {
                     lockstat::APPLY_HOLD_STEADY.add(t1)

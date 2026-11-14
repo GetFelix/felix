@@ -37,8 +37,8 @@ jobs:
         run: |
           set -euo pipefail
           nproc; free -m
-          for round in 1 2 3; do
-            for keys in 1000 1000000; do
+          for round in 1 2; do
+            for keys in 1000000; do
               MEASURE_KEYS=$keys MEASURE_LABEL=diag cargo test --locked --release -q -p felix-replication \
                 --features raft,felix-common/sim --lib raft::cache::measure::cache_back_to_back -- --ignored --nocapture --test-threads 1 2>&1 | grep -o 'cache_[a-z_]* label=.*'
             done
