@@ -1580,9 +1580,12 @@ impl ReplicaHandler {
         }
         let accepted = match seal {
             None => accept_sender(&log, correlation_id, &key, generation, sender).await,
+            #[cfg(feature = "raft")]
             Some(sealer) => {
                 promise_sender(&log, correlation_id, &key, generation, sender, sealer).await
             }
+            #[cfg(not(feature = "raft"))]
+            Some(_) => Some(seal::seal_refusal(correlation_id, &unreachable_seal())),
         };
         if let Some(refusal) = accepted {
             return refusal;
