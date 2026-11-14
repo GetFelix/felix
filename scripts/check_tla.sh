@@ -112,6 +112,7 @@ module_of() {
     FelixRaftCache*) echo FelixRaftCache ;;
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
     FelixRaftWritten*) echo FelixRaftWritten ;;
+    FelixRaftBatch*) echo FelixRaftBatch ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -558,6 +559,20 @@ expectations=(
   "FelixRaftWrittenReachEarly violates NeverAcksEarly"
   "FelixRaftWrittenReachEarlyInJoint violates NeverAcksEarlyInJoint"
   "FelixRaftWrittenReachCommitsAfterFailover violates NeverCommitsAfterFailover"
+  "FelixRaftBatch pass"
+  "FelixRaftBatchKeepsCut pass"
+  "FelixRaftBatchEachRecord violates BatchExactlyOnce"
+  "FelixRaftBatchRewrite violates BatchExactlyOnce"
+  "FelixRaftBatchRewriteOrder violates BatchInOrder"
+  "FelixRaftBatchForgetsCut violates BatchExactlyOnce"
+  "FelixRaftBatchForgetsCutPlace violates ProducerPlaceAgrees"
+  "FelixRaftBatchTableAtApply violates BatchExactlyOnce"
+  "FelixRaftBatchHeldBeforeCommit violates BatchExactlyOnce"
+  "FelixRaftBatchReachFinish violates NeverFinishesACut"
+  "FelixRaftBatchReachFinishOverTail violates NeverFinishesOverTail"
+  "FelixRaftBatchReachRefusal violates NeverRefuses"
+  "FelixRaftBatchReachInstall violates NeverInstalls"
+  "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"
