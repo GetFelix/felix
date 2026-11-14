@@ -55,6 +55,8 @@ pub(crate) mod crash_point;
 #[cfg(feature = "raft")]
 pub(crate) mod dir_lock;
 pub(crate) mod durable_mark;
+#[cfg(feature = "raft")]
+pub(crate) use durable_mark::left_poisoned;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -105,6 +107,9 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 /// fsynced on commit. Its records are written behind too, so an offset that
 /// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The file that makes a shard directory a Raft copy (`raft_copy`).
+pub(crate) const RAFT_COPY_FILE: &str = "raft-copy";
 
 /// How soon a Raft log's commit writer asks again when the replica state is
 /// locked and it cannot tell when the last write was.
@@ -1293,8 +1298,10 @@ impl DiskLog {
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             extensions_done: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "fault-injection"))]
+            fail_flush_past: AtomicU64::new(u64::MAX),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1449,6 +1456,22 @@ impl DiskLog {
     }
 }
 
+#[cfg(any(test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Fail this log's next flush, as a failed fsync would: the log is
+    /// poisoned and leaves its marker. For tests, in this crate and outside.
+    pub fn fail_next_flush(&self) {
+        self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+
+    /// Fail the first flush that would make the record at `offset` durable,
+    /// as [`Self::fail_next_flush`] does. Flushes of earlier records, such
+    /// as one with nothing new to sync, pass.
+    pub fn fail_flush_past(&self, offset: Offset) {
+        self.inner.fail_flush_past.store(offset, Ordering::Release);
+    }
+}
+
 /// A stalled device, for tests here and in other crates. Not in a plain
 /// release build, like [`crate::fault`].
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
@@ -1464,11 +1487,6 @@ impl DiskLog {
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
-    /// Fail the next flush, as a failed fsync would.
-    pub(crate) fn fail_next_flush(&self) {
-        self.inner.fail_next_flush.store(true, Ordering::Release);
-    }
-
     /// Wait until the commit offset in memory is the one on disk.
     pub(crate) async fn commit_offset_persisted(&self) {
         while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {
@@ -2036,8 +2054,12 @@ struct LogInner {
     #[cfg(test)]
     extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// Makes the first flush that covers this offset fail the same way.
+    /// `u64::MAX` when unset.
+    #[cfg(any(test, feature = "fault-injection"))]
+    fail_flush_past: AtomicU64,
     /// Makes the next truncation or reset fail to sync the durable mark.
     #[cfg(test)]
     fail_next_rewind_sync: std::sync::atomic::AtomicBool,
