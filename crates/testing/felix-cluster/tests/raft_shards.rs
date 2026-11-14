@@ -184,13 +184,15 @@ async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_
         .expect("follower")
         .clone();
 
-    let reader = felix_cluster::client::connect_cluster(
-        &[cluster.node(&follower).expect("node").client_addr],
-        &cluster.tenant_id,
-        &cluster.client_token(),
-    )
-    .await
-    .expect("reader");
+    let reader = std::sync::Arc::new(
+        felix_cluster::client::connect_cluster(
+            &[cluster.node(&follower).expect("node").client_addr],
+            &cluster.tenant_id,
+            &cluster.client_token(),
+        )
+        .await
+        .expect("reader"),
+    );
     let mut subscription = reader
         .subscribe_from(
             &cluster.tenant_id,
