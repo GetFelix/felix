@@ -121,7 +121,7 @@ bytes = "1"
 # and crash-point tests re-run, never a lockfile refresh. See
 # docs/replication-engine.md, "openraft version".
 #
-# A git rev on openraft main (2026-11-12, after the 0.10.0 tag) for changes
+# A git rev on openraft main (2026-11-14, after the 0.10.0 tag) for changes
 # that ship in 0.10.1: `Trigger::tick()`, which the node ticker needs, and the
 # queue changes that keep an idle member's memory small (openraft#2313,
 # openraft#2314 and openraft#2324). Goes back to `version = "=0.10.1"` when that is released.
