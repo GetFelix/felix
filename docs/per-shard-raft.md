@@ -728,10 +728,14 @@ them ends: `RaftEngine::publish` hands it to the broker to move the stream's
 offsets, and the publisher gets the bare error, as a `RaftEngine::propose`
 caller does. The batch is not delivered live on the leader, whose
 subscribers see its offsets as a drop. The stream's offsets move past the
-written records, so a reader resuming at one of them is sent to the log
-for it instead of joining live above it. A follower's subscribers read
-them from the log, which is the only place it delivers from. The same holds for a batch that was written whole
-and then lost its acknowledgement.
+written records that are already committed, so a reader resuming at one
+of them is sent to the log for it instead of joining live above it. They
+move no further: an uncommitted record can be cut, and the next leader
+can commit a different one at the same offset. On a broker that no
+longer leads, the offsets do not move at all, and its subscribers get
+whatever commits there from the log, which is the only place a follower
+delivers from. The same holds for a batch that was written whole and then
+lost its acknowledgement.
 
 A caller that names no term (`None`) gets the unbound call. The broker
 always names one.
@@ -1412,6 +1416,19 @@ way a held `Quorum` batch is released on the hybrid.
   batch and again from the log.
 - Records are grouped into frames by append time, so a follower's frame
   boundaries can differ from the leader's. Order and offsets are the same.
+- A batch that reaches the stream at offsets the log already delivered is
+  dropped, so a deposed term's batch settling just as the pass reads the
+  same records is not delivered twice.
+- A member that becomes leader finishes the pass first, then marks the
+  stream as led. If a `Block` subscriber's queue is full, the pass does not
+  wait for it: the subscriber is ended, with the batch counted as its drop,
+  so it knows where to resume. A slow reader never holds up a new term's
+  writes.
+- A pass that keeps failing (a read error on the member's log) backs off,
+  and after five failures in a row ends the stream's subscribers so they
+  resubscribe instead of waiting.
+- A tail-only subscribe on a follower that is behind its member joins at
+  what is committed, not at older records the pass has yet to reach.
 
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_record_a_later_leader_replaced_reaches_no_subscriber`,
@@ -1542,8 +1559,8 @@ fence are not asked.
   as a drop. They can subscribe again to the same broker, which now serves
   them from its log. A subscribe that registers after the deposal is kept.
 - A resume offset past the end of a follower's log is answered with a
-  redirect to the leader, which may hold records the follower has not
-  received yet. An offset between the follower's applied index and its
+  redirect to the leader, with the leader's client address, since the
+  leader may hold records the follower has not received yet. An offset between the follower's applied index and its
   log's tail is accepted, and waits.
 
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
@@ -1556,8 +1573,14 @@ fence are not asked.
 > `a_follower_delivers_what_is_committed_and_no_further`,
 > `a_follower_waits_for_a_handed_over_batch_to_settle`,
 > `leading_finishes_the_log_and_keeps_its_subscribers`,
-> `a_term_that_ended_is_not_marked_as_led` and
-> `a_follower_far_behind_skips_ahead_only_with_no_subscriber`;
+> `a_term_that_ended_is_not_marked_as_led`,
+> `a_follower_far_behind_skips_ahead_only_with_no_subscriber`,
+> `a_batch_the_log_delivered_is_not_delivered_again`,
+> `a_deposed_leaders_failed_batch_leaves_its_offsets_to_the_next_leader`,
+> `a_deposal_as_the_term_opens_leaves_the_stream_followed`,
+> `a_full_block_subscriber_does_not_hold_up_a_new_term`,
+> `a_snapshot_ends_readers_where_they_stood` and
+> `a_tail_only_subscriber_joins_at_the_committed_end`;
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
 > `a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
