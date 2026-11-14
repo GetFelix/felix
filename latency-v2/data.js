@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794636600475,
+  "lastUpdate": 1794640860948,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70686,6 +70686,72 @@ window.BENCHMARK_DATA = {
             "range": "927.84",
             "unit": "us",
             "extra": "trials: 5\nmedian: 365.00\nmean: 800.60\nstdev: 927.84\ncv: 115.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9b180931f6320f0167fff75d146e84a7bfb932da",
+          "message": "fix(broker): judge a groupless directory before a new group's catalog is applied (#2438) (#2508)\n\nUnder the controlplane_group_none mark, the catalog guard expects no group, and a start from the view runs admit against /v1/cluster/identity before the first apply, waiting through the 503 while a Raft group's identity is pending. admit deletes the mark on Adopt. Follow-up to #2504.",
+          "timestamp": "2026-11-14T07:15:08Z",
+          "tree_id": "e5a413cd9b2250502f23691af535219610ca82e8",
+          "url": "https://github.com/GetFelix/felix/commit/9b180931f6320f0167fff75d146e84a7bfb932da"
+        },
+        "date": 1794640854169,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 61,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 61.00\nmean: 61.20\nstdev: 0.45\ncv: 0.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 83,
+            "range": "7.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 85.80\nstdev: 7.98\ncv: 9.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 104,
+            "range": "492.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 324.60\nstdev: 492.16\ncv: 151.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 79,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 79.00\nmean: 79.20\nstdev: 0.45\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 164,
+            "range": "3.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 164.00\nmean: 163.20\nstdev: 3.11\ncv: 1.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 250,
+            "range": "81.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 250.00\nmean: 279.60\nstdev: 81.14\ncv: 29.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
