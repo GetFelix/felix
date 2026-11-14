@@ -78,6 +78,7 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
         subscriber_id: 1,
         frame: frame_a,
         item_count: 1,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: held_a,
@@ -88,6 +89,7 @@ async fn run_connection_writer_coalesces_multiple_deliveries() -> Result<()> {
         subscriber_id: 1,
         frame: frame_b,
         item_count: 1,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: held_b,
@@ -182,6 +184,7 @@ async fn run_connection_writer_handles_write_error() -> Result<()> {
         subscriber_id: 1,
         frame,
         item_count: 1,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: EgressBytes::default(),
@@ -245,6 +248,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
         subscriber_id: 1,
         frame,
         item_count: 1,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: EgressBytes::default(),
@@ -278,6 +282,7 @@ async fn run_connection_writer_unregister_drops_late_deliveries() -> Result<()> 
         subscriber_id: 1,
         frame: late,
         item_count: 1,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: EgressBytes::default(),
@@ -356,6 +361,7 @@ async fn run_connection_writer_writes_queued_frames_before_an_unregister() -> Re
         subscriber_id: 1,
         frame: felix_wire::binary::encode_event_batch_bytes(1, &[Bytes::from_static(b"last")])?,
         item_count: 1,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: EgressBytes::default(),
@@ -475,6 +481,7 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
             subscriber_id: 1,
             frame: felix_wire::binary::encode_event_batch_bytes(1, std::slice::from_ref(&big))?,
             item_count: 1,
+            base_offset: None,
             first_enqueued_at: now,
             enqueue_at: now,
             held: EgressBytes::default(),
@@ -491,6 +498,7 @@ async fn a_stalled_subscription_does_not_stop_the_others_on_its_connection() -> 
         subscriber_id: 2,
         frame: felix_wire::binary::encode_event_batch_bytes(2, &[Bytes::from_static(b"hello")])?,
         item_count: 1,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: EgressBytes::default(),
@@ -582,6 +590,7 @@ async fn block_policy_writes_a_batch_that_overshoots_the_bound() -> Result<()> {
                 &[Bytes::from(index.to_string())],
             )?,
             item_count: 1,
+            base_offset: None,
             first_enqueued_at: now,
             enqueue_at: now,
             held: EgressBytes::default(),
@@ -615,6 +624,103 @@ async fn block_policy_writes_a_batch_that_overshoots_the_bound() -> Result<()> {
         let batch = felix_wire::binary::decode_event_batch(&frame).context("decode")?;
         assert_eq!(batch.payloads[0], Bytes::from(index.to_string()));
     }
+
+    drop(tx);
+    writer_task.await.context("writer join")?;
+    let _ = crate::observability::timings::take_samples();
+    Ok(())
+}
+
+/// Frames the writer sheds over a subscriber's bound are the subscriber's
+/// drops like any other: its stats, its lag note and
+/// `felix_subscribe_dropped_total` count them, by record.
+#[tokio::test]
+#[serial]
+async fn frames_dropped_over_the_bound_are_counted_as_the_subscribers_drops() -> Result<()> {
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _recorder = metrics::set_default_local_recorder(&recorder);
+
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            felix_broker::StreamMetadata::default(),
+        )
+        .await?;
+    let (rx, guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await?
+        .into_parts();
+
+    let (server_config, cert) = make_server_config()?;
+    let transport = TransportConfig::default();
+    let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+    let addr = server.local_addr()?;
+    let server_task = tokio::spawn(async move { server.accept().await });
+    let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
+    let _client_conn = client.connect(addr, "localhost").await?;
+    let connection = server_task.await.context("server join")??;
+    let connection_id = connection.info().id.0;
+
+    // Queued before the writer runs, so it takes all of it in one pass and
+    // keeps the first two frames.
+    const FRAMES: usize = 10;
+    const KEPT: usize = 2;
+    const RECORDS_PER_FRAME: usize = 3;
+    let (tx, command_rx) = mpsc::channel(64);
+    tx.send(ConnectionCommand::Register {
+        subscriber_id: 1,
+        connection: connection.clone(),
+        connection_id: Some(connection_id),
+        event_send: connection.open_uni().await?,
+        guard,
+    })
+    .await
+    .context("register")?;
+    for index in 0..FRAMES {
+        let now = Instant::now();
+        let records = vec![Bytes::from_static(b"r"); RECORDS_PER_FRAME];
+        tx.send(ConnectionCommand::Delivery {
+            subscriber_id: 1,
+            frame: felix_wire::binary::encode_event_batch_bytes(1, &records)?,
+            item_count: RECORDS_PER_FRAME,
+            base_offset: Some((index * RECORDS_PER_FRAME) as u64),
+            first_enqueued_at: now,
+            enqueue_at: now,
+            held: EgressBytes::default(),
+        })
+        .await
+        .context("delivery")?;
+    }
+    let config = ConnectionWriterConfig {
+        max_queued_per_subscriber: KEPT,
+        block: false,
+        ..writer_config()
+    };
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, command_rx, config));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let dropped = ((FRAMES - KEPT) * RECORDS_PER_FRAME) as u64;
+    let page = broker
+        .list_subscriptions(&felix_wire::SubscriptionFilter::default(), None, 10)
+        .await;
+    assert_eq!(page.subscriptions.len(), 1);
+    assert_eq!(page.subscriptions[0].dropped, dropped);
+    assert_eq!(rx.lagged(), Some((KEPT * RECORDS_PER_FRAME) as u64));
+    let text = rendered.render();
+    assert!(
+        text.contains(&format!("felix_subscribe_dropped_total {dropped}")),
+        "{text}"
+    );
+    assert!(
+        text.contains(&format!("felix_sub_queue_dropped_total {dropped}")),
+        "{text}"
+    );
 
     drop(tx);
     writer_task.await.context("writer join")?;

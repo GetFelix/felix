@@ -152,6 +152,7 @@ pub(super) async fn run_lane_feeder(
                     config.subscription_id,
                     frame,
                     payloads.len(),
+                    envelope.base_offset(),
                     first_enqueued_at,
                     held,
                 )
@@ -206,6 +207,7 @@ pub(super) async fn run_lane_feeder(
                             config.subscription_id,
                             frame,
                             batch.len(),
+                            envelope.base_offset().map(|base| base + start as u64),
                             first_enqueued_at,
                             if end == payloads.len() {
                                 held.take().unwrap_or_default()
@@ -382,6 +384,7 @@ pub(super) async fn run_lane_feeder(
             config.subscription_id,
             frame,
             batch.len(),
+            batch_base,
             first_enqueued_at,
             held,
         )
@@ -460,12 +463,14 @@ fn frame_len(envelope: &DeliveryEnvelope, index: usize, headers: bool) -> usize 
     envelope.payloads()[index].len() + block
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn enqueue_lane_frame(
     manager: &WriterLaneManager,
     lane_idx: usize,
     subscriber_id: u64,
     frame: Bytes,
     item_count: usize,
+    base_offset: Option<u64>,
     first_enqueued_at: Instant,
     held: EgressBytes,
 ) {
@@ -473,6 +478,7 @@ pub(super) async fn enqueue_lane_frame(
         subscriber_id,
         frame,
         item_count,
+        base_offset,
         first_enqueued_at,
         enqueue_at: Instant::now(),
         held,

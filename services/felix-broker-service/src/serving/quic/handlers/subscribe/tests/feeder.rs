@@ -313,6 +313,7 @@ fn filler() -> LaneCommand {
         subscriber_id: 0,
         frame: Bytes::new(),
         item_count: 0,
+        base_offset: None,
         first_enqueued_at: now,
         enqueue_at: now,
         held: Default::default(),

@@ -162,6 +162,7 @@ pub(super) async fn run_writer_lane(
                     subscriber_id,
                     frame,
                     item_count,
+                    base_offset,
                     first_enqueued_at,
                     enqueue_at,
                     held,
@@ -180,6 +181,7 @@ pub(super) async fn run_writer_lane(
                                 subscriber_id,
                                 frame,
                                 item_count,
+                                base_offset,
                                 first_enqueued_at,
                                 enqueue_at,
                                 held,
@@ -233,6 +235,8 @@ pub(super) async fn run_connection_writer(
     let mut debug_bytes = 0u64;
     let mut debug_dequeues = 0u64;
     let mut subscribers: HashMap<u64, LaneSubscriber> = HashMap::default();
+    // Kept apart from `subscribers`, which is empty for one mid-write.
+    let mut drop_accounts: HashMap<u64, felix_broker::SubscriberDrops> = HashMap::default();
     let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::default();
     // Unregistered, but still writing what was queued before the unregister.
     let mut leaving: HashSet<u64> = HashSet::default();
@@ -252,6 +256,7 @@ pub(super) async fn run_connection_writer(
             let Some(mut subscriber) = subscribers.remove(&subscriber_id) else {
                 // Never registered here, or already gone: nothing to write to.
                 deliveries.remove(&subscriber_id);
+                drop_accounts.remove(&subscriber_id);
                 continue;
             };
             let Some(queue) = deliveries.get_mut(&subscriber_id) else {
@@ -358,6 +363,9 @@ pub(super) async fn run_connection_writer(
                             event_send,
                             guard,
                         } => {
+                            if let Some(account) = guard.drop_account() {
+                                drop_accounts.insert(subscriber_id, account);
+                            }
                             subscribers.insert(
                                 subscriber_id,
                                 LaneSubscriber {
@@ -399,12 +407,14 @@ pub(super) async fn run_connection_writer(
                             } else {
                                 subscribers.remove(&subscriber_id);
                                 deliveries.remove(&subscriber_id);
+                                drop_accounts.remove(&subscriber_id);
                             }
                         }
                         ConnectionCommand::Delivery {
                             subscriber_id,
                             frame,
                             item_count,
+                            base_offset,
                             first_enqueued_at,
                             enqueue_at,
                             held,
@@ -421,6 +431,9 @@ pub(super) async fn run_connection_writer(
                                 // on the connection are not made to wait for it.
                                 metrics::counter!("felix_sub_queue_dropped_total")
                                     .increment(item_count as u64);
+                                if let Some(account) = drop_accounts.get(&subscriber_id) {
+                                    account.dropped(base_offset, item_count as u64);
+                                }
                                 continue;
                             }
                             queue.push_back(LaneDelivery {
@@ -453,6 +466,7 @@ pub(super) async fn run_connection_writer(
                         if done {
                             leaving.remove(&subscriber_id);
                             deliveries.remove(&subscriber_id);
+                            drop_accounts.remove(&subscriber_id);
                             drop(subscriber);
                         } else {
                             subscribers.insert(subscriber_id, subscriber);
@@ -509,6 +523,7 @@ pub(super) async fn run_connection_writer(
                         // The stream is gone, and so is everything queued for it.
                         leaving.remove(&subscriber_id);
                         deliveries.remove(&subscriber_id);
+                        drop_accounts.remove(&subscriber_id);
                         t_counter!(
                             "broker_sub_conn_write_errors_total",
                             "connection_id" => conn_label.clone()

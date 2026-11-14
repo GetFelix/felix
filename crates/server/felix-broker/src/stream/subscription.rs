@@ -388,6 +388,41 @@ pub struct SubscriptionGuard {
     pub(crate) subscriber_id: u64,
 }
 
+impl SubscriptionGuard {
+    /// A handle for counting records dropped after the subscriber's queue,
+    /// for a writer that sheds frames the queue already accepted. `None`
+    /// once the subscriber is gone.
+    pub fn drop_account(&self) -> Option<SubscriberDrops> {
+        let stream_state = self.stream_state.upgrade()?;
+        let state = stream_state.subscribers.lock();
+        let entry = state.senders.get(&self.subscriber_id)?;
+        Some(SubscriberDrops {
+            lag: Arc::clone(&entry.lag),
+            stats: Arc::clone(&entry.stats),
+        })
+    }
+}
+
+/// Where a subscriber's drops are recorded, as its queue does for its own.
+#[derive(Debug, Clone)]
+pub struct SubscriberDrops {
+    lag: Arc<Lag>,
+    stats: Arc<SubscriberStats>,
+}
+
+impl SubscriberDrops {
+    /// Count `records` dropped from a frame whose first record is
+    /// `base_offset`, on a stream whose records have offsets. The lag note
+    /// is what turns it into an offset gap the subscriber can see.
+    pub fn dropped(&self, base_offset: Option<u64>, records: u64) {
+        if let Some(base) = base_offset {
+            self.lag.dropped(base);
+        }
+        self.stats.dropped(records);
+        metrics::counter!("felix_subscribe_dropped_total").increment(records);
+    }
+}
+
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         if let Some(stream_state) = self.stream_state.upgrade() {
