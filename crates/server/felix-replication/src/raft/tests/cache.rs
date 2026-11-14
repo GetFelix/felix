@@ -702,11 +702,9 @@ async fn a_member_behind_the_purge_catches_up_by_snapshot() {
     let member = cluster.runtime(behind).group(&shard(N)).expect("group");
     assert_eq!(member.cache().read().answer(7, 40), Some(Answer::Sum(39)));
     // It was sent the state, not the entries: its own log starts past them.
-    assert!(
-        cluster
-            .purged(behind, N)
-            .is_some_and(|purged| purged > first)
-    );
+    // openraft reports the purge after the install returns, so the agreed
+    // state can be seen first.
+    eventually(|| cluster.purged(behind, N).filter(|purged| *purged > first)).await;
     cluster.stop().await;
 }
 
