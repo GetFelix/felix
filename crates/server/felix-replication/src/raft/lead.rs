@@ -78,6 +78,11 @@ impl Leadership {
         *self.lead.borrow()
     }
 
+    /// Wakes on every change of this member's hold on its shard.
+    pub(crate) fn changes(&self) -> watch::Receiver<Lead> {
+        self.lead.subscribe()
+    }
+
     /// Whether this member still leads, for a publisher or a commit wait.
     pub(crate) fn watch(&self, raft: &Raft<ShardTypes, Machine>) -> Watched {
         Watched {

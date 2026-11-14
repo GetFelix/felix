@@ -21,6 +21,7 @@
 //!
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
+mod cache;
 mod codec;
 mod commit;
 mod deliver;
@@ -30,6 +31,7 @@ mod engine;
 #[doc(hidden)]
 pub mod fuzzing;
 mod group;
+mod install;
 mod lead;
 mod lease;
 mod machine;

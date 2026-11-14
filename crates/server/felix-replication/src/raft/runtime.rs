@@ -20,8 +20,9 @@ use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
-use super::group::{Group, Timers};
+use super::group::{self, Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
+use super::propose::Clock;
 use super::ticker;
 use super::types::{GroupId, MemberId, ShardTypes};
 use crate::driver::WriteFence;
@@ -54,6 +55,14 @@ pub struct RuntimeConfig {
     /// two starts an election.
     pub election_min: Duration,
     pub election_max: Duration,
+    /// A cache shard snapshots its state each time this many entries have
+    /// committed since its last snapshot. Zero never snapshots, and the
+    /// shard's log then grows without bound.
+    pub cache_snapshot_every: u64,
+    /// How many of the entries under a cache shard's snapshot stay in its
+    /// log, so a member a little behind catches up from the log and only
+    /// one further behind is sent the snapshot.
+    pub cache_log_keep: u64,
     /// How long after a majority's last answer a leader still acknowledges
     /// a `Leader` write on its own log. A follower promises its leader
     /// `election_max` on its own clock, so the lease must end before that
@@ -85,6 +94,8 @@ impl Default for RuntimeConfig {
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
+            cache_snapshot_every: 16_384,
+            cache_log_keep: 1_024,
             // A quarter under the follower's promise, which holds for
             // clocks up to 10% off.
             lease: Duration::from_millis(1500),
@@ -95,8 +106,17 @@ impl Default for RuntimeConfig {
     }
 }
 
+/// How long one piece of a snapshot may take to send and be answered. The
+/// last piece's answer waits for the install as well.
+pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
+
+fn wall_clock_micros() -> u64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    now.map_or(0, |now| now.as_micros() as u64)
+}
+
 impl RuntimeConfig {
-    pub(crate) fn raft(&self) -> Result<Config, InvalidTimers> {
+    pub(crate) fn raft(&self, kind: ShardKind) -> Result<Config, InvalidTimers> {
         if self.tick.is_zero() {
             return Err(InvalidTimers("the tick interval is zero".into()));
         }
@@ -120,12 +140,25 @@ impl RuntimeConfig {
             // The node ticker runs the timer check. A tick task per group
             // costs most of a core per thousand idle members.
             enable_tick: false,
-            // A shard's log is its data. Entries leave it by retention,
-            // never because a snapshot was taken.
-            snapshot_policy: SnapshotPolicy::Never,
-            // A snapshot that is taken anyway purges nothing. The default
-            // keeps only the last 1,000 entries under one.
-            max_in_snapshot_log_to_keep: u64::MAX,
+            // A stream shard's log is its data. Entries leave it by
+            // retention, never because a snapshot was taken. A cache
+            // shard's state is in its snapshot, so its log is cut to it.
+            // openraft checks the policy after each batch of messages, not
+            // on its tick, which is off.
+            snapshot_policy: match kind {
+                ShardKind::Cache if self.cache_snapshot_every > 0 => {
+                    SnapshotPolicy::LogsSinceLast(self.cache_snapshot_every)
+                }
+                _ => SnapshotPolicy::Never,
+            },
+            // For a stream shard a snapshot that is taken anyway purges
+            // nothing. The default keeps only the last 1,000 entries.
+            max_in_snapshot_log_to_keep: match kind {
+                ShardKind::Cache if self.cache_snapshot_every > 0 => self.cache_log_keep,
+                _ => u64::MAX,
+            },
+            // The deadline of one piece of a snapshot, which also sizes it.
+            install_snapshot_timeout: SNAPSHOT_PIECE_MILLIS,
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
@@ -365,10 +398,14 @@ struct Inner {
     log_mark: LogMarkMode,
     timers: Timers,
     raft: Arc<Config>,
+    /// What a cache shard's member runs on: it snapshots and purges.
+    raft_cache: Arc<Config>,
     transport: Arc<dyn RaftTransport>,
     registry: Arc<Registry>,
     /// Who is told when a shard opens and closes here.
     host: OnceLock<Arc<dyn EngineHost>>,
+    /// The clock cache shards opened from here on stamp by.
+    clock: parking_lot::RwLock<Clock>,
     stop: CancellationToken,
     ticker: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -406,8 +443,10 @@ impl GroupRuntime {
                     election_max: config.election_max.as_millis() as u64,
                     lease: config.lease.as_millis() as u64,
                 },
-                raft: Arc::new(config.raft()?),
+                raft: Arc::new(config.raft(ShardKind::Stream)?),
+                raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
                 transport,
+                clock: parking_lot::RwLock::new(Arc::new(wall_clock_micros)),
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
@@ -436,6 +475,11 @@ impl GroupRuntime {
         F: WriteFence + ?Sized + 'static,
     {
         self.set_host(Arc::new(Host::new(serving, fence)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_clock(&self, clock: Clock) {
+        *self.inner.clock.write() = clock;
     }
 
     pub(crate) fn set_host(&self, host: Arc<dyn EngineHost>) {
@@ -633,19 +677,28 @@ impl GroupRuntime {
     ) -> Result<(), OpenError> {
         let inner = &self.inner;
         let registry = &inner.registry;
+        let host = group::Host {
+            engine: inner.host.get().cloned(),
+            clock: Arc::clone(&inner.clock.read()),
+        };
+        let raft = match group.shard.kind {
+            ShardKind::Stream => &inner.raft,
+            ShardKind::Cache => &inner.raft_cache,
+        };
         let group = Group::open(
             group,
             member,
             log,
             marks.map(|marks| (marks, inner.log_mark)),
-            Arc::clone(&inner.raft),
+            Arc::clone(raft),
             Arc::clone(&inner.transport),
             inner.timers,
-            inner.host.get().cloned(),
+            host,
             Arc::clone(&registry.tail_budget),
         )
         .await?;
         let group = Arc::new(group);
+        group.start_expiry();
         let placed = {
             let mut slots = registry.slots.write();
             let placed = !slots.closed;
