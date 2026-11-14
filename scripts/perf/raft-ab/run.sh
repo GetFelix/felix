@@ -51,7 +51,7 @@ fi
 : "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}"
 MAX_HOLD_SECS=$(( 3600 + ROUNDS * 8 * 600 ))
 
-RUNID=$(date -u +%Y%m%dT%H%M%SZ)$([ "$SMOKE" = 1 ] && echo -smoke)
+RUNID=$(date -u +%Y%m%dT%H%M%SZ)$([ "$SMOKE" = 1 ] && echo -smoke || true)
 OUT=${OUT:-/Volumes/External/worktrees/.scratch/perf-raft-ab/runs/$RUNID}
 mkdir -p "$OUT/cells"
 exec > >(tee -a "$OUT/run.log") 2>&1 < /dev/null
