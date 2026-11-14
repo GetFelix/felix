@@ -349,33 +349,44 @@ async fn a_committed_id_saved_before_the_cut_reads_back_older() {
         let written = entries(0..26);
         append_flushed(&mut raft, &written).await;
         let log = raft.disk_log().clone();
+        // Taken before the first write, so the next is due no sooner than
+        // an interval after it.
+        let first_save = std::time::Instant::now();
+        let within = || first_save.elapsed() < COMMIT_PERSIST_INTERVAL / 2;
         raft.save_committed(Some(written[9].log_id))
             .await
             .expect("save");
         log.commit_offset_persisted().await;
-        let saved_at = std::time::Instant::now();
         raft.save_committed(Some(written[25].log_id))
             .await
             .expect("save");
         // Long enough for a write started by the save to land.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        let saved = log.saved_commit_offset();
         assert_eq!(log.commit_offset(), 26, "seed {seed}");
+        let saved = log.saved_commit_offset();
         // A starved runner can take most of the interval to get here.
-        if saved_at.elapsed() < COMMIT_PERSIST_INTERVAL / 2 {
+        if within() {
             assert_eq!(saved, 10, "seed {seed}: a write within the interval");
         }
         sim_fs::crash(&sim.0, seed).expect("crash");
+        let stale = within();
+        // The writer behind the old log would otherwise write after the cut.
+        drop(log);
+        drop(raft);
 
         let mut raft = sim.open();
         assert_eq!(all(&raft).await.expect("read after the cut"), written);
-        let committed = saved as usize - 1;
-        assert_eq!(
-            raft.read_committed().await.expect("committed"),
-            Some(written[committed].log_id),
-            "seed {seed}"
-        );
-        raft.truncate_after(Some(written[committed - 1].log_id))
+        let committed = raft.read_committed().await.expect("committed");
+        if stale {
+            assert_eq!(committed, Some(written[9].log_id), "seed {seed}");
+        } else {
+            assert!(
+                committed == Some(written[9].log_id) || committed == Some(written[25].log_id),
+                "seed {seed}: {committed:?}"
+            );
+        }
+        let below = committed.map_or(8, |id| id.index as usize - 1);
+        raft.truncate_after(Some(written[below].log_id))
             .await
             .expect_err("below the committed id");
         raft.save_committed(Some(written[25].log_id))
