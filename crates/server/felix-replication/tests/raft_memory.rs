@@ -22,10 +22,10 @@ use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, Reco
 static LIVE: AtomicUsize = AtomicUsize::new(0);
 /// The same in allocations of [`RESERVATION`] or more.
 static RESERVED: AtomicUsize = AtomicUsize::new(0);
-/// An allocation this large is a buffer set aside ahead of use, which
-/// openraft does for some queues when a member starts. Its pages are not
-/// resident until they are written, and an idle member does not write
-/// them, so they are counted apart from what the gate measures.
+/// An allocation this large is not a member's working memory. openraft
+/// builds its histogram scale tables once in a process, about 26 MB however
+/// many members there are, so they are counted apart from what the gate
+/// measures.
 const RESERVATION: usize = 128 * 1024;
 
 fn counter(size: usize) -> &'static AtomicUsize {
@@ -147,6 +147,10 @@ const GROUPS: u32 = 40;
 /// 5,000-member gate, and the design has to hear about it. See "The
 /// groups-per-broker gate" in the design.
 const MEMBER_BUDGET: usize = 256 * 1024;
+/// What the process may hold in allocations of [`RESERVATION`] or more.
+/// openraft's tables are 26 MB. One such buffer in every member would add
+/// at least 15 MB, as the 8,192-slot responder queue once did (openraft#2323).
+const PROCESS_RESERVE: usize = 32 * 1024 * 1024;
 
 #[derive(Default)]
 struct Net {
@@ -305,19 +309,23 @@ async fn an_idle_member_stays_within_the_designs_memory() {
     let each = with_log.saturating_sub(a_written_log);
     let reserved = RESERVED
         .load(Ordering::Relaxed)
-        .saturating_sub(reserved_before)
-        / members;
+        .saturating_sub(reserved_before);
     println!(
         "{members} idle members, leaders per broker {leaders:?}: {} KB each, after {} KB for a \
-         written log, and {} KB each reserved in large buffers that are not counted",
+         written log, and {} MB in large allocations for the whole process that are not counted",
         each / 1024,
         a_written_log / 1024,
-        reserved / 1024
+        reserved / (1024 * 1024)
     );
     print_trace(members);
     assert!(
         each <= MEMBER_BUDGET,
         "a member costs {each} bytes, over the {MEMBER_BUDGET} budget"
+    );
+
+    assert!(
+        reserved <= PROCESS_RESERVE,
+        "{reserved} bytes in large allocations: a member is reserving a large buffer again"
     );
 
     for broker in BROKERS {
