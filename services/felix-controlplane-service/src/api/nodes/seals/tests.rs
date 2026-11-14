@@ -29,7 +29,7 @@ async fn active(store: &InMemoryStore) -> ShardAssignment {
         move_reason: None,
         incarnation: 0,
         fence_storage_ids: Default::default(),
-        member_storage_ids: Default::default(),
+        member_storage_ids: [("broker-x".to_string(), COPY_X.to_string())].into(),
         learners: Default::default(),
         pending_set: None,
         previous_generation: None,

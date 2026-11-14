@@ -457,7 +457,9 @@ pub trait ControlPlaneStore: Send + Sync {
         &self,
         node_id: &str,
     ) -> StoreResult<Vec<ShardAssignment>>;
-    /// Remove one assignment, leaving the shard unowned.
+    /// Remove one assignment, leaving the shard unowned. Refused with
+    /// [`StoreError::Conflict`] for a shard that switched to Raft, which only
+    /// deleting its stream removes.
     async fn delete_shard_assignment(&self, key: &ShardKey) -> StoreResult<()>;
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>>;
     /// Each shard's first assignment still in the retained change log, as

@@ -36,13 +36,15 @@ use crate::store::{AssignmentWrite, StoreError};
 /// Order the seal that starts a stream shard's switch to Raft.
 ///
 /// The shard closes for writes until its leader reports the seal and a Raft
-/// leader opens, or until the seal is given up. There is no switch back.
+/// leader opens, or until the seal is given up. There is no switch back. A
+/// second call on a sealed shard seals it again at the next generation, which
+/// gives up the first seal: a report for it is then stale.
 ///
 /// # Errors
 /// - 404 when the shard has no assignment.
 /// - 409 `raft_unavailable` until the fleet has finalized `shard_raft`,
-///   `not_sealable` for a shard that is not active, is moving or already
-///   switched, and `conflict` when the shard changed under the request or a
+///   `not_sealable` for a shard that is not active, is moving, already
+///   switched, or led by a node with no registered copy id, and `conflict` when the shard changed under the request or a
 ///   control-plane member is below metadata version 34.
 pub(crate) async fn seal_shard(
     State(state): State<AppState>,

@@ -159,11 +159,9 @@ impl SealReport {
         let Some(copy) = self.voters.get(&switch.sealer) else {
             return Err(SealReportError::SealerMissing(switch.sealer.clone()));
         };
-        if switch
-            .sealer_copy
-            .as_ref()
-            .is_some_and(|ordered| ordered != copy)
-        {
+        // An order without the sealer's copy id cannot tell a replaced disk
+        // apart, so it is refused too.
+        if switch.sealer_copy.as_ref() != Some(copy) {
             return Err(SealReportError::AnotherSealer(switch.sealer.clone()));
         }
         Ok(())
@@ -188,6 +186,8 @@ pub enum SealOrderError {
     Moving,
     #[error("the shard already switched to Raft")]
     Switched,
+    #[error("the shard's leader has no registered copy id")]
+    NoSealerCopy,
 }
 
 impl ShardAssignment {
@@ -209,6 +209,11 @@ impl ShardAssignment {
             || !self.learners.is_empty()
         {
             return Err(SealOrderError::Moving);
+        }
+        // The report is checked against the sealer's copy id. Without one
+        // there is nothing to check a replaced disk against.
+        if !self.member_storage_ids.contains_key(&self.leader) {
+            return Err(SealOrderError::NoSealerCopy);
         }
         Ok(())
     }

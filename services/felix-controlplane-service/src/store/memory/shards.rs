@@ -387,9 +387,17 @@ pub(super) async fn delete_shard_assignment(
     key: &ShardKey,
 ) -> StoreResult<()> {
     let mut state = store.shards.write().await;
-    if state.records.remove(key).is_none() {
-        return Err(StoreError::NotFound("shard assignment".into()));
+    match state.records.get(key) {
+        None => return Err(StoreError::NotFound("shard assignment".into())),
+        // A put would then assign the shard afresh on the hybrid engine.
+        Some(existing) if existing.switched() => {
+            return Err(StoreError::Conflict(
+                "the shard switched to Raft; only deleting its stream removes it".into(),
+            ));
+        }
+        Some(_) => {}
     }
+    state.records.remove(key);
     state.record(ShardAssignmentChangeOp::Unassigned, key, None);
     // Taken under the assignment lock, so a report cannot slip in between.
     store.replica_reports.write().await.remove(key);

@@ -276,6 +276,7 @@ impl RaftStore {
         assignment.previous_generation = None;
         assignment.readmitted.clear();
         assignment.placed = None;
+        assignment.switch = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds

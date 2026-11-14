@@ -123,11 +123,33 @@ pub(crate) async fn token(store: &dyn ControlPlaneStore) -> u64 {
 }
 
 pub(crate) async fn clear(store: &dyn ControlPlaneStore) {
+    // A switched shard is removed only with its stream.
+    let switched: std::collections::HashSet<StreamKey> = store
+        .list_shard_assignments()
+        .await
+        .expect("list")
+        .iter()
+        .filter(|assignment| assignment.switched())
+        .map(|assignment| StreamKey {
+            tenant_id: assignment.key.tenant_id.clone(),
+            namespace: assignment.key.namespace.clone(),
+            stream: assignment.key.stream.clone(),
+        })
+        .collect();
+    for stream in &switched {
+        store
+            .delete_stream(stream)
+            .await
+            .expect("delete the stream");
+    }
     for assignment in store.list_shard_assignments().await.expect("list") {
         store
             .delete_shard_assignment(&assignment.key)
             .await
             .expect("delete");
+    }
+    if !switched.is_empty() {
+        seed(store).await;
     }
 }
 

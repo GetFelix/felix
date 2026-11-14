@@ -2832,10 +2832,12 @@ member at metadata level 34.
 - *The seal order.* `POST /v1/placement/seal/{tenant}/{namespace}/{stream}/{shard}`
   names the shard's leader and set again at the next generation `G`, with
   `switch` holding `G`, the leader as the sealer, and the sealer's storage
-  identity. It is refused until the fleet has finalized `shard_raft`, and
-  while the shard is not active or a move or a set change is in progress.
-  The route names stream shards only. The order
-  stands only at `G`.
+  identity. It is refused until the fleet has finalized `shard_raft`,
+  while the shard is not active or a move or a set change is in progress,
+  and while the leader has no registered storage identity, since the report
+  is checked against it. The route names stream shards only. The order
+  stands only at `G`. Ordering again on a sealed shard seals it at `G+1`,
+  which gives up the first seal: its report then loses the compare.
 - *The report.* The seal leader sends its report to
   `POST /v1/nodes/{node_id}/seal-report`: `G`, `N`, `S`, the digests, the
   side-log ranges and the copy ids that acknowledged. It is recorded only
@@ -2847,9 +2849,11 @@ member at metadata level 34.
   compare, so only the broker the order names can win or give up its seal. The write keeps
   generation `G`, the base's, and from then on the shard's engine is Raft:
   every later assignment write, adoption of a hybrid election and second
-  seal is refused with a conflict as it applies. Deleting the stream still
-  removes its shards' assignments. The recorded report sent
-  again is answered as accepted, so a lost answer is safe to retry.
+  seal is refused with a conflict as it applies. So is deleting the
+  assignment alone, which would let the next write assign the shard afresh
+  on the hybrid engine; deleting the stream still removes its shards'
+  assignments. The recorded report sent again by the sealer is answered as
+  accepted, so a lost answer is safe to retry.
 - *The give-up.* A leader whose seal cannot finish (a follower's digest
   differs, it restarted after its claim, it lost its promise) sends
   `POST /v1/nodes/{node_id}/seal-give-up`. The shard is named again at
@@ -2874,7 +2878,8 @@ set before the seal, as it did the seal order.
 An import restores `switch` as the export holds it, like every other
 field of an assignment. Restoring an export taken before a shard switched
 brings back a hybrid record for a shard whose brokers run Raft, so an
-export older than a switch must not be imported over it.
+export older than a switch must not be imported over it. Refusing such an
+import is [#2548](https://github.com/GetFelix/felix/issues/2548).
 
 A report for a shard with no standing order is answered `accepted: false`
 and changes nothing, so the control plane never names Raft for a shard

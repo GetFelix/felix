@@ -3,9 +3,10 @@
 //! written to a shard that switched.
 use std::collections::BTreeMap;
 
-use super::shards::{assignment, clear, key};
+use super::shards::{assignment, clear, key, seed};
 use crate::model::{
     ElectedLeader, SealReport, SealedSideLog, ShardAssignment, ShardKey, ShardKind, ShardState,
+    StreamKey,
 };
 use crate::store::{AssignmentWrite, ControlPlaneStore, StoreError};
 
@@ -25,6 +26,7 @@ pub(super) async fn run_switch_contract(store: &dyn ControlPlaneStore) {
     a_report_must_name_a_majority_with_the_sealer(store).await;
     a_report_must_name_the_copy_the_seal_was_ordered_from(store).await;
     nothing_is_written_to_a_switched_shard(store).await;
+    a_seal_needs_the_leaders_copy_id(store).await;
     a_seal_given_up_can_be_ordered_again(store).await;
     only_the_sealer_wins_or_gives_up_its_seal(store).await;
     the_set_before_the_seal_stays_listed_after_the_report(store).await;
@@ -250,11 +252,17 @@ async fn one_report_wins_a_generation(store: &dyn ControlPlaneStore) {
     // The recorded one sent again is answered as recorded, and writes nothing.
     let again = written(
         store
-            .accept_seal_report(&order.key, first, "broker-x")
+            .accept_seal_report(&order.key, first.clone(), "broker-x")
             .await
             .expect("report"),
     );
     assert_eq!(again, switched);
+    // But only to the sealer: another node is not told it won.
+    let err = store
+        .accept_seal_report(&order.key, first, "broker-y")
+        .await
+        .expect_err("not the sealer");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
 }
 
 /// The report names the seal it is for. One for another generation is not
@@ -388,14 +396,15 @@ async fn no_shard_switches_without_a_seal(store: &dyn ControlPlaneStore) {
 }
 
 async fn a_report_must_name_a_majority_with_the_sealer(store: &dyn ControlPlaneStore) {
-    // Three copies and no recorded copy id, so each refusal below has one
-    // reason.
+    // Three copies and only the sealer's copy id recorded, so each refusal
+    // below has one reason.
     let _ = store
         .register_node(super::nodes::node("broker-z", 7502))
         .await;
     clear(store).await;
     let mut wanted = assignment(0, "broker-x");
     wanted.replicas = vec!["broker-y".to_string(), "broker-z".to_string()];
+    wanted.member_storage_ids = BTreeMap::from([("broker-x".to_string(), COPY_X.to_string())]);
     store
         .put_shard_assignment(wanted.clone())
         .await
@@ -517,11 +526,48 @@ async fn nothing_is_written_to_a_switched_shard(store: &dyn ControlPlaneStore) {
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
     assert_eq!(read(store, &switched.key).await, switched);
 
-    // Deleting the stream's shard still works.
-    store
+    // Deleting the assignment alone would let a put assign it afresh on the
+    // hybrid engine. Deleting the stream still removes it.
+    let err = store
         .delete_shard_assignment(&switched.key)
         .await
-        .expect("delete");
+        .expect_err("a delete of a switched shard");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert_eq!(read(store, &switched.key).await, switched);
+    store
+        .delete_stream(&StreamKey {
+            tenant_id: switched.key.tenant_id.clone(),
+            namespace: switched.key.namespace.clone(),
+            stream: switched.key.stream.clone(),
+        })
+        .await
+        .expect("delete the stream");
+    assert!(matches!(
+        store.get_shard_assignment(&switched.key).await,
+        Err(StoreError::NotFound(_))
+    ));
+    seed(store).await;
+}
+
+/// The report is checked against the sealer's copy id, so a leader that
+/// registered none is not sealed: a replaced disk could not be told apart.
+async fn a_seal_needs_the_leaders_copy_id(store: &dyn ControlPlaneStore) {
+    clear(store).await;
+    let mut wanted = assignment(0, "broker-x");
+    wanted.replicas = vec!["broker-y".to_string()];
+    wanted.member_storage_ids = BTreeMap::from([("broker-y".to_string(), COPY_Y.to_string())]);
+    store
+        .put_shard_assignment(wanted.clone())
+        .await
+        .expect("assign");
+    wanted.state = ShardState::Active;
+    let current = store.put_shard_assignment(wanted).await.expect("activate");
+    let err = store
+        .seal_shard(&current.key, current.generation)
+        .await
+        .expect_err("no copy id for the leader");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert_eq!(read(store, &current.key).await, current);
 }
 
 async fn a_seal_given_up_can_be_ordered_again(store: &dyn ControlPlaneStore) {

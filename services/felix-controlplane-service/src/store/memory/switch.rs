@@ -74,11 +74,15 @@ pub(super) async fn accept_seal_report(
         current: Some(existing.generation),
     };
     // The report this shard switched on, sent again: its answer was lost.
-    if existing
+    // Only the sealer is answered as if it won.
+    if let Some(switch) = existing
         .switch
         .as_ref()
-        .is_some_and(|switch| switch.report.as_ref() == Some(&report))
+        .filter(|switch| switch.report.as_ref() == Some(&report))
     {
+        if switch.sealer != sealer {
+            return Err(not_sealer(sealer));
+        }
         return Ok(AssignmentWrite::Written(existing.clone()));
     }
     // The compare: the seal this report is for still stands. A later

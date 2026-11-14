@@ -4507,12 +4507,25 @@ async fn a_switch_waits_for_every_member_at_its_level() {
     }
     seed(store.as_ref()).await;
     let mut wanted = assignment(0, "broker-x");
+    wanted.member_storage_ids = BTreeMap::from([(
+        "broker-x".to_string(),
+        "000102030405060708090a0b0c0d0e0f".to_string(),
+    )]);
     store
         .put_shard_assignment(wanted.clone())
         .await
         .expect("assign");
     wanted.state = ShardState::Active;
+    // A switch record a caller copied in is dropped before the log, so the
+    // put is not raised to a level the group lacks.
+    wanted.switch = Some(crate::model::ShardSwitch {
+        generation: 1,
+        sealer: "broker-x".to_string(),
+        sealer_copy: None,
+        report: None,
+    });
     let active = store.put_shard_assignment(wanted).await.expect("activate");
+    assert!(active.switch.is_none());
     let key = active.key.clone();
 
     let refused = store.seal_shard(&key, active.generation).await;
