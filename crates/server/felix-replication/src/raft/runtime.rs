@@ -64,8 +64,11 @@ pub struct RuntimeConfig {
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
     /// mark at the data root.
     pub log_mark: LogMarkMode,
-    /// Record bytes the Raft logs of this runtime keep in memory for
-    /// replication reads, all groups together. Each log keeps at most 4 MiB.
+    /// Record bytes the shard groups' Raft logs of this runtime keep in
+    /// memory for replication reads, all groups together. Each log keeps at
+    /// most 4 MiB. The bound is soft: a log whose cache is in use is skipped
+    /// until the next eviction pass. The metadata group's log is not
+    /// counted; it keeps its own 4 MiB.
     pub tail_cache_bytes: u64,
 }
 

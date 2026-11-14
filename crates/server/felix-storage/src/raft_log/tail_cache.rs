@@ -8,7 +8,7 @@
 //! read that finds nothing goes to the segments.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use crate::log::{LogRecord, Offset};
@@ -18,23 +18,33 @@ use crate::metrics_names::RAFT_TAIL_CACHE_BYTES;
 /// Small under test, so the adapter's tests read from both.
 const CAPACITY_BYTES: u64 = if cfg!(test) { 2 << 10 } else { 4 << 20 };
 
-/// The least a log may keep when many logs hold bytes, so a share never
-/// shrinks to nothing.
-const FLOOR_BYTES: u64 = if cfg!(test) { 256 } else { 64 << 10 };
-
 /// A byte budget for the tail caches of every Raft log that shares it.
 ///
 /// An append adds to one atomic total and nothing else while the total is
-/// under the limit. Each log's own limit is its fair share among the logs
-/// that hold bytes, capped at the per-log capacity, so a busy log trims its
-/// own oldest records and never takes another's. Only when the total is
-/// still over the limit does an append take the registry lock, to empty
-/// the caches of the logs appended to least recently.
+/// under the limit, and every log keeps the full per-log capacity however
+/// many logs there are. Only when the total goes over the limit does an
+/// append start an eviction pass: it empties the caches of the logs
+/// appended to least recently, down to a low-water mark, so one pass serves
+/// many appends and only one runs at a time. If the logs being emptied
+/// were themselves appending just now, the appenders alone exceed the
+/// budget, and the per-log cap falls to their fair share until the total
+/// is well under the limit again.
+///
+/// The limit is soft: a victim whose lock is busy is skipped until the
+/// next pass.
 pub struct TailBudget {
     limit: u64,
     held: AtomicU64,
     /// Logs with a non-empty cache.
     holders: AtomicU64,
+    /// Bytes a log may keep now: the capacity, less while appenders
+    /// exceed the budget.
+    cap: AtomicU64,
+    /// Set by the appender running an eviction pass.
+    evicting: AtomicBool,
+    /// Full eviction passes run.
+    #[cfg(test)]
+    passes: AtomicU64,
     /// Orders appends across logs: the least recent is evicted first.
     clock: AtomicU64,
     /// Taken to register a log and to evict, never on an append under the
@@ -44,9 +54,8 @@ pub struct TailBudget {
 
 impl TailBudget {
     /// The limit of [`Self::process`]. 64 logs can hold a full cache of
-    /// 4 MiB; with more, each log's share shrinks. A broker with 2,000 busy
-    /// groups holds 256 MiB at most, a quarter of the 1 GB Raft memory row
-    /// of the groups-per-broker gate.
+    /// 4 MiB. A broker with 2,000 groups holds 256 MiB at most, a quarter
+    /// of the 1 GB memory target for the Raft groups of a broker.
     pub const DEFAULT_LIMIT_BYTES: u64 = 256 << 20;
 
     /// A budget of `limit` bytes.
@@ -55,6 +64,10 @@ impl TailBudget {
             limit,
             held: AtomicU64::new(0),
             holders: AtomicU64::new(0),
+            cap: AtomicU64::new(CAPACITY_BYTES),
+            evicting: AtomicBool::new(false),
+            #[cfg(test)]
+            passes: AtomicU64::new(0),
             clock: AtomicU64::new(0),
             logs: parking_lot::Mutex::new(Vec::new()),
         })
@@ -78,9 +91,8 @@ impl TailBudget {
         metrics::gauge!(RAFT_TAIL_CACHE_BYTES).set(self.held() as f64);
     }
 
-    fn share(&self) -> u64 {
-        let holders = self.holders.load(Ordering::Relaxed).max(1);
-        (self.limit / holders).clamp(FLOOR_BYTES, CAPACITY_BYTES)
+    fn cap(&self) -> u64 {
+        self.cap.load(Ordering::Relaxed)
     }
 
     /// Move the totals for a log whose cache went from `before` to `after`
@@ -100,9 +112,17 @@ impl TailBudget {
     }
 
     /// Empty the caches of the logs appended to least recently until the
-    /// total fits, never `keep`'s. A cache in use is skipped, not waited
-    /// for: no log's lock is held while another's is taken.
+    /// total is at the low-water mark, never `keep`'s. A cache in use is
+    /// skipped, not waited for: no log's lock is held while another's is
+    /// taken. Does nothing if another append is already running a pass.
     fn evict(&self, keep: &Tail) {
+        if self.evicting.swap(true, Ordering::Acquire) {
+            return;
+        }
+        #[cfg(test)]
+        self.passes.fetch_add(1, Ordering::Relaxed);
+        let holders = self.holders.load(Ordering::Relaxed);
+        let now = self.clock.load(Ordering::Relaxed);
         let mut victims: Vec<Arc<Tail>> = {
             let logs = self.logs.lock();
             logs.iter()
@@ -111,11 +131,34 @@ impl TailBudget {
                 .collect()
         };
         victims.sort_by_key(|log| log.last_append.load(Ordering::Relaxed));
+        let low_water = self.limit - self.limit / 8;
+        let mut appending = 1;
         for victim in victims {
-            if self.held() <= self.limit {
+            if self.held() <= low_water {
                 break;
             }
+            // A log that appended more than once, the latest within the
+            // last `holders` appends, is still writing, not idle.
+            let recent = now.saturating_sub(victim.last_append.load(Ordering::Relaxed));
+            if victim.appends.load(Ordering::Relaxed) > 1 && recent <= holders {
+                appending += 1;
+            }
             victim.clear_if_free();
+        }
+        if appending > 1 {
+            self.cap.store(
+                (self.limit / appending).clamp(1, CAPACITY_BYTES),
+                Ordering::Relaxed,
+            );
+        }
+        self.evicting.store(false, Ordering::Release);
+    }
+
+    /// Give logs their full capacity back once the total is well under the
+    /// limit.
+    fn relax(&self) {
+        if self.cap() < CAPACITY_BYTES && self.held() < self.limit / 2 {
+            self.cap.store(CAPACITY_BYTES, Ordering::Relaxed);
         }
     }
 }
@@ -127,6 +170,9 @@ pub(super) struct Tail {
     /// The cache's bytes, readable without its lock.
     bytes: AtomicU64,
     last_append: AtomicU64,
+    /// Appends so far, to tell a log still writing from one that took a
+    /// few entries and went quiet.
+    appends: AtomicU64,
 }
 
 impl Tail {
@@ -136,6 +182,7 @@ impl Tail {
             cache: parking_lot::Mutex::default(),
             bytes: AtomicU64::new(0),
             last_append: AtomicU64::new(0),
+            appends: AtomicU64::new(0),
         });
         let mut logs = tail.budget.logs.lock();
         if logs.len() == logs.capacity() {
@@ -155,15 +202,18 @@ impl Tail {
         {
             let mut cache = self.cache.lock();
             let before = cache.bytes;
-            cache.extend(cuts, self.budget.share(), records);
+            cache.extend(cuts, self.budget.cap(), records);
             self.bytes.store(cache.bytes, Ordering::Relaxed);
             self.budget.moved(before, cache.bytes);
         }
         let now = self.budget.clock.fetch_add(1, Ordering::Relaxed);
         self.last_append.store(now, Ordering::Relaxed);
+        self.appends.fetch_add(1, Ordering::Relaxed);
         // The lock above is released: eviction locks other logs' caches.
         if self.budget.held() > self.budget.limit {
             self.budget.evict(self);
+        } else {
+            self.budget.relax();
         }
     }
 
@@ -208,10 +258,12 @@ pub(super) struct TailCache {
 }
 
 impl TailCache {
-    /// Take records just written, keeping at most `cap` bytes. `cuts` is
-    /// the log's count from before the write. Anything held from before a
-    /// cut, or not directly below these, is dropped.
+    /// Take records just written, keeping at most `cap` bytes, though never
+    /// less than the batch itself unless that alone exceeds the capacity.
+    /// `cuts` is the log's count from before the write. Anything held from
+    /// before a cut, or not directly below these, is dropped.
     fn extend(&mut self, cuts: u64, cap: u64, records: impl IntoIterator<Item = LogRecord>) {
+        let mut batch = 0;
         for record in records {
             let follows = self
                 .records
@@ -221,9 +273,16 @@ impl TailCache {
                 self.clear();
                 self.cuts = cuts;
             }
-            self.bytes += size_of_record(&record);
+            let size = size_of_record(&record);
+            batch += size;
+            self.bytes += size;
             self.records.push_back(record);
         }
+        let cap = if batch > CAPACITY_BYTES {
+            CAPACITY_BYTES
+        } else {
+            cap.max(batch)
+        };
         while self.bytes > cap {
             let Some(oldest) = self.records.pop_front() else {
                 break;

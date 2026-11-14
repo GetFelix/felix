@@ -202,3 +202,86 @@ fn logs_appending_and_evicting_each_other_finish() {
     let sum: u64 = logs.iter().map(|log| log.cache.lock().bytes).sum();
     assert_eq!(sum, budget.held());
 }
+
+#[test]
+fn a_busy_log_keeps_the_full_cap_next_to_many_idle_ones() {
+    let budget = TailBudget::new(each() * 1_000);
+    let idle: Vec<_> = (0..500).map(|_| tail(&budget)).collect();
+    for log in &idle {
+        append(log, 0, 1, 1);
+    }
+    let busy = tail(&budget);
+    for offset in 0..3 {
+        append(&busy, offset, 1, 400);
+    }
+
+    assert!(budget.held() < budget.limit);
+    assert_eq!(budget.cap.load(Ordering::Relaxed), CAPACITY_BYTES);
+    assert_eq!(
+        offsets(busy.range(1, 0, 3)),
+        Some(vec![0, 1, 2]),
+        "large entries are served from memory with nothing to evict"
+    );
+    assert!(idle.iter().all(|log| log.held() > 0), "nothing was evicted");
+}
+
+#[test]
+fn idle_logs_holding_bytes_are_evicted_before_a_busy_one_loses_any() {
+    let budget = TailBudget::new(each() * 10);
+    let idle: Vec<_> = (0..10).map(|_| tail(&budget)).collect();
+    for log in &idle {
+        append(log, 0, 1, 100);
+    }
+    let busy = tail(&budget);
+    for offset in 0..4 {
+        append(&busy, offset, 1, 100);
+    }
+
+    assert!(budget.held() <= budget.limit);
+    assert_eq!(idle[0].held(), 0, "the least recent idle log went first");
+    assert!(idle[9].held() > 0, "the most recent idle log is kept");
+    assert_eq!(
+        offsets(busy.range(1, 0, 4)),
+        Some(vec![0, 1, 2, 3]),
+        "the busy log lost nothing"
+    );
+    assert_eq!(budget.cap.load(Ordering::Relaxed), CAPACITY_BYTES);
+}
+
+#[test]
+fn appenders_over_the_budget_share_it() {
+    let budget = TailBudget::new(each() * 20);
+    let logs: Vec<_> = (0..10).map(|_| tail(&budget)).collect();
+    for round in 0..60 {
+        for log in &logs {
+            append(log, round, 1, 100);
+        }
+    }
+    assert!(
+        budget.cap.load(Ordering::Relaxed) < CAPACITY_BYTES,
+        "the cap fell to a share"
+    );
+    assert!(budget.held() <= budget.limit + each());
+    let last = logs.last().expect("logs");
+    assert!(last.range(1, 59, 60).is_some(), "the newest is in memory");
+}
+
+#[test]
+fn a_sustained_over_budget_load_runs_few_passes() {
+    let budget = TailBudget::new(each() * 400);
+    let logs: Vec<_> = (0..600).map(|_| tail(&budget)).collect();
+    let mut appends = 0;
+    for round in 0..30 {
+        for log in &logs {
+            append(log, round, 1, 100);
+            appends += 1;
+        }
+    }
+    let passes = budget.passes.load(Ordering::Relaxed);
+    assert!(passes > 0, "the load was over the budget");
+    assert!(
+        passes * 20 < appends,
+        "{passes} passes for {appends} appends"
+    );
+    assert!(budget.held() <= budget.limit);
+}

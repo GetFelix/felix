@@ -201,7 +201,7 @@ async fn a_read_from_memory_restarts_when_the_log_is_cut_under_it() {
 /// from the segments, and the one that appended keeps its own in memory.
 #[tokio::test]
 async fn an_evicted_cache_is_read_from_the_segments() {
-    let budget = TailBudget::new(2048);
+    let budget = TailBudget::new(3000);
     let open_on = |dir: &TempDir, label: &str| {
         let log = DiskLog::open(dir.path(), label, config()).expect("open");
         RaftLog::<Types, Codec>::with_tail_budget(log, Codec, Arc::clone(&budget)).expect("log")
