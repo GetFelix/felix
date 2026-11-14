@@ -1892,13 +1892,31 @@ enough. A broker that was deposed and elected again after the read is open
 in a later term, and the value it read can miss a record the leader in
 between committed. A member that does not lead is refused as leadership lost. A majority that does not
 answer within the longest election timeout is a timeout, not a lost
-leadership. If openraft reports a lapsed lease, the engine asks for a
-heartbeat, waits for a majority to answer and asks again within the same
-bound.
+leadership. A read-index round does not use the leader's lease: the pinned
+openraft always asks the core for a fresh quorum confirmation for
+`ReadPolicy::ReadIndex` (`Raft::get_local_read_linearizer` in
+`openraft/src/raft/mod.rs`), so a lapsed lease costs a read that round and
+nothing more. A round that has not answered within the longest election
+timeout is dropped and the next one is asked. openraft reports a lapsed lease to writes only. If a later openraft
+reports one to a read, the engine asks for a heartbeat, waits for a majority
+to answer and asks again within the same bound.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
+
+Reads of one shard share rounds. A group asks one round at a time, and a
+round confirms every read that arrived before it was asked. A read that
+arrives while a round is out waits for the next one, which is asked when
+the current one ends: the round out may have been asked before the reader
+took its value, and its answer would not cover that value. So a burst of
+reads costs two rounds at most, not one each, and a read waits at most the
+rest of one round and one more. The bound above is on that whole wait.
+
+> `crates/server/felix-replication/src/raft/read_rounds/tests.rs`,
+> `a_read_that_arrives_during_a_round_waits_for_the_next_one`, and
+> `crates/server/felix-replication/src/raft/tests/read.rs`,
+> `reads_that_arrive_together_share_read_index_rounds`.
 
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
@@ -3195,15 +3213,17 @@ listener. Until idle groups sleep, both report what ticking every group
 costs; nothing waits on them. A third step, the write burst, is described
 with the memory figures below.
 
-Idle memory fits, with openraft at `30c947ef38` (openraft#2313 and openraft#2314).
+Idle memory fits, with openraft at `5c3ad1bc2d` (openraft#2313, openraft#2314 and openraft#2324).
 The design assumed 180 KB per leader member and 145 KB per follower. The
 runtime's memory test (Linux, release build, 120 idle members, a third
-leading) measures 142 KB of live heap per member, plus 535 KB per member
-that openraft reserves in a large buffer and does not touch while idle
-(#2415). The same three-runtime run, 1,500 members per broker, holds
-222 MB resident per broker, 17 MB of it the logs alone, and does not grow:
-217 MB ten minutes earlier. That is about 137 KB per member,
-and 5,000 members at 142 KB are about 0.7 GB.
+leading) measures 150 KB of live heap per member and no large per-member
+reserve. The process reserves about 26 MiB once, for openraft's latency
+histogram tables, however many members it hosts. The same
+three-runtime run, 1,500 members per broker, holds 232 MB resident per
+broker, 17 MB of it the logs alone. Subtracting the logs and the 26 MiB of
+tables leaves about 189 MB, or 126 KB per member; counting the tables as
+part of each member, (232 - 17) / 1500 is 143 KB. Either way it is under
+150 KB, and 5,000 members at 150 KB are about 0.72 GB.
 
 What a member keeps after it was busy is measured by the workflow's write
 burst step (`RAFT_IDLE_BURST_SECS`, #2415): 300 groups on three runtimes over
