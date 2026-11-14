@@ -43,8 +43,8 @@ pub(crate) const WINDOW: usize = 64;
 /// oldest is forgotten, and its next batch is refused as unknown.
 pub(crate) const MAX_PRODUCERS: usize = 4096;
 
-/// Cut batches remembered per shard. Past this the oldest is forgotten
-/// together with its producer, so its re-send is refused, not written again.
+/// Cut batches remembered whole per shard. Past this the oldest keeps only
+/// its producer and sequence, enough to refuse its re-send.
 pub(crate) const MAX_CUTS: usize = MAX_PRODUCERS;
 
 /// Where a producer's batch stands in the log.
@@ -108,6 +108,11 @@ pub(crate) struct ProducerState {
     /// another record has followed. It stays until the producer opens a
     /// batch again or the last record held of it leaves the log.
     cuts: HashMap<u64, OpenBatch>,
+    /// Per producer, the sequence of a cut batch the table no longer holds:
+    /// a purge passed its last record, or it went past [`MAX_CUTS`]. Some of
+    /// it was written, so its re-send, or anything older, is refused until
+    /// the producer opens a batch again.
+    forgotten: HashMap<u64, u64>,
     /// Whether cut batches are kept: on a Raft log, where pieces can finish
     /// one. Anywhere else a cut batch is abandoned and written again whole.
     /// Not part of the snapshot.
@@ -199,6 +204,9 @@ impl ProducerState {
 
     /// Where `sequence` stands for `producer_id`.
     pub(crate) fn classify(&self, producer_id: u64, sequence: u64) -> ProducerSequence {
+        if self.is_forgotten(producer_id, sequence) {
+            return ProducerSequence::Expired;
+        }
         if let Some(open) = &self.open
             && open.is(producer_id, sequence)
         {
@@ -245,6 +253,20 @@ impl ProducerState {
             .chain(self.cuts.get(&producer_id))
             .find(|open| open.is(producer_id, sequence))
             .map(OpenBatch::unfinished)
+            .or_else(|| {
+                (self.forgotten.get(&producer_id) == Some(&sequence)).then_some(UnfinishedBatch {
+                    first: None,
+                    held: 0,
+                    len: 0,
+                    digest: None,
+                })
+            })
+    }
+
+    fn is_forgotten(&self, producer_id: u64, sequence: u64) -> bool {
+        self.forgotten
+            .get(&producer_id)
+            .is_some_and(|cut| sequence <= *cut)
     }
 
     /// The sequence `producer_id` owes next, or `None` for a producer the log
@@ -291,6 +313,7 @@ impl ProducerState {
                 // The producer has started over: nothing finishes its cut
                 // batch now.
                 self.cuts.remove(&batch.producer_id);
+                self.forgotten.remove(&batch.producer_id);
                 let open = OpenBatch {
                     batch,
                     first: Some(offset),
@@ -324,6 +347,7 @@ impl ProducerState {
             Some(open) => Some(open),
             None => {
                 self.cut_open();
+                self.forgotten.remove(&piece.producer_id);
                 self.cuts.remove(&piece.producer_id)
             }
         };
@@ -385,9 +409,9 @@ impl ProducerState {
                 .min_by_key(|(_, cut)| cut.next)
                 .map(|(id, _)| *id)
         {
-            self.cuts.remove(&oldest);
-            // With the producer known its re-send would read as its next
-            // batch and be written whole.
+            if let Some(cut) = self.cuts.remove(&oldest) {
+                self.forget(cut);
+            }
             self.producers.remove(&oldest);
         }
     }
@@ -402,11 +426,21 @@ impl ProducerState {
 
     /// Forget batches retention removed, and producers left with none.
     pub(crate) fn prune(&mut self, base: Offset) {
-        self.open = self.open.take().and_then(|open| open.pruned(base));
-        self.cuts = std::mem::take(&mut self.cuts)
-            .into_iter()
-            .filter_map(|(id, cut)| Some((id, cut.pruned(base)?)))
-            .collect();
+        if let Some(open) = self.open.take() {
+            match open.pruned(base) {
+                Some(open) => self.open = Some(open),
+                None if self.keeps_cuts => self.forget(open),
+                None => {}
+            }
+        }
+        for (_, cut) in std::mem::take(&mut self.cuts) {
+            match cut.pruned(base) {
+                Some(cut) => {
+                    self.cuts.insert(cut.batch.producer_id, cut);
+                }
+                None => self.forget(cut),
+            }
+        }
         let mut headless = Vec::new();
         self.producers.retain(|id, producer| {
             let mut sequence = producer
@@ -446,6 +480,13 @@ impl ProducerState {
                 self.cut(batch);
             }
         }
+    }
+
+    /// Keep only enough of a cut batch to refuse its re-send. Written again
+    /// it would repeat the records the log held of it.
+    fn forget(&mut self, cut: OpenBatch) {
+        self.forgotten
+            .insert(cut.batch.producer_id, cut.batch.sequence);
     }
 
     /// `last` is the offset of the batch's last record.
@@ -504,6 +545,7 @@ impl ProducerState {
 // crc32 u32 over everything after the header, then:
 //   open batch: present u8, and when 1 a batch in progress
 //   cut batches: count u32, then per batch a batch in progress
+//   forgotten cuts: count u32, then per cut producer_id u64, sequence u64
 //   per producer: id u64, last_sequence u64, batches u16,
 //                 then per batch: first u64, last u64, pieces u32, digest
 // A batch in progress is producer_id u64, sequence u64, len u32,
@@ -512,13 +554,13 @@ impl ProducerState {
 //
 // Version 1 has no digest fields. Its batches read as having none, and a
 // re-send of one is answered the way it was before digests were kept.
-// Versions 1 and 2 have no cut batches. Their open batch is producer_id,
+// Versions 1 to 3 have no forgotten cuts. Versions 1 and 2 have no cut batches. Their open batch is producer_id,
 // sequence, len, first u64, held u32, digest, and their held batches store
 // a length (u32) in place of `last` and `pieces`: every batch they describe
 // is one run with no pieces.
 
 const SNAPSHOT_MAGIC: u32 = 0x464C_5053;
-const SNAPSHOT_VERSION: u16 = 3;
+const SNAPSHOT_VERSION: u16 = 4;
 pub(super) const SNAPSHOT_HEADER_LEN: usize = 24;
 
 pub(super) fn snapshot_file_name() -> &'static str {
@@ -541,6 +583,11 @@ pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
     body.extend_from_slice(&(state.cuts.len() as u32).to_be_bytes());
     for cut in state.cuts.values() {
         encode_open(&mut body, cut);
+    }
+    body.extend_from_slice(&(state.forgotten.len() as u32).to_be_bytes());
+    for (id, sequence) in &state.forgotten {
+        body.extend_from_slice(&id.to_be_bytes());
+        body.extend_from_slice(&sequence.to_be_bytes());
     }
     for (id, producer) in &state.producers {
         body.extend_from_slice(&id.to_be_bytes());
@@ -592,6 +639,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
     }
     let with_digests = version >= 2;
     let with_cuts = version >= 3;
+    let with_forgotten = version >= 4;
     reader.u16()?;
     let as_of = reader.u64()?;
     let count = reader.u32()? as usize;
@@ -609,6 +657,12 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
         for _ in 0..reader.u32()? {
             let cut = reader.open(with_digests, with_cuts)?;
             cuts.insert(cut.batch.producer_id, cut);
+        }
+    }
+    let mut forgotten = HashMap::default();
+    if with_forgotten {
+        for _ in 0..reader.u32()? {
+            forgotten.insert(reader.u64()?, reader.u64()?);
         }
     }
     let mut producers =
@@ -646,6 +700,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
             producers,
             open,
             cuts,
+            forgotten,
             keeps_cuts: false,
         },
         as_of,
@@ -753,6 +808,7 @@ pub(super) fn rebuild(
     state.keeps_cuts = keeps_cuts;
     if !keeps_cuts {
         state.cuts.clear();
+        state.forgotten.clear();
     }
     state.prune(base);
 

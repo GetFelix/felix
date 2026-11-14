@@ -565,6 +565,7 @@ as of the new segment's base offset, once the retired segment is sealed.
 20   4  body_crc     u32  crc32 over what follows
 24   1  open              1 when a batch is waiting for records, then one `partial`
      4  cuts         u32  then cuts × partial
+     4  forgotten    u32  then forgotten × { producer_id u64, sequence u64 }
      …  producers × { id u64, last_sequence u64, batches u16,
                       batches × { first u64, last u64, pieces u32, digest } }
 
@@ -573,10 +574,11 @@ partial = producer_id u64, sequence u64, len u32,
 digest  = present u8, value u64
 ```
 
-This is version 3. A cut batch is one whose writer stopped partway and that
+This is version 4. A cut batch is one whose writer stopped partway and that
 another record has followed; it is kept so the missing records can finish it
-and so it is never written again whole. Versions 1 and 2, which have no cut
-batches, are still read. `docs/storage-format.md` in the repository has every
+and so it is never written again whole. Once a purge removes its last record,
+or past 4096 cut batches, only its producer and sequence stay (`forgotten`),
+and its re-send is refused. Versions 1 to 3 are still read. `docs/storage-format.md` in the repository has every
 field.
 
 An open reads it and replays only the marks after `as_of`. Those are normally

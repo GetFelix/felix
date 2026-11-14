@@ -382,9 +382,59 @@ fn a_cut_batch_outlives_its_first_record() {
     saved.keeps_cuts = true;
     assert_eq!((saved, as_of), (state.clone(), 4));
 
-    // Once the last record held of it is gone, so is the batch.
+    // Once the last record held of it is gone, its re-send is still refused.
     state.prune(3);
-    assert_eq!(state, ProducerState::keeping_cuts());
+    assert_refused(&state, 3, 0);
+}
+
+/// The re-send of a refused batch: the stub a forgotten cut leaves.
+const FORGOTTEN: UnfinishedBatch = UnfinishedBatch {
+    first: None,
+    held: 0,
+    len: 0,
+    digest: None,
+};
+
+fn assert_refused(state: &ProducerState, producer: u64, sequence: u64) {
+    assert_eq!(state.unfinished(producer, sequence), Some(FORGOTTEN));
+    assert_eq!(
+        state.classify(producer, sequence),
+        ProducerSequence::Expired
+    );
+}
+
+/// A purge past the last record of a producer's first batch, cut, leaves
+/// the producer unknown. Taken as new, the re-send of sequence 0 would
+/// write the records the log held of it a second time. It is refused,
+/// across a snapshot, until the producer opens a batch again.
+#[test]
+fn a_purge_past_a_cut_first_batch_refuses_its_resend() {
+    let mut state = ProducerState::keeping_cuts();
+    pieces(&mut state, 3, 0, 3, &[(0, 0), (1, 1)]);
+    state.observe(2, RecordMark::None, 0);
+    state.prune(3);
+    assert_refused(&state, 3, 0);
+    assert_eq!(state.classify(3, 1), ProducerSequence::Unknown);
+    assert_eq!(state.classify(4, 0), ProducerSequence::Unknown);
+
+    let (mut saved, _) = decode(&encode(&state, 3)).expect("decodes");
+    saved.keeps_cuts = true;
+    assert_eq!(saved, state);
+
+    batch(&mut state, 3, 0, 5, 1);
+    assert_eq!(state.unfinished(3, 0), None);
+    assert_eq!(state.classify(3, 0), held(3, 0, 5, 5));
+}
+
+/// An open batch whose records a purge removed is refused the same way.
+#[test]
+fn a_purge_past_an_open_batch_refuses_its_resend() {
+    let mut state = ProducerState::keeping_cuts();
+    pieces(&mut state, 3, 0, 3, &[(0, 0)]);
+    assert!(state.is_open());
+    state.prune(1);
+    assert!(!state.is_open());
+    assert_refused(&state, 3, 0);
 }
 
 /// The same for a batch the log holds whole but for its first record: its
@@ -419,7 +469,7 @@ fn a_finished_batch_outlives_its_first_record() {
     assert_eq!(state, suffix);
 
     state.prune(5);
-    assert_eq!(state, ProducerState::keeping_cuts());
+    assert_refused(&state, 3, 0);
 }
 
 /// Pieces that do not follow one another leave a batch nothing can finish:
@@ -453,11 +503,12 @@ fn a_producer_that_starts_over_abandons_its_cut_batch() {
     assert_eq!(state.classify(3, 0), held(3, 0, 3, 3));
 }
 
-/// Past the bound the oldest cut batch goes together with its producer.
-/// Left known, the producer's re-send would read as its next batch and be
-/// written whole after the start that is still in the log.
+/// Past the bound the oldest cut batch is kept only by name, and its
+/// re-send is refused. Read as the producer's next batch, or as a new
+/// producer's first, it would be written whole after the start that is
+/// still in the log.
 #[test]
-fn past_the_bound_the_oldest_cut_batch_takes_its_producer_with_it() {
+fn past_the_bound_the_oldest_cut_batch_is_still_refused() {
     let mut state = ProducerState::keeping_cuts();
     batch(&mut state, 0, 0, 0, 1);
     let mut offset = 1;
@@ -471,9 +522,28 @@ fn past_the_bound_the_oldest_cut_batch_takes_its_producer_with_it() {
 
     pieces(&mut state, MAX_CUTS as u64, 1, 2, &[(0, offset)]);
     state.observe(offset + 1, RecordMark::None, 0);
-    assert_eq!(state.unfinished(0, 1), None);
-    assert_eq!(state.classify(0, 1), ProducerSequence::Unknown);
+    assert_refused(&state, 0, 1);
+    assert_eq!(state.classify(0, 0), ProducerSequence::Expired);
     assert!(state.unfinished(1, 1).is_some());
+}
+
+/// The same for a first batch: a producer the cap forgot is not taken as
+/// new at sequence 0.
+#[test]
+fn past_the_bound_a_cut_first_batch_is_still_refused() {
+    let mut state = ProducerState::keeping_cuts();
+    let mut offset = 0;
+    for producer in 0..=MAX_CUTS as u64 {
+        pieces(&mut state, producer, 0, 2, &[(0, offset)]);
+        state.observe(offset + 1, RecordMark::None, 0);
+        offset += 2;
+    }
+    assert_refused(&state, 0, 0);
+    assert!(
+        state
+            .unfinished(1, 0)
+            .is_some_and(|cut| cut.first.is_some())
+    );
 }
 
 /// Off a Raft log nothing finishes a cut batch, so none is kept.

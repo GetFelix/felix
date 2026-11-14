@@ -317,6 +317,12 @@ fn hash_mark(hash: &mut Sha256, mark: RecordMark) {
         RecordMark::Membership => (6, 0, 0, 0),
         RecordMark::CounterDelta => (7, 0, 0, 0),
         RecordMark::CounterCheckpoint => (8, 0, 0, 0),
+        RecordMark::Piece(piece) => (
+            9,
+            piece.producer_id,
+            piece.sequence,
+            (u64::from(piece.position) << 32) | u64::from(piece.len),
+        ),
     };
     hash.update([kind]);
     for word in [a, b, c] {

@@ -418,6 +418,18 @@ fn raft_config() -> LogConfig {
     }
 }
 
+/// Lead the log at a new generation, as a Raft leader does before it serves:
+/// a Raft log refuses an append from a writer it does not know.
+async fn lead(log: &DiskLog) {
+    let generation = log.accepted_generation() + 1;
+    log.accept_generation(generation, Some("a"))
+        .await
+        .expect("accept");
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(generation, tail).expect("record");
+    log.lead_at(generation);
+}
+
 /// The producer state the snapshot file holds and the offset it is as of.
 fn saved(dir: &TempDir) -> (crate::disk_log::producers::ProducerState, Offset) {
     crate::disk_log::producers::load(dir.path()).expect("a snapshot")
@@ -437,6 +449,7 @@ async fn a_cut_batch_is_known_again_after_a_restart() {
     });
     {
         let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        lead(&log).await;
         log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
             .await
             .expect("append");
@@ -455,12 +468,14 @@ async fn a_cut_batch_is_known_again_after_a_restart() {
             std::fs::remove_file(snapshot_path(&dir)).expect("remove");
         }
         let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+        lead(&log).await;
         assert_eq!(log.producer_unfinished(9, 0), cut, "snapshot: {snapshot}");
         assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Unknown);
         log.shutdown().await.expect("shutdown");
     }
 
     let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    lead(&log).await;
     let last = log.append(&[piece(0, 2, 3, "c")]).await.expect("append");
     assert_eq!(log.producer_unfinished(9, 0), None);
     assert_eq!(
@@ -482,6 +497,7 @@ async fn a_cut_batch_is_known_again_after_a_restart() {
 async fn a_cut_batch_whose_first_record_is_removed_cannot_be_finished() {
     let dir = tempdir().expect("dir");
     let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
     log.append(&[piece(0, 0, 3, "a")]).await.expect("append");
     // Enough to seal the segment the first record is in.
     let mut tail = 0;
@@ -531,6 +547,7 @@ async fn a_cut_batch_whose_first_record_is_removed_cannot_be_finished() {
             std::fs::remove_file(snapshot_path(&dir)).expect("remove");
         }
         let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+        lead(&log).await;
         assert_eq!(
             log.producer_unfinished(9, 0),
             headless,
@@ -538,6 +555,50 @@ async fn a_cut_batch_whose_first_record_is_removed_cannot_be_finished() {
         );
         log.shutdown().await.expect("shutdown");
     }
+}
+
+/// A purge past every record of a cut first batch leaves its producer
+/// unknown. The re-send of sequence 0 is refused, not taken as new, and a
+/// reopen from the snapshot still refuses it.
+#[tokio::test]
+async fn a_purge_past_a_cut_batch_refuses_its_resend() {
+    let dir = tempdir().expect("dir");
+    let refused = Some(UnfinishedBatch {
+        first: None,
+        held: 0,
+        len: 0,
+        digest: None,
+    });
+    {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        lead(&log).await;
+        log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+            .await
+            .expect("append");
+        let mut tail = 0;
+        for _ in 0..12 {
+            tail = log
+                .append(&records(FILLED))
+                .await
+                .expect("append")
+                .last_offset;
+        }
+        let removed = log.trim_before(tail).await.expect("trim");
+        assert!(!removed.is_empty());
+        assert!(log.base_offset() > 1, "base {}", log.base_offset());
+        assert_eq!(log.producer_unfinished(9, 0), refused);
+        assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+        // Enough after the trim to roll, so a snapshot is saved past it.
+        for _ in 0..6 {
+            log.append(&records(FILLED)).await.expect("append");
+        }
+        log.shutdown().await.expect("shutdown");
+    }
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    lead(&log).await;
+    assert_eq!(log.producer_unfinished(9, 0), refused);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
 }
 
 /// Only a Raft log writes batch pieces: the hybrid's replication cannot

@@ -378,8 +378,8 @@ things the unnamed mark cannot:
 - A log that has lost a batch's first record (a purge, or a copy that starts
   inside the batch) still sees from the pieces left that the batch is
   there, so a re-send of it is refused and never written a second time.
-  Once no record of the batch is left, the log has forgotten it, like any
-  batch retention removed.
+  Once no record of the batch is left the snapshot still names it, so the
+  re-send stays refused.
 - Pieces that do not follow one another (position 2 with no position 1)
   mark a batch that cannot be finished.
 
@@ -1633,13 +1633,14 @@ as of the new segment's base offset, once the retired segment is sealed.
 
 ```text
  0   4  magic        u32  "FLPS"
- 4   2  version      u16  3 (1 and 2 are still read; see below)
+ 4   2  version      u16  4 (1 to 3 are still read; see below)
  6   2  reserved     u16
  8   8  as_of        u64  the state covers every record below this offset
 16   4  producers    u32
 20   4  body_crc     u32  crc32 over what follows
 24   1  open              1 when a batch is waiting for records, then one `partial`
      4  cuts         u32  then cuts × partial
+     4  forgotten    u32  then forgotten × { producer_id u64, sequence u64 }
      …  producers × { id u64, last_sequence u64, batches u16,
                       batches × { first u64, last u64, pieces u32, digest } }
 
@@ -1664,6 +1665,13 @@ as a new batch, which would write the records still in the log a second
 time. A batch held whole whose first record has left the log, with pieces of
 it still there, is kept the same way, with `held` equal to `len`.
 
+A `forgotten` entry is a cut batch the log no longer holds a record of (a
+purge passed its last one) or that went past the 4096 cut batches kept
+whole. Only the producer and the batch's sequence are kept: a re-send of that
+sequence or an older one is refused with `sequence_expired`, even while the
+producer is otherwise unknown, so a cut first batch is not taken as a new
+producer's sequence 0. It goes when the producer opens a batch again.
+
 A held batch's `last` is the offset of its last record, which is not
 `first + len - 1` when the batch was finished after a cut. `pieces` is the
 batch's length when its later records are pieces and 0 otherwise.
@@ -1682,8 +1690,9 @@ answer a re-send got before digests were kept. They age out as the producers
 write. Versions 1 and 2 have no cut batches. Their open batch is
 `producer_id u64, sequence u64, len u32, first u64, held u32, digest`, and
 their held batches are `first u64, len u32, digest`: every batch they
-describe is one run. Both are still read, and the next snapshot is written as
-version 3. A build that predates version 3 ignores a version 3 snapshot and
+describe is one run. Versions 1 to 3 have no `forgotten` count. All are still
+read, and the next snapshot is written as version 4. A build that predates
+version 4 ignores a version 4 snapshot and
 rebuilds the state from the log. Any other version is ignored, like a damaged
 snapshot.
 
@@ -1701,8 +1710,12 @@ What is remembered is a function of the log. A producer is known while one of
 its batches is in the log; retention that removes the last of them forgets it,
 on every replica alike. Each producer keeps its last 64 batches, and past 4096
 producers the one whose newest batch is oldest is forgotten. Past 4096 cut
-batches the oldest is forgotten together with its producer, so its re-send is
-refused as from an unknown producer.
+batches the oldest is kept only as a `forgotten` entry, and its producer is
+forgotten.
+
+A `forgotten` entry is the one thing that is not a function of the records
+left: a log rebuilt from records alone, because its snapshot is gone or older
+than its first record, no longer refuses that re-send.
 
 Because pieces name their batch, the same holds for a log read from any
 base: a log pruned to an offset and a copy that starts at that offset

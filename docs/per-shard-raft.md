@@ -2384,18 +2384,22 @@ it holds of the batch:
 
 - its log starts inside the batch (a purge, or a copy that started above
   the batch's first record), so it holds later records of the batch
-  without the first. Once no record of the batch is left in the log, the
-  batch is forgotten like any other that retention removed;
+  without the first;
+- a purge removed every record the log held of it, or the member already
+  remembers 4096 other cut batches. The member keeps only the producer and
+  the sequence then, and refuses that sequence and older ones, a first
+  batch's sequence 0 included, until the producer opens a batch again;
 - the records it holds of the batch do not follow one another;
 - the re-send has a different number of records than the batch in the log.
 
 Refusing is the only safe answer there. Writing the batch again would put
 the records that are still in the log into the stream a second time. The
-cut batch is remembered for as long as one of its records is in the log. A
-restart keeps it, because the producer snapshot stores it and the log's
-marks rebuild it. A member that was caught up by copying segments derives
-it from the records it was sent, since a shard group's snapshot carries no
-records and no producer state.
+cut batch is remembered for as long as one of its records is in the log,
+and by name after that. A restart keeps it, because the producer snapshot
+stores it and the log's marks rebuild it. A member that was caught up by
+copying segments derives it from the records it was sent, since a shard
+group's snapshot carries no records and no producer state, so it does not
+know a cut batch none of whose records it was sent.
 
 What is still missing before the refusal can go is the second case: a
 write of several entries that openraft checks once, so a lapsed lease
