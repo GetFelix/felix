@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794671844517,
+  "lastUpdate": 1794672497143,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56576,6 +56576,58 @@ window.BENCHMARK_DATA = {
             "range": "84551.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1274135.89\nmean: 1240508.50\nstdev: 84551.67\ncv: 6.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "334ff021fcffb8b51f8c95154111b3f43e2ecf00",
+          "message": "spec: idempotent batches on a Raft shard in FelixRaftBatch (#2534)\n\n* WIP spec: idempotent batches on a Raft shard in FelixRaftBatch (#2524)\n\nNot model-checked yet: TLC has not run on this spec. README state counts\nare placeholders (STATES_MAIN, STATES_KEEP).\n\n* spec: idempotent batches on a Raft shard in FelixRaftBatch (#2524)\n\nModel-checked on a build box: FelixRaftBatch and FelixRaftBatchKeepsCut pass\n(8,525,374 distinct states each, depth 19); the twelve twins and witnesses each\nviolate the invariant they name. State counts filled in, CI weights added for\nthe two passing configurations.\n\nReview follow-ups: the header and README state that placing a send and\nappending its pieces is one step, and NeverFinishesFromSnapshot no longer\ntrips on a count read from the uncommitted tail.\n\n* spec: review fixes for FelixRaftBatch (#2524)\n\nThe README lists the code changes the model assumes, checked against main and\nthe first storage change, and says the model lets a new leader place sends\nbefore the code would. New witness FelixRaftBatchReachHeld for the held\nanswer with every rule on. Re-run on a build box: FelixRaftBatch and\nFelixRaftBatchKeepsCut both pass with 8,525,374 distinct states (42.9M and\n43.2M generated, depth 19 and 20); the changed twins and the new witness\nviolate what they name.\n\nSpec-Unaffected: spec and docs only",
+          "timestamp": "2026-11-14T16:00:52Z",
+          "tree_id": "55435a34b8ebff7bab2c64d059b879711bf2ab90",
+          "url": "https://github.com/GetFelix/felix/commit/334ff021fcffb8b51f8c95154111b3f43e2ecf00"
+        },
+        "date": 1794672496466,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 372307.65,
+            "range": "47456.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 372307.65\nmean: 386013.24\nstdev: 47456.80\ncv: 12.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 372307.65,
+            "range": "47456.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 372307.65\nmean: 386013.24\nstdev: 47456.80\ncv: 12.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 93834.04,
+            "range": "4789.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 93834.04\nmean: 91853.66\nstdev: 4789.88\ncv: 5.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 938340.41,
+            "range": "47898.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 938340.41\nmean: 918536.58\nstdev: 47898.77\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
