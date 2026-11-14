@@ -8,6 +8,7 @@ use felix_storage::log::{AppendRecord, LogRecord, RecordMark};
 use felix_storage::raft_log::{EntryCodec, WrittenToken};
 use serde::{Deserialize, Serialize};
 
+use super::membership::TargetVersion;
 use super::types::{Command, MemberId, Membership, ShardTypes};
 
 #[derive(Debug, Clone, Copy)]
@@ -17,40 +18,44 @@ pub(crate) struct ShardCodec;
 /// layout, so an openraft upgrade cannot change bytes already on disk.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct StoredMembership {
-    /// 1. A reader refuses any other.
+    /// 2, or 1 from before memberships carried a target version. A reader
+    /// refuses any other.
     pub(crate) version: u32,
     /// The voter sets: one, or two during a joint change.
     pub(crate) voters: Vec<BTreeSet<MemberId>>,
     /// Members that are not voters.
     pub(crate) learners: BTreeSet<MemberId>,
+    /// The version of the target the membership was made from. Layout 1
+    /// has none, which reads as the zero version.
+    #[serde(default)]
+    pub(crate) target: TargetVersion,
 }
 
-const MEMBERSHIP_VERSION: u32 = 1;
+const MEMBERSHIP_VERSION: u32 = 2;
+/// The layout without a target version.
+const UNVERSIONED: u32 = 1;
 
 impl StoredMembership {
     pub(crate) fn of(membership: &Membership) -> Self {
         Self {
             version: MEMBERSHIP_VERSION,
             voters: membership.get_joint_config().clone(),
-            learners: membership.non_write_voter_ids().collect(),
+            learners: membership.learner_ids().collect(),
+            target: membership.version(),
         }
     }
 
     pub(crate) fn membership(self) -> io::Result<Membership> {
-        if self.version != MEMBERSHIP_VERSION {
+        // A layout 1 payload that names a version was not written by a
+        // build that knew what the field means.
+        let unversioned = self.version == UNVERSIONED && self.target == TargetVersion::default();
+        if self.version != MEMBERSHIP_VERSION && !unversioned {
             return Err(invalid(format!(
                 "membership layout {} is not one this build reads",
                 self.version
             )));
         }
-        let members: BTreeSet<MemberId> = self
-            .voters
-            .iter()
-            .flatten()
-            .chain(&self.learners)
-            .cloned()
-            .collect();
-        Ok(Membership::new_with_defaults(self.voters, members))
+        Ok(Membership::new(self.voters, self.learners, self.target))
     }
 }
 

@@ -1158,7 +1158,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 2 (layout 1 had no report byte). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 3 (layout 1 had no report byte, layout 2 no target version in a membership). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
@@ -1195,7 +1195,8 @@ After the report byte comes the message:
 
 A membership is a `u8` count of voter sets (two during a joint change), each
 a `u8` count and that many members, then the members that are not voters the
-same way. At most 64 members in a set.
+same way, then the version of the target the membership was made from: the
+incarnation and the counter, a `u64` each. At most 64 members in a set.
 
 The answer has the same first byte, then:
 

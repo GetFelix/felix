@@ -23,14 +23,15 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, EntryOf, LogIdOf, Snapsh
 use openraft::{EntryPayload, LogId, StoredMembership, Vote};
 
 use super::codec::invalid;
+use super::membership::TargetVersion;
 use super::network::{Addressee, RaftReply, RaftRequest, Refused, Reply, Request};
 use super::types::{Command, GroupId, MemberId, Membership, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
-/// report byte to the request header.
-const LAYOUT: u8 = 2;
+/// report byte to the request header, 3 the target version to a membership.
+const LAYOUT: u8 = 3;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
@@ -475,7 +476,8 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
     })
 }
 
-/// The voter sets, then the members that are not voters.
+/// The voter sets, the members that are not voters, then the target
+/// version.
 fn put_membership(buf: &mut BytesMut, membership: &Membership) -> io::Result<()> {
     let configs = membership.get_joint_config();
     if configs.len() > MAX_CONFIGS {
@@ -485,8 +487,12 @@ fn put_membership(buf: &mut BytesMut, membership: &Membership) -> io::Result<()>
     for voters in configs {
         put_members(buf, voters)?;
     }
-    let learners: BTreeSet<MemberId> = membership.non_write_voter_ids().collect();
-    put_members(buf, &learners)
+    let learners: BTreeSet<MemberId> = membership.learner_ids().collect();
+    put_members(buf, &learners)?;
+    let version = membership.version();
+    buf.put_u64(version.incarnation);
+    buf.put_u64(version.counter);
+    Ok(())
 }
 
 fn take_membership(buf: &mut Bytes) -> io::Result<Membership> {
@@ -499,8 +505,11 @@ fn take_membership(buf: &mut Bytes) -> io::Result<Membership> {
         configs.push(take_members(buf)?);
     }
     let learners = take_members(buf)?;
-    let members: BTreeSet<MemberId> = configs.iter().flatten().chain(&learners).cloned().collect();
-    Ok(Membership::new_with_defaults(configs, members))
+    let version = TargetVersion {
+        incarnation: take_u64(buf)?,
+        counter: take_u64(buf)?,
+    };
+    Ok(Membership::new(configs, learners, version))
 }
 
 fn put_members(buf: &mut BytesMut, members: &BTreeSet<MemberId>) -> io::Result<()> {

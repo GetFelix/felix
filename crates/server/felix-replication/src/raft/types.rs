@@ -1,13 +1,19 @@
 //! What names a group and a member, and the openraft type config every
 //! shard group shares.
 
+use std::collections::BTreeSet;
+use std::convert::Infallible;
 use std::fmt;
 use std::sync::Arc;
 
 use bytes::Bytes;
 use felix_storage::raft_log::WrittenToken;
+use openraft::errors::MembershipError;
+use openraft::impls::{ChangeMembers, EmptyNode};
+use openraft::membership::{NodeRef, RaftMembership, RaftMembershipEdit, RaftMembershipEditOps};
 use serde::{Deserialize, Serialize};
 
+use super::membership::TargetVersion;
 use crate::ShardKey;
 
 /// One Raft group: a shard, and how many times its group has been re-formed.
@@ -120,13 +126,190 @@ impl fmt::Display for Command {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct Applied;
 
+/// The voter sets and learners of a group, as openraft's own type holds them.
+pub(crate) type Sets = openraft::impls::Membership<MemberId, EmptyNode>;
+
+/// A group's membership: who votes and who only receives the log, and the
+/// version of the target it was made from. The version rides in the
+/// membership entry itself, so it is committed, replicated and kept through
+/// a snapshot with the sets it describes.
+///
+/// Quorums are openraft's, taken from the sets alone. The version changes
+/// no vote.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct Membership {
+    sets: Sets,
+    version: TargetVersion,
+}
+
+impl Membership {
+    /// `voters` is one set, or two during a joint change. Every member of
+    /// them and of `learners` is in the membership.
+    pub(crate) fn new(
+        voters: Vec<BTreeSet<MemberId>>,
+        learners: BTreeSet<MemberId>,
+        version: TargetVersion,
+    ) -> Self {
+        let members: BTreeSet<MemberId> =
+            voters.iter().flatten().cloned().chain(learners).collect();
+        Self {
+            sets: Sets::new_with_defaults(voters, members),
+            version,
+        }
+    }
+
+    pub(crate) fn version(&self) -> TargetVersion {
+        self.version
+    }
+
+    /// The voter sets: one, or two during a joint change.
+    pub(crate) fn get_joint_config(&self) -> &Vec<BTreeSet<MemberId>> {
+        self.sets.get_joint_config()
+    }
+
+    pub(crate) fn voter_ids(&self) -> impl Iterator<Item = MemberId> {
+        self.sets.voter_ids()
+    }
+
+    /// The members that are not voters.
+    pub(crate) fn learner_ids(&self) -> impl Iterator<Item = MemberId> + '_ {
+        self.sets.non_write_voter_ids()
+    }
+}
+
+/// A group formed from its first set carries the zero version, which no
+/// target is older than.
+impl From<BTreeSet<MemberId>> for Membership {
+    fn from(voters: BTreeSet<MemberId>) -> Self {
+        Self::new(vec![voters], BTreeSet::new(), TargetVersion::default())
+    }
+}
+
+impl fmt::Display for Membership {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} at version {}", self.sets, self.version)
+    }
+}
+
+impl RaftMembership for Membership {
+    type NodeId = MemberId;
+    type Node = EmptyNode;
+    type QuorumSet = <Sets as RaftMembership>::QuorumSet;
+    type Iter = <Sets as RaftMembership>::Iter;
+
+    fn read_quorum_set(&self) -> Self::QuorumSet {
+        self.sets.read_quorum_set()
+    }
+
+    fn write_quorum_set(&self) -> Self::QuorumSet {
+        self.sets.write_quorum_set()
+    }
+
+    // openraft's own answer. The version must never make a change direct
+    // that the voter sets need a joint for.
+    fn supports_direct_transition_to(&self, other: &Self) -> bool {
+        self.sets.supports_direct_transition_to(&other.sets)
+    }
+
+    fn get_node(&self, node_id: &MemberId) -> Option<NodeRef<'_, EmptyNode>> {
+        RaftMembership::get_node(&self.sets, node_id)
+    }
+
+    fn node_ids(&self) -> Self::Iter {
+        RaftMembership::node_ids(&self.sets)
+    }
+
+    // The joint on the way to `goal` is made from `goal`'s target, so it
+    // carries that version: a leader that finds the joint must not take an
+    // older target for newer than it.
+    fn joint_with(&self, goal: &Self) -> Self {
+        Self {
+            sets: self.sets.joint_with(&goal.sets),
+            version: goal.version,
+        }
+    }
+}
+
+/// A change to a group's membership, and the version the result carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MembershipEdit {
+    change: ChangeMembers<MemberId, EmptyNode>,
+    /// `None` keeps the version of the membership the edit is applied to.
+    version: Option<TargetVersion>,
+}
+
+impl MembershipEdit {
+    /// Add `member` as a learner, at the version the membership has.
+    pub(crate) fn learner(member: MemberId) -> Self {
+        <Self as RaftMembershipEditOps<Membership>>::add_learner(member, EmptyNode {})
+    }
+
+    /// Make `voters` the only voters, at `version`. Every one of them must
+    /// already be a member.
+    pub(crate) fn voters(voters: BTreeSet<MemberId>, version: TargetVersion) -> Self {
+        Self {
+            change: ChangeMembers::ReplaceAllVoters(voters),
+            version: Some(version),
+        }
+    }
+
+    /// Leave a joint membership for `voters`, its new set, at the version
+    /// the joint carries.
+    pub(crate) fn flatten(voters: BTreeSet<MemberId>) -> Self {
+        Self {
+            change: ChangeMembers::ReplaceAllVoters(voters),
+            version: None,
+        }
+    }
+}
+
+impl fmt::Display for MembershipEdit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.version {
+            Some(version) => write!(f, "{} at version {version}", self.change),
+            None => write!(f, "{}", self.change),
+        }
+    }
+}
+
+impl RaftMembershipEdit<Membership> for MembershipEdit {
+    type Error = Infallible;
+
+    fn apply(
+        self,
+        membership: &Membership,
+        _retain: bool,
+    ) -> Result<Membership, MembershipError<MemberId, Infallible>> {
+        // Never keep a voter that leaves as a learner, whatever the caller
+        // asks. openraft lets a learner go on leading, and a leader that
+        // wrote itself out would hold a lease on a set it is not in.
+        let sets = self.change.apply(&membership.sets, false)?;
+        Ok(Membership {
+            sets,
+            version: self.version.unwrap_or(membership.version),
+        })
+    }
+}
+
+impl RaftMembershipEditOps<Membership> for MembershipEdit {
+    fn add_learner(node_id: MemberId, node: EmptyNode) -> Self {
+        Self {
+            change:
+                <ChangeMembers<MemberId, EmptyNode> as RaftMembershipEditOps<Sets>>::add_learner(
+                    node_id, node,
+                ),
+            version: None,
+        }
+    }
+}
+
 openraft::declare_raft_types!(
     pub(crate) ShardTypes:
         D = Command,
         R = Applied,
         NodeId = MemberId,
-        Node = openraft::impls::EmptyNode,
+        Node = EmptyNode,
         LeaderId = openraft::impls::leader_id_std::LeaderId<u64, MemberId>,
+        Membership = Membership,
+        MembershipEdit = MembershipEdit,
 );
-
-pub(crate) type Membership = openraft::impls::Membership<MemberId, openraft::impls::EmptyNode>;

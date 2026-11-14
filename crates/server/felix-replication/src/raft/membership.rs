@@ -10,16 +10,27 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use serde::{Deserialize, Serialize};
 
 use super::types::MemberId;
 
 /// The version of a target: the control plane's restore incarnation, then a
 /// counter that rises on every target write. Compared in that order, so a
 /// target issued before a metadata restore is older than every one after.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 pub struct TargetVersion {
     pub incarnation: u64,
     pub counter: u64,
+}
+
+impl fmt::Display for TargetVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.incarnation, self.counter)
+    }
 }
 
 /// The voters the control plane wants a group to have.
