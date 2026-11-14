@@ -54,10 +54,11 @@ jobs:
           }
           for round in 1 2 3 4; do
             for keys in 1000 1000000; do
+              # before_aa is the same base build run again: the A/A noise.
               if [ $((round % 2)) = 1 ]; then
-                run "$RUNNER_TEMP/base" before $keys; run "$GITHUB_WORKSPACE" after $keys
+                run "$RUNNER_TEMP/base" before $keys; run "$GITHUB_WORKSPACE" after $keys; run "$RUNNER_TEMP/base" before_aa $keys
               else
-                run "$GITHUB_WORKSPACE" after $keys; run "$RUNNER_TEMP/base" before $keys
+                run "$RUNNER_TEMP/base" before_aa $keys; run "$GITHUB_WORKSPACE" after $keys; run "$RUNNER_TEMP/base" before $keys
               fi
             done
           done | tee measure.log

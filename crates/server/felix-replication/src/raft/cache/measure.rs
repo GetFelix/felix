@@ -232,3 +232,126 @@ async fn cache_build() {
         reads_ns / read_runs.max(1) as f64,
     );
 }
+
+/// Back-to-back snapshot builds under sustained apply, asked for the way
+/// openraft does: once `EVERY` entries have applied since the last ask,
+/// with no build running. Reports the worst apply run, the worst ask, and
+/// the worst single read from a reader thread running throughout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a measurement"]
+async fn cache_back_to_back() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use openraft::entry::RaftEntry;
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+
+    use super::super::machine::Machine;
+    use super::super::types::{Command, ShardTypes};
+    use crate::ShardKind;
+
+    const RUN: u64 = 1_000;
+    const EVERY: u64 = 16_384;
+    let keys = keys();
+    let label = std::env::var("MEASURE_LABEL").unwrap_or_default();
+    let entries = move |first: u64, last: u64| {
+        let entries: Vec<_> = (first..=last)
+            .map(|index| {
+                let command = Command {
+                    timestamp_micros: index * 10,
+                    payload: command(index, keys).encode(),
+                    producer: None,
+                    written: None,
+                };
+                let id = LogIdOf::<ShardTypes>::new(1.into(), index);
+                Ok((EntryOf::<ShardTypes>::new_normal(id, command), None))
+            })
+            .collect();
+        futures::stream::iter(entries)
+    };
+    let dir = tempfile::tempdir().expect("dir");
+    let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
+    let (mut machine, _, cache) = Machine::open(snapshots, ShardKind::Cache)
+        .await
+        .expect("open");
+    let cache = cache.expect("cache");
+    let mut last = 0;
+    while last < keys {
+        machine
+            .apply(entries(last + 1, last + 10_000))
+            .await
+            .expect("apply");
+        last += 10_000;
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let worst_read_ns = Arc::new(AtomicU64::new(0));
+    let reads = Arc::new(AtomicU64::new(0));
+    let reader = std::thread::spawn({
+        let (cache, stop) = (Arc::clone(&cache), Arc::clone(&stop));
+        let (worst, reads) = (Arc::clone(&worst_read_ns), Arc::clone(&reads));
+        move || {
+            let names: Vec<String> = (1..=keys).map(|index| format!("key-{index:08}")).collect();
+            let mut x: u64 = 0x9E37_79B9_7F4A_7C15;
+            while !stop.load(Ordering::Relaxed) {
+                x = x
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                let key = &names[((x >> 33) % keys) as usize];
+                let started = Instant::now();
+                black_box(cache.read().read(key, 0));
+                worst.fetch_max(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                reads.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    });
+
+    let (mut builds, mut deferred, mut asked_at) = (0, 0, last);
+    let (mut worst_apply, mut worst_ask) = (Duration::ZERO, Duration::ZERO);
+    let mut build: Option<tokio::task::JoinHandle<()>> = None;
+    let (started, applied_from) = (Instant::now(), last);
+    while started.elapsed() < Duration::from_secs(15) {
+        if build.as_ref().is_some_and(|build| build.is_finished()) {
+            build.take().expect("build").await.expect("task");
+            builds += 1;
+        }
+        if build.is_none() && last >= asked_at + EVERY {
+            asked_at = last;
+            let asking = Instant::now();
+            let builder = machine.try_create_snapshot_builder(false).await;
+            worst_ask = worst_ask.max(asking.elapsed());
+            match builder {
+                Some(mut builder) => {
+                    build = Some(tokio::spawn(async move {
+                        builder.build_snapshot().await.expect("build");
+                    }));
+                }
+                None => deferred += 1,
+            }
+        }
+        let applying = Instant::now();
+        machine
+            .apply(entries(last + 1, last + RUN))
+            .await
+            .expect("apply");
+        worst_apply = worst_apply.max(applying.elapsed());
+        last += RUN;
+    }
+    let rate = (last - applied_from) as f64 / started.elapsed().as_secs_f64();
+    if let Some(build) = build {
+        build.await.expect("task");
+        builds += 1;
+    }
+    stop.store(true, Ordering::Relaxed);
+    reader.join().expect("reader");
+    println!(
+        "cache_back_to_back label={label} keys={keys} builds={builds} deferred={deferred} \
+         apply_per_s={rate:.0} worst_apply_run_ms={:.1} worst_ask_ms={:.1} worst_read_ms={:.1} \
+         reads={}",
+        worst_apply.as_secs_f64() * 1e3,
+        worst_ask.as_secs_f64() * 1e3,
+        worst_read_ns.load(Ordering::Relaxed) as f64 / 1e6,
+        reads.load(Ordering::Relaxed),
+    );
+}
