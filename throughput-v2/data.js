@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794634673614,
+  "lastUpdate": 1794636605177,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55640,6 +55640,58 @@ window.BENCHMARK_DATA = {
             "range": "10371.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1195957.33\nmean: 1201933.19\nstdev: 10371.99\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0b5048b963327c4268942c8e9bd28ef2d17776f5",
+          "message": "test(controlplane): the openraft 0.9 rollback test rolls back mid-upgrade (#2512)\n\nSince #2463 the control plane records its identity (metadata level 32) once every member reports 32, and a member is never rolled back below a level in use, so the rollback test's 0.7.1 member rightly refused its store. The test now keeps member 3 down while the others upgrade, rolls it back to 0.7.1 with the group below 32, then forward, and checks the identity is recorded. Docs: the rollback window closes when the last control-plane member is upgraded.",
+          "timestamp": "2026-11-14T05:56:54Z",
+          "tree_id": "3605764ee738bef2b292ccb7068663c11ad0be5d",
+          "url": "https://github.com/GetFelix/felix/commit/0b5048b963327c4268942c8e9bd28ef2d17776f5"
+        },
+        "date": 1794636604512,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 528819.15,
+            "range": "31487.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528819.15\nmean: 529062.94\nstdev: 31487.03\ncv: 5.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 528819.15,
+            "range": "31487.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 528819.15\nmean: 529062.94\nstdev: 31487.03\ncv: 5.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122289.54,
+            "range": "673.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122289.54\nmean: 122264.23\nstdev: 673.68\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1222895.45,
+            "range": "6736.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1222895.45\nmean: 1222642.27\nstdev: 6736.81\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
