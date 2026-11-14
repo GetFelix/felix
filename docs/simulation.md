@@ -631,7 +631,7 @@ the run, since no member restarts. The run then also checks that:
   else. The stopped copy is left out of that comparison.
 
 `a_failed_flush_stops_one_copy_and_the_group_carries_on` runs two seeds
-this way. The stopped member coming back needs a restart, which the run does
+this way. The stopped copy coming back needs a restart, which the run does
 not have yet (issue #2300).
 
 `FELIX_SIM_CLOCKS=bounded` gives each member timers that run at its own rate,

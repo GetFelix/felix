@@ -948,6 +948,8 @@ impl Sim {
                 .filter(|member| !self.flush_stopped(*member, shard))
                 .collect();
             let Some(&first) = running.first() else {
+                self.history.lock().unread_lists.insert(list(shard));
+                self.finding(format!("{}: every copy has stopped", list(shard)));
                 continue;
             };
             loop {
@@ -965,6 +967,8 @@ impl Sim {
             }
             for (member, read) in running.iter().map(|member| (*member, &reads[*member])) {
                 match read {
+                    // Its flush failed while the reads were taken.
+                    None if self.flush_stopped(member, shard) => {}
                     None => self.finding(format!(
                         "{}: {} still refuses reads {RECOVERY:?} after the heal",
                         list(shard),
