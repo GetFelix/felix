@@ -25,6 +25,7 @@ use felix_storage::raft_log::LogPoint;
 use super::group::Pace;
 use super::lease::Lease;
 use super::machine::SnapshotData;
+use super::reach::{Reach, Refusals};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 
@@ -199,6 +200,8 @@ pub(crate) struct Router {
     pace: Arc<Pace>,
     lease: Arc<Lease>,
     reports: Arc<Reports>,
+    reach: Arc<Reach>,
+    refusals: Arc<Refusals>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -211,12 +214,16 @@ impl Router {
         pace: Arc<Pace>,
         lease: Arc<Lease>,
         reports: Arc<Reports>,
+        reach: Arc<Reach>,
+        refusals: Arc<Refusals>,
     ) -> Self {
         Self {
             transport,
             pace,
             lease,
             reports,
+            reach,
+            refusals,
         }
     }
 
@@ -256,6 +263,7 @@ impl Router {
             deadline: option.hard_ttl(),
             body,
         };
+        let sent_at = self.reach.now();
         let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
         if let Some(sent) = &sent {
             match &answer {
@@ -269,6 +277,20 @@ impl Router {
             && let Some(term) = named(reply, pre_vote)
         {
             self.lease.named(term);
+        }
+        match &answer {
+            Ok(Err(Refused::Unreachable(_))) | Err(_) => self.reach.lost(&to.broker, sent_at),
+            // The broker is up, but this group's member is not open there.
+            Ok(Err(Refused::NoSuchMember(_) | Refused::OtherCopy(..) | Refused::Stopped(..))) => {
+                self.reach.answered(&to.broker);
+                self.refusals.refused(&to.broker);
+            }
+            Ok(_) => {
+                self.reach.answered(&to.broker);
+                if self.refusals.answered(&to.broker, self.reach.now()) {
+                    self.reach.opened(&to.broker, &self.refusals.group);
+                }
+            }
         }
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),
