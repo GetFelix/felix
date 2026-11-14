@@ -67,8 +67,9 @@ pub use broker::{
 };
 pub use felix_wire::StartPosition;
 pub use stream::{
-    DeliveryEnvelope, FrameShape, HeldBytes, ReadBound, ReadBounds, SubQueuePolicy,
-    SubscriberOwner, SubscriberStats, Subscription, SubscriptionGuard, SubscriptionReceiver,
+    ANSWERED_AHEAD, DeliveryEnvelope, FrameShape, HeldBytes, ReadBound, ReadBounds, SubQueuePolicy,
+    SubscriberDrops, SubscriberOwner, SubscriberStats, Subscription, SubscriptionGuard,
+    SubscriptionReceiver,
 };
 
 // Atomic commits.

@@ -17,6 +17,7 @@ use crate::serving::quic::handlers::subscribe::conn_counts::{
     connection_subscriber_register, connection_subscriber_unregister,
 };
 use crate::serving::quic::handlers::subscribe::egress::EgressBytes;
+use crate::serving::quic::handlers::subscribe::feeder::{encode_lagged, lagged_frame};
 use crate::serving::quic::handlers::subscribe::lane::{
     ConnectionCommand, LaneCommand, LaneDelivery, LaneRuntimeConfig, LaneSubscriber,
     WriterLaneManager,
@@ -162,6 +163,7 @@ pub(super) async fn run_writer_lane(
                     subscriber_id,
                     frame,
                     item_count,
+                    base_offset,
                     first_enqueued_at,
                     enqueue_at,
                     held,
@@ -180,6 +182,7 @@ pub(super) async fn run_writer_lane(
                                 subscriber_id,
                                 frame,
                                 item_count,
+                                base_offset,
                                 first_enqueued_at,
                                 enqueue_at,
                                 held,
@@ -233,6 +236,12 @@ pub(super) async fn run_connection_writer(
     let mut debug_bytes = 0u64;
     let mut debug_dequeues = 0u64;
     let mut subscribers: HashMap<u64, LaneSubscriber> = HashMap::default();
+    // Kept apart from `subscribers`, which is empty for one mid-write.
+    let mut drop_accounts: HashMap<u64, felix_broker::SubscriberDrops> = HashMap::default();
+    // Subscribers that end at a drop and lost a frame here. Everything after
+    // it is shed too, so the client sees the drop as where its stream stops
+    // rather than a hole followed by later records.
+    let mut shedding: HashSet<u64> = HashSet::default();
     let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::default();
     // Unregistered, but still writing what was queued before the unregister.
     let mut leaving: HashSet<u64> = HashSet::default();
@@ -252,6 +261,8 @@ pub(super) async fn run_connection_writer(
             let Some(mut subscriber) = subscribers.remove(&subscriber_id) else {
                 // Never registered here, or already gone: nothing to write to.
                 deliveries.remove(&subscriber_id);
+                drop_accounts.remove(&subscriber_id);
+                shedding.remove(&subscriber_id);
                 continue;
             };
             let Some(queue) = deliveries.get_mut(&subscriber_id) else {
@@ -358,6 +369,9 @@ pub(super) async fn run_connection_writer(
                             event_send,
                             guard,
                         } => {
+                            if let Some(account) = guard.drop_account() {
+                                drop_accounts.insert(subscriber_id, account);
+                            }
                             subscribers.insert(
                                 subscriber_id,
                                 LaneSubscriber {
@@ -372,6 +386,39 @@ pub(super) async fn run_connection_writer(
                             subscriber_id,
                             last,
                         } => {
+                            // The feeder chose `last` before this writer's drops,
+                            // which may have lowered the resume point. Nothing
+                            // after a shed was written, so `ended` would hide a
+                            // hole and an older `lagged` would skip records.
+                            // A move resumes at its own offset, so a lag
+                            // outranks it as in the feeder. Any other last
+                            // frame (a revocation, a deletion) says why the
+                            // subscription ended and is kept.
+                            let kind = last.as_ref().map(last_frame_kind);
+                            let last = if shedding.contains(&subscriber_id)
+                                && matches!(
+                                    kind,
+                                    Some(
+                                        LastKind::Ended
+                                            | LastKind::Lagged
+                                            | LastKind::Moved
+                                    )
+                                ) {
+                                drop_accounts
+                                    .get(&subscriber_id)
+                                    .and_then(|account| account.resume_from())
+                                    .and_then(|resume_from| {
+                                        // One lag, one count: the feeder
+                                        // counted its own lagged frame.
+                                        if kind == Some(LastKind::Lagged) {
+                                            encode_lagged(subscriber_id, resume_from)
+                                        } else {
+                                            lagged_frame(subscriber_id, resume_from)
+                                        }
+                                    })
+                            } else {
+                                last
+                            };
                             if let Some(frame) = last {
                                 // Never dropped for being over the limit: it may
                                 // be the frame that says where to resume.
@@ -399,12 +446,15 @@ pub(super) async fn run_connection_writer(
                             } else {
                                 subscribers.remove(&subscriber_id);
                                 deliveries.remove(&subscriber_id);
+                                drop_accounts.remove(&subscriber_id);
+                                shedding.remove(&subscriber_id);
                             }
                         }
                         ConnectionCommand::Delivery {
                             subscriber_id,
                             frame,
                             item_count,
+                            base_offset,
                             first_enqueued_at,
                             enqueue_at,
                             held,
@@ -416,11 +466,20 @@ pub(super) async fn run_connection_writer(
                             // `Block` never drops: a batch taken just before the
                             // bound was hit may overshoot it, and the writer then
                             // stops taking more until this subscriber drains.
-                            if !block && queue.len() >= max_queued_per_subscriber {
+                            let full = !block && queue.len() >= max_queued_per_subscriber;
+                            if full || shedding.contains(&subscriber_id) {
                                 // This subscriber is not keeping up; the others
                                 // on the connection are not made to wait for it.
                                 metrics::counter!("felix_sub_queue_dropped_total")
                                     .increment(item_count as u64);
+                                if let Some(account) = drop_accounts.get(&subscriber_id) {
+                                    account.dropped(base_offset, item_count as u64);
+                                    // A subscription that does not end at a drop
+                                    // sees it as an offset jump and carries on.
+                                    if base_offset.is_some() && account.ends_subscription() {
+                                        shedding.insert(subscriber_id);
+                                    }
+                                }
                                 continue;
                             }
                             queue.push_back(LaneDelivery {
@@ -453,6 +512,8 @@ pub(super) async fn run_connection_writer(
                         if done {
                             leaving.remove(&subscriber_id);
                             deliveries.remove(&subscriber_id);
+                            drop_accounts.remove(&subscriber_id);
+                            shedding.remove(&subscriber_id);
                             drop(subscriber);
                         } else {
                             subscribers.insert(subscriber_id, subscriber);
@@ -509,6 +570,8 @@ pub(super) async fn run_connection_writer(
                         // The stream is gone, and so is everything queued for it.
                         leaving.remove(&subscriber_id);
                         deliveries.remove(&subscriber_id);
+                        drop_accounts.remove(&subscriber_id);
+                        shedding.remove(&subscriber_id);
                         t_counter!(
                             "broker_sub_conn_write_errors_total",
                             "connection_id" => conn_label.clone()
@@ -547,5 +610,23 @@ pub(super) async fn run_connection_writer(
             debug_bytes = 0;
             debug_dequeues = 0;
         }
+    }
+}
+
+#[derive(PartialEq, Eq)]
+enum LastKind {
+    Ended,
+    Lagged,
+    Moved,
+    Other,
+}
+
+/// Which last frames a writer drop can make wrong.
+fn last_frame_kind(frame: &Bytes) -> LastKind {
+    match felix_wire::Frame::decode(frame.clone()).and_then(felix_wire::Message::decode) {
+        Ok(felix_wire::Message::SubscriptionEnded { .. }) => LastKind::Ended,
+        Ok(felix_wire::Message::SubscriptionLagged { .. }) => LastKind::Lagged,
+        Ok(felix_wire::Message::ShardMoved { .. }) => LastKind::Moved,
+        _ => LastKind::Other,
     }
 }

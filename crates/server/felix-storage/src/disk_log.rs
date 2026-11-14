@@ -692,6 +692,9 @@ impl DiskLog {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
+            // Before `segments`; see the lock order on `replica_persisted`.
+            let mut persisted = operation.replica_persisted.lock();
+            operation.hold_between_locks();
             let mut segments = operation.segments.write();
             segments.check_open()?;
             let (base, tail) = (segments.base_offset(), segments.tail_offset());
@@ -700,38 +703,36 @@ impl DiskLog {
             }
             // Lowered on disk before anything is cut, so a restore interrupted
             // between the two can simply be run again.
-            {
-                let mut persisted = operation.replica_persisted.lock();
-                if operation.commit_offset.load(Ordering::Acquire) > offset {
-                    // The generation saved named the record below the old
-                    // offset. A Raft log names the one below the new offset.
-                    let mut committed = operation.committed_generation.lock();
-                    #[cfg(feature = "raft")]
-                    let below = match offset.checked_sub(1) {
-                        Some(last) if operation.config.raft_log && last >= base => segments
-                            .read_plan(last)
-                            .generation_at(last, &operation.label)?
-                            .flatten()
-                            .unwrap_or(0),
-                        _ => 0,
-                    };
-                    #[cfg(not(feature = "raft"))]
-                    let below = 0;
-                    let state = replica_state::ReplicaState {
-                        commit_offset: offset,
-                        committed_generation: below,
-                        ..operation.replica_state_with(*committed)
-                    };
-                    operation.poison_on_sync_failure(
-                        "the replica state",
-                        replica_state::store(&operation.dir, &state),
-                    )?;
-                    *committed = below;
-                    operation.commit_offset.store(offset, Ordering::Release);
-                    operation.commit_persisted.store(offset, Ordering::Release);
-                    *persisted = (state, Some(tokio::time::Instant::now()));
-                }
+            if operation.commit_offset.load(Ordering::Acquire) > offset {
+                // The generation saved named the record below the old
+                // offset. A Raft log names the one below the new offset.
+                let mut committed = operation.committed_generation.lock();
+                #[cfg(feature = "raft")]
+                let below = match offset.checked_sub(1) {
+                    Some(last) if operation.config.raft_log && last >= base => segments
+                        .read_plan(last)
+                        .generation_at(last, &operation.label)?
+                        .flatten()
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                #[cfg(not(feature = "raft"))]
+                let below = 0;
+                let state = replica_state::ReplicaState {
+                    commit_offset: offset,
+                    committed_generation: below,
+                    ..operation.replica_state_with(*committed)
+                };
+                operation.poison_on_sync_failure(
+                    "the replica state",
+                    replica_state::store(&operation.dir, &state),
+                )?;
+                *committed = below;
+                operation.commit_offset.store(offset, Ordering::Release);
+                operation.commit_persisted.store(offset, Ordering::Release);
+                *persisted = (state, Some(tokio::time::Instant::now()));
             }
+            drop(persisted);
             if offset == tail {
                 return Ok(());
             }
@@ -1314,6 +1315,10 @@ impl DiskLog {
             #[cfg(test)]
             slow_inline_roll_millis: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
+            hold_between_locks_millis: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            hold_between_locks_entries: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
             flushes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
@@ -1894,7 +1899,8 @@ struct LogInner {
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
     /// under the read lock and does its I/O after releasing it, and an append
-    /// writes its batch after releasing it.
+    /// writes its batch after releasing it. Taken after `replica_persisted`;
+    /// see the lock order there.
     segments: RwLock<SegmentSet>,
     /// Held by an append from placing its batch to taking it in, and by
     /// anything else that changes the active segment: a background roll's
@@ -1983,6 +1989,11 @@ struct LogInner {
     replica_writes: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     /// Tokio's clock, so a simulation decides when to persist on virtual time.
+    ///
+    /// Lock order: `append_lock`, then `replica_persisted`, then `segments`.
+    /// The set raise and the sealing append hold this lock and read
+    /// `segments` without `append_lock`, so taking `segments` first and then
+    /// this one deadlocks.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
@@ -2075,6 +2086,13 @@ struct LogInner {
     /// Milliseconds an inline rollover holds the segment lock, for tests.
     #[cfg(test)]
     slow_inline_roll_millis: std::sync::atomic::AtomicU64,
+    /// Milliseconds a restore and a set raise sleep after their first of
+    /// `replica_persisted` and `segments`, so a test can overlap the two.
+    #[cfg(test)]
+    hold_between_locks_millis: std::sync::atomic::AtomicU64,
+    /// Times the hook above has run, so a test can wait for the first holder.
+    #[cfg(test)]
+    hold_between_locks_entries: std::sync::atomic::AtomicU64,
     /// Set while a stretched inline rollover holds the segment lock.
     #[cfg(test)]
     inline_roll_active: std::sync::atomic::AtomicBool,
@@ -2326,6 +2344,18 @@ impl LogInner {
 }
 
 impl LogInner {
+    #[cfg(test)]
+    fn hold_between_locks(&self) {
+        self.hold_between_locks_entries
+            .fetch_add(1, Ordering::Release);
+        let millis = self.hold_between_locks_millis.load(Ordering::Acquire);
+        std::thread::sleep(std::time::Duration::from_millis(millis));
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    fn hold_between_locks(&self) {}
+
     /// How long the commit writer waits before its next write: the rest of
     /// [`COMMIT_PERSIST_INTERVAL`] on a Raft log, nothing otherwise.
     fn commit_write_wait(&self) -> Option<std::time::Duration> {

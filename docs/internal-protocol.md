@@ -1159,7 +1159,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 2 (layout 1 had no report byte). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 4 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
@@ -1181,9 +1181,12 @@ After the report byte comes the message:
   is present only when a leader hands over leadership.
 - **Snapshot**: the leader's vote, the last log id the snapshot covers
   (optional), and its membership with that membership's log id (optional).
-  It carries no data. A stream shard's state is its log, so no member takes
-  a snapshot: each answers `NoSnapshots`, and a member that is behind is
-  sent entries.
+  Then one piece of the snapshot's data: the whole snapshot's length
+  (`u64`), where this piece starts in it (`u64`), and the piece (`u32`
+  length, then the bytes). A cache shard's member keeps the pieces in order
+  and installs the snapshot at the last. A stream shard's snapshot has no
+  data, and its state is its log, so no member takes one: each answers
+  `NoSnapshots`, and a member that is behind is sent entries.
 - **Leader transfer**: the leader's vote, the member to take over, and the
   leader's last log id (optional).
 - **Written position**: the member that sends it, and the log id of the
@@ -1196,7 +1199,8 @@ After the report byte comes the message:
 
 A membership is a `u8` count of voter sets (two during a joint change), each
 a `u8` count and that many members, then the members that are not voters the
-same way. At most 64 members in a set.
+same way, then the version of the target the membership was made from: the
+incarnation and the counter, a `u64` each. At most 64 members in a set.
 
 The answer has the same first byte, then:
 
@@ -1224,6 +1228,17 @@ fsync and the answer. The sender cuts a longer append, and openraft takes the
 answer as a partial acknowledgement and sends the rest next. An append that
 could not arrive in time would be cut the same way on every retry, so a
 follower far behind would never catch up.
+
+Two smaller limits apply first, when the leader builds the append: at most
+1,024 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records
+read from the log (the log reader's page). At 1 KiB records that is about
+1 MiB per append, and never more than 4 MiB. The wire budget (256 KiB
+to 32 MiB) still cuts an append that does not fit. So the cut above only
+shortens an append whose deadline is under about 130 ms, or one record
+larger than the budget's rest.
+openraft's default of 300 entries would cap an append of
+1 KiB records at about 300 KB, and a follower behind would take over ten
+times the round trips to catch up.
 
 Raft calls have in-flight budgets per peer of their own
 (`FELIX_INTERNAL_MAX_INFLIGHT` each), so groups waiting on a slow peer cannot

@@ -413,6 +413,10 @@ async fn a_raft_log_writes_its_commit_index_once_per_interval() {
     for index in 1..10 {
         log.save_committed(index, 1).await.expect("save");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        // What a reader of the saved offset is told is on disk already.
+        let told = log.saved_commit_offset();
+        let held = crate::disk_log::replica_state::load(dir.path()).expect("replica state");
+        assert!(told <= held.commit_offset && told <= log.commit_offset());
     }
     // A starved runner can take longer than the interval over the loop.
     let intervals = started.elapsed().as_millis() / COMMIT_PERSIST_INTERVAL.as_millis();

@@ -11,6 +11,7 @@ use openraft::vote::{RaftLeaderId, RaftVote};
 use openraft::{EntryPayload, StoredMembership};
 
 use super::*;
+use crate::raft::membership::TargetVersion;
 use crate::raft::network::{Addressee, RaftReply, RaftRequest, Refused, Reply, Request};
 use crate::raft::types::{Command, GroupId, MemberId, Membership, ShardTypes};
 use crate::{ShardKey, ShardKind};
@@ -49,13 +50,11 @@ fn log_id(term: u64, index: u64) -> LogIdOf<ShardTypes> {
 fn membership() -> Membership {
     let voters: BTreeSet<MemberId> = [member("a"), member("b"), member("c")].into();
     let joint: BTreeSet<MemberId> = [member("a"), member("d")].into();
-    let all = voters
-        .iter()
-        .chain(&joint)
-        .cloned()
-        .chain([member("learner")])
-        .collect::<BTreeSet<_>>();
-    Membership::new_with_defaults(vec![voters, joint], all)
+    let version = TargetVersion {
+        incarnation: 2,
+        counter: 9,
+    };
+    Membership::new(vec![voters, joint], [member("learner")].into(), version)
 }
 
 fn request(body: Request) -> RaftRequest {
@@ -123,6 +122,9 @@ fn every_request() -> Vec<RaftRequest> {
                 last_log_id: Some(log_id(2, 7)),
                 last_membership: StoredMembership::new(Some(log_id(2, 7)), membership()),
             },
+            data_len: 9,
+            offset: 4,
+            data: Bytes::from_static(b"state"),
         }),
         request(Request::TransferLeader(TransferLeaderRequest::new(
             vote(2, true),
@@ -268,7 +270,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[2, 3][..],
+        &[4, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -324,12 +326,12 @@ fn trailing_bytes_and_other_layouts_are_refused() {
     longer.put_u8(0);
     assert!(decode_request(longer.freeze()).is_err());
     let mut other = BytesMut::from(&bytes[..]);
-    other[0] = 3;
+    other[0] = LAYOUT + 1;
     assert!(decode_request(other.freeze()).is_err());
 
     let reply = encode_reply(&every_reply()[0]);
     let mut other = BytesMut::from(&reply[..]);
-    other[0] = 3;
+    other[0] = LAYOUT + 1;
     assert!(decode_reply(other.freeze()).is_err());
 }
 
@@ -361,6 +363,46 @@ fn a_layout_1_header_is_refused_by_layout() {
         panic!("a layout 1 answer was read");
     };
     assert!(refused.to_string().contains("layout 1"), "{refused}");
+}
+
+/// A build from before snapshots carried data writes layout 2, whose
+/// snapshot ends at the membership. It is refused by its layout: read as
+/// this one it would only look cut short.
+#[test]
+fn a_layout_2_snapshot_is_refused_by_layout() {
+    let sent = every_request().remove(4);
+    let Request::Snapshot { data, .. } = &sent.body else {
+        panic!("not the snapshot");
+    };
+    let bytes = encode_request(&sent).expect("encode");
+    // The data's length, the piece's offset, its length and its bytes.
+    let mut old = bytes[..bytes.len() - (8 + 8 + 4 + data.len())].to_vec();
+    old[0] = 2;
+    let refused = decode_request(Bytes::from(old)).expect_err("refused");
+    assert!(
+        refused.to_string().contains("layout 2"),
+        "refused for something else: {refused}"
+    );
+
+    let reply = encode_reply(&every_reply()[0]);
+    let mut old = BytesMut::from(&reply[..]);
+    old[0] = 2;
+    let Err(refused) = decode_reply(old.freeze()) else {
+        panic!("a layout 2 answer was read");
+    };
+    assert!(refused.to_string().contains("layout 2"), "{refused}");
+}
+
+/// Layout 3 is what a build with snapshot data but no target version
+/// writes. Its membership is shorter, so it is refused by layout rather
+/// than misread.
+#[test]
+fn a_layout_3_body_is_refused_by_layout() {
+    let bytes = encode_request(&every_request()[2]).expect("encode");
+    let mut old = BytesMut::from(&bytes[..]);
+    old[0] = 3;
+    let refused = decode_request(old.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("layout 3"), "{refused}");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does
@@ -534,7 +576,11 @@ fn room_for_entries_is_held_to_the_bytes_left() {
 
 #[test]
 fn a_membership_entry_with_no_voters_is_refused() {
-    let empty = Membership::new_with_defaults(vec![BTreeSet::new()], BTreeSet::new());
+    let empty = Membership::new(
+        vec![BTreeSet::new()],
+        BTreeSet::new(),
+        TargetVersion::default(),
+    );
     let written = request(Request::Append(AppendEntriesRequest {
         vote: vote(2, true),
         prev_log_id: None,

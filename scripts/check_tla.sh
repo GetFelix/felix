@@ -112,6 +112,7 @@ module_of() {
     FelixRaftCache*) echo FelixRaftCache ;;
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
     FelixRaftWritten*) echo FelixRaftWritten ;;
+    FelixRaftBatch*) echo FelixRaftBatch ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -558,6 +559,21 @@ expectations=(
   "FelixRaftWrittenReachEarly violates NeverAcksEarly"
   "FelixRaftWrittenReachEarlyInJoint violates NeverAcksEarlyInJoint"
   "FelixRaftWrittenReachCommitsAfterFailover violates NeverCommitsAfterFailover"
+  "FelixRaftBatch pass"
+  "FelixRaftBatchKeepsCut pass"
+  "FelixRaftBatchEachRecord violates BatchExactlyOnce"
+  "FelixRaftBatchRewrite violates BatchExactlyOnce"
+  "FelixRaftBatchRewriteOrder violates BatchInOrder"
+  "FelixRaftBatchForgetsCut violates BatchExactlyOnce"
+  "FelixRaftBatchForgetsCutPlace violates ProducerPlaceAgrees"
+  "FelixRaftBatchTableAtApply violates BatchExactlyOnce"
+  "FelixRaftBatchHeldBeforeCommit violates BatchExactlyOnce"
+  "FelixRaftBatchReachFinish violates NeverFinishesACut"
+  "FelixRaftBatchReachFinishOverTail violates NeverFinishesOverTail"
+  "FelixRaftBatchReachRefusal violates NeverRefuses"
+  "FelixRaftBatchReachInstall violates NeverInstalls"
+  "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
+  "FelixRaftBatchReachHeld violates NeverAnswersHeld"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"
@@ -596,7 +612,20 @@ expectations=(
   "FelixRaftPlacementSameIdWrites pass"
   "FelixRaftPlacementShrinkRetain pass"
   "FelixRaftPlacementReturnWipe pass"
-  "FelixRaftPlacementStaleWipe violates AckedOnDisk"
+  "FelixRaftPlacementStaleWipe pass"
+  "FelixRaftPlacementStaleWipeNoVersion violates AckedOnDisk"
+  "FelixRaftPlacementStaleWipeRewind pass"
+  "FelixRaftPlacementStaleWipeRewindSameInc violates AckedOnDisk"
+  "FelixRaftPlacementDirectTermsNoBarrier violates StateMachineSafety"
+  "FelixRaftPlacementTransferMove pass"
+  "FelixRaftPlacementTransferMoveSelfRemove violates NeverLeadsRemoved"
+  "FelixRaftPlacementReachTransfer violates NeverTransfers"
+  "FelixRaftPlacementSingleMove pass"
+  "FelixRaftPlacementSingleMoveSelfRemove violates NeverLeadsRemoved"
+  "FelixRaftPlacementStampDoomable pass"
+  "FelixRaftPlacementStampDoomableNoStamp violates DroppedIsDoomable"
+  "FelixRaftPlacementRewindSpareCommitted violates AckedOnDisk"
+  "FelixRaftPlacementStaleWipeTwoTerms pass"
   "FelixRaftPlacementSameIdCounted violates AckedSurvive"
   "FelixRaftPlacementSameIdFive violates OneLeaderPerTerm"
   "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"
@@ -1031,9 +1060,16 @@ fi
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a
 # build box.
-# FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
-# (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
-# hours, so nothing checks it yet.
+# FelixRaftPlacementFull (160 minutes on a CI runner) and
+# FelixRaftPlacementRewindSpare (176 minutes) run nightly (tla-walk.yml).
+# FelixRaftPlacementMoveWipeFull did not finish in three hours and
+# FelixRaftPlacementTransferMoveFull, TransferMove with a write, not in six,
+# so nothing checks them yet (issue 2497).
+# FelixRaftPlacement{DirectTerms,MoveWipeTwoMoves,TransferMoveWipe,
+# StaleWipeRewindNoAck} did not finish in six hours on a CI runner, and
+# FelixRaftPlacement{StaleReturnWipe,StaleReturnWipeAnyVersion} ran past
+# 45 minutes on a build box at their bounds; each is registered once a
+# dispatch run gives its declared outcome.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -1231,15 +1267,22 @@ weights=(
   "FelixRaftIdentityRootRestoreNoWitness 9"
   "FelixRaftIdentityRootRestoreBatched 18"
   "FelixRaftIdentityWipeThenRootRestore 7"
-  "FelixRaftPlacementFailover 10"
+  "FelixRaftPlacementFailover 36"
   "FelixRaftPlacementReseat 2"
   "FelixRaftPlacementReseatWrites 7"
-  "FelixRaftPlacementMoveWipe 3"
-  "FelixRaftPlacementStaleWipe 5"
+  "FelixRaftPlacementMoveWipe 22"
+  "FelixRaftPlacementStaleWipe 27"
+  "FelixRaftPlacementStaleWipeNoVersion 60"
+  "FelixRaftPlacementTransferMove 51"
+  "FelixRaftPlacementRewindSpareCommitted 57"
+  "FelixRaftPlacementDirectTermsNoBarrier 130"
+  "FelixRaftPlacementStaleWipeTwoTerms 150"
+  "FelixRaftPlacementStaleWipeRewind 275"
+  "FelixRaftPlacementStaleWipeRewindSameInc 191"
   "FelixRaftPlacementReturnWipe 2"
-  "FelixRaftPlacementStaleFull 49"
+  "FelixRaftPlacementStaleFull 39"
   "FelixRaftPlacementSameId 2"
-  "FelixRaftPlacementSameIdFive 20"
+  "FelixRaftPlacementSameIdFive 14"
   "FelixRaftPlacementFormAfterWipes 2"
   "FelixRaftPlacementFormEarlyWipeFirstBoot 2"
   "FelixRaftSwitchGenZero 6"
@@ -1260,6 +1303,8 @@ weights=(
   "FelixRaftMembershipTerms 109"
   "FelixRaftWritten 40"
   "FelixRaftWrittenCrash 5"
+  "FelixRaftBatch 18"
+  "FelixRaftBatchKeepsCut 18"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
@@ -1329,14 +1374,11 @@ pr_minutes=(
   "FelixRaftMembership 6"
   "FelixRaftMembershipFailover 20"
   "FelixRaftOffsetsFailover 17"
-  "FelixRaftPlacementFailover 8"
   "FelixRaftPlacementFormAfterWipes 3"
   "FelixRaftPlacementFormLogWipeFirstBoot 4"
-  "FelixRaftPlacementMoveWipe 4"
   "FelixRaftPlacementReseatWrites 8"
   "FelixRaftPlacementReturnWipe 3"
   "FelixRaftPlacementSameId 5"
-  "FelixRaftPlacementStaleWipe 3"
   "FelixRaftReform 3"
   "FelixRaftReformOneReplica 2"
   "FelixRaftReformRejoinFull 13"

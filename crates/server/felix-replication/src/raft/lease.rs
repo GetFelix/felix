@@ -50,7 +50,7 @@ pub(crate) struct Lease {
 ///
 /// Under the simulator boottime is virtual and the monotonic side is
 /// tokio's, so the two drift and the check may refuse for good. Nothing
-/// there asks the check yet.
+/// there asks the check: its publishes are answered at the commit.
 #[derive(Debug, Default)]
 pub(crate) struct Wake {
     /// How far boottime was ahead of the monotonic clock at the last jump.

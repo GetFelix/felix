@@ -22,16 +22,22 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod cache;
+mod change;
 mod commit;
 mod deliver;
 mod idempotent;
 mod identity;
 mod lease;
+mod membership;
 mod propose;
+mod read;
 mod root;
 mod switch;
 mod written;
 
+/// Shards numbered from here are cache shards.
+const CACHE: u32 = 1000;
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
 
@@ -47,7 +53,10 @@ fn shard(n: u32) -> ShardKey {
         namespace: "ns".into(),
         stream: "orders".into(),
         shard: n,
-        kind: ShardKind::Stream,
+        kind: match n >= CACHE {
+            true => ShardKind::Cache,
+            false => ShardKind::Stream,
+        },
     }
 }
 
@@ -104,6 +113,10 @@ struct Net {
     lose_transfers: std::sync::atomic::AtomicBool,
     /// How long an append's answer takes to come back.
     answer_after: parking_lot::Mutex<Option<Duration>>,
+    /// Appends carrying entries that were handed to a broker.
+    appends: std::sync::atomic::AtomicU64,
+    /// While set, an append is taken and its answer is lost.
+    lose_answers: std::sync::atomic::AtomicBool,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -158,14 +171,23 @@ impl RaftTransport for Net {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
+        if runtime.is_some()
+            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+        {
+            self.appends.fetch_add(1, Relaxed);
+        }
         let slow = match request.body {
             Request::Append(_) => *self.answer_after.lock(),
             _ => None,
         };
+        let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
         let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
+        if unheard {
+            return Err(Refused::Unreachable("the answer was lost".into()));
+        }
         if let Some(slow) = slow {
             tokio::time::sleep(slow).await;
         }
@@ -1354,6 +1376,9 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
             meta,
+            data_len: 0,
+            offset: 0,
+            data: Bytes::new(),
         },
     };
     let answer = cluster.runtime(behind).handle(request).await;
@@ -1586,22 +1611,25 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
 
 #[test]
 fn the_timers_must_make_sense() {
-    assert!(RuntimeConfig::default().raft().is_ok());
+    assert!(RuntimeConfig::default().raft(ShardKind::Stream).is_ok());
+    assert!(RuntimeConfig::default().raft(ShardKind::Cache).is_ok());
     let zero_tick = RuntimeConfig {
         tick: Duration::ZERO,
         ..RuntimeConfig::default()
     };
-    assert!(zero_tick.raft().is_err());
+    assert!(zero_tick.raft(ShardKind::Stream).is_err());
     let heartbeat_past_election = RuntimeConfig {
         heartbeat: Duration::from_secs(3),
         ..RuntimeConfig::default()
     };
-    assert!(heartbeat_past_election.raft().is_err());
+    assert!(heartbeat_past_election.raft(ShardKind::Stream).is_err());
 }
 
 #[test]
 fn the_default_timers_are_the_designs() {
-    let raft = RuntimeConfig::default().raft().expect("timers");
+    let raft = RuntimeConfig::default()
+        .raft(ShardKind::Stream)
+        .expect("timers");
     assert_eq!(RuntimeConfig::default().tick, Duration::from_millis(50));
     assert_eq!(raft.heartbeat_interval, 200);
     assert_eq!(
@@ -1622,22 +1650,45 @@ fn a_membership_round_trips_through_its_record() {
         BTreeSet::from([voter("a"), voter("b"), voter("c")]),
         BTreeSet::from([voter("a"), voter("b"), voter("d")]),
     ];
-    let everyone: BTreeSet<_> = ["a", "b", "c", "d", "e"].map(voter).into();
-    let membership = Membership::new_with_defaults(joint, everyone);
+    let version = TargetVersion {
+        incarnation: 1,
+        counter: 7,
+    };
+    let membership = Membership::new(joint, [voter("e")].into(), version);
 
     let payload = ShardCodec.encode_membership(&membership).expect("encode");
-    assert_eq!(
-        ShardCodec.decode_membership(&payload).expect("decode"),
-        membership
-    );
+    let read = ShardCodec.decode_membership(&payload).expect("decode");
+    assert_eq!(read, membership);
+    assert_eq!(read.version(), version);
     let stored: StoredMembership = serde_json::from_slice(&payload).expect("json");
     assert_eq!(stored.learners, BTreeSet::from([voter("e")]));
 
-    let newer = payload.to_vec();
-    let newer = String::from_utf8(newer)
-        .expect("utf8")
-        .replace("\"version\":1", "\"version\":2");
+    let text = String::from_utf8(payload.to_vec()).expect("utf8");
+    let newer = text.replace("\"version\":2", "\"version\":3");
+    assert_ne!(newer, text);
     assert!(ShardCodec.decode_membership(newer.as_bytes()).is_err());
+    // Layout 1 never held a version, so one that names a version is not
+    // layout 1.
+    let older = text.replace("\"version\":2", "\"version\":1");
+    assert!(ShardCodec.decode_membership(older.as_bytes()).is_err());
+    // Layout 2 always names its version. None is not the zero version.
+    let mut bare: serde_json::Value = serde_json::from_slice(&payload).expect("json");
+    let fields = bare.as_object_mut().expect("an object");
+    fields.remove("target").expect("a target");
+    let bare = bare.to_string();
+    assert!(ShardCodec.decode_membership(bare.as_bytes()).is_err());
+}
+
+#[test]
+fn a_membership_stored_before_versions_reads_as_the_zero_version() {
+    let voter = |broker: &str| MemberId::new(broker, 1);
+    let stored = r#"{"version":1,"voters":[[{"broker":"a","copy":1},{"broker":"b","copy":1}]],"learners":[{"broker":"c","copy":1}]}"#;
+    let read = ShardCodec
+        .decode_membership(stored.as_bytes())
+        .expect("decode");
+    let voters = BTreeSet::from([voter("a"), voter("b")]);
+    let want = Membership::new(vec![voters], [voter("c")].into(), TargetVersion::default());
+    assert_eq!(read, want);
 }
 
 #[test]

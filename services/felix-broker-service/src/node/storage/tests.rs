@@ -658,6 +658,8 @@ fn registered_directory() -> (tempfile::TempDir, StorageId) {
 /// names that id, and a lost copy there is readmitted from 0: the start
 /// reports the three things `record_readmitted` asks for. The deferred
 /// restore check decides the same once it has the record.
+// The `restart` helper relies on Linux boot-id behaviour, so these run on Linux only.
+#[cfg(target_os = "linux")]
 #[test]
 fn a_rotation_during_a_run_reports_minted_and_readmits_while_only_this_directory_registers() {
     let (root, before) = registered_directory();
@@ -708,6 +710,8 @@ fn a_rotation_during_a_run_reports_minted_and_readmits_while_only_this_directory
 /// one such undated registration, or by a gate rotation racing
 /// `record_dated_registration` (a crash before the rebind rotates again
 /// instead); two means a run here that the record does not cover.
+// The `restart` helper relies on Linux boot-id behaviour, so this runs on Linux only.
+#[cfg(target_os = "linux")]
 #[test]
 fn an_incarnation_past_the_next_one_gets_no_credit() {
     let (root, _) = registered_directory();
