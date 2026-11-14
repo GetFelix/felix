@@ -320,6 +320,7 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
         lease: at(shipped.lease),
         clock_drift_ppm: shipped.clock_drift_ppm,
         log_mark: shipped.log_mark,
+        tail_cache_bytes: shipped.tail_cache_bytes,
     }
 }
 
