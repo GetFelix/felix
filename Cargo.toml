@@ -122,14 +122,16 @@ bytes = "1"
 # docs/replication-engine.md, "openraft version".
 #
 # A git rev on openraft main (2026-11-14, after the 0.10.0 tag) for changes
-# that ship in 0.10.1: `Trigger::tick()`, which the node ticker needs, and the
+# that ship in 0.10.1: `Trigger::tick()`, which the node ticker needs, the
 # queue changes that keep an idle member's memory small (openraft#2313,
-# openraft#2314 and openraft#2324). Goes back to `version = "=0.10.1"` when that is released.
-openraft = { git = "https://github.com/databendlabs/openraft", rev = "5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58", default-features = false }
+# openraft#2314 and openraft#2324), and conditional batch writes
+# (`client_write_many` with a `WriteOption`, openraft#2321). Goes back to
+# `version = "=0.10.1"` when that is released.
+openraft = { git = "https://github.com/databendlabs/openraft", rev = "a8d0092bc850ec108f42dbfaba021f824b110094", default-features = false }
 # One shared router for every group's messages. Same rev as `openraft`.
-openraft-multi = { git = "https://github.com/databendlabs/openraft", rev = "5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58" }
+openraft-multi = { git = "https://github.com/databendlabs/openraft", rev = "a8d0092bc850ec108f42dbfaba021f824b110094" }
 # The tokio runtime the shard groups wrap. Same rev as `openraft`.
-openraft-rt-tokio = { git = "https://github.com/databendlabs/openraft", rev = "5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58" }
+openraft-rt-tokio = { git = "https://github.com/databendlabs/openraft", rev = "a8d0092bc850ec108f42dbfaba021f824b110094" }
 uuid = { version = "1", features = ["v4", "serde"] }
 # `test-util` (paused time) is a dev-dependency feature, added per member.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }

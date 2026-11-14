@@ -2579,7 +2579,7 @@ checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
 [[package]]
 name = "openraft"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
+source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
 dependencies = [
  "anyerror",
  "backoff-series",
@@ -2606,7 +2606,7 @@ dependencies = [
 [[package]]
 name = "openraft-macros"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
+source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
 dependencies = [
  "chrono",
  "proc-macro2",
@@ -2618,7 +2618,7 @@ dependencies = [
 [[package]]
 name = "openraft-multi"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
+source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
 dependencies = [
  "anyerror",
  "openraft",
@@ -2627,7 +2627,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
+source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
 dependencies = [
  "futures-channel",
  "futures-util",
@@ -2639,7 +2639,7 @@ dependencies = [
 [[package]]
 name = "openraft-rt-tokio"
 version = "0.10.1"
-source = "git+https://github.com/databendlabs/openraft?rev=5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58#5c3ad1bc2d15a3dd0a7676e59da5892b81e40f58"
+source = "git+https://github.com/databendlabs/openraft?rev=a8d0092bc850ec108f42dbfaba021f824b110094#a8d0092bc850ec108f42dbfaba021f824b110094"
 dependencies = [
  "futures-util",
  "openraft-rt",
