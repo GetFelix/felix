@@ -16,6 +16,7 @@ use bytes::Bytes;
 use felix_storage::CommitTurn;
 use felix_storage::disk_log::ProducerSequence;
 use felix_storage::log::PayloadDigest;
+use tokio::sync::oneshot;
 
 use super::completion::spawn_release;
 use super::{PublishOutcome, SequenceReuse};
@@ -71,24 +72,30 @@ impl Broker {
         if payloads.is_empty() {
             return Ok(ProposedPublish {
                 finishing: None,
+                count: 0,
+                answer_early: false,
+                answer_at: None,
                 answer_within: None,
                 batch_first: None,
             });
         }
         let timestamp_micros = crate::append_time_now();
-        let (committed, turn) = state
+        let handed = state
             .proposals
             .hand_over(stalled_after, || {
                 Box::pin(propose(timestamp_micros)) as Committing<E>
             })
             .map_err(|waited| BrokerError::ProposalsStalled { waited })?;
         Ok(ProposedPublish {
+            count: payloads.len() as u64,
+            answer_early: handed.answer_early,
+            answer_at: None,
             finishing: Some(Box::pin(finish(
                 handle.clone(),
                 payloads,
                 timestamp_micros,
-                committed,
-                turn,
+                handed.queued,
+                handed.turn,
             ))),
             answer_within: None,
             batch_first: None,
@@ -334,6 +341,12 @@ impl<E> ProposalFailed<E> {
 #[must_use = "a proposed publish reports its outcome only through `complete`"]
 pub struct ProposedPublish<E: Send + 'static> {
     finishing: Option<Finishing<E>>,
+    /// How many records the batch holds.
+    count: u64,
+    /// The stream had little enough waiting for a commit when this batch
+    /// was handed over for [`Self::answer_at`] to apply.
+    answer_early: bool,
+    answer_at: Option<oneshot::Receiver<u64>>,
     answer_within: Option<AnswerWithin<E>>,
     /// Where the batch starts when these records are only the rest of it:
     /// the first offset of the start an earlier leader wrote.
@@ -343,6 +356,26 @@ pub struct ProposedPublish<E: Send + 'static> {
 type AnswerWithin<E> = (Duration, Box<dyn FnOnce() -> E + Send>);
 
 impl<E: Send + 'static> ProposedPublish<E> {
+    /// Answer [`Self::complete`] as soon as `written` is sent the batch's
+    /// end (one past its last offset), without waiting for the commit: an
+    /// acknowledgement on the leader's own log. Delivery does not move. The
+    /// batch still goes out only once the engine commits it, in its place,
+    /// and not at all if the engine gives up on it, though its publisher
+    /// was answered. A sender dropped unsent leaves the answer at the
+    /// commit.
+    ///
+    /// The answer also stays at the commit when the stream already had
+    /// [`crate::ANSWERED_AHEAD`] batches waiting for theirs at the hand-over, or
+    /// its oldest had waited a quarter of `stalled_after`. A publisher that
+    /// outruns the engine's commits is then slowed to their pace, instead
+    /// of piling batches up until `propose_publish` refuses the next.
+    pub fn answer_at(mut self, written: oneshot::Receiver<u64>) -> Self {
+        if self.answer_early {
+            self.answer_at = Some(written);
+        }
+        self
+    }
+
     /// Answer [`Self::complete`] with `timed_out` if the batch is not
     /// committed within `timeout`. The batch keeps its place and is still
     /// delivered if it commits.
@@ -356,11 +389,12 @@ impl<E: Send + 'static> ProposedPublish<E> {
     }
 
     /// Wait until the batch is committed and queued for delivery behind
-    /// every batch handed over before it. Reports its offsets and no
-    /// subscribers: the fanout runs after this returns. The offsets of a
-    /// batch finished after a leader stopped partway run from the start's
-    /// first record to the last one written now, and are not one run:
-    /// other records lie between its pieces.
+    /// every batch handed over before it, or until [`Self::answer_at`]
+    /// says it may be answered. Reports its offsets and no subscribers:
+    /// the fanout runs after this returns. The offsets of a batch finished
+    /// after a leader stopped partway run from the start's first record to
+    /// the last one written now, and are not one run: other records lie
+    /// between its pieces.
     pub async fn complete(mut self) -> std::result::Result<PublishOutcome, E> {
         let Some(finishing) = self.finishing.as_mut() else {
             return Ok(PublishOutcome {
@@ -368,18 +402,45 @@ impl<E: Send + 'static> ProposedPublish<E> {
                 offsets: None,
             });
         };
-        let outcome = match self.answer_within.take() {
-            None => finishing.await,
+        let count = self.count;
+        let written = self.answer_at.take();
+        // The batch's offsets, if the engine says it may be answered where
+        // it was written.
+        let written = async move {
+            let end = written?.await.ok()?;
+            Some((end.checked_sub(count)?, end - 1))
+        };
+        let answered = async {
+            tokio::select! {
+                biased;
+                // First: this is what sends `written`, and a commit that is
+                // already known wins.
+                outcome = finishing => Ok(outcome),
+                Some(offsets) = written => Err(offsets),
+            }
+        };
+        let answered = match self.answer_within.take() {
+            None => answered.await,
             Some((timeout, timed_out)) => {
-                match tokio::time::timeout(timeout, finishing).await {
-                    Ok(outcome) => outcome,
+                match tokio::time::timeout(timeout, answered).await {
+                    Ok(answered) => answered,
                     // `Drop` finishes the batch on a task.
                     Err(_) => return Err(timed_out()),
                 }
             }
         };
-        self.finishing = None;
         let batch_first = self.batch_first;
+        let outcome = match answered {
+            Ok(outcome) => {
+                self.finishing = None;
+                outcome
+            }
+            // Not committed yet. `Drop` runs the rest on a task.
+            Err(offsets) => Ok(PublishOutcome {
+                subscribers: 0,
+                offsets: Some(offsets),
+            }),
+        };
         outcome.map(|mut outcome| {
             if let (Some(first), Some((_, last))) = (batch_first, outcome.offsets) {
                 outcome.offsets = Some((first, last));
