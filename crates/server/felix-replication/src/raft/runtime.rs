@@ -662,16 +662,20 @@ impl GroupRuntime {
     ///
     /// The shard cannot be opened again until the member has stopped: an
     /// open before that is refused with [`OpenError::Closing`]. That holds
-    /// even if the caller drops this future.
+    /// even if the caller drops this future. A close that finds an earlier
+    /// one still stopping the member waits for it too, and returns true,
+    /// unless [`Self::shutdown`] has taken the member over by then.
     pub async fn close(&self, shard: &ShardKey) -> bool {
         let registry = Arc::clone(&self.inner.registry);
         let (shard, group) = {
             let mut slots = registry.slots.write();
-            // A slot still opening is its open's to place or free.
-            let Some((shard, Slot::Open(group))) = slots.by_shard.get_key_value(shard) else {
-                return false;
+            let (shard, group) = match slots.by_shard.get_key_value(shard) {
+                Some((shard, Slot::Open(group) | Slot::Closing(group))) => {
+                    (Arc::clone(shard), Arc::clone(group))
+                }
+                // A slot still opening is its open's to place or free.
+                Some((_, Slot::Opening)) | None => return false,
             };
-            let (shard, group) = (Arc::clone(shard), Arc::clone(group));
             slots
                 .by_shard
                 .insert(Arc::clone(&shard), Slot::Closing(Arc::clone(&group)));
@@ -679,11 +683,15 @@ impl GroupRuntime {
             (shard, group)
         };
         // In its own task, so the slot is freed when the member has
-        // stopped and not when the caller stops waiting.
+        // stopped and not when the caller stops waiting. A retried close
+        // waits on the same stop.
         let stopped = tokio::spawn(async move {
             group.shutdown().await;
             let mut slots = registry.slots.write();
-            if matches!(slots.by_shard.get(&shard), Some(Slot::Closing(_))) {
+            // Only this member's slot: after the first close freed it, the
+            // shard may have been opened and be closing again.
+            if matches!(slots.by_shard.get(&shard), Some(Slot::Closing(closing)) if Arc::ptr_eq(closing, &group))
+            {
                 slots.by_shard.remove(&shard);
             }
         });
