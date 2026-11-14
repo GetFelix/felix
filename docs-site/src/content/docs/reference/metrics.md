@@ -66,7 +66,7 @@ Per-subscriber queues, the writer lanes behind them and the replay ring. A risin
 | `felix_sub_queue_enqueued_total` | counter | - | Deliveries placed on subscriber queues. |
 | `felix_sub_queue_dequeued_total` | counter | - | Deliveries taken off subscriber queues by the writer. |
 | `felix_sub_queue_dropped_total` | counter | - | Records lost to slow subscribers. A subscriber that is not keeping up loses records instead of slowing the publisher; delivered events carry offsets so the gap is visible. |
-| `felix_subscribe_dropped_total` | counter | - | Records dropped from subscriber queues; moves with `felix_sub_queue_dropped_total`. |
+| `felix_subscribe_dropped_total` | counter | - | Records dropped from subscriber queues, including frames the connection writer sheds over a subscriber's bound; moves with `felix_sub_queue_dropped_total`. Also counted in the subscriber's own dropped total. |
 | `felix_sub_queue_byte_dropped_total` | counter | `bound` | Of the dropped records, those the byte bound turned away, by which `bound` was hit. |
 | `felix_sub_queue_drop_old_emulated_total` | counter | - | Drops under a `DropOld` policy, which the broker implements as `DropNew`. |
 | `felix_sub_queue_len` | gauge | - | Deliveries waiting across subscriber queues. |
