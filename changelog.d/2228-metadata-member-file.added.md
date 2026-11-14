@@ -7,5 +7,4 @@
   and that file, without reading `raft.redb`. A snapshot's leftover temporary
   is now deleted at open, and a snapshot with its reserved bytes set is
   refused.
-  The control plane does not use these files yet, so nothing changes for a
-  running cluster. The format is in `docs/storage-format.md`.
+  The format is in `docs/storage-format.md`.
