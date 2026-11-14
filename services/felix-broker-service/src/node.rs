@@ -255,9 +255,11 @@ where
         },
         _ => None,
     };
-    let group = group.map(|stored| crate::cluster::controlplane_group::Guard {
-        stored,
-        refused: group_refused.clone(),
+    // Under the no-group mark the guard expects no group, so a control plane
+    // replaced by one with a group stops this broker instead of having its
+    // catalog applied over data it never saw.
+    let group = durable_root.as_deref().and_then(|root| {
+        crate::cluster::controlplane_group::guard(root, group, group_refused.clone())
     });
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let own_kept = stored.kept;

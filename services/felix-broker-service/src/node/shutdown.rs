@@ -75,7 +75,8 @@ pub(super) enum Stopped {
     Signal,
     /// The control plane refused this node's registration.
     MembershipRejected,
-    /// The control plane is another metadata group than the data directory's.
+    /// The control plane is another metadata group than the data directory's,
+    /// or has a group where the directory was checked without one.
     WrongGroup,
 }
 

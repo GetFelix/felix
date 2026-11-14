@@ -528,7 +528,12 @@ hold:
    (`controlplane_group`), or, for a backend with no group such as the
    in-memory one, that it had none (`controlplane_group_none`). A directory
    never checked, such as one from before the check existed, cannot tell a
-   recreated control plane, so it waits. See "Cluster identity" below.
+   recreated control plane, so it waits. Under `controlplane_group_none` the
+   broker applies only answers with no group: a snapshot or page that names
+   one, from a control plane with a group that replaced the in-memory one,
+   stops the broker, and its next start asks that control plane, which
+   refuses a directory holding data unless the group adopts existing data.
+   See "Cluster identity" below.
 
 Otherwise it waits for the control plane, as without the switch. A 401,
 another 4xx, or an answer that does not decode is a control plane that is
