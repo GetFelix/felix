@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794629401259,
+  "lastUpdate": 1794634673614,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55588,6 +55588,58 @@ window.BENCHMARK_DATA = {
             "range": "7029.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816295.46\nmean: 818261.10\nstdev: 7029.29\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ce9f29e894713bc402401a81de03e24907e88567",
+          "message": "fix(storage,replication): lock Raft log directories; a retried close waits for the stop (#2344, #2382) (#2499)\n\nA Raft DiskLog open takes a non-blocking flock on its log directory before recovery, so a second opener (another process, the same process, or a symlinked path) gets ResourceBusy; the lock goes with close, the last drop, or process death, and segment sizes are unchanged. A retried GroupRuntime::close on a member still closing waits for the same stop. Closes #2344, closes #2382.",
+          "timestamp": "2026-11-14T05:28:24Z",
+          "tree_id": "8fc1d21ce08ca6ad6eb32bde8edde29c393dcddf",
+          "url": "https://github.com/GetFelix/felix/commit/ce9f29e894713bc402401a81de03e24907e88567"
+        },
+        "date": 1794634672902,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 501042.69,
+            "range": "28975.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 501042.69\nmean: 501812.40\nstdev: 28975.76\ncv: 5.77%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 501042.69,
+            "range": "28975.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 501042.69\nmean: 501812.40\nstdev: 28975.76\ncv: 5.77%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119595.73,
+            "range": "1037.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119595.73\nmean: 120193.32\nstdev: 1037.20\ncv: 0.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1195957.33,
+            "range": "10371.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1195957.33\nmean: 1201933.19\nstdev: 10371.99\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
