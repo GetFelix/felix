@@ -35,7 +35,14 @@ async fn leader_of(
     consistency: felix_broker::ConsistencyLevel,
 ) -> Leader {
     let root = tempfile::tempdir().expect("tempdir");
-    let broker = fixture::broker_at(root.path(), 1, fixture::INCARNATION, consistency).await;
+    let broker = fixture::broker_at(
+        root.path(),
+        1,
+        fixture::INCARNATION,
+        consistency,
+        felix_storage::FsyncMode::None,
+    )
+    .await;
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);

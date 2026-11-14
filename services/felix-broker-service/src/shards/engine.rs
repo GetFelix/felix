@@ -160,8 +160,9 @@ impl StreamEngine {
     ///
     /// Call it in the shard's publish order: the batch takes its offsets
     /// and its place in the delivery order here. [`RaftPublish::complete`]
-    /// answers a `Quorum` stream's publisher at the commit, whatever the
-    /// fsync policy. A `Leader` stream's publisher is answered once the
+    /// answers a `Quorum` stream's publisher at the commit when the stream
+    /// fsyncs on commit, and otherwise once a majority of the voters has
+    /// written the batch, if that is first. A `Leader` stream's publisher is answered once the
     /// batch is on this leader's log, while the group's leader lease holds,
     /// and at the commit while it does not. Subscribers get the batch at
     /// its commit either way. No write waits on the hybrid's marks or this
@@ -192,12 +193,14 @@ impl StreamEngine {
             let ack = broker.durable_storage().map_or(AckAt::Flushed, |storage| {
                 AckAt::for_fsync(&storage.config().fsync_mode)
             });
-            // A `Quorum` stream on a periodic fsync waits for the commit,
-            // not `await_quorum_ack`, until a copy whose flush failed cannot
-            // vote with its cut log (#2469). The commit is never weaker.
-            let answer = match handle.consistency() {
-                felix_broker::ConsistencyLevel::Leader => AnswerAt::Lease,
-                felix_broker::ConsistencyLevel::Quorum => AnswerAt::Commit,
+            // A `Quorum` stream not fsynced on commit is answered once a
+            // majority has written the batch, the hybrid's periodic promise.
+            // A copy whose flush failed restarts under a new copy id and does
+            // not vote with its cut log (#2469), so only power cuts can lose it.
+            let answer = match (handle.consistency(), ack) {
+                (felix_broker::ConsistencyLevel::Leader, _) => AnswerAt::Lease,
+                (felix_broker::ConsistencyLevel::Quorum, AckAt::Written) => AnswerAt::Majority,
+                (felix_broker::ConsistencyLevel::Quorum, AckAt::Flushed) => AnswerAt::Commit,
             };
             let proposed = raft.publish(
                 broker,

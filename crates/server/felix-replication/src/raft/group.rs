@@ -55,6 +55,9 @@ pub(crate) struct Group {
     transport: Arc<dyn RaftTransport>,
     /// The written positions other members told this one.
     reports: Arc<Reports>,
+    /// The furthest entry acknowledged on `reports` before its commit,
+    /// which a confirmed read must wait to have applied.
+    answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -515,6 +518,7 @@ impl Group {
             hold,
             transport,
             reports,
+            answered: Arc::default(),
             positions,
             commits,
             copy,
@@ -980,6 +984,7 @@ impl Group {
                 index,
             });
         let reports = Arc::clone(&self.reports);
+        let answered = Arc::clone(&self.answered);
         let raft = self.raft.clone();
         let me = self.member.clone();
         async move {
@@ -991,7 +996,15 @@ impl Group {
                 // First, so a member that no longer leads is refused even
                 // with a majority's reports in hand.
                 committed = commit => committed,
-                () = reports.majority(&raft, &me, at) => Ok(()),
+                () = reports.majority(&raft, &me, at) => {
+                    // Before the caller is told, so a read that starts
+                    // after the answer waits for this entry.
+                    let mut answered = answered.lock();
+                    if answered.is_none_or(|was| (was.term, was.index) < (at.term, at.index)) {
+                        *answered = Some(at);
+                    }
+                    Ok(())
+                }
             }
         }
     }
@@ -1010,11 +1023,19 @@ impl Group {
         let patience = Duration::from_millis(self.pace.timers.election_max);
         let deadline = tokio::time::Instant::now() + patience;
         let bound = self.read_index(term).await?;
+        // The read index is the commit index, and a write answered once a
+        // majority had written it can be past it. It is of this term and
+        // on a majority, so it commits unless this member stops leading.
+        let answered = *self.answered.lock();
+        let answered = answered
+            .filter(|at| at.term == term)
+            .map_or(0, |at| at.index + 1);
         let unanswered = CommitError::TimedOut {
             what: "read",
             timeout: patience,
         };
-        self.applied_through(bound - 1, deadline, unanswered).await
+        self.applied_through(bound.max(answered) - 1, deadline, unanswered)
+            .await
     }
 
     /// One past the index a reader must have applied before it reads: the

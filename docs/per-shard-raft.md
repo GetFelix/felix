@@ -941,7 +941,9 @@ is committed, whichever is first. This count releases the publisher's
 acknowledgement and nothing else. The commit index, `read_bound`, apply,
 the offset floor and the root's log marks use fsynced positions only, so
 no member can come to hold a different record at a committed offset. On a
-stream with fsync on commit, `Quorum` waits for the commit index.
+stream with fsync on commit, `Quorum` waits for the commit index. The
+publish path answers this way (`AnswerAt::Majority`, "Acknowledging a
+write").
 
 Votes are the exception, and must be. A voter compares the candidate's
 last log id with the last entry its own log has accepted, written or not
@@ -1709,12 +1711,41 @@ A `Quorum` write is acknowledged when `await_commit` returns: the commit
 index has passed it and the entry there has the term it was written at. On
 a `Periodic` stream it is acknowledged earlier if a majority has written
 it: `await_quorum_ack` is `await_commit` raced with the written count
-("Two signals from one append"). The publish path does not call
-`await_quorum_ack` yet and answers every `Quorum` publisher at the commit
-("Delivering committed records" says why). If
+("Two signals from one append"). `RaftEngine::publish` does this for a
+`Quorum` stream that is not fsynced on commit (`AnswerAt::Majority`): the
+publisher is answered at the first of the two, and subscribers still get the
+batch at its commit. The early answer is paced like a `Leader` one ("A
+`Leader` publisher that outruns the commits is slowed down"), and answers
+can overtake each other the same way. If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
+
+Where each stream is answered, and what that answer promises. The answer
+point is the same on Raft and on the hybrid; the last column is where they
+still differ:
+
+| Stream | Answered on Raft | Answered on the hybrid | Lost by |
+| --- | --- | --- | --- |
+| `Quorum`, fsync on commit | At the commit: a majority has fsynced it | A majority has fsynced it | Losing the disks of a majority |
+| `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | Power cuts before the fsync. On the hybrid a majority must lose power; on Raft one cut plus one unreachable copy is enough at RF 3 until issue #2423 |
+| `Leader` | On the leader's log while the lease holds, else at the commit | On the leader's log | A change of leader before the commit |
+
+A record a majority has written in the leader's term survives a change of
+leader without a power cut. Any majority that elects a later leader holds a
+voter with the record, and that voter refuses a candidate whose last log id
+is behind its own, unsynced entries included (openraft's `handle_vote_req`,
+`engine/engine_impl.rs:448` at the pinned rev; Raft's election restriction,
+§5.4.1 of the Raft paper). Its own term matters: a majority holding an
+entry of an older term proves nothing, which is why the count reads the
+term on each report.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_quorum_publish_is_answered_once_a_majority_has_written_it` and
+> `a_majority_answered_publish_survives_its_leader`.
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_periodic_quorum_stream_is_answered_on_a_written_majority` and
+> `a_quorum_stream_fsynced_on_commit_is_not_answered_on_a_written_majority`.
 
 **`await_commit` as built** (`RaftEngine::await_commit`, in
 `crates/server/felix-replication/src/raft/commit.rs`). It takes the
@@ -2086,7 +2117,8 @@ to answer and asks again within the same bound.
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
-> `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused`.
+> `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused` and
+> `a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused`.
 
 Which answered writes a confirmed read observes depends on when the write
 was answered:
@@ -2095,7 +2127,7 @@ was answered:
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum` with `AckAt::Written`, not wired to a publish path yet) | Once the leader has counted it committed |
+| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
@@ -2255,10 +2287,10 @@ The broker never appends to that log, and four rules follow from it.
 - move the ring's start past a gap batch, so a reader resuming while the
   ring is empty reads that batch from the log instead of missing it (#2428);
 - answer a `Quorum` publisher on a stream that does not fsync on commit
-  from `await_quorum_ack`. `propose_publish` answers at the commit today,
-  and live delivery stays at the commit either way. The answer has to wait
-  for the batch's turn in `ProposalOrder`, because written-count wakeups
-  arrive in no particular order.
+  from `await_quorum_ack`, through the same early answer as a `Leader`
+  publisher's. Live delivery stays at the commit. Answers can come out of
+  order, but a follower writes its log in order, so a batch on a majority
+  has every batch before it there too.
 - The stream starts at what the engine committed, never at the log's tail.
   Entries past the commit index may be cut by a later leader, so a reader
   asking for the latest must not join above them. While the engine cannot
