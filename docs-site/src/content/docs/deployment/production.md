@@ -125,6 +125,38 @@ in [Benchmarks](/features/benchmarks/) and
 hardware bands in [Performance](/features/performance/#sizing-guidelines) are
 labelled illustrative there and are starting points, not ceilings.
 
+### Open files
+
+A broker keeps up to six files open for every shard it holds, as leader or
+follower: the active segment (open three times), its index, the durable
+mark, and the shard's directory when the log locks it against a second
+open. Sealed segments that were read stay open too, but in one cache for the
+whole broker that holds at most 1,024 of them, however many shards it has.
+`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` sets that number: a larger cache
+saves the open and index load a catch-up reader pays on each miss. A slot
+costs one descriptor and up to about 1 MiB of index memory at the default
+segment size. The broker holds the cache to a quarter of the open-file limit
+and logs when it does. So 2,000 shards on a broker are 12,000 open files, plus
+up to 1,024 sealed segments and about 1,000 for sockets. Cache and counter
+shards open a log each and count as shards.
+
+Most Linux systems start a process with a soft limit of 1,024 open files and a
+much higher hard limit. The broker raises its soft limit to the hard limit
+when it starts, so the hard limit is the one to set:
+
+| Where | Setting | Usual default |
+| --- | --- | --- |
+| systemd unit | `LimitNOFILE=1048576` | 524,288 |
+| Docker or Podman Compose | `ulimits.nofile.hard` ([example](/deployment/docker-compose/#resource-limits)) | the daemon's, usually 524,288 or more |
+| Kubernetes | the container runtime's limit; nothing to set in the chart | usually 524,288 or more |
+| A shell | `ulimit -Hn` before starting the broker | varies |
+
+`felix_broker_open_file_limit` reports the limit the broker ended up with.
+(limit - 1,024 - the sealed-segment cache) / 5 is about how many shards fit
+under it, so 65,536 holds about 12,000 ((65,536 - 1,024 - 1,024) / 5). A broker whose
+limit holds fewer than 2,000 shards logs a warning at start with that
+number. Past it, opening a shard fails with "Too many open files".
+
 ## Choosing durability
 
 Four settings decide what an acknowledged publish survives: the stream's
@@ -266,6 +298,8 @@ load balancer.
       recommendation for yours. Disk volumes sized with the Disk section.
 - [ ] Retention set on every durable stream (`FELIX_DURABLE_RETENTION_BYTES`
       or `_SECONDS`, or the stream's own `retention`). Unset means unbounded.
+- [ ] The hard open-file limit allows six files per shard you expect a
+      broker to hold, plus about 5,000 for sockets and the sealed-segment cache. See [Open files](#open-files).
 
 **Availability and operations**
 

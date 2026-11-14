@@ -115,7 +115,9 @@ pub struct LogConfig {
     /// caught — just when it is read rather than at boot. Turn this on where a
     /// slow, loud startup is preferable to a late surprise.
     pub verify_all_on_open: bool,
-    /// Most sealed segments kept open at once, per storage root.
+    /// Most sealed segments kept open at once by a log's own cache, or by a
+    /// [`crate::DiskLogProvider`]'s logs together. Ignored when `sealed_cache`
+    /// is set.
     ///
     /// A sealed segment's file and sparse index are opened by the first read
     /// that reaches it and closed again when this many others have been used
@@ -124,6 +126,12 @@ pub struct LogConfig {
     /// rather than by what is retained. The active segment of every open log
     /// is always open and does not count.
     pub max_open_sealed_segments: usize,
+    /// One cache of open sealed segments for every log opened with this
+    /// config, or its clones. `None` gives each log, or each
+    /// [`crate::DiskLogProvider`], one of its own sized by
+    /// `max_open_sealed_segments`. The broker sets it, so the bound holds for
+    /// stream, cache, counter and group logs together.
+    pub sealed_cache: Option<SealedFileCache>,
     /// Copy sealed segments to an object store. `None` (the default) copies
     /// nothing.
     ///
@@ -155,6 +163,40 @@ pub struct LogConfig {
     /// that may open the directory reads v9.
     pub raft_log: bool,
 }
+
+/// A cache of open sealed segments that several logs share, so the descriptors
+/// they hold open together stay under one bound.
+#[derive(Clone)]
+pub struct SealedFileCache(pub(crate) std::sync::Arc<crate::disk_log::SealedFiles>);
+
+impl SealedFileCache {
+    /// A cache that keeps at most `capacity` sealed segments open.
+    pub fn new(capacity: usize) -> Self {
+        Self(crate::disk_log::SealedFiles::new(capacity))
+    }
+
+    /// Change how many sealed segments the cache keeps open. Meant for
+    /// startup, before logs read; a smaller bound is applied as segments
+    /// are next opened.
+    pub fn set_capacity(&self, capacity: usize) {
+        self.0.set_capacity(capacity);
+    }
+}
+
+impl std::fmt::Debug for SealedFileCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SealedFileCache").finish_non_exhaustive()
+    }
+}
+
+/// Wiring rather than a setting, like [`GenerationGate`].
+impl PartialEq for SealedFileCache {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for SealedFileCache {}
 
 /// Whether logs may start new segments in format v9, shared by every log a
 /// provider opens.
@@ -456,6 +498,7 @@ impl Default for LogConfig {
             retention_age: None,
             retention_check_interval: Duration::from_secs(60),
             max_open_sealed_segments: 256,
+            sealed_cache: None,
             offload: None,
             retention_hold: RetentionHold::AsSaved,
             generations: GenerationGate::default(),

@@ -65,6 +65,10 @@ required-features = ["raft"]
 name = "raft_idle_cpu"
 required-features = ["raft"]
 
+[[test]]
+name = "raft_open_files"
+required-features = ["raft"]
+
 [dev-dependencies]
 # Turns `raft` on for this crate's own tests, so `cargo test` runs the
 # runtime's without a feature flag.

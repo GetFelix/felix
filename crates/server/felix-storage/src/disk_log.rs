@@ -88,7 +88,7 @@ use parking_lot::{Mutex, RwLock};
 
 use self::append::RollState;
 use self::producers::ProducerState;
-use self::sealed::SealedFiles;
+pub(crate) use self::sealed::SealedFiles;
 use self::segments::SegmentSet;
 use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
@@ -218,7 +218,7 @@ impl DiskLog {
         label: impl Into<String>,
         config: LogConfig,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -247,7 +247,7 @@ impl DiskLog {
         config: LogConfig,
         base_offset: Offset,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -273,7 +273,7 @@ impl DiskLog {
         config: LogConfig,
         keep_alive: Arc<dyn std::any::Any + Send + Sync>,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         let log = Self::open_shared(
             dir.into(),
             label.into(),
@@ -369,6 +369,11 @@ impl DiskLog {
     #[cfg(test)]
     pub(crate) fn open_sealed_segments(&self) -> usize {
         self.inner.segments.read().open_sealed_segments()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_sealed_files(&self, files: &Arc<SealedFiles>) -> bool {
+        self.inner.segments.read().uses_sealed_files(files)
     }
 
     /// Every segment on disk, oldest first.
