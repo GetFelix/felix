@@ -852,14 +852,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseSleep.cfg` | `FelixRaftLease.cfg` with sleep (issue #2239): up to two wakes not caused by the leader start a vote hold that may end early; ending it ends only the hold, and a sleep answer renews nothing | pass `LeaseExclusive` |
 | `FelixRaftLeaseSleepHoldEndClearsWindow.cfg` | the hold's early end also clears openraft's refusal window | violate `LeaseExclusive` |
 | `FelixRaftLeaseSleepAnswerRenews.cfg` | a sleep answer renews the lease, though the follower's window did not restart | violate `LeaseExclusive` |
-| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass on two rules the design does not state yet (issue #2310) |
-| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody, given that the ask arrives and the hold outlasts the answer | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
-| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader, given that the hold outlasts the leader noticing the new epoch | pass on two rules the design does not state yet (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
+| `FelixRaftSleep.cfg` | The handshake with every rule on: a write, an audit, a lost request or answer, a restart, a false alarm about the leader | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepWrite.cfg` | Writes arriving during the handshake are committed and no member sleeps behind | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepLeaderDies.cfg` | The leader's broker dies; liveness alone (audit off) elects a leader | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepLivenessMisses.cfg` | Liveness misses the death; the audit alone elects a leader | pass on two rules the design page states and nobody has built (issue #2310) |
+| `FelixRaftSleepFalseAlarm.cfg` | A false alarm about a healthy leader deposes nobody, given that the ask arrives and the hold outlasts the answer | pass on two rules the design page states and nobody has built (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
+| `FelixRaftSleepRestart.cfg` | A restarted member holds until it hears the leader, given that the hold outlasts the leader noticing the new epoch | pass on two rules the design page states and nobody has built (issue #2310). It does not test that the hold is long enough: the model has no clock and a hold ends only when no live leader could still answer |
 | `FelixRaftSleepAnyState.cfg` | Members fall asleep in any state with no handshake; safety only | pass |
-| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass on two rules the design does not state yet (issue #2310) |
+| `FelixRaftSleepEnds.cfg` | Every behaviour ends (temporal, no symmetry) | pass on two rules the design page states and nobody has built (issue #2310) |
 | `FelixRaftSleepNoWake.cfg` | Neither wake path: the group never elects | violate `QuiescentLed` |
 | `FelixRaftSleepCampaignOnWake.cfg` | A woken follower campaigns without asking | violate `NoNeedlessDeposal` |
 | `FelixRaftSleepRestartNoHold.cfg` | A restarted member ticks at once | violate `NoNeedlessDeposal` |
@@ -3624,7 +3624,7 @@ has been stalled for a lease does not pass the check. A stalled broker that
 kept asking would lose no record, since it cannot write, but it would keep
 the lease and block the failover.
 
-Two rules here are not in the design page's one-paragraph description. A
+One rule here is not in the design page: the expiry is read on a clock that survives a restart. Two are in the page and not built. A
 vote for another broker waits for the withdrawal, not just the expiry, and a
 withdrawal raises the epoch. Without the second
 (`FelixRaftLeaseStoreResupport.cfg`) a follower withdraws, votes, then
@@ -3653,7 +3653,7 @@ Sleep and wake are deferred to v0.9.0, with the store liveness they rest on
 (decided in issue #2167). Nothing in this section gates 0.8. The configurations stay
 registered so the design keeps its checks until it is built. The design page
 keeps sleep under "Deferred: sleep and wake", and its table "Rules the model found" now
-states the two rules of issue #2310 that this section says the design lacks, with three
+states the two rules of issue #2310, with three
 more the model does not have yet.
 
 `FelixRaftSleep.tla` models one Raft group whose members can be asleep, as
@@ -3700,7 +3700,7 @@ heartbeat follows it.
 
 Knobs, each dropping one rule: `NoLivenessWake`, `NoAudit`, `AcceptUnchecked`,
 `CampaignOnWake`, `LeaderSleepsFirst`, `RestartNoHold`, `HoldTooShort`. Two more drop rules
-the design page does not state yet and the model needs: `HeartbeatKeepsProposal` (a
+that are in the design page but not built, and the model needs: `HeartbeatKeepsProposal` (a
 heartbeat during the handshake does not close the proposal) and `SleepUnsupported` (a
 follower accepts a sleep request from a leader whose broker it does not support). Issue
 #2310 has both. Every passing configuration with a handshake runs with both rules on, and

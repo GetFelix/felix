@@ -319,6 +319,7 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
         idle_after: at(shipped.idle_after),
         election_min: at(shipped.election_min),
         election_max: at(shipped.election_max),
+        log_mark: shipped.log_mark,
     }
 }
 
