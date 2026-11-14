@@ -414,6 +414,7 @@ where
         restore_checked,
     } = membership::Gates::new(view.is_some(), &seeded);
     let root_sequence = crate::cluster::membership::RootSequenceSlot::default();
+    let root_rotated = CancellationToken::new();
     #[cfg(feature = "raft")]
     if let (Some(root), Some(membership)) = (&durable_root, &config.membership) {
         cluster::open_raft_root(
@@ -427,6 +428,7 @@ where
                 credential: credential.clone(),
                 slot: root_sequence.clone(),
                 stop: sync_shutdown.clone(),
+                rotated: root_rotated.clone(),
             },
         );
     }
@@ -733,6 +735,7 @@ where
         shard_tasks,
         sync_shutdown,
         group_refused,
+        root_rotated,
         controlplane_task,
         controlplane_view,
         storage: shutdown::Storage {

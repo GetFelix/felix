@@ -70,6 +70,13 @@ pub struct GatePassed {
     pub(super) marks: MarkLog,
 }
 
+impl GatePassed {
+    /// The storage id of the root that passed.
+    pub fn storage_id(&self) -> StorageId {
+        self.marks.storage_id()
+    }
+}
+
 impl std::fmt::Debug for GatePassed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GatePassed")

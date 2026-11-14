@@ -150,6 +150,23 @@ pub struct RaftStore {
     handle: RaftHandle,
     machine: Arc<MetadataStateMachine>,
     soft: Arc<SoftState>,
+    /// Heartbeats carry a root sequence every time, so a group that keeps
+    /// none is logged once per level.
+    root_sequence_unkept: OncePerLevel,
+}
+
+/// Whether a condition seen on every request has already been logged at
+/// this metadata level.
+#[derive(Debug, Default)]
+struct OncePerLevel(std::sync::atomic::AtomicU32);
+
+impl OncePerLevel {
+    /// True the first time it is called at `level`, and again after a call
+    /// at another level.
+    fn first_at(&self, level: u16) -> bool {
+        let marked = u32::from(level) + 1;
+        self.0.swap(marked, std::sync::atomic::Ordering::Relaxed) != marked
+    }
 }
 
 impl RaftStore {
@@ -161,6 +178,7 @@ impl RaftStore {
             handle,
             machine,
             soft,
+            root_sequence_unkept: OncePerLevel::default(),
         }
     }
 
@@ -1342,7 +1360,17 @@ impl ControlPlaneStore for RaftStore {
         if !crate::model::RootSequence::moved_by(held.as_ref(), &heard) {
             return Ok(false);
         }
-        if self.group_level().await < ROOT_SEQUENCE_LEVEL {
+        let level = self.group_level().await;
+        if level < ROOT_SEQUENCE_LEVEL {
+            if self.root_sequence_unkept.first_at(level) {
+                tracing::warn!(
+                    level,
+                    needed = ROOT_SEQUENCE_LEVEL,
+                    "the metadata group is below the level that keeps brokers' root \
+                     sequences, so none is kept; a broker restarted with a Raft data root \
+                     and no run witness holds its Raft members until the group is upgraded",
+                );
+            }
             return Ok(false);
         }
         match self

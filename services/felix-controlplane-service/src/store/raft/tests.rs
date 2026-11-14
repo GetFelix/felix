@@ -4455,3 +4455,15 @@ async fn a_root_sequence_is_kept_only_at_level_33() {
         Some(heard)
     );
 }
+
+/// The root sequence a group below its level does not keep is logged once
+/// per level, not once per heartbeat.
+#[test]
+fn an_unkept_root_sequence_is_logged_once_per_level() {
+    let logged = OncePerLevel::default();
+    assert!(logged.first_at(32));
+    assert!(!logged.first_at(32));
+    assert!(logged.first_at(31));
+    assert!(logged.first_at(32));
+    assert!(!logged.first_at(32));
+}

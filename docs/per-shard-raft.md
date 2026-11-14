@@ -204,7 +204,8 @@ root sequence, and the control plane's copy (both below). The gate has
 three outcomes:
 
 - **Behind** any of the three: the root gets a new storage id and every
-  copy id in it rotates.
+  copy id in it rotates. A broker that finds this as it opens the root
+  stops, so its restart registers under the new id.
 - **Unchecked:** the root holds marks but there is no copy of its sequence
   to compare against, because the machine rebooted (the witness is gone)
   and the control plane has none. No member opens until evidence arrives.
@@ -237,18 +238,23 @@ open. Two starts therefore hold for good. One is a root that wrote its
 first marks and lost its broker before a heartbeat carried them, on a
 machine that then rebooted or has no witness directory. The other is any
 start without a witness while a control-plane member is below metadata
-level 33, since nothing is stored below it. The broker logs the hold once
-at error level and keeps serving its other shards. To end it, stop the
-broker and run `felix-broker rotate-storage-id`: the root starts over
-under a new storage id and its copies come back as new members. That is
-safe, since a hold never lets a copy vote twice, and the rotation gives up
-only what the root could not prove.
+level 33, since nothing is stored below it; the control plane logs once
+per level that it keeps no root sequence. The broker logs the hold once
+at error level, sets `felix_broker_raft_root_held` to 1, and keeps
+serving its other shards. To end it, stop the broker and run
+`felix-broker rotate-storage-id`: the root starts over under a new
+storage id and its copies come back as new members. That is safe, since a
+hold never lets a copy vote twice, and the rotation gives up only what
+the root could not prove. Ending such a hold without an operator is
+tracked in #2542.
 
 When the gate finds a root behind while the broker runs, it rotates the
-storage id in place and the broker goes on: nothing is open under the old
-id yet, and the broker's registration keeps naming the old id until the
-next start, which then treats the directory as a replaced copy. That is
-the conservative reading, the same one a start that asked first makes.
+storage id, logs that it is stopping, and stops the broker, as the
+deferred restore check does for a restored directory. This run registered
+under the old id and its hybrid copies stop being trusted with the
+rotation, so it must not go on serving. The restart registers under the
+new id, which the control plane treats as a replaced directory, and every
+Raft copy on the root rejoins as a new member.
 
 **The root sequence.** The incarnation and the run token change once per
 start. A root put back from a backup taken during the run it interrupts
@@ -472,8 +478,9 @@ member that way. The log mark is exact by default (`LogMarkMode::Exact`,
 synced before the flush is reported to Raft) and can be batched
 (`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
 `felix_replication::raft::open_root` runs the gate for a broker: it asks
-the control plane for its copy, rotates a root that is behind, and checks a
-held root again every interval until a copy arrives or the broker stops.
+the control plane for its copy, rotates a root that is behind and returns
+it unopened (`RootOpened::Rotated`, on which the broker stops), and checks
+a held root again every interval until a copy arrives or the broker stops.
 The broker's heartbeat reports the open root through a slot that is set
 when the root opens (`RootSequenceSlot`). The broker opens its root through
 `open_root` and every member through `GroupRuntime::open_copy`

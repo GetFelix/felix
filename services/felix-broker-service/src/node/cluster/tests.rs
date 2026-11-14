@@ -127,6 +127,7 @@ async fn the_raft_root_opens_after_the_restore_check_and_reaches_the_heartbeat()
             credential: Some(NodeCredential::new("token".to_string())),
             slot: slot.clone(),
             stop: stop.clone(),
+            rotated: CancellationToken::new(),
         },
     );
     let orders = raft::key("orders", 0);
@@ -152,6 +153,84 @@ async fn the_raft_root_opens_after_the_restore_check_and_reaches_the_heartbeat()
         slot.read().is_some_and(|(_, sequence)| sequence > 0)
     })
     .await;
+    stop.cancel();
+    members.shutdown().await;
+}
+
+/// **A root found behind the control plane's copy at open is given a new
+/// storage id and the broker stops.** This run registered under the old id,
+/// so nothing opens on the new one until the restart registers it.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_root_behind_the_control_plane_rotates_and_stops_the_broker() {
+    use crate::cluster::membership::RootSequenceSlot;
+    use crate::shards::raft::tests as raft;
+    use crate::shards::routing::EngineShards;
+    use crate::test_support::fake_link::FakeLink;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = raft::broker(root.path()).await;
+    let (storage_id, _) =
+        felix_storage::storage_identity::load_or_create(root.path(), || [7; 16]).expect("id");
+    let members = raft::held_shards(&broker);
+    let shards = RaftShards {
+        engine_shards: None,
+        handler: None,
+        members: Some(Arc::clone(&members)),
+    };
+    // The control plane heard sequence 5 under this id; the root has none.
+    let link = FakeLink::default().reply(
+        "node",
+        serde_json::json!({
+            "node": {
+                "node_id": "broker-a",
+                "status": {
+                    "incarnation": 1,
+                    "lifecycle": "live",
+                    "storage_id": storage_id.to_string(),
+                },
+            },
+            "placement": { "eligible": true },
+            "root_sequence": { "storage_id": storage_id.to_string(), "sequence": 5 },
+        }),
+    );
+    let (restore_checked, stop, rotated) = (
+        CancellationToken::new(),
+        CancellationToken::new(),
+        CancellationToken::new(),
+    );
+    restore_checked.cancel();
+    let slot = RootSequenceSlot::default();
+    open_raft_root(
+        &shards,
+        RaftRoot {
+            root: root.path().to_path_buf(),
+            witness: None,
+            restore_checked,
+            link: Some(link),
+            node_id: "broker-a".to_string(),
+            credential: Some(NodeCredential::new("token".to_string())),
+            slot: slot.clone(),
+            stop: stop.clone(),
+            rotated: rotated.clone(),
+        },
+    );
+    tokio::time::timeout(Duration::from_secs(10), rotated.cancelled())
+        .await
+        .expect("the broker was not told to stop");
+    let now = felix_storage::storage_identity::load(root.path())
+        .expect("id")
+        .expect("an id");
+    assert_ne!(now, storage_id, "the root kept its storage id");
+    assert_eq!(slot.read(), None, "the rotated root reached the heartbeat");
+    let orders = raft::key("orders", 0);
+    members
+        .take(&mut raft::assignments([raft::assigned(
+            orders.clone(),
+            raft::INCARNATION,
+        )]))
+        .await;
+    assert!(members.engine_for(&orders).is_none(), "a member opened");
     stop.cancel();
     members.shutdown().await;
 }

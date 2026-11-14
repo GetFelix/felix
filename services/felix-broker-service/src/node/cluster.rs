@@ -191,18 +191,22 @@ pub(super) struct RaftRoot<L> {
     /// Set once the root opens, for the heartbeat.
     pub(super) slot: crate::cluster::membership::RootSequenceSlot,
     pub(super) stop: CancellationToken,
+    /// Cancelled when the gate gave the root a new storage id: the broker
+    /// stops, so the restart registers under it.
+    pub(super) rotated: CancellationToken,
 }
 
 /// Run the restore gate on the data root, off the start: a root nothing
 /// vouches for is held until the control plane answers with its copy of the
 /// root sequence, and the broker serves its other shards meanwhile. Raft
-/// members open once it passes. See `docs/per-shard-raft.md`, "The root
+/// members open once it passes. A root behind a copy gets a new storage id
+/// and the broker stops. See `docs/per-shard-raft.md`, "The root
 /// sequence".
 #[cfg(feature = "raft")]
 pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftRoot<L>) {
     use crate::cluster::membership::registered;
     use felix_storage::raft_copy::ControlPlaneCopy;
-    use replication::raft::{RootReport, open_root};
+    use replication::raft::{RootOpened, RootReport, open_root};
 
     let Some(members) = shards.members.clone() else {
         return;
@@ -242,8 +246,29 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
             )
             .await;
             match opened {
-                Ok(Some(root)) => break Arc::new(root),
-                Ok(None) => return,
+                Ok(RootOpened::Open(root)) => break Arc::new(root),
+                Ok(RootOpened::Stopped) => return,
+                Ok(RootOpened::Rotated {
+                    storage_id,
+                    sequence,
+                    witness,
+                    control_plane,
+                }) => {
+                    // This run registered under the old id and its hybrid
+                    // copies stopped being trusted with the rotation.
+                    tracing::error!(
+                        root = %on.root.display(),
+                        storage_id = %storage_id,
+                        sequence,
+                        witness = ?witness,
+                        control_plane = ?control_plane,
+                        "this data root is behind a copy of its root sequence, as a restored \
+                         snapshot is; gave it a new storage id and stopping, so it starts again \
+                         under the new id and every Raft copy in it rejoins as a new member",
+                    );
+                    on.rotated.cancel();
+                    return;
+                }
                 Err(err) => {
                     if !failed {
                         tracing::error!(

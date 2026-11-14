@@ -53,7 +53,7 @@ pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
 pub use propose::{AckAt, Batch, Record, Sequenced};
-pub use root::{RootReport, open_root};
+pub use root::{RootOpened, RootReport, open_root};
 pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
     Role, RuntimeConfig,

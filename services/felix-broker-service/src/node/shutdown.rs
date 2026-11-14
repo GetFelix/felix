@@ -63,6 +63,9 @@ pub(super) struct Running {
     /// Cancelled by the catalog sync when a snapshot names another
     /// control-plane metadata group.
     pub(super) group_refused: CancellationToken,
+    /// Cancelled when the Raft restore gate gave the data root a new storage
+    /// id, which this run did not register under.
+    pub(super) root_rotated: CancellationToken,
     pub(super) controlplane_task: Option<JoinHandle<()>>,
     /// Writes the control-plane view once more when stopped.
     pub(super) controlplane_view: Option<crate::cluster::controlplane_view::ViewWriter>,
@@ -81,6 +84,9 @@ pub(super) enum Stopped {
     /// The data directory cannot be served under the control plane's metadata
     /// group, or could not be checked against it.
     WrongGroup,
+    /// The Raft restore gate found the data root behind a copy of its root
+    /// sequence and gave it a new storage id.
+    RootRotated,
 }
 
 impl Stopped {
@@ -111,6 +117,7 @@ impl Running {
             () = shutdown => Stopped::Signal,
             () = rejected => Stopped::MembershipRejected,
             () = self.group_refused.cancelled() => Stopped::WrongGroup,
+            () = self.root_rotated.cancelled() => Stopped::RootRotated,
         }
     }
 
@@ -136,6 +143,7 @@ impl Running {
             shard_tasks,
             sync_shutdown,
             group_refused: _,
+            root_rotated: _,
             controlplane_task,
             controlplane_view,
             storage,
@@ -471,6 +479,13 @@ impl Running {
             return Err(anyhow::anyhow!(
                 "this data directory cannot be served under the control plane's metadata group; \
                  the reason and what to do are logged above"
+            ));
+        }
+        if stopped == Stopped::RootRotated {
+            tracing::error!("broker stopped: the data root was given a new storage id");
+            return Err(anyhow::anyhow!(
+                "the data root was behind a copy of its root sequence, as a restored snapshot \
+                 is, and was given a new storage id; start the broker again to register under it"
             ));
         }
         if membership_rejected {

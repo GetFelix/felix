@@ -5,20 +5,28 @@ use felix_storage::raft_copy::{ControlPlaneCopy, CopyRoot, VoteMark};
 use felix_storage::storage_identity;
 use tokio_util::sync::CancellationToken;
 
-use super::super::root::{RootReport, open_root};
+use super::super::root::{RootOpened, RootReport, open_root};
 use super::*;
 
 const RETRY: Duration = Duration::from_millis(10);
+
+fn opened(opened: RootOpened) -> CopyRoot {
+    match opened {
+        RootOpened::Open(copies) => copies,
+        other => panic!("the root did not open: {other:?}"),
+    }
+}
 
 /// A root with a storage id whose marks have been written: one copy opened
 /// and a vote saved, so its sequence is above 0.
 async fn root_with_marks(dir: &Path) -> (StorageId, u64) {
     storage_identity::load_or_create(dir, || [1; 16]).expect("id");
     let stop = CancellationToken::new();
-    let copies = open_root(dir, None, false, || async { None }, RETRY, &stop)
-        .await
-        .expect("open")
-        .expect("a root with no marks opens");
+    let copies = opened(
+        open_root(dir, None, false, || async { None }, RETRY, &stop)
+            .await
+            .expect("open"),
+    );
     let opened = copies
         .open_copy("t/ns/s/0/Stream", &dir.join("shard"), "shard", log_config())
         .await
@@ -50,25 +58,26 @@ async fn a_root_nothing_vouches_for_waits_for_the_control_plane() {
     let (id, sequence) = root_with_marks(dir.path()).await;
     let asked = std::sync::atomic::AtomicU32::new(0);
     let stop = CancellationToken::new();
-    let copies = open_root(
-        dir.path(),
-        None,
-        false,
-        || {
-            let n = asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            async move {
-                (n >= 3).then_some(ControlPlaneCopy {
-                    storage_id: id,
-                    sequence,
-                })
-            }
-        },
-        RETRY,
-        &stop,
-    )
-    .await
-    .expect("open")
-    .expect("opened");
+    let copies = opened(
+        open_root(
+            dir.path(),
+            None,
+            false,
+            || {
+                let n = asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                async move {
+                    (n >= 3).then_some(ControlPlaneCopy {
+                        storage_id: id,
+                        sequence,
+                    })
+                }
+            },
+            RETRY,
+            &stop,
+        )
+        .await
+        .expect("open"),
+    );
     assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 4);
     assert_eq!(opened_id(&copies), id);
     assert_eq!(copies.mark_log().sequence(), sequence);
@@ -85,21 +94,22 @@ async fn a_held_root_opens_nothing_before_the_stop() {
         tokio::time::sleep(Duration::from_millis(200)).await;
         stopper.cancel();
     });
-    let opened = open_root(dir.path(), None, false, || async { None }, RETRY, &stop)
+    let held = open_root(dir.path(), None, false, || async { None }, RETRY, &stop)
         .await
         .expect("open");
-    assert!(opened.is_none());
+    assert!(matches!(held, RootOpened::Stopped), "{held:?}");
 }
 
 /// A root below the control plane's copy was put back from a backup: it
-/// gets a new storage id and its mark log starts over, so every copy in it
-/// opens as a new member.
+/// gets a new storage id and is not opened, so the broker stops and
+/// registers under the new id. On the next open its mark log has started
+/// over and every copy in it opens as a new member.
 #[tokio::test]
-async fn a_root_behind_the_control_plane_opens_under_a_new_storage_id() {
+async fn a_root_behind_the_control_plane_rotates_and_is_not_opened() {
     let dir = tempfile::tempdir().expect("dir");
     let (id, sequence) = root_with_marks(dir.path()).await;
     let stop = CancellationToken::new();
-    let copies = open_root(
+    let rotated = open_root(
         dir.path(),
         None,
         false,
@@ -113,9 +123,30 @@ async fn a_root_behind_the_control_plane_opens_under_a_new_storage_id() {
         &stop,
     )
     .await
-    .expect("open")
-    .expect("opened");
-    assert_ne!(opened_id(&copies), id);
+    .expect("open");
+    let RootOpened::Rotated {
+        storage_id,
+        sequence: was,
+        control_plane,
+        ..
+    } = rotated
+    else {
+        panic!("a root behind the control plane was not rotated: {rotated:?}");
+    };
+    assert_ne!(storage_id, id);
+    assert_eq!((was, control_plane), (sequence, Some(sequence + 1)));
+    assert_eq!(
+        storage_identity::load(dir.path()).expect("id"),
+        Some(storage_id)
+    );
+
+    // The restart: the control plane has no copy under the new id yet.
+    let copies = opened(
+        open_root(dir.path(), None, false, || async { None }, RETRY, &stop)
+            .await
+            .expect("reopen"),
+    );
+    assert_eq!(opened_id(&copies), storage_id);
     assert_eq!(copies.mark_log().sequence(), 0);
     let opened = copies
         .open_copy(
