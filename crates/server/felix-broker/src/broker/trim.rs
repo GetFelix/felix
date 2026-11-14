@@ -93,6 +93,8 @@ impl Broker {
         let Some(log) = &handle.state.durable else {
             return Err(BrokerError::TrimNeedsDurableStream);
         };
+        // Before the directory is marked as holding a trim.
+        handle.state.refuse_on_engine_log("head trims")?;
         // A follower that predates trim records stops replicating at one. Not
         // the shard's live route, which is empty during startup and moves, so
         // a follower added mid-trim cannot slip past it.

@@ -94,6 +94,7 @@ pub(crate) async fn commit(
         publish_ctx,
         &key,
         "commit not served",
+        "commits",
         |handle| async move {
             broker
                 .commit_to_handle_at(&handle, event, ops, expected_offset, publisher)
@@ -133,6 +134,7 @@ pub(crate) async fn publish_at(
         publish_ctx,
         &shard,
         "publish not served",
+        "conditional publishes",
         |handle| async move {
             broker
                 .publish_batch_at(&handle, &payloads, expected_offset, publisher)
@@ -164,6 +166,10 @@ pub(crate) async fn trim_at(
     headers: Bytes,
 ) -> Result<TrimOutcome, NotWritten> {
     let key = shard_key(publish_ctx, tenant_id, namespace, stream, None, Some(shard))?;
+    publish_ctx
+        .engine
+        .refuse_on_raft(&key, "trims")
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), &key).await;
     let generation = owned(dispatched, &key)?;
     let handle = broker
@@ -199,12 +205,18 @@ async fn leader_write<W, F>(
     publish_ctx: &PublishContext,
     key: &ShardKey,
     context: &str,
+    // What the write is, for a shard on Raft that does not take it.
+    what: &'static str,
     write: W,
 ) -> Result<u64, NotWritten>
 where
     W: FnOnce(StreamHandle) -> F,
     F: Future<Output = felix_broker::Result<PublishOutcome>>,
 {
+    publish_ctx
+        .engine
+        .refuse_on_raft(key, what)
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
     let generation = owned(dispatched, key)?;
     let handle = broker

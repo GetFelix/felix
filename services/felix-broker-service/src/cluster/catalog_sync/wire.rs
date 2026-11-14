@@ -227,6 +227,10 @@ pub(crate) struct Stream {
     /// plane that predates mounts, and from a stream that has none.
     #[serde(default)]
     pub(crate) mount: Option<String>,
+    /// How many brokers hold each shard. Absent from a control plane that
+    /// does not send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) replication_factor: Option<u32>,
 }
 
 /// A stream's retention as the control plane stores it.
@@ -256,6 +260,7 @@ impl Stream {
             },
             incarnation: self.incarnation,
             mount: self.mount.clone(),
+            replication_factor: self.replication_factor,
         })
     }
 
@@ -281,6 +286,7 @@ impl Stream {
             }),
             incarnation: metadata.incarnation,
             mount: metadata.mount.clone(),
+            replication_factor: metadata.replication_factor,
         }
     }
 }
