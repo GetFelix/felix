@@ -500,6 +500,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             storage_id: durable_storage.as_ref().map(|_| storage_id),
             unclean: &unclean,
             prefetch,
+            engine_shards: None,
             sync_shutdown: &shutdown,
             nodes: Default::default(),
             reports_held: None,

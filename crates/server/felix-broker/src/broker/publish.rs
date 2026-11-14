@@ -12,7 +12,7 @@ mod proposed;
 pub(crate) use completion::spawn_release;
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
-pub use proposed::{ProposalCommitted, ProposedPublish};
+pub use proposed::{ProposalCommitted, ProposalFailed, ProposedPublish};
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -192,6 +192,9 @@ impl Broker {
         if !handle.state.active.load(Ordering::Acquire) {
             return Err(BrokerError::StreamHandleInactive(handle.id()));
         }
+        // Its engine gives records their offsets. One taken here would be
+        // an entry the group never agreed on.
+        handle.state.refuse_on_engine_log(append.what())?;
         let headers = usable_headers(payloads, headers)?;
         // Refused, not dropped: the client would think they were kept. An
         // in-memory stream stores nothing, so it has nothing to gate.
@@ -713,6 +716,17 @@ pub(super) enum Append<'a> {
 }
 
 impl Append<'_> {
+    /// The kind of write, for refusing it by name.
+    fn what(&self) -> &'static str {
+        match self {
+            Self::Plain => "publishes outside its group",
+            Self::At(_) => "conditional publishes",
+            Self::Marked(_) | Self::Continuing { .. } => "idempotent publishes",
+            Self::Commit { .. } => "atomic commits",
+            Self::Trim { .. } => "head trims",
+        }
+    }
+
     /// The offset this append must start at, if it is conditional.
     fn expected(&self) -> Option<u64> {
         match self {

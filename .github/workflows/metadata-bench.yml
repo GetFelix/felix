@@ -94,8 +94,13 @@ jobs:
           if [ -z "$BASE" ]; then
             python3 scripts/ci/metadata_bench.py table "$out"/head*.json | tee -a "$GITHUB_STEP_SUMMARY"
           else
+            # Waived: the 32 MiB build runs beside a writer that the
+            # segment store keeps applying, where redb stalled it, so the
+            # build shares the disk (docs/metadata-raft-benchmark.md,
+            # "Snapshot build with a writer running").
             python3 scripts/ci/metadata_bench.py compare --base "$out"/base-*.json \
-              --head "$out"/head-*.json --md "$out/compare.md" | tee -a "$GITHUB_STEP_SUMMARY"
+              --head "$out"/head-*.json --md "$out/compare.md" \
+              --waive "snapshot_build/32MiB build_ms" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
 
       - uses: actions/upload-artifact@v7

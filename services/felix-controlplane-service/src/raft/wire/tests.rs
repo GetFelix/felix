@@ -1,118 +1,153 @@
-//! The fixtures in `fixtures/openraft-0.9` are the JSON openraft 0.9.25
-//! wrote for the control plane's type configuration, which is what the 0.7
-//! releases store and send. They were printed by that library's own serde,
-//! not written by hand. A change that alters one byte here breaks a rolling
-//! upgrade or a rollback.
 use super::*;
 
-pub(crate) fn fixture(name: &str) -> Vec<u8> {
-    let path = format!(
-        "{}/src/raft/fixtures/openraft-0.9/{name}.json",
-        env!("CARGO_MANIFEST_DIR")
-    );
-    std::fs::read(&path).unwrap_or_else(|err| panic!("{path}: {err}"))
-}
-
-/// Reads the 0.9 bytes as `T` and writes them back unchanged.
-fn same_bytes<T: Serialize + serde::de::DeserializeOwned>(name: &str) -> T {
-    let bytes = fixture(name);
-    let value: T = serde_json::from_slice(&bytes).unwrap_or_else(|err| panic!("{name}: {err}"));
-    let written = serde_json::to_vec(&value).expect("serialize");
-    assert_eq!(
-        String::from_utf8_lossy(&written),
-        String::from_utf8_lossy(&bytes),
-        "{name}"
-    );
-    value
-}
-
-#[test]
-fn stored_forms_are_the_bytes_0_9_wrote() {
-    same_bytes::<Vote>("stored_vote");
-    same_bytes::<Vote>("stored_vote_uncommitted");
-    same_bytes::<Entry>("stored_entry_blank");
-    same_bytes::<Entry>("stored_entry_normal");
-    same_bytes::<Entry>("stored_entry_membership");
-    same_bytes::<Entry>("stored_entry_joint_membership");
-    same_bytes::<SnapshotMeta>("stored_snapshot_meta");
-    same_bytes::<SnapshotMeta>("stored_snapshot_meta_empty");
-    same_bytes::<Option<LogId>>("stored_committed");
-    same_bytes::<LogId>("stored_last_purged");
-}
-
-#[test]
-fn peer_requests_and_responses_are_the_bytes_0_9_sent() {
-    same_bytes::<VoteRequest>("vote_request");
-    same_bytes::<VoteRequest>("vote_request_empty_log");
-    same_bytes::<Reply<VoteResponse>>("vote_response");
-    same_bytes::<AppendEntriesRequest>("append_entries_request");
-    same_bytes::<AppendEntriesRequest>("append_entries_heartbeat");
-    same_bytes::<Reply<AppendEntriesResponse>>("append_entries_success");
-    same_bytes::<Reply<AppendEntriesResponse>>("append_entries_partial");
-    same_bytes::<Reply<AppendEntriesResponse>>("append_entries_partial_none");
-    same_bytes::<Reply<AppendEntriesResponse>>("append_entries_conflict");
-    same_bytes::<Reply<AppendEntriesResponse>>("append_entries_higher_vote");
-    same_bytes::<InstallSnapshotRequest>("install_snapshot_request");
-    same_bytes::<Reply<InstallSnapshotResponse>>("install_snapshot_response");
-}
-
-/// What the library is handed and hands back loses nothing on the way.
-#[test]
-fn the_library_types_carry_every_field() {
-    let vote: Vote = same_bytes("stored_vote");
-    assert_eq!(Vote::from(&types::Vote::from(vote)), vote);
-
-    for name in [
-        "stored_entry_blank",
-        "stored_entry_normal",
-        "stored_entry_membership",
-        "stored_entry_joint_membership",
-    ] {
-        let entry: Entry = same_bytes(name);
-        assert_eq!(
-            Entry::from(&types::Entry::from(entry.clone())),
-            entry,
-            "{name}"
-        );
+fn head() -> SnapshotHead {
+    SnapshotHead {
+        vote: Vote {
+            term: 3,
+            voted_for: 2,
+            committed: true,
+        },
+        meta: SnapshotMeta {
+            last_log_id: Some(LogId { term: 3, index: 41 }),
+            last_membership: StoredMembership {
+                log_id: Some(LogId { term: 1, index: 0 }),
+                membership: Membership {
+                    configs: vec![[1, 2, 3].into()],
+                    nodes: Default::default(),
+                },
+            },
+        },
     }
 }
 
-/// The id is the one field the library no longer has. It comes back as the
-/// snapshot's position, and everything else is unchanged.
 #[test]
-fn a_snapshot_meta_keeps_an_id_through_the_library() {
-    let stored: SnapshotMeta = same_bytes("stored_snapshot_meta");
-    let back = SnapshotMeta::from(&types::SnapshotMeta::from(stored.clone()));
-    assert_eq!(back.snapshot_id, "3-2-18");
-    assert_eq!(back.last_log_id, stored.last_log_id);
-    assert_eq!(back.last_membership, stored.last_membership);
-
-    let empty: SnapshotMeta = same_bytes("stored_snapshot_meta_empty");
-    let back = SnapshotMeta::from(&types::SnapshotMeta::from(empty));
-    assert_eq!(back.snapshot_id, "empty");
+fn a_snapshot_head_round_trips() {
+    let bytes = head().encode();
+    assert_eq!(SnapshotHead::decode(&bytes), Some(head()));
+    assert!(SnapshotHead::decode(&bytes[..bytes.len() - 1]).is_none());
+    // The chunk request an older release sends.
+    assert!(
+        SnapshotHead::decode(br#"{"vote":{},"meta":{},"offset":0,"data":[],"done":true}"#)
+            .is_none()
+    );
 }
 
+/// A log id is its term and its index, with no node id to lose.
 #[test]
-fn a_0_9_error_is_read_as_text_and_a_mismatch_is_recognized() {
-    let stopped: Reply<VoteResponse> =
-        serde_json::from_slice(&fixture("fatal_stopped")).expect("parse");
-    let Reply::Err(err) = stopped else {
-        panic!("an error reply");
+fn ids_keep_their_term_and_index() {
+    let id = LogId { term: 9, index: 4 };
+    assert_eq!(LogId::from(&types::LogId::from(id)), id);
+    let vote = Vote {
+        term: 9,
+        voted_for: 3,
+        committed: false,
     };
-    assert!(!is_snapshot_mismatch(&err));
-
-    let bytes = fixture("install_snapshot_mismatch");
-    let mismatch: Reply<InstallSnapshotResponse> = serde_json::from_slice(&bytes).expect("parse");
-    let Reply::Err(err) = mismatch else {
-        panic!("an error reply");
-    };
-    assert!(is_snapshot_mismatch(&err));
-
-    // And the one this build answers is the one 0.9 answered.
-    let id = "18-1762819200000000000";
-    let ours = Reply::<InstallSnapshotResponse>::Err(snapshot_mismatch((id, 0), (id, 4)));
+    assert_eq!(Vote::from(&types::Vote::from(vote)), vote);
     assert_eq!(
-        serde_json::to_value(&ours).expect("serialize"),
-        serde_json::from_slice::<serde_json::Value>(&bytes).expect("parse"),
+        serde_json::to_value(id).expect("json"),
+        serde_json::json!({"term": 9, "index": 4})
     );
+}
+
+/// The bytes members exchange and the membership and snapshot meta the store
+/// keeps. A member of the same release line reads them from a peer, and its
+/// own store across a restart, so a renamed field or variant must fail here
+/// rather than in a mixed group.
+#[test]
+fn the_peer_and_stored_forms_are_pinned() {
+    let vote = Vote {
+        term: 5,
+        voted_for: 2,
+        committed: true,
+    };
+    let id = |term, index| Some(LogId { term, index });
+    let membership = Membership {
+        configs: vec![[1, 2].into()],
+        nodes: [(
+            1,
+            Node {
+                addr: "10.0.0.1:7000".into(),
+            },
+        )]
+        .into(),
+    };
+    let entries = vec![
+        Entry {
+            log_id: LogId { term: 5, index: 7 },
+            payload: Payload::Blank,
+        },
+        Entry {
+            log_id: LogId { term: 5, index: 8 },
+            payload: Payload::Normal(vec![1, 2]),
+        },
+        Entry {
+            log_id: LogId { term: 5, index: 9 },
+            payload: Payload::Membership(membership.clone()),
+        },
+    ];
+    let cases: Vec<(serde_json::Value, &str)> = vec![
+        (
+            serde_json::to_value(VoteRequest {
+                vote,
+                last_log_id: id(4, 6),
+            })
+            .expect("json"),
+            r#"{"last_log_id":{"index":6,"term":4},"vote":{"committed":true,"term":5,"voted_for":2}}"#,
+        ),
+        (
+            serde_json::to_value(VoteResponse {
+                vote,
+                vote_granted: false,
+                last_log_id: None,
+            })
+            .expect("json"),
+            r#"{"last_log_id":null,"vote":{"committed":true,"term":5,"voted_for":2},"vote_granted":false}"#,
+        ),
+        (
+            serde_json::to_value(AppendEntriesRequest {
+                vote,
+                prev_log_id: id(4, 6),
+                entries,
+                leader_commit: id(4, 6),
+            })
+            .expect("json"),
+            r#"{"entries":[{"log_id":{"index":7,"term":5},"payload":"Blank"},{"log_id":{"index":8,"term":5},"payload":{"Normal":[1,2]}},{"log_id":{"index":9,"term":5},"payload":{"Membership":{"configs":[[1,2]],"nodes":{"1":{"addr":"10.0.0.1:7000"}}}}}],"leader_commit":{"index":6,"term":4},"prev_log_id":{"index":6,"term":4},"vote":{"committed":true,"term":5,"voted_for":2}}"#,
+        ),
+        (
+            serde_json::to_value(Reply::<AppendEntriesResponse>::Ok(
+                AppendEntriesResponse::PartialSuccess(id(5, 8)),
+            ))
+            .expect("json"),
+            r#"{"Ok":{"PartialSuccess":{"index":8,"term":5}}}"#,
+        ),
+        (
+            serde_json::to_value(Reply::<AppendEntriesResponse>::Ok(
+                AppendEntriesResponse::HigherVote(vote),
+            ))
+            .expect("json"),
+            r#"{"Ok":{"HigherVote":{"committed":true,"term":5,"voted_for":2}}}"#,
+        ),
+        (
+            serde_json::to_value(Reply::<InstallSnapshotResponse>::Err(serde_json::json!(
+                "stopped"
+            )))
+            .expect("json"),
+            r#"{"Err":"stopped"}"#,
+        ),
+        (
+            serde_json::to_value(SnapshotMeta {
+                last_log_id: id(5, 9),
+                last_membership: StoredMembership {
+                    log_id: id(5, 9),
+                    membership,
+                },
+            })
+            .expect("json"),
+            r#"{"last_log_id":{"index":9,"term":5},"last_membership":{"log_id":{"index":9,"term":5},"membership":{"configs":[[1,2]],"nodes":{"1":{"addr":"10.0.0.1:7000"}}}}}"#,
+        ),
+    ];
+    for (value, pinned) in cases {
+        let pinned: serde_json::Value = serde_json::from_str(pinned).expect("pinned json");
+        assert_eq!(value, pinned);
+    }
 }

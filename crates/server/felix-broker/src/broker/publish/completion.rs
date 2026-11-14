@@ -226,6 +226,7 @@ impl Completion {
             trim_applied: self.trim_applied.take(),
             skipped_before: 0,
             gap: false,
+            gap_end: None,
         };
         let start = state.held.push(batch);
         drop(ring);
@@ -576,7 +577,7 @@ async fn release(handle: StreamHandle) {
         };
         for batch in ready {
             if batch.gap {
-                state.restart_ring();
+                state.restart_ring(batch.gap_end);
                 continue;
             }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);

@@ -1,11 +1,12 @@
-//! The Raft engine as the publish and read paths see it. Nothing routes a
-//! shard here yet. See `docs/per-shard-raft.md`, "Writing through openraft"
+//! The Raft engine as the publish and read paths see it. The broker's
+//! `StreamEngine` (`felix-broker-service`, `shards/engine.rs`) sends a
+//! shard's writes and reads here when this broker holds a member. See `docs/per-shard-raft.md`, "Writing through openraft"
 //! and "Write fence, leases and read bound under Raft".
 
 use std::future::Future;
 use std::time::Duration;
 
-use super::propose::{self, AckAt, Batch};
+use super::propose::{self, AckAt, Batch, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
 use crate::engine::{CommitError, Written};
@@ -48,6 +49,17 @@ impl RaftEngine {
         shard: &ShardKey,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        let proposed = self.propose_reaching(shard, batch);
+        async move { proposed.await.map_err(|unacked| unacked.error) }
+    }
+
+    /// [`Self::propose`], and on an error how far the batch is known to be
+    /// written.
+    pub(crate) fn propose_reaching(
+        &self,
+        shard: &ShardKey,
+        batch: Batch,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let proposed = self
             .runtime
             .group(shard)

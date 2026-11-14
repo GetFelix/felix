@@ -132,6 +132,7 @@ impl Led {
         let batch = Batch {
             records: vec![record; records],
             ack: AckAt::Flushed,
+            term: None,
         };
         let written = self.engine.propose(&shard(0), batch).await;
         written.expect("written")
@@ -457,6 +458,7 @@ async fn a_group_that_stops_on_a_storage_error_closes_the_shard() {
             payload: Bytes::from_static(b"unwritten"),
         }],
         ack: AckAt::Written,
+        term: None,
     };
     let refused = led.engine.propose(&shard(0), batch).await;
     assert!(refused.is_err(), "written to a closed log: {refused:?}");
@@ -488,9 +490,13 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
             payload: Bytes::from_static(b"unheard"),
         }],
         ack: AckAt::Written,
+        term: Some(led.term),
     };
     let refused = led.engine.propose(&shard(0), batch).await;
-    assert!(refused.is_err(), "written with no majority: {refused:?}");
+    assert_eq!(
+        lost(&refused.map(|_| ())),
+        "no majority has answered this leader lately, so nothing was written"
+    );
     assert!(led.engine.admit_local_ack(&shard(0), led.term).is_err());
     let unconfirmed = led.engine.confirm_read(&shard(0), led.term).await;
     assert!(

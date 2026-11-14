@@ -16,6 +16,10 @@ use crate::serving::quic::client_error::ClientError;
 /// anyway: they only ever see its committed mark. A shard this broker learned
 /// has a newer leader is refused too.
 ///
+/// A Raft shard is served on its leader only, once the term is open there.
+/// A follower's broker holds the log but fans nothing out live, so it
+/// redirects to the leader its group elected.
+///
 /// This is checked before a reader registers, so it cannot see an ending that
 /// lands between it and the registration. [`stopped_serving`] is the check
 /// that can, made once the reader is registered.
@@ -56,8 +60,11 @@ pub(crate) fn redirect_for(
     };
 
     let dispatched = dispatch(ingress, &key);
+    // A shard another engine runs is held by that engine's term. This
+    // broker's lease and the hybrid's fence say nothing about it.
     if let crate::shards::routing::Dispatch::Local { generation } = dispatched
         && let Some(ingress) = ingress
+        && ingress.engine_dispatch(&key).is_none()
         && let Some(refusal) = read_refusal(ingress.fence(), &key, generation)
     {
         return Some(refusal);
@@ -80,6 +87,15 @@ pub(crate) fn stopped_serving(
     key: &crate::shards::ShardKey,
 ) -> Option<Message> {
     let ingress = ingress?;
+    // Another engine's shard is served here only while its route is local.
+    // A reader registered before the term ended was ended with it; one that
+    // registered after sees the route already gone.
+    if let Some(dispatched) = ingress.engine_dispatch(key) {
+        return match dispatched {
+            crate::shards::routing::Dispatch::Local { .. } => None,
+            _ => Some(moved_away(key)),
+        };
+    }
     let fence = ingress.fence();
     if fence.is_closed(key) {
         return Some(moved_away(key));
