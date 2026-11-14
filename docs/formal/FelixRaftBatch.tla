@@ -57,7 +57,8 @@
 (*   "forget" -- drops the cut. The member takes the re-send as new.       *)
 (*                                                                         *)
 (* A snapshot install gives a member another member's base and table       *)
-(* snapshot.                                                               *)
+(* snapshot. The table travels in the snapshot: the member holds nothing   *)
+(* below the base, so it cannot read the table from its log.               *)
 (*                                                                         *)
 (* What is checked, all over the committed log:                            *)
 (*                                                                         *)
@@ -85,6 +86,9 @@
 (*   TableAtAppend = FALSE   -- the leader's table reads committed entries *)
 (*                              only, so it misses a batch still in flight *)
 (*                              and the pieces a new leader took over.     *)
+(*   InstallKeepsTable = FALSE -- an install gives the base and not the    *)
+(*                              table, so the member knows only what it    *)
+(*                              holds above the base.                      *)
 (*   HeldAfterCommit = FALSE -- a batch is answered as held while its      *)
 (*                              pieces are still uncommitted.              *)
 (*                                                                         *)
@@ -116,13 +120,15 @@ CONSTANTS
     ResendFinishes,
     AtPurge,
     TableAtAppend,
-    HeldAfterCommit
+    HeldAfterCommit,
+    InstallKeepsTable
 
 ASSUME
     /\ MaxSeq \in Nat /\ MaxChanges \in Nat /\ MaxPurges \in Nat /\ MaxLog \in Nat
     /\ Lens # {} /\ \A n \in Lens : n \in Nat /\ n > 0
     /\ TermBoundBatch \in BOOLEAN /\ ResendFinishes \in BOOLEAN
     /\ TableAtAppend \in BOOLEAN /\ HeldAfterCommit \in BOOLEAN
+    /\ InstallKeepsTable \in BOOLEAN
     /\ AtPurge \in {"refuse", "keep", "forget"}
 
 VARIABLES
@@ -291,7 +297,7 @@ Purge(m, b) ==
 Install(m, n) ==
     /\ base[n] > base[m]
     /\ base' = [base EXCEPT ![m] = base[n]]
-    /\ snap' = [snap EXCEPT ![m] = snap[n]]
+    /\ snap' = [snap EXCEPT ![m] = IF InstallKeepsTable THEN snap[n] ELSE NoSnap]
     /\ UNCHANGED <<log, tail, inflight, leader, cur, blen, acked, changes, purges>>
 
 Next ==

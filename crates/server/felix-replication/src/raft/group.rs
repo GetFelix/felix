@@ -460,7 +460,8 @@ impl Group {
             copy_id,
             log.first_index_reader(),
         );
-        let (machine, commits, cache) = Machine::open(snapshots, id.shard.kind).await?;
+        let (machine, commits, cache) =
+            Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
@@ -882,10 +883,10 @@ impl Group {
                     }
                 }
             }
-            // A stream group's snapshot carries no records, and installing
-            // one purges the log up to it: the member would drop records it
-            // was never sent. Refused until retention says how a member
-            // that far behind gets them.
+            // A stream group's snapshot carries no records, only the cut
+            // batches its sender refuses by name, and installing one purges
+            // the log up to it: the member would drop records it was never
+            // sent. Refused until the records below it travel too.
             Request::Snapshot { vote, meta, .. } => {
                 self.lease.named(term_of(&vote));
                 let member = Box::new(Addressee {

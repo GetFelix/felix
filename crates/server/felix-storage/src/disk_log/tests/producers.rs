@@ -2,7 +2,7 @@
 //! retention leave behind, and how much of the log an open has to read.
 
 use super::*;
-use crate::disk_log::{ProducerSequence, UnfinishedBatch};
+use crate::disk_log::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
 use crate::log::{BatchPiece, PayloadDigest, ProducerBatch, RecordMark};
 
 /// One idempotent batch, marked as the broker marks it.
@@ -866,4 +866,35 @@ async fn a_batch_piece_is_refused_outside_a_raft_log() {
         matches!(refused, Err(StorageError::Unsupported(_))),
         "{refused:?}"
     );
+}
+
+/// A copy that starts past a cut batch it was never sent refuses its re-send
+/// once it takes in the source's forgotten cuts, and still after a reopen.
+/// Without them it would know nothing of the producer and take sequence 0
+/// as new, writing the start of the batch a second time.
+#[tokio::test]
+async fn a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts() {
+    let source_dir = tempdir().expect("dir");
+    let (source, tail) = cut_then_filled(&source_dir).await;
+    // The cut batch is still in the source's log, so a copy from its first
+    // record could finish it. One from past it can only refuse it.
+    assert!(source.forgotten_cuts_from(0).is_empty());
+    let cuts = source.forgotten_cuts_from(tail);
+    assert_eq!(cuts.sequence(9), Some(0));
+    assert_eq!(ForgottenCuts::decode(&cuts.encode()), Some(cuts.clone()));
+    source.shutdown().await.expect("shutdown");
+
+    let dir = tempdir().expect("dir");
+    {
+        let copy = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        copy.reset_to(tail).await.expect("reset");
+        assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Unknown);
+        copy.remember_forgotten_cuts(cuts).await.expect("remember");
+        assert_eq!(copy.producer_unfinished(9, 0), REFUSED);
+        assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+        copy.shutdown().await.expect("shutdown");
+    }
+    let copy = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+    copy.shutdown().await.expect("shutdown");
 }

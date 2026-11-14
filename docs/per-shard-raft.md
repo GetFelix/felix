@@ -1565,7 +1565,8 @@ holds none. Two settings keep that true until retention is designed:
   sent. The member answers `NoSnapshots` and logs an error. A leader keeps
   its whole log, so a member that is behind is sent the entries.
 
-So the snapshot message between brokers carries only its metadata. A
+So the snapshot message between brokers carries its metadata and the cut
+batches its sender refuses by name ("Idempotent publishes"), never records. A
 stream shard that needs more than entries, a learner started below the
 switch's base, is caught up by copying segments from a starting offset, as a
 rebuild does.
@@ -2702,10 +2703,28 @@ the records that are still in the log into the stream a second time. The
 cut batch is remembered for as long as one of its records is in the log,
 and by name after that. A restart keeps it: while records of it are in the
 log, the log's marks rebuild it, and the by-name entry is in a flushed
-`producers.forgotten` file in the log's directory. A member that was caught up by
-copying segments derives it from the records it was sent, since a shard
-group's snapshot carries no records and no producer state, so it does not
-know a cut batch none of whose records it was sent.
+`producers.forgotten` file in the log's directory.
+
+A member that installs a snapshot holds no record below it, so it cannot
+read those refusals from its log. They travel in the snapshot instead. A
+stream shard's snapshot data is the list of cut batches, by producer and
+sequence, that a log starting right after the snapshot's last entry has to
+refuse: the ones its sender refuses by name already, and the ones a purge
+to that point would forget. The member saves them to its own
+`producers.forgotten` before it stores the snapshot, so from the moment it
+holds nothing below the snapshot it refuses those re-sends the way its
+sender would once purged there. A crash in between leaves the old snapshot
+and only more refusals. Empty data carries none: a switch's base snapshot,
+or a snapshot taken with nothing forgotten.
+
+Whole batches below the snapshot do not travel. A member that installs one
+knows a producer only from the batches it holds, as a member whose own
+purge passed every batch of that producer does, and takes its sequence 0
+as a new batch.
+
+Nothing sends a stream shard's snapshot to a member yet: a member still
+refuses it, because it carries no records (see "Group runtime"). The
+install that ships the records below it will take these refusals with it.
 
 What is still missing before the refusal can go is the second case: a
 write of several entries that openraft checks once, so a lapsed lease
@@ -2732,7 +2751,10 @@ refused.
 > `a_purge_past_an_open_batch_refuses_its_resend` and
 > `past_the_bound_a_cut_first_batch_is_still_refused`;
 > `crates/server/felix-storage/src/disk_log/tests/producers.rs`,
-> `a_purge_past_a_cut_batch_refuses_its_resend`;
+> `a_purge_past_a_cut_batch_refuses_its_resend` and
+> `a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts`;
+> `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
+> `a_member_installed_past_a_cut_batch_refuses_its_resend`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,

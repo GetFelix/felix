@@ -566,6 +566,7 @@ expectations=(
   "FelixRaftBatchRewriteOrder violates BatchInOrder"
   "FelixRaftBatchForgetsCut violates BatchExactlyOnce"
   "FelixRaftBatchForgetsCutPlace violates ProducerPlaceAgrees"
+  "FelixRaftBatchInstallWithoutTable violates BatchExactlyOnce"
   "FelixRaftBatchTableAtApply violates BatchExactlyOnce"
   "FelixRaftBatchHeldBeforeCommit violates BatchExactlyOnce"
   "FelixRaftBatchReachFinish violates NeverFinishesACut"

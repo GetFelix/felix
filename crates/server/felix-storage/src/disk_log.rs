@@ -75,7 +75,7 @@ mod set;
 pub mod switch;
 mod sync;
 
-pub use producers::{ProducerSequence, UnfinishedBatch};
+pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
 pub use set::{Member, Membership, ReplicaSet};
@@ -398,6 +398,37 @@ impl DiskLog {
             .producers
             .lock()
             .unfinished(producer_id, sequence)
+    }
+
+    /// The cut batches a copy of this log that starts at `base` has to
+    /// refuse by name: the ones this log refuses so already, and the ones a
+    /// purge to `base` would forget. A copy that takes them in with
+    /// [`Self::remember_forgotten_cuts`] answers a re-send the way this log
+    /// would once purged to `base`.
+    pub fn forgotten_cuts_from(&self, base: Offset) -> ForgottenCuts {
+        self.inner.producers.lock().forgotten_from(base)
+    }
+
+    /// Refuse the re-send of `cuts` as if this log had forgotten them
+    /// itself, saved to `producers.forgotten` before this returns. A
+    /// producer's higher sequence wins. Only a Raft log keeps cut batches,
+    /// so any other log takes nothing.
+    pub async fn remember_forgotten_cuts(&self, cuts: ForgottenCuts) -> Result<()> {
+        if !self.inner.config.raft_log || cuts.is_empty() {
+            return Ok(());
+        }
+        let inner = Arc::clone(&self.inner);
+        felix_common::blocking::spawn(move || {
+            // Held so a close cannot land between the check and the write:
+            // the directory may then be another log's.
+            let segments = inner.segments.read();
+            segments.check_open()?;
+            let mut producers = inner.producers.lock();
+            producers.remember(cuts.0);
+            inner.store_forgotten(&producers)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
     /// The sequence `producer_id` owes next in this log, or `None` when the

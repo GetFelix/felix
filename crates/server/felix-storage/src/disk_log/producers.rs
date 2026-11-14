@@ -98,6 +98,35 @@ pub struct UnfinishedBatch {
     pub digest: Option<PayloadDigest>,
 }
 
+/// Cut batches a log refuses by producer and sequence alone, as one copy of
+/// a shard hands them to another that starts at a later base. Nothing in
+/// the records says they were written, so a copy that starts past them
+/// knows them only this way. See `docs/per-shard-raft.md`, "Idempotent
+/// publishes".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ForgottenCuts(pub(super) HashMap<u64, u64>);
+
+impl ForgottenCuts {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The batch refused for `producer_id`: that sequence and older ones.
+    pub fn sequence(&self, producer_id: u64) -> Option<u64> {
+        self.0.get(&producer_id).copied()
+    }
+
+    /// The same layout as the `producers.forgotten` file.
+    pub fn encode(&self) -> Vec<u8> {
+        encode_forgotten(&self.0)
+    }
+
+    /// `None` when `bytes` are not what [`Self::encode`] writes.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        decode_forgotten(bytes).map(Self)
+    }
+}
+
 /// Every producer a shard's log holds batches for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProducerState {
@@ -510,8 +539,17 @@ impl ProducerState {
         &self.forgotten
     }
 
-    /// Take in forgotten batches saved earlier. The higher sequence wins.
-    fn remember(&mut self, saved: HashMap<u64, u64>) {
+    /// The forgotten batches of this table pruned to `base`: what a log
+    /// that starts at `base` has to refuse by name.
+    pub(super) fn forgotten_from(&self, base: Offset) -> ForgottenCuts {
+        let mut pruned = self.clone();
+        pruned.prune(base);
+        ForgottenCuts(pruned.forgotten)
+    }
+
+    /// Take in forgotten batches saved earlier, or carried from another copy.
+    /// The higher sequence wins.
+    pub(super) fn remember(&mut self, saved: HashMap<u64, u64>) {
         for (id, sequence) in saved {
             let kept = self.forgotten.entry(id).or_insert(sequence);
             *kept = (*kept).max(sequence);
@@ -968,7 +1006,10 @@ pub(super) fn forgotten_temporary_name() -> &'static str {
 fn encode_forgotten(forgotten: &HashMap<u64, u64>) -> Vec<u8> {
     let mut body = Vec::with_capacity(4 + forgotten.len() * 16);
     body.extend_from_slice(&(forgotten.len() as u32).to_be_bytes());
-    for (id, sequence) in forgotten {
+    // Sorted, so one table always encodes to the same bytes.
+    let mut sorted: Vec<_> = forgotten.iter().collect();
+    sorted.sort_unstable();
+    for (id, sequence) in sorted {
         body.extend_from_slice(&id.to_be_bytes());
         body.extend_from_slice(&sequence.to_be_bytes());
     }
