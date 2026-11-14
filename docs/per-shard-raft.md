@@ -2025,6 +2025,20 @@ sequenceDiagram
    membership. Everything up to `N` stays on disk as readable records and
    is never compared by term, so records whose writer is unknown
    (generation 0) are never Raft entries.
+
+   Before it starts, the copy checks the base again: its log starts at or
+   below `S`, the record at `N` is the seal's generation-start record of
+   generation `G`, and its own digest from `S` to `N` is the recorded one.
+   A copy that fails any check starts as a learner, with its directory
+   untouched. One that passes writes, in this order: the cut above `N`,
+   the base snapshot, the purged id, a vote for itself at the base's term,
+   and last the engine marker with the base. The vote is the term floor:
+   without it the member would campaign at term 1, below the base, and its
+   entries would compare older than the base's. A crash before the marker
+   leaves a directory that is started again from the first step with the
+   same result. The first Raft entry is the blank entry at `N + 1`.
+   `felix_storage::disk_log::switch::start_voter` and
+   `felix_replication::raft::switch::start_voter` do this.
 4. **Start the rest as learners.** Every other copy starts empty as a
    learner: one that lagged, one that was halted, one whose digest
    differed, and one whose copy id changed after it acknowledged. It
