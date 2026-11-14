@@ -528,7 +528,14 @@ hold:
    (`controlplane_group`), or, for a backend with no group such as the
    in-memory one, that it had none (`controlplane_group_none`). A directory
    never checked, such as one from before the check existed, cannot tell a
-   recreated control plane, so it waits. See "Cluster identity" below.
+   recreated control plane, so it waits. Once the control plane answers, and
+   before its catalog is applied, the broker checks the directory against
+   `GET /v1/cluster/identity` as a start that asked would. A snapshot is not
+   enough: a Raft group that has not recorded its id yet answers without one,
+   like the in-memory backend. A directory that holds data under the mark is
+   refused by a group formed on an empty catalog, and the broker stops. After
+   that, under `controlplane_group_none`, any snapshot or page that names a
+   group stops the broker too. See "Cluster identity" below.
 
 Otherwise it waits for the control plane, as without the switch. A 401,
 another 4xx, or an answer that does not decode is a control plane that is

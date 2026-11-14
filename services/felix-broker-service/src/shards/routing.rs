@@ -132,10 +132,7 @@ impl std::fmt::Display for Reason {
 /// the hot path for a lookup that is two loads.
 pub type ServableShards = HashMap<ShardKey, u64>;
 
-/// Felix's replication protocol, read against how this broker serves each
-/// shard. What the stream write and read paths hold in place of the marks and
-/// the router.
-pub type StreamEngine = felix_replication::engine::Hybrid<IngressRouter>;
+pub use super::engine::{RaftPublish, RaftRefusal, StreamEngine};
 
 /// Resolves ingress requests against cluster ownership.
 ///
@@ -152,6 +149,9 @@ pub struct IngressRouter {
     /// Woken on every new view, for writes held while their shard moves.
     changed: tokio::sync::Notify,
     hold: MoveHold,
+    /// Routes for the shards the hybrid does not run. They never reach the
+    /// view, so they are asked for first.
+    engine_shards: std::sync::OnceLock<Arc<dyn EngineShards>>,
     /// Runs inside [`IngressRouter::publish`] just before the view is stored,
     /// so a test can land a change between the read and the store. Held while
     /// the hook runs, so a hook must not call `publish` itself.
@@ -186,9 +186,30 @@ impl IngressRouter {
             fence,
             changed: tokio::sync::Notify::new(),
             hold: MoveHold::disabled(),
+            engine_shards: std::sync::OnceLock::new(),
             #[cfg(test)]
             before_publish: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Route the shards `engine_shards` runs by what it says. Only the first
+    /// call counts.
+    pub fn set_engine_shards(&self, engine_shards: Arc<dyn EngineShards>) {
+        let _ = self.engine_shards.set(engine_shards);
+    }
+
+    /// Where another engine sends `key`, when one runs it here. A local
+    /// answer has no place in the hybrid's fence and needs no broker lease.
+    pub(crate) fn engine_dispatch(&self, key: &ShardKey) -> Option<Dispatch> {
+        let nodes = |broker: &str| self.router.node_addr(broker);
+        self.engine_shards.get()?.dispatch(key, &nodes)
+    }
+
+    /// Whether another engine serves `key`'s readers here without leading it.
+    pub(crate) fn engine_serves_reads(&self, key: &ShardKey) -> bool {
+        self.engine_shards
+            .get()
+            .is_some_and(|engine| engine.serves_reads(key))
     }
 
     /// Hold writes to a moving shard under `hold` rather than refusing them.
@@ -365,6 +386,9 @@ impl IngressRouter {
     /// trusting only local state would keep serving a shard that has been
     /// reassigned.
     pub fn dispatch(&self, key: &ShardKey) -> Dispatch {
+        if let Some(dispatch) = self.engine_dispatch(key) {
+            return dispatch;
+        }
         self.dispatch_in(&self.view.load(), key)
     }
 
@@ -377,6 +401,11 @@ impl IngressRouter {
     /// closes before the write claims its offsets still counts it and the move
     /// waits for it.
     pub(crate) async fn dispatch_write(&self, key: &ShardKey) -> (Dispatch, Option<FenceGuard>) {
+        // Not held through an election: the group answers who leads next,
+        // and the client's retry finds it.
+        if let Some(dispatch) = self.engine_dispatch(key) {
+            return (dispatch, None);
+        }
         let mut held = None;
         loop {
             let changed = self.changed.notified();
@@ -790,6 +819,55 @@ fn newly_named<'a>(
         .map(|assignment| (to_router_key(&assignment.key), assignment.incarnation))
 }
 
+/// The shards an engine took in one pass, each with its stream's key mapping.
+pub type Taken = Vec<(ShardKey, felix_wire::routing::ShardRouting)>;
+
+/// Shards an engine other than the hybrid runs on this broker.
+pub trait EngineShards: Send + Sync {
+    /// Take this engine's shards out of `assignments` and bring its members
+    /// here in line with them. What is left is the hybrid's. Returns every
+    /// shard taken with its stream's key mapping, whether or not this
+    /// broker holds a member of it.
+    ///
+    /// The feed calls it first in every pass, so the hybrid lifecycle, its
+    /// replica handler and the routes never see a shard taken here: one
+    /// shard is never opened by two engines. The routing table still learns
+    /// the taken streams' width and key mapping, which every broker answers
+    /// clients with and maps keys by.
+    fn take<'a>(
+        &'a self,
+        assignments: &'a mut HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Taken> + Send + 'a>>;
+
+    /// Where a request for `key` goes, when this engine runs the shard on
+    /// this broker: here once it leads and may take writes, to the leader
+    /// it follows (addressed through `nodes`) otherwise. With no member
+    /// here, to the broker the shard's placement names as leader. `None`
+    /// for a shard this engine does not run.
+    fn dispatch(
+        &self,
+        key: &ShardKey,
+        nodes: &dyn Fn(&str) -> Option<SocketAddr>,
+    ) -> Option<Dispatch>;
+
+    /// Whether `key`'s subscribers and readers are served on this broker
+    /// although it does not lead the shard: from the engine's log, up to
+    /// what the engine committed here.
+    fn serves_reads(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    /// Hands over the feed's wake, for an engine that learns something
+    /// between passes that the next pass must act on.
+    fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
+
+    /// Stop every member and close its log. The broker calls it once, when
+    /// it stops, before storage is flushed.
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
+}
+
 /// The cluster state one task keeps in step. Grouped because they are only ever
 /// used together, and only in the order this feed applies them.
 pub struct FeedState {
@@ -820,6 +898,8 @@ pub struct FeedState {
     /// Node addresses to route by until the first catalog read lands: those
     /// a start from the control-plane view kept. Empty otherwise.
     pub nodes: HashMap<String, felix_router::NodeRef>,
+    /// Whoever runs the shards the hybrid does not. `None` when it runs all.
+    pub engine_shards: Option<Arc<dyn EngineShards>>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -865,6 +945,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         prefetch,
         elections,
         nodes,
+        engine_shards,
     } = state;
     // Seeded with the kept addresses, so a first read that fails still leaves
     // the feed something to route by.
@@ -918,7 +999,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
             let joint = joint_fence
                 .as_ref()
                 .is_some_and(|fleet| fleet.supports(felix_common::fleet::JOINT_FENCE));
-            let (assignments, renewals, priors, as_of, checkpoint) = {
+            let (mut assignments, renewals, priors, as_of, checkpoint) = {
                 let owned = ownership.read().await;
                 (
                     owned.assignments().clone(),
@@ -931,6 +1012,10 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                     owned.as_of(),
                     owned.checkpoint(),
                 )
+            };
+            let taken = match &engine_shards {
+                Some(engine_shards) => engine_shards.take(&mut assignments).await,
+                None => Taken::new(),
             };
             let assignments = match &elections {
                 Some(elections) => with_elected(assignments, elections),
@@ -978,8 +1063,13 @@ pub fn spawn_feed<L: ControlPlaneLink>(
             // owner of a shard it has not opened. Held through the publish: a
             // fence publishes under this lock too, and one finishing between
             // the read and the publish would be undone until the next pass.
-            let table =
-                routing_table_from(&assignments, &catalog.nodes).with_priors(priors.clone());
+            let table = routing_table_from(&assignments, &catalog.nodes)
+                .with_priors(priors.clone())
+                .with_placed_elsewhere(
+                    taken
+                        .iter()
+                        .map(|(key, routing)| (to_router_key(key), *routing)),
+                );
             {
                 let owned = lifecycle.lock().await;
                 ingress.publish(table, &catalog.nodes, owned.servable());

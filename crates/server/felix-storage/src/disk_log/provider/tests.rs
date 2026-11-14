@@ -722,3 +722,36 @@ async fn logs_under_one_provider_share_the_open_sealed_segment_bound() {
     }
     assert_eq!(provider.sealed_files.len(), 0);
 }
+
+/// The marker has to land in the directory an open would use, or the hybrid
+/// could still open the Raft member's log.
+#[tokio::test]
+async fn a_raft_claim_marks_the_directory_the_incarnation_opens() {
+    let dir = tempdir().expect("dir");
+    let provider = DiskLogProvider::new(dir.path(), config()).expect("provider");
+    provider.set_stream_incarnation("t", "ns", "orders", Some(7));
+
+    assert!(matches!(
+        provider.claim_for_raft(&shard("orders"), 6),
+        Err(StorageError::Closed(_))
+    ));
+    let (claimed, label) = provider.claim_for_raft(&shard("orders"), 7).expect("claim");
+    assert_eq!(
+        claimed,
+        layout::incarnation_dir(dir.path(), &shard("orders"), 7)
+    );
+    assert_eq!(label, layout::shard_label(&shard("orders")));
+    assert!(!layout::shard_dir(dir.path(), &shard("orders")).exists());
+
+    let Err(StorageError::Io(err)) = provider.open_incarnation(&shard("orders"), None, 7) else {
+        panic!("the hybrid opened a Raft member's directory");
+    };
+    assert!(err.to_string().contains("holds a Raft member's log"));
+
+    // Found by a retire like any directory an open made.
+    provider
+        .retire_stream("t", "ns", "orders", 7)
+        .await
+        .expect("retire");
+    assert!(!claimed.exists());
+}

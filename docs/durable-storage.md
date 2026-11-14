@@ -616,6 +616,15 @@ Four properties:
    A marker that cannot be read cuts and rewrites nothing; the open logs a warning and still
    writes the state files again.
 
+   A per-shard Raft copy is the exception. A leader can count what a copy
+   has written, before it is synced, toward a `Quorum` acknowledgement
+   (`await_quorum_ack`), so the cut could remove a record that was
+   acknowledged. An open refuses a poisoned directory that
+   holds a copy file (`raft-copy`) and leaves the marker. The copy root
+   rotates the copy instead: it moves the directory aside as it is and
+   starts an empty one under a new copy id. See `docs/per-shard-raft.md`,
+   "Group and member identity".
+
    If the marker itself did not survive, the restart is a reboot or a power
    loss and the rules above apply. The run record also stops vouching for the
    boot: under every fsync mode the next start takes a new storage id, so a

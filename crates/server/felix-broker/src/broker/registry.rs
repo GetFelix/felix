@@ -226,6 +226,20 @@ impl Broker {
                 return Ok(());
             }
 
+            // Its engine opens each shard, shard 0 included.
+            if metadata.durable && self.engines_open_durable_streams() {
+                let mut streams = self.streams.write().await;
+                if let Some(existing) = streams.get(&key)
+                    && existing.durable != metadata.durable
+                {
+                    return Err(Self::durability_change_error(&key, existing, &metadata));
+                }
+                self.mounts.set(&key, metadata.mount.as_deref());
+                streams.insert(key, metadata);
+                self.catalog_changed();
+                return Ok(());
+            }
+
             let durable = self
                 .open_durable_log(&key.tenant_id, &key.namespace, &key.stream, 0, &metadata)
                 .await?;

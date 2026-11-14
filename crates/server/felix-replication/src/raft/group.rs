@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use felix_storage::DiskLog;
 use felix_storage::raft_copy::{CopyMarks, LogMarkMode};
-use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore};
+use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::storage::RaftLogReader;
 use openraft::type_config::alias::VoteOf;
@@ -26,7 +26,7 @@ use super::machine::Machine;
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
-use super::propose::{self, AckAt, Batch, Proposal};
+use super::propose::{self, AckAt, Batch, Proposal, Unacknowledged};
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
@@ -365,9 +365,11 @@ impl Group {
         transport: Arc<dyn RaftTransport>,
         timers: Timers,
         host: Option<Arc<dyn EngineHost>>,
+        tail_budget: Arc<TailBudget>,
     ) -> Result<Self, OpenError> {
         let snapshots = SnapshotStore::open(log.dir())?;
-        let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
+        let log =
+            RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
         // It started after the last message it took, so waiting the
@@ -759,7 +761,7 @@ impl Group {
     pub(crate) fn propose(
         &self,
         batch: Batch,
-    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let waiting = if self.stop.is_cancelled() {
             Err(propose::stopped())
         } else {
@@ -1028,6 +1030,13 @@ impl Group {
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
             client_writes: self.client_writes.load(Ordering::Relaxed),
         }
+    }
+
+    pub(crate) fn voters(&self) -> BTreeSet<MemberId> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        metrics.membership_config.membership().voter_ids().collect()
     }
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {

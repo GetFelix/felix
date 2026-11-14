@@ -25,7 +25,7 @@ use crate::serving::quic::handlers::publish::ingress::{
 };
 use crate::serving::quic::handlers::publish::route::{
     DeclaredWidth, PublishRoute, UNKEYED_SHARD, internal_ack, local_shard_key, needs_quorum,
-    publish_target, resolve_declared_shard, resolve_route, targets_durable,
+    publish_target, resolve_declared_shard, resolve_route, targets_durable, targets_raft,
 };
 use crate::serving::quic::handlers::publish::{
     CommitAcks, PublishAs, PublishContext, PublishJob, PublishReply, StreamHandleCache,
@@ -313,6 +313,7 @@ pub(crate) async fn handle_publish_batch_message(
         };
         let quorum = needs_quorum(&target);
         let durable = targets_durable(&target);
+        let on_raft = targets_raft(publish_ctx, &target);
         let Some(target) = target else {
             count_publish("error");
             if ack_mode != felix_wire::AckMode::None {
@@ -352,6 +353,7 @@ pub(crate) async fn handle_publish_batch_message(
             || forwarding
             || quorum
             || idempotent
+            || on_raft
             || (ack_mode != felix_wire::AckMode::None && publish_ctx.must_wait_for_write());
         // Made before the enqueue: an in-memory publish can settle before the
         // enqueue returns, and is answered from there.

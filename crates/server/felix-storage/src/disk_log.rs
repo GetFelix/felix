@@ -45,6 +45,7 @@
 //! * `read_range` may touch cold blocks, so it runs entirely on `spawn_blocking`.
 //!   It is a replay and catch-up path, not the publish hot path.
 
+pub mod engine_marker;
 pub mod inspect;
 pub mod layout;
 
@@ -54,6 +55,8 @@ pub(crate) mod crash_point;
 #[cfg(feature = "raft")]
 pub(crate) mod dir_lock;
 pub(crate) mod durable_mark;
+#[cfg(feature = "raft")]
+pub(crate) use durable_mark::left_poisoned;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -68,6 +71,8 @@ mod retention;
 mod sealed;
 mod segments;
 mod set;
+#[cfg(feature = "raft")]
+pub mod switch;
 mod sync;
 
 pub use producers::ProducerSequence;
@@ -102,6 +107,13 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 /// fsynced on commit. Its records are written behind too, so an offset that
 /// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The file that makes a shard directory a Raft copy (`raft_copy`).
+pub(crate) const RAFT_COPY_FILE: &str = "raft-copy";
+
+/// How soon a Raft log's commit writer asks again when the replica state is
+/// locked and it cannot tell when the last write was.
+const COMMIT_WAIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(10);
 
 /// Set the first time any log in this process is poisoned, or a node
 /// record's sync fails, and never cleared. A log closed since still counts:
@@ -1085,6 +1097,11 @@ impl DiskLog {
         #[cfg_attr(not(feature = "raft"), allow(unused_variables))] other_commit: OtherCommit,
     ) -> Result<Self> {
         config.validate()?;
+        // Before anything is created or repaired in a directory that is not
+        // this engine's.
+        if !config.raft_log {
+            engine_marker::refuse_raft_directory(&dir, &label)?;
+        }
         // Before recovery, which would repair a tail that another open log
         // may still be writing.
         #[cfg(feature = "raft")]
@@ -1282,8 +1299,10 @@ impl DiskLog {
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             extensions_done: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "fault-injection"))]
+            fail_flush_past: AtomicU64::new(u64::MAX),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1438,6 +1457,22 @@ impl DiskLog {
     }
 }
 
+#[cfg(any(test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Fail this log's next flush, as a failed fsync would: the log is
+    /// poisoned and leaves its marker. For tests, in this crate and outside.
+    pub fn fail_next_flush(&self) {
+        self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+
+    /// Fail the first flush that would make the record at `offset` durable,
+    /// as [`Self::fail_next_flush`] does. Flushes of earlier records, such
+    /// as one with nothing new to sync, pass.
+    pub fn fail_flush_past(&self, offset: Offset) {
+        self.inner.fail_flush_past.store(offset, Ordering::Release);
+    }
+}
+
 /// A stalled device, for tests here and in other crates. Not in a plain
 /// release build, like [`crate::fault`].
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
@@ -1453,11 +1488,6 @@ impl DiskLog {
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
-    /// Fail the next flush, as a failed fsync would.
-    pub(crate) fn fail_next_flush(&self) {
-        self.inner.fail_next_flush.store(true, Ordering::Release);
-    }
-
     /// Wait until the commit offset in memory is the one on disk.
     pub(crate) async fn commit_offset_persisted(&self) {
         while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {
@@ -2017,8 +2047,12 @@ struct LogInner {
     #[cfg(test)]
     extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// Makes the first flush that covers this offset fail the same way.
+    /// `u64::MAX` when unset.
+    #[cfg(any(test, feature = "fault-injection"))]
+    fail_flush_past: AtomicU64,
     /// Makes the next truncation or reset fail to sync the durable mark.
     #[cfg(test)]
     fail_next_rewind_sync: std::sync::atomic::AtomicBool,
@@ -2280,6 +2314,23 @@ impl LogInner {
 }
 
 impl LogInner {
+    /// How long the commit writer waits before its next write: the rest of
+    /// [`COMMIT_PERSIST_INTERVAL`] on a Raft log, nothing otherwise.
+    fn commit_write_wait(&self) -> Option<std::time::Duration> {
+        if !self.config.raft_log {
+            return None;
+        }
+        // Held by a write in flight or a replica-set change; ask again soon
+        // rather than wait out a whole interval.
+        let last = match self.replica_persisted.try_lock() {
+            Some(persisted) => persisted.1?,
+            None => return Some(COMMIT_WAIT_RECHECK),
+        };
+        COMMIT_PERSIST_INTERVAL
+            .checked_sub(last.elapsed())
+            .filter(|wait| !wait.is_zero())
+    }
+
     /// The replica state as memory has it.
     fn replica_state(&self) -> replica_state::ReplicaState {
         let committed = self.committed_generation.lock();
@@ -2315,12 +2366,14 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         // Not retried once poisoned: the write behind would otherwise try
         // again, and a retry after a failed flush proves nothing.
         inner.check_not_poisoned()?;
+        // Counted before the rename, so a test that sees the file sees the
+        // count too.
+        #[cfg(test)]
+        inner.replica_writes.fetch_add(1, Ordering::SeqCst);
         inner.poison_on_sync_failure(
             "the replica state",
             replica_state::store(&inner.dir, &state),
         )?;
-        #[cfg(test)]
-        inner.replica_writes.fetch_add(1, Ordering::Relaxed);
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
@@ -2335,6 +2388,12 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
 /// log; it loops until disk has caught up with memory, so an advance made
 /// while a write is in flight is carried by the next one rather than adding
 /// its own.
+///
+/// On a Raft log a write waits until [`COMMIT_PERSIST_INTERVAL`] has passed
+/// since the last one. Its commit index moves on almost every entry, and a
+/// write is a create, two fsyncs and a rename that the log's own fsyncs queue
+/// behind on the same disk (`docs/metadata-raft-benchmark.md`, "Saving the
+/// committed index").
 fn write_commit_behind(inner: &Arc<LogInner>) {
     if inner.commit_writer.swap(true, Ordering::AcqRel) {
         return;
@@ -2343,6 +2402,9 @@ fn write_commit_behind(inner: &Arc<LogInner>) {
     let weak = Arc::downgrade(inner);
     tokio::spawn(async move {
         loop {
+            while let Some(wait) = weak.upgrade().and_then(|inner| inner.commit_write_wait()) {
+                tokio::time::sleep(wait).await;
+            }
             let Some(inner) = weak.upgrade() else {
                 return;
             };

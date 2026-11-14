@@ -197,6 +197,34 @@ async fn acks_all_waits_for_the_streams_consistency() {
     assert!(answer.error_message.is_some());
 }
 
+/// A produce the shard's log does not take is answered with an error no
+/// client retries, and nothing is written.
+#[tokio::test]
+async fn a_produce_the_shard_does_not_take_is_not_retriable() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    let mut client = fixture.connect();
+    *fixture.cluster.admit_error.lock().expect("lock") = Some(WriteError::Unsupported);
+
+    let answer = produce(
+        &mut client,
+        -1,
+        batch(Producer::Plain, &["a"], Compression::None),
+    )
+    .await;
+
+    assert_eq!(answer.error_code, 42, "INVALID_REQUEST");
+    assert_eq!(
+        answer
+            .error_message
+            .as_ref()
+            .map(|message| message.as_str()),
+        Some("a stream on Raft does not take Kafka produces")
+    );
+    *fixture.cluster.admit_error.lock().expect("lock") = None;
+    assert!(stored(&mut client).await.is_empty());
+}
+
 /// **An idempotent producer's re-send lands once.** Sequences count records,
 /// so the second batch starts at 3; sending either batch again writes nothing
 /// and answers with its original offset.

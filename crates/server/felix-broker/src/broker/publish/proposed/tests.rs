@@ -11,8 +11,8 @@ use parking_lot::Mutex;
 use tokio::sync::oneshot;
 
 use crate::{
-    Broker, ConsistencyLevel, DeliveryEnvelope, ProposalCommitted, ReadBound, ReadBounds,
-    StreamHandle, StreamMetadata, SubscriptionReceiver,
+    Broker, BrokerError, ConsistencyLevel, DeliveryEnvelope, ProposalCommitted, ProposalFailed,
+    ReadBound, ReadBounds, StreamHandle, StreamMetadata, SubscriptionReceiver,
 };
 
 /// An engine that gives offsets in hand-over order and commits a batch when
@@ -27,8 +27,9 @@ impl Engine {
     fn propose(
         &self,
         records: u64,
-    ) -> impl std::future::Future<Output = Result<ProposalCommitted, &'static str>> + Send + use<>
-    {
+    ) -> impl std::future::Future<Output = Result<ProposalCommitted, ProposalFailed<&'static str>>>
+    + Send
+    + use<> {
         self.propose_after(0, records)
     }
 
@@ -37,8 +38,9 @@ impl Engine {
         &self,
         skipped: u64,
         records: u64,
-    ) -> impl std::future::Future<Output = Result<ProposalCommitted, &'static str>> + Send + use<>
-    {
+    ) -> impl std::future::Future<Output = Result<ProposalCommitted, ProposalFailed<&'static str>>>
+    + Send
+    + use<> {
         let end = {
             let mut next = self.next.lock();
             *next += skipped + records;
@@ -47,7 +49,11 @@ impl Engine {
         let (commit, committed) = oneshot::channel();
         self.pending.lock().push(commit);
         async move {
-            committed.await.map_err(|_| "dropped")??;
+            committed
+                .await
+                .map_err(|_| "dropped")
+                .flatten()
+                .map_err(|err| ProposalFailed::written(err, end))?;
             Ok(ProposalCommitted {
                 end,
                 skipped_before: skipped,
@@ -133,9 +139,12 @@ async fn batches_go_out_in_hand_over_order_whoever_hears_first() {
     let publish = |payload: &'static [u8]| {
         let engine = Arc::clone(&engine);
         broker
-            .propose_publish(&handle, vec![Bytes::from_static(payload)], move |_| {
-                engine.propose(1)
-            })
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(payload)],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
             .expect("handed over")
     };
     let first = publish(b"a");
@@ -174,9 +183,12 @@ async fn only_what_the_engine_committed_is_delivered() {
     for payload in [b"lost".as_slice(), b"kept"] {
         let engine = Arc::clone(&engine);
         let proposed = broker
-            .propose_publish(&handle, vec![Bytes::from_static(payload)], move |_| {
-                engine.propose(1)
-            })
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(payload)],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
             .expect("handed over");
         publishes.push(tokio::spawn(proposed.complete()));
     }
@@ -217,7 +229,9 @@ async fn every_subscriber_shares_one_envelope_of_the_publishers_bytes() {
     let proposed = {
         let engine = Arc::clone(&engine);
         broker
-            .propose_publish(&handle, vec![payload.clone()], move |_| engine.propose(1))
+            .propose_publish(&handle, vec![payload.clone()], Duration::MAX, move |_| {
+                engine.propose(1)
+            })
             .expect("handed over")
     };
     let publish = tokio::spawn(proposed.complete());
@@ -257,9 +271,12 @@ async fn a_leader_stream_bounded_at_every_level_waits_for_the_bound() {
     let proposed = {
         let engine = Arc::clone(&engine);
         broker
-            .propose_publish(&handle, vec![Bytes::from_static(b"a")], move |_| {
-                engine.propose(1)
-            })
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"a")],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
             .expect("handed over")
     };
     let publish = tokio::spawn(proposed.complete());
@@ -284,9 +301,12 @@ async fn a_batch_that_commits_after_its_publisher_timed_out_goes_out_first() {
     let publish = |payload: &'static [u8]| {
         let engine = Arc::clone(&engine);
         broker
-            .propose_publish(&handle, vec![Bytes::from_static(payload)], move |_| {
-                engine.propose(1)
-            })
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(payload)],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
             .expect("handed over")
     };
     let slow = publish(b"slow").answer_within(Duration::from_millis(50), || "timed out");
@@ -318,9 +338,12 @@ async fn a_batch_given_up_on_restarts_the_ring_above_it() {
     for payload in [b"a".as_slice(), b"lost", b"b"] {
         let engine = Arc::clone(&engine);
         let proposed = broker
-            .propose_publish(&handle, vec![Bytes::copy_from_slice(payload)], move |_| {
-                engine.propose(1)
-            })
+            .propose_publish(
+                &handle,
+                vec![Bytes::copy_from_slice(payload)],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
             .expect("handed over");
         drop(proposed);
     }
@@ -330,6 +353,78 @@ async fn a_batch_given_up_on_restarts_the_ring_above_it() {
     assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
     assert_eq!(next(&mut receiver).await.base_offset(), Some(2));
     assert_eq!(handle.state.oldest_seq(), 2);
+}
+
+/// **A reader resuming right after a batch the engine gave up on starts
+/// above it.** The ring is empty then, so the reader joins live at the
+/// stream's sequence. Left at the batch before, it would read history only
+/// up to there and get the given-up batch, if it committed, as a drop.
+#[tokio::test]
+async fn a_reader_resuming_after_a_batch_given_up_on_starts_above_it() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    for payload in [b"a".as_slice(), b"lost"] {
+        let engine = Arc::clone(&engine);
+        let proposed = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::copy_from_slice(payload)],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
+            .expect("handed over");
+        drop(proposed);
+    }
+    engine.commit(0, Ok(()));
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
+    engine.commit(1, Err("this broker stopped leading the shard"));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while handle.tail_seq() != 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the sequence moves past the batch given up on");
+    assert_eq!(handle.state.oldest_seq(), 2, "the ring restarts above it");
+}
+
+/// **An engine that settles nothing is handed no more batches.** A leader
+/// cut off from its majority is not deposed and commits nothing; every
+/// batch handed to it waits with its payload in memory. Taking them
+/// without limit grows until the partition heals.
+#[tokio::test]
+async fn an_engine_that_settles_nothing_is_handed_no_more_batches() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let engine = Arc::new(Engine::default());
+    let stalled_after = Duration::from_secs(2);
+    let propose = |payload: &'static [u8]| {
+        let engine = Arc::clone(&engine);
+        broker.propose_publish(
+            &handle,
+            vec![Bytes::from_static(payload)],
+            stalled_after,
+            move |_| engine.propose(1),
+        )
+    };
+    let first = propose(b"a").expect("handed over");
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    let second = propose(b"b").expect("the oldest is still within its time");
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    match propose(b"c") {
+        Err(BrokerError::ProposalsStalled { waited }) => assert!(waited > stalled_after),
+        other => panic!("handed a stalled engine another batch: {:?}", other.err()),
+    }
+    assert_eq!(engine.pending.lock().len(), 2, "the engine was not asked");
+
+    // The oldest settles; the next oldest is still within its time.
+    engine.commit(0, Ok(()));
+    first.complete().await.expect("committed");
+    let third = propose(b"c").expect("handed over once the oldest settled");
+    engine.commit(1, Ok(()));
+    engine.commit(2, Ok(()));
+    second.complete().await.expect("committed");
+    third.complete().await.expect("committed");
 }
 
 /// **Offsets an engine used for entries holding no record reach subscribers
@@ -343,9 +438,12 @@ async fn offsets_holding_no_record_are_reported_skipped() {
     let proposed = {
         let engine = Arc::clone(&engine);
         broker
-            .propose_publish(&handle, vec![Bytes::from_static(b"a")], move |_| {
-                engine.propose_after(2, 1)
-            })
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"a")],
+                Duration::MAX,
+                move |_| engine.propose_after(2, 1),
+            )
             .expect("handed over")
     };
     let publish = tokio::spawn(proposed.complete());

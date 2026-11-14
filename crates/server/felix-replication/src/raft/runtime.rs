@@ -1,6 +1,6 @@
 //! The groups one broker holds, and their lifecycle.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -14,14 +14,16 @@ use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
     CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
 };
-use felix_storage::raft_log::{LogPoint, LogPositions};
-use openraft::{Config, SnapshotPolicy};
+use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
+use openraft::impls::leader_id_std::LeaderId;
+use openraft::raft::{VoteRequest, VoteResponse};
+use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
-use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
+use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::ticker;
-use super::types::{GroupId, MemberId};
+use super::types::{GroupId, MemberId, ShardTypes};
 use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
@@ -64,6 +66,14 @@ pub struct RuntimeConfig {
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
     /// mark at the data root.
     pub log_mark: LogMarkMode,
+    /// Record bytes the shard groups' Raft logs of this runtime keep in
+    /// memory for replication reads, all groups together. Each log keeps at
+    /// most 4 MiB. Over the limit, logs that have not appended since the
+    /// last pass are emptied first, then busy ones are trimmed to their
+    /// newest records. The bound is soft: a log whose cache is in use is
+    /// skipped until the next pass. The metadata group's log is not
+    /// counted; it keeps its own 4 MiB.
+    pub tail_cache_bytes: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -80,6 +90,7 @@ impl Default for RuntimeConfig {
             lease: Duration::from_millis(1500),
             clock_drift_ppm: 100_000,
             log_mark: LogMarkMode::Exact,
+            tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
         }
     }
 }
@@ -177,6 +188,17 @@ pub enum InitializeError {
     NotAMember(MemberId),
     #[error("the group was not formed: {0}")]
     Raft(String),
+}
+
+/// Why a member set was not found untouched by any group.
+#[derive(Debug, thiserror::Error)]
+pub enum NotBlank {
+    #[error("the shard has no group here")]
+    NoSuchGroup,
+    #[error("{0} did not answer: {1}")]
+    Unanswered(MemberId, String),
+    #[error("{0} already holds a vote or an entry of a group")]
+    Formed(MemberId),
 }
 
 /// A member [`GroupRuntime::open_copy`] started.
@@ -289,6 +311,8 @@ pub(crate) struct Registry {
     ticked: ArcSwap<Vec<Arc<Group>>>,
     /// Times the ticker ended on a panic and was started again.
     pub(crate) ticker_restarts: AtomicU64,
+    /// Shared by every group's log, and read by the ticker for its gauge.
+    pub(crate) tail_budget: Arc<TailBudget>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -296,7 +320,9 @@ pub(crate) struct Registry {
 
 #[derive(Default)]
 struct Slots {
-    by_shard: HashMap<Arc<ShardKey>, Slot>,
+    /// Ordered, so the ticked view comes out in shard order without a sort
+    /// under the lock: a fixed tick order lets a simulation seed replay.
+    by_shard: BTreeMap<Arc<ShardKey>, Slot>,
     closed: bool,
 }
 
@@ -306,7 +332,7 @@ impl Registry {
     }
 
     fn publish(&self, slots: &Slots) {
-        let open = slots
+        let open: Vec<_> = slots
             .by_shard
             .values()
             .filter_map(|slot| match slot {
@@ -386,6 +412,7 @@ impl GroupRuntime {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
                     ticker_restarts: AtomicU64::new(0),
+                    tail_budget: TailBudget::new(config.tail_cache_bytes),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -436,9 +463,10 @@ impl GroupRuntime {
     /// ([`Self::initialize`]) or to hear from a leader.
     ///
     /// Nothing here checks that the directory may still hold copy `copy`,
-    /// and no marks are kept, so it is for tests only. A shard opens
-    /// through [`Self::open_copy`].
-    #[cfg(any(test, feature = "testing"))]
+    /// and no marks are kept. A shard is meant to open through
+    /// [`Self::open_copy`]. The broker opening its groups here is interim:
+    /// it runs without the copy and restore check until it opens them
+    /// through the gate (#2441).
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
         let reserved = self.reserve(&group)?;
         let member = MemberId::new(self.inner.broker.clone(), copy);
@@ -450,8 +478,9 @@ impl GroupRuntime {
     ///
     /// The directory keeps its copy id only if it may: an empty directory,
     /// one minted under another storage id, one whose copy the root's marks
-    /// do not name, or one whose vote or log is below its marks gets a new
-    /// copy id that never voted and an empty log. The member id is this
+    /// do not name, one whose vote or log is below its marks, or one whose
+    /// log was poisoned in its last run gets a new copy id that never voted and an
+    /// empty log. The member id is this
     /// broker and the copy id in the directory. From here on the vote mark
     /// is synced before a vote is answered and the log mark follows the log
     /// as [`RuntimeConfig::log_mark`] says. See `docs/per-shard-raft.md`,
@@ -613,6 +642,7 @@ impl GroupRuntime {
             Arc::clone(&inner.transport),
             inner.timers,
             inner.host.get().cloned(),
+            Arc::clone(&registry.tail_budget),
         )
         .await?;
         let group = Arc::new(group);
@@ -653,6 +683,73 @@ impl GroupRuntime {
             .initialize(members)
             .await
             .map_err(InitializeError::Raft)
+    }
+
+    /// Ask every other member of `members` whether it has heard from a
+    /// group of `shard`. `Ok` only when each one answered within `within`
+    /// that it holds no vote and no entry.
+    ///
+    /// The one member that forms a group asks this first: a set with a
+    /// member a group already reached must not be formed a second time,
+    /// because the second group would elect on empty logs and overwrite
+    /// what the first acknowledged. Silence is not an answer. The question
+    /// is a pre-vote, which changes nothing on the member asked.
+    pub async fn peers_blank(
+        &self,
+        shard: &ShardKey,
+        members: &BTreeSet<MemberId>,
+        within: Duration,
+    ) -> Result<(), NotBlank> {
+        let group = self
+            .inner
+            .registry
+            .get(shard)
+            .ok_or(NotBlank::NoSuchGroup)?;
+        let asks = members
+            .iter()
+            .filter(|member| **member != group.member)
+            .map(|member| {
+                let request = RaftRequest {
+                    group: group.id.clone(),
+                    to: member.clone(),
+                    beat: 0,
+                    report: false,
+                    deadline: within,
+                    body: Request::PreVote(VoteRequest::new(
+                        Vote {
+                            leader_id: LeaderId {
+                                term: 0,
+                                voted_for: group.member.clone(),
+                            },
+                            committed: false,
+                        },
+                        None,
+                    )),
+                };
+                let transport = Arc::clone(&self.inner.transport);
+                async move {
+                    let unanswered = |why: String| NotBlank::Unanswered(member.clone(), why);
+                    match tokio::time::timeout(within, transport.send(request)).await {
+                        Ok(Ok(RaftReply(Reply::Vote(answer)))) => {
+                            if blank(&answer) {
+                                Ok(())
+                            } else {
+                                Err(NotBlank::Formed(member.clone()))
+                            }
+                        }
+                        Ok(Ok(_)) => Err(unanswered("not an answer to the question".into())),
+                        Ok(Err(refused)) => Err(unanswered(refused.to_string())),
+                        Err(_) => Err(unanswered(format!("nothing within {within:?}"))),
+                    }
+                }
+            });
+        futures::future::try_join_all(asks).await.map(|_| ())
+    }
+
+    /// The brokers that vote in `shard`'s group, as this member's log has
+    /// them. Empty until the member has heard from a group.
+    pub fn voters(&self, shard: &ShardKey) -> Option<BTreeSet<MemberId>> {
+        self.inner.registry.get(shard).map(|group| group.voters())
     }
 
     /// Stop this broker's member of `shard`'s group and forget it. The log
@@ -709,10 +806,9 @@ impl GroupRuntime {
         let groups: Vec<Arc<Group>> = {
             let mut slots = inner.registry.slots.write();
             slots.closed = true;
-            let groups = slots
-                .by_shard
-                .drain()
-                .filter_map(|(_, slot)| match slot {
+            let groups = std::mem::take(&mut slots.by_shard)
+                .into_values()
+                .filter_map(|slot| match slot {
                     // A member being closed is stopped by its close too.
                     // Both wait for the same stop.
                     Slot::Open(group) | Slot::Closing(group) => Some(group),
@@ -781,6 +877,16 @@ impl GroupRuntime {
         self.inner.registry.get(shard)
     }
 
+    /// The shards the ticker visits, in its order.
+    #[cfg(test)]
+    pub(crate) fn ticked_shards(&self) -> Vec<ShardKey> {
+        let ticked = self.inner.registry.ticked();
+        ticked
+            .iter()
+            .map(|group| (*group.id.shard).clone())
+            .collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn trip_ticker(&self) {
         self.inner
@@ -788,4 +894,10 @@ impl GroupRuntime {
             .trip_ticker
             .store(true, Ordering::Relaxed);
     }
+}
+
+/// Whether a pre-vote answer comes from a member no group has reached: it
+/// holds no vote and no entry. Either one alone means a group got there.
+pub(super) fn blank(answer: &VoteResponse<ShardTypes>) -> bool {
+    answer.vote.leader_id.term == 0 && answer.last_log_id.is_none()
 }

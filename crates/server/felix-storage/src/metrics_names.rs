@@ -121,3 +121,6 @@ pub const RECOVERY_INDEX_REBUILDS_TOTAL: &str = "felix_storage_recovery_index_re
 /// Opens (or truncations) that rebuilt producer state by reading sealed
 /// segments, because the producer snapshot was missing or out of date.
 pub const PRODUCER_STATE_REBUILT_TOTAL: &str = "felix_storage_producer_state_rebuilt_total";
+
+/// Record bytes held in the tail caches of every Raft log on the broker.
+pub const RAFT_TAIL_CACHE_BYTES: &str = "felix_broker_raft_tail_cache_bytes";

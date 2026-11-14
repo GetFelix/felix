@@ -48,6 +48,7 @@ async fn lane_fanout_preserves_order_for_multiple_subscribers() -> Result<()> {
                 &IdentityLimits::unlimited(),
                 &server_lane_manager,
                 None,
+                None,
                 &out_ack_tx,
                 &out_ack_depth,
                 &ack_throttle_tx,

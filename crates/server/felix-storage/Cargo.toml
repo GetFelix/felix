@@ -24,7 +24,7 @@ sim = []
 fuzzing = []
 # `raft_log`: a `DiskLog` as an openraft log. Off for the broker library, so
 # it builds without openraft.
-raft = ["dep:openraft"]
+raft = ["dep:openraft", "dep:sha2"]
 
 [dependencies]
 bytes = { workspace = true }
@@ -38,6 +38,7 @@ metrics = { workspace = true }
 parking_lot = { workspace = true }
 object_store = { workspace = true }
 openraft = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

@@ -1,1 +1,0 @@
-A control plane built without `--cfg felix_segment_store` now refuses to start on a data directory that holds a segment store (`store/`), and so does `form-without`. It used to create an empty `raft.redb` beside it and start as a new member, so restarting every member that way formed a new group without the metadata (#2363).

@@ -88,6 +88,7 @@ pub(crate) async fn handle_subscribe_message(
     subscriptions: &Arc<IdentityLimits>,
     lane_manager: &Arc<WriterLaneManager>,
     ingress: Option<&crate::shards::routing::IngressRouter>,
+    client_endpoints: Option<&crate::cluster::client_endpoints::ClientEndpoints>,
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,
@@ -210,7 +211,13 @@ pub(crate) async fn handle_subscribe_message(
                 Ok(join) => history_only = join,
                 Err(err) => {
                     return subscribe_failed(
-                        subscribe_error_message(err),
+                        subscribe_refusal(
+                            err,
+                            ingress,
+                            client_endpoints,
+                            (&tenant_id, &namespace, &stream, shard),
+                            peer_features,
+                        ),
                         subscriptions,
                         out_ack_tx,
                         out_ack_depth,
@@ -241,7 +248,13 @@ pub(crate) async fn handle_subscribe_message(
                     Ok(subscription) => subscription,
                     Err(err) => {
                         return subscribe_failed(
-                            subscribe_error_message(err),
+                            subscribe_refusal(
+                                err,
+                                ingress,
+                                client_endpoints,
+                                (&tenant_id, &namespace, &stream, shard),
+                                peer_features,
+                            ),
                             subscriptions,
                             out_ack_tx,
                             out_ack_depth,
@@ -270,7 +283,13 @@ pub(crate) async fn handle_subscribe_message(
                     }
                     Err(err) => {
                         return subscribe_failed(
-                            subscribe_error_message(err),
+                            subscribe_refusal(
+                                err,
+                                ingress,
+                                client_endpoints,
+                                (&tenant_id, &namespace, &stream, shard),
+                                peer_features,
+                            ),
                             subscriptions,
                             out_ack_tx,
                             out_ack_depth,
@@ -733,6 +752,34 @@ pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message
             ClientError::from_broker(&other, message).into_message()
         }
     }
+}
+
+/// [`subscribe_error_message`], except for a resume offset this broker's log
+/// has not reached on a shard it serves as a follower. The offset came from
+/// a broker that is ahead, so the answer is a redirect to the leader, not
+/// "in the future".
+fn subscribe_refusal(
+    err: felix_broker::BrokerError,
+    ingress: Option<&crate::shards::routing::IngressRouter>,
+    client_endpoints: Option<&crate::cluster::client_endpoints::ClientEndpoints>,
+    (tenant_id, namespace, stream, shard): (&str, &str, &str, u32),
+    peer_features: u32,
+) -> Message {
+    if matches!(err, felix_broker::BrokerError::CursorInFuture { .. }) {
+        let key = crate::shards::ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            kind: crate::shards::ShardKind::Stream,
+        };
+        if let Some(redirect) =
+            super::redirect::to_leader_from_follower(ingress, client_endpoints, &key, peer_features)
+        {
+            return redirect;
+        }
+    }
+    subscribe_error_message(err)
 }
 
 /// Report a failed subscribe on the control stream and keep the stream alive.
