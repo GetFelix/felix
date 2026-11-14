@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794636605177,
+  "lastUpdate": 1794640863543,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55692,6 +55692,58 @@ window.BENCHMARK_DATA = {
             "range": "6736.81",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1222895.45\nmean: 1222642.27\nstdev: 6736.81\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9b180931f6320f0167fff75d146e84a7bfb932da",
+          "message": "fix(broker): judge a groupless directory before a new group's catalog is applied (#2438) (#2508)\n\nUnder the controlplane_group_none mark, the catalog guard expects no group, and a start from the view runs admit against /v1/cluster/identity before the first apply, waiting through the 503 while a Raft group's identity is pending. admit deletes the mark on Adopt. Follow-up to #2504.",
+          "timestamp": "2026-11-14T07:15:08Z",
+          "tree_id": "e5a413cd9b2250502f23691af535219610ca82e8",
+          "url": "https://github.com/GetFelix/felix/commit/9b180931f6320f0167fff75d146e84a7bfb932da"
+        },
+        "date": 1794640862850,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 709810.21,
+            "range": "24656.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 709810.21\nmean: 700608.91\nstdev: 24656.75\ncv: 3.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 709810.21,
+            "range": "24656.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 709810.21\nmean: 700608.91\nstdev: 24656.75\ncv: 3.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 161556.13,
+            "range": "762.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 161556.13\nmean: 161501.05\nstdev: 762.62\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1615561.29,
+            "range": "7626.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1615561.29\nmean: 1615010.55\nstdev: 7626.20\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
