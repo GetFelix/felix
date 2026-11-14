@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794641190614,
+  "lastUpdate": 1794641469577,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70818,6 +70818,72 @@ window.BENCHMARK_DATA = {
             "range": "746.08",
             "unit": "us",
             "extra": "trials: 5\nmedian: 480.00\nmean: 847.20\nstdev: 746.08\ncv: 88.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b826c2aae43236192e647b244c19f05816aab23",
+          "message": "feat(storage): one budget for a broker's Raft tail caches (#2339) (#2519)\n\n## Summary\nThe Raft log adapter kept up to 4 MiB of newest records per log, so thousands of groups on one broker could hold gigabytes, and an idle group kept its cache until its next append. All the Raft logs of a broker now share one `TailBudget` (256 MiB by default), with the 4 MiB per-log cap kept. A new gauge, `felix_broker_raft_tail_cache_bytes`, reports the bytes held.\nHow it works:",
+          "timestamp": "2026-11-14T07:26:02Z",
+          "tree_id": "1762db7f40439a97a48a992466786264c18da040",
+          "url": "https://github.com/GetFelix/felix/commit/1b826c2aae43236192e647b244c19f05816aab23"
+        },
+        "date": 1794641461074,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 68.80\nstdev: 0.84\ncv: 1.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 121,
+            "range": "12.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 121.00\nmean: 125.40\nstdev: 12.12\ncv: 9.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 152,
+            "range": "262.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 291.20\nstdev: 262.05\ncv: 89.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.60\nstdev: 0.89\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 187,
+            "range": "5.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 186.60\nstdev: 5.03\ncv: 2.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 333,
+            "range": "75.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 333.00\nmean: 340.00\nstdev: 75.15\ncv: 22.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
