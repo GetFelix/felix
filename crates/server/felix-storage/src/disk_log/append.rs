@@ -687,6 +687,15 @@ impl LogInner {
             .store(RollState::Failed as u8, Ordering::Release);
     }
 
+    /// Poison after a failed flush. Idempotent like [`Self::poison`].
+    pub(super) fn record_flush_failure(&self, had_pending_seal: bool, err: &StorageError) {
+        if had_pending_seal {
+            self.record_roll_failure(err);
+        } else {
+            self.poison(format!("a flush failed ({err})"));
+        }
+    }
+
     /// Stop the log for good.
     ///
     /// Idempotent and first-writer-wins: the first failure is the interesting

@@ -109,27 +109,34 @@ impl LogInner {
                 let marker = Arc::clone(&self);
                 self.flusher
                     .run(move || {
-                        // The retired segment first, for the same reason.
-                        if let Some(retired) = retired {
-                            sync_data(&retired)?;
+                        let synced = (|| {
+                            // The retired segment first, for the same reason.
+                            if let Some(retired) = retired {
+                                sync_data(&retired)?;
+                            }
+                            sync_data(&handle)?;
+                            injected_failure()
+                        })();
+                        match synced {
+                            // On this thread too: the mark is a write, and a
+                            // write waits on a busy filesystem journal like a
+                            // sync does.
+                            Ok(()) => marker.note_synced_since(segment_id, synced_bytes, rewinds),
+                            // Here rather than in the caller, which may have
+                            // stopped waiting: the failure must poison anyway.
+                            Err(ref err) => marker.record_flush_failure(
+                                had_pending_seal,
+                                &StorageError::SyncFailed(err.to_string()),
+                            ),
                         }
-                        sync_data(&handle)?;
-                        injected_failure()?;
-                        // On this thread too: the mark is a write, and a write
-                        // waits on a busy filesystem journal like a sync does.
-                        marker.note_synced_since(segment_id, synced_bytes, rewinds);
-                        Ok(())
+                        synced
                     })
                     .await
             }
         };
         if let Err(err) = outcome {
             let err = StorageError::SyncFailed(err.to_string());
-            if had_pending_seal {
-                self.record_roll_failure(&err);
-            } else {
-                self.poison(format!("a flush failed ({err})"));
-            }
+            self.record_flush_failure(had_pending_seal, &err);
             return Err(err);
         }
 

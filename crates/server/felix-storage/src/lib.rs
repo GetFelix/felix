@@ -33,7 +33,8 @@
 //! - `shard_slots`: the per-shard open and close every store above shares.
 //!   `legacy_swap` settles, before that open, a compaction swap an older build
 //!   left half done. `incarnation` picks which incarnation of a stream a store
-//!   opens, and retires a deleted one's directories.
+//!   opens, retires a deleted one's directories, and measures the shard
+//!   directories a Raft rotation kept aside.
 //! - [`storage_identity`]: the random id a data directory keeps, so peers can
 //!   tell a restarted disk from a wiped one. [`run_state`] gives it a new one
 //!   when a crash may have lost what it acknowledged. [`controlplane_view`]
