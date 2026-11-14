@@ -2345,11 +2345,13 @@ or fails on it.
 
 The `Raft idle groups` workflow (`.github/workflows/raft-idle.yml`) runs
 the measurement every night and on demand, and puts the numbers in the run's
-summary. It runs twice: 5,000 groups led by one runtime whose peers are
-stubs, the worst case for one broker, and three runtimes in one process
-joined by the real peer transport on loopback (`RAFT_IDLE_PEERS=transport`),
-so the figure includes framing, QUIC and the listener. Until idle groups
-sleep, both report what ticking every group costs; nothing waits on them.
+summary. It runs the idle measurement twice: 5,000 groups led by one runtime
+whose peers are stubs, the worst case for one broker, and three runtimes in
+one process joined by the real peer transport on loopback
+(`RAFT_IDLE_PEERS=transport`), so the figure includes framing, QUIC and the
+listener. Until idle groups sleep, both report what ticking every group
+costs; nothing waits on them. A third step, the write burst, is described
+with the memory figures below.
 
 Idle memory fits, with openraft at `30c947ef38` (openraft#2313 and openraft#2314).
 The design assumed 180 KB per leader member and 145 KB per follower. The
@@ -2359,8 +2361,18 @@ that openraft reserves in a large buffer and does not touch while idle
 (#2415). The same three-runtime run, 1,500 members per broker, holds
 222 MB resident per broker, 17 MB of it the logs alone, and does not grow:
 217 MB ten minutes earlier. That is about 137 KB per member,
-and 5,000 members at 142 KB are about 0.7 GB. The loaded run, with publishers
-writing, is not measured yet (#2415).
+and 5,000 members at 142 KB are about 0.7 GB.
+
+What a member keeps after it was busy is measured by the workflow's write
+burst step (`RAFT_IDLE_BURST_SECS`, #2415): 300 groups on three runtimes over
+the real peer transport take pipelined writes for 120 s, then go idle. The
+run reports resident memory per broker at the end of the burst and again
+after a settle delay of 25 s (`idle_after` plus 20 s), and the difference
+from before the burst per member. These are resident set sizes, not live
+heap: pages the allocator has freed and not handed back to the system still
+count, so the figure can sit above what the members hold. It is a report
+with no bound on it, and no figure is quoted here until the nightly run has
+produced one. Memory while publishers are writing is not measured.
 
 The earlier pin measured 414 KB of live heap per member and 1.4 MB
 reserved, and the same run grew from 233 MB to 313 MB resident in ten
