@@ -128,6 +128,7 @@ async fn cache_build() {
                 let command = Command {
                     timestamp_micros: index * 10,
                     payload: command(index, keys).encode(),
+                    producer: None,
                     written: None,
                 };
                 let id = LogIdOf::<ShardTypes>::new(1.into(), index);
