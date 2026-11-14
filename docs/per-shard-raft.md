@@ -1287,6 +1287,7 @@ own role is read as well.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_leader_opens_only_once_its_blank_entry_commits`,
+> `leaders_that_commit_nothing_open_nothing`,
 > `a_write_whose_index_commits_under_another_term_is_refused`,
 > `a_transfer_about_to_start_closes_the_shard`,
 > `a_term_closed_before_it_opened_is_not_waited_on`,
