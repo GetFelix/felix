@@ -2376,6 +2376,28 @@ one-broker-killed run stays under the limit, which may be below 5,000. It
 is not set to the gate size because the gate names it. Placement answers
 `at_capacity` past it.
 
+### Open files
+
+A Raft member opens no file of its own. The count is the log's: five
+files per held shard (the active segment three times, its index and the
+durable mark), the same with or without Raft, and none for a sealed
+segment. Votes and replica state are written to a temporary file, renamed
+and closed. `crates/server/felix-replication/tests/raft_open_files.rs`
+measures it on 120 idle members and fails if a member holds more than
+`felix_storage::log::FDS_PER_SHARD_LOG`.
+
+So 1,500 members are 7,500 open files and 5,000 are 25,000, against the
+soft limit of 1,024 a process usually starts with (issue #2351). That
+limit is under 200 shards, on the hybrid as well. The broker now raises
+its soft limit to the hard limit at start, which is 524,288 under systemd
+and that or more in most container runtimes, and warns when the result
+holds fewer than 2,000 shards. `felix_broker_open_file_limit` reports it. The
+operator's side is on the site, under Production, "Open files".
+
+Closing the files of idle shards was priced and not built: it would put
+an open on the first write after idle, and the default hard limits
+already hold about 100,000 shards.
+
 ## Pull request split
 
 Each pull request is safe to merge on its own. Until the gate passes, the

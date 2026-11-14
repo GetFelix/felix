@@ -125,6 +125,29 @@ in [Benchmarks](/features/benchmarks/) and
 hardware bands in [Performance](/features/performance/#sizing-guidelines) are
 labelled illustrative there and are starting points, not ceilings.
 
+### Open files
+
+A broker keeps five files open for every shard it holds, as leader or
+follower: the active segment, its index and a small state file. Sealed
+segments are opened only while they are read. So 2,000 shards on a broker
+are 10,000 open files, plus a few hundred for sockets and reads.
+
+Most systems start a process with a soft limit of 1,024 open files and a
+much higher hard limit. The broker raises its soft limit to the hard limit
+when it starts, so the hard limit is the one to set:
+
+| Where | Setting | Usual default |
+| --- | --- | --- |
+| systemd unit | `LimitNOFILE=1048576` | 524,288 |
+| Docker or Podman Compose | `ulimits.nofile.hard` ([example](/deployment/docker-compose/#resource-limits)) | the daemon's, usually 524,288 or more |
+| Kubernetes | the container runtime's limit; nothing to set in the chart | usually 524,288 or more |
+| A shell | `ulimit -Hn` before starting the broker | varies |
+
+`felix_broker_open_file_limit` reports the limit the broker ended up with.
+(limit - 512) / 5 is about how many shards fit under it. A broker whose
+limit holds fewer than 2,000 shards logs a warning at start with that
+number. Past it, opening a shard fails with "Too many open files".
+
 ## Choosing durability
 
 Four settings decide what an acknowledged publish survives: the stream's

@@ -293,6 +293,12 @@ pub struct LogRecord {
     pub generation: Option<u64>,
 }
 
+/// The files a shard's log keeps open while it is not being read: the active
+/// segment three times, its index, and the durable mark. Sealed segments
+/// hold none, and a Raft member adds none. The broker's open-file check
+/// counts this for each shard.
+pub const FDS_PER_SHARD_LOG: usize = 5;
+
 /// The generation a v9 segment stamps on a record whose writer nobody knows:
 /// one a sender held in an older segment, where no generation was kept. It
 /// is never compared: it neither raises nor breaks the floor. Generation 0 is

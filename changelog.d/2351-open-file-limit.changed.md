@@ -1,0 +1,1 @@
+The broker raises its soft open-file limit to the hard limit at start. Each held shard keeps five files open, so the usual soft limit of 1,024 stopped a broker near 200 shards with "Too many open files". A broker whose limit holds fewer than 2,000 shards logs a warning with the number it does hold, and the new gauge `felix_broker_open_file_limit` reports the limit (#2351).

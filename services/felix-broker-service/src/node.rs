@@ -27,6 +27,7 @@ mod handoff;
 mod identity;
 mod listeners;
 mod membership;
+pub mod open_files;
 pub(crate) mod peer_dispatch;
 mod shutdown;
 #[cfg(feature = "sim")]
@@ -78,6 +79,8 @@ where
     // Configuration is resolved from environment variables (and optionally a YAML file).
     // Keep this early so the remainder of startup is entirely driven by `config`.
     let config = config::BrokerConfig::from_env_or_yaml()?;
+    // Before storage opens: every held shard keeps files open.
+    open_files::raise_limit();
     // Before any control-plane client exists: they are all built trusting it.
     controlplane_http::trust_ca(config.controlplane_ca.as_deref())?;
     // Size the QUIC I/O runtime pool before ANY endpoint is built: the pool is
