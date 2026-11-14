@@ -827,7 +827,7 @@ used by every shard group and by the control plane, tested once.
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
 `[workspace.dependencies]` pins one commit of openraft's main branch,
-`5c3ad1bc2d` (2026-11-14), past the 0.10.0 tag, for changes that ship
+`a8d0092bc8` (2026-11-14), past the 0.10.0 tag, for changes that ship
 in 0.10.1. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
 "One timer for every group"). openraft#2313 (issue #2312) resets a drained
 queue to its start, so an idle member stops touching every page of its
@@ -840,7 +840,13 @@ jepsen test app, `7628ad401a` (cancellable runtime futures, additive),
 `3b1f7fa446` (the read state keeps the no-op and committed log ids
 separately), `e2986754ef` (`expected_leader` moves into a `WriteOption`, and
 `client_write_many` sends `WriteOption::default()`), and the responder queue
-change `5c3ad1bc2d`. The read path
+change `5c3ad1bc2d`. From `5c3ad1bc2d` to `a8d0092bc8` there are four more:
+a CI-only change, `b3d8c1b6b2` (the `Raft::write()` builder returns an
+unboxed future; callers that only await it are unchanged), `5457dc5a62`
+(`Raft::write_many()`, additive), and `a8d0092bc8`, which adds a
+`WriteOption` argument to `client_write_many` (openraft#2321). Felix passes
+`WriteOption::default()`, the previous behaviour, so untermed batches are
+admitted as before. The read path
 (`get_read_log_id` still returns the larger of the no-op and committed ids)
 and the term-bound write path (`raft/propose.rs`, `with_leader`) behave
 the same for Felix. The pin as a whole also carries a `#[non_exhaustive]` on some name enums,

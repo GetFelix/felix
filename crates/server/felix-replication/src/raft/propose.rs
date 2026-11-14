@@ -18,7 +18,7 @@ use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
 use openraft::impls::ProgressResponder;
-use openraft::raft::WriteResult;
+use openraft::raft::{WriteOption, WriteResult};
 use openraft::{Raft, ServerState};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
@@ -540,7 +540,9 @@ pub(super) async fn write(
 ) -> Result<BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>, Fatal<ShardTypes>>
 {
     let Some(term) = term else {
-        return raft.client_write_many(commands).await;
+        return raft
+            .client_write_many(commands, WriteOption::default())
+            .await;
     };
     let mut answers = Vec::with_capacity(commands.len());
     for command in commands {
