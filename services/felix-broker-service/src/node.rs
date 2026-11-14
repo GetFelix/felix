@@ -253,8 +253,9 @@ where
     };
     // Before storage opens, and before anything is written under a group:
     // the directory is refused, or recorded, on what the control plane says.
-    // A start from the view could not ask; `qualify` required a record, and
-    // the catalog sync compares it with the snapshots.
+    // A start from the view could not ask; `qualify` required a record, or
+    // one saying the control plane had no group, and the catalog sync
+    // compares a record with the snapshots.
     let group_refused = CancellationToken::new();
     let group = match (&durable_root, &config.controlplane_url, &view) {
         (Some(root), _, Some(_)) => crate::cluster::controlplane_group::read(root)?,

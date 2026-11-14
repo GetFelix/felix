@@ -1,0 +1,1 @@
+A broker with `FELIX_START_WITHOUT_CONTROLPLANE` on started from its control-plane view again when the control plane has no metadata group (the in-memory backend). The group check refused every such start because there was no group to record; a start that finds no group now records that it asked (`controlplane_group_none`), which is enough to start from the view later (#2438).

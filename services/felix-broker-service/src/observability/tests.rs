@@ -310,8 +310,11 @@ fn a_poisoned_log_makes_the_broker_not_ready() {
     use axum::http::StatusCode;
     use felix_storage::disk_log::PoisonedLog;
 
-    assert_eq!(ready_status(&[], true).0, StatusCode::OK);
-    assert_eq!(ready_status(&[], false).0, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(ready_status(&[], &[], true).0, StatusCode::OK);
+    assert_eq!(
+        ready_status(&[], &[], false).0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
 
     let poisoned = [
         PoisonedLog {
@@ -326,13 +329,33 @@ fn a_poisoned_log_makes_the_broker_not_ready() {
     // Whether or not it is otherwise ready, and it names each log's tenant
     // with its own cause, but not the namespace or stream.
     for ready in [true, false] {
-        let (status, body) = ready_status(&poisoned, ready);
+        let (status, body) = ready_status(&poisoned, &[], ready);
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             body,
             "a log of tenant t is poisoned: a flush of <shard> failed (EIO)\n\
              a log of tenant t is poisoned: a truncation or reset failed: no space\n\
-             reboot the host before restarting the broker; the broker log names each shard"
+             reboot the host before restarting the broker; the broker log has the details"
+        );
+    }
+}
+
+#[test]
+fn a_failed_node_record_makes_the_broker_not_ready() {
+    use axum::http::StatusCode;
+    use felix_storage::run_state::FailedRecord;
+
+    let failed = [FailedRecord {
+        record: "copy-trust".to_string(),
+        reason: "durability sync failed: EIO".to_string(),
+    }];
+    for ready in [true, false] {
+        let (status, body) = ready_status(&[], &failed, ready);
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            body,
+            "a sync of the node record copy-trust failed: durability sync failed: EIO\n\
+             reboot the host before restarting the broker; the broker log has the details"
         );
     }
 }

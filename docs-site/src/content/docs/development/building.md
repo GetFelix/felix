@@ -97,6 +97,10 @@ would hide. The workspace lints (`unreachable_pub`, clippy's
 runs `cargo fmt -- --check`, and the pre-push hook runs `task lint`. Neither runs
 tests.
 
+To lint somewhere else before a push, set `FELIX_PRE_PUSH` to a command that
+exits non-zero when lint fails, for example one that runs `task lint` on a build
+machine. The hook runs that command instead of `task lint`.
+
 ## Coverage
 
 ```bash
