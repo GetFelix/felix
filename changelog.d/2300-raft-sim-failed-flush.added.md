@@ -1,0 +1,1 @@
+- The Raft group simulation can fail one member's flush (`RaftSimConfig::failed_flush`, #2300). The copy whose log it poisoned stops, and the run checks that its group elects another leader, that nothing acknowledged is lost and that the member's other shards keep serving.

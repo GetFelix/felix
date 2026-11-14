@@ -617,6 +617,23 @@ What a seed checks:
 A seed also fails when it checked too little: no leader change, or fewer
 than 500 live deliveries, 1000 acknowledged writes, 200 reads or 4 faults.
 
+**A failed flush.** A run can also fail one flush on one member
+(`RaftSimConfig::failed_flush`), half the time on a shard's leader. The log
+that flush was for is poisoned (`docs/durable-storage.md`, "A failed fsync
+poisons the log"), and that member's copy of one shard stops for the rest of
+the run, since no member restarts. The run then also checks that:
+
+- the stopped copy's group reports that it stopped, and the member no longer
+  has the shard open;
+- every shard still gets a leader that acknowledges a write, so a group whose
+  leader stopped elected another;
+- the member's copies of the other shards serve the same records as everyone
+  else. The stopped copy is left out of that comparison.
+
+`a_failed_flush_stops_one_copy_and_the_group_carries_on` runs three seeds
+this way. The stopped member coming back needs a restart, which the run does
+not have yet (issue #2300).
+
 `FELIX_SIM_CLOCKS=bounded` gives each member timers that run at its own rate,
 0.8x to 1.2x. The engine reads no clock except its timers, so this is all that
 clock skew can do to it. Without the variable the timers agree.

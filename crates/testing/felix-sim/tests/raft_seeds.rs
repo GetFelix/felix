@@ -108,6 +108,29 @@ fn a_run_past_its_virtual_bound_ends_with_a_finding() {
     assert!(outcome.history.acknowledged() > 100);
 }
 
+/// One member's flush fails while the faults run. The copy whose log it
+/// poisoned stops, every shard still gets a leader that acknowledges a
+/// write, nothing acknowledged is lost, and the member's other copy serves.
+#[test]
+fn a_failed_flush_stops_one_copy_and_the_group_carries_on() {
+    for seed in [1, 2, 3] {
+        let config = RaftSimConfig {
+            failed_flush: true,
+            ..RaftSimConfig::default()
+        };
+        let outcome = run_seed(seed, config);
+        println!("{outcome}");
+        assert!(outcome.passed(), "{}", outcome.first_failure());
+        let stopped: Vec<_> = outcome
+            .history
+            .faults
+            .iter()
+            .filter(|fault| fault.what.contains("a failed flush stopped"))
+            .collect();
+        assert_eq!(stopped.len(), 1, "one copy stops: {stopped:?}");
+    }
+}
+
 fn clocks() -> Clocks {
     match std::env::var("FELIX_SIM_CLOCKS").as_deref() {
         Ok("bounded") => Clocks::Bounded,
