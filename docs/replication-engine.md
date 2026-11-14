@@ -597,6 +597,27 @@ A stream shard sends no snapshot body at all. Its state is its log, so a
 member that is behind is sent entries or copied segments
 ([per-shard Raft](per-shard-raft.md), "Group runtime").
 
+A cache shard's snapshot is its whole state, which each member already
+holds in memory, so it is not staged in a file. It goes over the broker
+transport as snapshot messages, one piece each, and follows the same rules
+in its own way (`raft/install.rs`):
+
+- **Cap.** Every piece names the whole snapshot's size. One over 1 GiB is
+  refused at its first piece.
+- **One install.** A member holds one incoming snapshot. A first piece
+  replaces what is held when its sender's vote is the same or newer, and is
+  refused otherwise. A piece that does not follow the last one kept is
+  refused, and the sender starts again.
+- **Stale sender.** A sender the member has outvoted is answered with the
+  member's vote before any of its data is kept, and stops sending.
+- **Idle.** Pieces held for 30 s with no next piece are dropped.
+- **Unreadable.** At the last piece the member reads the whole snapshot,
+  on a blocking thread, before openraft is handed it. One it cannot read,
+  such as a newer build's format, is refused and the member stays behind
+  but running. openraft would treat the failed restore as a storage error
+  and stop the member. The state read here is what the install puts in
+  place, so the snapshot is parsed once.
+
 **The body.** A form byte, the head's length, the data's length, the head,
 the data, then a crc32 of the data:
 

@@ -937,7 +937,7 @@ async fn a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused() {
     let runtime = led.cluster.runtime(&led.leader.broker);
     let member = runtime.group(&shard(0)).expect("group");
 
-    member.stall_apply(true);
+    let held = Arc::clone(&member.apply_hold).lock_owned().await;
     let published = publish_on_lease(&led, &broker, &handle, Bytes::from_static(b"answered"));
     let offset = led.committed + 1;
     let outcome = published.await.expect("joined").expect("on the lease");
@@ -954,7 +954,7 @@ async fn a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused() {
         "a read confirmed below an answered write: {confirmed:?}, bound {bound}"
     );
 
-    member.stall_apply(false);
+    drop(held);
     let confirmed = led.engine.confirm_read(&shard(0), term).await;
     assert_eq!(confirmed, Ok(()));
     assert!(led.engine.read_bound(&shard(0)).expect("bound") > offset);
