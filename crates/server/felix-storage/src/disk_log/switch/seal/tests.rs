@@ -779,6 +779,11 @@ async fn retention_holds_while_a_promise_does() {
     let payloads: Vec<String> = (0..24).map(|i| format!("record-{i:02}")).collect();
     let payloads: Vec<&str> = payloads.iter().map(String::as_str).collect();
     let copy = Copy::with(root.path(), config, 0, &payloads).await;
+    // Only the seal holds this log.
+    copy.log
+        .hold_retention_at_commit(false)
+        .await
+        .expect("no commit hold");
     copy.promise(SEAL, sealer()).await;
     let outcome = copy.log.enforce_retention_now().await.expect("retention");
     assert_eq!(outcome.segments_deleted, 0);
