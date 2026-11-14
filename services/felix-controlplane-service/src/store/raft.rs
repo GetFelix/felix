@@ -1079,7 +1079,12 @@ impl ControlPlaneStore for RaftStore {
         .await
     }
 
-    async fn give_up_seal(&self, key: &ShardKey, generation: u64) -> StoreResult<AssignmentWrite> {
+    async fn give_up_seal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite> {
         self.propose_switch(MetaCommand::GiveUpSeal {
             key: key.clone(),
             generation,
