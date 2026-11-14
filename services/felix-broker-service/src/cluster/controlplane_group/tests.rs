@@ -175,13 +175,38 @@ fn an_upgraded_group_still_refuses_another_groups_record() {
 }
 
 #[test]
-fn a_control_plane_without_a_group_stores_nothing() {
+fn a_control_plane_without_a_group_stores_no_group_but_records_the_check() {
     let dir = used();
+    assert!(!checked_without_group(dir.path()));
     assert_eq!(
         admit(dir.path(), &identity(None, "hybrid")).expect("admit"),
         None
     );
     assert_eq!(read(dir.path()).expect("read"), None);
+    assert!(checked_without_group(dir.path()));
+}
+
+#[test]
+fn a_directory_with_a_record_is_not_marked_groupless() {
+    let dir = used();
+    write(dir.path(), "g-1").expect("write");
+    admit(dir.path(), &identity(None, "hybrid")).expect("admit");
+    assert!(!checked_without_group(dir.path()));
+}
+
+/// The mark is not data: a group formed later on an empty catalog still
+/// adopts a directory that only ever held the mark.
+#[test]
+fn the_no_group_mark_is_not_data() {
+    let dir = tempfile::tempdir().expect("dir");
+    admit(dir.path(), &identity(None, "hybrid")).expect("admit");
+    assert!(!holds_data(dir.path()));
+    assert_eq!(
+        admit(dir.path(), &identity(Some("g-1"), "hybrid"))
+            .expect("admit")
+            .as_deref(),
+        Some("g-1")
+    );
 }
 
 #[test]

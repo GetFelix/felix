@@ -36,6 +36,9 @@ pub(super) struct Storage {
     /// The durable root and the storage id this run announced; `None`
     /// without durable storage.
     pub(super) run: Option<(PathBuf, StorageId)>,
+    /// Whoever runs the shards the hybrid does not. Its members write logs
+    /// the storage provider never opened, so they stop before the flush.
+    pub(super) engine_shards: Option<Arc<dyn crate::shards::routing::EngineShards>>,
 }
 
 /// Everything a running node has to stop, in the fields the drain reads.
@@ -392,6 +395,11 @@ impl Running {
             }
         }
 
+        if let Some(engine_shards) = &storage.engine_shards {
+            budget
+                .drain("engine_shards_stop", engine_shards.shutdown())
+                .await;
+        }
         // Step 3b: flush every store while the drain deadline still applies.
         // Publishes have stopped by now, so this is the last chance to push
         // page-cache bytes to the device — under `Periodic` it is the difference

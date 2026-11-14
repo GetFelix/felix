@@ -541,6 +541,12 @@ hold:
 6. This build reports every feature the view's fleet finalized. That is the
    check the control plane makes when a broker registers: a build rolled back,
    or started with `FELIX_INTERNAL_ELECTION` off, would be refused.
+7. A start that asked the control plane checked the directory against it:
+   the directory records the control plane's metadata group
+   (`controlplane_group`), or, for a backend with no group such as the
+   in-memory one, that it had none (`controlplane_group_none`). A directory
+   never checked, such as one from before the check existed, cannot tell a
+   recreated control plane, so it waits. See "Cluster identity" below.
 
 Otherwise it waits for the control plane, as without the switch. A 401,
 another 4xx, or an answer that does not decode is a control plane that is
@@ -553,7 +559,7 @@ started this way votes only if it comes back at its registered address.
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
     A -- "up but refusing or unreadable" --> W["Wait for the control plane"]
-    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, run witness,<br/>replica_election, every feature reported?"}
+    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, run witness,<br/>replica_election, every feature reported, group checked?"}
     Q -- "no" --> W
     Q -- "yes" --> O["Open storage"]
     O -- "the run rotated the storage id" --> W

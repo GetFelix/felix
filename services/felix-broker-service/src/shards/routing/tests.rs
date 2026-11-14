@@ -430,6 +430,7 @@ mod feed {
                 prefetch: None,
                 elections: None,
                 nodes: HashMap::default(),
+                engine_shards: None,
             },
             router,
         )
@@ -463,6 +464,107 @@ mod feed {
             matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
         })
         .await;
+
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
+    /// Takes shard 1 and records that it did.
+    #[derive(Default)]
+    struct TakesShardOne {
+        taken: std::sync::Mutex<Vec<ShardAssignment>>,
+    }
+
+    impl EngineShards for TakesShardOne {
+        fn take<'a>(
+            &'a self,
+            assignments: &'a mut HashMap<ShardKey, ShardAssignment>,
+        ) -> std::pin::Pin<Box<dyn Future<Output = Taken> + Send + 'a>> {
+            Box::pin(async move {
+                let Some(assignment) = assignments.remove(&key(1)) else {
+                    return Taken::new();
+                };
+                let taken = vec![(assignment.key.clone(), assignment.routing)];
+                *self.taken.lock().expect("lock") = vec![assignment];
+                taken
+            })
+        }
+
+        fn dispatch(
+            &self,
+            _key: &ShardKey,
+            _nodes: &dyn Fn(&str) -> Option<std::net::SocketAddr>,
+        ) -> Option<Dispatch> {
+            None
+        }
+    }
+
+    /// **A shard another engine took is never opened or routed by the
+    /// hybrid**, or one shard would have two engines writing it.
+    #[tokio::test]
+    async fn a_shard_another_engine_took_is_left_alone() {
+        let (mut state, _router) =
+            state(&[assignment(0, "broker-a", 1), assignment(1, "broker-a", 1)]);
+        let engine = Arc::new(TakesShardOne::default());
+        state.engine_shards = Some(Arc::clone(&engine) as Arc<dyn EngineShards>);
+        let ingress = Arc::clone(&state.ingress);
+        let lifecycle = Arc::clone(&state.lifecycle);
+        let shutdown = CancellationToken::new();
+
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
+        // Shard 0 is opened in the same pass, after the take.
+        until("the hybrid's shard to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
+        })
+        .await;
+        assert_eq!(engine.taken.lock().expect("lock").len(), 1);
+        assert!(!matches!(ingress.dispatch(&key(1)), Dispatch::Local { .. }));
+        let lifecycle = lifecycle.lock().await;
+        assert!(lifecycle.generation(&key(0)).is_some());
+        assert!(lifecycle.generation(&key(1)).is_none());
+        drop(lifecycle);
+
+        shutdown.cancel();
+        let _ = feed.await;
+    }
+
+    /// **A stream another engine runs keeps its width and key mapping in
+    /// the routes, and gets no route.** Every broker answers a client's
+    /// width question and maps keys from the table, so a stream missing
+    /// from it has width 0 to clients and all its keys on shard 0.
+    #[tokio::test]
+    async fn a_stream_another_engine_runs_keeps_its_width_and_key_mapping() {
+        let (mut state, _router) =
+            state(&[assignment(0, "broker-a", 1), assignment(1, "broker-a", 1)]);
+        let engine = Arc::new(TakesShardOne::default());
+        state.engine_shards = Some(Arc::clone(&engine) as Arc<dyn EngineShards>);
+        let ingress = Arc::clone(&state.ingress);
+        let shutdown = CancellationToken::new();
+
+        let feed = spawn_feed(
+            state,
+            no_catalog(),
+            Duration::from_millis(20),
+            shutdown.clone(),
+        );
+        until("the hybrid's shard to be served locally", || {
+            matches!(ingress.dispatch(&key(0)), Dispatch::Local { .. })
+        })
+        .await;
+
+        let stream = crate::shards::ShardKind::Stream;
+        let placement = ingress.placement_for(stream, "t1", "ns", "orders");
+        assert_eq!(placement.map(|placement| placement.shards), Some(2));
+        let mapped: std::collections::BTreeSet<u32> = (0..64u8)
+            .map(|k| ingress.shard_for_key(stream, "t1", "ns", "orders", Some(&[k])))
+            .collect();
+        assert_eq!(mapped, [0, 1].into());
+        assert!(ingress.route(&key(1)).is_none());
 
         shutdown.cancel();
         let _ = feed.await;

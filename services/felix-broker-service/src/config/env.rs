@@ -660,3 +660,55 @@ pub(crate) fn quorum_reads_by_lease() -> Result<bool> {
         }
     }
 }
+
+/// Which engine replicates this broker's durable stream shards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ShardEngine {
+    Hybrid,
+    Raft,
+}
+
+/// `FELIX_SHARD_ENGINE`: `hybrid` (the default) or `raft`. Every broker of a
+/// cluster must say the same; see `docs/per-shard-raft.md`.
+pub(crate) fn shard_engine() -> Result<ShardEngine> {
+    parse_shard_engine(std::env::var("FELIX_SHARD_ENGINE").ok().as_deref())
+}
+
+pub(crate) fn parse_shard_engine(value: Option<&str>) -> Result<ShardEngine> {
+    match value
+        .map(|value| value.trim().to_ascii_lowercase())
+        .as_deref()
+    {
+        None | Some("" | "hybrid") => Ok(ShardEngine::Hybrid),
+        Some("raft") => Ok(ShardEngine::Raft),
+        Some(other) => anyhow::bail!("FELIX_SHARD_ENGINE must be hybrid or raft, not {other:?}"),
+    }
+}
+
+/// What a broker asked to run Raft shards has, of what they need.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RaftPrerequisites {
+    /// Built with the `raft` cargo feature.
+    pub(crate) compiled: bool,
+    pub(crate) membership: bool,
+    pub(crate) peer_transport: bool,
+    pub(crate) durable_storage: bool,
+}
+
+impl RaftPrerequisites {
+    /// Why this broker cannot run Raft shards, if it cannot. Starting as a
+    /// hybrid broker instead would put two engines on one shard.
+    pub(crate) fn missing(&self) -> Option<&'static str> {
+        if !self.compiled {
+            Some("this build has no Raft engine (cargo feature `raft`)")
+        } else if !self.membership {
+            Some("it needs a cluster identity (FELIX_NODE_ID)")
+        } else if !self.peer_transport {
+            Some("it needs the broker-internal listener (FELIX_INTERNAL_BIND)")
+        } else if !self.durable_storage {
+            Some("it needs durable storage (FELIX_DURABLE_STORAGE_DIR)")
+        } else {
+            None
+        }
+    }
+}

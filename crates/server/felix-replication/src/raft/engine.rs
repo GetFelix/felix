@@ -1,18 +1,18 @@
-//! The Raft engine as the publish and read paths see it. Nothing routes a
-//! shard here yet. See `docs/per-shard-raft.md`, "Writing through openraft"
+//! The Raft engine as the publish and read paths see it. The broker's
+//! `StreamEngine` (`felix-broker-service`, `shards/engine.rs`) sends a
+//! shard's writes and reads here when this broker holds a member. See `docs/per-shard-raft.md`, "Writing through openraft"
 //! and "Write fence, leases and read bound under Raft".
 
 use std::future::Future;
 use std::time::Duration;
 
-use super::propose::{self, AckAt, Batch};
+use super::propose::{self, AckAt, Batch, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
 use crate::engine::{CommitError, Written};
 use crate::quorum::Unreadable;
 
 const NO_GROUP: &str = "this broker holds no group for the shard";
-const NO_LEASE: &str = "a Raft shard acknowledges nothing on its own log yet";
 
 /// Writes to the Raft shards a [`GroupRuntime`] holds.
 ///
@@ -49,6 +49,17 @@ impl RaftEngine {
         shard: &ShardKey,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        let proposed = self.propose_reaching(shard, batch);
+        async move { proposed.await.map_err(|unacked| unacked.error) }
+    }
+
+    /// [`Self::propose`], and on an error how far the batch is known to be
+    /// written.
+    pub(crate) fn propose_reaching(
+        &self,
+        shard: &ShardKey,
+        batch: Batch,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let proposed = self
             .runtime
             .group(shard)
@@ -57,11 +68,41 @@ impl RaftEngine {
         async move { proposed?.await }
     }
 
-    /// Whether a write at `generation` may be acknowledged on this leader's
-    /// log alone. Always refused: the leader lease is not built, so every
-    /// `Leader` write waits for commit. A refusal never closes the shard.
-    pub fn admit_local_ack(&self, _shard: &ShardKey, _generation: u64) -> Result<(), CommitError> {
-        Err(propose::lost(NO_LEASE))
+    /// Whether a write at `generation`, the term [`Self::propose`] wrote
+    /// it in, may be acknowledged on this leader's log alone. That is the
+    /// leader lease: this broker leads that term, a majority answered a
+    /// message it sent less than [`super::RuntimeConfig::lease`] ago, and
+    /// it has neither given the term up nor just woken from a suspend.
+    ///
+    /// On an error the write waits for its commit instead
+    /// ([`Self::await_ack`]). A refusal never closes the shard.
+    pub fn admit_local_ack(&self, shard: &ShardKey, generation: u64) -> Result<(), CommitError> {
+        let group = self.runtime.group(shard);
+        group
+            .ok_or_else(|| propose::lost(NO_GROUP))?
+            .admit_local_ack(generation)
+    }
+
+    /// The acknowledgement of a `Leader` write that [`Self::propose`]
+    /// returned as `written`: at once while the lease holds, and otherwise
+    /// when the write is committed, as [`Self::await_commit`] says it.
+    /// [`Self::publish`] does not use it yet and answers at commit.
+    pub fn await_ack(
+        &self,
+        shard: &ShardKey,
+        written: Written,
+        timeout: Duration,
+    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+        let admitted = self.admit_local_ack(shard, written.generation);
+        let committed = admitted
+            .is_err()
+            .then(|| self.await_commit(shard, written, timeout));
+        async move {
+            match committed {
+                Some(committed) => committed.await,
+                None => Ok(()),
+            }
+        }
     }
 
     /// Wait until `written`, as [`Self::propose`] returned it, is
@@ -147,13 +188,20 @@ impl RaftEngine {
     }
 
     /// A transfer of `shard`'s leadership away from this broker is about
-    /// to be asked for. The shard closes (`deposed`) before this returns
-    /// and opens again only in a later term, so call it before the request
-    /// is sent. Returns the term that was closed, read from the group's
-    /// core. `None` means this broker leads no term of the shard, and the
-    /// caller must not ask for the transfer.
+    /// to be asked for. The lease for the term is given up and the shard
+    /// closes (`deposed`) before this returns. Both come back only in a
+    /// later term. Returns the term that was closed, read from the group's
+    /// core. `None` means this broker leads no term of the shard.
     pub async fn transfer_starting(&self, shard: &ShardKey) -> Option<u64> {
         self.runtime.group(shard)?.transfer_starting().await
+    }
+
+    /// Hand `shard`'s leadership to `to`: [`Self::transfer_starting`], then
+    /// the request to openraft. Every transfer goes through here. Returns
+    /// the term given up, or `None` if this broker leads none, and then
+    /// nothing was asked. The transfer itself may still not go through.
+    pub async fn transfer(&self, shard: &ShardKey, to: super::MemberId) -> Option<u64> {
+        self.runtime.group(shard)?.transfer(to).await
     }
 
     /// `shard`'s commit table on this broker, if it holds a member.

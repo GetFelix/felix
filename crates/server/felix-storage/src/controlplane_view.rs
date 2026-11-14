@@ -34,13 +34,7 @@ pub fn record(root: &Path, body: &[u8]) -> Result<()> {
 /// broker deregisters: the control plane may then move its shards to sets
 /// without it, and a view of the old sets must not let it stand or vote.
 pub fn forget(root: &Path) -> Result<()> {
-    match crate::fs::remove_file(root.join(FILE_NAME)) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
-    crate::io::sync_dir(root)?;
-    Ok(())
+    crate::run_state::remove_record(root, FILE_NAME)
 }
 
 /// The body last recorded under `root`, or `None` when there is none this

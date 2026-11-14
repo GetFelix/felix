@@ -196,6 +196,8 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_peer_requests_shed_total` | counter | - | Requests refused before sending because the peer was at its in-flight limit. Nothing was attempted. |
 | `felix_broker_peer_request_seconds` | histogram | `outcome` | Round-trip latency of a request to a peer. |
 | `felix_broker_peer_served_total` | counter | `outcome` | Requests this broker served for a peer. |
+| `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
+| `felix_broker_raft_shards_off_placement` | gauge | - | Raft shards open on this broker whose group's voters are not the brokers placement names for the shard. A group keeps the members it formed with, so anything above zero means placement moved, drained or replaced a broker of a Raft shard, which is not supported yet. |
 | `felix_broker_peer_inbound_rejected_total` | counter | `reason` | Inbound peer connections refused: `alpn` or `handshake`. |
 
 ## Replication
@@ -251,6 +253,8 @@ The durable log. Every series is process-wide, not per stream. Compare `felix_st
 | `felix_storage_segment_roll_discarded_total` | counter | - | Prepared segments discarded because the tail moved on before the swap. |
 | `felix_storage_segment_reserve_failed_total` | counter | - | Extensions of an active segment's block reservation that failed. Appends carry on and allocate as they write. |
 | `felix_storage_segment_count` | gauge | - | Segments currently on disk for a shard. |
+| `felix_storage_raft_kept_copies` | gauge | - | Shard directories a Raft rotation moved aside that are still on disk, summed over data roots. Measured in the background after a rotation, a reclaim or a stream delete. |
+| `felix_storage_raft_kept_copy_bytes` | gauge | - | Bytes those directories hold. |
 | `felix_storage_open_sealed_segments` | gauge | - | Sealed segments whose file and index are open, across every log. |
 | `felix_storage_retention_segments_deleted_total` | counter | - | Sealed segments deleted by retention. |
 | `felix_storage_retention_bytes_reclaimed_total` | counter | - | Bytes reclaimed by retention. |

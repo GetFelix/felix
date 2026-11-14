@@ -161,6 +161,16 @@ struct LaneWork {
 impl LaneWork {
     async fn run(self: &Arc<Self>, mut job: PublishJob, lane: LaneGuard) {
         let held = job.fenced.take();
+        if let PublishTarget::Resolved {
+            shard: Some(shard), ..
+        }
+        | PublishTarget::Idempotent {
+            shard: Some(shard), ..
+        } = &job.target
+            && self.engine.on_raft(shard)
+        {
+            return self.publish_on_raft(job, lane);
+        }
         match &job.target {
             PublishTarget::Resolved { handle, .. } if handle.is_durable() => {
                 let slots = self.flush_slots(handle.id());
@@ -415,6 +425,60 @@ impl LaneWork {
                     Err(refused.into()),
                 ),
             }
+        }
+    }
+
+    /// A publish to a shard a Raft group runs. Proposed on the lane, so the
+    /// group's order is the lane's, and answered at its commit off the lane.
+    /// It never enters the hybrid's fence or touches its log.
+    fn publish_on_raft(&self, mut job: PublishJob, lane: LaneGuard) {
+        let (handle, shard, term, refused) = match &job.target {
+            PublishTarget::Resolved {
+                handle,
+                shard: Some(shard),
+                generation,
+                ..
+            } => (
+                handle,
+                shard,
+                *generation,
+                job.headers.as_ref().map(|_| "record headers"),
+            ),
+            PublishTarget::Idempotent {
+                handle,
+                shard: Some(shard),
+                generation,
+                ..
+            } => (handle, shard, *generation, Some("idempotent publishes")),
+            _ => unreachable!("only local publishes with a shard are proposed"),
+        };
+        let proposed = match refused {
+            Some(what) => Err(felix_broker::BrokerError::NotOnEngineStream { what }.into()),
+            None => self
+                .engine
+                .publish_on_raft(
+                    &self.broker,
+                    handle,
+                    shard,
+                    term,
+                    std::mem::take(&mut job.payloads),
+                    self.quorum_timeout,
+                )
+                .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
+                    term,
+                }))
+                .map_err(crate::shards::routing::RaftRefusal::into_anyhow),
+        };
+        drop(lane);
+        let shard = shard.clone();
+        match proposed {
+            Ok(proposed) => {
+                self.work.spawn(async move {
+                    let result = proposed.complete().await.map_err(Into::into);
+                    settle(job.response, job.acked_on_enqueue, Some(&shard), result);
+                });
+            }
+            Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
         }
     }
 

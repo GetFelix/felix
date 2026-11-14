@@ -25,6 +25,7 @@ use crate::{ShardKey, ShardKind};
 mod commit;
 mod deliver;
 mod identity;
+mod lease;
 mod propose;
 mod root;
 mod written;
@@ -94,6 +95,13 @@ struct Net {
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
+    /// Appends to this broker are answered with this vote, as a member
+    /// that has voted for a later candidate answers.
+    higher_vote: parking_lot::Mutex<Option<(String, VoteOf<ShardTypes>)>>,
+    /// While set, every transfer request is lost.
+    lose_transfers: std::sync::atomic::AtomicBool,
+    /// How long an append's answer takes to come back.
+    answer_after: parking_lot::Mutex<Option<Duration>>,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -132,17 +140,34 @@ impl RaftTransport for Net {
         if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
             || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
             || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
+            || (matches!(request.body, Request::TransferLeader(_))
+                && self.lose_transfers.load(Relaxed))
         {
             return Err(Refused::Unreachable("lost".into()));
+        }
+        if matches!(request.body, Request::Append(_))
+            && let Some((to, vote)) = &*self.higher_vote.lock()
+            && to == broker
+        {
+            let higher = openraft::raft::AppendError::HigherVote(vote.clone());
+            return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
         let runtime = match self.cut.lock().contains(broker) {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
-        match runtime {
+        let slow = match request.body {
+            Request::Append(_) => *self.answer_after.lock(),
+            _ => None,
+        };
+        let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
+        };
+        if let Some(slow) = slow {
+            tokio::time::sleep(slow).await;
         }
+        answer
     }
 }
 
@@ -472,6 +497,62 @@ async fn without_the_ticker_no_timeout_is_noticed() {
     cluster.stop().await;
 }
 
+/// The member that forms a group asks the others first. Only answers of
+/// "no vote, no entry" from every one of them let it form; silence does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peers_blank_needs_a_blank_answer_from_every_other_member() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let (a, key) = (cluster.runtime("a"), shard(0));
+    let within = Duration::from_secs(5);
+    a.peers_blank(&key, &members(), within)
+        .await
+        .expect("every member is blank");
+    // The question is a pre-vote: it leaves the members asked as they were.
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, 0, "{status:?}");
+    }
+
+    cluster.net.cut.lock().insert("c".into());
+    match a.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Unanswered(member, _)) => assert_eq!(member, MemberId::new("c", 1)),
+        other => panic!("a silent member counted as blank: {other:?}"),
+    }
+    cluster.net.cut.lock().clear();
+
+    a.initialize(&key, members()).await.expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"record").await;
+    let b = cluster.runtime("b");
+    match b.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Formed(_)) => {}
+        other => panic!("a formed group looked blank: {other:?}"),
+    }
+    cluster.stop().await;
+}
+
+/// A vote alone and an entry alone each mean a group reached the member.
+/// A member can hold a vote and no entry after granting one in an election
+/// that never got as far as an append.
+#[test]
+fn a_vote_or_an_entry_alone_is_not_blank() {
+    use openraft::raft::VoteResponse;
+    use openraft::type_config::alias::LogIdOf;
+    let vote = |term: u64| {
+        let leader = LeaderIdOf::<ShardTypes>::new(term, MemberId::new("a", 1));
+        <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, false)
+    };
+    let answer = |term: u64, entry: bool| {
+        let last = entry.then(|| LogIdOf::<ShardTypes>::new(1_u64.into(), 1));
+        VoteResponse::<ShardTypes>::new(vote(term), last, false)
+    };
+
+    assert!(runtime::blank(&answer(0, false)));
+    assert!(!runtime::blank(&answer(1, false)), "a vote alone");
+    assert!(!runtime::blank(&answer(0, true)), "an entry alone");
+    assert!(!runtime::blank(&answer(1, true)));
+}
+
 /// The ticker asks a group for a timer check only when its timer can have
 /// run out: a leader once per heartbeat, a follower that hears its leader
 /// never.
@@ -524,6 +605,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         idle_after: millis(config.idle_after),
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
+        lease: millis(config.lease),
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -1150,8 +1232,8 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.start(true);
     cluster.open(0).await;
 
-    // What each member read back from its log. The old leader's vote is
-    // still its own, so it may lead again at once and add an entry.
+    // What each member read back from its log, before a leader elected
+    // after the restart adds an entry.
     for runtime in cluster.runtimes() {
         let status = eventually(|| {
             runtime

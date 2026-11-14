@@ -1013,3 +1013,103 @@ mod quorum_wait {
         held_by_another_generation_for_the_timeout(Path::Idempotent).await;
     }
 }
+
+#[cfg(feature = "raft")]
+mod on_raft {
+    use super::*;
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    type Answer = oneshot::Receiver<Result<Option<u64>>>;
+
+    fn job(
+        handle: &felix_broker::StreamHandle,
+        shard: &crate::shards::ShardKey,
+        term: u64,
+        payload: &'static [u8],
+        headers: Option<Vec<Option<Bytes>>>,
+    ) -> (PublishJob, Answer) {
+        let (response_tx, response_rx) = oneshot::channel();
+        let job = PublishJob {
+            headers,
+            target: PublishTarget::Resolved {
+                handle: handle.clone(),
+                shard: Some(shard.clone()),
+                generation: term,
+                fenced: None,
+            },
+            payloads: vec![Bytes::from_static(payload)],
+            response: Some(response_tx.into()),
+            acked_on_enqueue: false,
+            admission_permit: None,
+            fenced: None,
+            publisher: None,
+        };
+        (job, response_rx)
+    }
+
+    /// **A queued publish to a Raft shard is proposed to its group and
+    /// answered with the offset it committed at**, in lane order. One
+    /// admitted at a term this broker no longer serves, or carrying what a
+    /// Raft stream cannot store, is refused with nothing proposed.
+    #[tokio::test]
+    async fn a_queued_publish_to_a_raft_shard_commits_through_its_group() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        // As startup binds them: readers see what the group committed.
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let (mut receiver, _guard) = broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await?
+            .into_parts();
+
+        let (one, first) = job(&handle, &orders, term, b"one", None);
+        let (stale, refused_term) = job(&handle, &orders, term + 1, b"stale", None);
+        let headers = Some(vec![Some(Bytes::from_static(b"h"))]);
+        let (headered, refused_headers) = job(&handle, &orders, term, b"headered", headers);
+        let (two, second) = job(&handle, &orders, term, b"two", None);
+        for job in [one, stale, headered, two] {
+            publish_ctx.scheduler.send(job).await;
+        }
+
+        let first = first.await?.expect("acknowledged").expect("an offset");
+        let err = refused_term.await?.expect_err("a stale term was written");
+        assert!(err.to_string().contains("does not serve"), "{err}");
+        let err = refused_headers.await?.expect_err("headers were dropped");
+        assert!(err.to_string().contains("record headers"), "{err}");
+        let second = second.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(second, first + 1, "a refused publish took an offset");
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (first, Bytes::from_static(b"one"))
+        );
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (second, Bytes::from_static(b"two"))
+        );
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+}

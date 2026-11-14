@@ -61,3 +61,40 @@ async fn read_bounds_hold_the_nodes_engine() {
     assert_eq!(Arc::strong_count(&engine), 2, "the broker's read bounds");
     drop(opened);
 }
+
+/// **Wiring registers no stream**, so a start that leaves durable streams to
+/// their engines can say so after it and still be ahead of the first
+/// registration, which would otherwise open shard 0 itself.
+#[tokio::test]
+async fn wiring_registers_no_stream_a_directory_holds() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let key = felix_storage::log::ShardKey {
+        tenant: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+    };
+    let dir = felix_storage::disk_log::layout::shard_dir(root.path(), &key);
+    std::fs::create_dir_all(&dir).expect("shard directory");
+    let durable = DurableStorageConfig {
+        root: root.path().to_path_buf(),
+        log: Default::default(),
+        offload_dir: None,
+    };
+    let config = BrokerConfig::default();
+    let stored = open_storage(&config, Some(durable), None).expect("open");
+    let fleet = Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new()));
+    let marks = Arc::new(QuorumMarks::new());
+    let engine = Arc::new(crate::shards::routing::StreamEngine::new(
+        Some(Arc::clone(&marks)),
+        None,
+    ));
+    let opened = wire_broker(&config, stored, &None, &fleet, &marks, &engine)
+        .await
+        .expect("wire");
+    assert!(!opened.broker.stream_exists("t1", "ns", "orders").await);
+    assert!(
+        std::fs::read_dir(&dir).expect("read").next().is_none(),
+        "wiring opened the stream's log"
+    );
+}
