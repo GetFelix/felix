@@ -418,10 +418,16 @@ impl SubscriberDrops {
     /// is what turns it into an offset gap the subscriber can see.
     pub fn dropped(&self, base_offset: Option<u64>, records: u64) {
         if let Some(base) = base_offset {
-            self.lag.dropped(base);
+            self.lag.dropped_live(base);
         }
         self.stats.dropped(records);
         metrics::counter!("felix_subscribe_dropped_total").increment(records);
+    }
+
+    /// Where the subscriber can resume after its drops so far, queue and
+    /// writer alike.
+    pub fn resume_from(&self) -> Option<u64> {
+        self.lag.first_dropped()
     }
 
     /// Whether a drop ends the subscription, so that nothing after it should
@@ -476,7 +482,20 @@ impl Drops {
 impl Lag {
     /// Record a dropped batch starting at `offset`.
     pub(crate) fn dropped(&self, offset: u64) {
+        self.record_drop(|_| offset);
+    }
+
+    /// Record a dropped live frame starting at `offset`, after the catch-up
+    /// set the floor. A frame straddling the floor lost the records from
+    /// the floor up, so a drop below it counts from the floor. Ignoring it
+    /// would leave a writer that sheds after it with no lag to report.
+    pub(crate) fn dropped_live(&self, offset: u64) {
+        self.record_drop(|floor| offset.max(floor));
+    }
+
+    fn record_drop(&self, offset: impl FnOnce(u64) -> u64) {
         let mut drops = self.drops.lock().unwrap_or_else(|e| e.into_inner());
+        let offset = offset(drops.floor);
         let before = drops.resume_from();
         drops.lowest = Some(drops.lowest.map_or(offset, |low| low.min(offset)));
         drops.highest = Some(drops.highest.map_or(offset, |high| high.max(offset)));

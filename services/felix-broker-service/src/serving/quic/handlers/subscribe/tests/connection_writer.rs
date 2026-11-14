@@ -870,11 +870,176 @@ async fn shed_after_a_writer_drop(ends_on_lag: bool) -> Result<()> {
     })
     .await
     .context("unregister")?;
-    if !ends_on_lag {
+    if ends_on_lag {
+        // The shed replaces the feeder's last frame: it is where to resume.
+        let last = read_last_frame(&mut event_recv, &mut scratch).await?;
+        assert_eq!(
+            last,
+            Some(felix_wire::Message::SubscriptionLagged {
+                subscription_id: 1,
+                resume_from: 2,
+            })
+        );
+    } else {
         assert_eq!(next().await?.as_deref(), Some(&b"3"[..]));
+        assert_eq!(next().await?.as_deref(), Some(&b"last"[..]));
+        assert_eq!(next().await?, None, "nothing follows the last frame");
     }
-    assert_eq!(next().await?.as_deref(), Some(&b"last"[..]));
-    assert_eq!(next().await?, None, "nothing follows the last frame");
+
+    drop(tx);
+    writer_task.await.context("writer join")?;
+    let _ = crate::observability::timings::take_samples();
+    Ok(())
+}
+
+/// Read the control frame that ends the event stream, and check that
+/// nothing follows it.
+async fn read_last_frame(
+    event_recv: &mut quinn::RecvStream,
+    scratch: &mut crate::serving::quic::FrameScratch,
+) -> Result<Option<felix_wire::Message>> {
+    let mut read = async || {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::serving::quic::codec::read_frame_limited_into(event_recv, 16 * 1024, scratch),
+        )
+        .await
+        .context("no frame")?
+    };
+    let Some(frame) = read().await? else {
+        return Ok(None);
+    };
+    let message = felix_wire::Message::decode(frame)?;
+    assert!(read().await?.is_none(), "nothing follows the last frame");
+    Ok(Some(message))
+}
+
+/// The feeder picks the last frame when it hands over its final delivery,
+/// before the writer has taken those deliveries. A writer drop after that
+/// lowers where the subscriber can resume, so the writer swaps the last
+/// frame for a `subscription_lagged` from the lower offset: an older
+/// `lagged` would skip the shed records, and `ended` would claim a range
+/// the client did not get.
+#[tokio::test]
+#[serial]
+async fn a_writer_drop_after_the_feeder_chose_lagged_lowers_resume_from() -> Result<()> {
+    // The queue dropped from 5, so the feeder chose lagged(5).
+    let lagged = felix_wire::Message::SubscriptionLagged {
+        subscription_id: 1,
+        resume_from: 5,
+    };
+    writer_drop_replaces_last(Some(5), lagged).await
+}
+
+/// The bounded half of the above: the feeder saw the subscription reach its
+/// end and chose `ended`.
+#[tokio::test]
+#[serial]
+async fn a_writer_drop_after_the_feeder_chose_ended_sends_lagged() -> Result<()> {
+    let ended = felix_wire::Message::SubscriptionEnded {
+        subscription_id: 1,
+        end: 3,
+    };
+    writer_drop_replaces_last(None, ended).await
+}
+
+async fn writer_drop_replaces_last(
+    queue_drop: Option<u64>,
+    feeder_last: felix_wire::Message,
+) -> Result<()> {
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    broker.register_tenant("t1").await?;
+    broker.register_namespace("t1", "default").await?;
+    broker
+        .register_stream(
+            "t1",
+            "default",
+            "orders",
+            felix_broker::StreamMetadata::default(),
+        )
+        .await?;
+    let (mut rx, guard) = broker
+        .subscribe("t1", "default", "orders", 0)
+        .await?
+        .into_parts();
+    rx.end_on_lag();
+    if let Some(offset) = queue_drop {
+        guard
+            .drop_account()
+            .context("drop account")?
+            .dropped(Some(offset), 1);
+    }
+    let (connection, client_conn) = quic_pair().await?;
+    let connection_id = connection.info().id.0;
+
+    // All of it queued before the writer runs, as when the feeder has
+    // finished: the writer keeps 0 and 1, drops 2, then sees the last frame.
+    let (tx, command_rx) = mpsc::channel(64);
+    tx.send(ConnectionCommand::Register {
+        subscriber_id: 1,
+        connection: connection.clone(),
+        connection_id: Some(connection_id),
+        event_send: connection.open_uni().await?,
+        guard,
+    })
+    .await
+    .context("register")?;
+    for offset in 0..3u64 {
+        let now = Instant::now();
+        tx.send(ConnectionCommand::Delivery {
+            subscriber_id: 1,
+            frame: felix_wire::binary::encode_event_batch_bytes(
+                1,
+                &[Bytes::from(offset.to_string())],
+            )?,
+            item_count: 1,
+            base_offset: Some(offset),
+            first_enqueued_at: now,
+            enqueue_at: now,
+            held: EgressBytes::default(),
+        })
+        .await
+        .context("delivery")?;
+    }
+    tx.send(ConnectionCommand::Unregister {
+        subscriber_id: 1,
+        last: Some(feeder_last.encode()?.encode()),
+    })
+    .await
+    .context("unregister")?;
+    let config = ConnectionWriterConfig {
+        max_queued_per_subscriber: 2,
+        block: false,
+        ..writer_config()
+    };
+    let writer_task = tokio::spawn(run_connection_writer(connection_id, command_rx, config));
+
+    let mut event_recv = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
+        .await
+        .context("accept uni timeout")??;
+    let mut scratch = crate::serving::quic::FrameScratch::new();
+    for offset in 0..2u64 {
+        let frame = tokio::time::timeout(
+            Duration::from_secs(2),
+            crate::serving::quic::codec::read_frame_limited_into(
+                &mut event_recv,
+                16 * 1024,
+                &mut scratch,
+            ),
+        )
+        .await
+        .context("no frame")??
+        .context("stream ended early")?;
+        let batch = felix_wire::binary::decode_event_batch(&frame).context("decode")?;
+        assert_eq!(batch.payloads[0], Bytes::from(offset.to_string()));
+    }
+    assert_eq!(
+        read_last_frame(&mut event_recv, &mut scratch).await?,
+        Some(felix_wire::Message::SubscriptionLagged {
+            subscription_id: 1,
+            resume_from: 2,
+        })
+    );
 
     drop(tx);
     writer_task.await.context("writer join")?;

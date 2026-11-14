@@ -17,6 +17,7 @@ use crate::serving::quic::handlers::subscribe::conn_counts::{
     connection_subscriber_register, connection_subscriber_unregister,
 };
 use crate::serving::quic::handlers::subscribe::egress::EgressBytes;
+use crate::serving::quic::handlers::subscribe::feeder::lagged_frame;
 use crate::serving::quic::handlers::subscribe::lane::{
     ConnectionCommand, LaneCommand, LaneDelivery, LaneRuntimeConfig, LaneSubscriber,
     WriterLaneManager,
@@ -385,6 +386,20 @@ pub(super) async fn run_connection_writer(
                             subscriber_id,
                             last,
                         } => {
+                            // The feeder chose `last` before this writer's drops,
+                            // which may have lowered the resume point. Nothing
+                            // after a shed was written, so `ended` would hide a
+                            // hole and an older `lagged` would skip records.
+                            let last = if shedding.contains(&subscriber_id) {
+                                drop_accounts
+                                    .get(&subscriber_id)
+                                    .and_then(|account| account.resume_from())
+                                    .and_then(|resume_from| {
+                                        lagged_frame(subscriber_id, resume_from)
+                                    })
+                            } else {
+                                last
+                            };
                             if let Some(frame) = last {
                                 // Never dropped for being over the limit: it may
                                 // be the frame that says where to resume.

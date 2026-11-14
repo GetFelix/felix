@@ -531,7 +531,7 @@ fn stream_deleted_frame(subscription_id: u64) -> Option<Bytes> {
 }
 
 /// The last frame of a subscription whose queue dropped records.
-fn lagged_frame(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
+pub(super) fn lagged_frame(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
     metrics::counter!("felix_subscription_lagged_total").increment(1);
     let message = felix_wire::Message::SubscriptionLagged {
         subscription_id,

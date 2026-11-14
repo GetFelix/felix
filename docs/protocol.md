@@ -431,7 +431,9 @@ The last frame on the event stream of a subscription that reached the `end` it
 asked for. The broker finishes the stream after it. Every record below `end` was
 delivered, or holds no event (a skip the event batches already report). It is
 sent only in answer to a `subscribe` that carried `end`, so no other client
-sees it. A stream that closes without it did not reach `end`.
+sees it. A stream that closes without it did not reach `end`. A subscription
+that lost records on the way ends with `subscription_lagged` instead, even when
+the broker had read up to `end`.
 
 ### SubscriptionLagged (server -> client)
 ```
@@ -443,7 +445,9 @@ records dropped, either by its queue on the broker or by the connection
 writer's queue for it. `resume_from` is the lowest offset either dropped, or
 where a resumed subscription's catch-up ended when the drops before that were
 filled from disk. Nothing at or above it was sent: once the writer drops a
-frame, it drops every later one for that subscription too. A client can resume
+frame, it drops every later one for that subscription too, and sends this frame
+in place of whatever would have ended the stream, `subscription_ended`
+included. A client can resume
 from `resume_from`, or after the last event it received, which is never past
 it; felix-client's `ClusterSubscription` and `ShardedSubscription` do the
 latter. The broker sends it as
