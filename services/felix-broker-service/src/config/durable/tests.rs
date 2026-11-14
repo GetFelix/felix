@@ -17,6 +17,7 @@ const VARS: &[&str] = &[
     "FELIX_DURABLE_VERIFY_ALL_ON_OPEN",
     "FELIX_DURABLE_REPAIR_CHECKSUM_TAIL",
     "FELIX_DURABLE_OFFLOAD_DIR",
+    "FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS",
 ];
 
 /// Every caller is `#[serial]`, which is what actually keeps these apart
@@ -346,4 +347,35 @@ fn a_broker_without_a_node_id_offloads_under_one_kept_in_its_data_directory() {
         .expect("config")
         .validate()
         .expect("a generated id is a valid key segment");
+}
+
+#[serial]
+#[test]
+fn the_open_sealed_segment_bound_is_a_setting_with_a_broker_wide_default() {
+    with_env(&[("FELIX_DURABLE_STORAGE_DIR", "/tmp/felix")], || {
+        let config = DurableStorageConfig::from_env()
+            .expect("config")
+            .expect("enabled");
+        assert_eq!(config.log.max_open_sealed_segments, 4096);
+        assert!(config.log.sealed_cache.is_some());
+    });
+    with_env(
+        &[
+            ("FELIX_DURABLE_STORAGE_DIR", "/tmp/felix"),
+            ("FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS", "512"),
+        ],
+        || {
+            let config = DurableStorageConfig::from_env()
+                .expect("config")
+                .expect("enabled");
+            assert_eq!(config.log.max_open_sealed_segments, 512);
+        },
+    );
+    with_env(
+        &[
+            ("FELIX_DURABLE_STORAGE_DIR", "/tmp/felix"),
+            ("FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS", "0"),
+        ],
+        || assert!(DurableStorageConfig::from_env().is_err()),
+    );
 }

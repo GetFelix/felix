@@ -128,11 +128,14 @@ labelled illustrative there and are starting points, not ceilings.
 ### Open files
 
 A broker keeps five files open for every shard it holds, as leader or
-follower: the active segment, its index and a small state file. Sealed
-segments that were read stay open too, but in one cache for the whole
-broker that holds at most 256 of them, however many shards it has. So
-2,000 shards on a broker are 10,000 open files, plus up to 256 sealed
-segments and a few hundred for sockets.
+follower: the active segment (open three times), its index and the durable
+mark. Sealed segments that were read stay open too, but in one cache for the
+whole broker that holds at most 4,096 of them, however many shards it has.
+`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` sets that number: a larger cache
+saves the open and index load a catch-up reader pays on each miss, at one
+descriptor per slot. So 2,000 shards on a broker are 10,000 open files, plus
+up to 4,096 sealed segments and about 1,000 for sockets. Cache and counter
+shards open a log each and count as shards.
 
 Most Linux systems start a process with a soft limit of 1,024 open files and a
 much higher hard limit. The broker raises its soft limit to the hard limit
@@ -146,7 +149,8 @@ when it starts, so the hard limit is the one to set:
 | A shell | `ulimit -Hn` before starting the broker | varies |
 
 `felix_broker_open_file_limit` reports the limit the broker ended up with.
-(limit - 1,024) / 5 is about how many shards fit under it. A broker whose
+(limit - 1,024 - the sealed-segment cache) / 5 is about how many shards fit
+under it, so 65,536 holds about 12,000. A broker whose
 limit holds fewer than 2,000 shards logs a warning at start with that
 number. Past it, opening a shard fails with "Too many open files".
 
@@ -292,7 +296,7 @@ load balancer.
 - [ ] Retention set on every durable stream (`FELIX_DURABLE_RETENTION_BYTES`
       or `_SECONDS`, or the stream's own `retention`). Unset means unbounded.
 - [ ] The hard open-file limit allows five files per shard you expect a
-      broker to hold, plus about 1,000. See [Open files](#open-files).
+      broker to hold, plus about 5,000 for sockets and the sealed-segment cache. See [Open files](#open-files).
 
 **Availability and operations**
 

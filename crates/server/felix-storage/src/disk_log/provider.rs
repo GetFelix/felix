@@ -66,7 +66,7 @@ impl DiskLogProvider {
         // Whatever a delete left before a crash or restart.
         incarnation::purge_in_background(root.clone());
         Ok(Self {
-            sealed_files: super::sealed::SealedFiles::new(config.max_open_sealed_segments),
+            sealed_files: super::sealed::SealedFiles::for_config(&config),
             markers: incarnation::marker::MarkerFiles::new(root.clone()),
             root,
             config,

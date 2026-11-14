@@ -13,7 +13,13 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use felix_storage::log::{FsyncMode, LogConfig, OffloadTarget};
+use felix_storage::log::{FsyncMode, LogConfig, OffloadTarget, SealedFileCache};
+
+/// Sealed segments kept open at once across every log the broker opens
+/// (`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS`). A read that misses costs an
+/// open and a sparse index load, so catch-up readers walking many shards
+/// want room; the cost is one descriptor per slot.
+pub(crate) const DEFAULT_MAX_OPEN_SEALED_SEGMENTS: usize = 4096;
 
 /// Durable storage settings resolved from the environment.
 #[derive(Debug, Clone)]
@@ -37,6 +43,8 @@ impl DurableStorageConfig {
             return Ok(None);
         };
 
+        let max_open_sealed_segments = parse_env("FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS")?
+            .unwrap_or(DEFAULT_MAX_OPEN_SEALED_SEGMENTS);
         let log = LogConfig {
             segment_size_bytes: parse_env("FELIX_DURABLE_SEGMENT_BYTES")?
                 .unwrap_or(LogConfig::default().segment_size_bytes),
@@ -66,7 +74,10 @@ impl DurableStorageConfig {
             retention_check_interval: parse_env::<u64>("FELIX_DURABLE_RETENTION_INTERVAL_SECONDS")?
                 .map(Duration::from_secs)
                 .unwrap_or(LogConfig::default().retention_check_interval),
-            max_open_sealed_segments: LogConfig::default().max_open_sealed_segments,
+            max_open_sealed_segments,
+            // One cache for the stream, cache, counter and group logs: each
+            // store clones this config, so they all share it.
+            sealed_cache: Some(SealedFileCache::new(max_open_sealed_segments)),
             // Set per store: only stream logs offload. See `stream_log`.
             offload: None,
             // Set from the broker's cluster configuration when the stores open.

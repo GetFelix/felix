@@ -79,8 +79,6 @@ where
     // Configuration is resolved from environment variables (and optionally a YAML file).
     // Keep this early so the remainder of startup is entirely driven by `config`.
     let config = config::BrokerConfig::from_env_or_yaml()?;
-    // Before storage opens: every held shard keeps files open.
-    open_files::raise_limit();
     // Before any control-plane client exists: they are all built trusting it.
     controlplane_http::trust_ca(config.controlplane_ca.as_deref())?;
     // Size the QUIC I/O runtime pool before ANY endpoint is built: the pool is
@@ -102,6 +100,12 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // Before storage opens: every held shard keeps files open.
+    open_files::raise_limit(
+        durable_config
+            .as_ref()
+            .map_or(0, |durable| durable.log.max_open_sealed_segments),
+    );
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.

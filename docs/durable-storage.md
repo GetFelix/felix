@@ -927,9 +927,14 @@ Invalid combinations fail at startup, not at the first publish.
 
 Sealed segments are opened lazily: an open reads only each sealed segment's
 header and last index entry, and the first read that reaches a segment opens
-its file and loads its sparse index into a cache shared per storage root,
-bounded by `LogConfig::max_open_sealed_segments` (default 256, least recently
-used evicted). Retention chooses segments and deletes their files outside the
+its file and loads its sparse index into a cache shared by every log opened
+with the same `LogConfig::sealed_cache` (a provider's logs together when it
+is unset), bounded by `LogConfig::max_open_sealed_segments` (default 256 for a
+standalone log; the broker sets 4,096 through
+`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` and shares one cache across all its
+logs; least recently used evicted). A read in flight when a segment is
+deleted, truncated or its log closed may still use the handle it opened, but
+never caches it. Retention chooses segments and deletes their files outside the
 segment lock; the lock is held only to drop them from the list.
 
 ### Opening and closing shards

@@ -23,9 +23,8 @@ const BROKERS: [&str; 3] = ["a", "b", "c"];
 const GROUPS: u32 = 40;
 /// Sealed segments the provider may keep open, for the whole root.
 const SEALED_OPEN: usize = 16;
-/// Open files beyond the per-shard budget the count may show: the
-/// provider's sealed cache and a few files in flight.
-const SLACK: usize = SEALED_OPEN + 8;
+/// Open files beyond the per-shard budget that a few files in flight may add.
+const IN_FLIGHT: usize = 8;
 
 #[derive(Default)]
 struct Net {
@@ -95,12 +94,12 @@ async fn a_member_stays_within_the_open_file_budget() {
     }
     let runtime = |broker: &str| net.brokers.lock()[broker].clone();
     let mut providers = Vec::new();
-    // Small segments, so a few records roll several of them.
+    // Segments too big to roll: an idle member has nothing sealed, so any
+    // descriptor past the per-shard budget is a member's own.
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
         raft_log: true,
-        segment_size_bytes: 1024,
         max_open_sealed_segments: SEALED_OPEN,
         ..LogConfig::default()
     };
@@ -108,8 +107,10 @@ async fn a_member_stays_within_the_open_file_budget() {
     // A shard's log without Raft, written to and read back across many
     // sealed segments, for comparison. One provider, as the broker has.
     let start = open_files();
+    // Small segments, so a few records roll several of them.
     let plain = LogConfig {
         raft_log: false,
+        segment_size_bytes: 1024,
         ..config.clone()
     };
     let plain_provider =
@@ -140,9 +141,10 @@ async fn a_member_stays_within_the_open_file_budget() {
         plain_logs.push(log);
     }
     let plain_files = open_files() - start;
-    let a_plain_log = plain_files as f64 / f64::from(GROUPS);
+    // The shared sealed handles are a fixed amount, not a cost per log.
+    let a_plain_log = plain_files.saturating_sub(SEALED_OPEN) as f64 / f64::from(GROUPS);
     assert!(
-        plain_files <= FDS_PER_SHARD_LOG * GROUPS as usize + SLACK,
+        plain_files <= FDS_PER_SHARD_LOG * GROUPS as usize + SEALED_OPEN + IN_FLIGHT,
         "{GROUPS} written logs hold {plain_files} files open, over {FDS_PER_SHARD_LOG} each \
          plus the {SEALED_OPEN} sealed segments one root may keep open"
     );
@@ -203,10 +205,12 @@ async fn a_member_stays_within_the_open_file_budget() {
     let each = held as f64 / count as f64;
     println!(
         "{count} idle members: {each:.2} open files each, against {a_plain_log:.2} for a \
-         written log without Raft"
+         written log without Raft (not counting its {SEALED_OPEN} shared sealed handles)"
     );
+    // Nothing is sealed or read back here, so the slack is only a few files
+    // in flight: one extra descriptor per member would blow far past it.
     assert!(
-        held <= FDS_PER_SHARD_LOG * count + SLACK,
+        held <= FDS_PER_SHARD_LOG * count + IN_FLIGHT,
         "a member holds {each:.2} files open, over the {FDS_PER_SHARD_LOG} the broker's \
          open-file check assumes"
     );

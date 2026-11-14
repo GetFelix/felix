@@ -2,7 +2,8 @@
 //!
 //! A log keeps only a descriptor per sealed segment. The file descriptor and
 //! the sparse index a read needs are loaded on first use and held in a
-//! [`SealedFiles`] cache shared by every log under one root, which evicts the
+//! [`SealedFiles`] cache shared by every log opened with the same
+//! `LogConfig::sealed_cache` (or under one provider), which evicts the
 //! least recently used once it holds `LogConfig::max_open_sealed_segments`.
 //! Without the bound, memory and descriptors grow with retained data rather
 //! than with what is being read: a sparse index is about 1/256 of its segment,
@@ -17,7 +18,7 @@ use felix_common::random::HashMap;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 
@@ -45,6 +46,9 @@ pub(crate) struct SealedEntry {
     /// the segment after it when a truncation empties that one.
     pub(crate) last_generation: Option<u64>,
     key: u64,
+    /// Set once the log lets go of the entry (deleted, truncated, closed).
+    /// A read in flight may still open it, and must not cache the handle.
+    forgotten: Arc<AtomicBool>,
 }
 
 impl SealedEntry {
@@ -55,6 +59,7 @@ impl SealedEntry {
             holds_trims,
             last_generation: None,
             key: NEXT_KEY.fetch_add(1, Ordering::Relaxed),
+            forgotten: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -75,14 +80,11 @@ impl SealedEntry {
     pub(crate) fn locator(&self, dir: &Path, index_spacing_bytes: u64) -> SealedLocator {
         SealedLocator {
             key: self.key,
+            forgotten: Arc::clone(&self.forgotten),
             dir: dir.to_path_buf(),
             descriptor: self.descriptor.clone(),
             index_spacing_bytes,
         }
-    }
-
-    pub(crate) fn key(&self) -> u64 {
-        self.key
     }
 }
 
@@ -91,6 +93,7 @@ impl SealedEntry {
 #[derive(Debug, Clone)]
 pub(crate) struct SealedLocator {
     key: u64,
+    forgotten: Arc<AtomicBool>,
     dir: PathBuf,
     descriptor: SegmentDescriptor,
     index_spacing_bytes: u64,
@@ -175,7 +178,7 @@ impl SealedLocator {
                 outcome.index
             }
         };
-        Ok(files.insert(self.key, SealedHandle { reader, index }))
+        Ok(files.insert(self.key, &self.forgotten, SealedHandle { reader, index }))
     }
 
     /// Timestamp of the segment's newest record, for retention by age.
@@ -245,6 +248,14 @@ struct Lru {
 }
 
 impl SealedFiles {
+    /// The cache `config` names, or a new one of its own size.
+    pub(crate) fn for_config(config: &crate::log::LogConfig) -> Arc<Self> {
+        match &config.sealed_cache {
+            Some(shared) => Arc::clone(&shared.0),
+            None => Self::new(config.max_open_sealed_segments),
+        }
+    }
+
     pub(crate) fn new(capacity: usize) -> Arc<Self> {
         Arc::new(Self {
             capacity: capacity.max(1),
@@ -260,14 +271,17 @@ impl SealedFiles {
 
     /// Hand over a handle a writer already has, so the segment it just sealed
     /// is warm for the reader most likely to want it next.
-    pub(crate) fn seed(&self, key: u64, handle: SealedHandle) {
-        self.insert(key, handle);
+    pub(crate) fn seed(&self, entry: &SealedEntry, handle: SealedHandle) {
+        self.insert(entry.key, &entry.forgotten, handle);
     }
 
     /// Forget one segment: it was deleted, or became the active one again.
-    pub(crate) fn remove(&self, key: u64) {
+    /// The entry can never be cached again, so a read that planned before
+    /// this cannot leave a handle on a file the log no longer owns.
+    pub(crate) fn forget(&self, entry: &SealedEntry) {
         let mut lru = self.lru.lock();
-        if let Some((_, used)) = lru.entries.remove(&key) {
+        entry.forgotten.store(true, Ordering::Release);
+        if let Some((_, used)) = lru.entries.remove(&entry.key) {
             lru.order.remove(&used);
             metrics::gauge!(metrics_names::OPEN_SEALED_SEGMENTS).decrement(1.0);
         }
@@ -284,10 +298,15 @@ impl SealedFiles {
         Some(Arc::clone(handle))
     }
 
-    fn insert(&self, key: u64, handle: SealedHandle) -> Arc<SealedHandle> {
+    fn insert(&self, key: u64, forgotten: &AtomicBool, handle: SealedHandle) -> Arc<SealedHandle> {
         let mut lru = self.lru.lock();
         if let Some((existing, _)) = lru.entries.get(&key) {
             return Arc::clone(existing);
+        }
+        // Checked under the lock `forget` takes: the reader still gets its
+        // handle, but nothing caches it.
+        if forgotten.load(Ordering::Acquire) {
+            return Arc::new(handle);
         }
         lru.clock += 1;
         let used = lru.clock;

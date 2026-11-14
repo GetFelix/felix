@@ -1,18 +1,27 @@
 use super::*;
 
+const DEFAULT_SEALED: usize = crate::config::durable::DEFAULT_MAX_OPEN_SEALED_SEGMENTS;
+
 #[test]
-fn the_default_soft_limit_holds_under_two_hundred_shards() {
-    assert!(shards_within(1024) < 200);
-    assert_eq!(shards_within(0), 0);
-    assert_eq!(shards_within(RESERVED), 0);
+fn the_default_soft_limit_holds_no_shards_beside_the_default_cache() {
+    assert_eq!(shards_within(1024, DEFAULT_SEALED), 0);
+    assert_eq!(shards_within(0, DEFAULT_SEALED), 0);
+    assert_eq!(shards_within(SOCKET_RESERVE, 0), 0);
+}
+
+#[test]
+fn the_configured_cache_comes_off_the_shard_estimate() {
+    assert_eq!(shards_within(11_024, 0), 2_000);
+    assert_eq!(shards_within(11_024, 1_000), 1_800);
+    assert_eq!(shards_within(11_024, 100_000), 0);
 }
 
 #[test]
 fn a_common_hard_limit_holds_the_gates_shards() {
     // systemd's default hard limit.
-    assert!(shards_within(524_288) > 5_000 * 10);
+    assert!(shards_within(524_288, DEFAULT_SEALED) > 5_000 * 10);
     // The limit the Compose file sets.
-    assert!(shards_within(65_536) > 5_000);
+    assert!(shards_within(65_536, DEFAULT_SEALED) > 5_000);
 }
 
 #[test]

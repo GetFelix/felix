@@ -121,7 +121,7 @@ impl SegmentSet {
 
     fn close_files(&self) {
         for entry in &self.sealed {
-            self.files.remove(entry.key());
+            self.files.forget(entry);
         }
     }
 
@@ -371,7 +371,7 @@ impl SegmentSet {
     /// Drop a sealed entry's cached handle. Every path that takes an entry
     /// out of the list calls this.
     pub(super) fn forget(&self, entry: &SealedEntry) {
-        self.files.remove(entry.key());
+        self.files.forget(entry);
     }
 
     fn bump_next_segment_id(&self, at_least: SegmentId) {

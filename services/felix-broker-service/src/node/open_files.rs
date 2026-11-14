@@ -2,8 +2,11 @@
 //!
 //! A shard's log keeps [`FDS_PER_SHARD_LOG`] files open for as long as the
 //! broker holds the shard, so the limit caps the shards a broker can hold.
-//! Most Linux systems start a process with a soft limit of 1,024, which is under
-//! 200 shards, and a hard limit far above it. The broker takes the hard
+//! The sealed-segment cache (`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS`) and a
+//! reserve for sockets come off the top. Cache and counter shards open a log
+//! each too, so they count as shards here.
+//! Most Linux systems start a process with a soft limit of 1,024, which is
+//! under the cache alone, and a hard limit far above it. The broker takes the hard
 //! limit at start, and says so when even that is small.
 
 use std::io;
@@ -13,9 +16,9 @@ use felix_storage::log::FDS_PER_SHARD_LOG;
 /// The open-file limit this broker runs with.
 pub(crate) const OPEN_FILE_LIMIT: &str = "felix_broker_open_file_limit";
 
-/// Files kept back for everything that is not a held shard's log: sockets,
-/// the runtime, segments being read, files being replaced.
-const RESERVED: u64 = 1024;
+/// Files kept back for everything that is not a held shard's log or a slot of
+/// the sealed-segment cache: sockets, the runtime, files being replaced.
+const SOCKET_RESERVE: u64 = 1024;
 /// A limit that holds fewer shards than this is worth a warning. It is the
 /// design point of the groups-per-broker gate.
 const EXPECTED_SHARDS: u64 = 2_000;
@@ -23,7 +26,7 @@ const EXPECTED_SHARDS: u64 = 2_000;
 /// Raise the soft open-file limit to the hard one, and report what the
 /// broker is left with. Never lowers it and never fails the start: a
 /// broker with few shards runs fine under a small limit.
-pub(super) fn raise_limit() {
+pub(super) fn raise_limit(sealed_slots: usize) {
     let limit = match raise() {
         Ok((before, limit)) => {
             if limit > before {
@@ -41,7 +44,7 @@ pub(super) fn raise_limit() {
         }
     };
     metrics::gauge!(OPEN_FILE_LIMIT).set(limit as f64);
-    let shards = shards_within(limit);
+    let shards = shards_within(limit, sealed_slots);
     if shards < EXPECTED_SHARDS {
         tracing::warn!(
             limit,
@@ -53,9 +56,13 @@ pub(super) fn raise_limit() {
     }
 }
 
-/// The shards a broker can hold under `limit` open files.
-pub(super) fn shards_within(limit: u64) -> u64 {
-    limit.saturating_sub(RESERVED) / FDS_PER_SHARD_LOG as u64
+/// The shards a broker can hold under `limit` open files, with a sealed
+/// segment cache of `sealed_slots`.
+pub(super) fn shards_within(limit: u64, sealed_slots: usize) -> u64 {
+    limit
+        .saturating_sub(SOCKET_RESERVE)
+        .saturating_sub(sealed_slots as u64)
+        / FDS_PER_SHARD_LOG as u64
 }
 
 /// The soft limit to ask for, given the current pair and the most the
