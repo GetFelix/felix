@@ -287,7 +287,10 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
         &keys,
         "ops",
         "p:operator",
-        vec!["tenant.manage:cluster:*".to_string()],
+        vec![
+            "tenant.manage:cluster:*".to_string(),
+            "node.view:cluster:*".to_string(),
+        ],
         Duration::from_secs(3_600),
         felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
     )
@@ -410,9 +413,10 @@ fn create_tenants(member: &Member, bearer: &str, range: std::ops::Range<u32>) {
     }
 }
 
-/// Stop `lagging`, write past the others' next snapshot, and start it again
-/// on `bin`. Both of the others have then purged the entries it missed, so
-/// whichever leads can only bring it up to date with a snapshot.
+/// Stop `lagging`, run `while_down`, write past the others' next snapshot,
+/// and start it again on `bin`. Both of the others have then purged the
+/// entries it missed, so whichever leads can only bring it up to date with a
+/// snapshot.
 fn catch_up_by_snapshot(
     members: &mut [Member],
     lagging: usize,
@@ -420,10 +424,12 @@ fn catch_up_by_snapshot(
     peers: &str,
     bearer: &str,
     tenants: std::ops::Range<u32>,
+    while_down: impl FnOnce(&mut [Member]),
 ) {
     let last = format!("t{}", tenants.end - 1);
     let had = members[lagging].gauge("felix_meta_raft_last_log_index");
     members[lagging].stop();
+    while_down(members);
     let writer = (lagging + 1) % members.len();
     create_tenants(&members[writer], bearer, tenants);
     until("the running members snapshot past the stopped one", || {
@@ -445,13 +451,19 @@ fn catch_up_by_snapshot(
 
 /// A group is upgraded from openraft 0.9 to 0.10 one member at a time, so
 /// members on both must replicate to each other, snapshots included, and a
-/// member must be able to go back.
+/// member must be able to go back while the upgrade is under way.
 ///
 /// 1. Members 1 and 2 run the release, member 3 this build. A 0.9 leader
 ///    sends member 3 a snapshot.
-/// 2. Members 1 and 2 move to this build.
-/// 3. Member 3 is rolled back to the release on the store this build wrote
-///    a snapshot into, and a 0.10 leader sends it a snapshot.
+/// 2. Member 3 stops, and members 1 and 2 move to this build.
+/// 3. Member 3 comes back on the release, on the store this build wrote a
+///    snapshot into, and a 0.10 leader sends it a snapshot.
+/// 4. Member 3 rolls forward, which finishes the upgrade.
+///
+/// Member 3 is down while the others upgrade because a group whose members
+/// have all reported this build's metadata level records its identity, and
+/// a member on the release refuses a store holding it. The rollback has to
+/// come before that, as a real one would: mid-upgrade.
 #[test]
 fn members_on_openraft_0_9_and_0_10_exchange_snapshots_and_one_rolls_back() {
     // A member on the segment store and a released one on redb serve
@@ -499,24 +511,28 @@ fn members_on_openraft_0_9_and_0_10_exchange_snapshots_and_one_rolls_back() {
     }
 
     // A 0.9 leader, a lagging 0.10 member.
-    catch_up_by_snapshot(&mut members, 2, &current, &peers, &bearer, 5..45);
+    catch_up_by_snapshot(&mut members, 2, &current, &peers, &bearer, 5..45, |_| {});
 
-    // The rest of the upgrade, one member at a time.
-    for index in [0, 1] {
-        members[index].stop();
-        members[index].start(&current, &peers, "existing");
-        members[index].wait_ready();
-    }
-    create_tenants(&members[0], &bearer, 45..50);
-    for member in &members {
-        until("every member holds the writes after the upgrade", || {
-            member.lists(&bearer, "t49")
-        });
-    }
-
-    // A 0.10 leader, and member 3 back on the release, on a store this build
-    // installed and built snapshots in.
-    catch_up_by_snapshot(&mut members, 2, &released, &peers, &bearer, 50..90);
+    // Members 1 and 2 move to this build one at a time while member 3 is
+    // down, so neither has heard member 3's level and the group stays below
+    // the one that records its identity. Then a 0.10 leader, and member 3
+    // back on the release, on a store this build installed and built
+    // snapshots in.
+    catch_up_by_snapshot(
+        &mut members,
+        2,
+        &released,
+        &peers,
+        &bearer,
+        45..90,
+        |members| {
+            for member in &mut members[..2] {
+                member.stop();
+                member.start(&current, &peers, "existing");
+                member.wait_ready();
+            }
+        },
+    );
 
     // The rolled-back member still takes writes and hands them to the leader.
     create_tenants(&members[2], &bearer, 90..91);
@@ -525,6 +541,24 @@ fn members_on_openraft_0_9_and_0_10_exchange_snapshots_and_one_rolls_back() {
             member.lists(&bearer, "t90")
         });
     }
+
+    // Rolling member 3 forward finishes the upgrade: every member reports
+    // this build's level, and the group records its identity.
+    members[2].stop();
+    members[2].start(&current, &peers, "existing");
+    members[2].wait_ready();
+    until("the group records its identity", || {
+        matches!(
+            http(
+                members[2].api,
+                "GET",
+                "/v1/cluster/identity",
+                Some(&bearer),
+                None
+            ),
+            Some((200, _))
+        )
+    });
     for member in &mut members {
         member.stop();
     }

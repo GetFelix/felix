@@ -846,7 +846,7 @@ finalize it. See the runbook above.
 | Internal protocol *kind* | Safe once every broker is back on the old build; see the note on credentialed forwards below |
 | Fleet feature, not finalized | Safe; broker by broker |
 | Fleet feature, finalized | **Not possible** to a build without it; a broker on such a build is refused. Roll back to a build that still has the feature |
-| Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
+| Control-plane metadata version (Raft) | Safe until something at the new level is written, such as a jump-hash stream, or the group identity, which the group records as soon as every member runs a release at level 32. After that, **not** below it: a member from metadata version 3 on refuses entries and snapshots with fields it does not know, and stops; an older one silently drops them. Roll the member forward |
 | `INTERNAL_VERSION` | Cutover again, in both directions |
 | `FORMAT_VERSION` | **Not possible.** Restore from backup |
 

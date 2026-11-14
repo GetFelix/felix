@@ -1,0 +1,1 @@
+- The upgrade docs now say that a Raft control-plane member can be rolled back to an older release only while the upgrade is under way: once every member runs a release at metadata level 32, the group records its identity and an older release refuses the store (#2438).
