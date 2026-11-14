@@ -96,6 +96,11 @@
 (* log up to its tail, so any member can lead. A refused producer keeps    *)
 (* re-sending: it never gives the sequence up. The records of a cut batch  *)
 (* are visible to readers before the batch is finished.                    *)
+(*                                                                         *)
+(* A new leader here places sends at once. The code serves a term only     *)
+(* once every earlier entry is applied, so it never places one over a      *)
+(* tail it took over. The model allows more than the code, which keeps     *)
+(* its passes sound for the code.                                          *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -380,5 +385,9 @@ NeverFinishesOverTail ==
 
 \* A member installs a snapshot: more members have a base than purges ran.
 NeverInstalls == Cardinality({m \in Members : base[m] > 0}) <= purges
+
+\* A send is answered as held: it is acknowledged by a step that neither
+\* appends nor commits. Commit always empties the tail.
+NeverAnswersHeld == [][\A a \in acked' \ acked : tail' # tail]_vars
 
 =============================================================================

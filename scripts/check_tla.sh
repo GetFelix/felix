@@ -573,6 +573,7 @@ expectations=(
   "FelixRaftBatchReachRefusal violates NeverRefuses"
   "FelixRaftBatchReachInstall violates NeverInstalls"
   "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
+  "FelixRaftBatchReachHeld violates NeverAnswersHeld"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"
