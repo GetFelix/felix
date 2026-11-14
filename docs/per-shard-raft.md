@@ -2156,7 +2156,8 @@ it holds of the batch:
 
 - its log starts inside the batch (a purge, or a copy that started above
   the batch's first record), so it holds later records of the batch
-  without the first;
+  without the first. Once no record of the batch is left in the log, the
+  batch is forgotten like any other that retention removed;
 - the records it holds of the batch do not follow one another;
 - the re-send has a different number of records than the batch in the log.
 

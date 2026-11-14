@@ -418,6 +418,11 @@ fn raft_config() -> LogConfig {
     }
 }
 
+/// The producer state the snapshot file holds and the offset it is as of.
+fn saved(dir: &TempDir) -> (crate::disk_log::producers::ProducerState, Offset) {
+    crate::disk_log::producers::load(dir.path()).expect("a snapshot")
+}
+
 /// A batch another record cut is still known after a restart, whether the
 /// open reads it from the snapshot or from the records, and the pieces it
 /// was owed then finish it.
@@ -435,13 +440,19 @@ async fn a_cut_batch_is_known_again_after_a_restart() {
         log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
             .await
             .expect("append");
-        log.append(&records(&["theirs"])).await.expect("append");
+        // Enough after the cut to roll, so a snapshot is saved past it.
+        for _ in 0..6 {
+            log.append(&records(FILLED)).await.expect("append");
+        }
         assert_eq!(log.producer_unfinished(9, 0), cut);
         log.shutdown().await.expect("shutdown");
     }
+    let (snapshot, as_of) = saved(&dir);
+    assert!(as_of > 2, "as of {as_of}");
+    assert_eq!(snapshot.unfinished(9, 0), cut);
     for snapshot in [true, false] {
         if !snapshot {
-            let _ = std::fs::remove_file(snapshot_path(&dir));
+            std::fs::remove_file(snapshot_path(&dir)).expect("remove");
         }
         let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
         assert_eq!(log.producer_unfinished(9, 0), cut, "snapshot: {snapshot}");
@@ -450,13 +461,13 @@ async fn a_cut_batch_is_known_again_after_a_restart() {
     }
 
     let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
-    log.append(&[piece(0, 2, 3, "c")]).await.expect("append");
+    let last = log.append(&[piece(0, 2, 3, "c")]).await.expect("append");
     assert_eq!(log.producer_unfinished(9, 0), None);
     assert_eq!(
         log.producer_sequence(9, 0),
         ProducerSequence::Held {
             first: 0,
-            last: 3,
+            last: last.last_offset,
             digest: digest(&["a", "b", "c"]),
         }
     );
@@ -483,7 +494,10 @@ async fn a_cut_batch_whose_first_record_is_removed_cannot_be_finished() {
     }
     // Written by a leader that held the first record, as the rest of it.
     let second = log.append(&[piece(0, 1, 3, "b")]).await.expect("append");
-    log.append(&records(&["theirs"])).await.expect("append");
+    // Enough after it to roll, so a snapshot is saved with the piece in it.
+    for _ in 0..6 {
+        log.append(&records(FILLED)).await.expect("append");
+    }
     assert_eq!(
         log.producer_unfinished(9, 0),
         Some(UnfinishedBatch {
@@ -508,9 +522,13 @@ async fn a_cut_batch_whose_first_record_is_removed_cannot_be_finished() {
     log.shutdown().await.expect("shutdown");
     drop(log);
 
+    // The snapshot was saved with the piece, before or after the trim.
+    let (snapshot, as_of) = saved(&dir);
+    assert!(as_of > second.first_offset, "as of {as_of}");
+    assert_eq!(snapshot.unfinished(9, 0).map(|cut| cut.held), Some(2));
     for snapshot in [true, false] {
         if !snapshot {
-            let _ = std::fs::remove_file(snapshot_path(&dir));
+            std::fs::remove_file(snapshot_path(&dir)).expect("remove");
         }
         let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
         assert_eq!(

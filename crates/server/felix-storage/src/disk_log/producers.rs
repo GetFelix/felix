@@ -108,6 +108,10 @@ pub(crate) struct ProducerState {
     /// another record has followed. It stays until the producer opens a
     /// batch again or the last record held of it leaves the log.
     cuts: HashMap<u64, OpenBatch>,
+    /// Whether cut batches are kept: on a Raft log, where pieces can finish
+    /// one. Anywhere else a cut batch is abandoned and written again whole.
+    /// Not part of the snapshot.
+    keeps_cuts: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +189,14 @@ impl OpenBatch {
 }
 
 impl ProducerState {
+    #[cfg(test)]
+    pub(crate) fn keeping_cuts() -> Self {
+        Self {
+            keeps_cuts: true,
+            ..Self::default()
+        }
+    }
+
     /// Where `sequence` stands for `producer_id`.
     pub(crate) fn classify(&self, producer_id: u64, sequence: u64) -> ProducerSequence {
         if let Some(open) = &self.open
@@ -362,6 +374,9 @@ impl ProducerState {
     }
 
     fn cut(&mut self, open: OpenBatch) {
+        if !self.keeps_cuts {
+            return;
+        }
         self.cuts.insert(open.batch.producer_id, open);
         if self.cuts.len() > MAX_CUTS
             && let Some(oldest) = self
@@ -631,6 +646,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
             producers,
             open,
             cuts,
+            keeps_cuts: false,
         },
         as_of,
     ))
@@ -716,10 +732,12 @@ impl Reader<'_> {
 /// the oldest record otherwise, then replays the marks up to the tail. On open
 /// the active segment's marks come from recovery's scan (`active_marks`), so
 /// with a current snapshot nothing is read that recovery did not already read.
+/// `keeps_cuts` is whether this is a Raft log.
 pub(super) fn rebuild(
     dir: &Path,
     segments: &SegmentSet,
     active_marks: Option<&[(Offset, RecordMark, u64)]>,
+    keeps_cuts: bool,
 ) -> crate::Result<ProducerState> {
     let base = segments.base_offset();
     let tail = segments.tail_offset();
@@ -732,6 +750,10 @@ pub(super) fn rebuild(
             segments.first_markable_offset().max(base),
         ),
     };
+    state.keeps_cuts = keeps_cuts;
+    if !keeps_cuts {
+        state.cuts.clear();
+    }
     state.prune(base);
 
     let active_base = segments.active().base_offset();

@@ -220,8 +220,8 @@ segment, so damage here is never a torn write. It is always an error.
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
 | 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
-| 28 | 20, 24 or 8 | `tag` | 20 bytes when only bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 24 bytes on a batch piece (bits 31 and 30): the same, then `position u32`. 8 bytes on a trim record: `floor u64` |
-| 28, 36, 48 or 52 | n | body | the payload, opaque bytes; with bit 26, preceded by the key and headers and their `u32` length; with bit 27, followed by the publisher and its `u8` length |
+| 28 | 20, 24 or 8 | `tag` | 20 bytes when only bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 24 bytes on a batch piece (bits 31 and 30, v9 only, after the 36-byte v9 header): the same, then `position u32`. 8 bytes on a trim record: `floor u64` |
+| 28, 36 or 48 | n | body | the payload, opaque bytes; with bit 26, preceded by the key and headers and their `u32` length; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
 an idempotent producer.
@@ -378,6 +378,8 @@ things the unnamed mark cannot:
 - A log that has lost a batch's first record (a purge, or a copy that starts
   inside the batch) still sees from the pieces left that the batch is
   there, so a re-send of it is refused and never written a second time.
+  Once no record of the batch is left, the log has forgotten it, like any
+  batch retention removed.
 - Pieces that do not follow one another (position 2 with no position 1)
   mark a batch that cannot be finished.
 
@@ -1663,7 +1665,9 @@ refused as from an unknown producer.
 
 Because pieces name their batch, the same holds for a log read from any
 base: a log pruned to an offset and a copy that starts at that offset
-remember the same batches.
+remember the same batches, as long as neither bound above was reached.
+Cut batches are kept only on a Raft log. On any other log nothing can
+finish one, so it is abandoned as before.
 
 
 ## `head`: the trim records' head entries

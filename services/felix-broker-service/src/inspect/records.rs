@@ -424,7 +424,7 @@ fn kind(mark: &RecordMark) -> String {
         RecordMark::Piece(piece) => {
             format!(
                 "producer-batch-piece ({} of {})",
-                piece.position + 1,
+                piece.position.saturating_add(1),
                 piece.len
             )
         }

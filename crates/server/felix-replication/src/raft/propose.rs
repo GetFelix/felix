@@ -102,6 +102,8 @@ const DISCARDED: &str = "a newer leader discarded the entry";
 const STOPPED: &str = "the shard's group stopped";
 const UNKNOWN: &str = "the entry was not reported written";
 const EMPTY: &str = "the batch held no record";
+const NOT_THE_REST: &str =
+    "the records are not the rest of the producer's batch, so nothing was written";
 const SEVERAL: &str =
     "an idempotent batch of several records is not written on Raft, so nothing was written";
 
@@ -219,7 +221,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         Some(Sequenced { position, len, .. })
             if u64::from(position) + count as u64 != u64::from(len) =>
         {
-            return Err(lost(SEVERAL));
+            return Err(lost(NOT_THE_REST));
         }
         Some(Sequenced {
             producer_id,

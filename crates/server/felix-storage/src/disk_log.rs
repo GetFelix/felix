@@ -1193,8 +1193,12 @@ impl DiskLog {
         }
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
-        let producer_state =
-            producers::rebuild(&epochs_dir, &segments, Some(&recovered.active_marks))?;
+        let producer_state = producers::rebuild(
+            &epochs_dir,
+            &segments,
+            Some(&recovered.active_marks),
+            config.raft_log,
+        )?;
         let active_has_trims = recovered
             .active_marks
             .iter()
@@ -2255,7 +2259,7 @@ impl LogInner {
         producers::discard(&self.dir).map_err(StorageError::Io)?;
         crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
-        let state = producers::rebuild(&self.dir, segments, None)?;
+        let state = producers::rebuild(&self.dir, segments, None, self.config.raft_log)?;
         self.batch_open
             .store(state.is_open(), std::sync::atomic::Ordering::Release);
         *self.producers.lock() = state;
