@@ -1212,17 +1212,19 @@ fn cut_all(net: &Loopback) {
     net.cut.lock().extend(BROKERS.map(String::from));
 }
 
-/// Publish `payload` on the leader while no member reaches another, until
-/// one is answered. Returns the leader, its term and the offset, with
-/// everyone still cut off. An attempt that falls outside the lease is not
-/// answered, and may cost the leader its term once the others are back.
+/// Publish on the leader while no member reaches another, until one is
+/// answered. Returns the leader, its term, the offset and the payload
+/// answered, with everyone still cut off. An attempt that falls outside the
+/// lease is not answered, and may cost the leader its term once the others
+/// are back. It can still commit then, so each attempt has its own payload.
 async fn answered_alone(
     net: &Loopback,
     members: &[Member],
-    payload: &'static [u8],
-) -> (usize, u64, u64) {
+    name: &str,
+) -> (usize, u64, u64, &'static [u8]) {
     let orders = key("orders", 0);
-    for _ in 0..40 {
+    for attempt in 0..40 {
+        let payload: &'static [u8] = format!("{name}-{attempt}").into_bytes().leak();
         net.cut.lock().clear();
         // A heartbeat or two, so a majority has answered inside the lease.
         tokio::time::sleep(timers().heartbeat * 2).await;
@@ -1233,7 +1235,7 @@ async fn answered_alone(
         cut_all(net);
         let answered = members[leader].publish_within(term, payload, UNANSWERED);
         if let Some(offset) = answered.await {
-            return (leader, term, offset);
+            return (leader, term, offset, payload);
         }
     }
     panic!("no publish was answered while the leader reached nobody");
@@ -1262,7 +1264,7 @@ async fn publishes_again(members: &[Member]) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_stream_is_answered_on_its_leaders_log() {
     let (net, members, _) = trio_at(ConsistencyLevel::Leader).await;
-    let (leader, _, offset) = answered_alone(&net, &members, b"l1").await;
+    let (leader, _, offset, payload) = answered_alone(&net, &members, "l1").await;
     let leader = &members[leader];
     assert!(leader.bound() <= offset, "committed with nobody reachable");
     let subscription = leader.broker.subscribe("t1", "ns", "orders", 0);
@@ -1274,7 +1276,7 @@ async fn a_leader_stream_is_answered_on_its_leaders_log() {
     // term and commits the record.
     net.cut.lock().clear();
     let got = delivered(&mut receiver).await;
-    assert_eq!(got, (offset, bytes::Bytes::from_static(b"l1")));
+    assert_eq!(got, (offset, bytes::Bytes::from_static(payload)));
     assert!(leader.bound() > offset);
     stop(&members).await;
 }
@@ -1330,14 +1332,14 @@ async fn a_leader_cut_off_past_its_lease_answers_no_leader_publish() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_acknowledgement_does_not_outlive_its_leader() {
     let (net, mut members, _) = trio_at(ConsistencyLevel::Leader).await;
-    let (leader, term, lost) = answered_alone(&net, &members, b"lost").await;
+    let (leader, term, lost, lost_payload) = answered_alone(&net, &members, "lost").await;
 
     let old = members.remove(leader);
     net.runtimes.lock().remove(old.name);
     EngineShards::shutdown(&*old.shards).await;
     net.cut.lock().clear();
 
-    let (next, next_term, kept) = answered_alone(&net, &members, b"kept").await;
+    let (next, next_term, kept, kept_payload) = answered_alone(&net, &members, "kept").await;
     assert!(next_term > term);
     net.cut.lock().clear();
     until("the new leader's record commits", || {
@@ -1349,9 +1351,13 @@ async fn a_leader_acknowledgement_does_not_outlive_its_leader() {
         .read_durable("t1", "ns", "orders", 0, 0, 1 << 20)
         .await
         .expect("read");
-    assert!(read.iter().any(|record| &record.payload[..] == b"kept"));
     assert!(
-        read.iter().all(|record| &record.payload[..] != b"lost"),
+        read.iter()
+            .any(|record| &record.payload[..] == kept_payload)
+    );
+    assert!(
+        read.iter()
+            .all(|record| &record.payload[..] != lost_payload),
         "offset {lost} was acknowledged by the old leader alone"
     );
     stop(&members).await;

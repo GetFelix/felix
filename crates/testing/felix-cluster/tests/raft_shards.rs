@@ -277,7 +277,9 @@ async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowl
 /// acknowledges nothing the group loses once its lease is over.** The
 /// broker keeps running and still says it leads, while the others elect.
 /// Whatever is acknowledged from then on, by either side, is in the log the
-/// group agrees on after the partition heals.
+/// group agrees on after the partition heals. This late the group takes no
+/// write from the old leader, so this is the whole path and not the lease
+/// check alone, which felix-replication's `raft/tests/deliver.rs` covers.
 #[tokio::test]
 #[serial]
 async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease() {
