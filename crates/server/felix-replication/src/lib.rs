@@ -60,6 +60,8 @@ pub(crate) mod reclaim;
 pub(crate) mod replica;
 mod replica_set;
 pub mod reporter;
+#[cfg(feature = "raft")]
+pub mod seal;
 mod shard;
 mod ship;
 pub mod status;

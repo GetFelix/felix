@@ -55,6 +55,8 @@ pub(crate) mod crash_point;
 #[cfg(feature = "raft")]
 pub(crate) mod dir_lock;
 pub(crate) mod durable_mark;
+#[cfg(feature = "raft")]
+pub(crate) use durable_mark::left_poisoned;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -69,6 +71,8 @@ mod retention;
 mod sealed;
 mod segments;
 mod set;
+#[cfg(feature = "raft")]
+pub mod switch;
 mod sync;
 
 pub use producers::ProducerSequence;
@@ -84,7 +88,7 @@ use parking_lot::{Mutex, RwLock};
 
 use self::append::RollState;
 use self::producers::ProducerState;
-use self::sealed::SealedFiles;
+pub(crate) use self::sealed::SealedFiles;
 use self::segments::SegmentSet;
 use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
@@ -103,6 +107,9 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 /// fsynced on commit. Its records are written behind too, so an offset that
 /// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The file that makes a shard directory a Raft copy (`raft_copy`).
+pub(crate) const RAFT_COPY_FILE: &str = "raft-copy";
 
 /// How soon a Raft log's commit writer asks again when the replica state is
 /// locked and it cannot tell when the last write was.
@@ -211,7 +218,7 @@ impl DiskLog {
         label: impl Into<String>,
         config: LogConfig,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -240,7 +247,7 @@ impl DiskLog {
         config: LogConfig,
         base_offset: Offset,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -266,7 +273,7 @@ impl DiskLog {
         config: LogConfig,
         keep_alive: Arc<dyn std::any::Any + Send + Sync>,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         let log = Self::open_shared(
             dir.into(),
             label.into(),
@@ -362,6 +369,11 @@ impl DiskLog {
     #[cfg(test)]
     pub(crate) fn open_sealed_segments(&self) -> usize {
         self.inner.segments.read().open_sealed_segments()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_sealed_files(&self, files: &Arc<SealedFiles>) -> bool {
+        self.inner.segments.read().uses_sealed_files(files)
     }
 
     /// Every segment on disk, oldest first.
@@ -1254,6 +1266,10 @@ impl DiskLog {
             accepted_generation: AtomicU64::new(accepted.generation),
             led_generation: AtomicU64::new(0),
             ballot: RwLock::new(accepted),
+            #[cfg(feature = "raft")]
+            switch_seal: Mutex::new(switch::seal::load(&epochs_dir)?),
+            #[cfg(feature = "raft")]
+            seal_matched: Mutex::new(None),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
             wiped: RwLock::new(wiped),
@@ -1287,8 +1303,10 @@ impl DiskLog {
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             extensions_done: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "fault-injection"))]
+            fail_flush_past: AtomicU64::new(u64::MAX),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1443,6 +1461,22 @@ impl DiskLog {
     }
 }
 
+#[cfg(any(test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Fail this log's next flush, as a failed fsync would: the log is
+    /// poisoned and leaves its marker. For tests, in this crate and outside.
+    pub fn fail_next_flush(&self) {
+        self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+
+    /// Fail the first flush that would make the record at `offset` durable,
+    /// as [`Self::fail_next_flush`] does. Flushes of earlier records, such
+    /// as one with nothing new to sync, pass.
+    pub fn fail_flush_past(&self, offset: Offset) {
+        self.inner.fail_flush_past.store(offset, Ordering::Release);
+    }
+}
+
 /// A stalled device, for tests here and in other crates. Not in a plain
 /// release build, like [`crate::fault`].
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
@@ -1458,11 +1492,6 @@ impl DiskLog {
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
-    /// Fail the next flush, as a failed fsync would.
-    pub(crate) fn fail_next_flush(&self) {
-        self.inner.fail_next_flush.store(true, Ordering::Release);
-    }
-
     /// Wait until the commit offset in memory is the one on disk.
     pub(crate) async fn commit_offset_persisted(&self) {
         while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {
@@ -1912,6 +1941,14 @@ struct LogInner {
     /// replicated batch, so a raise is seen with its own leader. Written only
     /// under `replica_persisted`.
     ballot: RwLock<ballot::Accepted>,
+    #[cfg(feature = "raft")]
+    /// The switch seal this copy promised, as on disk. Held while the file
+    /// is written, so two promises cannot interleave.
+    switch_seal: Mutex<Option<switch::seal::SealPromise>>,
+    #[cfg(feature = "raft")]
+    /// The seal whose digest this process last found its records to match.
+    /// See [`DiskLog::ack_seal`].
+    seal_matched: Mutex<Option<switch::SwitchBase>>,
     /// The generation of `replica_set`, zero for none, read without a lock on
     /// every stamped batch. Raised only after the set is on disk.
     set_generation: AtomicU64,
@@ -2022,8 +2059,12 @@ struct LogInner {
     #[cfg(test)]
     extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// Makes the first flush that covers this offset fail the same way.
+    /// `u64::MAX` when unset.
+    #[cfg(any(test, feature = "fault-injection"))]
+    fail_flush_past: AtomicU64,
     /// Makes the next truncation or reset fail to sync the durable mark.
     #[cfg(test)]
     fail_next_rewind_sync: std::sync::atomic::AtomicBool,

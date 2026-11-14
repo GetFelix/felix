@@ -1086,6 +1086,34 @@ a Raft shard's directory holds an `engine` file with the one line `raft`.
   marker.
 - Any other content is refused by both: a newer build wrote it.
 
+The switch's seal (`docs/per-shard-raft.md`, "The seal on the hybrid side")
+writes two things. Its generation-start record has a longer payload: the
+generation, the four bytes `SEAL`, a version byte (`1`), the seal's start,
+the 32-byte digest of the records from the start to the record, and for the
+dead-letter log and then the group-cursor log a start, an end and a digest,
+149 bytes in all, big-endian. A reader that takes the generation from the
+first eight bytes reads it as before. And each copy that takes the seal
+writes a `switch-seal` file in the shard's directory: the magic `FLSP`, a
+version (`1`), the generation, the sealing copy's 16-byte storage id, a
+claimed flag (`0` or `1`) and a CRC-32 over the rest, 35 bytes. It is
+written as the ballot is (a temporary file, fsync, rename, fsync of the
+directory). One that does not decode fails the open: it cannot be rebuilt.
+
+> `crates/server/felix-storage/src/disk_log/switch/seal/tests.rs`.
+
+A directory the hybrid wrote becomes a Raft log only through the switch to
+Raft (`docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft").
+Its marker has a second line, `base <G> <N>`: the seal's generation and the
+offset of its generation-start record. `disk_log::switch::start_voter`
+writes it last, after the member's snapshot, purged id, vote and commit, so a
+directory with this marker holds all of them and one without it is started
+again from the beginning. A second start from another base is refused. A
+build that predates the line refuses the directory as a newer build's.
+
+> `crates/server/felix-storage/src/disk_log/switch/tests.rs`,
+> `a_crash_before_the_marker_starts_the_voter_again_with_the_same_result` and
+> `a_member_never_starts_from_a_second_base`.
+
 The hybrid writes no marker, so a directory from before the file existed
 opens as it always did. A metadata store's log is a Raft log with no marker:
 nothing else ever opens its directory.
@@ -1745,6 +1773,11 @@ it reads every byte past the mark back and writes it again, then syncs. Either
 way it writes the state files again and removes `poisoned` last. A file that
 does not decode cuts and rewrites nothing, logs a warning, and still triggers
 the rewrite of the state files.
+
+A directory that also holds a `raft-copy` file is not opened this way. The
+open is refused and `poisoned` stays, and the copy root moves the directory
+aside and starts a new copy (`docs/per-shard-raft.md`, "A poisoned log"
+under "Group and member identity").
 
 ## `storage-id`: the data directory's identity
 

@@ -81,6 +81,22 @@ pub(crate) struct StreamState {
     /// The log belongs to the shard's engine, which gives records their
     /// offsets: nothing here appends to it, and what is held was committed.
     pub(crate) engine_log: bool,
+    /// This broker leads the shard on its engine's log: records reach the
+    /// ring from its publishers' batches. Otherwise they are read from the
+    /// log as the engine commits them.
+    pub(crate) leads_engine_log: AtomicBool,
+    /// Held across a pass that delivers from the engine's log, and across a
+    /// new leader's move to the committed tail, so the two never interleave.
+    pub(crate) log_pass: tokio::sync::Mutex<()>,
+    /// How many callers wait to lead the shard on its engine's log. While
+    /// one does, a pass ends a `Block` subscriber it finds full instead of
+    /// waiting on it: a slow reader must not hold up a term's writes.
+    pub(crate) leads_wanted: AtomicUsize,
+    /// Wakes a pass waiting on full subscribers when `leads_wanted` rises.
+    pub(crate) lead_wanted: tokio::sync::Notify,
+    /// Holds a release just before its ring append, for a test to act there.
+    #[cfg(test)]
+    pub(crate) stall_release: Stall,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -197,6 +213,12 @@ impl StreamState {
             held: CommitHold::default(),
             proposals: ProposalOrder::default(),
             engine_log: false,
+            leads_engine_log: AtomicBool::new(false),
+            log_pass: tokio::sync::Mutex::new(()),
+            leads_wanted: AtomicUsize::new(0),
+            lead_wanted: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            stall_release: Stall::default(),
             commits: CommitScan::default(),
         }
     }
@@ -278,6 +300,24 @@ impl StreamState {
             state.state_view = None;
             state.next_seq = end;
         }
+    }
+
+    pub(crate) fn has_subscribers(&self) -> bool {
+        !self.subscribers.lock().senders.is_empty()
+    }
+
+    /// Start again at `to` with an empty ring, if nobody is registered to
+    /// miss what lies between. A reader below `to` is served from the log.
+    pub(crate) fn jump_unwatched(&self, to: u64) -> bool {
+        let mut state = self.log_state.lock();
+        if to <= state.next_seq || !self.subscribers.lock().senders.is_empty() {
+            return false;
+        }
+        state.log.clear();
+        state.state_view = None;
+        state.generation_start_run = None;
+        state.next_seq = to;
+        true
     }
 
     pub(crate) fn deactivate(&self) {
@@ -469,6 +509,11 @@ impl StreamState {
     /// and nothing is appended, if a reset superseded it: resets bump the
     /// sequencer under this same lock, so the check cannot race one.
     ///
+    /// `released_from` is where a batch released from the hold starts,
+    /// counting the record-less offsets just below it. On an engine's log
+    /// that this broker no longer leads, a batch starting above the
+    /// sequence is not appended, and `None` comes back.
+    ///
     /// `commit` is a commit's state updates. They go to the state view under
     /// the same lock as the event goes to the ring, so no reader sees one
     /// without the other.
@@ -477,6 +522,7 @@ impl StreamState {
         &self,
         payloads: &[Bytes],
         first_seq: Option<u64>,
+        released_from: Option<u64>,
         turn: Option<&CommitTurn<'_>>,
         log_capacity: usize,
         commit: Option<&[StateOp]>,
@@ -505,6 +551,27 @@ impl StreamState {
             }
         }
         if turn.is_some_and(|turn| !turn.is_current()) {
+            return None;
+        }
+        // On an engine's log a batch can come twice: released from a deposed
+        // term's hold, and read from the log by the pass that followed.
+        if self.engine_log
+            && let Some(first) = first_seq
+            && first + payloads.len() as u64 <= state.next_seq
+        {
+            return None;
+        }
+        // A failed batch on a broker that no longer leads keeps the sequence
+        // below offsets that may hold committed records. A batch released
+        // behind it would carry the sequence past them, so it is left to the
+        // pass over the log. Decided under the log lock, which ending the
+        // deposed term's readers takes too: a reader that joins after they
+        // are ended is either above this batch or gets it, and what lies
+        // below it, from the pass.
+        if self.engine_log
+            && released_from.is_some_and(|from| from > state.next_seq)
+            && !self.leads_engine_log.load(Ordering::Acquire)
+        {
             return None;
         }
 
@@ -628,7 +695,11 @@ impl StreamState {
             return;
         }
         // Readers still registered were never offered the records it passes.
-        self.end_passed_over(&state, to);
+        // On an engine's log they were delivered up to `next_seq` from the
+        // log, so a pass over offsets that hold no record skips nothing.
+        if !self.engine_log || tail - state.next_seq > run {
+            self.end_passed_over(&state, to);
+        }
         state.forget_view_across(tail, run);
         // The ring would end below records a reader from it then never gets.
         state.log.clear();
@@ -682,7 +753,17 @@ impl StreamState {
     /// exercise the ring without a log behind it.
     #[cfg(test)]
     pub(crate) fn append_batch(&self, payloads: &[Bytes], log_capacity: usize) {
-        self.append_batch_at(payloads, None, None, log_capacity, None, None, None, None);
+        self.append_batch_at(
+            payloads,
+            None,
+            None,
+            None,
+            log_capacity,
+            None,
+            None,
+            None,
+            None,
+        );
     }
 
     pub(crate) fn register_subscriber(&self) -> (u64, SubscriptionReceiver) {
@@ -1025,6 +1106,34 @@ impl LogState {
         if start > self.next_seq.saturating_add(skipped) {
             self.state_view = None;
         }
+    }
+}
+
+/// A point a test can hold a task at.
+#[cfg(test)]
+#[derive(Debug)]
+pub(crate) struct Stall(tokio::sync::watch::Sender<bool>);
+
+#[cfg(test)]
+impl Default for Stall {
+    fn default() -> Self {
+        Self(tokio::sync::watch::Sender::new(false))
+    }
+}
+
+#[cfg(test)]
+impl Stall {
+    pub(crate) fn set(&self, stalled: bool) {
+        self.0.send_replace(stalled);
+    }
+
+    /// Whether a task is held here now.
+    pub(crate) fn holds(&self) -> bool {
+        *self.0.borrow() && self.0.receiver_count() > 0
+    }
+
+    pub(crate) async fn wait(&self) {
+        let _ = self.0.subscribe().wait_for(|stalled| !stalled).await;
     }
 }
 
