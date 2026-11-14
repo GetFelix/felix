@@ -113,9 +113,13 @@ impl ForwardingHandler {
         // A forward can reach this broker between a move's fence and its
         // cut-over, or ahead of this broker's own routes. Either settles in
         // milliseconds, so it waits here rather than bouncing the requester.
-        self.ingress
-            .settle(&key, publish.shard.generation, publish.shard.incarnation)
-            .await;
+        // A Raft shard has no move to wait out: its group says who leads.
+        let on_raft = self.engine.on_raft(&key);
+        if !on_raft {
+            self.ingress
+                .settle(&key, publish.shard.generation, publish.shard.incarnation)
+                .await;
+        }
         if let Some(denial) = self.check_ownership(correlation_id, &key, &publish.shard) {
             return denial.into_publish_answer(correlation_id);
         }
@@ -166,6 +170,9 @@ impl ForwardingHandler {
             }
         };
 
+        if on_raft {
+            return self.apply_on_raft(&key, &handle, publish).await;
+        }
         let fenced = match self.ingress.fence().admit(&key, publish.shard.generation) {
             Ok(fenced) => fenced,
             Err(refused) => {
@@ -243,6 +250,69 @@ impl ForwardingHandler {
                 // The owner accepted the request and the write failed. Distinct
                 // from a refusal: the requester must not retry, because this
                 // broker did try.
+                metrics::record_served(metrics::OUTCOME_ERROR);
+                error(correlation_id, ErrorCode::StorageFailed, err.to_string())
+            }
+        }
+    }
+
+    /// Propose a forwarded batch to the shard's Raft group, which this
+    /// broker leads, and answer at its commit. The requester's generation is
+    /// the term it saw; the batch is written at the term served here now.
+    async fn apply_on_raft(
+        &self,
+        key: &ShardKey,
+        handle: &felix_broker::StreamHandle,
+        publish: ForwardPublish,
+    ) -> InternalMessage {
+        let correlation_id = publish.correlation_id;
+        let refused = if publish.producer.is_some() {
+            Some("idempotent publishes")
+        } else if publish.headers.is_some() {
+            Some("record headers")
+        } else {
+            None
+        };
+        if let Some(what) = refused {
+            metrics::record_served(metrics::OUTCOME_REFUSED);
+            let err = felix_broker::BrokerError::NotOnEngineStream { what };
+            return error(correlation_id, ErrorCode::UnsupportedKind, err.to_string());
+        }
+        let records = publish.payloads.len() as u64;
+        let proposed = self.engine.raft_term(key).and_then(|term| {
+            self.engine.publish_on_raft(
+                &self.broker,
+                handle,
+                key,
+                term,
+                publish.payloads,
+                self.quorum_timeout,
+            )
+        });
+        let proposed = match proposed {
+            Some(Ok(proposed)) => proposed,
+            // Deposed since the ownership check, or the group is taking no
+            // more. Nothing was written, so the requester may send it again.
+            Some(Err(refused)) => {
+                metrics::record_served(metrics::OUTCOME_REFUSED);
+                return error(correlation_id, ErrorCode::Unavailable, refused.to_string());
+            }
+            None => {
+                metrics::record_served(metrics::OUTCOME_REFUSED);
+                let detail = "this broker stopped leading the shard's Raft group";
+                return error(correlation_id, ErrorCode::Unavailable, detail.to_string());
+            }
+        };
+        match proposed.complete().await {
+            Ok(first) => {
+                metrics::record_served(metrics::OUTCOME_OK);
+                InternalMessage::ForwardPublishOk(ForwardPublishOk::new(
+                    correlation_id,
+                    first.map(|first| (first, first + records.saturating_sub(1))),
+                ))
+            }
+            // The batch may still commit, so this is not a refusal.
+            Err(err) => {
                 metrics::record_served(metrics::OUTCOME_ERROR);
                 error(correlation_id, ErrorCode::StorageFailed, err.to_string())
             }
@@ -678,6 +748,9 @@ impl ForwardingHandler {
     ) -> Option<Denial> {
         let claimed_generation = claimed.generation;
         match self.ingress.dispatch(key) {
+            // The group's term is the whole check: the requester's number is
+            // the term it saw, and the write is proposed at the one led now.
+            Dispatch::Local { .. } if self.engine.on_raft(key) => return None,
             Dispatch::Local { .. } => {}
             Dispatch::Forward {
                 node_id,

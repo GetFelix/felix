@@ -44,6 +44,16 @@ if [ "${1:-}" = "--simulate" ]; then
 elif [ "${1:-}" = "--plan-heavy" ]; then
   mode=plan-heavy
   shift
+elif [ "${1:-}" = "--affected" ]; then
+  mode=affected
+  affected_base="${2:?--affected needs a base revision}"
+  shift 2
+  affected_walks=""
+  if [ "${1:-}" = "--simulate" ]; then
+    affected_walks=1
+    shift
+  fi
+  TLA_CHANGED_BASE="${TLA_CHANGED_BASE:-$affected_base}"
 fi
 
 TLA_VERSION="v1.7.4"
@@ -81,6 +91,34 @@ fetch_tools() {
   exit 1
 }
 
+# The module a configuration checks: the one whose name it starts with.
+module_of() {
+  case "$1" in
+    FelixPlacementPacing*) echo FelixPlacementPacing ;;
+    FelixShardWalkElectStaleSetReplay) echo FelixShardWalkElectStaleSetReplay ;;
+    FelixShardWalkSparesSeatEarlyReplay) echo FelixShardWalkSparesSeatEarlyReplay ;;
+    FelixShardFigure8*) echo FelixShardFigure8 ;;
+    FelixShardReads*) echo FelixShardReads ;;
+    FelixShardSessions*) echo FelixShardSessions ;;
+    FelixAtomicCommit*) echo FelixAtomicCommit ;;
+    FelixHeadTrim*) echo FelixHeadTrim ;;
+    FelixGroups*) echo FelixGroups ;;
+    FelixRaftMembership*) echo FelixRaftMembership ;;
+    FelixRaftIdentity*) echo FelixRaftIdentity ;;
+    FelixRaftPlacement*) echo FelixRaftPlacement ;;
+    FelixRaftReform*) echo FelixRaftReform ;;
+    FelixRaftLease*) echo FelixRaftLease ;;
+    FelixRaftSleep*) echo FelixRaftSleep ;;
+    FelixRaftCache*) echo FelixRaftCache ;;
+    FelixRaftSwitch*) echo FelixRaftSwitch ;;
+    FelixRaftWritten*) echo FelixRaftWritten ;;
+    FelixRaft*) echo FelixRaft ;;
+    FelixShardUnified*) echo FelixShardUnified ;;
+    FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
+    *) echo FelixShard ;;
+  esac
+}
+
 # Run TLC on one configuration, printing its output; the exit code is TLC's.
 #
 # Checkpoints off and the scratch directory outside the tree: TLC otherwise
@@ -90,31 +128,9 @@ fetch_tools() {
 tlc() {
   local cfg="$1"
   shift
-  local scratch
+  local scratch module
   scratch="$(mktemp -d "${TLC_SCRATCH_DIR:-${TMPDIR:-/tmp}}/tlc.XXXXXX")"
-  # A configuration checks the module whose name it starts with.
-  local module="FelixShard"
-  case "$cfg" in
-    FelixPlacementPacing*) module="FelixPlacementPacing" ;;
-    FelixShardWalkElectStaleSetReplay) module="FelixShardWalkElectStaleSetReplay" ;;
-    FelixShardWalkSparesSeatEarlyReplay) module="FelixShardWalkSparesSeatEarlyReplay" ;;
-    FelixShardFigure8*) module="FelixShardFigure8" ;;
-    FelixShardReads*) module="FelixShardReads" ;;
-    FelixShardSessions*) module="FelixShardSessions" ;;
-    FelixAtomicCommit*) module="FelixAtomicCommit" ;;
-    FelixHeadTrim*) module="FelixHeadTrim" ;;
-    FelixGroups*) module="FelixGroups" ;;
-    FelixRaftMembership*) module="FelixRaftMembership" ;;
-    FelixRaftIdentity*) module="FelixRaftIdentity" ;;
-    FelixRaftPlacement*) module="FelixRaftPlacement" ;;
-    FelixRaftReform*) module="FelixRaftReform" ;;
-    FelixRaftLease*) module="FelixRaftLease" ;;
-    FelixRaftSleep*) module="FelixRaftSleep" ;;
-    FelixRaftSwitch*) module="FelixRaftSwitch" ;;
-    FelixRaft*) module="FelixRaft" ;;
-    FelixShardUnified*) module="FelixShardUnified" ;;
-    FelixShardMoveGiveUp*) module="FelixShardMoveGiveUp" ;;
-  esac
+  module="$(module_of "$cfg")"
   local flags=(-deadlock -workers "${TLC_WORKERS:-auto}" -checkpoint 0 "$@"
     -config "$cfg.cfg" "$module.tla")
   # A simulation runs until stopped, so a walk is stopped by the clock: exit
@@ -532,6 +548,16 @@ expectations=(
   "FelixRaftMembershipReachMove violates NeverMoves"
   "FelixRaftMembershipReachStepDown violates NeverRemovedLeaderStepsDown"
   "FelixRaftMembershipReachFailoverInJoint violates NeverFailoverInJoint"
+  "FelixRaftWritten pass"
+  "FelixRaftWrittenCrash pass"
+  "FelixRaftWrittenLearnerCounts violates AckedHeld"
+  "FelixRaftWrittenOtherTermCounts violates AckedHeld"
+  "FelixRaftWrittenJointOneHalf violates AckedHeld"
+  "FelixRaftWrittenCommits violates CommittedHeld"
+  "FelixRaftWrittenPowerCut violates AckedNeverLost"
+  "FelixRaftWrittenReachEarly violates NeverAcksEarly"
+  "FelixRaftWrittenReachEarlyInJoint violates NeverAcksEarlyInJoint"
+  "FelixRaftWrittenReachCommitsAfterFailover violates NeverCommitsAfterFailover"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"
@@ -595,6 +621,7 @@ expectations=(
   "FelixRaftPlacementFormTwoWipes pass"
   "FelixRaftPlacementFormAfterWipes pass"
   "FelixRaftPlacementFormMajority violates AckedHeldSurvive"
+  "FelixRaftPlacementFormAlias violates AckedHeldSurvive"
   "FelixRaftPlacementFormEarlyWipe pass"
   "FelixRaftPlacementFormEarlyWipeFirstBoot pass"
   "FelixRaftPlacementFormEarlyWipeTwo pass"
@@ -633,9 +660,43 @@ expectations=(
   "FelixRaftSwitchReachGenZero violates NeverElects"
   "FelixRaftSwitchReachWipedSwitch violates NeverSwitches"
   "FelixRaftSwitchReachReseal violates NeverSwitchesAfterReseal"
+  "FelixRaftSwitchInFlight pass"
+  "FelixRaftSwitchInFlightFailover pass"
+  "FelixRaftSwitchPowerLoss pass"
+  "FelixRaftSwitchCopySource pass"
+  "FelixRaftSwitchDigestTag pass"
+  "FelixRaftSwitchDigestSide pass"
+  "FelixRaftSwitchVoteFloor pass"
+  "FelixRaftSwitchSealHolds pass"
+  "FelixRaftSwitchStartOrder pass"
+  "FelixRaftSwitchInFlightClaimFirst violates LeaderAcksInBase"
+  "FelixRaftSwitchInFlightFailoverLeaseAtEntry violates NoAckAfterHandOver"
+  "FelixRaftSwitchPowerLossSameGen violates HybridAcksInBase"
+  "FelixRaftSwitchCopySourceAny violates StateMachineSafety"
+  "FelixRaftSwitchDigestTagSkipped violates LeaderCompleteness"
+  "FelixRaftSwitchDigestSideSkipped violates SideComplete"
+  "FelixRaftSwitchVoteFloorOff violates LeaderCompleteness"
+  "FelixRaftSwitchSealHoldsReopen violates HybridAcksInBase"
+  "FelixRaftSwitchSealHoldsBallot violates HybridAcksInBase"
+  "FelixRaftSwitchStartOrderMarkFirst violates NeverReadsBelowBase"
+  "FelixRaftSwitchReachInFlightAck violates NeverSwitchesAfterLeaderAck"
+  "FelixRaftSwitchReachFailover violates NeverSwitchesAfterFailover"
+  "FelixRaftSwitchReachPowerLoss violates NeverSwitchesAfterFailover"
+  "FelixRaftSwitchFailoverWipe pass"
+  "FelixRaftSwitchPowerLossLag pass"
+  "FelixRaftSwitchPowerLossLagAll pass"
+  "FelixRaftSwitchPowerLossFollowers pass"
+  "FelixRaftSwitchEnds pass"
+  "FelixRaftSwitchFailoverWipeVotes violates HybridAcksInBase"
+  "FelixRaftSwitchPowerLossPeriodic violates HybridAcksInBase"
+  "FelixRaftSwitchPowerLossAckBeforeSync violates BaseAgree"
+  "FelixRaftSwitchEndsLeaderWiped violates liveness"
+  "FelixRaftSwitchReachStartCrash violates NeverRestartsBeforeMark"
   "FelixRaftReform pass"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"
+  "FelixRaftReformTwoRotatedOffsetsTerms pass"
+  "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
   "FelixRaftReformStaleMembershipIntact pass"
   "FelixRaftReformLearnerWaited pass"
@@ -648,7 +709,6 @@ expectations=(
   "FelixRaftReformTwoRotatedFull pass"
   "FelixRaftReformTwoRestarts pass"
   "FelixRaftReformBeforeAll violates AckedSurvive"
-  "FelixRaftReformEpochNotChecked violates AckedSurvive"
   "FelixRaftReformReportNotPromise violates AckedSurvive"
   "FelixRaftReformPlanNotRechecked violates AckedSurvive"
   "FelixRaftReformRetireNotDurable violates AckedSurvive"
@@ -664,7 +724,10 @@ expectations=(
   "FelixRaftReformWrongDeclaration violates AckedSurvive"
   "FelixRaftReformTwoRotatedOffsetsTrailing violates OffsetNeverReused"
   "FelixRaftReformTwoRotatedOffsetsNoFloor violates OffsetNeverReused"
-  "FelixRaftReformTwoRotatedOffsetsTerms violates OffsetNeverReused"
+  "FelixRaftReformTwoRotatedOffsetsTermsIndexOnly violates OffsetNeverReused"
+  "FelixRaftReformTwoRotatedOffsetsTermsCuts violates NeverCuts"
+  "FelixRaftReformTwoRotatedOffsetsTermsUnvouched violates LossNeedsLostDisk"
+  "FelixRaftReformTwoRotatedOffsetsCutToCommit violates AckedSurvive"
   "FelixRaftReformCommits violates NeverCommitsAfterReform"
   "FelixRaftReformOneReplicaCommits violates NeverCommitsAfterReform"
   "FelixRaftReformOneReplicaSelfStarts violates NeverSelfStarts"
@@ -682,10 +745,44 @@ expectations=(
   "FelixRaftLeaseDeliver pass"
   "FelixRaftLeaseRestart pass"
   "FelixRaftLeaseRestartRenews pass"
+  "FelixRaftLeaseRestoreLed pass"
+  "FelixRaftLeaseRestoreNamed pass"
+  "FelixRaftLeaseRestoreSingle pass"
+  "FelixRaftLeaseStepDown pass"
+  "FelixRaftLeaseStepDownSync pass"
+  "FelixRaftLeaseTransfer pass"
+  "FelixRaftLeaseTransferThreeTerms pass"
+  "FelixRaftLeaseTransferWrite pass"
+  "FelixRaftLeaseTransferStepDown pass"
+  "FelixRaftLeaseRestoreTransferStepDown pass"
+  "FelixRaftLeaseRestoreTransferThreeTerms pass"
+  "FelixRaftLeaseRestoreTransferStepDownWrite pass"
+  "FelixRaftLeaseRestoreStepDown pass"
+  "FelixRaftLeaseSuspend pass"
+  "FelixRaftLeaseStepDownWrite pass"
+  "FelixRaftLeaseSuspendRoleLate pass"
+  "FelixRaftLeaseStepDownDrift pass"
+  "FelixRaftLeaseTransferDrift pass"
+  "FelixRaftLeaseSuspendDrift pass"
   "FelixRaftLeaseStore pass"
   "FelixRaftLeaseStoreStall pass"
   "FelixRaftLeaseStoreWide pass"
   "FelixRaftLeaseRestartForgets violates LeaseExclusive"
+  "FelixRaftLeaseRestoreAnyVote violates LeaseExclusive"
+  "FelixRaftLeaseReachRestoreLed violates NeverHoldSkipped"
+  "FelixRaftLeaseRestoreNamedAny violates LeaseExclusive"
+  "FelixRaftLeaseReachHeldGrant violates NeverHeldGrant"
+  "FelixRaftLeaseReachRestoreTransferThreeTerms violates NeverThirdTermOnHeldGrant"
+  "FelixRaftLeaseReachRestoreTransferThreeTermsWrite violates NeverThirdTermLocalAck"
+  "FelixRaftLeaseStepDownNoVoid violates LeaseExclusive"
+  "FelixRaftLeaseTransferKeepsLease violates LeaseExclusive"
+  "FelixRaftLeaseTransferVoidLate violates LeaseExclusive"
+  "FelixRaftLeaseTransferVoidEquality violates LeaseExclusive"
+  "FelixRaftLeaseSuspendLateCheck violates LeaseExclusive"
+  "FelixRaftLeaseReachLeaseAfterVoid violates NeverLeaseAfterVoid"
+  "FelixRaftLeaseSuspendUnchecked violates LeaseExclusive"
+  "FelixRaftLeaseTransferStepDownNoVoid violates LeaseExclusive"
+  "FelixRaftLeaseReachStepDownLocalAck violates NeverLocalAck"
   "FelixRaftLeaseLong violates LeaseExclusive"
   "FelixRaftLeaseDrift violates LeaseExclusive"
   "FelixRaftLeaseFromAck violates LeaseExclusive"
@@ -704,6 +801,9 @@ expectations=(
   "FelixRaftLeaseStoreStalledAsks violates StalledLeaseLapses"
   "FelixRaftLeaseStoreReachLocalAck violates NeverLocalAck"
   "FelixRaftLeaseStoreReachFailover violates NeverFailoverAfterLease"
+  "FelixRaftLeaseSleep pass"
+  "FelixRaftLeaseSleepHoldEndClearsWindow violates LeaseExclusive"
+  "FelixRaftLeaseSleepAnswerRenews violates LeaseExclusive"
   "FelixRaftSleep pass"
   "FelixRaftSleepWrite pass"
   "FelixRaftSleepLeaderDies pass"
@@ -725,6 +825,78 @@ expectations=(
   "FelixRaftSleepFalseAlarmFollowerBehind violates AsleepIsLevel"
   "FelixRaftSleepReachWakeOnWrite violates NeverWakesOnWrite"
   "FelixRaftSleepReachAuditElection violates NeverElectsAfterDyingAsleep"
+  "FelixRaftSleepWake pass"
+  "FelixRaftSleepWakeWrite pass"
+  "FelixRaftSleepAuditLost pass"
+  "FelixRaftSleepFalseAlarmFollowerAsked pass"
+  "FelixRaftSleepFalseAlarmFollowerAskedLost pass"
+  "FelixRaftSleepFalseAlarmFollowerBehindAsked pass"
+  "FelixRaftSleepTtl pass"
+  "FelixRaftSleepMidHandshake pass"
+  "FelixRaftSleepWriteBeforeRound violates NoWriteRefused"
+  "FelixRaftSleepAuditCampaigns pass"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostDroppedPreVoteGrants violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoVoteHold violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoPreVote violates NoNeedlessDeposal"
+  "FelixRaftSleepFalseAlarmFollowerAskedLostNoLeftOutAsked pass"
+  "FelixRaftSleepFalseAlarmFollowerBehindAskedNoRefusalWakes pass"
+  "FelixRaftSleepNoTtlWake violates QuiescentTtl"
+  "FelixRaftSleepReachMidHandshake violates NeverElectedMidHandshake"
+  "FelixRaftSleepTtlWrite pass"
+  "FelixRaftSleepTtlWriteUnconditional violates ExpiryKeepsNewer"
+  "FelixRaftSleepTtlWriteReachRace violates NeverExpirySkipsNewer"
+  "FelixRaftCache pass"
+  "FelixRaftCacheClock pass"
+  "FelixRaftCacheDedup pass"
+  "FelixRaftCacheExpiry pass"
+  "FelixRaftCacheClockSnapshot pass"
+  "FelixRaftCacheNoRequestId violates SumExact"
+  "FelixRaftCacheSnapshotDropsDedup violates SumExact"
+  "FelixRaftCacheSnapshotIdAhead violates MembersAgree"
+  "FelixRaftCacheReadNoApplyWait violates ReadsFresh"
+  "FelixRaftCachePurgePastSnapshot violates LiveReadable"
+  "FelixRaftCacheClockApplyLocalClock violates MembersAgree"
+  "FelixRaftCacheClockReadsLocalClock violates OneClock"
+  "FelixRaftCacheClockReadsLogTime violates ReadsNotStale"
+  "FelixRaftCacheClockStampNotMonotone violates OneClock"
+  "FelixRaftCacheClockFloorFromCommitted violates StampsMonotone"
+  "FelixRaftCacheClockFloorCountsBlank violates StampsMonotone"
+  "FelixRaftCacheDedupPutNotDeduped violates AnswersKept"
+  "FelixRaftCacheDedupPutAbsentNotDeduped violates AppliedOnce"
+  "FelixRaftCacheDedupDeleteNotDeduped violates AppliedOnce"
+  "FelixRaftCacheExpiryUnconditional violates ExpiryRemovesItsVersion"
+  "FelixRaftCacheClockSnapshotDropsTime violates StampsMonotone"
+  "FelixRaftCacheReachInstallRead violates NeverReadAfterInstall"
+  "FelixRaftCacheReachRetry violates NeverRetryApplied"
+  "FelixRaftCacheDedupReachRetryAnswer violates NeverRetryAnswered"
+  "FelixRaftCacheClockReachExpiry violates NeverExpiredThenTaken"
+  "FelixRaftCacheExpiryReachRefresh violates NeverExpirySkipsNewer"
+  "FelixRaftCacheExpiryReachExpireRead violates NeverReadAfterExpiry"
+  "FelixRaftCacheClockSnapshotReachInstallStamp violates NeverStampFromSnapshot"
+  "FelixRaftCacheDelete pass"
+  "FelixRaftCacheDeleteSnapshot pass"
+  "FelixRaftCacheCond pass"
+  "FelixRaftCachePutAbsentSnapshot pass"
+  "FelixRaftCacheCondSnapshot pass"
+  "FelixRaftCacheDeleteSeesExpired violates OneClock"
+  "FelixRaftCacheDeleteSnapshotSeesExpired violates AnswersKept"
+  "FelixRaftCachePutAbsentSnapshotSeesExpired violates MembersAgree"
+  "FelixRaftCacheCondSeesExpired violates OneClock"
+  "FelixRaftCacheCondSnapshotSeesExpired violates AnswersKept"
+  "FelixRaftCacheDeleteReachExpired violates NeverDeleteOfExpired"
+  "FelixRaftCacheDeleteSnapshotReachDropped violates NeverDroppedAndKept"
+  "FelixRaftCacheCondReachApplied violates NeverCondApplied"
+  "FelixRaftCacheCondReachStale violates NeverCondStale"
+  "FelixRaftCacheTrim pass"
+  "FelixRaftCacheTrimRetireDropsFloor violates AppliedOnce"
+  "FelixRaftCacheTrimSnapshotDropsFloor violates MembersAgree"
+  "FelixRaftCacheTrimRetireLocal violates MembersAgree"
+  "FelixRaftCacheTrimFloorPastUnanswered violates ForgetsOnlyDone"
+  "FelixRaftCacheTrimNoFloorClamp violates ForgetsOnlyDone"
+  "FelixRaftCacheTrimReachForgotten violates NeverForgotten"
+  "FelixRaftCacheTrimReachRetryAboveFloor violates NeverRetryAboveFloor"
+  "FelixRaftCacheTrimReachRetryAfterRetire violates NeverRetryAfterRetire"
+  "FelixRaftCacheTrimReachInstalledFloor violates NeverInstalledFloor"
 )
 
 # The long random walks, for `--simulate`: one pass configuration per family
@@ -771,7 +943,7 @@ walks=(
   "FelixShardElectUncleanContinuingDoubtedFull pass"
 )
 registered=("${expectations[@]}")
-if [ "$mode" = simulate ]; then registered=("${walks[@]}"); fi
+if [ "$mode" = simulate ] || [ -n "${affected_walks:-}" ]; then registered=("${walks[@]}"); fi
 
 shard_index=0
 shard_count=1
@@ -849,6 +1021,16 @@ fi
 # FelixRaftReformStaleMembershipFull, FelixRaftReformStaleMembershipTwoMoves
 # and FelixRaftLeaseAckWide are not registered: each is registered once a
 # dispatch run gives its declared outcome.
+# FelixRaftWrittenFailover passes in 46 minutes with 8 workers on a 32-core
+# machine and runs nightly (tla-walk.yml). FelixRaftWrittenJoint passes in
+# 2 h 10 min there, too long for a hosted runner's six hours, so only that
+# box run checks it. FelixRaftWrittenTerms and FelixRaftWrittenJointFailover
+# did not finish in two hours there (docs/formal/README.md has how far each
+# got).
+# FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
+# (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
+# runner by its siblings' times, past the nightly job's six. Run it on a
+# build box.
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
@@ -1063,25 +1245,67 @@ weights=(
   "FelixRaftSwitchGenZero 6"
   "FelixRaftSwitchStarts 11"
   "FelixRaftSwitchReseal 4"
+  "FelixRaftSwitchFailoverWipe 60"
+  "FelixRaftSwitchPowerLossLagAll 8"
   "FelixRaftReform 3"
   "FelixRaftReformTwoRotated 2"
   "FelixRaftReformOneReplica 2"
   "FelixRaftReformDead 2"
   "FelixRaftReformStaleMembershipTwoRotated 7"
-  "FelixRaftReformStaleMembershipTwoMovesForgotten 13"
+  "FelixRaftReformStaleMembershipTwoMovesForgotten 20"
   "FelixRaftReformRejoinFull 13"
   "FelixRaftReformTwoRotatedFull 15"
+  "FelixRaftReformTwoRotatedOffsetsTerms 12"
   "FelixRaftSwitchGenZeroFull 37"
   "FelixRaftMembershipTerms 109"
+  "FelixRaftWritten 40"
+  "FelixRaftWrittenCrash 5"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
   "FelixRaftLeaseRestartRenews 5"
+  "FelixRaftLeaseRestoreLed 12"
+  "FelixRaftLeaseRestoreNamed 38"
+  "FelixRaftLeaseRestoreStepDown 6"
+  "FelixRaftLeaseRestoreTransferStepDown 11"
+  "FelixRaftLeaseRestoreTransferThreeTerms 7"
+  "FelixRaftLeaseRestoreTransferStepDownWrite 40"
+  "FelixRaftLeaseReachRestoreTransferThreeTermsWrite 9"
   "FelixRaftLeaseStore 2"
   "FelixRaftLeaseStoreStall 2"
   "FelixRaftLeaseStoreWide 36"
+  "FelixRaftLeaseStepDown 8"
+  "FelixRaftLeaseStepDownDrift 5"
+  "FelixRaftLeaseStepDownNoVoid 2"
+  "FelixRaftLeaseStepDownWrite 8"
+  "FelixRaftLeaseSuspendLateCheck 2"
+  "FelixRaftLeaseSuspendDrift 22"
+  "FelixRaftLeaseSuspendRoleLate 28"
+  "FelixRaftLeaseSuspendUnchecked 2"
+  "FelixRaftLeaseTransfer 10"
+  "FelixRaftLeaseTransferDrift 35"
+  "FelixRaftLeaseTransferKeepsLease 2"
+  "FelixRaftLeaseTransferStepDownNoVoid 2"
+  "FelixRaftLeaseTransferThreeTerms 12"
+  "FelixRaftLeaseTransferVoidEquality 4"
+  "FelixRaftLeaseTransferVoidLate 2"
+  "FelixRaftLeaseTransferStepDown 38"
+  "FelixRaftLeaseTransferWrite 40"
+  "FelixRaftLeaseSleep 93"
+  "FelixRaftCache 4"
+  "FelixRaftCacheClock 9"
+  "FelixRaftCacheClockSnapshot 18"
+  "FelixRaftCacheExpiry 2"
+  "FelixRaftCacheDelete 9"
+  "FelixRaftCacheCond 3"
+  "FelixRaftCacheDeleteSnapshot 50"
+  "FelixRaftCachePutAbsentSnapshot 45"
+  "FelixRaftCacheCondSnapshot 33"
+  "FelixRaftCacheTrim 105"
   "FelixRaftSleep 2"
   "FelixRaftSleepEnds 2"
+  "FelixRaftSleepMidHandshake 87"
+  "FelixRaftSleepWake 9"
 )
 
 # Minutes a configuration took on a pull request's runner, from the `Finished
@@ -1116,9 +1340,10 @@ pr_minutes=(
   "FelixRaftReform 3"
   "FelixRaftReformOneReplica 2"
   "FelixRaftReformRejoinFull 13"
-  "FelixRaftReformStaleMembershipTwoMovesForgotten 12"
+  "FelixRaftReformStaleMembershipTwoMovesForgotten 25"
   "FelixRaftReformStaleMembershipTwoRotated 5"
   "FelixRaftReformTwoRotatedFull 15"
+  "FelixRaftReformTwoRotatedOffsetsTerms 15"
   "FelixRaftSnapshot 7"
   "FelixRaftSnapshotCrashes 26"
   "FelixRaftSnapshotReplace 8"
@@ -1201,6 +1426,13 @@ pr_minutes=(
   "FelixShardUnifiedLearnerVariantDropped 2"
   "FelixShardUnifiedSets 7"
   "FelixShardWipeFull 5"
+  "FelixRaftCache 6"
+  "FelixRaftCacheClock 13"
+  "FelixRaftCacheClockSnapshot 26"
+  "FelixRaftCacheDelete 13"
+  "FelixRaftCacheDeleteSnapshot 72"
+  "FelixRaftCachePutAbsentSnapshot 65"
+  "FelixRaftCacheCondSnapshot 47"
 )
 
 weight_of() {
@@ -1217,7 +1449,7 @@ changed_cfgs=" "
 if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # Captured first so a base that does not resolve fails the run: an empty
   # list would quietly leave a changed configuration unchecked.
-  changed_files="$(git diff --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")"
+  changed_files="$(git diff --no-renames --name-only "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/*.cfg")"
   while read -r f; do
     [ -n "$f" ] || continue
     f="${f##*/}"
@@ -1227,7 +1459,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Placement Reform Lease Sleep Switch"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"
@@ -1246,6 +1478,179 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
       done
     fi
   done
+fi
+
+# `--affected <base>` lists what a pull request checks: the configurations
+# whose result the diff from <base> (base...HEAD) can change.
+#
+# - A changed .cfg is that configuration.
+# - A changed .tla is every configuration of that module and of each module
+#   that EXTENDS or INSTANCEs it, transitively.
+# - In this script, a changed line of a registration table (`expectations`,
+#   `walks`, `weights`, `pr_minutes`) is the configuration it names. A changed
+#   `Pattern) echo Module ;;` line of `module_of`, old or new, is the
+#   configurations the pattern matches plus those of the module and its
+#   dependents, as for a .tla. Any other changed line, unless a comment or
+#   blank, is all of them.
+# - In ci.yml, a changed line before `jobs:` or in the `changes`, `formal*`
+#   or `ci-ok` jobs is all of them, unless a comment or blank.
+# - Anything else, docs/formal/README.md included, is nothing.
+#
+# Only registered configurations are listed, in registration order, then
+# filtered to a pull request's tier (`TLA_QUICK` below). Two comment lines
+# follow: the total of their `pr_minutes` and the shards to split it into,
+# one per 30 minutes, at most 30 and none when nothing is listed.
+# `--affected <base> --simulate` lists the affected `walks` instead.
+
+# The modules one .tla extends or instantiates, space-separated.
+module_deps() {
+  awk '{ sub(/\\\*.*/, "") }
+    cont || /^[[:space:]]*EXTENDS[[:space:]]/ {
+      line = $0; sub(/^[[:space:]]*EXTENDS/, "", line); gsub(/,/, " ", line)
+      printf "%s ", line; cont = ($0 ~ /,[[:space:]]*$/) }
+    { while (match($0, /INSTANCE[[:space:]]+[A-Za-z0-9_]+/)) {
+        dep = substr($0, RSTART, RLENGTH); sub(/^INSTANCE[[:space:]]+/, "", dep)
+        printf "%s ", dep; $0 = substr($0, RSTART + RLENGTH) } }' "$1"
+}
+
+# Changed lines of one file between two revisions, comments and blank lines
+# left out, as `old <line> <text>` or `new <line> <text>`.
+changed_lines() {
+  git diff -U0 --no-color "$1" "$2" -- "$3" | awk '
+    /^@@/ {
+      seen = 1
+      match($0, /-[0-9]+/); o = substr($0, RSTART + 1, RLENGTH - 1)
+      match($0, /\+[0-9]+/); n = substr($0, RSTART + 1, RLENGTH - 1)
+      next }
+    !seen || /^\\/ { next }
+    { text = substr($0, 2) }
+    /^-/ { side = "old"; line = o++ }
+    /^\+/ { side = "new"; line = n++ }
+    text ~ /^[[:space:]]*(#|$)/ { next }
+    { print side, line, text }'
+}
+
+# Lines of this script inside a registration table, as `first-last` ranges.
+table_ranges() {
+  awk '/^(expectations|walks|weights|pr_minutes)=\($/ { s = NR + 1 }
+    s && /^\)$/ { printf "%d-%d ", s, NR - 1; s = 0 }'
+}
+
+# Lines of ci.yml that decide how the models are checked: the triggers, and
+# the jobs that pick, run and gate the checks.
+workflow_ranges() {
+  awk 'function close_job() { if (keep) printf "%d-%d ", s, NR - 1 }
+    /^jobs:/ { printf "1-%d ", NR; injobs = 1; next }
+    injobs && /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+      close_job(); name = $1; sub(/:$/, "", name); s = NR
+      keep = (name == "changes" || name == "ci-ok" || name ~ /^formal/) }
+    END { if (injobs) { NR++; close_job() } else printf "1-%d ", NR }'
+}
+
+# Lines of this script inside the body of `module_of`, as a `first-last` range.
+module_of_range() {
+  awk '/^module_of\(\) \{$/ { s = NR + 1 }
+    s && /^\}$/ { printf "%d-%d ", s, NR - 1; s = 0 }'
+}
+
+# Prints the `old`/`new` changed lines, each marked `in` when it falls in the
+# given old/new ranges, else `map` when in the optional second pair, else `out`.
+in_ranges() {
+  awk -v old="$1" -v new="$2" -v old2="${3:-}" -v new2="${4:-}" '
+    function within(l, r,   k, i, parts, ab) {
+      k = split(r, parts, " ")
+      for (i = 1; i <= k; i++) { split(parts[i], ab, "-"); if (l >= ab[1] && l <= ab[2]) return 1 }
+      return 0 }
+    { l = $2 + 0; o = ($1 == "old")
+      print (within(l, o ? old : new) ? "in" : within(l, o ? old2 : new2) ? "map" : "out"), $0 }'
+}
+
+# The configuration names a diff affects, one per line, or `*` for all.
+affected_names() {
+  local base files f name modules=" " grew deps dep lines kind pat mod
+  local patterns=()
+  # Errors return, so the caller fails: an empty list would quietly leave a
+  # changed configuration unchecked.
+  base="$(git merge-base "$1" HEAD)" || return 1
+  files="$(git diff --no-renames --name-only "$base" HEAD)" || return 1
+  while read -r f; do
+    case "$f" in
+      "$SPEC_DIR"/*.cfg)
+        name="${f##*/}"
+        echo "${name%.cfg}"
+        ;;
+      "$SPEC_DIR"/*.tla)
+        name="${f##*/}"
+        modules="$modules${name%.tla} "
+        ;;
+      scripts/check_tla.sh)
+        lines="$(changed_lines "$base" HEAD "$f" \
+          | in_ranges "$(git show "$base:$f" | table_ranges)" "$(table_ranges <"$f")" \
+            "$(git show "$base:$f" | module_of_range)" "$(module_of_range <"$f")" \
+          | awk '$1 == "out" { print "*"; next }
+              match($0, /^in (old|new) [0-9]+ [[:space:]]*"[A-Za-z0-9_]+/) {
+                n = substr($0, RSTART, RLENGTH); sub(/.*"/, "", n); print n; next }
+              $1 == "map" && NF == 7 && $4 ~ /^[A-Za-z0-9_]+\*?\)$/ && $5 == "echo" \
+                && $6 ~ /^[A-Za-z0-9_]+$/ && $7 == ";;" {
+                sub(/\)$/, "", $4); print "map", $4, $6; next }
+              { print "*" }')" || return 1
+        # A `module_of` mapping, old or new, is the configurations its pattern
+        # matches and every configuration of its module and dependents.
+        while read -r kind pat mod; do
+          if [ "$kind" = map ]; then
+            patterns+=("$pat")
+            [[ "$modules" == *" $mod "* ]] || modules="$modules$mod "
+          elif [ -n "$kind" ]; then
+            echo "$kind"
+          fi
+        done <<<"$lines"
+        ;;
+      .github/workflows/ci.yml)
+        changed_lines "$base" HEAD "$f" \
+          | in_ranges "$(git show "$base:$f" | workflow_ranges)" "$(workflow_ranges <"$f")" \
+          | awk '$1 == "in" { hit = 1 } END { if (hit) print "*" }' || return 1
+        ;;
+    esac
+  done <<<"$files"
+  [ "$modules" != " " ] || [ "${#patterns[@]}" -gt 0 ] || return 0
+  # Modules built on a changed one, until no more join.
+  grew=1
+  while [ -n "$grew" ]; do
+    grew=""
+    for f in "$SPEC_DIR"/*.tla; do
+      [ -e "$f" ] || continue
+      name="${f##*/}"
+      name="${name%.tla}"
+      [[ "$modules" == *" $name "* ]] && continue
+      deps="$(module_deps "$f")"
+      for dep in $deps; do
+        if [[ "$modules" == *" $dep "* ]]; then
+          modules="$modules$name "
+          grew=1
+          break
+        fi
+      done
+    done
+  done
+  for f in "${registered[@]}"; do
+    name="${f%% *}"
+    if [[ "$modules" == *" $(module_of "$name") "* ]]; then echo "$name"; continue; fi
+    for pat in ${patterns[@]+"${patterns[@]}"}; do
+      # shellcheck disable=SC2053 # $pat is a case glob from module_of.
+      if [[ "$name" == $pat ]]; then echo "$name"; break; fi
+    done
+  done
+}
+
+if [ "$mode" = affected ]; then
+  names=" $(affected_names "$affected_base" | tr '\n' ' ') "
+  kept=()
+  for entry in "${selected[@]}"; do
+    if [[ "$names" == *" * "* ]] || [[ "$names" == *" ${entry%% *} "* ]]; then kept+=("$entry"); fi
+  done
+  selected=(${kept[@]+"${kept[@]}"})
+  # The walks have no tiers; the exhaustive checks get a pull request's.
+  if [ -z "$affected_walks" ]; then TLA_QUICK=1; fi
 fi
 
 # `--plan-heavy` prints the changed registered configurations weighing more
@@ -1280,9 +1685,9 @@ fi
 # changes on main. Configurations named on the command line always run. FelixShard,
 # the base configuration every other one varies, runs on every pull request
 # whatever its weight.
-if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
+if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ] && [ -z "${affected_walks:-}" ]; then
   quick=()
-  for entry in "${selected[@]}"; do
+  for entry in ${selected[@]+"${selected[@]}"}; do
     weight="$(weight_of "${entry%% *}")"
     if [ "$weight" -le 10 ] || [ "${entry%% *}" = FelixShard ]; then
       quick+=("$entry")
@@ -1290,7 +1695,7 @@ if [ -n "${TLA_QUICK:-}" ] && [ "$#" -eq 0 ]; then
       if [ "$weight" -le 30 ]; then
         quick+=("$entry")
       else
-        echo "leaving changed ${entry%% *} (about $weight min) to a job of its own"
+        echo "leaving changed ${entry%% *} (about $weight min) to a job of its own" >&2
       fi
     fi
   done
@@ -1305,6 +1710,19 @@ plan_weight_of() {
   done
   weight_of "$1"
 }
+
+if [ "$mode" = affected ]; then
+  total=0
+  for entry in ${selected[@]+"${selected[@]}"}; do
+    echo "${entry%% *}"
+    total=$((total + $(plan_weight_of "${entry%% *}")))
+  done
+  count=$(((total + 29) / 30))
+  if [ "$count" -gt 30 ]; then count=30; fi
+  echo "# total: $total minutes"
+  echo "# shards: $count"
+  exit 0
+fi
 
 # Print the shard for each selected configuration, in order.
 assign_shards() {

@@ -11,6 +11,11 @@ configuration) becomes a Raft-replicated state machine, persisted as a log
 and snapshots on each instance's own volume. No external database is needed.
 [Control-plane HA](/deployment/control-plane-ha/) covers running it.
 
+The group also records its own identity once, when it forms: a random group
+id and the shard engine (`FELIX_SHARD_ENGINE`, `hybrid` by default). The first
+record wins and it never changes, so a broker that kept data from one group can
+tell when it reaches another. `GET /v1/cluster/identity` returns it.
+
 The failure handling is covered by tests. Three instances under continuous
 broker traffic come through rolling restarts, a leader killed with SIGKILL, a
 leader frozen past several elections and then thawed, and a member whose
@@ -130,6 +135,13 @@ blocks the first start, and the others log which one it is. A group that
 already runs is not affected. The steps are in
 [the design doc](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#forming-the-group).
 
+Each address in `FELIX_RAFT_PEERS` must reach its own member. A member says
+which one it is when it answers, so two addresses that reach the same
+member, such as an IP and a DNS name for one pod, block the first start
+instead of letting that member answer twice. The members log which id
+answered at which address. Once the group runs, every Raft request names
+the member it is for, and a member answers only its own.
+
 If a member's machine is lost for good before the group has ever formed,
 stop the others and run this on each, naming the absent member's
 `FELIX_RAFT_NODE_ID`:
@@ -185,7 +197,9 @@ Consensus position ships as metrics: `felix_meta_raft_term`,
 (informational: the LB is handing writes to followers) and
 `felix_meta_raft_write_timeouts_total`, the counter to alert on, because it
 means no leader or no quorum. `felix_meta_raft_peer_rejected_total{reason}`
-counts peer requests refused for the wrong cluster id or token.
+counts peer requests refused for the wrong cluster id or token, or because
+they were meant for another member (`reason="target"`), which means two
+addresses in `FELIX_RAFT_PEERS` reach the same member.
 `felix_meta_raft_deduplicated_proposals_total` counts retried writes answered
 from the first attempt's result. `felix_meta_raft_unsupported_commands_total`
 counts committed commands this build could not apply, which in a mixed-version

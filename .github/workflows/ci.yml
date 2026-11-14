@@ -140,7 +140,7 @@ jobs:
     if: needs.changes.outputs.docs == 'true' && github.event_name != 'workflow_dispatch'
     name: Docs site build
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -405,7 +405,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The job takes 8 to 15 minutes on main. A seed run that holds its thread
+    # ends the process within ten minutes and names the seed
+    # (docs/simulation.md), so this limit is for a runner that stops
+    # answering: it holds the runner for 35 minutes, not most of an hour.
+    timeout-minutes: 35
     env:
       CARGO_TERM_COLOR: always
       FELIX_SIM_SEEDS: "20"
@@ -529,6 +533,28 @@ jobs:
           FELIX_SIM_CLOCKS: bounded
         run: cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
 
+      # Groups of the per-shard Raft engine (docs/simulation.md, "Raft groups").
+      # The pinned seeds live here, not in the blocking suite, until a seed
+      # replays its run (#2449).
+      - name: Raft group pinned seeds
+        if: ${{ !cancelled() }}
+        run: cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seed_1 raft_seed_2_with_skewed_timers --nocapture
+
+      - name: Raft group seeds
+        if: ${{ !cancelled() }}
+        env:
+          FELIX_SIM_SEED_START: "3"
+          FELIX_SIM_SEEDS: "4"
+        run: cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
+
+      - name: Raft group seeds with skewed timers
+        if: ${{ !cancelled() }}
+        env:
+          FELIX_SIM_SEED_START: "7"
+          FELIX_SIM_SEEDS: "4"
+          FELIX_SIM_CLOCKS: bounded
+        run: cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
+
   # felix-cluster's suites, the three longest each on a runner of its own
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
   # load-sensitive, and sharing a runner would make them flaky.
@@ -633,6 +659,43 @@ jobs:
           retention-days: 7
           # Already gzipped.
           compression-level: 0
+
+  # Durable stream shards on Raft, across broker processes. The harness runs
+  # the prebuilt broker beside the test binary, so this job builds it with the
+  # `raft` feature, which no other job's broker has. Not in `ci-ok`'s needs:
+  # it reports, and does not gate a merge yet.
+  cluster-raft:
+    name: Cluster tests (Raft shards)
+    needs: changes
+    if: needs.changes.outputs.code == 'true' && github.event_name != 'workflow_dispatch'
+    # Hosted, never the self-hosted pool: a broker built with another feature
+    # set would evict the one the `cluster` jobs keep warm there.
+    runs-on: ${{ vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+
+      - name: Rust Cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Build the broker with Raft shards
+        run: cargo build --locked -p felix-broker-service --bin felix-broker --features raft
+
+      - name: Test
+        env:
+          FELIX_TEST_TIMEOUT_SCALE: "3"
+          FELIX_TEST_RAFT_SHARDS: "1"
+        run: cargo test --locked -p felix-cluster --test raft_shards
 
   # Lint and the repository checks, beside the tests rather than in front of
   # them.
@@ -1144,15 +1207,69 @@ jobs:
         # would count changes already on main as this PR's.
         run: python3 scripts/check_spec_pairing.py --base HEAD^1
 
-  # A pull request checks the configurations of ten minutes or less
-  # (TLA_QUICK) and FelixShard, plus the ones it changes (`formal-heavy` takes those over 30
-  # minutes); a push to main or a manual run checks all of them, so a slow
+  # What the model-check jobs run. A pull request checks only the
+  # configurations its diff can affect (`scripts/check_tla.sh --affected`),
+  # in one shard per 30 minutes of them, and none when it affects nothing.
+  # Main and manual runs keep thirty shards over the registered set.
+  formal-plan:
+    needs: changes
+    if: needs.changes.outputs.formal == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      configs: ${{ steps.plan.outputs.configs }}
+      count: ${{ steps.plan.outputs.count }}
+      shards: ${{ steps.plan.outputs.shards }}
+      heavy: ${{ steps.plan.outputs.heavy }}
+      walk: ${{ steps.plan.outputs.walk }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # HEAD^1, the base the diff is taken from.
+          fetch-depth: 2
+
+      - id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != pull_request ]; then
+            {
+              echo "configs="
+              echo "count=30"
+              echo "shards=$(jq -cn '[range(30)]')"
+              echo "heavy=[]"
+              echo "walk=$([ "$EVENT" = push ] && echo true || echo false)"
+            } | tee -a "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The merge commit's first parent is main.
+          plan="$(scripts/check_tla.sh --affected HEAD^1)"
+          echo "$plan"
+          count="$(sed -n 's/^# shards: //p' <<<"$plan")"
+          walks="$(scripts/check_tla.sh --affected HEAD^1 --simulate)"
+          walk=false
+          if grep -qxE 'FelixShardFencedCrash(Unprobed|CountsUnnamed)' <<<"$walks"; then walk=true; fi
+          {
+            echo "configs=$(sed '/^#/d' <<<"$plan" | tr '\n' ' ')"
+            echo "count=$count"
+            echo "shards=$(jq -cn --argjson n "$count" '[range($n)]')"
+            echo "heavy=$(TLA_CHANGED_BASE=HEAD^1 scripts/check_tla.sh --plan-heavy)"
+            echo "walk=$walk"
+          } >>"$GITHUB_OUTPUT"
+          echo "shards: $count, walk: $walk"
+
+  # A pull request checks its affected configurations of ten minutes or less,
+  # plus the ones it changes up to 30 minutes (`formal-heavy` takes those
+  # over); a push to main or a manual run checks all of them, so a slow
   # configuration that breaks shows up on main rather than holding up every
   # spec change for an hour.
   formal:
-    needs: changes
-    if: needs.changes.outputs.formal == 'true'
-    name: TLA+ model (${{ matrix.shard }}/30)
+    needs: [changes, formal-plan]
+    if: needs.formal-plan.outputs.count != '0'
+    name: TLA+ model (${{ matrix.shard }}/${{ needs.formal-plan.outputs.count }})
     # Only main's full set is heavy (a shard can run for hours). One run per
     # shard at a time on main; a newer pending one replaces an older one.
     # Pull requests and manual runs get a group of their own.
@@ -1164,21 +1281,19 @@ jobs:
     # A full run on main takes up to about 200 min per shard, and the longest
     # single configurations run 2-3 h, so main gets the hosted-runner maximum.
     timeout-minutes: ${{ fromJSON(inputs.tla_timeout_minutes || (github.event_name == 'pull_request' && '60' || '360')) }}
-    # Thirty shards, on a pull request (about 1050 minutes, none planned past 40
-    # of the hour) and for main's full set (about 3200 minutes of weight; the two
-    # longest configurations get a job each), filled by each configuration's
-    # measured time (scripts/check_tla.sh).
+    # Shards from formal-plan, filled by each configuration's measured time
+    # (scripts/check_tla.sh): up to thirty on a pull request (its whole tier is
+    # about 1050 minutes) and thirty for main's full set (about 3200 minutes of
+    # weight; the two longest configurations get a job each).
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+        shard: ${{ fromJSON(needs.formal-plan.outputs.shards) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
-          # HEAD^1, the base, for TLA_CHANGED_BASE.
-          fetch-depth: 2
 
       - name: Java
         uses: actions/setup-java@v6
@@ -1202,13 +1317,10 @@ jobs:
 
       - name: Model-check
         env:
-          TLA_SHARD: ${{ matrix.shard }}/30
-          TLA_CONFIGS: ${{ inputs.tla_configs }}
+          TLA_SHARD: ${{ matrix.shard }}/${{ needs.formal-plan.outputs.count }}
+          # A pull request's planned list, or the dispatch's; empty is the registered set.
+          TLA_CONFIGS: ${{ github.event_name == 'pull_request' && needs.formal-plan.outputs.configs || inputs.tla_configs }}
           TLA_COVERAGE: ${{ inputs.tla_coverage }}
-          TLA_QUICK: ${{ github.event_name == 'pull_request' && '1' || '' }}
-          # The merge commit's first parent is main; a changed .cfg runs
-          # whatever its weight.
-          TLA_CHANGED_BASE: ${{ github.event_name == 'pull_request' && 'HEAD^1' || '' }}
         # Word splitting is wanted: the input is a list of names.
         run: scripts/check_tla.sh $TLA_CONFIGS
 
@@ -1224,29 +1336,10 @@ jobs:
 
   # A pull request that changes a configuration of over 30 minutes checks it
   # in a job of its own instead of leaving it to main: it would not fit the
-  # shards' hour beside the rest.
-  formal-heavy-plan:
-    needs: changes
-    if: needs.changes.outputs.formal == 'true' && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-          fetch-depth: 2
-
-      - id: plan
-        env:
-          TLA_CHANGED_BASE: HEAD^1
-        run: echo "matrix=$(scripts/check_tla.sh --plan-heavy)" | tee -a "$GITHUB_OUTPUT"
-
+  # shards' hour beside the rest. formal-plan lists them (`--plan-heavy`).
   formal-heavy:
-    needs: formal-heavy-plan
-    if: needs.formal-heavy-plan.outputs.matrix != '[]'
+    needs: formal-plan
+    if: needs.formal-plan.outputs.heavy != '[]'
     name: TLA+ model (${{ matrix.cfg }})
     # The free four-core runner the weights were measured on.
     runs-on: ubuntu-latest
@@ -1254,7 +1347,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include: ${{ fromJSON(needs.formal-heavy-plan.outputs.matrix) }}
+        include: ${{ fromJSON(needs.formal-plan.outputs.heavy) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -1277,10 +1370,11 @@ jobs:
 
   # FelixShardFencedCrashUnprobed no longer finishes exhaustively in a hosted
   # runner's six hours (#1584), so it is walked here instead, with its twin,
-  # at the nightly walks' budget (tla-walk.yml). Sampling, not proof.
+  # at the nightly walks' budget (tla-walk.yml). Sampling, not proof. A pull
+  # request walks it only when the diff affects those configurations.
   formal-walk:
-    needs: changes
-    if: needs.changes.outputs.formal == 'true' && github.event_name != 'workflow_dispatch'
+    needs: formal-plan
+    if: needs.formal-plan.outputs.walk == 'true'
     name: TLA+ walk (unprobed crash)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -1398,7 +1492,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, compose, test, sim, segment-store, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal, formal-heavy-plan, formal-heavy, formal-walk, fuzz]
+    needs: [changes, images, compose, test, sim, segment-store, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal-plan, formal, formal-heavy, formal-walk, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

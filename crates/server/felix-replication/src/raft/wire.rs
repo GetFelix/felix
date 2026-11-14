@@ -11,6 +11,7 @@ use std::io;
 use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use felix_storage::raft_log::LogPoint;
 use felix_wire::internal::MAX_IDENT_BYTES;
 use openraft::entry::RaftEntry;
 use openraft::impls::leader_id_std::LeaderId;
@@ -26,8 +27,10 @@ use super::network::{Addressee, RaftReply, RaftRequest, Refused, Reply, Request}
 use super::types::{Command, GroupId, MemberId, Membership, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
-/// The first byte of every body. A reader refuses any other.
-const LAYOUT: u8 = 1;
+/// The first byte of every body. A reader refuses any other, so a peer
+/// on another layout is refused by name rather than misread. 2 added the
+/// report byte to the request header.
+const LAYOUT: u8 = 2;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
@@ -38,12 +41,14 @@ const VOTE: u8 = 3;
 const PRE_VOTE: u8 = 4;
 const SNAPSHOT: u8 = 5;
 const TRANSFER_LEADER: u8 = 6;
+const WRITTEN: u8 = 7;
 
 /// The second byte of an answer.
 const APPENDED: u8 = 1;
 const VOTED: u8 = 2;
 const SNAPSHOT_TAKEN: u8 = 3;
 const TRANSFERRED: u8 = 4;
+const WRITTEN_TAKEN: u8 = 5;
 const UNREACHABLE: u8 = 16;
 const NO_SUCH_MEMBER: u8 = 17;
 const STOPPED: u8 = 18;
@@ -119,12 +124,14 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
         Request::PreVote(_) => PRE_VOTE,
         Request::Snapshot { .. } => SNAPSHOT,
         Request::TransferLeader(_) => TRANSFER_LEADER,
+        Request::Written { .. } => WRITTEN,
     });
     // At a fixed place, so a listener reads it without reading the rest.
     buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
     put_group(&mut buf, &request.group)?;
     put_member(&mut buf, &request.to)?;
     buf.put_u64(request.beat);
+    buf.put_u8(u8::from(request.report));
     match &request.body {
         Request::Append(rpc) => {
             put_vote(&mut buf, &rpc.vote)?;
@@ -169,6 +176,11 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
             put_member(&mut buf, rpc.to_node_id())?;
             put_opt_log_id(&mut buf, rpc.last_log_id());
         }
+        Request::Written { from, at } => {
+            put_member(&mut buf, from)?;
+            buf.put_u64(at.term);
+            buf.put_u64(at.index);
+        }
     }
     Ok(buf.freeze())
 }
@@ -180,6 +192,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     let group = take_group(&mut buf)?;
     let to = take_member(&mut buf)?;
     let beat = take_u64(&mut buf)?;
+    let report = take_bool(&mut buf)?;
     let body = match tag {
         APPEND | APPEND_ENTRIES => {
             let vote = take_vote(&mut buf)?;
@@ -250,6 +263,15 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
             let last_log_id = take_opt_log_id(&mut buf)?;
             Request::TransferLeader(TransferLeaderRequest::new(from, to, last_log_id))
         }
+        WRITTEN => {
+            let from = take_member(&mut buf)?;
+            let term = take_u64(&mut buf)?;
+            let index = take_u64(&mut buf)?;
+            Request::Written {
+                from,
+                at: LogPoint { term, index },
+            }
+        }
         other => return Err(invalid(format!("{other} is not a Raft request"))),
     };
     expect_empty(&buf)?;
@@ -257,6 +279,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
         group,
         to,
         beat,
+        report,
         deadline,
         body,
     })
@@ -307,6 +330,7 @@ fn put_reply(buf: &mut BytesMut, reply: &Result<RaftReply, Refused>) -> io::Resu
                 }
             }
         }
+        Ok(RaftReply(Reply::Written)) => buf.put_u8(WRITTEN_TAKEN),
         Err(Refused::Unreachable(reason)) => {
             buf.put_u8(UNREACHABLE);
             put_reason(buf, reason);
@@ -351,6 +375,7 @@ pub(crate) fn decode_reply(mut buf: Bytes) -> io::Result<Result<RaftReply, Refus
             }),
             other => return Err(invalid(format!("{other} is not a transfer outcome"))),
         })),
+        WRITTEN_TAKEN => Ok(Reply::Written),
         UNREACHABLE => Err(Refused::Unreachable(take_str(&mut buf, MAX_REASON_BYTES)?)),
         NO_SUCH_MEMBER => Err(Refused::NoSuchMember(take_addressee(&mut buf)?)),
         STOPPED => {

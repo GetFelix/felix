@@ -63,16 +63,22 @@ impl AckAt {
 pub struct Batch {
     pub records: Vec<Record>,
     pub ack: AckAt,
+    /// The term the caller was admitted at. The batch is written only
+    /// while this member leads that term. `None` takes any term.
+    pub term: Option<u64>,
 }
 
 /// A drain takes no batch that would bring it past this many payload bytes
-/// or this many records. One drain is one append, and the group handles
-/// nothing else while it runs. A batch past either on its own is drained
-/// alone.
+/// or this many records. openraft appends as much of a drain as it finds
+/// waiting in one go, and the group handles nothing else meanwhile. A batch
+/// past either on its own is drained alone.
 pub(super) const DRAIN_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const DRAIN_RECORDS: usize = 4096;
 
 const NOT_LEADING: &str = "this broker does not lead the shard";
+const OTHER_TERM: &str =
+    "this broker does not lead the term the batch was admitted at, so nothing was written";
+const IN_PART: &str = "only some of the batch's records were written";
 const ELECTING: &str = "this broker is standing for election, so the batch may still be written";
 const LEASE_LAPSED: &str = "no majority has answered this leader lately, so nothing was written";
 const DISCARDED: &str = "a newer leader discarded the entry";
@@ -98,6 +104,33 @@ pub(crate) fn not_a_stream() -> CommitError {
     lost(WRONG_KIND)
 }
 
+/// Why a publisher has no acknowledgement. Like any error from the
+/// proposer, the outcome is unknown: records of the batch may commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Unacknowledged {
+    pub(crate) error: CommitError,
+    /// One past the last offset a record of the batch is known to be
+    /// written at, if one is. Readers resuming below it go to the log.
+    pub(crate) written_end: Option<u64>,
+}
+
+impl Unacknowledged {
+    /// The batch is known to be written up to `end`, whatever else was said.
+    fn reaching(mut self, end: u64) -> Self {
+        self.written_end = Some(self.written_end.map_or(end, |known| known.max(end)));
+        self
+    }
+}
+
+impl From<CommitError> for Unacknowledged {
+    fn from(error: CommitError) -> Self {
+        Self {
+            error,
+            written_end: None,
+        }
+    }
+}
+
 /// Where a batch's first and last record are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Span {
@@ -118,6 +151,12 @@ impl Span {
             end: last.index + 1,
             generation: last.term,
         })
+    }
+
+    /// One past the furthest record reported written, whether or not the
+    /// span is one run.
+    fn end(self) -> u64 {
+        self.first.index.max(self.last.index) + 1
     }
 }
 
@@ -204,9 +243,11 @@ pub(crate) struct Proposal {
     /// A cache shard's batch: what each command is once it is stamped.
     /// Empty for a stream's.
     unstamped: Vec<Unstamped>,
+    /// [`Batch::term`].
+    term: Option<u64>,
     bytes: usize,
     /// Where openraft applied the batch, or why it did not.
-    answer: oneshot::Sender<Result<Span, CommitError>>,
+    answer: oneshot::Sender<Result<Span, Unacknowledged>>,
 }
 
 /// The publisher's side of a queued batch. `W` is a token's future.
@@ -216,7 +257,7 @@ pub(crate) struct Waiting<W = WrittenAt> {
     /// `None` for a batch of one record, where `last` is also the first.
     pub(super) first: Option<W>,
     pub(super) last: W,
-    pub(super) answer: oneshot::Receiver<Result<Span, CommitError>>,
+    pub(super) answer: oneshot::Receiver<Result<Span, Unacknowledged>>,
 }
 
 /// Split `batch` into what is queued and what its publisher waits on.
@@ -226,7 +267,7 @@ pub(crate) struct Waiting<W = WrittenAt> {
 /// last record each carry one, because one record's index says nothing
 /// certain about another's.
 pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
-    let Batch { records, ack } = batch;
+    let Batch { records, ack, term } = batch;
     let mut bytes = 0;
     let commands = records
         .into_iter()
@@ -239,7 +280,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             }
         })
         .collect();
-    queued(commands, Vec::new(), bytes, ack)
+    queued(commands, Vec::new(), term, bytes, ack)
 }
 
 /// The same for a cache shard's writes. Each is one entry, and the batch
@@ -253,12 +294,13 @@ pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting),
             written: None,
         })
         .collect();
-    queued(commands, writes, 0, AckAt::Written)
+    queued(commands, writes, None, 0, AckAt::Written)
 }
 
 fn queued(
     mut commands: Vec<Command>,
     unstamped: Vec<Unstamped>,
+    term: Option<u64>,
     bytes: usize,
     ack: AckAt,
 ) -> Result<(Proposal, Waiting), CommitError> {
@@ -278,6 +320,7 @@ fn queued(
         Proposal {
             commands,
             unstamped,
+            term,
             bytes,
             answer,
         },
@@ -295,24 +338,30 @@ fn queued(
 pub(super) struct Drain {
     pub(super) commands: Vec<Command>,
     pub(super) unstamped: Vec<Unstamped>,
+    /// The term every batch of the call was admitted at.
+    pub(super) term: Option<u64>,
     /// Each batch's record count and where its answer goes.
-    pub(super) answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
+    pub(super) answers: Vec<(usize, oneshot::Sender<Result<Span, Unacknowledged>>)>,
 }
 
 /// Take `first` and what is queued behind it, up to [`DRAIN_BYTES`] and
-/// [`DRAIN_RECORDS`]. A batch that would pass either is left in `held`, to
-/// start the next drain, so it keeps its place.
+/// [`DRAIN_RECORDS`]. A batch that would pass either, or that was admitted
+/// at another term than `first`, is left in `held`, to start the next
+/// drain, so it keeps its place.
 pub(super) fn drain(
     first: Proposal,
     queue: &mut mpsc::UnboundedReceiver<Proposal>,
     held: &mut Option<Proposal>,
 ) -> Drain {
+    let term = first.term;
     let mut bytes = first.bytes;
     let mut commands = first.commands;
     let mut unstamped = first.unstamped;
     let mut answers = vec![(commands.len(), first.answer)];
     while let Ok(next) = queue.try_recv() {
-        if bytes + next.bytes > DRAIN_BYTES || commands.len() + next.commands.len() > DRAIN_RECORDS
+        if next.term != term
+            || bytes + next.bytes > DRAIN_BYTES
+            || commands.len() + next.commands.len() > DRAIN_RECORDS
         {
             *held = Some(next);
             break;
@@ -325,6 +374,7 @@ pub(super) fn drain(
     Drain {
         commands,
         unstamped,
+        term,
         answers,
     }
 }
@@ -332,9 +382,9 @@ pub(super) fn drain(
 /// Hand a shard's queued batches to its group, in the order they were
 /// queued, until `stop` or until the queue's sender is gone.
 ///
-/// Everything queued when the task looks goes down as one
-/// `client_write_many`, up to the drain bounds, so batches that arrive
-/// while an append runs share the next one. The task does not wait for a
+/// Everything queued when the task looks goes down in one call, up to
+/// the drain bounds, so batches that arrive while an append runs share
+/// the next one. The task does not wait for a
 /// call's entries to commit before it makes the next: openraft takes calls
 /// in the order they are made.
 pub(crate) async fn run(
@@ -364,20 +414,22 @@ pub(crate) async fn run(
         let Drain {
             mut commands,
             unstamped,
+            term,
             answers,
         } = drain(first, &mut queue, &mut held);
         // Every entry of a cache shard is a stamped command, and a stream's
         // are raw records. A mix would stamp the wrong entries and append
-        // ones no member can apply.
+        // ones no member can apply. A cache write names no term: it is
+        // written in the one its stamp is for.
         let stamped = if stamper.is_some() { commands.len() } else { 0 };
-        if unstamped.len() != stamped {
+        if unstamped.len() != stamped || (stamper.is_some() && term.is_some()) {
             tracing::error!(
                 entries = commands.len(),
                 cache_writes = unstamped.len(),
                 "a drain mixed stream and cache writes"
             );
             for (_, to) in answers {
-                let _ = to.send(Err(not_a_stream()));
+                let _ = to.send(Err(not_a_stream().into()));
             }
             continue;
         }
@@ -392,12 +444,12 @@ pub(crate) async fn run(
         }
         // Stamped after the renewal, which can take a whole lease.
         let term = match &mut stamper {
-            None => None,
+            None => term,
             Some(stamper) => match stamper.stamp(&mut commands, unstamped) {
                 Some(term) => Some(term),
                 None => {
                     for (_, to) in answers {
-                        let _ = to.send(Err(lost(NOT_LEADING)));
+                        let _ = to.send(Err(lost(NOT_LEADING).into()));
                     }
                     continue;
                 }
@@ -414,11 +466,11 @@ pub(crate) async fn run(
             return;
         };
         match sent {
-            Ok(results) => answering.push(answer(results, answers)),
+            Ok(results) => answering.push(answer(results, answers, term.is_some())),
             Err(fatal) => {
                 tracing::warn!(error = %fatal, "a stopped Raft group took no write");
                 for (_, to) in answers {
-                    let _ = to.send(Err(stopped()));
+                    let _ = to.send(Err(stopped().into()));
                 }
             }
         }
@@ -427,7 +479,7 @@ pub(crate) async fn run(
 
 /// Hand `commands` to openraft, in order. With a term, each is appended
 /// only if this member still leads that term, which openraft checks as it
-/// appends: what was stamped for one term never lands in another.
+/// appends: what was stamped or admitted at one term never lands in another.
 pub(super) async fn write(
     raft: &Raft<ShardTypes, Machine>,
     commands: Vec<Command>,
@@ -540,16 +592,20 @@ fn leads(raft: &Raft<ShardTypes, Machine>) -> bool {
 }
 
 /// Tell each batch of one call how openraft answered its records. The
-/// answers come in the order the records went in.
+/// answers come in the order the records went in. `bound` says the call
+/// named a term.
 pub(super) async fn answer(
     results: BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>,
-    answers: Vec<(usize, oneshot::Sender<Result<Span, CommitError>>)>,
+    answers: Vec<(usize, oneshot::Sender<Result<Span, Unacknowledged>>)>,
+    bound: bool,
 ) {
     // A group that stops ends the stream early, and openraft's stream must
     // not be polled past its end. The records left are answered as stopped.
     let mut results = results.fuse();
     for (records, to) in answers {
         let mut span: Result<Option<Span>, CommitError> = Ok(None);
+        // One past the last record of the batch openraft applied.
+        let mut written_end = None;
         for _ in 0..records {
             let applied = match results.next().await {
                 Some(Ok(Ok(applied))) => Ok(LogPoint {
@@ -563,12 +619,16 @@ pub(super) async fn answer(
                 Some(Ok(Err(ClientWriteError::ForwardToLeader(forward)))) => {
                     Err(lost(match forward.reason {
                         ForwardReason::LeaseExpired => LEASE_LAPSED,
+                        _ if bound => OTHER_TERM,
                         _ => NOT_LEADING,
                     }))
                 }
                 Some(Ok(Err(_))) => Err(lost(DISCARDED)),
                 Some(Err(_)) | None => Err(stopped()),
             };
+            if let Ok(at) = applied {
+                written_end = Some(at.index + 1);
+            }
             span = match (span, applied) {
                 (Err(err), _) | (Ok(_), Err(err)) => Err(err),
                 (Ok(None), Ok(at)) => Ok(Some(Span {
@@ -581,8 +641,21 @@ pub(super) async fn answer(
                 })),
             };
         }
+        // Records that name a term are refused one by one, so some of a
+        // batch can be in the log when the rest is not. A term change cuts
+        // a prefix, but a lapsed lease can cut any subset (#2472). No
+        // refusal's "nothing was written" holds for it, and the records
+        // that were applied are committed.
+        let span = match (span, written_end) {
+            (Ok(span), _) => span.ok_or_else(|| lost(EMPTY).into()),
+            (Err(_), Some(end)) => Err(Unacknowledged {
+                error: lost(IN_PART),
+                written_end: Some(end),
+            }),
+            (Err(err), None) => Err(err.into()),
+        };
         // The publisher may have stopped waiting.
-        let _ = to.send(span.and_then(|span| span.ok_or_else(|| lost(EMPTY))));
+        let _ = to.send(span);
     }
 }
 
@@ -621,13 +694,14 @@ fn unled(why: Lost, unwritten: bool) -> CommitError {
 /// A token has no bound of its own, so every wait here also ends on
 /// openraft's answer, on this member no longer leading, and on `stop`. An
 /// error means the outcome is unknown, never that the batch is absent: it
-/// may be in the log and may commit.
+/// may be in the log and may commit. Once the batch is known written, the
+/// error says how far.
 pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     waiting: Waiting<W>,
     mut positions: watch::Receiver<LogPositions>,
     mut leading: impl Leading,
     stop: CancellationToken,
-) -> Result<Written, CommitError> {
+) -> Result<Written, Unacknowledged> {
     let Waiting {
         ack,
         records,
@@ -637,10 +711,11 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     } = waiting;
     // Applied means committed: on a majority's disks, which is more than
     // either acknowledgement asks of this one.
-    let committed = |answered: Result<Result<Span, CommitError>, oneshot::error::RecvError>| {
-        answered
-            .unwrap_or_else(|_| Err(stopped()))?
-            .written(records)
+    let committed = |answered: Result<Result<Span, Unacknowledged>, oneshot::error::RecvError>|
+     -> Result<Written, Unacknowledged> {
+        let span = answered.unwrap_or_else(|_| Err(stopped().into()))?;
+        span.written(records)
+            .map_err(|err| Unacknowledged::from(err).reaching(span.end()))
     };
     let written = async {
         let last = last.await?;
@@ -654,8 +729,8 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         biased;
         answered = &mut answer => return committed(answered),
         span = written => span,
-        why = leading.lost(None) => return Err(unled(why, true)),
-        () = stop.cancelled() => return Err(stopped()),
+        why = leading.lost(None) => return Err(unled(why, true).into()),
+        () = stop.cancelled() => return Err(stopped().into()),
     };
     let Some(span) = span else {
         // No append reported the batch: refused, dropped, or its append
@@ -663,11 +738,25 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         return tokio::select! {
             biased;
             answered = &mut answer => committed(answered),
-            why = leading.lost(None) => Err(unled(why, false)),
-            () = stop.cancelled() => Err(stopped()),
+            why = leading.lost(None) => Err(unled(why, false).into()),
+            () = stop.cancelled() => Err(stopped().into()),
         };
     };
-    let written = span.written(records)?;
+    let written = match span.written(records) {
+        Ok(written) => written,
+        // Tokens exist only for the first and last record, so a lease cut
+        // that refuses a record between them looks like this. openraft's
+        // answer says how far the batch was written.
+        Err(_) => {
+            let told = tokio::select! {
+                biased;
+                answered = &mut answer => committed(answered),
+                why = leading.lost(None) => Err(unled(why, false).into()),
+                () = stop.cancelled() => Err(stopped().into()),
+            };
+            return told.map_err(|err| err.reaching(span.end()));
+        }
+    };
     if ack == AckAt::Written {
         return Ok(written);
     }
@@ -684,15 +773,16 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
         let at = positions.wait_for(reached).await.ok()?;
         at.flushed.map(|flushed| flushed.term)
     };
-    tokio::select! {
+    let flushed = tokio::select! {
         biased;
         answered = &mut answer => committed(answered),
         term = flushed => match term {
             Some(term) if term == last.term => Ok(written),
-            Some(_) => Err(lost(NOT_LEADING)),
-            None => Err(stopped()),
+            Some(_) => Err(lost(NOT_LEADING).into()),
+            None => Err(stopped().into()),
         },
-        why = leading.lost(Some(last.term)) => Err(unled(why, false)),
-        () = stop.cancelled() => Err(stopped()),
-    }
+        why = leading.lost(Some(last.term)) => Err(unled(why, false).into()),
+        () = stop.cancelled() => Err(stopped().into()),
+    };
+    flushed.map_err(|err: Unacknowledged| err.reaching(written.end))
 }

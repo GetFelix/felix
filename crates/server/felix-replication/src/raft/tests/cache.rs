@@ -749,6 +749,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
             group: group(N),
             to: MemberId::new(behind, 1),
             beat: 0,
+            report: false,
             deadline: Duration::from_secs(10),
             body: super::super::network::Request::Snapshot {
                 vote: vote(term),
@@ -807,6 +808,7 @@ async fn a_cache_shard_takes_no_stream_batch_and_a_stream_shard_no_cache_write()
             payload: Bytes::from_static(b"a stream record"),
         }],
         ack: AckAt::Written,
+        term: None,
     };
     // Refused at the call: nothing is queued.
     let refused = futures::FutureExt::now_or_never(engine.propose(&shard(N), batch()));
@@ -868,6 +870,7 @@ async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
         group: group(N),
         to: MemberId::new(behind, 1),
         beat: 0,
+        report: false,
         deadline: Duration::from_secs(10),
         body: super::super::network::Request::Snapshot {
             vote,

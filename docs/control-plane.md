@@ -523,6 +523,12 @@ hold:
 6. This build reports every feature the view's fleet finalized. That is the
    check the control plane makes when a broker registers: a build rolled back,
    or started with `FELIX_INTERNAL_ELECTION` off, would be refused.
+7. A start that asked the control plane checked the directory against it:
+   the directory records the control plane's metadata group
+   (`controlplane_group`), or, for a backend with no group such as the
+   in-memory one, that it had none (`controlplane_group_none`). A directory
+   never checked, such as one from before the check existed, cannot tell a
+   recreated control plane, so it waits. See "Cluster identity" below.
 
 Otherwise it waits for the control plane, as without the switch. A 401,
 another 4xx, or an answer that does not decode is a control plane that is
@@ -535,7 +541,7 @@ started this way votes only if it comes back at its registered address.
 flowchart TD
     A["Startup lookup, at most FELIX_CONTROLPLANE_STARTUP_WAIT_MS"] -- "answered" --> N["Start as usual"]
     A -- "up but refusing or unreadable" --> W["Wait for the control plane"]
-    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, run witness,<br/>replica_election, every feature reported?"}
+    A -- "down on every attempt" --> Q{"View for this node, registered storage id,<br/>registered since any replacement, run witness,<br/>replica_election, every feature reported, group checked?"}
     Q -- "no" --> W
     Q -- "yes" --> O["Open storage"]
     O -- "the run rotated the storage id" --> W
@@ -965,6 +971,52 @@ The tenant, namespace, stream and cache feeds keep only their most recent
 `FELIX_CONTROLPLANE_CHANGE_RETENTION_MAX_ROWS` changes, so a consumer that
 falls further behind than that has to take a new snapshot.
 
+### Cluster identity
+
+A Raft group records its identity once, when it forms: a random `group_id`
+and the `shard_engine` (`hybrid` or `raft`) from `FELIX_SHARD_ENGINE` on the
+instance that proposes it. The first record applied wins, and nothing changes
+it afterwards, so racing proposers on a new group are settled by log order. A
+background task on each instance proposes it while the group has none, and
+retries until every member is at metadata level 32 and a leader exists.
+
+The apply also records `adopts_existing`: whether the store already held a
+stream or a cache, or their change history, when the identity was recorded.
+It is computed from replicated state, so every member agrees. A group upgraded
+in place has it set, and a broker whose data directory holds data but no group
+record adopts such a group instead of refusing. A group formed on an empty
+store does not, and such a broker is refused.
+
+Until the record exists, stream and cache creates wait: they are refused
+with 503 `not_ready` unless every member has answered the version probe and
+one is below level 32, so the group cannot record yet. A member that has not
+answered counts as unknown, not as older, so nothing created while a new
+group forms can set `adopts_existing` on it.
+
+`GET /v1/cluster/identity` returns `{"group_id": "...", "shard_engine":
+"hybrid"}`, plus `"adopts_existing": true` when set. Every snapshot and every
+change-feed page (tenants, namespaces, streams, caches) carries `group_id`, so
+a broker checks each answer before applying it. Under Raft the route answers
+503 `identity_pending` until the record exists. The in-memory backend has no
+group, so it reports the configured engine and leaves `group_id` out, as do
+its snapshots and pages, which keeps their bytes what an older broker
+expects.
+
+If an instance's `FELIX_SHARD_ENGINE` differs from the record, it logs a
+warning and keeps running. The record wins.
+
+The identity is part of the Raft snapshot. An `ImportState` (a restore from
+an export) adopts the export's identity, `adopts_existing` included, since it
+restores that group. An export that carries none keeps the group's own id
+and sets `adopts_existing` if the import brought streams or caches. That
+lets brokers with no group record accept the restored group; a broker that
+already names another group still refuses it and needs an export carrying its
+group's id, or its data wiped. Take an export after the upgrade records the
+identity. Importing one cluster's export into another gives it that cluster's
+group id, so the brokers of both accept it: use import only to restore. An
+export that carries an identity needs every member at level 32, and the
+leader refuses its import until then.
+
 ### Shard ownership
 
 `GET /v1/shard-assignments` lists which broker leads each shard, and
@@ -1007,6 +1059,45 @@ broker that watched that assignment takes its set as the one the new
 generation leaves (`docs/replication-design.md`, "Planned handoff"). The store
 sets it; a caller's value is ignored. The Raft store writes it
 only at metadata level 29.
+
+An assignment also carries `placed`: every broker the control plane has
+placed for the shard's group in its group epoch, as
+`{"epoch": 0, "brokers": [...]}`. It is the list the re-form command reads
+(`docs/per-shard-raft.md`, "Re-forming a group"). The store sets it; a
+caller's value is ignored.
+
+- The shard's first assignment starts it with the brokers that write names.
+- Every later write adds the brokers it names in any role: leader,
+  replicas, a move's successor or joining copy, a pending set's members,
+  learners. The broker is on the record in the same write that first names
+  it, so before any leader acts on the set.
+- Nothing takes a broker off. A broker moved away stays, because its disk
+  can hold acknowledged records the brokers placed now lack.
+- It is carried in snapshots and the change feed like the rest of the
+  assignment, and goes with the assignment when the stream or cache is
+  deleted.
+- Restoring an export (the import ceremony) drops every record, in the
+  assignments and in the change feed. The export is older than the epoch it
+  is restored into, so a broker placed and moved away since would be
+  missing, and a re-form trusting the record would skip its disk. Without a
+  record the re-form blocks the group.
+- The import also marks every stream and cache it restores, at its
+  incarnation, and their shards never start a record, even on a first
+  assignment. A shard the export shows unassigned may have been assigned
+  since on the live cluster. A stream or cache deleted and created again
+  after the import has a new incarnation and starts records as usual. The
+  mark is carried in snapshots. Under Raft the leader sets the mark when the
+  import enters the log, whatever the proposer sent, so every member applies
+  the same one. Below metadata level 31 an older member cannot read the mark,
+  so the leader refuses the import and asks the operator to finish the
+  control-plane upgrade first.
+
+The record grows with every move for as long as the epoch lasts. No pruning
+rule exists yet, and any rule must be modelled first. Under Raft it is
+started only at metadata level 31. A shard first assigned below that level
+has no record and never gets one in its current epoch: the brokers it placed
+and removed before are unknown, and a record without them would let a
+re-form skip their disks.
 
 A snapshot item also carries `previous`, the set of the assignment the change
 log holds right before it (the generation below, or the one
@@ -2697,6 +2788,7 @@ be a member; it is legitimately 0 during a drain.
 | `node_liveness.expiry_timeout_ms` | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | 15000 |
 | `node_liveness.regrant_margin_ms` | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `expiry_timeout_ms` |
 | `node_liveness.sweep_interval_ms` | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | 2000 |
+| `shard_engine` | `FELIX_SHARD_ENGINE` | `hybrid` |
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than

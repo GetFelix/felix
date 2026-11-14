@@ -306,6 +306,15 @@ A first boot acts on answers, never on silence:
   group exists" either.
 - **Each member has its own address.** `FELIX_RAFT_PEERS` is refused when
   two ids share one, since one machine would then answer for both.
+- **An empty answer counts only for the member that gave it.** Two
+  addresses can differ as text and still reach one machine, such as an IP
+  and a DNS name for the same pod. So `standing` carries the answering
+  member's id, as `member`. An empty answer from another member than the one
+  asked blocks a first boot, and the log says which member answered at which
+  member's address. So does an empty answer with no `member` in it, which is
+  what a build that predates the field gives. The model loses an
+  acknowledged write when answers are counted by address
+  (`FelixRaftPlacementFormAlias.cfg`).
 - **The group exists when a log holds an entry at index 1 or above.** Every
   first-boot member writes the same membership at index 0 and may vote for
   itself before anyone leads, so neither says a group exists. An entry at
@@ -356,7 +365,9 @@ sequenceDiagram
    its own store and syncs it before it answers. A member records whatever
    its own state is: formed, empty or still withholding its vote. It refuses
    a group that is not the one in its own `FELIX_RAFT_PEERS` (409), since
-   members initialized with different groups can split.
+   members initialized with different groups can split. The request names
+   the member it is for in `x-felix-raft-target`, so another member that
+   answers at that address refuses it (503) instead of recording.
 3. **Vote.** Once every one of them has answered, the member gives back its
    vote and initializes. Until then it votes for nobody and asks again.
    Between `initialize` and its first vote it writes a *reached* flag to
@@ -581,6 +592,34 @@ The network layer resolves a member's address from `FELIX_RAFT_PEERS` by
 id before falling back to the address recorded in the membership, so moving
 the peer port is a config change, not a membership change.
 
+An address does not prove who is behind it. Every vote request, append,
+snapshot and `forming` record a member sends therefore names the member it is meant for, in the
+`x-felix-raft-target` header. A member that receives one meant for another
+id answers 503, which the sender reads as an unreachable member, so its
+vote or its acknowledgement is never counted as the other member's.
+`felix_meta_raft_peer_rejected_total{reason="target"}` counts these. A
+request without the header is served: a sender on a build without it can
+only mean the configured id, which is the only id a member has today.
+
+#### The peer listener starts before the Raft node
+
+A member opens its store, starts the peer listener, and only then builds
+its Raft node. In between it is a member with no node, and its peers can
+already ask where it stands:
+
+| Route | Member without a node | Member with a node |
+| --- | --- | --- |
+| `standing` | Answers `raft: false` and its `member` id, if its store holds no Raft state. 503 if it does | Answers `raft: true`, `node_id`, `member` and its last log index |
+| Every other route | 503 | Served |
+
+A member whose store holds a log gives no `standing` until its node runs.
+The answer would not carry the log's last index, and a peer on its first
+start would read it as an empty member.
+
+The node's routes open only after the member has settled whether it may
+vote ([above](#rejoining-after-a-lost-volume)), so an empty member never
+answers a vote request in between.
+
 ### Upgrading
 
 Two rules, both about mixed versions.
@@ -656,7 +695,8 @@ and restore and each member's last reported level; a send never waits on a
 probe. The leader keeps those levels fresh in the background
 (`watch_versions` in `raft/version.rs`): it asks every member on the
 `standing` route when it takes the lead, every 10 seconds after that, and
-every 500 ms while a member is held.
+every 500 ms while a member is held. An answer that names another member is
+no answer: that member's level says nothing about the one asked.
 
 The evidence is one of two things. Either the member reported a level
 below the floor (every released build that runs Raft answers `standing`
@@ -906,6 +946,10 @@ the field itself, on every member alike, or refuses the command:
 | `adopt_elected_leader` `elected_set` | 26 | every member takes only the generation of a leader elected on a set other than the recorded one, and the report handler then moves the shard past it |
 | `adopt_elected_leader` `own_leader_set` | 27 | every member takes only the generation when the shard's own leader was elected on another set, and the report handler then moves the shard past it (#1929) |
 | replica report `refused.ballot`, and in the snapshot; shard put `at_least` | 28 | the report is proposed without the ballot and the write without the floor, so every member names the refusing leader one generation up, as before #1951 |
+| assignment `previous_generation`, and in the snapshot; shard put `record_previous` | 29 | no member records the generation a skip replaced, and under `joint_fence` a rename past a refusal's ballot takes the next generation instead of skipping, since a broker that missed the one before would have no set to fence against (#2024) |
+| assignment `readmitted`, and in the snapshot; replica report `readmit` | 30 | the report is proposed without the flag, so no member records a replaced copy as caught up |
+| assignment `placed`, and in the snapshot; shard put `start_placed` | 31 | a first assignment is proposed without the flag, so no member starts the record of brokers placed in the shard's epoch, and that shard has none for the rest of the epoch. Later writes grow a record whatever their level: only a member that applied the start holds one |
+| `record_cluster_identity`, import `cluster_identity`, and in the snapshot | 32 | the command is held back until every member is at 32, so a group below it records no identity and `GET /v1/cluster/identity` answers 503 |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers
@@ -938,6 +982,7 @@ leader's snapshot as in
 | A majority loses its volumes | The empty members wait rather than form a new, empty group. Under `FELIX_RAFT_INITIAL_CLUSTER_STATE=new` they still wait until every member answers and is empty, so a member that holds the log blocks them whether it is up or down; recovery is the snapshot restore |
 | A member's volume is lost after the group formed and before its first leader wrote an entry | Its peers recorded it before it first voted, so it does not form again, even under `new`. It waits for the others to elect a leader, catches up and votes again ([above](#forming-the-group)). If a majority's volumes go in that window, nobody can lead: empty every volume and start again if the cluster held no data, or restore |
 | A first start with a member on a build without the `forming` route | Nobody forms: that member cannot record the others. The log names it. Start every member on the same release |
+| Two addresses in `FELIX_RAFT_PEERS` reach the same member | A first start does not form: the member's empty answer counts once, and the member behind the other id was never asked. The log names both ids. In a group that runs, the member refuses Raft requests meant for the other id, so it is never counted twice |
 | A member's machine is lost before the group first forms | The others wait for its answer. `felix-controlplane raft form-without` lets them form without it ([above](#forming-without-a-lost-machine)) |
 | Something other than a member reaches the peer port | Refused before any route runs: wrong cluster id 403, missing or wrong peer token 401, and under peer mTLS no TLS handshake without a certificate from the cluster CA |
 | Network partition, leader in minority | Old leader steps down (cannot commit), majority elects; minority instances fail readiness rather than serve writes that cannot commit |
@@ -977,7 +1022,13 @@ leader's snapshot as in
   member does not vote while one peer has not recorded it; on the segment
   store, a member whose log directory was emptied does not form again; and
   (`raft/join/tests.rs`) members stopped between the records and
-  `initialize` form after a restart.
+  `initialize` form after a restart. Two addresses that reach one member do
+  not form a group.
+- **A member without a node** (`raft/member/tests.rs`): it answers
+  `standing` and nothing else until its node is attached, and gives no
+  `standing` while it holds a log. A request that names another member in
+  `x-felix-raft-target` reaches no route (`raft/http/tests.rs`), and every
+  Raft RPC carries the header (`raft/network/tests.rs`).
 
 ## What would overturn this
 

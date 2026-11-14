@@ -11,6 +11,7 @@ mod membership;
 mod mqtt;
 mod peer_transport;
 mod printing;
+mod shard_engine;
 mod tls;
 mod yaml_file;
 mod yaml_overrides;

@@ -559,6 +559,117 @@ Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference
 on. Rerun the seeds rather than trusting this table.
 
+## Raft groups
+
+The per-shard Raft engine (`docs/per-shard-raft.md`) is not behind a broker
+yet: no broker service routes a shard to it. So the runs above cannot test
+it. `felix_sim::raft` tests the engine on its own, on the same paused clock.
+
+A run starts three or five members. Each member is what a broker will hold
+for a Raft shard: a group runtime, the engine, and a broker core whose stream
+is bounded by the engine's read bound. Each shard has one in-memory log per
+member. Links between members are simulated. There is no control plane in the
+run, so everything it shows holds with the control plane down.
+
+The member set is fixed and no member restarts. Restarts and power cuts on
+Raft shards come with the pull request that adds copy ids and the restore
+check.
+
+Faults, drawn from the seed and healed one at a time: a member isolated, a
+minority split off, one direction of one link cut (a request that never
+arrives, or one that is handled and whose answer is lost), and the leader of a
+shard isolated.
+
+Clients publish through the engine on the member they believe leads (the one
+claiming leadership at the highest term), and sometimes on another member,
+which must refuse. Readers read a member's log directly up to its read bound,
+on any member. They do not go through the broker's read path. Every publish
+error is recorded as unknown.
+Every member's broker also has a live subscriber on each shard. Publishers
+exist only on the member that leads, so a subscriber sees what its member
+fans out while it leads.
+
+What a seed checks:
+
+- The history checker, over what the clients saw and a final read taken from
+  the leader after the writers stop. Every list is checked as acknowledged by
+  a majority, whatever the stream's level, because a Raft shard acknowledges
+  at commit: an acknowledged write that is missing, or a read that saw
+  records the final log does not hold, fails the seed.
+- At most one member leads a term. Sampled once a second, so a leader that
+  comes and goes between two samples is not seen.
+- A member's read bound never goes back, and never passes what a majority of
+  members holds on disk. Also sampled once a second. A member counts toward
+  the majority only when its log holds the same record (same term, same
+  payload) at that offset and it reports having fsynced that far. A deposed
+  leader's own flushed tail does not count.
+- When a member acknowledges a write, its log holds that value at the
+  acknowledged offset, below its read bound, and a majority holds the same
+  record fsynced, counted the same way.
+- A record handed to a live subscriber comes in offset order and is in the
+  final log at its offset. The subscriber also checks the member's read bound
+  at delivery, but the broker's commit hold reads the same bound, so that
+  check cannot disagree with the hold. The final log comparison is the one
+  that counts.
+- Within 30 seconds of the heal every shard has a leader that acknowledges a
+  write, no member refuses a read, and every member serves the same records.
+
+A seed also fails when it checked too little: no leader change, or fewer
+than 500 live deliveries, 1000 acknowledged writes, 200 reads or 4 faults.
+
+`FELIX_SIM_CLOCKS=bounded` gives each member timers that run at its own rate,
+0.8x to 1.2x. The engine reads no clock except its timers, so this is all that
+clock skew can do to it. Without the variable the timers agree.
+
+Two pinned seeds, `raft_seed_1` and `raft_seed_2_with_skewed_timers`, run in
+CI's non-blocking `sim-seeds` job with a few more seeds. They stay out of the
+workspace tests until a seed replays its run (see below). A failing seed
+prints its whole outcome: mode, faults, counts, terms led and every finding.
+The batch is ignored by default. It runs every seed and lists the ones that
+failed:
+
+```bash
+FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=20 \
+  cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
+```
+
+The nightly sweep runs 250 Raft seeds a night in each of the `raft` and
+`raft-clocks` modes ([The nightly sweep](#the-nightly-sweep)). One seed runs
+the way the sweep runs it with:
+
+```bash
+FELIX_SIM_SEED=7 task sim:raft-replay
+```
+
+A run that is still going after six minutes of virtual time ends with a
+`stalled` finding that names the step it was in, and the history recorded so
+far is still checked. A healthy seed takes a little over one minute of virtual
+time. A run that holds the thread for 15 minutes of real time ends the
+process and prints the seed.
+
+A seed fixes the member count, the faults and their times, the link delays
+and what the clients do. It does not yet fix the whole run. openraft draws
+each election timeout from a random generator that cannot be seeded, so two
+runs of a seed can elect at different moments and then differ in everything
+after (#2449). Rerunning a failing seed gives the same faults, but it may not
+fail the same way, or at all.
+
+Each run prints a trace hash: one number over the faults, every operation,
+every delivery, the final reads and the findings. Two runs with the same hash
+were the same run. This test runs each seed twice and shows the first event
+that differs. It is ignored until #2449 is fixed:
+
+```bash
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=1 FELIX_SIM_SEEDS=4 \
+  cargo test -p felix-sim --test raft_seeds -- --ignored --exact each_raft_seed_runs_the_same_twice --nocapture
+```
+
+Not covered yet, because each needs a broker that serves a Raft shard: a
+subscriber that follows a shard from one leader to the next, consumer groups,
+reads after a restart, and the whole-cluster history campaign in
+`history.yml`. Nor are the engine's read index (`confirm_read`) and a stale
+read served by a member that has fallen behind another.
+
 ## The nightly sweep
 
 `.github/workflows/dst-nightly.yml` runs 2000 seeds every night at 01:13
@@ -567,24 +678,41 @@ the seeds test once, in release with `--cfg tokio_unstable` as `task sim:replay`
 does, and hands it to shards that each run a range of seeds two at a time
 through `scripts/sim-sweep.sh`.
 
-The opt-in nemeses run too. Each night also runs 250 seeds with each of clock
-skew (`bounded`), placement faults and power loss, a window that moves 250
-seeds a night, so eight nights cover seeds 1 to 2000 in every mode.
+The opt-in nemeses run too. Each night also runs 250 seeds in each other
+mode, a window that moves 250 seeds a night, so eight nights cover seeds 1 to
+2000 in every mode:
+
+| Mode | What it adds |
+| --- | --- |
+| `clocks` | Bounded clock skew (`FELIX_SIM_CLOCKS=bounded`). |
+| `placement` | Placement faults (`FELIX_SIM_PLACEMENT=1`). |
+| `power-loss` | Power cuts in place of kills (`FELIX_SIM_POWER_LOSS=1`). |
+| `relaxed-power-loss` | The same on brokers that do not sync on commit. |
+| `majority-cut`, `majority-cut-relaxed` | Several brokers lose power at once. |
+| `wipe` | Shard and data directories emptied. |
+| `raft`, `raft-clocks` | Raft groups ([Raft groups](#raft-groups)) in place of a whole cluster, the second with skewed timers. |
+
+A Raft seed runs through the same script, one process per seed, on the
+`raft_seeds` test binary built beside the `seeds` one.
 
 A failing seed is sorted by its log:
 
 | Kind | What it is | Effect |
 | --- | --- | --- |
 | Real bug | A history violation, an undecided cache key, a safety finding (`at-most-one-serving`, `one-leader-per-generation`, `acked-held-by-leader`, ...) or a crash. | Fails the shard. A scheduled run opens an issue labelled `dst-nightly`, which a green night closes. |
-| Tracked stall | Only the liveness findings `stalled`, `election-settles` and `final-reads`, listed above under known failing seeds. | Listed apart in the summary. Fails nothing. |
+| Tracked stall | Only the liveness findings `stalled`, `election-settles` and `final-reads`, listed above under known failing seeds. For a Raft seed, only `stalled`. | Listed apart in the summary. Fails nothing. |
 
 One stall is tracked inside a test. `seed_3_replicas_agree_on_who_wrote_each_record` prints `tracked stall #2206` and passes when the only failing finding is `election-settles` with every stuck shard in the #2206 shape: the leader's phase is `failed`, the control plane is `Assigning`, and no other copy is ready to take over. The stuck shards must be named in the census, which the checker prints for at most three, so four or more never match. Any history violation, other finding or other shape still fails it.
 
 Each line in the run summary gives the seed, its categories and the exact
 command that replays it, for example
-`FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEED=412 task sim:replay`. A real bug runs
-once more to say whether it repeats; a stall does not, because the run is
-exact and a stall takes minutes. The logs of failing seeds are in the
+`FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEED=412 task sim:replay`, or
+`FELIX_SIM_CLOCKS=bounded FELIX_SIM_SEED=412 task sim:raft-replay` for a Raft
+seed. A Raft seed's categories are `history`, `stalled`, `group` (any other
+group finding), `too-little` (it exercised too little to count) or `crash`.
+
+A real bug runs once more to say whether it repeats; a stall does not,
+because the run is exact and a stall takes minutes. The logs of failing seeds are in the
 `sim-sweep-<mode>-<first seed>` artifacts.
 
 For the release gate, start the workflow by hand (Actions, "Simulation sweep
@@ -595,7 +723,7 @@ For the release gate, start the workflow by hand (Actions, "Simulation sweep
 | `first` | The first seed. | 1 |
 | `seeds` | How many seeds per mode. | 2000 |
 | `shards` | Jobs per mode, lowered to `seeds` when larger. | 50 |
-| `modes` | `off`, `clocks`, `placement`, `power-loss` (comma separated), or `all`. | `off` |
+| `modes` | Modes from the table above (comma separated), `all` (`off`, `clocks`, `placement`, `power-loss`) or `disks` (`relaxed-power-loss`, `majority-cut`, `majority-cut-relaxed`, `wipe`). Neither includes the Raft modes; name them. | `off` |
 | `parallel` | Jobs running at once, 1 to 20. | 4 |
 
 `modes` `all` with 2000 seeds is 200 jobs (the limit is 256), and a job takes at most 50 seeds. Repeated modes count once. Dispatched runs queue behind each other. The gate is no

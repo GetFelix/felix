@@ -428,6 +428,7 @@ async fn seed_shard(store: &InMemoryStore, leader: &str, generation: u64) {
                 pending_set: None,
                 previous_generation: None,
                 readmitted: Default::default(),
+                placed: None,
             })
             .await
             .expect("assign");

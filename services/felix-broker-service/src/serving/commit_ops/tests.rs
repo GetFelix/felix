@@ -239,3 +239,69 @@ async fn a_state_read_confirms_leadership_through_the_engine() {
         .await
         .expect_err("the lease lapsed");
 }
+
+/// **A conditional publish and a trim to a Raft shard are refused by name,
+/// with nothing written.** A Raft stream's log takes plain publishes only,
+/// and neither write may reach the hybrid's fence, which never opens for it.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn conditional_writes_to_a_raft_shard_are_refused_by_name() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let publish_ctx = build_publish_context(
+        Arc::clone(&broker),
+        &BrokerConfig::default(),
+        ClusterContext {
+            engine: Arc::new(fixture::engine(&shards)),
+            ..ClusterContext::default()
+        },
+    );
+
+    let published = publish_at(
+        &broker,
+        &publish_ctx,
+        "t1",
+        "ns",
+        "orders",
+        None,
+        Some(0),
+        vec![Bytes::from_static(b"a")],
+        0,
+        None,
+    )
+    .await;
+    let trimmed = trim_at(
+        &broker,
+        &publish_ctx,
+        "t1",
+        "ns",
+        "orders",
+        0,
+        0,
+        0,
+        Bytes::new(),
+    )
+    .await;
+
+    for (refused, what) in [
+        (published.err(), "conditional publishes"),
+        (trimmed.err(), "trims"),
+    ] {
+        let Some(NotWritten::Refused(err)) = refused else {
+            panic!("{what} on a Raft shard were not refused");
+        };
+        assert_eq!(
+            err.message(),
+            format!("a stream on Raft does not take {what}")
+        );
+    }
+    EngineShards::shutdown(&*shards).await;
+}

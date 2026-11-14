@@ -7,20 +7,32 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use std::path::Path;
+
 use felix_storage::DiskLog;
+use felix_storage::log::LogConfig;
+use felix_storage::raft_copy::{
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
+};
 use felix_storage::raft_log::{LogPoint, LogPositions};
-use openraft::{Config, SnapshotPolicy};
+use openraft::impls::leader_id_std::LeaderId;
+use openraft::raft::{VoteRequest, VoteResponse};
+use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{self, Group, Timers};
-use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused};
+use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::propose::Clock;
 use super::ticker;
-use super::types::{GroupId, MemberId};
+use super::types::{GroupId, MemberId, ShardTypes};
 use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
+
+/// How often a kept-copy reclaim that waits only on a commit save looks
+/// again. A log not under `FsyncMode::OnCommit` saves at most this often.
+const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +63,18 @@ pub struct RuntimeConfig {
     /// log, so a member a little behind catches up from the log and only
     /// one further behind is sent the snapshot.
     pub cache_log_keep: u64,
+    /// How long after a majority's last answer a leader still acknowledges
+    /// a `Leader` write on its own log. A follower promises its leader
+    /// `election_max` on its own clock, so the lease must end before that
+    /// on any two clocks within the drift bound:
+    /// `lease * (1 + p) / (1 - p) <= election_max`.
+    pub lease: Duration,
+    /// `p` above, in parts per million: how much faster or slower than real
+    /// time a broker's clock may run.
+    pub clock_drift_ppm: u32,
+    /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
+    /// mark at the data root.
+    pub log_mark: LogMarkMode,
 }
 
 impl Default for RuntimeConfig {
@@ -64,6 +88,11 @@ impl Default for RuntimeConfig {
             election_max: Duration::from_secs(2),
             cache_snapshot_every: 16_384,
             cache_log_keep: 1_024,
+            // A quarter under the follower's promise, which holds for
+            // clocks up to 10% off.
+            lease: Duration::from_millis(1500),
+            clock_drift_ppm: 100_000,
+            log_mark: LogMarkMode::Exact,
         }
     }
 }
@@ -86,6 +115,12 @@ impl RuntimeConfig {
             return Err(InvalidTimers(
                 "the idle heartbeat is shorter than the heartbeat".into(),
             ));
+        }
+        if !self.lease_fits() {
+            return Err(InvalidTimers(format!(
+                "a lease of {:?} can outlast a follower's promise of {:?} on clocks {} ppm off",
+                self.lease, self.election_max, self.clock_drift_ppm
+            )));
         }
         let millis = |duration: Duration| duration.as_millis() as u64;
         Config {
@@ -118,6 +153,10 @@ impl RuntimeConfig {
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
+            // A member whose stored vote is its own committed one stands
+            // for the next term as it starts. It promised nobody, so it
+            // skips the vote hold too (`Group::open`).
+            enable_leader_restore: Some(true),
             // openraft keeps six ring buffers of this many slots per member
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
@@ -126,6 +165,18 @@ impl RuntimeConfig {
         }
         .validate()
         .map_err(|err| InvalidTimers(err.to_string()))
+    }
+}
+
+impl RuntimeConfig {
+    /// `lease * (1 + p) / (1 - p) <= election_max`: the leader's lease on
+    /// a fast clock ends before a follower's promise on a slow one.
+    fn lease_fits(&self) -> bool {
+        const MILLION: u128 = 1_000_000;
+        let drift = u128::from(self.clock_drift_ppm);
+        drift < MILLION
+            && self.lease.as_nanos() * (MILLION + drift)
+                <= self.election_max.as_nanos() * (MILLION - drift)
     }
 }
 
@@ -163,6 +214,53 @@ pub enum InitializeError {
     Raft(String),
 }
 
+/// Why a member set was not found untouched by any group.
+#[derive(Debug, thiserror::Error)]
+pub enum NotBlank {
+    #[error("the shard has no group here")]
+    NoSuchGroup,
+    #[error("{0} did not answer: {1}")]
+    Unanswered(MemberId, String),
+    #[error("{0} already holds a vote or an entry of a group")]
+    Formed(MemberId),
+}
+
+/// A member [`GroupRuntime::open_copy`] started.
+pub struct OpenedMember {
+    /// This broker and the copy id the directory holds.
+    pub member: MemberId,
+    /// The shard's log. Close it once the member is closed.
+    pub log: DiskLog,
+    /// Set when the directory's copy was rotated.
+    pub rotation: Option<Rotation>,
+    /// What reclaiming the copies earlier rotations kept did at open. The
+    /// ones it held are tried again as the group commits.
+    pub kept: KeptReport,
+}
+
+/// The name a shard's marks go by at the data root. It is on disk, so it
+/// must not change: names come from users and may hold any character, so
+/// each is length-prefixed, and the kind is a fixed tag.
+pub(super) fn mark_name(shard: &ShardKey) -> String {
+    let ShardKey {
+        tenant_id,
+        namespace,
+        stream,
+        shard,
+        kind,
+    } = shard;
+    let kind = match kind {
+        ShardKind::Stream => "stream",
+        ShardKind::Cache => "cache",
+    };
+    format!(
+        "{}:{tenant_id}/{}:{namespace}/{}:{stream}/{shard}/{kind}",
+        tenant_id.len(),
+        namespace.len(),
+        stream.len()
+    )
+}
+
 /// What a member is doing in its group.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -188,6 +286,9 @@ pub struct GroupStatus {
     /// The last entry on disk. Votes, a follower's answer and the commit
     /// index count this one.
     pub flushed: Option<LogPoint>,
+    /// The commit index as openraft last published it. It is published
+    /// after the entries are handed on to be applied, so for a moment it
+    /// can be below the read bound. Never read it as a limit on the bound.
     pub committed: Option<u64>,
     /// Timer checks the ticker sent this member.
     pub ticks: u64,
@@ -281,6 +382,7 @@ pub struct GroupRuntime {
 struct Inner {
     broker: String,
     tick: Duration,
+    log_mark: LogMarkMode,
     timers: Timers,
     raft: Arc<Config>,
     /// What a cache shard's member runs on: it snapshots and purges.
@@ -317,6 +419,7 @@ impl GroupRuntime {
             inner: Arc::new(Inner {
                 broker: broker.into(),
                 tick: config.tick,
+                log_mark: config.log_mark,
                 timers: Timers {
                     started: tokio::time::Instant::now(),
                     tick: config.tick.as_millis() as u64,
@@ -325,6 +428,7 @@ impl GroupRuntime {
                     idle_after: config.idle_after.as_millis() as u64,
                     election_min: config.election_min.as_millis() as u64,
                     election_max: config.election_max.as_millis() as u64,
+                    lease: config.lease.as_millis() as u64,
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
@@ -387,27 +491,177 @@ impl GroupRuntime {
     /// from what the log holds: its vote, its entries and its membership. A
     /// member on an empty log waits to be told its group's first members
     /// ([`Self::initialize`]) or to hear from a leader.
+    ///
+    /// Nothing here checks that the directory may still hold copy `copy`,
+    /// and no marks are kept. A shard is meant to open through
+    /// [`Self::open_copy`]. The broker opening its groups here is interim:
+    /// it runs without the copy and restore check until it opens them
+    /// through the gate (#2441).
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
-        let inner = &self.inner;
-        let registry = &inner.registry;
+        let reserved = self.reserve(&group)?;
+        let member = MemberId::new(self.inner.broker.clone(), copy);
+        self.start_member(reserved, group, member, log, None).await
+    }
+
+    /// Start this broker's member of `group` on the shard directory `dir`,
+    /// opened as a copy through `root`, a data root that passed the gate.
+    ///
+    /// The directory keeps its copy id only if it may: an empty directory,
+    /// one minted under another storage id, one whose copy the root's marks
+    /// do not name, or one whose vote or log is below its marks gets a new
+    /// copy id that never voted and an empty log. The member id is this
+    /// broker and the copy id in the directory. From here on the vote mark
+    /// is synced before a vote is answered and the log mark follows the log
+    /// as [`RuntimeConfig::log_mark`] says. See `docs/per-shard-raft.md`,
+    /// "Group and member identity".
+    pub async fn open_copy(
+        &self,
+        group: GroupId,
+        dir: &Path,
+        config: LogConfig,
+        root: &CopyRoot,
+    ) -> Result<OpenedMember, OpenError> {
+        let reserved = self.reserve(&group)?;
+        let kept_config = config.clone();
         let shard = group.shard.clone();
-        {
-            let mut slots = registry.slots.write();
-            if slots.closed {
-                return Err(OpenError::Closed);
-            }
-            match slots.by_shard.get(&shard) {
-                None => {}
-                Some(Slot::Closing(_)) => return Err(OpenError::Closing),
-                Some(Slot::Opening | Slot::Open(_)) => return Err(OpenError::AlreadyOpen),
-            }
-            slots.by_shard.insert(shard.clone(), Slot::Opening);
+        let opened = root
+            .open_copy(&mark_name(&group.shard), dir, group.to_string(), config)
+            .await?;
+        let member = MemberId::new(self.inner.broker.clone(), opened.copy);
+        let log = opened.log;
+        let started = self
+            .start_member(
+                reserved,
+                group,
+                member.clone(),
+                log.clone(),
+                Some(opened.marks),
+            )
+            .await;
+        if let Err(err) = started {
+            let _ = log.close().await;
+            return Err(err);
         }
-        let mut reserved = Reserved {
+        let kept = self.reclaim_kept(&shard, dir, kept_config).await;
+        Ok(OpenedMember {
+            member,
+            log,
+            rotation: opened.rotation,
+            kept,
+        })
+    }
+
+    /// Delete the kept copies the running member already covers. For the
+    /// ones it is behind, a task waits for its saved commit and flushed tail
+    /// to reach them and tries again. It ends when the group or the runtime
+    /// stops and never deletes anything after that. Failures are logged: a
+    /// kept copy left on disk is never worse than one deleted early.
+    async fn reclaim_kept(&self, shard: &ShardKey, dir: &Path, config: LogConfig) -> KeptReport {
+        let Some(group) = self.inner.registry.get(shard) else {
+            return KeptReport::default();
+        };
+        let (stop, stopped) = (self.inner.stop.clone(), group.stopped());
+        let halted = {
+            let (stop, stopped) = (stop.clone(), stopped.clone());
+            move || stop.is_cancelled() || stopped.is_cancelled()
+        };
+        let report = match reclaim_kept(dir, group.current_copy(), config.clone(), &halted).await {
+            Ok(report) => report,
+            Err(err) => {
+                tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
+                return KeptReport::default();
+            }
+        };
+        let Some(mut wait) = report.wait_for() else {
+            return report;
+        };
+        let dir = dir.to_path_buf();
+        let (mut commits, mut positions) = (group.commits(), group.positions());
+        let covers = |group: &Group, wait: u64| {
+            let at = group.current_copy();
+            at.committed().is_some_and(|at| at >= wait)
+                && at.flushed_last().is_some_and(|at| at >= wait)
+        };
+        // The saved commit follows the one in memory with nothing to wake
+        // on, so a wait that lacks only the save polls for it.
+        let saving = |group: &Group, wait: u64| {
+            let at = group.current_copy();
+            at.committed_in_memory().is_some_and(|at| at >= wait)
+                && !at.committed().is_some_and(|at| at >= wait)
+        };
+        tokio::spawn(async move {
+            loop {
+                while !covers(&group, wait) {
+                    let poll = saving(&group, wait);
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        () = stopped.cancelled() => return,
+                        changed = commits.changed() => if changed.is_err() { return },
+                        changed = positions.changed() => if changed.is_err() { return },
+                        () = tokio::time::sleep(SAVE_POLL), if poll => {}
+                    }
+                }
+                if halted() {
+                    return;
+                }
+                let report = match reclaim_kept(&dir, group.current_copy(), config.clone(), &halted)
+                    .await
+                {
+                    Ok(report) => report,
+                    Err(err) => {
+                        tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
+                        return;
+                    }
+                };
+                let Some(next) = report.wait_for() else {
+                    return;
+                };
+                // Covered, yet still held: the pass saw an older state. Wait
+                // for the next change instead of spinning.
+                if covers(&group, next) {
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        () = stopped.cancelled() => return,
+                        changed = commits.changed() => if changed.is_err() { return },
+                        changed = positions.changed() => if changed.is_err() { return },
+                    }
+                }
+                wait = next;
+            }
+        });
+        report
+    }
+
+    /// Hold `group`'s shard while a member starts on it.
+    fn reserve(&self, group: &GroupId) -> Result<Reserved<'_>, OpenError> {
+        let registry = &self.inner.registry;
+        let shard = group.shard.clone();
+        let mut slots = registry.slots.write();
+        if slots.closed {
+            return Err(OpenError::Closed);
+        }
+        match slots.by_shard.get(&shard) {
+            None => {}
+            Some(Slot::Closing(_)) => return Err(OpenError::Closing),
+            Some(Slot::Opening | Slot::Open(_)) => return Err(OpenError::AlreadyOpen),
+        }
+        slots.by_shard.insert(shard.clone(), Slot::Opening);
+        Ok(Reserved {
             registry,
             shard: Some(shard),
-        };
-        let member = MemberId::new(inner.broker.clone(), copy);
+        })
+    }
+
+    async fn start_member(
+        &self,
+        mut reserved: Reserved<'_>,
+        group: GroupId,
+        member: MemberId,
+        log: DiskLog,
+        marks: Option<CopyMarks>,
+    ) -> Result<(), OpenError> {
+        let inner = &self.inner;
+        let registry = &inner.registry;
         let host = group::Host {
             engine: inner.host.get().cloned(),
             clock: Arc::clone(&inner.clock.read()),
@@ -420,6 +674,7 @@ impl GroupRuntime {
             group,
             member,
             log,
+            marks.map(|marks| (marks, inner.log_mark)),
             Arc::clone(raft),
             Arc::clone(&inner.transport),
             inner.timers,
@@ -465,6 +720,73 @@ impl GroupRuntime {
             .initialize(members)
             .await
             .map_err(InitializeError::Raft)
+    }
+
+    /// Ask every other member of `members` whether it has heard from a
+    /// group of `shard`. `Ok` only when each one answered within `within`
+    /// that it holds no vote and no entry.
+    ///
+    /// The one member that forms a group asks this first: a set with a
+    /// member a group already reached must not be formed a second time,
+    /// because the second group would elect on empty logs and overwrite
+    /// what the first acknowledged. Silence is not an answer. The question
+    /// is a pre-vote, which changes nothing on the member asked.
+    pub async fn peers_blank(
+        &self,
+        shard: &ShardKey,
+        members: &BTreeSet<MemberId>,
+        within: Duration,
+    ) -> Result<(), NotBlank> {
+        let group = self
+            .inner
+            .registry
+            .get(shard)
+            .ok_or(NotBlank::NoSuchGroup)?;
+        let asks = members
+            .iter()
+            .filter(|member| **member != group.member)
+            .map(|member| {
+                let request = RaftRequest {
+                    group: group.id.clone(),
+                    to: member.clone(),
+                    beat: 0,
+                    report: false,
+                    deadline: within,
+                    body: Request::PreVote(VoteRequest::new(
+                        Vote {
+                            leader_id: LeaderId {
+                                term: 0,
+                                voted_for: group.member.clone(),
+                            },
+                            committed: false,
+                        },
+                        None,
+                    )),
+                };
+                let transport = Arc::clone(&self.inner.transport);
+                async move {
+                    let unanswered = |why: String| NotBlank::Unanswered(member.clone(), why);
+                    match tokio::time::timeout(within, transport.send(request)).await {
+                        Ok(Ok(RaftReply(Reply::Vote(answer)))) => {
+                            if blank(&answer) {
+                                Ok(())
+                            } else {
+                                Err(NotBlank::Formed(member.clone()))
+                            }
+                        }
+                        Ok(Ok(_)) => Err(unanswered("not an answer to the question".into())),
+                        Ok(Err(refused)) => Err(unanswered(refused.to_string())),
+                        Err(_) => Err(unanswered(format!("nothing within {within:?}"))),
+                    }
+                }
+            });
+        futures::future::try_join_all(asks).await.map(|_| ())
+    }
+
+    /// The brokers that vote in `shard`'s group, as this member's log has
+    /// them. Empty until the member has heard from a group.
+    pub fn voters(&self, shard: &ShardKey) -> Option<BTreeSet<MemberId>> {
+        self.inner.registry.get(shard).map(|group| group.voters())
     }
 
     /// Stop this broker's member of `shard`'s group and forget it. The log
@@ -535,13 +857,14 @@ impl GroupRuntime {
             group,
             to,
             beat,
+            report,
             body,
             ..
         } = request;
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
             Some(member) if member.id == group && member.member == to => {
-                member.handle(body, beat).await.map(RaftReply)
+                member.handle(body, beat, report).await.map(RaftReply)
             }
             _ => Err(Refused::NoSuchMember(Box::new(Addressee { group, to }))),
         }
@@ -591,4 +914,10 @@ impl GroupRuntime {
             .trip_ticker
             .store(true, Ordering::Relaxed);
     }
+}
+
+/// Whether a pre-vote answer comes from a member no group has reached: it
+/// holds no vote and no entry. Either one alone means a group got there.
+pub(super) fn blank(answer: &VoteResponse<ShardTypes>) -> bool {
+    answer.vote.leader_id.term == 0 && answer.last_log_id.is_none()
 }

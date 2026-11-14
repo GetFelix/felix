@@ -32,6 +32,7 @@ pub mod fuzzing;
 mod group;
 mod install;
 mod lead;
+mod lease;
 mod machine;
 mod network;
 mod peer;
@@ -42,6 +43,7 @@ mod tests;
 mod ticker;
 mod types;
 mod wire;
+mod written;
 
 pub use deliver::RaftReads;
 pub use engine::RaftEngine;
@@ -49,8 +51,10 @@ pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTranspor
 pub use peer::{PeerAddresses, PeerTransport};
 pub use propose::{AckAt, Batch, Record};
 pub use runtime::{
-    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, Role, RuntimeConfig,
+    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
+    Role, RuntimeConfig,
 };
 pub use types::{GroupId, MemberId};
 
+pub use felix_storage::raft_copy::LogMarkMode;
 pub use felix_storage::raft_log::{LogPoint, LogPositions};

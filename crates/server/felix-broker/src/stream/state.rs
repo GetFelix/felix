@@ -22,6 +22,7 @@ use crate::ConsistencyLevel;
 use crate::broker::RingRecord;
 use crate::commit::{StateEntry, StateOp, StateView};
 use crate::durable::StreamLog;
+use crate::error::BrokerError;
 use crate::handoff::{Ending, FeedEnd, ShardHandoff, ShardMoved};
 
 /// One stream shard's live state, shared by every handle to it.
@@ -77,6 +78,9 @@ pub(crate) struct StreamState {
     /// The order publishes were handed to an engine that gives them their
     /// offsets. Unused unless the shard runs on one.
     pub(crate) proposals: ProposalOrder,
+    /// The log belongs to the shard's engine, which gives records their
+    /// offsets: nothing here appends to it, and what is held was committed.
+    pub(crate) engine_log: bool,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -144,6 +148,22 @@ impl StreamState {
         self
     }
 
+    /// A stream over its engine's log. Readers at every level stop at what
+    /// the engine says is committed.
+    pub(crate) fn on_engine_log(mut self) -> Self {
+        self.engine_log = true;
+        self.held.bound_every_level();
+        self
+    }
+
+    /// Refuse a write the stream's engine does not take.
+    pub(crate) fn refuse_on_engine_log(&self, what: &'static str) -> Result<(), BrokerError> {
+        if self.engine_log {
+            return Err(BrokerError::NotOnEngineStream { what });
+        }
+        Ok(())
+    }
+
     pub(crate) fn new(
         handle_id: u64,
         subscriber_queue_capacity: usize,
@@ -176,6 +196,7 @@ impl StreamState {
             append_slot: 0,
             held: CommitHold::default(),
             proposals: ProposalOrder::default(),
+            engine_log: false,
             commits: CommitScan::default(),
         }
     }
@@ -225,7 +246,13 @@ impl StreamState {
     /// The ring goes too so it cannot end up with a hole where the dropped
     /// batches were: the next batch released here pins its own offsets, and
     /// a reader below it is served from disk.
+    ///
+    /// A stream on its engine's log keeps them: a batch joins that hold only
+    /// once the engine committed it, so it is delivered whoever leads now.
     pub(crate) fn discard_held(&self) -> usize {
+        if self.engine_log {
+            return 0;
+        }
         let mut state = self.log_state.lock();
         let dropped = self.held.discard();
         if dropped > 0 {
@@ -237,8 +264,20 @@ impl StreamState {
     /// Empty the replay ring, keeping `next_seq`, so the next batch
     /// appended starts it and a reader below that is served from the log.
     /// For a batch whose outcome is unknown, in its place in the order.
-    pub(crate) fn restart_ring(&self) {
-        self.log_state.lock().log.clear();
+    ///
+    /// `written_end` is one past that batch's last offset, when the engine
+    /// wrote it. The sequence moves up to it, so a reader resuming while the
+    /// ring is empty reads the batch from the log instead of joining live
+    /// below it.
+    pub(crate) fn restart_ring(&self, written_end: Option<u64>) {
+        let mut state = self.log_state.lock();
+        state.log.clear();
+        if let Some(end) = written_end
+            && end > state.next_seq
+        {
+            state.state_view = None;
+            state.next_seq = end;
+        }
     }
 
     pub(crate) fn deactivate(&self) {
