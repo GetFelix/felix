@@ -598,6 +598,8 @@ expectations=(
   "FelixRaftPlacementReturnWipe pass"
   "FelixRaftPlacementStaleWipe pass"
   "FelixRaftPlacementStaleWipeNoVersion violates AckedOnDisk"
+  "FelixRaftPlacementStaleWipeRewind pass"
+  "FelixRaftPlacementStaleWipeRewindSameInc violates AckedOnDisk"
   "FelixRaftPlacementDirectTermsNoBarrier violates StateMachineSafety"
   "FelixRaftPlacementTransferMove pass"
   "FelixRaftPlacementTransferMoveSelfRemove violates NeverLeadsRemoved"
@@ -1040,9 +1042,10 @@ fi
 # FelixRaftPlacementTransferMoveFull, TransferMove with a write, not in six,
 # so nothing checks them yet (issue 2497).
 # FelixRaftPlacement{DirectTerms,MoveWipeTwoMoves,TransferMoveWipe,
-# StaleWipeRewind,StaleWipeRewindSameInc,StaleWipeRewindNoAck,StaleReturnWipe,
-# StaleReturnWipeAnyVersion} each ran past 45 minutes on a build box at their
-# bounds; each is registered once a dispatch run gives its declared outcome.
+# StaleWipeRewindNoAck} did not finish in six hours on a CI runner, and
+# FelixRaftPlacement{StaleReturnWipe,StaleReturnWipeAnyVersion} ran past
+# 45 minutes on a build box at their bounds; each is registered once a
+# dispatch run gives its declared outcome.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -1250,6 +1253,8 @@ weights=(
   "FelixRaftPlacementRewindSpareCommitted 57"
   "FelixRaftPlacementDirectTermsNoBarrier 130"
   "FelixRaftPlacementStaleWipeTwoTerms 150"
+  "FelixRaftPlacementStaleWipeRewind 275"
+  "FelixRaftPlacementStaleWipeRewindSameInc 191"
   "FelixRaftPlacementReturnWipe 2"
   "FelixRaftPlacementStaleFull 39"
   "FelixRaftPlacementSameId 2"
