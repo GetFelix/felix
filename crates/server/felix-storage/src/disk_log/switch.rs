@@ -14,6 +14,7 @@
 //! engine marker last, so a marked directory has all of it on disk and an
 //! unmarked one is started again from the beginning.
 
+pub mod seal;
 #[cfg(test)]
 mod tests;
 
@@ -56,13 +57,131 @@ pub struct SwitchBase {
     /// answered it. The digest covers `start..offset`.
     pub start: Offset,
     pub digest: RangeDigest,
+    /// The shard's dead-letter log as the seal leader held it.
+    pub dead_letters: SideRange,
+    /// The shard's group-cursor log as the seal leader held it.
+    pub cursors: SideRange,
 }
+
+/// One of a stream shard's side logs (dead letters, group cursors) at the
+/// seal: a copy must hold `start..end` with this digest and nothing past
+/// `end`. A cursor is only good with the dead letters written before it, so
+/// a voter must hold the leader's pair, not just the records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SideRange {
+    pub start: Offset,
+    pub end: Offset,
+    pub digest: RangeDigest,
+}
+
+impl SideRange {
+    /// `log` from `start` to its tail.
+    pub async fn of(log: &DiskLog, start: Offset) -> Result<Self> {
+        let end = log.tail_offset().await?;
+        let start = start.min(end);
+        Ok(Self {
+            start,
+            end,
+            digest: digest(log, start, end).await?,
+        })
+    }
+}
+
+/// Which side log a check is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SideLog {
+    DeadLetters,
+    Cursors,
+}
+
+/// A side log's directory, for [`start_voter`] to check it against the
+/// base. The check only reads it.
+#[derive(Debug, Clone)]
+pub struct SideDir<'a> {
+    pub dir: &'a Path,
+    pub label: &'a str,
+    pub config: LogConfig,
+}
+
+/// `"SEAL"`, after the generation in the record's payload.
+const SEAL_MAGIC: [u8; 4] = *b"SEAL";
+const SEAL_VERSION: u8 = 1;
+/// generation(8) + magic(4) + version(1) + start(8) + digest(32), then
+/// start(8) + end(8) + digest(32) for each side log.
+const SEAL_PAYLOAD_LEN: usize = 8 + 4 + 1 + 8 + 32 + 2 * 48;
 
 impl SwitchBase {
     /// The Raft term of the base's last entry. Every entry after the switch
     /// has a higher one.
     pub fn term(&self) -> Option<u64> {
         term_of_generation(self.generation)
+    }
+
+    /// The seal's generation-start record, to append at `offset`. Its
+    /// payload starts with the generation, as every generation-start
+    /// record's does, and then carries the rest of the base, so a copy
+    /// that holds the record holds the seal.
+    pub fn record(&self, timestamp_micros: u64) -> crate::log::AppendRecord {
+        let mut payload = Vec::with_capacity(SEAL_PAYLOAD_LEN);
+        payload.extend_from_slice(&self.generation.to_be_bytes());
+        payload.extend_from_slice(&SEAL_MAGIC);
+        payload.push(SEAL_VERSION);
+        payload.extend_from_slice(&self.start.to_be_bytes());
+        payload.extend_from_slice(&self.digest.0);
+        for side in [&self.dead_letters, &self.cursors] {
+            payload.extend_from_slice(&side.start.to_be_bytes());
+            payload.extend_from_slice(&side.end.to_be_bytes());
+            payload.extend_from_slice(&side.digest.0);
+        }
+        crate::log::AppendRecord {
+            payload: bytes::Bytes::from(payload),
+            timestamp_micros,
+            mark: RecordMark::GenerationStart,
+            publisher: None,
+            headers: None,
+        }
+    }
+
+    /// The base a seal record names, or `None` if `record` is not one.
+    pub fn from_record(record: &LogRecord) -> Option<Self> {
+        if record.mark != RecordMark::GenerationStart || record.payload.len() != SEAL_PAYLOAD_LEN {
+            return None;
+        }
+        let mut at = record.payload.as_ref();
+        let mut take = |n: usize| {
+            let (head, rest) = at.split_at(n);
+            at = rest;
+            head
+        };
+        let word = |b: &[u8]| u64::from_be_bytes(b.try_into().expect("8 bytes"));
+        let digest = |b: &[u8]| RangeDigest(b.try_into().expect("32 bytes"));
+        let generation = word(take(8));
+        if take(4) != SEAL_MAGIC || take(1) != [SEAL_VERSION] || generation == 0 {
+            return None;
+        }
+        // The header's generation must agree where the segment keeps one.
+        if record
+            .generation
+            .is_some_and(|stamped| stamped != generation)
+        {
+            return None;
+        }
+        let start = word(take(8));
+        let range = digest(take(32));
+        let mut side = || SideRange {
+            start: word(take(8)),
+            end: word(take(8)),
+            digest: digest(take(32)),
+        };
+        let (dead_letters, cursors) = (side(), side());
+        Some(Self {
+            generation,
+            offset: record.offset,
+            start,
+            digest: range,
+            dead_letters,
+            cursors,
+        })
     }
 }
 
@@ -79,6 +198,8 @@ pub enum NotAVoter {
     /// The records from the seal's start to the base differ from the ones
     /// the seal recorded.
     DigestDiffers { start: Offset, offset: Offset },
+    /// A side log does not hold what the seal leader's held.
+    SideDiffers { log: SideLog },
     /// The directory's member already started, from another base (`None`:
     /// as an empty Raft log).
     AnotherBase {
@@ -110,6 +231,9 @@ impl std::fmt::Display for NotAVoter {
                 f,
                 "the records from {start} to {offset} differ from the ones the seal recorded"
             ),
+            Self::SideDiffers { log } => {
+                write!(f, "the {log:?} log differs from the one the seal recorded")
+            }
             Self::AnotherBase { found, base } => write!(
                 f,
                 "the directory's member started from base {found:?}, not {base:?}"
@@ -214,8 +338,10 @@ fn hash_bytes(hash: &mut Sha256, bytes: Option<&[u8]>) {
 ///
 /// In this order, each step on disk before the next:
 ///
-/// 1. Check that the log holds `base.start..=base.offset`, that the record
-///    at `base.offset` is the seal's, and that the digest matches.
+/// 1. Check that each side log in `side` (dead letters, then cursors)
+///    holds the seal's range and nothing past it, that the log holds
+///    `base.start..=base.offset`, that the record at `base.offset` is the
+///    seal's, payload included, and that the digest matches.
 /// 2. Cut every record above `base.offset`. None was acknowledged.
 /// 3. Write the snapshot, then the purged id at the base.
 /// 4. Write the vote at the base's term for this member, and the commit at
@@ -235,6 +361,7 @@ pub async fn start_voter(
     label: &str,
     hybrid: LogConfig,
     base: &SwitchBase,
+    side: [SideDir<'_>; 2],
     vote_for: &str,
     snapshot: StoredSnapshot,
 ) -> Result<std::result::Result<(), NotAVoter>> {
@@ -262,6 +389,15 @@ pub async fn start_voter(
             }));
         }
     }
+    let [dead_letters, cursors] = side;
+    for (side, log, range) in [
+        (dead_letters, SideLog::DeadLetters, &base.dead_letters),
+        (cursors, SideLog::Cursors, &base.cursors),
+    ] {
+        if !check_side_dir(&side, range).await? {
+            return Ok(Err(NotAVoter::SideDiffers { log }));
+        }
+    }
     if let Err(not) = check_and_cut(dir, label, hybrid, base).await? {
         return Ok(Err(not));
     }
@@ -271,6 +407,42 @@ pub async fn start_voter(
     Ok(Ok(()))
 }
 
+/// Whether `log` holds `range` and nothing past it.
+pub(crate) async fn side_holds(log: &DiskLog, range: &SideRange) -> Result<bool> {
+    if log.tail_offset().await? != range.end {
+        return Ok(false);
+    }
+    if range.start == range.end {
+        return Ok(true);
+    }
+    if log.base_offset() > range.start {
+        return Ok(false);
+    }
+    Ok(digest(log, range.start, range.end).await? == range.digest)
+}
+
+async fn check_side_dir(side: &SideDir<'_>, range: &SideRange) -> Result<bool> {
+    let log = DiskLog::open(side.dir, side.label, without_retention(side.config.clone()))?;
+    let held = side_holds(&log, range).await;
+    let shut = log.shutdown().await;
+    let held = held?;
+    shut?;
+    Ok(held)
+}
+
+/// Nothing may delete a segment while a range is read or after it was
+/// checked: a redo after a crash must find what the first pass found.
+fn without_retention(config: LogConfig) -> LogConfig {
+    LogConfig {
+        raft_log: false,
+        retention_bytes: None,
+        retention_age: None,
+        retention_check_interval: std::time::Duration::ZERO,
+        offload: None,
+        ..config
+    }
+}
+
 /// Steps 1 and 2.
 async fn check_and_cut(
     dir: &Path,
@@ -278,17 +450,7 @@ async fn check_and_cut(
     hybrid: LogConfig,
     base: &SwitchBase,
 ) -> Result<std::result::Result<(), NotAVoter>> {
-    // Nothing may delete a segment while the range is read or after it was
-    // checked: a redo after a crash must find what the first pass found.
-    let hybrid = LogConfig {
-        raft_log: false,
-        retention_bytes: None,
-        retention_age: None,
-        retention_check_interval: std::time::Duration::ZERO,
-        offload: None,
-        ..hybrid
-    };
-    let log = DiskLog::open(dir, label, hybrid)?;
+    let log = DiskLog::open(dir, label, without_retention(hybrid))?;
     let checked = check(&log, base).await;
     let cut = match checked {
         Ok(Ok(())) => log.truncate(base.offset + 1).await,
@@ -337,6 +499,14 @@ async fn check(log: &DiskLog, base: &SwitchBase) -> Result<std::result::Result<(
         return Ok(Err(NotAVoter::DigestDiffers {
             start: base.start,
             offset: base.offset,
+        }));
+    }
+    // The record's payload names the start and every digest, so a record of
+    // this generation that some other claim wrote fails here.
+    if at_base.first().and_then(SwitchBase::from_record).as_ref() != Some(base) {
+        return Ok(Err(NotAVoter::NotTheSeal {
+            offset: base.offset,
+            generation: base.generation,
         }));
     }
     Ok(Ok(()))

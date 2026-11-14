@@ -1209,6 +1209,8 @@ impl DiskLog {
             accepted_generation: AtomicU64::new(accepted.generation),
             led_generation: AtomicU64::new(0),
             ballot: RwLock::new(accepted),
+            #[cfg(feature = "raft")]
+            switch_seal: Mutex::new(switch::seal::load(&epochs_dir)?),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
             wiped: RwLock::new(wiped),
@@ -1863,6 +1865,10 @@ struct LogInner {
     /// replicated batch, so a raise is seen with its own leader. Written only
     /// under `replica_persisted`.
     ballot: RwLock<ballot::Accepted>,
+    #[cfg(feature = "raft")]
+    /// The switch seal this copy promised, as on disk. Held while the file
+    /// is written, so two promises cannot interleave.
+    switch_seal: Mutex<Option<switch::seal::SealPromise>>,
     /// The generation of `replica_set`, zero for none, read without a lock on
     /// every stamped batch. Raised only after the set is on disk.
     set_generation: AtomicU64,

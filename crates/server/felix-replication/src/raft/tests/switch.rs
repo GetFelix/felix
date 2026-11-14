@@ -1,6 +1,6 @@
 //! Members started from a switch's base on directories the hybrid wrote.
 
-use felix_storage::disk_log::switch::{SwitchBase, digest};
+use felix_storage::disk_log::switch::{SideDir, SideRange, SwitchBase, digest};
 use felix_storage::log::{AppendRecord, ReadRange, RecordMark};
 
 use super::*;
@@ -49,8 +49,23 @@ async fn sealed_copy(dir: &Path, payloads: &[&[u8]], tail: &[&[u8]]) -> u64 {
         .collect();
     log.append(&records).await.expect("append");
     lead(&log, SEAL).await;
+    let n = log.tail_offset().await.expect("tail");
+    let mut side = Vec::new();
+    for dir in side_dirs(dir) {
+        let log = DiskLog::open(&dir, "t/ns/orders/0", hybrid()).expect("open");
+        side.push(SideRange::of(&log, 0).await.expect("side"));
+        log.shutdown().await.expect("shutdown");
+    }
+    let base = SwitchBase {
+        generation: SEAL,
+        offset: n,
+        start: 0,
+        digest: digest(&log, 0, n).await.expect("digest"),
+        dead_letters: side[0],
+        cursors: side[1],
+    };
     let seal = log
-        .append(&[record(&SEAL.to_be_bytes(), RecordMark::GenerationStart)])
+        .append(&[base.record(1_700_000_000)])
         .await
         .expect("seal")
         .first_offset;
@@ -60,6 +75,11 @@ async fn sealed_copy(dir: &Path, payloads: &[&[u8]], tail: &[&[u8]]) -> u64 {
     }
     log.shutdown().await.expect("shutdown");
     seal
+}
+
+/// The shard's dead-letter and cursor logs, empty here.
+fn side_dirs(dir: &Path) -> [std::path::PathBuf; 2] {
+    ["dead-letters", "cursors"].map(|kind| dir.with_extension(kind))
 }
 
 /// The client records from `from` on.
@@ -92,21 +112,28 @@ async fn switched_cluster() -> (Cluster, SwitchBase) {
             Some(base) => base,
             None => {
                 let log = DiskLog::open(&dir, "t/ns/orders/0", hybrid()).expect("open");
-                let digest = digest(&log, 0, n).await.expect("digest");
+                let at = log
+                    .read_range_with_trims(ReadRange {
+                        start: n,
+                        max_bytes: 1,
+                    })
+                    .await
+                    .expect("read");
                 log.shutdown().await.expect("shutdown");
-                *base.insert(SwitchBase {
-                    generation: SEAL,
-                    offset: n,
-                    start: 0,
-                    digest,
-                })
+                *base.insert(SwitchBase::from_record(&at[0]).expect("a seal record"))
             }
         };
+        let side = side_dirs(&dir);
         crate::raft::switch::start_voter(
             &dir,
             "t/ns/orders/0",
             hybrid(),
             &base,
+            [0, 1].map(|i| SideDir {
+                dir: &side[i],
+                label: "t/ns/orders/0",
+                config: hybrid(),
+            }),
             &MemberId::new(broker, 1),
             &members(),
         )
