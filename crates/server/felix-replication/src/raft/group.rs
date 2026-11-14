@@ -823,7 +823,7 @@ impl Group {
         // the write the state machine has applied it. One wait in 16.
         static SAMPLE: AtomicU64 = AtomicU64::new(0);
         let probe = felix_storage::stage_probe::enabled()
-            && SAMPLE.fetch_add(1, Ordering::Relaxed) % 16 == 0;
+            && SAMPLE.fetch_add(1, Ordering::Relaxed).is_multiple_of(16);
         let raft = self.raft.clone();
         async move {
             if !probe {
@@ -836,7 +836,7 @@ impl Group {
                 loop {
                     let passed = metrics
                         .borrow_watched()
-                        .committed
+                        .local_committed
                         .as_ref()
                         .is_some_and(|at| at.index >= index);
                     if passed {

@@ -666,7 +666,7 @@ async fn a_batch_written_at_another_term_is_not_answered_on_the_lease() {
         term: Some(written.generation + 1),
         count: 1,
         timeout: PATIENCE,
-        on_lease: Some(on_lease),
+        on_lease: Some((AnswerAt::Lease, on_lease)),
     };
     let admitted = led.engine.admit_local_ack(&shard(0), written.generation);
     admitted.expect("the lease holds");
