@@ -729,7 +729,8 @@ async fn a_leader_publisher_ahead_of_slow_followers_waits_for_its_commit() {
     // Under the heartbeat interval, so the lease holds throughout.
     *led.cluster.net.answer_after.lock() = Some(timers().heartbeat / 2);
 
-    // Handed over in one go: nothing commits in between.
+    // Nothing commits while the batches are handed over.
+    led.cut_followers();
     let published: Vec<_> = (0..felix_broker::ANSWERED_AHEAD + OVER)
         .map(|_| {
             let engine = led.engine.clone();
@@ -742,6 +743,7 @@ async fn a_leader_publisher_ahead_of_slow_followers_waits_for_its_commit() {
             })
         })
         .collect();
+    led.heal();
     let mut early = 0;
     for (place, committed) in published.into_iter().enumerate() {
         let committed = tokio::time::timeout(PATIENCE, committed).await;
