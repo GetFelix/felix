@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794687236403,
+  "lastUpdate": 1794687829325,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -72336,6 +72336,72 @@ window.BENCHMARK_DATA = {
             "range": "73.86",
             "unit": "us",
             "extra": "trials: 5\nmedian: 411.00\nmean: 430.00\nstdev: 73.86\ncv: 17.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "27a47929ee1e7150ddf860c6069d1fe8198c1f77",
+          "message": "test: judge two loaded-runner flakes by events, not the clock (#2554)\n\n* test: judge two loaded-runner flakes by events, not the clock\n\nThe forwarded quorum cache op test bounded each op at 6x its quorum\ntimeout and the released op at 1x. A loaded box stalls the storage\nwrite around the wait (four loops failed together at one iteration,\n2.0s for a 300ms wait), so the test now checks that the error names\nthe quorum timeout, and that an op after the mark answers Ok, which a\nwait that ran out could not (#2545).\n\nThe lease canary started its 30s hold right after creating 600\nstreams. Under load the brokers are still opening and fencing those\nshards when the hold ends, so fewer than half the appended streams take\na write. The hold now starts once half of them serve, within a budget,\nand the failure prints each broker's open-file limit (#2530).\n\nSpec-Unaffected: test-only changes; no product code or protocol change\n\n* test: bound the quorum wait loosely and print fd counts in the lease canary",
+          "timestamp": "2026-11-14T20:18:22Z",
+          "tree_id": "16a4749f7b1faedb8bc7298ac38fd607f8235610",
+          "url": "https://github.com/GetFelix/felix/commit/27a47929ee1e7150ddf860c6069d1fe8198c1f77"
+        },
+        "date": 1794687821469,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 72.60\nstdev: 1.14\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 101,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 101.00\nmean: 101.20\nstdev: 2.49\ncv: 2.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 138,
+            "range": "17.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 139.40\nstdev: 17.33\ncv: 12.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 94.60\nstdev: 1.14\ncv: 1.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 232,
+            "range": "35.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 232.00\nmean: 230.80\nstdev: 35.41\ncv: 15.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 601,
+            "range": "598.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 601.00\nmean: 726.20\nstdev: 598.67\ncv: 82.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
