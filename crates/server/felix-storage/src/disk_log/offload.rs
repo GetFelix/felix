@@ -150,8 +150,20 @@ impl Offloader {
             return Ok(Arc::clone(store));
         }
         let root = self.root.clone();
+        #[cfg(test)]
+        let injected = self.faults.take_store_sync_failure();
+        #[cfg(not(test))]
+        let injected = false;
         let store = blocking(move || {
-            crate::io::create_dir_all_durable(&root)?;
+            // A retry would find the root there and sync its parent again,
+            // which proves nothing after a failed sync.
+            archive_sync(&root, || {
+                crate::io::create_dir_all_durable(&root)?;
+                if injected {
+                    return Err(StorageError::SyncFailed("injected".to_string()));
+                }
+                Ok(())
+            })?;
             LocalFileSystem::new_with_prefix(&root).map_err(object_error)
         })
         .await?;
@@ -344,21 +356,24 @@ impl Offloader {
                         return Err(StorageError::SyncFailed("injected".to_string()));
                     }
                     crate::io::sync_all(&crate::fs::File::open(&path)?)?;
-                    // The store resolves its prefix, so `path` may spell the
-                    // root differently (a symlink, `/var` on macOS). The climb
-                    // must still stop there, not sync every ancestor.
-                    let top = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
-                    let mut dir = path.parent();
-                    while let Some(current) = dir {
-                        crate::io::sync_dir(current)?;
-                        if current == root || current == top {
-                            break;
-                        }
-                        dir = current.parent();
-                    }
                     Ok(())
                 })(),
-            )
+            )?;
+            // The store resolves its prefix, so `path` may spell the root
+            // differently (a symlink, `/var` on macOS). The climb must still
+            // stop there, not sync every ancestor.
+            let top = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+            archive_sync(&root, || {
+                let mut dir = path.parent();
+                while let Some(current) = dir {
+                    crate::io::sync_dir(current)?;
+                    if current == root || current == top {
+                        break;
+                    }
+                    dir = current.parent();
+                }
+                Ok(())
+            })
         })
         .await
     }
@@ -551,8 +566,7 @@ impl LogInner {
 /// keeps the directory and its manifest for the retry.
 pub(crate) fn remove_copies(target: &OffloadTarget, shard_dir: &Path) -> Result<()> {
     let OffloadTarget::LocalDir { dir: root, .. } = target;
-    check_archive(root)?;
-    stop_archive_on_sync_failure(root, remove_copies_from(target, shard_dir))
+    archive_sync(root, || remove_copies_from(target, shard_dir))
 }
 
 fn remove_copies_from(target: &OffloadTarget, shard_dir: &Path) -> Result<()> {
@@ -623,6 +637,21 @@ fn check_archive(root: &Path) -> Result<()> {
     }
     Ok(())
 }
+
+/// Run `sync`, which syncs directories in the archive at `root`, under its
+/// stop.
+///
+/// One at a time: shards share the archive's directories, and two syncs of
+/// one directory share its writeback error. Without this a shard's sync could
+/// report success after another's failed sync dropped its entry but before
+/// that failure stopped the archive.
+fn archive_sync<T>(root: &Path, sync: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _one_at_a_time = ARCHIVE_SYNCS.lock();
+    check_archive(root)?;
+    stop_archive_on_sync_failure(root, sync())
+}
+
+static ARCHIVE_SYNCS: Mutex<()> = Mutex::new(());
 
 fn stop_archive_on_sync_failure<T>(root: &Path, result: Result<T>) -> Result<T> {
     if let Err(err) = &result
@@ -703,6 +732,7 @@ pub(super) mod test_hooks {
         stopped: Mutex<bool>,
         corrupt_next: Mutex<bool>,
         fail_sync: Mutex<bool>,
+        fail_store_sync: Mutex<bool>,
     }
 
     thread_local! {
@@ -740,6 +770,15 @@ pub(super) mod test_hooks {
 
         pub(super) fn take_sync_failure(&self) -> bool {
             std::mem::take(&mut *self.fail_sync.lock())
+        }
+
+        /// Fail the sync that creates the archive directory, after it ran.
+        pub(crate) fn fail_next_store_sync(&self) {
+            *self.fail_store_sync.lock() = true;
+        }
+
+        pub(super) fn take_store_sync_failure(&self) -> bool {
+            std::mem::take(&mut *self.fail_store_sync.lock())
         }
 
         /// Fails, ending the sweep, when the armed stop is `at`.

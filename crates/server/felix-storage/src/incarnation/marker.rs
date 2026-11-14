@@ -155,11 +155,11 @@ pub(crate) fn write_floors(root: &Path, floors: &Floors) -> Result<()> {
     write_file(root, &root.join(STREAMS_DIR).join(FLOORS), text.as_bytes())
 }
 
+/// Under the durable root's stop: creating `.streams` syncs the root itself.
 fn write_file(root: &Path, path: &Path, contents: &[u8]) -> Result<()> {
-    let dir = root.join(STREAMS_DIR);
-    let name = record_name(path);
-    crate::run_state::check_records(&dir, &name)?;
-    crate::run_state::stop_records_on_sync_failure(&dir, &name, write_file_in(&dir, path, contents))
+    crate::run_state::durable_change(root, &record_name(path), || {
+        write_file_in(&root.join(STREAMS_DIR), path, contents)
+    })
 }
 
 fn record_name(path: &Path) -> String {
@@ -188,14 +188,16 @@ const IN_PLAY: &str = ".incarnations";
 
 /// Record, durably, that streams here carry incarnations.
 pub(crate) fn record_in_play(root: &Path) -> Result<()> {
-    let path = root.join(STREAMS_DIR).join(IN_PLAY);
-    // Before the shortcut: after a failed directory sync the file can be
-    // there without its entry being durable.
-    crate::run_state::check_records(&root.join(STREAMS_DIR), IN_PLAY)?;
-    if crate::fs::exists(&path) {
-        return Ok(());
-    }
-    write_file(root, &path, b"felix-stream-incarnations 1\n")
+    let dir = root.join(STREAMS_DIR);
+    let path = dir.join(IN_PLAY);
+    // The shortcut is under the stop: after a failed directory sync the
+    // file can be there without its entry being durable.
+    crate::run_state::durable_change(root, IN_PLAY, || {
+        if crate::fs::exists(&path) {
+            return Ok(());
+        }
+        write_file_in(&dir, &path, b"felix-stream-incarnations 1\n")
+    })
 }
 
 /// Whether this broker has seen a stream with an incarnation: the record of
@@ -230,18 +232,13 @@ pub(crate) fn in_play(root: &Path) -> Result<bool> {
 
 pub(crate) fn remove(root: &Path, tenant: &str, namespace: &str, stream: &str) -> Result<()> {
     let path = path(root, tenant, namespace, stream);
-    let dir = root.join(STREAMS_DIR);
-    let name = record_name(&path);
-    crate::run_state::check_records(&dir, &name)?;
-    match crate::fs::remove_file(&path) {
-        Ok(()) => crate::run_state::stop_records_on_sync_failure(
-            &dir,
-            &name,
-            sync_dir(&dir).map_err(StorageError::Io),
-        ),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(StorageError::Io(err)),
-    }
+    crate::run_state::durable_change(root, &record_name(&path), || {
+        match crate::fs::remove_file(&path) {
+            Ok(()) => sync_dir(&root.join(STREAMS_DIR)).map_err(StorageError::Io),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(StorageError::Io(err)),
+        }
+    })
 }
 
 /// Every marker whose delete has not finished.

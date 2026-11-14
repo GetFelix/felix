@@ -680,9 +680,11 @@ Four properties:
      `copy-trust`, `copy-trust-kept`, `run-token`, `controlplane.view`
      (written or removed), the stream incarnation markers under `.streams/`,
      and moving a deleted stream's directory into `.deleted/`. There is no
-     log to poison, so a
-     failed sync of one stops every later durable record in that directory
-     for the rest of the process. The write that failed returns
+     log to poison, so a failed sync of one stops every later durable record
+     under the durable root for the rest of the process. These changes run
+     one at a time, so a sync that fails for one record is recorded before
+     another record's sync of the same directory can report success. The
+     write that failed returns
      `StorageError::SyncFailed`, and so does any later one, the same record
      included. The broker counts it as a poisoned log: it attests no trusted
      copy, the run record stops vouching for the boot, and a stop is not
@@ -694,10 +696,15 @@ Four properties:
    - *Offloaded copies* (see "Tiered storage: offload"). A failed sync of an
      uploaded object or of a directory above it, or of the directory a
      retired shard's copy was removed from, stops offloading to that archive
-     for the rest of the process. A retry would sync directories it does not
-     change again, and could then record a copy that never reached the disk
-     and let retention delete the only one. Retention keeps every segment
-     without a recorded copy, as it does while passes fail.
+     for the rest of the process. So does a failed sync while creating the
+     archive directory. A retry would sync directories it does not change
+     again, and could then record a copy that never reached the disk and let
+     retention delete the only one. Directory syncs in an archive run one at
+     a time for the same reason as node records. Retention keeps every
+     segment without a recorded copy, as it does while passes fail. This
+     stop does not turn `/ready` false, because no acknowledged record
+     depends on it: it shows as an error in the broker log and as
+     `felix_storage_offload_failures_total` rising on each pass with a segment to copy.
    - *The cache's key index snapshot.* It is tried again by the next
      compaction. Each try writes a new file, and a snapshot that a crash lost
      or left stale costs a full replay on the next open, never a wrong read.
@@ -706,7 +713,9 @@ Four properties:
    > `disk_log/tests/durability.rs`) drops a flush during a failing sync.
    > `a_failed_node_record_sync_is_not_retried` (in
    > `disk_log/tests/flush_failures.rs`) fails the file sync and then the
-   > directory sync of each node record. The offload cases are
+   > directory sync of each node record, and
+   > `a_failed_incarnation_record_sync_is_not_retried` does the same for the
+   > incarnation record. The offload cases are
    > `a_failed_upload_sync_stops_offloading_to_the_archive` and
    > `a_failed_removal_sync_is_not_retried`, and the snapshot case is
    > `a_failed_snapshot_sync_is_retried_and_a_crash_reads_right`.

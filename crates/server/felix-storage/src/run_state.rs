@@ -731,46 +731,59 @@ fn write(root: &Path, record: &[u8], durable: bool) -> Result<()> {
 /// sync could then succeed without making any rename durable. See
 /// [`failed_records`].
 pub(crate) fn write_atomically(root: &Path, name: &str, bytes: &[u8], durable: bool) -> Result<()> {
-    if durable {
-        check_records(root, name)?;
+    if !durable {
+        return replace_file(root, name, bytes, false);
     }
-    stop_records_on_sync_failure(root, name, replace_file(root, name, bytes, durable))
+    durable_change(root, name, || replace_file(root, name, bytes, true))
 }
 
-/// Refuse a durable change to `name` in `dir` once a sync there has failed.
-/// See [`write_atomically`].
-pub(crate) fn check_records(dir: &Path, name: &str) -> Result<()> {
-    match stopped_by(dir) {
-        Some(first) => Err(refused(name, &first)),
-        None => Ok(()),
-    }
-}
-
-/// Stop durable changes in `dir` if `result` is a failed sync of `name`
-/// there. See [`write_atomically`].
-pub(crate) fn stop_records_on_sync_failure<T>(
+/// Run `change`, a durable change to `name` in `dir`, under the stop of
+/// [`write_atomically`]: refused once a sync in `dir` has failed, and a
+/// failed sync of its own stops `dir`.
+///
+/// Changes run one at a time. Two writers syncing one directory share its
+/// writeback error, so without this a sync could report success after
+/// another writer's failed sync dropped its entry but before that failure
+/// was recorded.
+pub(crate) fn durable_change<T>(
     dir: &Path,
     name: &str,
-    result: Result<T>,
+    change: impl FnOnce() -> Result<T>,
 ) -> Result<T> {
-    if let Err(err) = &result
-        && err.is_sync_failure()
-    {
-        stop_records(dir, name, err);
+    let (result, stopped) = {
+        let _one_at_a_time = DURABLE_CHANGES.lock();
+        if let Some(first) = stopped_by(dir) {
+            return Err(refused(name, &first));
+        }
+        let result = change();
+        let stopped = match &result {
+            Err(err) if err.is_sync_failure() => stop_records(dir, name, err),
+            _ => false,
+        };
+        (result, stopped)
+    };
+    if stopped {
+        // What this broker vouched for may now be lost like a poisoned log's
+        // acknowledged records, so it is treated as one.
+        crate::disk_log::note_lost_durability();
+        forget_watched();
     }
     result
 }
 
+static DURABLE_CHANGES: Mutex<()> = Mutex::new(());
+
 /// Remove the record `name` under `root` durably, under the same stop as
 /// [`write_atomically`].
 pub(crate) fn remove_record(root: &Path, name: &str) -> Result<()> {
-    check_records(root, name)?;
-    match crate::fs::remove_file(root.join(name)) {
-        Ok(()) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(err.into()),
-    }
-    stop_records_on_sync_failure(root, name, sync_dir(root).map_err(StorageError::from))
+    durable_change(root, name, || {
+        match crate::fs::remove_file(root.join(name)) {
+            Ok(()) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(err.into()),
+        }
+        sync_dir(root).map_err(StorageError::from)
+    })
 }
 
 fn refused(name: &str, first: &FailedRecord) -> StorageError {
@@ -832,31 +845,27 @@ pub(crate) fn stopped_by(root: &Path) -> Option<FailedRecord> {
         .map(|(_, record)| record.clone())
 }
 
-fn stop_records(root: &Path, name: &str, err: &StorageError) {
-    {
-        let mut stopped = STOPPED_DIRS.lock();
-        if stopped.iter().any(|(dir, _)| dir == root) {
-            return;
-        }
-        tracing::error!(
-            root = %root.display(),
-            record = name,
-            error = %err,
-            "a sync of a node record failed; no durable record is written in this directory \
-             until the broker restarts, after a reboot"
-        );
-        stopped.push((
-            root.to_path_buf(),
-            FailedRecord {
-                record: name.to_string(),
-                reason: err.to_string(),
-            },
-        ));
+/// Record the stop of `root`. Returns whether this was its first.
+fn stop_records(root: &Path, name: &str, err: &StorageError) -> bool {
+    let mut stopped = STOPPED_DIRS.lock();
+    if stopped.iter().any(|(dir, _)| dir == root) {
+        return false;
     }
-    // What this broker vouched for may now be lost like a poisoned log's
-    // acknowledged records, so it is treated as one.
-    crate::disk_log::note_lost_durability();
-    forget_watched();
+    tracing::error!(
+        root = %root.display(),
+        record = name,
+        error = %err,
+        "a sync of a node record failed; no durable record is written in this directory \
+         until the broker restarts, after a reboot"
+    );
+    stopped.push((
+        root.to_path_buf(),
+        FailedRecord {
+            record: name.to_string(),
+            reason: err.to_string(),
+        },
+    ));
+    true
 }
 
 fn path_in(root: &Path) -> PathBuf {

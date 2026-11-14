@@ -636,6 +636,24 @@ async fn a_failed_upload_sync_stops_offloading_to_the_archive() {
     log.shutdown().await.expect("shutdown");
 }
 
+/// A failed sync while creating the archive directory stops it too: the next
+/// pass would find the directory there and sync its parent again.
+#[tokio::test]
+async fn a_failed_archive_creation_sync_stops_offloading() {
+    let dir = tempdir().expect("dir");
+    let config = offload_config(dir.path(), tight_retention());
+    let log = filled_log(dir.path(), &config).await;
+    offloader(&log).faults.fail_next_store_sync();
+
+    for pass in 0..2 {
+        let err = log.enforce_retention_now().await.expect_err("pass");
+        assert!(err.is_sync_failure(), "pass {pass}: {err}");
+        assert!(log.inner.manifest.lock().entries().is_empty());
+        assert_eq!(log.base_offset(), 0, "pass {pass} deleted a segment");
+    }
+    log.shutdown().await.expect("shutdown");
+}
+
 /// A failed directory sync after removing a retired shard's copy stops the
 /// archive too: the retry finds the file gone and would sync nothing.
 #[tokio::test]
