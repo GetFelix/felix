@@ -650,7 +650,8 @@ from run to run:
   random generator. The shard groups use tokio's runtime with that one
   generator swapped: while the simulation thread holds a seed
   (`felix_replication::raft::seed_timers`), every draw comes from a stream
-  derived from it. A broker never sets one and draws as before.
+  derived from it. `seed_timers` exists only in test builds (the
+  `testing` feature), so a broker cannot set one and draws as before.
 - The order the node ticker visits groups in, which is by shard.
 - Storage work that a broker hands to tokio's blocking threads. The run
   installs the simulated clock, so that work runs as tasks on the

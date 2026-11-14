@@ -1363,6 +1363,22 @@ async fn a_log_that_does_not_fsync_on_commit_gets_no_group() {
     runtime.shutdown().await;
 }
 
+/// The ticker visits groups in shard order whatever order they opened and
+/// closed in, so a simulation seed replays its run.
+#[tokio::test]
+async fn the_ticker_visits_groups_in_shard_order() {
+    let cluster = Cluster::new(false);
+    let runtime = cluster.runtime("a");
+    for n in [7, 2, 9, 0, 5, 3, 8, 1] {
+        let log = open_log(cluster.root.path(), "a", n, log_config());
+        runtime.open(group(n), 1, log).await.expect("open");
+    }
+    assert!(runtime.close(&shard(5)).await);
+    let want: Vec<_> = [0, 1, 2, 3, 7, 8, 9].map(shard).into();
+    assert_eq!(runtime.ticked_shards(), want);
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_member_forms_a_group_only_from_a_set_that_names_it() {
     let mut cluster = Cluster::new(false);

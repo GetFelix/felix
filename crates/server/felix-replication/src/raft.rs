@@ -44,6 +44,7 @@ mod wire;
 mod written;
 
 pub use deliver::RaftReads;
+#[cfg(any(test, feature = "testing"))]
 pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};

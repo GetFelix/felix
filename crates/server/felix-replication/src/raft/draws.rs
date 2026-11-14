@@ -4,11 +4,14 @@
 //! Tokio's stock runtime answers with `rand::rng()`, which nothing can seed,
 //! so two simulation runs of one seed would elect at different times.
 //! [`ShardRuntime`] is that runtime with one change: while a thread holds a
-//! [`TimerSeed`], its draws come from a stream derived from the seed.
+//! `TimerSeed` (test builds only), its draws come from a stream derived
+//! from the seed.
 
+#[cfg(any(test, feature = "testing"))]
 use std::cell::Cell;
 use std::future::Future;
 use std::io;
+#[cfg(any(test, feature = "testing"))]
 use std::marker::PhantomData;
 use std::time::Duration;
 
@@ -20,6 +23,7 @@ use rand::rngs::SmallRng;
 #[cfg(test)]
 mod tests;
 
+#[cfg(any(test, feature = "testing"))]
 thread_local! {
     static STREAM: Cell<Option<u64>> = const { Cell::new(None) };
 }
@@ -29,6 +33,7 @@ thread_local! {
 /// For the simulator: its run is one thread, so the draws come in the
 /// same order each time and one stream fixes them all. A broker never
 /// holds one.
+#[cfg(any(test, feature = "testing"))]
 #[must_use = "the draws follow the seed only while this is held"]
 pub struct TimerSeed {
     before: Option<u64>,
@@ -37,6 +42,7 @@ pub struct TimerSeed {
 }
 
 /// Seed openraft's draws on this thread. See [`TimerSeed`].
+#[cfg(any(test, feature = "testing"))]
 pub fn seed_timers(seed: u64) -> TimerSeed {
     TimerSeed {
         before: STREAM.replace(Some(seed)),
@@ -44,6 +50,7 @@ pub fn seed_timers(seed: u64) -> TimerSeed {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl Drop for TimerSeed {
     fn drop(&mut self) {
         STREAM.set(self.before);
@@ -51,6 +58,7 @@ impl Drop for TimerSeed {
 }
 
 /// SplitMix64: each draw gets a well-mixed seed of its own.
+#[cfg(any(test, feature = "testing"))]
 fn next(state: u64) -> u64 {
     let z = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
     let z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
@@ -150,12 +158,15 @@ impl AsyncRuntime for ShardRuntime {
     }
 
     fn thread_rng() -> Self::ThreadLocalRng {
-        let seed = STREAM.with(|stream| {
+        #[cfg(any(test, feature = "testing"))]
+        if let Some(seed) = STREAM.with(|stream| {
             let state = stream.get()?;
             stream.set(Some(next(state)));
             Some(state)
-        });
-        SmallRng::seed_from_u64(seed.unwrap_or_else(rand::random))
+        }) {
+            return SmallRng::seed_from_u64(seed);
+        }
+        SmallRng::seed_from_u64(rand::random())
     }
 
     fn new(threads: usize) -> Self {

@@ -1,6 +1,6 @@
 //! The groups one broker holds, and their lifecycle.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -252,7 +252,9 @@ pub(crate) struct Registry {
 
 #[derive(Default)]
 struct Slots {
-    by_shard: HashMap<Arc<ShardKey>, Slot>,
+    /// Ordered, so the ticked view comes out in shard order without a sort
+    /// under the lock: a fixed tick order lets a simulation seed replay.
+    by_shard: BTreeMap<Arc<ShardKey>, Slot>,
     closed: bool,
 }
 
@@ -262,7 +264,7 @@ impl Registry {
     }
 
     fn publish(&self, slots: &Slots) {
-        let mut open: Vec<_> = slots
+        let open: Vec<_> = slots
             .by_shard
             .values()
             .filter_map(|slot| match slot {
@@ -270,8 +272,6 @@ impl Registry {
                 Slot::Opening | Slot::Closing(_) => None,
             })
             .collect();
-        // A fixed tick order, so a simulation seed replays its run.
-        open.sort_by(|a, b| a.id.shard.cmp(&b.id.shard));
         self.ticked.store(Arc::new(open));
     }
 
@@ -573,10 +573,9 @@ impl GroupRuntime {
         let groups: Vec<Arc<Group>> = {
             let mut slots = inner.registry.slots.write();
             slots.closed = true;
-            let groups = slots
-                .by_shard
-                .drain()
-                .filter_map(|(_, slot)| match slot {
+            let groups = std::mem::take(&mut slots.by_shard)
+                .into_values()
+                .filter_map(|slot| match slot {
                     // A member being closed is stopped by its close too.
                     // Both wait for the same stop.
                     Slot::Open(group) | Slot::Closing(group) => Some(group),
@@ -643,6 +642,16 @@ impl GroupRuntime {
 
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         self.inner.registry.get(shard)
+    }
+
+    /// The shards the ticker visits, in its order.
+    #[cfg(test)]
+    pub(crate) fn ticked_shards(&self) -> Vec<ShardKey> {
+        let ticked = self.inner.registry.ticked();
+        ticked
+            .iter()
+            .map(|group| (*group.id.shard).clone())
+            .collect()
     }
 
     #[cfg(test)]
