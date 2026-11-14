@@ -86,13 +86,28 @@ pub(crate) fn restores_of(data: &[u8]) -> usize {
 pub(super) fn encode(time: u64, maps: Layers<'_>) -> Bytes {
     #[cfg(test)]
     ENCODED.with(|encoded| encoded.set(encoded.get() + 1));
-    let mut buf = BytesMut::new();
-    buf.put_u8(VERSION);
-    buf.put_u64_le(time);
     // An expired value is left out. No write or read can tell: each
     // treats it as absent.
     let live = || maps.entries().filter(|(_, entry)| entry.live(time));
-    buf.put_u64_le(live().count() as u64);
+    let (mut count, mut len) = (0u64, 1 + 8 + 8);
+    for (key, entry) in live() {
+        count += 1;
+        len += 4 + key.len() + 8 + 8 + 4 + entry.value.len();
+    }
+    len += 8 + maps
+        .counters()
+        .map(|(key, _)| 4 + key.len() + 8)
+        .sum::<usize>();
+    len += 8 + maps
+        .producers()
+        .map(|(_, known)| 8 + 8 + 8 + known.answers().count() * (8 + 1 + 8))
+        .sum::<usize>();
+    // Sized up front: growing a buffer of hundreds of megabytes remaps it,
+    // which stalls page faults on every other thread, apply's included.
+    let mut buf = BytesMut::with_capacity(len);
+    buf.put_u8(VERSION);
+    buf.put_u64_le(time);
+    buf.put_u64_le(count);
     for (key, entry) in live() {
         put_key(&mut buf, key);
         buf.put_u64_le(entry.version);
@@ -115,6 +130,7 @@ pub(super) fn encode(time: u64, maps: Layers<'_>) -> Bytes {
             put_answer(&mut buf, *answer);
         }
     }
+    debug_assert_eq!(buf.len(), len, "the snapshot's size was miscounted");
     buf.freeze()
 }
 

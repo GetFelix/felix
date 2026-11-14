@@ -28,6 +28,89 @@ use super::commit::Commits;
 use super::types::{Applied, ShardTypes};
 use crate::ShardKind;
 
+/// Scratch: lock wait/hold histograms for the bench.
+#[allow(unreachable_pub, dead_code)]
+pub(crate) mod lockstat {
+    use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
+    use std::time::Instant;
+    pub(crate) struct Hist {
+        pub(crate) b: [AtomicU64; 40],
+        pub(crate) max: AtomicU64,
+        pub(crate) sum: AtomicU64,
+        pub(crate) n: AtomicU64,
+    }
+    impl Hist {
+        pub(crate) const fn new() -> Self {
+            Self {
+                b: [const { AtomicU64::new(0) }; 40],
+                max: AtomicU64::new(0),
+                sum: AtomicU64::new(0),
+                n: AtomicU64::new(0),
+            }
+        }
+        pub(crate) fn add(&self, since: Instant) {
+            let ns = since.elapsed().as_nanos() as u64;
+            self.addn(ns)
+        }
+        pub(crate) fn addn(&self, ns: u64) {
+            self.b[(64 - ns.leading_zeros()) as usize % 40].fetch_add(1, Relaxed);
+            self.max.fetch_max(ns, Relaxed);
+            self.sum.fetch_add(ns, Relaxed);
+            self.n.fetch_add(1, Relaxed);
+        }
+        pub(crate) fn reset(&self) {
+            for b in &self.b {
+                b.store(0, Relaxed)
+            }
+            self.max.store(0, Relaxed);
+            self.sum.store(0, Relaxed);
+            self.n.store(0, Relaxed);
+        }
+        pub(crate) fn show(&self, name: &str) -> String {
+            let n = self.n.load(Relaxed).max(1);
+            // count of samples >= 2^k ns for k = 10 (1us), 14 (16us), 17 (131us), 20 (1ms), 22 (4ms)
+            let ge = |k: usize| self.b[k + 1..].iter().map(|b| b.load(Relaxed)).sum::<u64>();
+            format!(
+                "{name}:n={} mean_ns={} max_us={:.0} ge16us={} ge131us={} ge1ms={} ge4ms={}",
+                self.n.load(Relaxed),
+                self.sum.load(Relaxed) / n,
+                self.max.load(Relaxed) as f64 / 1e3,
+                ge(14),
+                ge(17),
+                ge(20),
+                ge(22)
+            )
+        }
+    }
+    pub(crate) static T0: parking_lot::Mutex<Option<Instant>> = parking_lot::Mutex::new(None);
+    pub(crate) static EVENTS: parking_lot::Mutex<Vec<String>> = parking_lot::Mutex::new(Vec::new());
+    pub(crate) fn event(what: &str) {
+        if let Some(t0) = *T0.lock() {
+            EVENTS
+                .lock()
+                .push(format!("{}@{:.1}", what, t0.elapsed().as_secs_f64() * 1e3));
+        }
+    }
+    pub(crate) static APPLY_WAIT: Hist = Hist::new();
+    pub(crate) static APPLY_HOLD_STEADY: Hist = Hist::new();
+    pub(crate) static APPLY_HOLD_LAYERED: Hist = Hist::new();
+    pub(crate) static FOLD_WAIT: Hist = Hist::new();
+    pub(crate) static FOLD_HOLD: Hist = Hist::new();
+    pub(crate) static FOLD_TOTAL: Hist = Hist::new();
+    pub(crate) static CUT_HOLD: Hist = Hist::new();
+    pub(crate) fn all() -> [(&'static str, &'static Hist); 7] {
+        [
+            ("apply_wait", &APPLY_WAIT),
+            ("apply_hold_steady", &APPLY_HOLD_STEADY),
+            ("apply_hold_layered", &APPLY_HOLD_LAYERED),
+            ("fold_wait", &FOLD_WAIT),
+            ("fold_hold", &FOLD_HOLD),
+            ("fold_total", &FOLD_TOTAL),
+            ("cut_hold", &CUT_HOLD),
+        ]
+    }
+}
+
 /// A cache group's projection, shared by its state machine, which writes
 /// it, and the member's read and answer paths.
 pub(crate) type Cache = Arc<parking_lot::RwLock<CacheState>>;
@@ -332,9 +415,20 @@ impl Machine {
         let mut budget = FOLD_CHUNK.max(written.saturating_mul(FOLD_PER_ENTRY));
         while budget > 0 {
             let chunk = budget.min(FOLD_CHUNK);
+            let t0 = std::time::Instant::now();
             let mut state = cache.write();
+            lockstat::FOLD_WAIT.add(t0);
+            let was = state.layered();
+            let t1 = std::time::Instant::now();
             let more = state.fold(chunk);
+            let now = state.layered();
             parking_lot::RwLockWriteGuard::unlock_fair(state);
+            if was {
+                lockstat::FOLD_HOLD.add(t1);
+            }
+            if was && !now {
+                lockstat::event("folded");
+            }
             if !more {
                 return;
             }
@@ -381,9 +475,22 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 };
                 // Before the commit table moves, so a write that waits on
                 // its commit finds its answer.
-                cache
-                    .write()
-                    .apply(entry.log_id.index, command.0, &command.1);
+                let t0 = std::time::Instant::now();
+                let mut guard = cache.write();
+                lockstat::APPLY_WAIT.add(t0);
+                let t1 = std::time::Instant::now();
+                let layered = guard.layered();
+                guard.apply(entry.log_id.index, command.0, &command.1);
+                drop(guard);
+                if layered {
+                    let held = t1.elapsed();
+                    if held.as_micros() >= 1000 {
+                        lockstat::event(&format!("hold{}us", held.as_micros()));
+                    }
+                    lockstat::APPLY_HOLD_LAYERED.add(t1)
+                } else {
+                    lockstat::APPLY_HOLD_STEADY.add(t1)
+                }
                 written += 1;
             }
             let record = matches!(entry.payload, EntryPayload::Normal(_));
@@ -420,7 +527,11 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 if !force && state.layered() {
                     return None;
                 }
-                Some(state.cut())
+                let t1 = std::time::Instant::now();
+                let cut = state.cut();
+                drop(state);
+                lockstat::CUT_HOLD.add(t1);
+                Some(cut)
             }
             None => None,
         };
