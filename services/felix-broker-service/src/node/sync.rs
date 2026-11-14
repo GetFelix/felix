@@ -1,5 +1,6 @@
 //! The catalog sync task, and the readiness flip that waits on its first pass.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use tokio::sync::{oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
+use crate::cluster::controlplane_group::{self, Guard};
 use crate::cluster::credential::NodeCredential;
 use crate::config::BrokerConfig;
 use crate::serving::auth::ControlPlaneKeyStore;
@@ -16,6 +18,73 @@ use crate::serving::auth::ControlPlaneKeyStore;
 /// How long the first sync may spend fetching every known tenant's JWKS
 /// before it reports the catalog seeded anyway.
 const JWKS_WARM_BUDGET: Duration = Duration::from_secs(5);
+
+/// Which metadata group the catalog sync holds the control plane's answers to.
+#[derive(Debug)]
+pub(super) enum GroupCheck {
+    /// Judged at startup, when the start asked the control plane.
+    Decided(Option<Guard>),
+    /// A start from the view could not ask. The directory at `root` is judged
+    /// against the control plane's identity once the restore check passes and
+    /// before anything is applied: a snapshot alone cannot tell a control
+    /// plane with no group from a Raft group that has not recorded its id yet.
+    /// A refusal cancels `refused`, which stops the broker.
+    Deferred {
+        client: reqwest::Client,
+        root: PathBuf,
+        refused: CancellationToken,
+    },
+}
+
+impl GroupCheck {
+    /// The check for a start: deferred after a start from the view, otherwise
+    /// `stored` (what startup admitted) held as a guard. Under the no-group
+    /// mark that guard expects no group, so an answer that names one stops
+    /// the broker instead of being applied over data its group never saw.
+    pub(super) fn for_start(
+        root: Option<&Path>,
+        from_view: bool,
+        stored: Option<String>,
+        client: &reqwest::Client,
+        refused: &CancellationToken,
+    ) -> Self {
+        match root {
+            Some(root) if from_view => Self::Deferred {
+                client: client.clone(),
+                root: root.to_owned(),
+                refused: refused.clone(),
+            },
+            Some(root) => Self::Decided(controlplane_group::guard(root, stored, refused.clone())),
+            None => Self::Decided(None),
+        }
+    }
+
+    async fn guard(
+        self,
+        base_url: &str,
+        credential: &Option<NodeCredential>,
+    ) -> anyhow::Result<Option<Guard>> {
+        let (client, root, refused) = match self {
+            Self::Decided(guard) => return Ok(guard),
+            Self::Deferred {
+                client,
+                root,
+                refused,
+            } => (client, root, refused),
+        };
+        match super::identity::admit(&client, base_url, credential, &root).await {
+            Ok(stored) => Ok(controlplane_group::guard(&root, stored, refused)),
+            Err(err) => {
+                tracing::error!(
+                    error = format!("{err:#}"),
+                    "could not admit the data directory under the control plane's group"
+                );
+                refused.cancel();
+                Err(err)
+            }
+        }
+    }
+}
 
 /// Start a periodic control-plane sync to keep tenant/namespace/stream metadata
 /// refreshed. When disabled, the broker relies solely on local registrations.
@@ -28,6 +97,7 @@ const JWKS_WARM_BUDGET: Duration = Duration::from_secs(5);
 /// control-plane view, once the restore check has passed, so nothing the
 /// control plane says is applied to a directory that turns out to be a
 /// restored copy. `provisional` is what that start registered from the view.
+/// `group` is judged after `checked` too ([`GroupCheck`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_catalog_sync(
     config: &BrokerConfig,
@@ -40,7 +110,7 @@ pub(super) fn spawn_catalog_sync(
     key_store: &Arc<ControlPlaneKeyStore>,
     checked: &CancellationToken,
     provisional: crate::cluster::catalog_sync::Provisional,
-    group: Option<crate::cluster::controlplane_group::Guard>,
+    group: GroupCheck,
 ) -> Option<JoinHandle<()>> {
     if let Some(base_url) = config.controlplane_url.clone() {
         let sync_credential = credential.clone();
@@ -97,6 +167,7 @@ pub(super) fn spawn_catalog_sync(
                 }
                 result = async {
                     checked.cancelled().await;
+                    let group = group.guard(&base_url, &sync_credential).await?;
                     crate::cluster::catalog_sync::start_sync_with_signal(
                         broker,
                         base_url,
