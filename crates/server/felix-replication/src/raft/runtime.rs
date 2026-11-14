@@ -66,8 +66,10 @@ pub struct RuntimeConfig {
     pub log_mark: LogMarkMode,
     /// Record bytes the shard groups' Raft logs of this runtime keep in
     /// memory for replication reads, all groups together. Each log keeps at
-    /// most 4 MiB. The bound is soft: a log whose cache is in use is skipped
-    /// until the next eviction pass. The metadata group's log is not
+    /// most 4 MiB. Over the limit, logs that have not appended since the
+    /// last pass are emptied first, then busy ones are trimmed to their
+    /// newest records. The bound is soft: a log whose cache is in use is
+    /// skipped until the next pass. The metadata group's log is not
     /// counted; it keeps its own 4 MiB.
     pub tail_cache_bytes: u64,
 }

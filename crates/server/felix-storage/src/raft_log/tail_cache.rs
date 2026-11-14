@@ -23,23 +23,20 @@ const CAPACITY_BYTES: u64 = if cfg!(test) { 2 << 10 } else { 4 << 20 };
 /// An append adds to one atomic total and nothing else while the total is
 /// under the limit, and every log keeps the full per-log capacity however
 /// many logs there are. Only when the total goes over the limit does an
-/// append start an eviction pass: it empties the caches of the logs
-/// appended to least recently, down to a low-water mark, so one pass serves
-/// many appends and only one runs at a time. If the logs being emptied
-/// were themselves appending just now, the appenders alone exceed the
-/// budget, and the per-log cap falls to their fair share until the total
-/// is well under the limit again.
+/// append run an eviction pass, one at a time, so one pass serves many
+/// appends. The pass walks logs from the least recently appended until the
+/// total is at the low-water mark (seven eighths of the limit). A log that
+/// has not appended since the previous pass is emptied. One that has is
+/// trimmed from its oldest records to half of what it holds, keeping at
+/// least its newest record, so the entries replication is about to read
+/// stay cached. Idle groups give up their bytes first, and when only busy
+/// logs are left they all shrink a little.
 ///
-/// The limit is soft: a victim whose lock is busy is skipped until the
-/// next pass.
+/// The limit is soft: a victim whose lock is busy frees nothing and is
+/// passed over until the next pass.
 pub struct TailBudget {
     limit: u64,
     held: AtomicU64,
-    /// Logs with a non-empty cache.
-    holders: AtomicU64,
-    /// Bytes a log may keep now: the capacity, less while appenders
-    /// exceed the budget.
-    cap: AtomicU64,
     /// Set by the appender running an eviction pass.
     evicting: AtomicBool,
     /// Full eviction passes run.
@@ -47,6 +44,9 @@ pub struct TailBudget {
     passes: AtomicU64,
     /// Orders appends across logs: the least recent is evicted first.
     clock: AtomicU64,
+    /// The clock when the previous pass began. A log whose last append is
+    /// not after it has been idle since.
+    last_pass: AtomicU64,
     /// Taken to register a log and to evict, never on an append under the
     /// limit.
     logs: parking_lot::Mutex<Vec<Weak<Tail>>>,
@@ -63,12 +63,11 @@ impl TailBudget {
         Arc::new(Self {
             limit,
             held: AtomicU64::new(0),
-            holders: AtomicU64::new(0),
-            cap: AtomicU64::new(CAPACITY_BYTES),
             evicting: AtomicBool::new(false),
             #[cfg(test)]
             passes: AtomicU64::new(0),
             clock: AtomicU64::new(0),
+            last_pass: AtomicU64::new(0),
             logs: parking_lot::Mutex::new(Vec::new()),
         })
     }
@@ -91,11 +90,7 @@ impl TailBudget {
         metrics::gauge!(RAFT_TAIL_CACHE_BYTES).set(self.held() as f64);
     }
 
-    fn cap(&self) -> u64 {
-        self.cap.load(Ordering::Relaxed)
-    }
-
-    /// Move the totals for a log whose cache went from `before` to `after`
+    /// Move the total for a log whose cache went from `before` to `after`
     /// bytes. Called with that cache locked, so each log's changes arrive in
     /// order and the total never goes below zero.
     fn moved(&self, before: u64, after: u64) {
@@ -104,25 +99,23 @@ impl TailBudget {
         } else {
             self.held.fetch_sub(before - after, Ordering::Relaxed);
         }
-        match (before, after) {
-            (0, 1..) => self.holders.fetch_add(1, Ordering::Relaxed),
-            (1.., 0) => self.holders.fetch_sub(1, Ordering::Relaxed),
-            _ => 0,
-        };
     }
 
-    /// Empty the caches of the logs appended to least recently until the
-    /// total is at the low-water mark, never `keep`'s. A cache in use is
-    /// skipped, not waited for: no log's lock is held while another's is
-    /// taken. Does nothing if another append is already running a pass.
+    /// Free bytes from the logs appended to least recently until the total
+    /// is at the low-water mark, never from `keep`. Logs idle since the
+    /// previous pass are emptied first, then the busy ones trimmed. A cache
+    /// in use is skipped, not waited for: no log's lock is held while
+    /// another's is taken. Does nothing if another append is already running
+    /// a pass.
     fn evict(&self, keep: &Tail) {
         if self.evicting.swap(true, Ordering::Acquire) {
             return;
         }
         #[cfg(test)]
         self.passes.fetch_add(1, Ordering::Relaxed);
-        let holders = self.holders.load(Ordering::Relaxed);
-        let now = self.clock.load(Ordering::Relaxed);
+        let since = self
+            .last_pass
+            .swap(self.clock.load(Ordering::Relaxed), Ordering::Relaxed);
         let mut victims: Vec<Arc<Tail>> = {
             let logs = self.logs.lock();
             logs.iter()
@@ -132,34 +125,18 @@ impl TailBudget {
         };
         victims.sort_by_key(|log| log.last_append.load(Ordering::Relaxed));
         let low_water = self.limit - self.limit / 8;
-        let mut appending = 1;
+        // Oldest first, so the idle logs are a prefix.
         for victim in victims {
             if self.held() <= low_water {
                 break;
             }
-            // A log that appended more than once, the latest within the
-            // last `holders` appends, is still writing, not idle.
-            let recent = now.saturating_sub(victim.last_append.load(Ordering::Relaxed));
-            if victim.appends.load(Ordering::Relaxed) > 1 && recent <= holders {
-                appending += 1;
+            if victim.last_append.load(Ordering::Relaxed) <= since {
+                victim.free_if_unused(|cache| cache.clear());
+            } else {
+                victim.free_if_unused(|cache| cache.trim_to(cache.bytes / 2));
             }
-            victim.clear_if_free();
-        }
-        if appending > 1 {
-            self.cap.store(
-                (self.limit / appending).clamp(1, CAPACITY_BYTES),
-                Ordering::Relaxed,
-            );
         }
         self.evicting.store(false, Ordering::Release);
-    }
-
-    /// Give logs their full capacity back once the total is well under the
-    /// limit.
-    fn relax(&self) {
-        if self.cap() < CAPACITY_BYTES && self.held() < self.limit / 2 {
-            self.cap.store(CAPACITY_BYTES, Ordering::Relaxed);
-        }
     }
 }
 
@@ -169,10 +146,8 @@ pub(super) struct Tail {
     cache: parking_lot::Mutex<TailCache>,
     /// The cache's bytes, readable without its lock.
     bytes: AtomicU64,
+    /// The budget's clock at this log's latest append; 0 if it has none.
     last_append: AtomicU64,
-    /// Appends so far, to tell a log still writing from one that took a
-    /// few entries and went quiet.
-    appends: AtomicU64,
 }
 
 impl Tail {
@@ -182,7 +157,6 @@ impl Tail {
             cache: parking_lot::Mutex::default(),
             bytes: AtomicU64::new(0),
             last_append: AtomicU64::new(0),
-            appends: AtomicU64::new(0),
         });
         let mut logs = tail.budget.logs.lock();
         if logs.len() == logs.capacity() {
@@ -202,37 +176,38 @@ impl Tail {
         {
             let mut cache = self.cache.lock();
             let before = cache.bytes;
-            cache.extend(cuts, self.budget.cap(), records);
+            cache.extend(cuts, records);
             self.bytes.store(cache.bytes, Ordering::Relaxed);
             self.budget.moved(before, cache.bytes);
         }
-        let now = self.budget.clock.fetch_add(1, Ordering::Relaxed);
+        let now = self.budget.clock.fetch_add(1, Ordering::Relaxed) + 1;
         self.last_append.store(now, Ordering::Relaxed);
-        self.appends.fetch_add(1, Ordering::Relaxed);
         // The lock above is released: eviction locks other logs' caches.
         if self.budget.held() > self.budget.limit {
             self.budget.evict(self);
-        } else {
-            self.budget.relax();
         }
     }
 
     pub(super) fn clear(&self) {
-        self.empty(self.cache.lock());
+        self.free(self.cache.lock(), |cache| cache.clear());
     }
 
-    /// Empty the cache unless a read or append has it.
-    fn clear_if_free(&self) {
+    /// Shrink the cache with `shrink` unless a read or append has it.
+    fn free_if_unused(&self, shrink: impl FnOnce(&mut TailCache)) {
         if let Some(cache) = self.cache.try_lock() {
-            self.empty(cache);
+            self.free(cache, shrink);
         }
     }
 
-    fn empty(&self, mut cache: parking_lot::MutexGuard<'_, TailCache>) {
+    fn free(
+        &self,
+        mut cache: parking_lot::MutexGuard<'_, TailCache>,
+        shrink: impl FnOnce(&mut TailCache),
+    ) {
         let before = cache.bytes;
-        cache.clear();
-        self.bytes.store(0, Ordering::Relaxed);
-        self.budget.moved(before, 0);
+        shrink(&mut cache);
+        self.bytes.store(cache.bytes, Ordering::Relaxed);
+        self.budget.moved(before, cache.bytes);
     }
 
     pub(super) fn range(&self, cuts: u64, start: Offset, end: Offset) -> Option<Vec<LogRecord>> {
@@ -258,12 +233,10 @@ pub(super) struct TailCache {
 }
 
 impl TailCache {
-    /// Take records just written, keeping at most `cap` bytes, though never
-    /// less than the batch itself unless that alone exceeds the capacity.
+    /// Take records just written, keeping at most [`CAPACITY_BYTES`].
     /// `cuts` is the log's count from before the write. Anything held from
     /// before a cut, or not directly below these, is dropped.
-    fn extend(&mut self, cuts: u64, cap: u64, records: impl IntoIterator<Item = LogRecord>) {
-        let mut batch = 0;
+    fn extend(&mut self, cuts: u64, records: impl IntoIterator<Item = LogRecord>) {
         for record in records {
             let follows = self
                 .records
@@ -274,20 +247,22 @@ impl TailCache {
                 self.cuts = cuts;
             }
             let size = size_of_record(&record);
-            batch += size;
             self.bytes += size;
             self.records.push_back(record);
         }
-        let cap = if batch > CAPACITY_BYTES {
-            CAPACITY_BYTES
-        } else {
-            cap.max(batch)
-        };
-        while self.bytes > cap {
-            let Some(oldest) = self.records.pop_front() else {
-                break;
-            };
-            self.bytes -= size_of_record(&oldest);
+        self.trim_to(CAPACITY_BYTES);
+    }
+
+    /// Drop the oldest records until at most `bytes` are held, though never
+    /// the newest one unless it alone exceeds the capacity.
+    fn trim_to(&mut self, bytes: u64) {
+        while self.bytes > bytes && self.records.len() > 1 {
+            if let Some(oldest) = self.records.pop_front() {
+                self.bytes -= size_of_record(&oldest);
+            }
+        }
+        if self.bytes > CAPACITY_BYTES {
+            self.clear();
         }
     }
 

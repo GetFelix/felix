@@ -2371,10 +2371,14 @@ reads fresh entries without the segments. A log keeps at most 4 MiB, and the
 shard groups' logs of a broker share one budget, 256 MiB by default
 (`RuntimeConfig::tail_cache_bytes`). While the total is under the budget,
 every log keeps its full 4 MiB, however many groups there are and however
-idle most of them are. When the total goes over, the logs appended to least
-recently drop their caches first, down to seven eighths of the budget, which
-is what frees an idle group. Only if the logs that are appending now exceed
-the budget does each log's limit fall to a share of it. A dropped cache costs
+idle most of them are. When the total goes over, one append runs an eviction
+pass that walks the logs from the one appended to least recently until the
+total is down to seven eighths of the budget. A log that has not appended
+since the previous pass is emptied. A log that has is trimmed from its oldest
+records to half of what it holds, and never below its newest record, so the
+entries replication is about to read stay in memory. Idle groups give up
+their bytes first, and when only busy logs are left they all shrink a little.
+A dropped cache costs
 a read from the segments and nothing else, and the bound is soft: a log whose
 cache is in use is skipped until the next pass. The metadata group's log is
 not counted; it keeps its own 4 MiB. The gauge
