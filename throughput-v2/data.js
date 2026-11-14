@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794675741636,
+  "lastUpdate": 1794676134038,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56732,6 +56732,58 @@ window.BENCHMARK_DATA = {
             "range": "4734.43",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 983159.06\nmean: 982026.99\nstdev: 4734.43\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b16bc65f5d1746f0f19d09a9baa236e29b49f926",
+          "message": "feat(replication): concurrent Raft reads share read-index rounds (#2535)\n\n* perf(raft): reads share read-index rounds; appends carry up to 4,096 entries (#2329, #2332)\n\nA group asks one read-index round at a time. A read that arrives while a\nround is out waits for the next one, so every round's answer was taken\nafter each read it confirms arrived. Appends to a follower carry up to\n4,096 entries instead of openraft's 300, so 1 KiB records catch up in\nabout 4 MiB per round trip. Adds an Actions benchmark for both.\n\n* fix(raft): a read-round task dropped before it ran frees the group's reads; an abandoned round is not asked (#2329)\n\n* fix(raft): review round: a read whose round task ended times out; read tests fail instead of hanging; docs say read-index rounds do not use the lease (#2329)\n\n* test(raft): the catch-up test's batches name no term\n\n* test(raft): name the read benchmark's trial type\n\n* ci(raft): the read benchmark is dispatch-only and builds the tests with felix-common/sim\n\n* test(raft): the read test's batch names no producer\n\n* fix(raft): a read round that never answers is dropped; append_entries 1024\n\nSpec-Unaffected: bounds a read round and lowers an append size; no protocol state changes.\n\n* docs(raft): append limit is 1,024 entries, with the real memory bound\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-14T17:01:11Z",
+          "tree_id": "aa29040dde10256aaca2e6fe52ff0f25e8a95123",
+          "url": "https://github.com/GetFelix/felix/commit/b16bc65f5d1746f0f19d09a9baa236e29b49f926"
+        },
+        "date": 1794676133199,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 478542.43,
+            "range": "16457.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478542.43\nmean: 479833.24\nstdev: 16457.24\ncv: 3.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 478542.43,
+            "range": "16457.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478542.43\nmean: 479833.24\nstdev: 16457.24\ncv: 3.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117119.53,
+            "range": "1353.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117119.53\nmean: 116993.93\nstdev: 1353.70\ncv: 1.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1171195.27,
+            "range": "13537.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1171195.27\nmean: 1169939.32\nstdev: 13537.03\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
