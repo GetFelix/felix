@@ -19,20 +19,8 @@ impl std::fmt::Display for Command {
     }
 }
 
-// On redb the leader id stays openraft's default (`leader_id_adv`, a term
-// and a node id): it is part of every stored log id and of the peer format.
-#[cfg(not(felix_segment_store))]
-openraft::declare_raft_types!(
-    pub(crate) TypeConfig:
-        D = Command,
-        R = Vec<u8>,
-        NodeId = u64,
-        Node = openraft::impls::BasicNode,
-);
-
-// The segment store's log id is a term and an index, so the leader id is
-// the standard one: one leader per term.
-#[cfg(felix_segment_store)]
+// A log id is a term and an index, so the leader id is the standard one:
+// one leader per term.
 openraft::declare_raft_types!(
     pub(crate) TypeConfig:
         D = Command,
@@ -42,17 +30,13 @@ openraft::declare_raft_types!(
         LeaderId = openraft::impls::leader_id_std::LeaderId<u64, u64>,
 );
 
-#[cfg(not(felix_segment_store))]
-pub(crate) type SnapshotData = std::io::Cursor<Vec<u8>>;
 /// Built in memory, sent from the stored file, received into a file of its
 /// own: a snapshot is never held whole on the way through.
-#[cfg(felix_segment_store)]
 pub(crate) type SnapshotData = felix_storage::raft_log::SnapshotData;
 pub(crate) type Raft = openraft::Raft<TypeConfig, super::store::StateMachineStore>;
 /// What a vote names.
 pub(crate) type LeaderId = openraft::type_config::alias::LeaderIdOf<TypeConfig>;
-/// What a log id names: the same on redb, the term alone on the segment
-/// store.
+/// What a log id names: the term alone.
 pub(crate) type CommittedLeaderId = openraft::type_config::alias::CommittedLeaderIdOf<TypeConfig>;
 pub(crate) type LogId = openraft::LogId<CommittedLeaderId>;
 pub(crate) type Vote = openraft::impls::Vote<LeaderId>;
@@ -63,19 +47,8 @@ pub(crate) type StoredMembership = openraft::StoredMembership<CommittedLeaderId,
 pub(crate) type SnapshotMeta = openraft::storage::SnapshotMeta<CommittedLeaderId, Membership>;
 pub(crate) type Snapshot = openraft::storage::Snapshot<CommittedLeaderId, Membership, SnapshotData>;
 
-/// The log id of `term` at `index`. On redb a log id also names its leader,
-/// `node`.
+/// The log id of `term` at `index`.
 #[cfg(test)]
-pub(crate) fn test_log_id(term: u64, node: u64, index: u64) -> LogId {
-    #[cfg(not(felix_segment_store))]
-    let leader = LeaderId {
-        term,
-        node_id: node,
-    };
-    #[cfg(felix_segment_store)]
-    let leader = {
-        let _ = node;
-        term.into()
-    };
-    LogId::new(leader, index)
+pub(crate) fn test_log_id(term: u64, index: u64) -> LogId {
+    LogId::new(term.into(), index)
 }

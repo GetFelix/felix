@@ -1,7 +1,6 @@
 //! The server half of the Raft transport: three POST routes handing each
 //! RPC to the local node and answering in Felix's peer format
-//! ([`super::wire`]), the shape [`super::network`] and a member on a release
-//! that ran openraft 0.9 both expect, plus the
+//! ([`super::wire`]), the shape [`super::network`] expects, plus the
 //! proposal route, the leader-only route ([`super::leader`]), and the three
 //! a member uses to enter the group ([`super::join`]).
 //!
@@ -10,9 +9,9 @@
 //! until the node is attached, so no vote or append is answered by a member
 //! that has not settled how it enters the group.
 //!
-//! Every route is under [`super::PEER_PREFIX`], which differs between a
-//! member on redb and one on the segment store, so neither answers the
-//! other.
+//! Every route is under [`super::PEER_PREFIX`]. Releases that kept the store
+//! in redb served `/internal/raft`, so a member of such a group and this
+//! one never answer each other.
 //!
 //! Served on the peer listener only, behind [`super::peer::require_peer`]:
 //! `propose` alone can replace the whole store, so nothing here is reachable
@@ -24,10 +23,8 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use openraft::raft::{AppendEntriesRequest, AppendEntriesResponse, VoteRequest};
 
-#[cfg(felix_segment_store)]
 use felix_storage::raft_log::SnapshotId;
 
-#[cfg(felix_segment_store)]
 use super::types;
 use super::types::{Snapshot, Vote};
 use super::{RaftHandle, RaftMember, peer_route, wire};
@@ -38,7 +35,9 @@ pub(super) fn router(member: RaftMember) -> Router {
     Router::new()
         .route(&peer_route("append-entries"), post(append_entries))
         .route(&peer_route("vote"), post(vote))
-        .route(&peer_route("install-snapshot"), install_snapshot_route())
+        // The body is read as a stream, which the router's body limit does not
+        // cover; the transfer's own cap does, from the length in the head.
+        .route(&peer_route("install-snapshot"), post(install_snapshot))
         .route(&peer_route("propose"), post(propose))
         .route(
             &peer_route(super::leader::LEADER_ROUTE),
@@ -201,18 +200,10 @@ async fn catch_up_target(Node(handle): Node) -> Response {
     }
 }
 
-/// On the segment store the body is read as a stream, which the router's
-/// body limit does not cover; the transfer's own cap does, from the length
-/// in the head.
-fn install_snapshot_route() -> axum::routing::MethodRouter<RaftMember> {
-    post(install_snapshot)
-}
-
 /// A snapshot streamed in one request (`felix_storage::raft_log::transfer`).
 /// The head is read first, and a stale sender, a length over the cap or a
 /// busy slot is answered before any data is read. The data goes straight
 /// to the receive file, never into memory.
-#[cfg(felix_segment_store)]
 async fn install_snapshot(Node(handle): Node, body: axum::body::Body) -> Response {
     let mut incoming =
         felix_storage::raft_log::transfer::Incoming::new(BodyPieces(body.into_data_stream()));
@@ -293,10 +284,8 @@ async fn install_snapshot(Node(handle): Node, body: axum::body::Body) -> Respons
 }
 
 /// A request body, as the snapshot receive reads it.
-#[cfg(felix_segment_store)]
 struct BodyPieces(axum::body::BodyDataStream);
 
-#[cfg(felix_segment_store)]
 impl felix_storage::raft_log::transfer::Pieces for BodyPieces {
     async fn next_piece(&mut self) -> Option<std::io::Result<bytes::Bytes>> {
         use futures_util::StreamExt;
@@ -308,7 +297,6 @@ impl felix_storage::raft_log::transfer::Pieces for BodyPieces {
 
 /// A transfer that was refused or broke off, logged with how far it got
 /// so one that keeps failing shows up as such.
-#[cfg(felix_segment_store)]
 fn transfer_failed(
     err: &felix_storage::raft_log::transfer::TransferError,
     received: u64,
@@ -327,49 +315,6 @@ fn transfer_failed(
         | TransferError::Crc => StatusCode::BAD_REQUEST,
     };
     (status, err.to_string()).into_response()
-}
-
-/// One chunk of a snapshot, as a 0.9 member sends it. The chunks are joined
-/// here and the library is handed the whole snapshot with the last one.
-#[cfg(not(felix_segment_store))]
-async fn install_snapshot(
-    Node(handle): Node,
-    Json(chunk): Json<wire::InstallSnapshotRequest>,
-) -> Response {
-    let sender = Vote::from(chunk.vote);
-    let mine = match handle.raft.with_raft_state(|state| *state.vote_ref()).await {
-        Ok(vote) => vote,
-        Err(err) => return stopped(err),
-    };
-    let mut answer = wire::InstallSnapshotResponse {
-        vote: (&mine).into(),
-    };
-    // A sender that is no longer the leader this member follows learns so
-    // from the vote in the answer, before any of its bytes are kept.
-    if sender < mine {
-        return Json(wire::Reply::Ok(answer)).into_response();
-    }
-    // Held to the end of the install, so two transfers cannot interleave.
-    let mut receiving = handle.receiving.lock().await;
-    let (meta, data) = match super::chunks::receive(&mut receiving, chunk) {
-        Ok(Some(whole)) => whole,
-        Ok(None) => return Json(wire::Reply::Ok(answer)).into_response(),
-        Err(mismatch) => {
-            return Json(wire::Reply::<wire::InstallSnapshotResponse>::Err(mismatch))
-                .into_response();
-        }
-    };
-    let snapshot = Snapshot {
-        meta: meta.into(),
-        snapshot: std::io::Cursor::new(data),
-    };
-    match handle.raft.install_full_snapshot(sender, snapshot).await {
-        Ok(response) => {
-            answer.vote = (&response.vote).into();
-            Json(wire::Reply::Ok(answer)).into_response()
-        }
-        Err(err) => stopped(err),
-    }
 }
 
 #[cfg(test)]

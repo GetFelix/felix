@@ -765,6 +765,41 @@ async fn shutdown_stops_the_members_and_closes_their_logs() {
     assert_eq!(route(&shards, &orders), None);
 }
 
+/// **A member's log directory is locked while the member is open**, so a
+/// second broker started on the same data directory cannot recover and
+/// write a log this one is writing. Closing the member lets it go.
+#[tokio::test]
+async fn an_open_member_holds_its_log_directory() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    assert!(shards.log_of(&orders).await.is_some());
+    let storage = broker.durable_storage().expect("storage");
+    let (dir, label) = storage
+        .claim_for_raft("t1", "ns", "orders", 0, INCARNATION)
+        .expect("claimed");
+    let config = LogConfig {
+        raft_log: true,
+        fsync_mode: FsyncMode::OnCommit,
+        ..storage.config().clone()
+    };
+
+    let second = DiskLog::open(&dir, label.clone(), config.clone());
+    assert!(
+        matches!(second, Err(felix_storage::StorageError::Io(ref err))
+            if err.kind() == std::io::ErrorKind::ResourceBusy),
+        "a second open of an open member's directory was let in"
+    );
+
+    EngineShards::shutdown(&*shards).await;
+    let reopened = DiskLog::open(&dir, label, config).expect("open after the member closed");
+    reopened.close().await.expect("close");
+}
+
 /// Carries Raft messages between the runtimes of one process. A broker
 /// taken out of it, or in `cut`, is unreachable.
 #[derive(Default)]

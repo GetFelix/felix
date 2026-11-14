@@ -1,7 +1,7 @@
 //! The metadata Raft group, exercised as a group: election, replication,
 //! restart with state, rebuild from snapshot, and learner-first growth.
 //!
-//! Each node here is the real thing — a `RaftHandle` over the redb store,
+//! Each node here is the real thing — a `RaftHandle` over the metadata store,
 //! serving its RPCs on a real HTTP listener — with a toy key/value app
 //! standing where the metadata state machine (#338) will stand.
 use std::collections::BTreeMap;
@@ -127,6 +127,43 @@ async fn start_gated(
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
+    TestNode {
+        handle,
+        app,
+        addr,
+        dir,
+        server,
+    }
+}
+
+/// Start a member and enter the group before its routes serve, as the
+/// service does: served first, an empty member can grant a vote before it
+/// starts withholding it.
+async fn start_entering(
+    dir: PathBuf,
+    settings: RaftSettings,
+    addr: Option<SocketAddr>,
+    members: &BTreeMap<NodeId, String>,
+    shutdown: &tokio_util::sync::CancellationToken,
+) -> TestNode {
+    use felix_controlplane_service::raft::{InitialClusterState, RaftMember};
+
+    let app = Arc::new(KvApp::default());
+    let member = RaftMember::open(settings, Arc::clone(&app) as Arc<dyn AppStateMachine>)
+        .await
+        .expect("open the member");
+    let listener = bind(addr.unwrap_or("127.0.0.1:0".parse().expect("addr"))).await;
+    let addr = listener.local_addr().expect("local addr");
+    let router = member.rpc_router();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    let handle = member.start_node().await.expect("start raft node");
+    handle
+        .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
+        .await
+        .expect("enter group");
+    member.attach(&handle);
     TestNode {
         handle,
         app,
@@ -970,47 +1007,24 @@ async fn wipe_and_restart(
     members: &BTreeMap<NodeId, String>,
     shutdown: &tokio_util::sync::CancellationToken,
 ) -> TestNode {
-    use felix_controlplane_service::raft::{InitialClusterState, RaftMember};
-
     let (id, addr) = (node.handle.status().id, node.addr);
     node.stop().await;
     drop(node);
     let dir: PathBuf = dir.path().into();
-    let app = Arc::new(KvApp::default());
-    let member = RaftMember::open(
-        settings(id, dir.clone()),
-        Arc::clone(&app) as Arc<dyn AppStateMachine>,
+    start_entering(
+        dir.clone(),
+        settings(id, dir),
+        Some(addr),
+        members,
+        shutdown,
     )
     .await
-    .expect("open the member");
-    let listener = bind(addr).await;
-    let router = member.rpc_router();
-    let server = tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
-    });
-    let handle = member.start_node().await.expect("start raft node");
-    handle
-        .enter_group(members.clone(), InitialClusterState::New, shutdown.clone())
-        .await
-        .expect("enter group");
-    member.attach(&handle);
-    TestNode {
-        handle,
-        app,
-        addr,
-        dir,
-        server,
-    }
 }
 
 /// Whether `node` refuses a vote request the way a member withholding its
 /// vote does.
 async fn withholds_its_vote(node: &TestNode) -> bool {
-    let vote = if cfg!(felix_segment_store) {
-        serde_json::json!({"term": 0, "voted_for": 9, "committed": false})
-    } else {
-        serde_json::json!({"leader_id": {"term": 0, "node_id": 9}, "committed": false})
-    };
+    let vote = serde_json::json!({"term": 0, "voted_for": 9, "committed": false});
     let response = peer_security()
         .client(Duration::from_secs(5))
         .expect("peer client")
@@ -1119,11 +1133,8 @@ async fn a_member_wiped_before_the_first_entry_does_not_form_again() {
 /// mark is in `store/formation`. A member whose log directory is emptied
 /// keeps its mark, and every peer names it. Before the reached flag it went
 /// on forming and could vote twice in a term; now it catches up instead.
-#[cfg(felix_segment_store)]
 #[tokio::test]
 async fn a_member_whose_log_was_emptied_does_not_form_again() {
-    use felix_controlplane_service::raft::InitialClusterState;
-
     let dirs: Vec<tempfile::TempDir> = (0..3)
         .map(|_| tempfile::tempdir().expect("tempdir"))
         .collect();
@@ -1148,12 +1159,14 @@ async fn a_member_whose_log_was_emptied_does_not_form_again() {
     );
 
     let dir: PathBuf = dirs[2].path().into();
-    let emptied = start_node(dir.clone(), settings(id, dir), Some(addr)).await;
-    emptied
-        .handle
-        .enter_group(members, InitialClusterState::New, shutdown.clone())
-        .await
-        .expect("enter group");
+    let emptied = start_entering(
+        dir.clone(),
+        settings(id, dir),
+        Some(addr),
+        &members,
+        &shutdown,
+    )
+    .await;
     assert_stays_withheld(&[&emptied], &[&nodes[0], &nodes[1], &emptied]).await;
 
     shutdown.cancel();
@@ -1200,7 +1213,6 @@ async fn a_wiped_member_catches_up_once_a_leader_exists() {
     }
     // It votes, so it recorded that it reached the vote (#2407): flags bit 1
     // of the formation file.
-    #[cfg(felix_segment_store)]
     {
         let formation =
             std::fs::read(empty.path().join("store").join("formation")).expect("formation file");
