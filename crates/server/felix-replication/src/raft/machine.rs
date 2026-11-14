@@ -51,7 +51,7 @@ pub(crate) struct Machine {
     /// Held by a test to keep this member from applying.
     #[cfg(test)]
     pub(crate) hold: Arc<tokio::sync::Mutex<()>>,
-    /// Held by a test to keep a fold from starting.
+    /// Held by a test to keep apply from folding.
     #[cfg(test)]
     pub(crate) fold_hold: Arc<tokio::sync::Mutex<()>>,
 }
@@ -265,69 +265,19 @@ fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
 pub(crate) struct Builder {
     snapshots: SnapshotStore,
     state: State,
-    /// The projection as of `state.last_applied`.
-    cut: Option<Held>,
-}
-
-/// A cut being snapshotted. Let go, it has the writes made since it was
-/// taken folded back into the live maps, off apply.
-struct Held {
+    /// The projection as of `state.last_applied`. Let go, the apply task
+    /// folds the writes made since back into the live maps.
     cut: Option<Cut>,
-    cache: Cache,
-    #[cfg(test)]
-    fold_hold: Arc<tokio::sync::Mutex<()>>,
 }
 
-/// Writes folded per hold of the lock, so apply and reads wait out at most
-/// one chunk.
+/// Overlay writes folded per hold of the cache lock, so apply and reads
+/// wait out at most one chunk.
 const FOLD_CHUNK: usize = 256;
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        drop(self.cut.take());
-        let cache = Arc::clone(&self.cache);
-        #[cfg(test)]
-        let fold_hold = Arc::clone(&self.fold_hold);
-        let fold = move || {
-            #[cfg(test)]
-            drop(fold_hold.blocking_lock());
-            loop {
-                let mut state = cache.write();
-                let more = state.fold(FOLD_CHUNK);
-                parking_lot::RwLockWriteGuard::unlock_fair(state);
-                if !more {
-                    break;
-                }
-            }
-        };
-        // Its own thread rather than the blocking pool: a pool backed up
-        // with disk flushes would leave the overlay up, and the next
-        // snapshot deferred, for as long as the backlog lasts. Under the
-        // simulator it is a task, so a seed repeats.
-        if felix_common::blocking::on_runtime() && tokio::runtime::Handle::try_current().is_ok() {
-            drop(felix_common::blocking::spawn(fold));
-            return;
-        }
-        let fold = Arc::new(parking_lot::Mutex::new(Some(fold)));
-        let spawned = std::thread::Builder::new()
-            .name("felix-cache-fold".into())
-            .spawn({
-                let fold = Arc::clone(&fold);
-                move || {
-                    if let Some(fold) = fold.lock().take() {
-                        fold();
-                    }
-                }
-            });
-        // No thread to be had: fold here. So this must never be dropped
-        // by a thread that holds the cache lock.
-        if spawned.is_err()
-            && let Some(fold) = fold.lock().take()
-        {
-            fold();
-        }
-    }
-}
+/// Overlay writes folded per entry applied. A write adds at most four
+/// (value, expiry added and removed, producer answer), so the overlay
+/// shrinks under any write rate.
+const FOLD_PER_ENTRY: usize = 8;
 
 impl RaftSnapshotBuilder<ShardTypes> for Builder {
     type SnapshotData = SnapshotData;
@@ -338,10 +288,9 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
         // the member. A receiver whose parse fails in `Group::dispatch`
         // refuses the snapshot and keeps running.
         let data = match self.cut.take() {
-            Some(held) => cpu(move || held.cut.as_ref().map(Cut::snapshot)).await?,
-            None => None,
+            Some(cut) => cpu(move || cut.snapshot()).await?,
+            None => Bytes::new(),
         };
-        let data = data.unwrap_or_default();
         store(&self.snapshots, &meta, data.clone()).await?;
         Ok(SnapshotOf::<ShardTypes, SnapshotData> {
             meta,
@@ -363,12 +312,33 @@ impl Machine {
         Builder {
             snapshots: self.snapshots.clone(),
             state: self.state.clone(),
-            cut: self.cache.as_ref().map(|cache| Held {
-                cut,
-                cache: Arc::clone(cache),
-                #[cfg(test)]
-                fold_hold: Arc::clone(&self.fold_hold),
-            }),
+            cut,
+        }
+    }
+
+    /// Fold part of the overlay a released cut left back into the live
+    /// maps, after a run that applied `written` cache entries. On this task rather than a
+    /// thread of its own: the overlay's nodes are freed where they were
+    /// made, and no second thread competes with apply for the lock or a
+    /// core. A cut still held, or no overlay, makes this a no-op.
+    fn fold_back(&self, written: usize) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        #[cfg(test)]
+        let Ok(_held) = self.fold_hold.try_lock() else {
+            return;
+        };
+        let mut budget = FOLD_CHUNK.max(written.saturating_mul(FOLD_PER_ENTRY));
+        while budget > 0 {
+            let chunk = budget.min(FOLD_CHUNK);
+            let mut state = cache.write();
+            let more = state.fold(chunk);
+            parking_lot::RwLockWriteGuard::unlock_fair(state);
+            if !more {
+                return;
+            }
+            budget -= chunk;
         }
     }
 }
@@ -390,6 +360,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
         #[cfg(test)]
         let _held = Arc::clone(&self.hold).lock_owned().await;
         let mut applied = Ok(());
+        let mut written = 0;
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {
                 Ok(next) => next,
@@ -413,6 +384,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 cache
                     .write()
                     .apply(entry.log_id.index, command.0, &command.1);
+                written += 1;
             }
             let record = matches!(entry.payload, EntryPayload::Normal(_));
             if let EntryPayload::Membership(membership) = entry.payload {
@@ -431,6 +403,8 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
         self.publish();
+        // After the publish, so the run's waiters are not held by it.
+        self.fold_back(written);
         applied
     }
 
