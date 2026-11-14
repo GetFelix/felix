@@ -1616,13 +1616,32 @@ entries above it, so its log is cut to the snapshot:
   (16,384) have committed since its last snapshot. openraft checks that
   after each batch of messages, so it needs no tick.
 - Building a snapshot does not hold apply. Between two entries the state
-  machine takes a copy of the state, which costs nothing because the state
-  is kept in persistent maps that share their nodes with the copy. The copy
-  is encoded and written on a blocking thread while apply goes on. A node
-  that apply changes during the build is copied first, so a build costs
-  memory in proportion to what apply changes while it runs. The snapshot
-  is exactly the state as of its last entry, never a mix of that and later
-  writes.
+  machine freezes its maps as they are, without copying them, and the
+  build encodes the frozen maps on a blocking thread. Meanwhile apply
+  writes to an overlay of changes (new values, deletes, raised floors),
+  and reads look in the overlay first, then in the frozen maps. When the
+  build is done, the overlay is folded back into the maps a few hundred
+  changes at a time, so apply and reads wait at most one such chunk. The
+  snapshot is exactly the state as of its last entry, never a mix of that
+  and later writes. Between builds there is no overlay, and reads and
+  apply cost what they would without snapshots.
+- The overlay is bounded by what is touched from the moment the maps are
+  frozen until it is folded back: one record per distinct key and counter
+  written, the answers kept for each producer that wrote, and the expiry
+  entries added or removed. A wait for a CPU slot (see below) lengthens
+  that window. That is the build's memory cost, plus the encoded snapshot.
+- The fold runs on the state machine's task, after each run of applied
+  entries: a few hundred changes, or eight per entry in the run if that is
+  more, so the overlay shrinks however fast writes come. A fold on another
+  thread would compete with apply for the lock and a core. A group that
+  stops writing keeps its overlay until its next write; reads still see
+  the right values.
+- A snapshot due while the last build's overlay is still folding back is
+  deferred: taking it would mean finishing the fold, or copying the
+  overlay, on the state machine's task. openraft asks again once another
+  `cache_snapshot_every` entries have committed, and purging the log
+  waits until then. Only a snapshot openraft must have (one it forces)
+  is taken anyway, and pays that cost.
 - Encoding a snapshot and parsing one are CPU work. Across all groups on a
   broker, at most half the cores (at least one) do it at once. The rest
   wait, so many groups snapshotting or restarting together do not take

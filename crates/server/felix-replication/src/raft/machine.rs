@@ -22,7 +22,7 @@ use openraft::{EntryPayload, OptionalSend};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, watch};
 
-use super::cache::{CacheCommand, CacheState};
+use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{StoredMembership, invalid};
 use super::commit::Commits;
 use super::types::{Applied, ShardTypes};
@@ -51,6 +51,9 @@ pub(crate) struct Machine {
     /// Held by a test to keep this member from applying.
     #[cfg(test)]
     pub(crate) hold: Arc<tokio::sync::Mutex<()>>,
+    /// Held by a test to keep apply from folding.
+    #[cfg(test)]
+    pub(crate) fold_hold: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Machine {
@@ -83,6 +86,8 @@ impl Machine {
             cache: cache.clone(),
             #[cfg(test)]
             hold: Arc::default(),
+            #[cfg(test)]
+            fold_hold: Arc::default(),
         };
         Ok((machine, applied, cache))
     }
@@ -261,10 +266,19 @@ fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
 pub(crate) struct Builder {
     snapshots: SnapshotStore,
     state: State,
-    /// The projection as of `state.last_applied`. A clone that shares the
-    /// live one's nodes, so apply goes on while this is encoded.
-    cache: Option<CacheState>,
+    /// The projection as of `state.last_applied`. Let go, the apply task
+    /// folds the writes made since back into the live maps.
+    cut: Option<Cut>,
 }
+
+/// Overlay writes folded per hold of the cache lock, so apply and reads
+/// wait out at most one chunk.
+const FOLD_CHUNK: usize = 256;
+
+/// Overlay writes folded per entry applied. A write adds at most four
+/// (value, expiry added and removed, producer answer), so the overlay
+/// shrinks under any write rate.
+const FOLD_PER_ENTRY: usize = 8;
 
 impl RaftSnapshotBuilder<ShardTypes> for Builder {
     type SnapshotData = SnapshotData;
@@ -274,8 +288,8 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
         // A panic or JoinError in the encode fails the build, which stops
         // the member. A receiver whose parse fails in `Group::dispatch`
         // refuses the snapshot and keeps running.
-        let data = match self.cache.take() {
-            Some(cache) => cpu(move || cache.snapshot()).await?,
+        let data = match self.cut.take() {
+            Some(cut) => cpu(move || cut.snapshot()).await?,
             None => Bytes::new(),
         };
         store(&self.snapshots, &meta, data.clone()).await?;
@@ -283,6 +297,50 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
             meta,
             snapshot: SnapshotData::bytes(data),
         })
+    }
+}
+
+impl Machine {
+    /// A builder for the state as of the last applied entry, `cut` being
+    /// the projection's.
+    ///
+    /// The state and the id it is as of are taken in one step, where no
+    /// entry is being applied. Taken when the snapshot is built, the state
+    /// could hold entries past the id, and a member that restored it would
+    /// apply them twice. The cut copies nothing; encoding it is the cost,
+    /// and happens in the build, off this task.
+    fn builder(&self, cut: Option<Cut>) -> Builder {
+        Builder {
+            snapshots: self.snapshots.clone(),
+            state: self.state.clone(),
+            cut,
+        }
+    }
+
+    /// Fold part of the overlay a released cut left back into the live
+    /// maps, after a run that applied `written` cache entries. On this task rather than a
+    /// thread of its own: the overlay's nodes are freed where they were
+    /// made, and no second thread competes with apply for the lock or a
+    /// core. A cut still held, or no overlay, makes this a no-op.
+    fn fold_back(&self, written: usize) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        #[cfg(test)]
+        let Ok(_held) = self.fold_hold.try_lock() else {
+            return;
+        };
+        let mut budget = FOLD_CHUNK.max(written.saturating_mul(FOLD_PER_ENTRY));
+        while budget > 0 {
+            let chunk = budget.min(FOLD_CHUNK);
+            let mut state = cache.write();
+            let more = state.fold(chunk);
+            parking_lot::RwLockWriteGuard::unlock_fair(state);
+            if !more {
+                return;
+            }
+            budget -= chunk;
+        }
     }
 }
 
@@ -303,6 +361,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
         #[cfg(test)]
         let _held = Arc::clone(&self.hold).lock_owned().await;
         let mut applied = Ok(());
+        let mut written = 0;
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {
                 Ok(next) => next,
@@ -326,6 +385,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 cache
                     .write()
                     .apply(entry.log_id.index, command.0, &command.1);
+                written += 1;
             }
             let record = matches!(entry.payload, EntryPayload::Normal(_));
             if let EntryPayload::Membership(membership) = entry.payload {
@@ -344,20 +404,33 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
         self.publish();
+        // After the publish, so the run's waiters are not held by it.
+        self.fold_back(written);
         applied
     }
 
+    async fn try_create_snapshot_builder(&mut self, force: bool) -> Option<Self::SnapshotBuilder> {
+        // While the last build's overlay is still folding back, a cut would
+        // have to finish the fold on this task, holding apply and reads.
+        // Deferring is safe: openraft asks again `cache_snapshot_every`
+        // entries later and the log is purged later. Only a forced build
+        // (one a follower or a restart needs) takes the cut regardless.
+        let cut = match &self.cache {
+            Some(cache) => {
+                let mut state = cache.write();
+                if !force && state.layered() {
+                    return None;
+                }
+                Some(state.cut())
+            }
+            None => None,
+        };
+        Some(self.builder(cut))
+    }
+
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        // The state and the id it is as of are taken in one step, here,
-        // where no entry is being applied. Taken when the snapshot is built,
-        // the state could hold entries past the id, and a member that
-        // restored it would apply them twice. The clone is cheap; encoding
-        // it is not, and happens in the build, off this task.
-        Builder {
-            snapshots: self.snapshots.clone(),
-            state: self.state.clone(),
-            cache: self.cache.as_ref().map(|cache| cache.read().clone()),
-        }
+        let cut = self.cache.as_ref().map(|cache| cache.write().cut());
+        self.builder(cut)
     }
 
     async fn install_snapshot(

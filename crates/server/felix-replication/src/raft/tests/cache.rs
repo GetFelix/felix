@@ -638,6 +638,335 @@ async fn an_install_takes_the_state_the_receiver_parsed() {
     assert_eq!(*cache.read(), parsed);
 }
 
+/// Puts, deletes, adds and floor raises over 500 keys, so a build's
+/// writes touch every table.
+fn mixed(index: u64) -> CacheCommand {
+    let key = format!("k{}", index % 500);
+    let request = Request {
+        producer: index % 3,
+        sequence: index,
+        floor: index.saturating_sub(50),
+    };
+    match index % 11 {
+        0 => CacheCommand::Delete {
+            key,
+            version: None,
+            request,
+        },
+        1 => CacheCommand::Add {
+            key,
+            delta: 1,
+            request,
+        },
+        2 => CacheCommand::Put {
+            key,
+            value: Bytes::from(index.to_le_bytes().to_vec()),
+            expires_at: index * 10 + 5_000,
+            cond: Condition::None,
+            request,
+        },
+        _ => keyed(index, 500),
+    }
+}
+
+/// The state a member that applied `mixed` up to `upto` holds.
+fn mixed_upto(upto: u64) -> super::super::cache::CacheState {
+    let mut state = super::super::cache::CacheState::default();
+    for index in 1..=upto {
+        state.apply(index, index * 10, &mixed(index));
+    }
+    state
+}
+
+/// Applies empty runs until the writes a build let go of are folded back
+/// into the live maps. Apply is what folds, so nothing else would.
+async fn folded(
+    machine: &mut super::super::machine::Machine,
+    cache: &super::super::machine::Cache,
+) {
+    use openraft::storage::RaftStateMachine;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while cache.read().layered() {
+        assert!(tokio::time::Instant::now() < deadline, "never folded");
+        machine
+            .apply(futures::stream::empty())
+            .await
+            .expect("apply");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// A released cut folds back through apply, a chunk per run, and not on
+/// a thread of its own: one competing with apply for the lock and a core
+/// is what held reads up during back to back builds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_cut_folds_back_on_the_apply_task() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    machine
+        .apply(entries(1, 20_000, mixed))
+        .await
+        .expect("apply");
+    let mut builder = machine.get_snapshot_builder().await;
+    machine
+        .apply(entries(20_001, 25_000, mixed))
+        .await
+        .expect("apply");
+    builder.build_snapshot().await.expect("build");
+    drop(builder);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        cache.read().layered(),
+        "the overlay folded off the apply task"
+    );
+    // One run folds one bounded share, not the whole overlay.
+    machine
+        .apply(futures::stream::empty())
+        .await
+        .expect("apply");
+    assert!(cache.read().layered(), "one run folded the whole overlay");
+    folded(&mut machine, &cache).await;
+    assert!(*cache.read() == mixed_upto(25_000), "a write was lost");
+}
+
+/// A build cancelled part way, its encode still running, leaves the
+/// writes made meanwhile folded back once the encode lets go of the cut.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_build_dropped_part_way_folds_back_with_nothing_lost() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    machine
+        .apply(entries(1, 20_000, mixed))
+        .await
+        .expect("apply");
+    let mut builder = machine.get_snapshot_builder().await;
+    let build = tokio::spawn(async move { builder.build_snapshot().await });
+    machine
+        .apply(entries(20_001, 21_000, mixed))
+        .await
+        .expect("apply");
+    build.abort();
+    machine
+        .apply(entries(21_001, 22_000, mixed))
+        .await
+        .expect("apply");
+    folded(&mut machine, &cache).await;
+    assert!(*cache.read() == mixed_upto(22_000), "a write was lost");
+
+    // A builder dropped before it built anything folds back too.
+    let builder = machine.get_snapshot_builder().await;
+    machine
+        .apply(entries(22_001, 23_000, mixed))
+        .await
+        .expect("apply");
+    drop(builder);
+    folded(&mut machine, &cache).await;
+    assert!(*cache.read() == mixed_upto(23_000), "a write was lost");
+}
+
+/// A second build taken while the first still holds its cut, or just as
+/// the first finishes and its writes are folding back, is exact at its
+/// own entry, and nothing is lost once both let go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_second_build_while_the_first_holds_or_folds_is_exact() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    let mut last = 20_000;
+    machine.apply(entries(1, last, mixed)).await.expect("apply");
+    for round in 0..4 {
+        let mut first = machine.get_snapshot_builder().await;
+        let first_at = last;
+        machine
+            .apply(entries(last + 1, last + 5_000, mixed))
+            .await
+            .expect("apply");
+        last += 5_000;
+        // Even rounds take the second cut while the first is held; odd
+        // ones once the first is built and folding back.
+        let mut second = None;
+        if round % 2 == 0 {
+            second = Some((machine.get_snapshot_builder().await, last));
+        }
+        let writes = async {
+            machine
+                .apply(entries(last + 1, last + 1_000, mixed))
+                .await
+                .expect("apply");
+        };
+        let (built, ()) = tokio::join!(first.build_snapshot(), writes);
+        last += 1_000;
+        assert!(built.expect("build").snapshot.bytes == mixed_upto(first_at).snapshot());
+        drop(first);
+        let (mut second, second_at) = match second {
+            Some(second) => second,
+            None => (machine.get_snapshot_builder().await, last),
+        };
+        machine
+            .apply(entries(last + 1, last + 1_000, mixed))
+            .await
+            .expect("apply");
+        last += 1_000;
+        let built = second.build_snapshot().await.expect("build");
+        assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(second_at));
+        assert!(
+            built.snapshot.bytes == mixed_upto(second_at).snapshot(),
+            "round {round}: the second build is not the state at its entry"
+        );
+    }
+    folded(&mut machine, &cache).await;
+    assert!(*cache.read() == mixed_upto(last), "a write was lost");
+}
+
+/// A built snapshot whose writes are still folding back, the fold held
+/// off by `machine.fold_hold`: the machine and its cache, the last entry
+/// applied, and the guard that holds the fold.
+async fn folding(
+    dir: &std::path::Path,
+) -> (
+    super::super::machine::Machine,
+    super::super::machine::Cache,
+    u64,
+    tokio::sync::OwnedMutexGuard<()>,
+) {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let (mut machine, cache) = cache_machine(dir).await;
+    machine
+        .apply(entries(1, 20_000, mixed))
+        .await
+        .expect("apply");
+    let mut builder = machine
+        .try_create_snapshot_builder(false)
+        .await
+        .expect("nothing is folding yet");
+    machine
+        .apply(entries(20_001, 25_000, mixed))
+        .await
+        .expect("apply");
+    let hold = Arc::clone(&machine.fold_hold).lock_owned().await;
+    let built = builder.build_snapshot().await.expect("build");
+    assert!(built.snapshot.bytes == mixed_upto(20_000).snapshot());
+    drop(builder);
+    assert!(cache.read().layered(), "the fold ran past its hold");
+    (machine, cache, 25_000, hold)
+}
+
+/// A snapshot asked for while the last one's writes are still folding
+/// back is deferred. Taken, it would finish the fold on the state
+/// machine's task, holding apply and reads for the whole overlay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_snapshot_asked_for_while_a_fold_runs_is_deferred() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache, last, hold) = folding(dir.path()).await;
+    let asked = tokio::time::timeout(PATIENCE, machine.try_create_snapshot_builder(false));
+    assert!(
+        asked
+            .await
+            .expect("the request waited on the fold")
+            .is_none(),
+        "a snapshot was cut while a fold was unfinished"
+    );
+    assert!(cache.read().layered(), "the cut folded on the apply task");
+    // Apply goes on meanwhile.
+    let applied = tokio::time::timeout(
+        PATIENCE,
+        machine.apply(entries(last + 1, last + 1_000, mixed)),
+    );
+    applied
+        .await
+        .expect("apply waited on the fold")
+        .expect("apply");
+    let last = last + 1_000;
+    drop(hold);
+    folded(&mut machine, &cache).await;
+    assert!(*cache.read() == mixed_upto(last), "a write was lost");
+    // Once folded, the snapshot is taken, exact at its entry.
+    let mut builder = machine
+        .try_create_snapshot_builder(false)
+        .await
+        .expect("the fold is done");
+    let built = builder.build_snapshot().await.expect("build");
+    assert_eq!(built.meta.last_log_id.map(|id| id.index), Some(last));
+    assert!(built.snapshot.bytes == mixed_upto(last).snapshot());
+}
+
+/// What a leader sends replaces the state while a fold is still due. The
+/// fold then finds nothing of its own to put back.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_install_while_a_fold_is_due_takes_the_sent_state() {
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache, _, hold) = folding(dir.path()).await;
+    let sent = mixed_upto(30_000);
+    install(&mut machine, 30_000, &sent).await;
+    drop(hold);
+    folded(&mut machine, &cache).await;
+    assert!(
+        *cache.read() == sent,
+        "the fold wrote over the installed state"
+    );
+}
+
+/// What a leader sends replaces the state while a build still holds its
+/// cut. The build stays exact at its own entry and its fold leaves the
+/// installed state alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_install_while_a_build_holds_its_cut_takes_the_sent_state() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    machine
+        .apply(entries(1, 20_000, mixed))
+        .await
+        .expect("apply");
+    let mut builder = machine.get_snapshot_builder().await;
+    machine
+        .apply(entries(20_001, 21_000, mixed))
+        .await
+        .expect("apply");
+    let sent = mixed_upto(30_000);
+    install(&mut machine, 30_000, &sent).await;
+    let built = builder.build_snapshot().await.expect("build");
+    assert!(built.snapshot.bytes == mixed_upto(20_000).snapshot());
+    drop(builder);
+    folded(&mut machine, &cache).await;
+    assert!(
+        *cache.read() == sent,
+        "the fold wrote over the installed state"
+    );
+    machine
+        .apply(entries(30_001, 31_000, mixed))
+        .await
+        .expect("apply");
+    assert!(*cache.read() == mixed_upto(31_000));
+}
+
+/// Install `sent` as the snapshot through `last`, as a receiver that
+/// parsed it hands it in.
+async fn install(
+    machine: &mut super::super::machine::Machine,
+    last: u64,
+    sent: &super::super::cache::CacheState,
+) {
+    use super::super::machine::SnapshotData;
+    use openraft::storage::RaftStateMachine;
+    use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf};
+    let meta = SnapshotMetaOf::<ShardTypes> {
+        last_log_id: Some(LogIdOf::<ShardTypes>::new(1.into(), last)),
+        last_membership: Default::default(),
+    };
+    let snapshot = SnapshotData {
+        bytes: sent.snapshot(),
+        restored: Some(sent.clone()),
+    };
+    machine
+        .install_snapshot(&meta, snapshot)
+        .await
+        .expect("install");
+}
+
 /// Entries a snapshot covers can leave the log, and no others. A member
 /// that restarts after that holds what the purged entries wrote.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
