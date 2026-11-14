@@ -924,3 +924,39 @@ async fn a_reader_resumes_on_another_member_by_offset() {
     );
     led.cluster.stop().await;
 }
+
+/// **A read confirmed after a `Leader` publish was answered sees the write,
+/// or is refused.** The answer comes before the leader applies the write,
+/// so a read that took its bound before the leader applied it would miss a
+/// write its client was already told about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused() {
+    let led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    leased(&led).await;
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    let member = runtime.group(&shard(0)).expect("group");
+
+    member.stall_apply(true);
+    let published = publish_on_lease(&led, &broker, &handle, Bytes::from_static(b"answered"));
+    let offset = led.committed + 1;
+    let outcome = published.await.expect("joined").expect("on the lease");
+    assert_eq!(outcome.offsets, Some((offset, offset)));
+    // Committed, and not applied on the leader.
+    eventually(|| (led.status().committed? >= offset).then_some(())).await;
+    assert_eq!(led.engine.read_bound(&shard(0)), Ok(offset));
+
+    let term = led.engine.open_term(&shard(0)).expect("open");
+    let confirmed = led.engine.confirm_read(&shard(0), term).await;
+    let bound = led.engine.read_bound(&shard(0)).expect("bound");
+    assert!(
+        confirmed.is_err() || bound > offset,
+        "a read confirmed below an answered write: {confirmed:?}, bound {bound}"
+    );
+
+    member.stall_apply(false);
+    let confirmed = led.engine.confirm_read(&shard(0), term).await;
+    assert_eq!(confirmed, Ok(()));
+    assert!(led.engine.read_bound(&shard(0)).expect("bound") > offset);
+    led.cluster.stop().await;
+}

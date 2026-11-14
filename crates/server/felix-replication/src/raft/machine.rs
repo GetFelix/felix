@@ -33,6 +33,9 @@ pub(crate) struct Machine {
     /// `commits` as the read bound and the commit waits see it, moved once
     /// per run of applied entries.
     published: watch::Sender<Commits>,
+    /// While true, `apply` waits before it applies anything.
+    #[cfg(test)]
+    pub(crate) stall: std::sync::Arc<watch::Sender<bool>>,
 }
 
 impl Machine {
@@ -52,6 +55,8 @@ impl Machine {
             state,
             commits,
             published,
+            #[cfg(test)]
+            stall: std::sync::Arc::new(watch::channel(false).0),
         };
         Ok((machine, applied))
     }
@@ -193,6 +198,8 @@ impl RaftStateMachine<ShardTypes> for Machine {
     where
         Strm: Stream<Item = io::Result<EntryResponder<ShardTypes>>> + Unpin + OptionalSend,
     {
+        #[cfg(test)]
+        let _ = self.stall.subscribe().wait_for(|held| !held).await;
         let mut applied = Ok(());
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {

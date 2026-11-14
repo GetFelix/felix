@@ -1933,9 +1933,13 @@ commit index.
 
 `confirm_read` is a read-index round (`Raft::get_read_log_id` with
 `ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
-first, then its value, then calls `RaftEngine::confirm_read` with that
-term. The read is confirmed only if the shard is still open in that term
-and the round's answer is for it. The term open at confirm time is not
+first, then calls `RaftEngine::confirm_read` with that term, then takes its
+value. The read is confirmed only if the shard is still open in that term,
+the round's answer is for it, and this broker has applied the read index
+before the same deadline. The value comes after that wait, because a write
+can be answered before the leader applies it. A value taken from the read
+bound before the wait could miss a write whose client already has its
+answer. The term open at confirm time is not
 enough. A broker that was deposed and elected again after the read is open
 in a later term, and the value it read can miss a record the leader in
 between committed. A member that does not lead is refused as leadership lost. A majority that does not
@@ -1947,6 +1951,20 @@ bound.
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused`.
+
+Which answered writes a confirmed read observes depends on when the write
+was answered:
+
+| Answered | Observed by a read that starts after the answer |
+|---|---|
+| At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
+| On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
+| When a majority has written it (`Quorum` with `AckAt::Written`, not wired to a publish path yet) | Once the leader has counted it committed |
+
+So a read never misses a write that committed before the read began,
+whatever answered it.
 
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine

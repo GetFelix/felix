@@ -73,6 +73,8 @@ pub(crate) struct Group {
     /// The publish task starts there, not on the first publisher's runtime,
     /// which may end while the group lives on.
     runtime: tokio::runtime::Handle,
+    #[cfg(test)]
+    stall: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 /// The runtime's clock and timers, as a group needs them to say when its
@@ -400,6 +402,8 @@ impl Group {
             log.first_index_reader(),
         );
         let (machine, commits) = Machine::open(snapshots).await?;
+        #[cfg(test)]
+        let stall = Arc::clone(&machine.stall);
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new());
@@ -467,6 +471,8 @@ impl Group {
             client_writes: Arc::default(),
             stop,
             runtime: tokio::runtime::Handle::current(),
+            #[cfg(test)]
+            stall,
         })
     }
 
@@ -859,7 +865,8 @@ impl Group {
     ///
     /// A majority that does not answer is a timeout, and so is a lapsed
     /// lease: neither says another leader exists, and neither closes the
-    /// shard.
+    /// shard. Ok only once this member has applied the read index, so a
+    /// value the reader takes after this returns has every answered write.
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
         let lost = |detail| CommitError::LeadershipLost {
             what: "read",
@@ -884,7 +891,9 @@ impl Group {
                 round = self.raft.get_read_log_id(ReadPolicy::ReadIndex) => round,
             };
             let forward = match round {
-                Ok((read, _)) if **read.committed_leader_id() == term => return Ok(()),
+                Ok((read, _)) if **read.committed_leader_id() == term => {
+                    return self.applied_through(read.index, deadline, unanswered).await;
+                }
                 Ok(_) => {
                     return Err(lost(
                         "this broker leads a later term than the read began in",
@@ -910,6 +919,34 @@ impl Group {
             let answered = lead::quorum_answered(&self.raft);
             let again = Duration::from_millis(timers.heartbeat);
             let _ = tokio::time::timeout(again, answered).await;
+        }
+    }
+
+    /// Wait until this member has applied `index`. A write can be answered
+    /// after it commits but before it is applied here, and a value taken
+    /// from below the read index would miss it. `timed_out` once `deadline`
+    /// passes.
+    async fn applied_through(
+        &self,
+        index: u64,
+        deadline: tokio::time::Instant,
+        timed_out: CommitError,
+    ) -> Result<(), CommitError> {
+        let mut commits = self.commits.clone();
+        let applied = commits.wait_for(|commits| {
+            commits
+                .applied()
+                .is_some_and(|applied| applied.index >= index)
+        });
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => Err(propose::stopped()),
+            waited = tokio::time::timeout_at(deadline, applied) => match waited {
+                Ok(Ok(_)) => Ok(()),
+                // The state machine is gone with the member.
+                Ok(Err(_)) => Err(propose::stopped()),
+                Err(_) => Err(timed_out),
+            },
         }
     }
 
@@ -1057,6 +1094,12 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn reports(&self) -> &Reports {
         &self.reports
+    }
+
+    /// Hold (`true`) or release the state machine's next apply.
+    #[cfg(test)]
+    pub(crate) fn stall_apply(&self, held: bool) {
+        self.stall.send_replace(held);
     }
 
     #[cfg(test)]
