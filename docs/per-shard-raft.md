@@ -1927,8 +1927,9 @@ A publish served here is proposed in the order the shard's publishes
 arrive and answered at its commit, for every consistency level and fsync
 policy. It does not enter the hybrid's write fence and does not need this
 broker's lease: the term is what holds the shard. A publish routed at a
-term the broker no longer serves is refused with nothing written. Readers
-at every level are bound by the commit index.
+term the broker no longer serves is refused with nothing written. A
+forwarded publish is checked against the term the owner serves now, not the
+one the sender saw. Readers at every level are bound by the commit index.
 
 `FELIX_ACK_ON_COMMIT` does not apply to a shard on Raft. With it set to `0`
 a hybrid `Leader` stream is acknowledged when the publish is queued; a Raft
@@ -1937,10 +1938,10 @@ a write the term may not live to make.
 
 A publish sent with no acknowledgement asked for takes the same path. It is
 proposed and delivered at its commit like any other. If the term moved while
-it waited in the queue it is dropped, since there is nobody to tell, and
-counted in `felix_publish_requests_total{result="unacked_failed"}`.
-A forwarded publish is
-checked against the term the owner serves now, not the one the sender saw.
+it waited in the queue it is dropped, since there is nobody to tell. A
+publish whose write was not confirmed is counted in
+`felix_publish_requests_total{result="unacked_failed"}`. That includes one
+whose commit wait timed out, which may still commit and be delivered.
 
 A `Quorum` publisher on a stream that does not fsync on commit is answered
 at the commit too, not earlier from `await_quorum_ack`. That waits until a
