@@ -1988,7 +1988,9 @@ Otherwise its publisher waits for the batch's own commit, as a `Quorum`
 publisher does, within the same publish timeout. The first limit holds back
 a fast publisher, the second one followers too slow to commit even a few
 batches in time. Both are read under the lock that orders the hand-overs
-and nothing waits while holding it. On a healthy group neither is reached.
+and nothing waits while holding it. The count is per stream, across every
+connection, so a stream busy enough to keep 256 batches uncommitted on a
+healthy group answers its `Leader` publishers at the commit too.
 
 > Tests: `a_publisher_answered_early_waits_once_enough_batches_are_uncommitted`,
 > `a_publisher_answered_early_waits_once_the_oldest_batch_is_late`
