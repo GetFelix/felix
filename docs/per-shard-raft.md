@@ -1691,9 +1691,12 @@ enough. A broker that was deposed and elected again after the read is open
 in a later term, and the value it read can miss a record the leader in
 between committed. A member that does not lead is refused as leadership lost. A majority that does not
 answer within the longest election timeout is a timeout, not a lost
-leadership. If openraft reports a lapsed lease, the engine asks for a
-heartbeat, waits for a majority to answer and asks again within the same
-bound.
+leadership. A read-index round does not use the leader's lease: openraft
+answers it only from a majority's acknowledgements of a heartbeat sent after
+the round was asked, so a lapsed lease costs a read that round and nothing
+more. openraft reports a lapsed lease to writes only. If a later openraft
+reports one to a read, the engine asks for a heartbeat, waits for a majority
+to answer and asks again within the same bound.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and

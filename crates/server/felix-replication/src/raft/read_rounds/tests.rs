@@ -1,8 +1,16 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 
 use super::*;
+
+/// The answer, or a failure instead of a hang if none comes.
+async fn answered(read: Entered<u64>) -> Option<u64> {
+    tokio::time::timeout(Duration::from_secs(10), read.answer())
+        .await
+        .expect("the read was told something")
+}
 
 /// Rounds the test answers. Each round asked sends the test its number
 /// and a slot, and answers what the test puts in the slot.
@@ -131,13 +139,13 @@ async fn reads_are_not_stuck_behind_a_round_that_ended_without_an_answer() {
     let next = scripted.enter();
     // The round's task panics on the dropped slot and ends.
     drop(answer_first);
-    assert_eq!(first.answer().await, None);
-    assert_eq!(next.answer().await, None);
+    assert_eq!(answered(first).await, None);
+    assert_eq!(answered(next).await, None);
 
     let later = scripted.enter();
     let (n, answer) = asked.recv().await.expect("a new round started");
     answer.send(n).expect("waiting");
-    assert_eq!(later.answer().await, Some(n));
+    assert_eq!(answered(later).await, Some(n));
 }
 
 /// A round every read gave up on before it was asked is not asked.
@@ -169,11 +177,12 @@ fn a_task_dropped_before_it_ran_does_not_strand_later_reads() {
     drop(gone);
 
     let live = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
         .build()
         .expect("runtime");
     live.block_on(async {
-        assert_eq!(stranded.answer().await, None);
+        assert_eq!(answered(stranded).await, None);
         let read = rounds.enter(&tokio::runtime::Handle::current(), || async { 2 });
-        assert_eq!(read.answer().await, Some(2));
+        assert_eq!(answered(read).await, Some(2));
     });
 }

@@ -361,6 +361,7 @@ pub(crate) enum Round {
     /// A majority answered this member as leader of this term.
     Leads(u64),
     /// This member leads but its lease lapsed: ask again after a heartbeat.
+    /// The pinned openraft says this to writes only.
     LeaseExpired,
     NotLeader,
     /// No majority answered in time.
@@ -904,7 +905,9 @@ impl Group {
                 biased;
                 () = self.stop.cancelled() => return Err(propose::stopped()),
                 round = tokio::time::timeout_at(deadline, entered.answer()) => match round {
-                    Ok(round) => round.unwrap_or(Round::Stopped),
+                    Ok(Some(round)) => round,
+                    // The task asking rounds ended without an answer.
+                    Ok(None) => return Err(unanswered),
                     Err(_) => return Err(unanswered),
                 },
             };
