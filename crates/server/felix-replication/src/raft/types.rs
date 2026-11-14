@@ -13,7 +13,8 @@ use crate::ShardKey;
 /// One Raft group: a shard, and how many times its group has been re-formed.
 ///
 /// The epoch starts at 0. Messages carry it, so members of two epochs of
-/// one shard never hear each other.
+/// one shard never hear each other. A stream shard's broker uses the
+/// stream's incarnation.
 ///
 /// openraft's router clones the id for every message, so the shard key is
 /// shared and a clone allocates nothing.
@@ -126,6 +127,7 @@ openraft::declare_raft_types!(
         NodeId = MemberId,
         Node = openraft::impls::EmptyNode,
         LeaderId = openraft::impls::leader_id_std::LeaderId<u64, MemberId>,
+        AsyncRuntime = super::draws::ShardRuntime,
 );
 
 pub(crate) type Membership = openraft::impls::Membership<MemberId, openraft::impls::EmptyNode>;

@@ -24,6 +24,7 @@
 mod codec;
 mod commit;
 mod deliver;
+mod draws;
 mod engine;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
@@ -45,13 +46,15 @@ mod wire;
 mod written;
 
 pub use deliver::RaftReads;
+#[cfg(any(test, feature = "testing"))]
+pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
 pub use propose::{AckAt, Batch, Record};
 pub use runtime::{
-    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, OpenedMember, Role,
-    RuntimeConfig,
+    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
+    Role, RuntimeConfig,
 };
 pub use types::{GroupId, MemberId};
 

@@ -23,7 +23,7 @@ use crate::error::{BrokerError, Result};
 use crate::stream::HeldBatch;
 
 type Committing<E> =
-    Pin<Box<dyn Future<Output = std::result::Result<ProposalCommitted, E>> + Send>>;
+    Pin<Box<dyn Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>> + Send>>;
 type Finishing<E> = Pin<Box<dyn Future<Output = std::result::Result<PublishOutcome, E>> + Send>>;
 
 impl Broker {
@@ -35,10 +35,15 @@ impl Broker {
     /// returns, because the order of these calls is taken as the order of
     /// the batches' offsets. Its future resolves once the engine has
     /// committed the batch under the leader that wrote it, or to the
-    /// engine's error, which delivers nothing. It must not resolve to an
+    /// engine's error ([`ProposalFailed`]), which delivers nothing. It must
+    /// not resolve to an
     /// error while the batch may still commit (a timeout): the batches
     /// behind it would go out while it never did. Bound the publisher's
     /// wait with [`ProposedPublish::answer_within`] instead.
+    ///
+    /// [`BrokerError::ProposalsStalled`], with `propose` not called, while
+    /// the oldest batch the engine has not settled has waited longer than
+    /// `stalled_after`.
     ///
     /// The batch is delivered from `payloads` as they are, after every batch
     /// handed over before it. Finish it with [`ProposedPublish::complete`];
@@ -48,10 +53,13 @@ impl Broker {
         &self,
         handle: &StreamHandle,
         payloads: Vec<Bytes>,
+        stalled_after: Duration,
         propose: impl FnOnce(u64) -> F,
     ) -> Result<ProposedPublish<E>>
     where
-        F: Future<Output = std::result::Result<ProposalCommitted, E>> + Send + 'static,
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
         E: Send + 'static,
     {
         let state = &handle.state;
@@ -67,7 +75,10 @@ impl Broker {
         let timestamp_micros = crate::append_time_now();
         let (committed, turn) = state
             .proposals
-            .hand_over(|| Box::pin(propose(timestamp_micros)) as Committing<E>);
+            .hand_over(stalled_after, || {
+                Box::pin(propose(timestamp_micros)) as Committing<E>
+            })
+            .map_err(|waited| BrokerError::ProposalsStalled { waited })?;
         Ok(ProposedPublish {
             finishing: Some(Box::pin(finish(
                 handle.clone(),
@@ -90,6 +101,34 @@ pub struct ProposalCommitted {
     /// blank entry, a membership change). Subscribers are told they were
     /// skipped, so the jump is not read as a drop.
     pub skipped_before: u64,
+}
+
+/// An engine gave up on a batch it was handed.
+#[derive(Debug)]
+pub struct ProposalFailed<E> {
+    pub error: E,
+    /// One past the batch's last offset, if the engine wrote it. The batch
+    /// may still commit, so readers resuming here start above it and read
+    /// it from the log.
+    pub written_end: Option<u64>,
+}
+
+impl<E> ProposalFailed<E> {
+    /// The engine never wrote the batch.
+    pub fn unwritten(error: E) -> Self {
+        Self {
+            error,
+            written_end: None,
+        }
+    }
+
+    /// The engine wrote the batch up to `end` and cannot say it committed.
+    pub fn written(error: E, end: u64) -> Self {
+        Self {
+            error,
+            written_end: Some(end),
+        }
+    }
 }
 
 /// A batch handed to the shard's engine, on its way to its subscribers.
@@ -199,15 +238,18 @@ async fn finish<E>(
             trim_applied: None,
             skipped_before: at.skipped_before,
             gap: false,
+            gap_end: None,
         },
-        _ => HeldBatch::gap(),
+        (Err(failed), _) => HeldBatch::gap(failed.written_end),
+        (Ok(at), None) => HeldBatch::gap(Some(at.end)),
     };
     let start = state.held.push(batch);
+    state.proposals.settled();
     drop(turn);
     if start {
         spawn_release(&handle);
     }
-    committed?;
+    committed.map_err(|failed| failed.error)?;
     Ok(PublishOutcome {
         subscribers: 0,
         offsets: first_offset.map(|first| (first, first + count - 1)),

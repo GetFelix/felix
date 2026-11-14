@@ -263,6 +263,7 @@ dropped silently: each is counted in `felix_mqtt_refused_total{reason}`.
 | Not written here and not forwarded: the owner cannot be reached, keeps moving or is busy, predates forwarded MQTT publishes, has not opened record headers yet, or the connection is anonymous and another broker owns the shard (`not_owner`) | `PUBACK` 0x83, reason string `not_owner` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | The owner refused the connection's token on a forward: revoked, expired, or no `stream.publish` there (`not_authorized`) | `PUBACK` 0x87 | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Broker does not accept record headers (`record_headers_disabled`) | `PUBACK` 0x83, reason string `record_headers_disabled` | Dropped, counted | Closes (QoS 0: dropped, counted) |
+| The stream runs on per-shard Raft (`FELIX_SHARD_ENGINE=raft`), which takes no MQTT publish yet (`raft_stream`) | `PUBACK` 0x83, reason string `raft_stream` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | Mounted stream is gone or not durable (`stream_unavailable`) | `PUBACK` 0x80, reason string `stream_unavailable` | Dropped, counted | Closes (QoS 0: dropped, counted) |
 | User property starting with `felix.` (`reserved_header`) | `PUBACK` 0x83 | `DISCONNECT` 0x83 | Not possible |
 | QoS 2 (`qos2_unsupported`) | `DISCONNECT` 0x9B | the same | Closes |

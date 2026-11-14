@@ -406,6 +406,9 @@ it is queued.
   its cluster lease lapses, before the record is written
 - any other value: logged as a warning, and the default is kept
 
+A shard on Raft (`FELIX_SHARD_ENGINE=raft`) ignores this setting: its publishes
+are always answered after they commit.
+
 **Example**:
 ```bash
 export FELIX_ACK_ON_COMMIT="0"      # opt out: ack on accept
@@ -2322,7 +2325,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_RAFT_ELECTION_TIMEOUT_MAX_MS` | `1200` | Upper edge of the election window. Must exceed the minimum. |
 | `FELIX_RAFT_SNAPSHOT_LOGS_SINCE_LAST` | `500` | Snapshot after this many log entries. Metadata state is small, so snapshots are cheap and the log stays short. |
 | `FELIX_RAFT_LOGS_KEPT_BEHIND_SNAPSHOT` | `100` | Entries kept behind the snapshot so a briefly-lagging member catches up from the log rather than a snapshot install. |
-| `FELIX_RAFT_SNAPSHOT_MAX_BYTES` | `1073741824` | Largest snapshot, in bytes, this member accepts from a peer. Only a build on the segment store reads it. A larger one is refused before its data is read, and a built snapshot past half of it is logged as an error. Set the same value on every member. |
+| `FELIX_RAFT_SNAPSHOT_MAX_BYTES` | `1073741824` | Largest snapshot, in bytes, this member accepts from a peer. A larger one is refused before its data is read, and a built snapshot past half of it is logged as an error. Set the same value on every member. |
 | `FELIX_RAFT_WRITE_TIMEOUT_MS` | `10000` | Overall budget for one proposal, elections and forwarding included. "No quorum" becomes an error at this bound rather than a hang, and the API answers it `503 unavailable`. |
 | `FELIX_READINESS_TIMEOUT_MS` | `2000` | Longest a readiness check may take before it counts as a failure. Keep it below the prober's own timeout so the reason is reported rather than lost. |
 | `FELIX_READINESS_CACHE_TTL_MS` | `1000` | How long a readiness answer is reused. Bounds probe cost regardless of how many probers there are, and bounds how long recovery takes to become visible. |
@@ -2423,6 +2426,7 @@ absent. They are listed in that script rather than here.
 | `FELIX_QUORUM_READS` | `majority` | How a get or counter get on a replicated `Quorum` cache confirms this broker still leads once the fleet has finalized `lease_free_reads`: `majority`, a round of fences its replicas answer (`docs/replication-design.md`, "Reads without the lease"), or `lease`, the faster path that trusts the lease and is only as safe as the clocks. Before the finalize every read is on the lease whatever this says. With `lease` the broker does not report `lease_free_reads`, so the fleet cannot finalize it while the broker serves, and once it is finalized the broker is refused at registration. Also bounds the round by `FELIX_PUBLISH_QUORUM_TIMEOUT_MS`. |
 | `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT` | `1` | Halted followers this broker rebuilds at once, across every shard it leads. `0` rebuilds nothing and leaves every halt to an operator. |
 | `FELIX_REPLICATION_REBUILD_BYTES_PER_SEC` | `0` | Bytes per second a rebuilding follower is shipped at. `0` is unlimited. |
+| `FELIX_SHARD_ENGINE` | `hybrid` | Which engine replicates this broker's durable stream shards: `hybrid`, or `raft` for one Raft group per shard (`docs/per-shard-raft.md`). `raft` is for a fresh cluster only, and every broker of the cluster must set it: there is no way yet to switch a shard that holds data from one engine to the other. A broker that shares a durable stream shard with a broker on the other engine closes the shard and refuses every request for it with "the shard's brokers run different shard engines" until they agree, and counts it in `felix_broker_shard_engine_refused_total`. It needs a build with the `raft` cargo feature, `FELIX_NODE_ID`, `FELIX_INTERNAL_BIND` and `FELIX_DURABLE_STORAGE_DIR`; a broker missing one refuses to start and names it. A stream on Raft takes plain publishes only, and subscribers are served on the shard's leader. A shard's group forms once placement names as many brokers as the stream's replication factor, and keeps those members: moves, drains and broker replacement are not supported on Raft shards yet ([#2235](https://github.com/GetFelix/felix/issues/2235)), and `felix_broker_raft_shards_off_placement` counts the shards whose placement no longer matches their group. Any other value is refused, so a typo never starts the hybrid engine beside brokers that run Raft. |
 | `FELIX_SHARD_MOVE_HOLD_MS` | `2000` | How long a publish to a shard that is moving waits for the move to cut over before it is refused with `shard_unavailable` / `moving`. The wait happens before the publish is accepted, so nothing held is acknowledged. `0` refuses at once. |
 | `FELIX_SHARD_MOVE_HOLD_MAX` | `1024` | How many publishes may wait on moving shards at once. Each keeps its payload in memory. Beyond this, a publish to a moving shard is refused at once. |
 | `FELIX_SHARD_MOVE_BYTES_PER_SEC` | `0` | Bytes per second this broker ships to move destinations, across every shard it leads. Only a destination the quorum does not need is held to it, so a `Quorum` publish never waits on it. The remainder after the fence is not. `0` is unlimited. |

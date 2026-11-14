@@ -504,6 +504,62 @@ async fn without_the_ticker_no_timeout_is_noticed() {
     cluster.stop().await;
 }
 
+/// The member that forms a group asks the others first. Only answers of
+/// "no vote, no entry" from every one of them let it form; silence does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peers_blank_needs_a_blank_answer_from_every_other_member() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let (a, key) = (cluster.runtime("a"), shard(0));
+    let within = Duration::from_secs(5);
+    a.peers_blank(&key, &members(), within)
+        .await
+        .expect("every member is blank");
+    // The question is a pre-vote: it leaves the members asked as they were.
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, 0, "{status:?}");
+    }
+
+    cluster.net.cut.lock().insert("c".into());
+    match a.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Unanswered(member, _)) => assert_eq!(member, MemberId::new("c", 1)),
+        other => panic!("a silent member counted as blank: {other:?}"),
+    }
+    cluster.net.cut.lock().clear();
+
+    a.initialize(&key, members()).await.expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"record").await;
+    let b = cluster.runtime("b");
+    match b.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Formed(_)) => {}
+        other => panic!("a formed group looked blank: {other:?}"),
+    }
+    cluster.stop().await;
+}
+
+/// A vote alone and an entry alone each mean a group reached the member.
+/// A member can hold a vote and no entry after granting one in an election
+/// that never got as far as an append.
+#[test]
+fn a_vote_or_an_entry_alone_is_not_blank() {
+    use openraft::raft::VoteResponse;
+    use openraft::type_config::alias::LogIdOf;
+    let vote = |term: u64| {
+        let leader = LeaderIdOf::<ShardTypes>::new(term, MemberId::new("a", 1));
+        <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, false)
+    };
+    let answer = |term: u64, entry: bool| {
+        let last = entry.then(|| LogIdOf::<ShardTypes>::new(1_u64.into(), 1));
+        VoteResponse::<ShardTypes>::new(vote(term), last, false)
+    };
+
+    assert!(runtime::blank(&answer(0, false)));
+    assert!(!runtime::blank(&answer(1, false)), "a vote alone");
+    assert!(!runtime::blank(&answer(0, true)), "an entry alone");
+    assert!(!runtime::blank(&answer(1, true)));
+}
+
 /// The ticker asks a group for a timer check only when its timer can have
 /// run out: a leader once per heartbeat, a follower that hears its leader
 /// never.
@@ -1407,6 +1463,22 @@ async fn a_log_that_does_not_fsync_on_commit_gets_no_group() {
             .await,
         Err(OpenError::AlreadyOpen)
     ));
+    runtime.shutdown().await;
+}
+
+/// The ticker visits groups in shard order whatever order they opened and
+/// closed in, so a simulation seed replays its run.
+#[tokio::test]
+async fn the_ticker_visits_groups_in_shard_order() {
+    let cluster = Cluster::new(false);
+    let runtime = cluster.runtime("a");
+    for n in [7, 2, 9, 0, 5, 3, 8, 1] {
+        let log = open_log(cluster.root.path(), "a", n, log_config());
+        runtime.open(group(n), 1, log).await.expect("open");
+    }
+    assert!(runtime.close(&shard(5)).await);
+    let want: Vec<_> = [0, 1, 2, 3, 7, 8, 9].map(shard).into();
+    assert_eq!(runtime.ticked_shards(), want);
     runtime.shutdown().await;
 }
 

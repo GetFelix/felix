@@ -9,7 +9,7 @@ use super::keys::{StreamKeyRef, TopicKey, TopicKeyRef};
 use super::metadata::{ConsistencyLevel, StreamMetadata};
 use crate::durable::StreamLog;
 use crate::error::{BrokerError, Result};
-use crate::stream::StreamState;
+use crate::stream::{ReadBound, StreamState};
 
 /// Byte ceiling on the replay ring refill at startup.
 ///
@@ -24,9 +24,39 @@ const HYDRATE_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// callers retry on a later pass.
 const RELEASE_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
+/// The logs an engine opened itself and gave to
+/// [`Broker::open_stream_on_engine_log`]. The storage provider does not
+/// know them, so it cannot close them when their stream goes.
+pub trait EngineLogs: Send + Sync + std::fmt::Debug {
+    /// Stop the engine's members of every shard of the stream at
+    /// incarnation `through` or an earlier one, and close their logs. The
+    /// broker closes or deletes those directories as soon as this returns.
+    fn close_through<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        through: u64,
+    ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
 /// A record's payload and headers block, the bytes the replay ring holds for it.
 fn record_bytes(record: &felix_storage::log::LogRecord) -> usize {
     record.payload.len() + record.headers.as_deref().map_or(0, bytes::Bytes::len)
+}
+
+/// Where a stream's sequence may stand: its log's tail, or for a stream on
+/// its engine's log what the engine says is committed, `None` while it
+/// cannot say.
+async fn visible_end(state: &StreamState, log: &StreamLog) -> Result<Option<u64>> {
+    let tail = log.tail_offset().await?;
+    if !state.engine_log {
+        return Ok(Some(tail));
+    }
+    Ok(match state.read_bound() {
+        ReadBound::Committed(end) => Some(end.min(tail)),
+        _ => None,
+    })
 }
 
 impl Broker {
@@ -77,6 +107,9 @@ impl Broker {
     /// replay ring. For a shard this broker has stopped leading: what it
     /// held was never committed under its leadership. Returns how many
     /// batches were dropped.
+    ///
+    /// Nothing is dropped from a stream on its engine's log
+    /// ([`Self::open_stream_on_engine_log`]): what it holds was committed.
     pub async fn discard_uncommitted(
         &self,
         tenant_id: &str,
@@ -98,6 +131,17 @@ impl Broker {
     /// readers can see them. A no-op for a shard not opened here yet, which
     /// starts from its log's tail when it is.
     ///
+    /// A stream on its engine's log is brought up to what the engine says is
+    /// committed, never to the log's tail, which may hold entries a later
+    /// leader cuts. Call it once the engine can say (the leader's first
+    /// entry is committed) and before the first publish of the new term is
+    /// handed over: a batch committed below the new tail and delivered
+    /// after it would reach a resuming reader twice.
+    ///
+    /// Returns whether the stream now starts at that bound. False when
+    /// nothing could be moved to: the shard is not open here, its engine
+    /// cannot say what is committed yet, or batches are still held.
+    ///
     /// [`BrokerError::ReleaseInFlight`], with nothing changed, if a release
     /// of the shard's held batches is still running after a short wait.
     pub async fn lead_from_tail(
@@ -106,7 +150,7 @@ impl Broker {
         namespace: &str,
         stream: &str,
         shard: u32,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let state = self
             .topics
             .read()
@@ -114,10 +158,10 @@ impl Broker {
             .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
             .cloned();
         let Some(state) = state else {
-            return Ok(());
+            return Ok(false);
         };
         let Some(log) = &state.durable else {
-            return Ok(());
+            return Ok(false);
         };
         // A hold just discarded reads as busy until its release task runs,
         // and `lead_from` skips a busy hold. Bounded because that task may be
@@ -129,13 +173,16 @@ impl Broker {
         {
             return Err(BrokerError::ReleaseInFlight);
         }
-        let tail = log.tail_offset().await?;
+        let Some(tail) = visible_end(&state, log).await? else {
+            return Ok(false);
+        };
         if tail <= state.tail_seq() {
-            return Ok(());
+            return Ok(true);
         }
         let run = tail - log.event_end(0, tail).await?;
         state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
-        Ok(())
+        // `lead_from` leaves a stream with held batches where it is.
+        Ok(state.tail_seq() >= tail)
     }
 
     pub(super) async fn get_stream_state(
@@ -201,30 +248,127 @@ impl Broker {
             });
         }
 
-        let topic = TopicKey::new(tenant_id, namespace, stream, shard);
+        if metadata.durable && self.engines_open_durable_streams() {
+            return Err(BrokerError::ShardNotOpen {
+                stream: stream.to_string(),
+                shard,
+            });
+        }
         let durable = self
             .open_durable_log(tenant_id, namespace, stream, shard, &metadata)
             .await?;
-        let handle_id = self.next_stream_handle.fetch_add(1, Ordering::Relaxed);
-        let state = Arc::new(
-            StreamState::new(
-                handle_id,
-                self.topic_capacity,
-                self.subscriber_queue_policy,
-                self.subscriber_queue_bytes.clone(),
-                &self.ring_bytes,
-                durable,
-                metadata.consistency,
-            )
-            .for_shard(tenant_id, namespace, stream, shard),
+        let state = self.build_stream_state(
+            tenant_id, namespace, stream, shard, durable, &metadata, false,
         );
+        self.install_stream_state(tenant_id, namespace, stream, shard, state, false)
+            .await
+    }
+
+    /// Open a durable stream shard over `log`, which belongs to the shard's
+    /// engine (a member of its Raft group) and is never appended to here.
+    ///
+    /// Every publish to the stream goes through
+    /// [`Self::propose_publish`]; an ordinary publish, a conditional or
+    /// idempotent one, an atomic commit and a head trim are refused with
+    /// [`BrokerError::NotOnEngineStream`]. Readers at every consistency
+    /// level stop at the broker's read bound for the shard, and the stream
+    /// starts from that bound, not from the log's tail: entries past it may
+    /// be cut by a later leader. Its commit hold survives
+    /// [`Self::discard_uncommitted`].
+    ///
+    /// Refused if the stream is not registered as durable here, or if the
+    /// shard is already open: its state would be over another log.
+    pub async fn open_stream_on_engine_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        log: StreamLog,
+    ) -> Result<StreamHandle> {
+        let stream_key = StreamKeyRef::new(tenant_id, namespace, stream);
+        let metadata = self.streams.read().await.get(&stream_key).cloned().ok_or(
+            BrokerError::StreamNotFound {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+            },
+        )?;
+        if !metadata.durable {
+            return Err(BrokerError::StreamNotDurable {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+            });
+        }
+        let state = self.build_stream_state(
+            tenant_id,
+            namespace,
+            stream,
+            shard,
+            Some(log),
+            &metadata,
+            true,
+        );
+        let state = self
+            .install_stream_state(tenant_id, namespace, stream, shard, state, true)
+            .await?;
+        Ok(StreamHandle { state })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_stream_state(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        durable: Option<StreamLog>,
+        metadata: &StreamMetadata,
+        engine_log: bool,
+    ) -> Arc<StreamState> {
+        let topic = TopicKey::new(tenant_id, namespace, stream, shard);
+        let handle_id = self.next_stream_handle.fetch_add(1, Ordering::Relaxed);
+        let mut state = StreamState::new(
+            handle_id,
+            self.topic_capacity,
+            self.subscriber_queue_policy,
+            self.subscriber_queue_bytes.clone(),
+            &self.ring_bytes,
+            durable,
+            metadata.consistency,
+        )
+        .for_shard(tenant_id, namespace, stream, shard);
+        if engine_log {
+            state = state.on_engine_log();
+        }
         self.bind_reads(&state, &topic);
+        Arc::new(state)
+    }
+
+    /// Hydrate `state` and make it the shard's. With `only`, a shard that
+    /// is already open is an error instead of the answer.
+    async fn install_stream_state(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        state: Arc<StreamState>,
+        only: bool,
+    ) -> std::result::Result<Arc<StreamState>, BrokerError> {
+        let topic = TopicKey::new(tenant_id, namespace, stream, shard);
         self.hydrate_durable_stream(&state).await?;
 
         let mut topics = self.topics.write().await;
         // No retry loop: a caller that lost the race takes the winner's state
         // rather than building another, so there is nothing to go round for.
         if let Some(existing) = topics.get(&topic) {
+            if only {
+                return Err(BrokerError::Storage(format!(
+                    "stream {stream} shard {shard} is already open over another log"
+                )));
+            }
             return Ok(Arc::clone(existing));
         }
         // `close_stream_shard` closed the log while this was hydrating, and
@@ -375,8 +519,18 @@ impl Broker {
         let Some(log) = &state.durable else {
             return Ok(());
         };
-        let tail = log.tail_offset().await?;
         let capacity = self.log_capacity;
+        // Entries past what the engine committed may be cut by a later
+        // leader, so the stream must not count them, and the engine may not
+        // be able to say yet. The ring starts empty and readers are served
+        // from the log; `lead_from_tail` moves the sequence up once this
+        // broker leads.
+        if state.engine_log {
+            let committed = visible_end(state, log).await?.unwrap_or(0);
+            state.hydrate(Vec::new(), committed, capacity);
+            return Ok(());
+        }
+        let tail = log.tail_offset().await?;
         // A `Quorum` ring holds only committed records, and a tail past the
         // commit offset may be a dead generation's that a new leader replaces.
         // A ring stopping at the commit offset would leave a hole before the

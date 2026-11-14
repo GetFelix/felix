@@ -25,11 +25,13 @@ impl Cluster {
         if features.is_empty() {
             return Ok(());
         }
-        let store = &self
+        // The live member's store in group mode: the placeholder store has no
+        // brokers, so a finalize through it finds none serving.
+        let store = self
             .control_plane
             .as_ref()
             .context("finalizing fleet features needs the control plane")?
-            .store;
+            .live_store();
         let mut ordered: Vec<&str> = Vec::new();
         for feature in features {
             let needed = felix_common::fleet::prerequisites(feature)
