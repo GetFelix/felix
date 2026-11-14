@@ -40,7 +40,7 @@ async fn leader_of(
         1,
         fixture::INCARNATION,
         consistency,
-        felix_storage::FsyncMode::None,
+        felix_storage::log::FsyncMode::None,
     )
     .await;
     let shards = fixture::shards(&broker);

@@ -195,8 +195,9 @@ impl StreamEngine {
             });
             // A `Quorum` stream not fsynced on commit is answered once a
             // majority has written the batch, the hybrid's periodic promise.
-            // A copy whose flush failed restarts under a new copy id and does
-            // not vote with its cut log (#2469), so only power cuts can lose it.
+            // A copy that lost its unsynced tail to a failed flush (#2469) or
+            // a power cut (#2423) restarts under a new copy id and does not
+            // vote with its cut log, so only a majority's power cuts lose it.
             let answer = match (handle.consistency(), ack) {
                 (felix_broker::ConsistencyLevel::Leader, _) => AnswerAt::Lease,
                 (felix_broker::ConsistencyLevel::Quorum, AckAt::Written) => AnswerAt::Majority,

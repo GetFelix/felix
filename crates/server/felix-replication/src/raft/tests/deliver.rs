@@ -18,7 +18,7 @@ use crate::engine::{CommitError, Written};
 
 /// A broker whose `orders` stream is bounded by `engine` at every level and
 /// told each time the commit index moves.
-async fn broker_on(engine: &RaftEngine) -> (Broker, StreamHandle) {
+pub(super) async fn broker_on(engine: &RaftEngine) -> (Broker, StreamHandle) {
     let broker = Broker::new(EphemeralCache::new().into());
     broker.set_read_bounds(Arc::new(RaftReads::new(engine.clone())));
     broker.register_tenant("t").await.expect("tenant");
@@ -825,6 +825,21 @@ async fn records(receiver: &mut SubscriptionReceiver, count: usize) -> Vec<(u64,
     got
 }
 
+/// The next `count` records past `after`. A subscriber opened on a follower
+/// that was still applying gets the earlier ones first.
+async fn records_past(
+    receiver: &mut SubscriptionReceiver,
+    after: u64,
+    count: usize,
+) -> Vec<(u64, Bytes)> {
+    let mut got = Vec::new();
+    while got.len() < count {
+        let more = records(receiver, 1).await;
+        got.extend(more.into_iter().filter(|(offset, _)| *offset > after));
+    }
+    got
+}
+
 /// **A follower's subscriber gets each committed record at the offset the
 /// group gave it, and nothing its member has not applied.** Held back from
 /// the leader, the follower delivers nothing; caught up, it delivers what
@@ -1122,8 +1137,8 @@ async fn a_majority_answered_publish_survives_its_leader() {
     *led.cluster.net.cut.lock() = HashSet::from([old.clone()]);
     drop(held);
     let kept = [(offset, Bytes::from_static(b"kept"))];
-    assert_eq!(records(&mut from_holder, 1).await, kept);
+    assert_eq!(records_past(&mut from_holder, primed, 1).await, kept);
     // Committed with the old leader muted, so by a leader elected since.
-    assert_eq!(records(&mut from_without, 1).await, kept);
+    assert_eq!(records_past(&mut from_without, primed, 1).await, kept);
     led.cluster.stop().await;
 }

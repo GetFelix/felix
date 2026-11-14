@@ -1759,13 +1759,12 @@ gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
 
 Where each stream is answered, and what that answer promises. The answer
-point is the same on Raft and on the hybrid; the last column is where they
-still differ:
+point and the loss are the same on Raft and on the hybrid:
 
 | Stream | Answered on Raft | Answered on the hybrid | Lost by |
 | --- | --- | --- | --- |
 | `Quorum`, fsync on commit | At the commit: a majority has fsynced it | A majority has fsynced it | Losing the disks of a majority |
-| `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | Power cuts before the fsync. On the hybrid a majority must lose power; on Raft one cut plus one unreachable copy is enough at RF 3 until issue #2423 |
+| `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | A majority losing power before the fsync, on both. One cut does not: that copy comes back under a new copy id and cannot vote the record away (issue #2423) |
 | `Leader` | On the leader's log while the lease holds, else at the commit | On the leader's log | A change of leader before the commit |
 
 A record a majority has written in the leader's term survives a change of
@@ -1780,6 +1779,8 @@ term on each report.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_quorum_publish_is_answered_once_a_majority_has_written_it` and
 > `a_majority_answered_publish_survives_its_leader`.
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_publish_answered_on_a_written_majority_survives_a_power_cut`.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_periodic_quorum_stream_is_answered_on_a_written_majority` and
 > `a_quorum_stream_fsynced_on_commit_is_not_answered_on_a_written_majority`.
