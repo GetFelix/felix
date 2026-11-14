@@ -65,6 +65,9 @@ pub struct RaftSimConfig {
     pub shards: u32,
     /// How long faults are injected.
     pub nemesis: Duration,
+    /// Fail one flush on one member while the faults run. The log it was
+    /// for stops, and with it that member's copy of one shard.
+    pub failed_flush: bool,
     /// Virtual time the whole run may take. A healthy seed needs the
     /// nemesis and a few seconds more.
     pub run_limit: Duration,
@@ -78,6 +81,7 @@ impl Default for RaftSimConfig {
             clocks: Clocks::Off,
             shards: 2,
             nemesis: Duration::from_secs(60),
+            failed_flush: false,
             run_limit: Duration::from_secs(360),
             real_time_limit: Duration::from_secs(900),
         }
@@ -246,7 +250,7 @@ struct Member {
     /// Per shard: the broker's stream and the Raft log under it.
     streams: Vec<StreamHandle>,
     logs: Vec<DiskLog>,
-    _dir: DataDir,
+    dir: DataDir,
 }
 
 struct Sim {
@@ -369,7 +373,7 @@ impl Sim {
                 broker,
                 streams: Vec::new(),
                 logs,
-                _dir: dir,
+                dir,
             });
         }
         links.connect(members.iter().map(|m| m.runtime.clone()).collect());
@@ -796,6 +800,60 @@ impl Sim {
         }
     }
 
+    /// Fail the next flush on one member, half the time on a shard's leader.
+    /// Whichever of its logs flushes next is poisoned and its group stops.
+    /// The member's other shards carry on.
+    async fn fail_a_flush(&self, mut rng: Rng, length: Duration) {
+        tokio::time::sleep(rng.between(length / 8, length / 2)).await;
+        let pick = rng.below(self.members.len() as u64) as usize;
+        let shard = rng.below(u64::from(self.shards)) as u32;
+        let member = match self.leader(shard) {
+            Some(leader) if rng.percent(50) => leader,
+            _ => pick,
+        };
+        match felix_storage::sim_fs::fail_flush(&self.members[member].dir.0, 0) {
+            Ok(()) => self.fault(format!("fail the next flush on {}", name(member))),
+            Err(err) => self.finding(format!("no flush to fail on {}: {err}", name(member))),
+        }
+    }
+
+    /// Whether a failed flush stopped `member`'s copy of `shard`.
+    fn flush_stopped(&self, member: usize, shard: u32) -> bool {
+        self.members[member].logs[shard as usize].is_poisoned()
+    }
+
+    /// A copy whose log a failed flush poisoned has stopped: it leads
+    /// nothing and serves no read. Nothing else on its member has.
+    fn check_stopped_copies(&self) {
+        for (member, at) in self.members.iter().enumerate() {
+            for shard in 0..self.shards {
+                if !self.flush_stopped(member, shard) {
+                    continue;
+                }
+                self.fault(format!(
+                    "{}: a failed flush stopped {}",
+                    list(shard),
+                    name(member)
+                ));
+                let role = at.runtime.status(&key(shard)).map(|status| status.role);
+                if role != Some(Role::Stopped) {
+                    self.finding(format!(
+                        "{}: {}'s log is poisoned and its group is {role:?}, not stopped",
+                        list(shard),
+                        name(member)
+                    ));
+                }
+                if at.engine.open_term(&key(shard)).is_some() {
+                    self.finding(format!(
+                        "{}: {} still has the shard open on a poisoned log",
+                        list(shard),
+                        name(member)
+                    ));
+                }
+            }
+        }
+    }
+
     /// Checked every second of the run, faults or not.
     async fn watch(self: Arc<Self>, stop: CancellationToken) {
         let mut leaders: BTreeMap<(u32, u64), usize> = BTreeMap::new();
@@ -887,31 +945,45 @@ impl Sim {
         for shard in 0..self.shards {
             let deadline = Instant::now() + RECOVERY;
             let mut reads = Vec::new();
+            // A copy stopped by a failed flush serves nothing and is not
+            // compared. A majority is still running, or `recover` failed.
+            let running: Vec<usize> = (0..self.members.len())
+                .filter(|member| !self.flush_stopped(*member, shard))
+                .collect();
+            let Some(&first) = running.first() else {
+                self.history.lock().unread_lists.insert(list(shard));
+                self.finding(format!("{}: every copy has stopped", list(shard)));
+                continue;
+            };
             loop {
                 reads.clear();
                 for member in 0..self.members.len() {
                     reads.push(self.read(member, shard).await);
                 }
-                let same = reads.iter().all(|read| read.is_some() && *read == reads[0]);
+                let same = running
+                    .iter()
+                    .all(|member| reads[*member].is_some() && reads[*member] == reads[running[0]]);
                 if same || Instant::now() >= deadline {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(200)).await;
             }
-            for (member, read) in reads.iter().enumerate() {
+            for (member, read) in running.iter().map(|member| (*member, &reads[*member])) {
                 match read {
+                    // Its flush failed while the reads were taken.
+                    None if self.flush_stopped(member, shard) => {}
                     None => self.finding(format!(
                         "{}: {} still refuses reads {RECOVERY:?} after the heal",
                         list(shard),
                         name(member)
                     )),
-                    Some(read) if Some(read) != reads[0].as_ref() => self.finding(format!(
+                    Some(read) if Some(read) != reads[first].as_ref() => self.finding(format!(
                         "{}: {} serves {} records and {} serves {}, or not the same ones",
                         list(shard),
                         name(member),
                         read.len(),
-                        name(0),
-                        reads[0].as_ref().map_or(0, Vec::len)
+                        name(first),
+                        reads[first].as_ref().map_or(0, Vec::len)
                     )),
                     Some(_) => {}
                 }
@@ -1017,7 +1089,14 @@ async fn drive(
         )));
     }
     phase("injecting faults");
-    sim.nemesis(rng.fork(), config.nemesis).await;
+    // Forked after the nemesis, so a seed without the failed flush runs as
+    // it did before.
+    let (faults, flush) = (rng.fork(), rng.fork());
+    tokio::join!(sim.nemesis(faults, config.nemesis), async {
+        if config.failed_flush {
+            sim.fail_a_flush(flush, config.nemesis).await;
+        }
+    });
     sim.links.heal();
     let clients = tasks.split_off(watchers);
     phase("waiting for each shard to acknowledge a write after the heal");
@@ -1031,6 +1110,7 @@ async fn drive(
     }
     phase("taking the final reads");
     sim.final_reads().await;
+    sim.check_stopped_copies();
     phase("stopping the watch and the subscribers");
     watching.cancel();
     for task in tasks {
