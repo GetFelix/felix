@@ -471,6 +471,30 @@ impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
             InternalMessage::Fence(request) => replica.fence_from(from, caller, request).await,
             InternalMessage::ReplicateFetch(request) => replica.fetch(from, request).await,
             InternalMessage::PreVote(request) => replica.pre_vote(request).await,
+            InternalMessage::SealFence(request) => replica.seal_fence(from, request).await,
+            InternalMessage::SealAck(request) => replica.seal_ack(from, request).await,
+            // Only a batch is taken from a named copy; anything else inside
+            // is answered as it would be bare.
+            InternalMessage::FromCopy(stamped) => {
+                let copy = Some(felix_storage::StorageId::from_bytes(stamped.copy));
+                match *stamped.message {
+                    InternalMessage::ReplicateRecords(batch)
+                    | InternalMessage::ReplicateMarkedRecords(batch) => {
+                        replica.apply_from(from, copy, batch, LogKind::Stream).await
+                    }
+                    InternalMessage::ReplicateGroupRecords(batch) => {
+                        replica
+                            .apply_from(from, copy, batch, LogKind::GroupCursors)
+                            .await
+                    }
+                    InternalMessage::ReplicateDeadLetterRecords(batch) => {
+                        replica
+                            .apply_from(from, copy, batch, LogKind::GroupDeadLetters)
+                            .await
+                    }
+                    other => not_replication(&other),
+                }
+            }
             other => not_replication(&other),
         }
     }

@@ -255,6 +255,30 @@ pub enum Kind {
     Raft = 57,
     /// The answer to `Raft`, laid out the same way.
     RaftAnswer = 58,
+    /// `Fence` (never with election fields) followed by the sealing copy's
+    /// 16-byte id. Sent only to a peer that offered
+    /// [`PeerCapabilities::SWITCH_SEAL`].
+    ///
+    /// [`PeerCapabilities::SWITCH_SEAL`]: super::PeerCapabilities::SWITCH_SEAL
+    SealFence = 59,
+    /// The answer to `SealFence`: `FenceOk`, a flags byte (kept ballot), and
+    /// the start of the shard's log, its dead letters and its cursors.
+    SealFenceOk = 60,
+    /// The seal's record for a follower to check and append: the shard, the
+    /// sealing copy's id, the offset, the timestamp, then the payload to the
+    /// end of the frame. Sent only to a peer that offered
+    /// [`PeerCapabilities::SWITCH_SEAL`].
+    ///
+    /// [`PeerCapabilities::SWITCH_SEAL`]: super::PeerCapabilities::SWITCH_SEAL
+    SealAck = 61,
+    /// The answer to `SealAck`: the follower's copy id.
+    SealAckOk = 62,
+    /// A request from a named copy: the correlation id, the 16-byte copy id,
+    /// the inner kind and the inner body. Outermost, never nested. Sent only
+    /// to a peer that offered [`PeerCapabilities::SWITCH_SEAL`].
+    ///
+    /// [`PeerCapabilities::SWITCH_SEAL`]: super::PeerCapabilities::SWITCH_SEAL
+    FromCopy = 63,
 }
 
 impl Kind {
@@ -320,6 +344,11 @@ impl Kind {
             56 => Ok(Kind::ReplicateStampedFetch),
             57 => Ok(Kind::Raft),
             58 => Ok(Kind::RaftAnswer),
+            59 => Ok(Kind::SealFence),
+            60 => Ok(Kind::SealFenceOk),
+            61 => Ok(Kind::SealAck),
+            62 => Ok(Kind::SealAckOk),
+            63 => Ok(Kind::FromCopy),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

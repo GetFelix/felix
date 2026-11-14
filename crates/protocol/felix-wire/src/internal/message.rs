@@ -6,6 +6,7 @@ use super::{
     PeerCapabilities, Ping, Pong, PreVote, PreVoteAnswer, RaftAnswer, RaftCall, ReplicateBootstrap,
     ReplicateError, ReplicateFetch, ReplicateOk, ReplicateRebuild, ReplicateRecords,
 };
+use super::{FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk};
 
 /// A decoded internal message.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +71,11 @@ pub enum InternalMessage {
     LeaseForwardCacheOk(LeaseForwardCacheOk),
     Raft(RaftCall),
     RaftAnswer(RaftAnswer),
+    SealFence(SealFence),
+    SealFenceOk(SealFenceOk),
+    SealAck(SealAck),
+    SealAckOk(SealAckOk),
+    FromCopy(FromCopy),
 }
 
 /// The record kinds, whichever log they are for, send as
@@ -103,6 +109,21 @@ fn records_kind(records: &ReplicateRecords, own: Kind) -> Kind {
 }
 
 impl InternalMessage {
+    /// Whether this is a records batch for any of a shard's logs, bare or
+    /// from a named copy.
+    pub fn is_records(&self) -> bool {
+        match self {
+            Self::ReplicateRecords(_)
+            | Self::ReplicateMarkedRecords(_)
+            | Self::ReplicateCacheRecords(_)
+            | Self::ReplicateGroupRecords(_)
+            | Self::ReplicateDeadLetterRecords(_)
+            | Self::ReplicateCounterRecords(_) => true,
+            Self::FromCopy(m) => m.message.is_records(),
+            _ => false,
+        }
+    }
+
     /// The kind this message is sent as.
     pub fn kind(&self) -> Kind {
         match self {
@@ -173,12 +194,30 @@ impl InternalMessage {
             Self::LeaseForwardCacheOk(_) => Kind::LeaseForwardCacheOk,
             Self::Raft(_) => Kind::Raft,
             Self::RaftAnswer(_) => Kind::RaftAnswer,
+            Self::SealFence(_) => Kind::SealFence,
+            Self::SealFenceOk(_) => Kind::SealFenceOk,
+            Self::SealAck(_) => Kind::SealAck,
+            Self::SealAckOk(_) => Kind::SealAckOk,
+            Self::FromCopy(_) => Kind::FromCopy,
         }
     }
 
     /// The capability a peer must have offered to be sent this message, if
     /// any. The pool refuses to send one the peer did not offer.
     pub fn required_capability(&self) -> Option<PeerCapabilities> {
+        match self {
+            Self::SealFence(_) | Self::SealAck(_) => return Some(PeerCapabilities::SWITCH_SEAL),
+            Self::FromCopy(m) => {
+                return Some(
+                    m.message
+                        .required_capability()
+                        .map_or(PeerCapabilities::SWITCH_SEAL, |inner| {
+                            inner.union(PeerCapabilities::SWITCH_SEAL)
+                        }),
+                );
+            }
+            _ => {}
+        }
         let election = match self {
             Self::Fence(m) if m.election.as_ref().is_some_and(|e| !e.earlier.is_empty()) => {
                 Some(PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS))
@@ -326,6 +365,11 @@ impl InternalMessage {
             Self::LeaseForwardCacheOk(m) => m.correlation_id,
             Self::Raft(m) => m.correlation_id,
             Self::RaftAnswer(m) => m.correlation_id,
+            Self::SealFence(m) => m.fence.correlation_id,
+            Self::SealFenceOk(m) => m.ok.correlation_id,
+            Self::SealAck(m) => m.correlation_id,
+            Self::SealAckOk(m) => m.correlation_id,
+            Self::FromCopy(m) => m.message.correlation_id(),
         }
     }
 }

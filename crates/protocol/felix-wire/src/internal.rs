@@ -21,6 +21,7 @@ mod header;
 mod message;
 mod raft;
 mod replicate;
+mod seal;
 
 pub use election::{
     FenceElection, MAX_EARLIER_SETS, MAX_SET_MEMBERS, MAX_SET_NODE_BYTES, PreVote, PreVoteAnswer,
@@ -44,6 +45,7 @@ pub use replicate::{
     GenerationStart, ProducerMark, RefusalReason, ReplicaLog, ReplicateBootstrap, ReplicateError,
     ReplicateOk, ReplicateRebuild, ReplicateRecords, batch_checksum,
 };
+pub use seal::{FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk, SealStarts};
 
 /// Longest identifier (tenant, namespace, stream, node id) accepted.
 pub const MAX_IDENT_BYTES: usize = 512;

@@ -16,6 +16,9 @@
 //! established as the current leader: applying first and checking after would
 //! let a fenced leader's bytes reach the disk, and records are never rewritten.
 mod election;
+mod seal;
+
+pub(crate) use seal::SealedWrite;
 
 use felix_common::random::HashMap;
 use std::sync::Arc;
@@ -280,6 +283,14 @@ impl ReplicaHandler {
         {
             return refusal;
         }
+        // A rebuild discards what the seal's digest covers.
+        if key.kind == felix_router::ShardKind::Stream
+            && let Some(refusal) = self
+                .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Rebuild)
+                .await
+        {
+            return refusal;
+        }
         let Some(log) = self
             .broker
             .shard_log_off_runtime(
@@ -507,6 +518,14 @@ impl ReplicaHandler {
         // Creates the log at `base_offset` when this broker has never held the
         // shard, and opens what is there otherwise. The base it comes back with
         // is the authority either way.
+        // A rebuild discards what the seal's digest covers.
+        if key.kind == felix_router::ShardKind::Stream
+            && let Some(refusal) = self
+                .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Rebuild)
+                .await
+        {
+            return refusal;
+        }
         let Some(log) = self
             .broker
             .shard_log_off_runtime(
@@ -624,6 +643,18 @@ impl ReplicaHandler {
     pub async fn apply(
         &self,
         sender: Option<&str>,
+        batch: ReplicateRecords,
+        log_kind: felix_broker::LogKind,
+    ) -> InternalMessage {
+        self.apply_from(sender, None, batch, log_kind).await
+    }
+
+    /// [`Self::apply`] for a batch that names the copy `from` that sent it,
+    /// which a copy holding a seal promise needs to take it.
+    pub(crate) async fn apply_from(
+        &self,
+        sender: Option<&str>,
+        from: Option<felix_storage::StorageId>,
         batch: ReplicateRecords,
         log_kind: felix_broker::LogKind,
     ) -> InternalMessage {
@@ -751,6 +782,15 @@ impl ReplicaHandler {
         }
         if let Some(refusal) =
             accept_sender(&log, correlation_id, &key, batch.shard.generation, sender).await
+        {
+            return refusal;
+        }
+        // The side logs are held to the seal by their ranges in the record
+        // at `N`, which a later write makes a copy fail.
+        if log_kind == felix_broker::LogKind::Stream
+            && let Some(refusal) = self
+                .sealed_refusal(correlation_id, &batch.shard, from, SealedWrite::Batch)
+                .await
         {
             return refusal;
         }
@@ -1256,7 +1296,7 @@ impl ReplicaHandler {
         // under the refusals that caller's counting relies on.
         let unified = caller.contains(PeerCapabilities::UNIFIED_FENCE)
             && self.fleet.as_ref().is_none_or(|fleet| fleet.attests());
-        let answer = self.fence_in_turn(sender, unified, request).await;
+        let answer = self.fence_in_turn(sender, unified, None, request).await;
         if matches!(answer, InternalMessage::FenceOk(_)) {
             let mut fenced_at = self.fenced_at.lock();
             // Forgetting only sends a read round's fence through the queue.
@@ -1301,10 +1341,13 @@ impl ReplicaHandler {
             .ok()
     }
 
+    /// With `seal`, the fence promises the seal by the copy `seal` in place
+    /// of a plain accept ([`Self::seal_fence`]).
     async fn fence_in_turn(
         &self,
         sender: Option<&str>,
         unified: bool,
+        seal: Option<felix_storage::StorageId>,
         request: Fence,
     ) -> InternalMessage {
         let correlation_id = request.correlation_id;
@@ -1522,7 +1565,22 @@ impl ReplicaHandler {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
         }
-        if let Some(refusal) = accept_sender(&log, correlation_id, &key, generation, sender).await {
+        // An election among sealed copies would reopen the shard without
+        // the control plane, so a promise refuses every election ballot.
+        if request.election.is_some()
+            && let Some(refusal) = self
+                .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Ballot)
+                .await
+        {
+            return refusal;
+        }
+        let accepted = match seal {
+            None => accept_sender(&log, correlation_id, &key, generation, sender).await,
+            Some(sealer) => {
+                promise_sender(&log, correlation_id, &key, generation, sender, sealer).await
+            }
+        };
+        if let Some(refusal) = accepted {
             return refusal;
         }
         // After the ballot, as the open expects, and before the answer.
@@ -2708,6 +2766,45 @@ async fn accept_sender(
 ) -> Option<InternalMessage> {
     match log.accept_generation(generation, sender).await {
         Ok(check) => ballot_refusal(check, correlation_id, key, generation, sender),
+        Err(err) => {
+            metrics::record_replicated(metrics::OUTCOME_ERROR);
+            Some(refused(
+                correlation_id,
+                ErrorCode::StorageFailed,
+                0,
+                err.to_string(),
+            ))
+        }
+    }
+}
+
+/// [`accept_sender`] for the seal's fence: the ballot and then the promise
+/// to the copy `sealer`, both on disk before it returns `None`.
+async fn promise_sender(
+    log: &felix_broker::StreamLog,
+    correlation_id: u64,
+    key: &felix_router::ShardKey,
+    generation: u64,
+    sender: Option<&str>,
+    sealer: felix_storage::StorageId,
+) -> Option<InternalMessage> {
+    // The promise names its leader in the ballot, so a fence with no node
+    // id makes none.
+    let Some(leader) = sender else {
+        return Some(refused(
+            correlation_id,
+            ErrorCode::Unauthorized,
+            0,
+            "a seal's fence must come from a named leader".to_string(),
+        ));
+    };
+    match log
+        .disk_log()
+        .promise_seal(generation, leader, sealer)
+        .await
+    {
+        Ok(Ok(check)) => ballot_refusal(check, correlation_id, key, generation, sender),
+        Ok(Err(why)) => Some(seal::seal_refusal(correlation_id, &why)),
         Err(err) => {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             Some(refused(

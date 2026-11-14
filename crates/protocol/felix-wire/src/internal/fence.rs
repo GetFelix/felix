@@ -158,6 +158,11 @@ impl PeerCapabilities {
     /// it holds. Offered only by a broker that runs the group runtime; a
     /// peer without it is never sent a Raft message.
     pub const RAFT: Self = Self(1 << 23);
+    /// Takes part in the seal that moves a shard to Raft: answers
+    /// [`SealFence`](super::SealFence) and [`SealAck`](super::SealAck), and
+    /// reads a request wrapped in [`FromCopy`](super::FromCopy). A peer
+    /// without it is sent none of these.
+    pub const SWITCH_SEAL: Self = Self(1 << 24);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
