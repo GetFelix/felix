@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794634669645,
+  "lastUpdate": 1794636600475,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70620,6 +70620,72 @@ window.BENCHMARK_DATA = {
             "range": "856.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 420.00\nmean: 915.60\nstdev: 856.31\ncv: 93.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0b5048b963327c4268942c8e9bd28ef2d17776f5",
+          "message": "test(controlplane): the openraft 0.9 rollback test rolls back mid-upgrade (#2512)\n\nSince #2463 the control plane records its identity (metadata level 32) once every member reports 32, and a member is never rolled back below a level in use, so the rollback test's 0.7.1 member rightly refused its store. The test now keeps member 3 down while the others upgrade, rolls it back to 0.7.1 with the group below 32, then forward, and checks the identity is recorded. Docs: the rollback window closes when the last control-plane member is upgraded.",
+          "timestamp": "2026-11-14T05:56:54Z",
+          "tree_id": "3605764ee738bef2b292ccb7068663c11ad0be5d",
+          "url": "https://github.com/GetFelix/felix/commit/0b5048b963327c4268942c8e9bd28ef2d17776f5"
+        },
+        "date": 1794636591776,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 94,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 94.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 126.60\nstdev: 1.82\ncv: 1.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 168,
+            "range": "136.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 168.00\nmean: 232.00\nstdev: 136.05\ncv: 58.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "3.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 132.00\nstdev: 3.39\ncv: 2.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "51.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 282.80\nstdev: 51.59\ncv: 18.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 365,
+            "range": "927.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 365.00\nmean: 800.60\nstdev: 927.84\ncv: 115.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
