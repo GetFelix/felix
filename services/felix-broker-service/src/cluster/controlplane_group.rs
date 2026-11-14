@@ -354,8 +354,8 @@ pub(crate) struct Mismatch {
 #[derive(Debug, thiserror::Error)]
 #[error(
     "the control plane's {what} names metadata group {current} but this data directory was \
-     checked against a control plane with no group; not applied, stopping so the next start \
-     checks the directory against group {current}"
+     checked against a control plane with no group; not applied. Restart the broker: its next \
+     start checks the directory against group {current}"
 )]
 pub(crate) struct Grouped {
     pub(crate) what: &'static str,
