@@ -3088,14 +3088,14 @@ listener. Until idle groups sleep, both report what ticking every group
 costs; nothing waits on them. A third step, the write burst, is described
 with the memory figures below.
 
-Idle memory fits, with openraft at `30c947ef38` (openraft#2313 and openraft#2314).
+Idle memory fits, with openraft at `5c3ad1bc2d` (openraft#2313, openraft#2314 and openraft#2324).
 The design assumed 180 KB per leader member and 145 KB per follower. The
 runtime's memory test (Linux, release build, 120 idle members, a third
-leading) measures 142 KB of live heap per member, plus 535 KB per member
-that openraft reserves in a large buffer and does not touch while idle
-(#2415). The same three-runtime run, 1,500 members per broker, holds
-222 MB resident per broker, 17 MB of it the logs alone, and does not grow:
-217 MB ten minutes earlier. That is about 137 KB per member,
+leading) measures 150 KB of live heap per member and no large per-member
+reserve. The process reserves about 26 MB once, for openraft's latency
+histogram tables, however many members it hosts (#2415, part a). The same
+three-runtime run, 1,500 members per broker, holds 232 MB resident per
+broker, 17 MB of it the logs alone. That is about 137 KB per member,
 and 5,000 members at 142 KB are about 0.7 GB.
 
 What a member keeps after it was busy is measured by the workflow's write

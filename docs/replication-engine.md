@@ -806,13 +806,14 @@ used by every shard group and by the control plane, tested once.
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
 `[workspace.dependencies]` pins one commit of openraft's main branch,
-`30c947ef38` (2026-11-12), past the 0.10.0 tag, for changes that ship
+`5c3ad1bc2d` (2026-11-14), past the 0.10.0 tag, for changes that ship
 in 0.10.1. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
 "One timer for every group"). openraft#2313 (issue #2312) resets a drained
 queue to its start, so an idle member stops touching every page of its
 queues, and openraft#2314 starts those queues at 64 slots instead of
 reserving room for 4,096 commands and 1,024-slot response buffers, so a member's
-resident memory stays small. The others are a `#[non_exhaustive]` on some name enums,
+resident memory stays small. openraft#2324 starts the client responder
+queue at 64 slots instead of 8,192. The others are a `#[non_exhaustive]` on some name enums,
 benchmark changes, and one change to the state-machine worker: it merges
 `Apply` commands that are already queued into one `apply()` call. That
 call still gets the committed entries in log order, each once, with each
