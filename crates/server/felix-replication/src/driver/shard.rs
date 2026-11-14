@@ -31,8 +31,12 @@ use crate::{
 pub(super) const MAX_BATCH_BYTES: usize = 1024 * 1024;
 
 // A read can overshoot the budget by one record, and the batch still has to
-// fit once stamped and incarnated.
-const _: () = assert!(2 * MAX_BATCH_BYTES <= felix_wire::internal::MAX_INNER_BODY_BYTES as usize);
+// fit once stamped, incarnated and, from a seal leader, named by its copy.
+const _: () = assert!(
+    2 * MAX_BATCH_BYTES
+        <= (felix_wire::internal::MAX_INNER_BODY_BYTES - felix_wire::internal::FROM_COPY_BYTES)
+            as usize
+);
 
 /// How long one exchange ships to a destination that is still copying.
 ///

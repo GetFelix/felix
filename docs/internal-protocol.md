@@ -1287,7 +1287,11 @@ While its own promise holds, the seal leader wraps each batch for the
 shard's log to a peer that offered `SWITCH_SEAL` in **`FromCopy`** (kind 63): the correlation id, the 16-byte copy
 id, the inner kind (`u16`), then the inner body as it would travel alone.
 `FromCopy` is always outermost and never nested, and its correlation id must
-equal the inner one. A promised replica takes a batch only when the copy id
+equal the inner one. Its 26 bytes count toward `MAX_BODY_BYTES`: a batch that
+would pass the limit once wrapped is `FrameTooLarge` on encode, and the
+shipping budget leaves room for it. A request inside `FromCopy` still needs
+every capability it needs alone, so a batch holding a trim goes only to a
+peer that also offered `HEAD_TRIM`. A promised replica takes a batch only when the copy id
 is the one its promise names, so the same broker back after a wipe, under a
 new copy id, cannot write past what the seal covers. Once the leader has
 appended the record at `N`, it ships nothing from `N` on: a follower gets

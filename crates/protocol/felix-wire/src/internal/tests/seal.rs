@@ -152,6 +152,45 @@ fn a_stamped_batch_is_the_plain_batch_behind_the_copy_id() {
     assert_eq!(&body[26..], &plain[InternalHeader::LEN..]);
 }
 
+/// The copy id's 26 bytes count toward the frame limit: a stamped batch
+/// fills the frame exactly, and one byte more is refused before it is sent,
+/// though the batch alone would still fit.
+#[test]
+fn a_stamped_batch_never_exceeds_the_frame_limit() {
+    let sized = |len: usize| ReplicateRecords {
+        payloads: vec![Bytes::from(vec![7u8; len])],
+        ..batch()
+    };
+    let stamped = |len: usize| {
+        InternalMessage::FromCopy(FromCopy {
+            copy: SEALER,
+            message: Box::new(InternalMessage::ReplicateRecords(sized(len))),
+        })
+    };
+    let plain = InternalMessage::ReplicateRecords(sized(0))
+        .encode()
+        .expect("encode");
+    let empty = stamped(0).encode().expect("encode");
+    assert_eq!(empty.len() - plain.len(), FROM_COPY_BYTES as usize);
+    let at_limit = MAX_BODY_BYTES as usize - (empty.len() - InternalHeader::LEN);
+
+    let message = stamped(at_limit);
+    let encoded = message.encode().expect("a stamped batch at the limit");
+    assert_eq!(
+        InternalHeader::decode(&encoded).expect("header").length,
+        MAX_BODY_BYTES
+    );
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), message);
+
+    assert!(matches!(
+        stamped(at_limit + 1).encode(),
+        Err(Error::FrameTooLarge)
+    ));
+    InternalMessage::ReplicateRecords(sized(at_limit + 1))
+        .encode()
+        .expect("the batch alone fits");
+}
+
 #[test]
 fn a_fence_without_the_seal_is_sent_as_before() {
     // The seal rides its own kinds, so a plain fence and its answer keep

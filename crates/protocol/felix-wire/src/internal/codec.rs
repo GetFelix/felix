@@ -18,7 +18,7 @@ use super::{
     ReplicaSetView, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
     ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
 };
-use super::{FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk, SealStarts};
+use super::{FROM_COPY_BYTES, FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk, SealStarts};
 use crate::error::{Error, Result};
 
 /// Every payload is a 4-byte length prefix plus its bytes, so a body can never
@@ -1600,14 +1600,16 @@ fn encode_from_copy(m: &FromCopy) -> Result<Bytes> {
     let inner = m.message.encode()?;
     let header = InternalHeader::decode(&inner)?;
     let inner_body = &inner[InternalHeader::LEN..];
-    let mut body = BytesMut::with_capacity(InternalHeader::LEN + 26 + inner_body.len());
+    // The envelope's bytes count toward the frame limit, so a batch that
+    // fits alone can be too large once it names its copy.
+    if inner_body.len() > (MAX_BODY_BYTES - FROM_COPY_BYTES) as usize {
+        return Err(Error::FrameTooLarge);
+    }
+    let mut body = BytesMut::with_capacity(FROM_COPY_BYTES as usize + inner_body.len());
     body.put_u64(m.message.correlation_id());
     body.put_slice(&m.copy);
     body.put_u16(header.kind as u16);
     body.extend_from_slice(inner_body);
-    if body.len() > MAX_BODY_BYTES as usize {
-        return Err(Error::FrameTooLarge);
-    }
     let mut frame = BytesMut::with_capacity(InternalHeader::LEN + body.len());
     InternalHeader {
         kind: Kind::FromCopy,

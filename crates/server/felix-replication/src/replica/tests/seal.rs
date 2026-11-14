@@ -368,6 +368,9 @@ struct Followers<'a> {
     nodes: Vec<(&'static str, &'a ReplicaHandler, PeerCapabilities)>,
     /// While false, every `SealAck` is lost on the way.
     acking: std::sync::atomic::AtomicBool,
+    /// The leader's log and a generation it accepts while its first
+    /// `SealAck` is on the way: after the round's claim, before its report.
+    later: Option<(&'a felix_broker::StreamLog, u64)>,
 }
 
 impl crate::peer::PeerRequester for Followers<'_> {
@@ -397,6 +400,12 @@ impl crate::peer::PeerRequester for Followers<'_> {
                 node_id: node_id.to_string(),
                 detail: "lost".to_string(),
             });
+        }
+        if let (InternalMessage::SealAck(_), Some((leader, generation))) = (&message, self.later) {
+            leader
+                .accept_generation(generation, Some("broker-a"))
+                .await
+                .expect("ballot");
         }
         Ok(match message {
             InternalMessage::SealFence(request) => handler.seal_fence(SENDER, request).await,
@@ -448,6 +457,7 @@ async fn the_seal_leader_claims_once_quiesced_and_reports_the_copies_that_hold_t
             ("broker-d", &d, PeerCapabilities::NONE),
         ],
         acking: true.into(),
+        later: None,
     };
     let addr: std::net::SocketAddr = "10.0.0.1:7000".parse().expect("addr");
     let peers: Vec<_> = ["broker-b", "broker-c", "broker-d"]
@@ -530,27 +540,29 @@ async fn a_copy_that_does_not_fsync_on_commit_refuses_the_seals_fence() {
 }
 
 /// **A leader whose own promise lapsed after the claim reports nothing.**
-/// A later generation it accepted reopened the shard, even though followers
-/// that have not seen it would still acknowledge `N`.
+/// A later generation it accepts while the acknowledgements are on the way
+/// reopened the shard, though both followers, which have not seen it, hold
+/// the record at `N` and answered.
 #[tokio::test]
 async fn a_seal_leader_that_accepted_a_later_generation_reports_nothing() {
     let root = tempfile::tempdir().expect("tempdir");
     let leader = sealing_broker(&root.path().join("a"));
     holding(&leader).await;
-    let (_b_broker, b) = follower(&root.path().join("b"), 2).await;
-    let (_c_broker, c) = follower(&root.path().join("c"), 3).await;
+    let (b_broker, b) = follower(&root.path().join("b"), 2).await;
+    let (c_broker, c) = follower(&root.path().join("c"), 3).await;
+    let [log, dead_letters, cursors] = logs_of(&leader).await;
     let followers = Followers {
         nodes: vec![
             ("broker-b", &b, PeerCapabilities::SWITCH_SEAL),
             ("broker-c", &c, PeerCapabilities::SWITCH_SEAL),
         ],
-        acking: false.into(),
+        acking: true.into(),
+        later: Some((&log, SEAL + 1)),
     };
     let addr: std::net::SocketAddr = "10.0.0.1:7000".parse().expect("addr");
     let peers: Vec<_> = ["broker-b", "broker-c"]
         .map(|node| (node.to_string(), addr))
         .to_vec();
-    let [log, dead_letters, cursors] = logs_of(&leader).await;
     let logs = crate::seal::SealLogs {
         log: log.disk_log(),
         dead_letters: dead_letters.disk_log(),
@@ -563,25 +575,29 @@ async fn a_seal_leader_that_accepted_a_later_generation_reports_nothing() {
         crate::seal::LogStarts::default(),
     );
     let shard = batch(SEAL, 0, &[]).shard;
-    let claimed = round
-        .step(&followers, &shard, &peers, logs, true)
-        .await
-        .expect("step");
-    assert_eq!(claimed, crate::seal::SealProgress::Waiting);
-    assert_eq!(log.tail_offset().await.expect("tail"), 4, "not claimed");
 
-    log.accept_generation(SEAL + 1, Some("broker-a"))
-        .await
-        .expect("ballot");
-    followers
-        .acking
-        .store(true, std::sync::atomic::Ordering::Release);
     let after = round
         .step(&followers, &shard, &peers, logs, true)
         .await
         .expect("step");
-    assert!(
-        matches!(after, crate::seal::SealProgress::Refused(_)),
-        "{after:?}"
+    assert_eq!(
+        after,
+        crate::seal::SealProgress::Refused(
+            felix_storage::disk_log::switch::seal::SealRefused::NoPromise
+        )
+    );
+    // Everything a report needs was there: the claim and a majority's
+    // acknowledgements.
+    assert_eq!(log.accepted_generation(), SEAL + 1);
+    for broker in [&b_broker, &c_broker] {
+        let [log, _, _] = logs_of(broker).await;
+        assert_eq!(log.tail_offset().await.expect("tail"), 4);
+    }
+    assert_eq!(
+        round
+            .step(&followers, &shard, &peers, logs, true)
+            .await
+            .expect("step"),
+        crate::seal::SealProgress::Abandoned
     );
 }

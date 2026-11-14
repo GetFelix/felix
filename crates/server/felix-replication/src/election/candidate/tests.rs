@@ -2299,3 +2299,75 @@ async fn a_round_that_panics_is_stood_again() {
     shutdown.cancel();
     task.await.expect("run");
 }
+
+/// `follower()` whose copy promised a seal at `generation` led by `leader`.
+#[cfg(feature = "raft")]
+async fn sealed_follower(generation: u64, leader: &str) -> (Arc<Broker>, tempfile::TempDir) {
+    let (broker, dir) = follower().await;
+    let log = shard_log(&broker, &key()).await.expect("log");
+    log.disk_log()
+        .promise_seal(
+            generation,
+            leader,
+            felix_storage::StorageId::from_bytes([1; 16]),
+        )
+        .await
+        .expect("promise")
+        .expect("one sealer");
+    (broker, dir)
+}
+
+/// **A copy that promised a seal never stands**, though it suspects its
+/// leader and every voter would grant: its ballot at a later generation
+/// would end the promise and reopen the shard without the control plane.
+/// It asks for no pre-vote and writes nothing, whether the promise sits at
+/// the route's generation or on a ballot past it that the routes have not
+/// caught up with.
+#[cfg(feature = "raft")]
+#[tokio::test(start_paused = true)]
+async fn a_sealed_copy_never_stands() {
+    for (generation, leader) in [(3, "broker-a"), (6, "broker-c")] {
+        let (broker, _dir) = sealed_follower(generation, leader).await;
+        let ctx = ctx(&broker, voters(None));
+        let log = shard_log(&broker, &key()).await.expect("log");
+
+        let round = tokio::time::timeout(
+            Duration::from_secs(60),
+            stand(&ctx, &key(), &route_of(&ctx)),
+        )
+        .await
+        .expect("a round");
+        assert_eq!(round, Round::Ineligible, "at {generation}");
+        assert!(
+            ctx.requester.asked.lock().expect("lock").is_empty(),
+            "asked for a pre-vote at {generation}"
+        );
+        assert_eq!(log.accepted_generation(), generation);
+        assert_eq!(log.accepted_leader().as_deref(), Some(leader));
+        assert!(ctx.elections.get(&key()).is_none());
+        assert!(log.disk_log().seal_promise().is_some());
+    }
+}
+
+/// **The candidate task leaves a sealed copy alone**, tick after tick, while
+/// its leader stays suspected.
+#[cfg(feature = "raft")]
+#[tokio::test(start_paused = true)]
+async fn the_candidate_task_never_stands_a_sealed_copy() {
+    let (broker, _dir) = sealed_follower(3, "broker-a").await;
+    let ctx = Arc::new(ctx(&broker, voters(None)));
+    let log = shard_log(&broker, &key()).await.expect("log");
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(run(Arc::clone(&ctx), shutdown.clone()));
+
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    shutdown.cancel();
+    task.await.expect("candidate task");
+    assert!(
+        ctx.requester.asked.lock().expect("lock").is_empty(),
+        "asked for a pre-vote"
+    );
+    assert_eq!(log.accepted_generation(), 3, "stood");
+    assert!(ctx.elections.get(&key()).is_none());
+    assert!(log.disk_log().seal_promise().is_some());
+}

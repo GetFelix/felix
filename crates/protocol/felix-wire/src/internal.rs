@@ -36,8 +36,8 @@ pub use forward::{
 };
 pub use handshake::{Hello, HelloOk};
 pub use header::{
-    FrameEnvelope, INTERNAL_MAGIC, INTERNAL_VERSION, InternalHeader, Kind, MAX_BODY_BYTES,
-    MAX_ENVELOPE_BYTES, MAX_INNER_BODY_BYTES, correlation_id_in,
+    FROM_COPY_BYTES, FrameEnvelope, INTERNAL_MAGIC, INTERNAL_VERSION, InternalHeader, Kind,
+    MAX_BODY_BYTES, MAX_ENVELOPE_BYTES, MAX_INNER_BODY_BYTES, correlation_id_in,
 };
 pub use message::{InternalMessage, ShardRef};
 pub use raft::{RaftAnswer, RaftCall};

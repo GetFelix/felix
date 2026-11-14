@@ -203,6 +203,51 @@ fn a_batch_holding_a_trim_needs_head_trim() {
     );
 }
 
+/// **A trim inside a seal leader's `FromCopy` still needs `HEAD_TRIM`**, on
+/// top of the seal's own bit: the envelope hides nothing from the check.
+#[test]
+fn a_trim_named_by_a_copy_still_needs_head_trim() {
+    use felix_wire::internal::{FromCopy, ProducerMark, ReplicateRecords, ShardRef};
+    let stamped = |marks: Vec<ProducerMark>| {
+        InternalMessage::FromCopy(FromCopy {
+            copy: [1; 16],
+            message: Box::new(InternalMessage::ReplicateMarkedRecords(ReplicateRecords {
+                writers: None,
+                correlation_id: 0,
+                shard: ShardRef {
+                    tenant_id: "t1".into(),
+                    namespace: "ns".into(),
+                    stream: "orders".into(),
+                    shard: 0,
+                    generation: 1,
+                    incarnation: None,
+                },
+                first_offset: 0,
+                checksum: 0,
+                payloads: vec![bytes::Bytes::new(); marks.len()],
+                marks,
+                publishers: Vec::new(),
+                commit_offset: None,
+                generations: None,
+                times: None,
+                headers: None,
+                set_generation: None,
+            })),
+        })
+    };
+    assert_eq!(
+        required_capability(&stamped(vec![
+            ProducerMark::Commit,
+            ProducerMark::Trim { floor: 1 }
+        ])),
+        Some(PeerCapabilities::HEAD_TRIM.union(PeerCapabilities::SWITCH_SEAL))
+    );
+    assert_eq!(
+        required_capability(&stamped(vec![ProducerMark::Commit])),
+        Some(PeerCapabilities::SWITCH_SEAL)
+    );
+}
+
 /// **The election messages go only to a peer that offers `ELECTION`**, on top
 /// of whatever the request already needs.
 #[test]

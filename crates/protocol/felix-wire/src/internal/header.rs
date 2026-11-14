@@ -34,6 +34,10 @@ pub const MAX_ENVELOPE_BYTES: u32 = 36;
 /// under [`MAX_BODY_BYTES`] once both envelopes go around it.
 pub const MAX_INNER_BODY_BYTES: u32 = MAX_BODY_BYTES - MAX_ENVELOPE_BYTES;
 
+/// Bytes the `FromCopy` envelope puts in front of a body: the correlation
+/// id, the copy id and the inner kind. They count toward [`MAX_BODY_BYTES`].
+pub const FROM_COPY_BYTES: u32 = 26;
+
 /// Fixed-size header preceding every internal body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InternalHeader {
