@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794641194334,
+  "lastUpdate": 1794641472637,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55796,6 +55796,58 @@ window.BENCHMARK_DATA = {
             "range": "97137.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1213564.84\nmean: 1161424.09\nstdev: 97137.64\ncv: 8.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b826c2aae43236192e647b244c19f05816aab23",
+          "message": "feat(storage): one budget for a broker's Raft tail caches (#2339) (#2519)\n\n## Summary\nThe Raft log adapter kept up to 4 MiB of newest records per log, so thousands of groups on one broker could hold gigabytes, and an idle group kept its cache until its next append. All the Raft logs of a broker now share one `TailBudget` (256 MiB by default), with the 4 MiB per-log cap kept. A new gauge, `felix_broker_raft_tail_cache_bytes`, reports the bytes held.\nHow it works:",
+          "timestamp": "2026-11-14T07:26:02Z",
+          "tree_id": "1762db7f40439a97a48a992466786264c18da040",
+          "url": "https://github.com/GetFelix/felix/commit/1b826c2aae43236192e647b244c19f05816aab23"
+        },
+        "date": 1794641471934,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 504993.69,
+            "range": "31792.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504993.69\nmean: 512708.36\nstdev: 31792.70\ncv: 6.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 504993.69,
+            "range": "31792.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504993.69\nmean: 512708.36\nstdev: 31792.70\ncv: 6.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122145.34,
+            "range": "7988.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122145.34\nmean: 118562.93\nstdev: 7988.52\ncv: 6.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1221453.44,
+            "range": "79885.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1221453.44\nmean: 1185629.36\nstdev: 79885.20\ncv: 6.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
