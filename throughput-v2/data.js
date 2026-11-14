@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794672497143,
+  "lastUpdate": 1794675013796,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56628,6 +56628,58 @@ window.BENCHMARK_DATA = {
             "range": "47898.77",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 938340.41\nmean: 918536.58\nstdev: 47898.77\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f4374c6af739132dfd35cf7a0c5aa301b3815bf",
+          "message": "fix(storage): one lock order for restore and set raise (#2538)\n\n* fix(storage): one lock order for replica_persisted and segments (#2528)\n\nrestore_to took segments before replica_persisted, while a set raise\ntakes replica_persisted and then reads segments without append_lock.\nRun together on one log, each could hold one lock and wait on the other.\nrestore_to now takes replica_persisted first, the order the seal append\nand every ballot and set write already use. The order is written on the\nfield.\n\n* test(storage): make the restore and set raise deadlock test deterministic\n\nStart the restore only after the raise holds replica_persisted. Correct the lock-order doc: the readers are the set raise and the sealing append.",
+          "timestamp": "2026-11-14T16:41:29Z",
+          "tree_id": "17c44aa0fac2b972adaa196de4a1f4dee99c42f1",
+          "url": "https://github.com/GetFelix/felix/commit/4f4374c6af739132dfd35cf7a0c5aa301b3815bf"
+        },
+        "date": 1794675012885,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 480446.68,
+            "range": "31114.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 480446.68\nmean: 486297.41\nstdev: 31114.53\ncv: 6.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 480446.68,
+            "range": "31114.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 480446.68\nmean: 486297.41\nstdev: 31114.53\ncv: 6.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122689.74,
+            "range": "879.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122689.74\nmean: 123021.23\nstdev: 879.63\ncv: 0.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1226897.4,
+            "range": "8796.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1226897.40\nmean: 1230212.29\nstdev: 8796.23\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
