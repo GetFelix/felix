@@ -89,7 +89,8 @@ impl RaftEngine {
     /// The acknowledgement of a `Leader` write that [`Self::propose`]
     /// returned as `written`: at once while the lease holds, and otherwise
     /// when the write is committed, as [`Self::await_commit`] says it.
-    /// [`Self::publish`] does not use it yet and answers at commit.
+    /// [`Self::publish`] asks the same check itself, since its batch waits
+    /// for the commit either way before it is delivered.
     pub fn await_ack(
         &self,
         shard: &ShardKey,
@@ -173,11 +174,13 @@ impl RaftEngine {
     }
 
     /// Confirm that this broker still leads `term`, by one read-index
-    /// round: a majority answers a heartbeat sent after the call. A reader
-    /// of `shard`'s state takes [`Self::open_term`] first, then its value,
-    /// then calls this with that term. A broker deposed and elected again
-    /// in between is refused: its value can miss what the leader in
-    /// between committed.
+    /// round: a majority answers a heartbeat sent after the call, and this
+    /// broker has applied the read index. A reader of `shard`'s state takes
+    /// [`Self::open_term`] first, then calls this with that term, then takes
+    /// its value. A value taken before this returns can miss a write
+    /// answered before it was applied. A broker deposed and elected again
+    /// in between is refused: it can miss what the leader in between
+    /// committed.
     ///
     /// No answer from a majority is a timeout, not a lost leadership, and
     /// does not close the shard.
