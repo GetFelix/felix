@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794660245694,
+  "lastUpdate": 1794662541766,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -71610,6 +71610,72 @@ window.BENCHMARK_DATA = {
             "range": "1003.50",
             "unit": "us",
             "extra": "trials: 5\nmedian: 389.00\nmean: 837.00\nstdev: 1003.50\ncv: 119.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee67d87b6ffd250914bb020e3d122f7f32746d95",
+          "message": "fix(broker): take the hard open-file limit at start (#2351) (#2518)\n\n* fix(broker): take the hard open-file limit at start (#2351)\n\nA shard's log keeps five files open, with or without a Raft member, so the\nusual soft limit of 1,024 stopped a broker near 200 shards. The broker now\nraises its soft limit to the hard one before storage opens, reports it in\nfelix_broker_open_file_limit, and warns when it holds fewer than 2,000\nshards. raft_open_files measures the files per member and fails if a\nmember holds more than the count the check assumes.\n\n* fix(broker): one sealed-segment cache per storage root, macOS limit ceiling, read back the granted limit (#2351)\n\n* fix(storage): a forgotten sealed segment is never cached; one broker-wide cache with a setting (#2351)\n\n* fix(broker): hold the sealed-segment cache to a quarter of the open-file limit, default 1,024 (#2351)\n\n* fix(broker): OPEN_MAX is not in the libc crate on macOS (#2351)\n\n* fix(storage): the open-file budget counts a Raft log's directory lock (#2351)\n\nA Raft log holds its directory open for the flock that refuses a second\nopen (#2499), so a member keeps six files open, not five. The broker's\nstart-time check and raft_open_files read the same constant. Docs and the\nchangelog fragment say six.",
+          "timestamp": "2026-11-14T13:15:43Z",
+          "tree_id": "496716861cf571fc0c43a0f90063366f9fbaef14",
+          "url": "https://github.com/GetFelix/felix/commit/ee67d87b6ffd250914bb020e3d122f7f32746d95"
+        },
+        "date": 1794662532616,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 96.60\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 147,
+            "range": "19.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 147.00\nmean: 155.60\nstdev: 19.15\ncv: 12.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 202,
+            "range": "134.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 265.00\nstdev: 134.73\ncv: 50.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 133.60\nstdev: 1.14\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 263,
+            "range": "9.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 263.00\nmean: 267.40\nstdev: 9.91\ncv: 3.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 453,
+            "range": "191.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 453.00\nmean: 534.80\nstdev: 191.25\ncv: 35.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
