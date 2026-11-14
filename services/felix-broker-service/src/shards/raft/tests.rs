@@ -135,6 +135,12 @@ fn timers() -> RuntimeConfig {
     }
 }
 
+/// The index of the last entry `shard`'s log on `shards` has written.
+pub(crate) fn written(shards: &RaftShards, shard: &ShardKey) -> u64 {
+    let status = shards.runtime.status(shard).expect("a member");
+    status.written.map_or(0, |point| point.index)
+}
+
 pub(crate) async fn until(what: &str, mut check: impl FnMut() -> bool) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     while !check() {

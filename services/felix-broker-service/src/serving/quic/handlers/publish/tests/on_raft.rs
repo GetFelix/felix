@@ -258,3 +258,36 @@ async fn a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off() 
     assert!(after > committed, "answered before the record committed");
     EngineShards::shutdown(&*leader.shards).await;
 }
+
+/// **A `Leader` stream on Raft is answered after the leader's own write,
+/// even with `FELIX_ACK_ON_COMMIT=0`.** The lease lets the answer come
+/// before the commit, never before the batch is on the leader's log: an
+/// answer on enqueue would promise a write the term may not live to make.
+#[tokio::test]
+async fn a_leader_stream_on_raft_answers_after_its_write_with_ack_on_commit_off() {
+    let mut leader = leader_of(false, felix_broker::ConsistencyLevel::Leader).await;
+    let orders = fixture::key("orders", 0);
+    let written = |leader: &Leader| fixture::written(&leader.shards, &orders);
+
+    let before = written(&leader);
+    leader.publish_batch(records("queued", 4), Some(3)).await;
+    assert!(
+        leader.out_rx.try_recv().is_err(),
+        "answered when it was queued"
+    );
+    leader.acknowledged(3).await;
+    let batch = written(&leader);
+    assert!(batch > before, "answered before the batch was written");
+
+    leader.publish(b"one", Some(4)).await;
+    assert!(
+        leader.out_rx.try_recv().is_err(),
+        "answered when it was queued"
+    );
+    leader.acknowledged(4).await;
+    assert!(
+        written(&leader) > batch,
+        "answered before the record was written"
+    );
+    EngineShards::shutdown(&*leader.shards).await;
+}

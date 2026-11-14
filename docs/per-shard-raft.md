@@ -1629,7 +1629,8 @@ nothing else: store liveness is not part of it.
 
 A publisher that gets too far ahead of the commits is left waiting for its
 commit too, with the lease intact. "Delivering committed records" has the
-two limits.
+two limits. An idempotent producer's batch is not answered on the lease:
+it waits for its commit on either level ("Idempotent publishes").
 
 **As built.** `RuntimeConfig` has the lease (1.5 s) and the clock drift
 bound `p` (10%, as `clock_drift_ppm`), and refuses to start unless
@@ -2192,6 +2193,10 @@ a hybrid `Leader` stream is acknowledged when the publish is queued; a Raft
 shard still answers only after the write, at the commit or on the leader
 lease as above, since an answer on enqueue would promise a write the term
 may not live to make.
+
+> `services/felix-broker-service/src/serving/quic/handlers/publish/tests/on_raft.rs`,
+> `a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off` and
+> `a_leader_stream_on_raft_answers_after_its_write_with_ack_on_commit_off`.
 
 A publish sent with no acknowledgement asked for takes the same path. It is
 proposed and delivered at its commit like any other. If the term moved while

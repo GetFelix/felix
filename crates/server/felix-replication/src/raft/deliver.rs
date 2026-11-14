@@ -139,7 +139,8 @@ impl RaftEngine {
     /// its own re-send.
     ///
     /// A batch is one record. One of several is refused with nothing
-    /// written ([`Broker::engine_takes_idempotent`]).
+    /// written ([`Broker::engine_takes_idempotent`]). It is answered at its
+    /// commit, on a `Leader` stream too: never on the lease.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_idempotent(
         &self,
