@@ -7,7 +7,7 @@
 use felix_broker::{LogKind, StreamLog};
 use felix_storage::StorageId;
 use felix_storage::disk_log::switch::seal::{SealPromise, SealRefused};
-use felix_storage::log::{LogRecord, RecordMark};
+use felix_storage::log::{FsyncMode, LogRecord, RecordMark};
 use felix_wire::internal::{
     ErrorCode, InternalMessage, ReplicaLog, SealAck, SealAckOk, SealFence, SealFenceOk, SealStarts,
     ShardRef,
@@ -45,6 +45,21 @@ impl ReplicaHandler {
                 "this broker holds no dead-letter or cursor log for that shard".to_string(),
             );
         };
+        // Refused before the ballot: a copy that answered would count
+        // toward the claim and then could never acknowledge `N`.
+        if let Some(log) = self.stream_log(&request.fence.shard).await
+            && [&log, &dead_letters, &cursors]
+                .iter()
+                .any(|log| log.disk_log().config().fsync_mode != FsyncMode::OnCommit)
+        {
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Unauthorized,
+                0,
+                "a copy that does not fsync on commit takes no part in a seal".to_string(),
+            );
+        }
         let shard = request.fence.shard.clone();
         let sealer = StorageId::from_bytes(request.sealer);
         let _turn = self.fence_turn(sender).await;

@@ -808,3 +808,24 @@ async fn retention_holds_while_a_promise_holds() {
     assert!(released.segments_deleted > 0, "{released:?}");
     assert!(log.base_offset() > 0);
 }
+
+/// **A closed log marks no claim.** Once `close` has run, the directory may
+/// already be another log's, so the claim's mark is checked against the
+/// closed flag under the lock `close` takes, and nothing is written.
+#[tokio::test]
+async fn a_closed_log_marks_no_claim() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("leader");
+    let leader = Copy::with(&dir, on_commit(), 0, &["a", "b"]).await;
+    leader.promise(SEAL, sealer()).await;
+    leader.log.close().await.expect("close");
+    let claimed = leader
+        .log
+        .claim_seal(sealer(), 0, (&leader.dead_letters, 0), (&leader.cursors, 0))
+        .await;
+    assert!(claimed.is_err(), "{claimed:?}");
+
+    let reopened = DiskLog::open(dir.join("log"), LABEL, on_commit()).expect("reopen");
+    let promise = reopened.seal_promise().expect("the promise");
+    assert!(!promise.claimed, "{promise:?}");
+}

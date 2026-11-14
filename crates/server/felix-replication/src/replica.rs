@@ -519,10 +519,7 @@ impl ReplicaHandler {
         {
             return refusal;
         }
-        // Creates the log at `base_offset` when this broker has never held the
-        // shard, and opens what is there otherwise. The base it comes back with
-        // is the authority either way.
-        // A rebuild discards what the seal's digest covers.
+        // A bootstrap discards what the seal's digest covers.
         if key.kind == felix_router::ShardKind::Stream
             && let Some(refusal) = self
                 .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Rebuild)
@@ -530,6 +527,9 @@ impl ReplicaHandler {
         {
             return refusal;
         }
+        // Creates the log at `base_offset` when this broker has never held the
+        // shard, and opens what is there otherwise. The base it comes back with
+        // is the authority either way.
         let Some(log) = self
             .broker
             .shard_log_off_runtime(

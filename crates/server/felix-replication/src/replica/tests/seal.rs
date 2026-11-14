@@ -485,3 +485,28 @@ async fn the_seal_leader_claims_once_quiesced_and_reports_the_copies_that_hold_t
     let [log_d, _, _] = logs_of(&d_broker).await;
     assert_eq!(log_d.tail_offset().await.expect("tail"), 3);
 }
+
+/// **A copy that does not fsync on commit promises nothing.** It could
+/// never acknowledge `N`, so answering would count it toward the claim's
+/// majority for nothing.
+#[tokio::test]
+async fn a_copy_that_does_not_fsync_on_commit_refuses_the_seals_fence() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = super::groups::group_broker(dir.path());
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], 4));
+    handler
+        .apply(SENDER, batch(4, 0, &["a"]), felix_broker::LogKind::Stream)
+        .await;
+    let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], SEAL));
+    let answer = handler.seal_fence(SENDER, seal_fence(SEAL, sealer())).await;
+    assert!(
+        refusal(&answer).detail.contains("fsync on commit"),
+        "{answer:?}"
+    );
+    assert!(
+        handler
+            .seal_promise(&batch(SEAL, 0, &[]).shard)
+            .await
+            .is_none()
+    );
+}

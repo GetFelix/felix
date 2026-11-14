@@ -124,6 +124,7 @@ never have dialled the one that shipped to it.
 | `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
 | `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
 | `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
+| `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
 
 #### Storage identity
 
@@ -1242,6 +1243,51 @@ and gives up on a message at that deadline, or at 10 s if it names longer,
 answering `ReplicateError` `Unavailable`. The sender has given up by then, so a
 member stuck on storage cannot hold the stream's permits.
 
+
+### Sealing a shard for the switch to Raft
+
+Moving a shard from the hybrid protocol to Raft starts with a seal: the
+hybrid leader of a new generation `G` fences the shard, appends one last
+record at offset `N`, the base, and counts the copies that hold it. The
+steps and why they are safe are in `docs/per-shard-raft.md`, "Moving a shard
+from the hybrid to Raft". Four kinds carry it, sent only to a peer that
+offered `SWITCH_SEAL`. No existing body changes, so two brokers that never
+seal exchange the same bytes as before.
+
+- **`SealFence`** (kind 59) is `Fence` without election fields, on the
+  shard's own log, followed by the seal leader's 16-byte storage identity,
+  its copy id. The replica takes it as a fence and, in place of a plain
+  ballot, promises the seal on disk: from then on it takes the shard's
+  batches only from that copy, refuses rebuilds, bootstraps and election
+  ballots, and answers no pre-vote. The promise has no timeout. It ends only
+  when the replica accepts a later generation.
+- **`SealFenceOk`** (kind 60) is the `FenceOk` body (never an attestation),
+  a `u8` that is 1 for a kept ballot and 0 otherwise (any other value is
+  refused), then three `u64` starts: where the shard's log, its dead letters
+  and its group cursors begin on this copy.
+- **`SealAck`** (kind 61) is the correlation id, the shard (names, shard
+  `u32`, generation `u64`), the sealing copy id, the record's offset and
+  append time (`u64` each), then the record's payload to the end of the
+  frame. The replica checks its copy against the payload's digests and
+  appends the record at `N`.
+- **`SealAckOk`** (kind 62) is the correlation id and the replica's own copy
+  id, sent only once the record is on disk.
+
+A replica refuses the seal's fence with `ReplicateError` when it keeps no
+dead-letter and cursor logs for the shard or any of the three logs does not
+fsync on commit, and refuses `SealAck` when its copy differs from the
+digests. A build without the Raft engine answers both with `UnsupportedKind`.
+
+While its own promise holds, the seal leader wraps each batch for the
+shard's log in **`FromCopy`** (kind 63): the correlation id, the 16-byte copy
+id, the inner kind (`u16`), then the inner body as it would travel alone.
+`FromCopy` is always outermost and never nested, and its correlation id must
+equal the inner one. A promised replica takes a batch only when the copy id
+is the one its promise names, so the same broker back after a wipe, under a
+new copy id, cannot write past what the seal covers. Once the leader has
+appended the record at `N`, it ships nothing from `N` on: a follower gets
+that record only through `SealAck`, which checks its copy first.
+
 ## Errors
 
 Typed, because they need different responses:
@@ -1297,7 +1343,8 @@ back to the detail whenever the fields are absent.
 `ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51,
 `SequencedForwardPublish` 52, `FenceKeptOk` 53 and
 `FenceAttestedOk` 54, `ReplicateStampedRecords` 55,
-`ReplicateStampedFetch` 56, `Raft` 57 and `RaftAnswer` 58. A peer
+`ReplicateStampedFetch` 56, `Raft` 57, `RaftAnswer` 58, `SealFence` 59,
+`SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62 and `FromCopy` 63. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
