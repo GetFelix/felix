@@ -34,6 +34,12 @@
 //! live heap: pages the allocator freed and has not handed back still count.
 //! Use fewer groups for it: every log then holds its newest records in
 //! memory.
+//!
+//! `RAFT_IDLE_DEAD=1` (with `real` peers) stops broker `c` after the idle
+//! window and writes one record to every group, so each leader has a
+//! follower it cannot reach and entries to send it. It then measures the
+//! CPU of the two that are left and the calls a second they make to `c`,
+//! which is what openraft's retry delays cost.
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
@@ -122,6 +128,8 @@ async fn logs_alone(groups: u32, config: LogConfig) {
 #[derive(Default)]
 struct Net {
     brokers: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
+    /// Calls to a broker that is not in `brokers`.
+    refused: std::sync::atomic::AtomicU64,
 }
 
 #[async_trait]
@@ -130,7 +138,11 @@ impl RaftTransport for Net {
         let runtime = self.brokers.lock().get(&*request.to().broker).cloned();
         match runtime {
             Some(runtime) => runtime.handle(request).await,
-            None => Err(Refused::Unreachable("no such broker".into())),
+            None => {
+                self.refused
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err(Refused::Unreachable("no such broker".into()))
+            }
         }
     }
 }
@@ -220,6 +232,63 @@ async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Durati
         written += writer.await.expect("writer");
     }
     written
+}
+
+/// Stops `c`, writes one record to every group and measures what the two
+/// brokers left spend retrying it.
+async fn with_a_dead_peer(
+    net: &Net,
+    runtimes: &[GroupRuntime],
+    groups: u32,
+    timers: &RuntimeConfig,
+    window: Duration,
+) {
+    use std::sync::atomic::Ordering;
+    let dead = runtimes.last().expect("c").clone();
+    net.brokers.lock().remove(BROKERS[2]);
+    dead.shutdown().await;
+    let alive = &runtimes[..2];
+    let leader = |n: u32| {
+        alive
+            .iter()
+            .find(|runtime| runtime.status(&shard(n)).map(|s| s.role) == Some(Role::Leader))
+    };
+    let settled = tokio::time::Instant::now() + LEADERS_SETTLE;
+    while (0..groups).any(|n| leader(n).is_none()) && tokio::time::Instant::now() < settled {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut written = 0u32;
+    for n in 0..groups {
+        let Some(runtime) = leader(n) else { continue };
+        let batch = Batch {
+            records: vec![Record {
+                timestamp_micros: 1_700_000_000,
+                payload: Bytes::from_static(&[7; 100]),
+            }],
+            ack: AckAt::Written,
+            term: None,
+            producer: None,
+        };
+        let write = RaftEngine::new(runtime.clone()).propose(&shard(n), batch);
+        if let Ok(Ok(_)) = tokio::time::timeout(WRITE_TIMEOUT, write).await {
+            written += 1;
+        }
+    }
+    tokio::time::sleep(timers.idle_after + Duration::from_secs(10)).await;
+    let (cpu_before, calls_before) = (cpu(), net.refused.load(Ordering::Relaxed));
+    tokio::time::sleep(window).await;
+    let used = cpu() - cpu_before;
+    let calls = net.refused.load(Ordering::Relaxed) - calls_before;
+    println!(
+        "{groups} groups, {written} written, broker c down, heartbeat {:?}: \
+         {:.2}% of one core per live broker, {:.0} calls a second to c",
+        timers.heartbeat,
+        100.0 * used.as_secs_f64() / window.as_secs_f64() / 2.0,
+        calls as f64 / window.as_secs_f64(),
+    );
+    for runtime in alive {
+        runtime.shutdown().await;
+    }
 }
 
 fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
@@ -361,6 +430,9 @@ async fn idle_groups_cost_little_cpu() {
     assert_eq!(terms(), terms_before, "an election ran while idle");
     assert_eq!(before.iter().sum::<u32>(), groups, "a group has no leader");
 
+    if real && !transport && env::<u8>("RAFT_IDLE_DEAD") == Some(1) {
+        return with_a_dead_peer(&net, &runtimes, groups, &timers, window).await;
+    }
     if let Some(secs) = env::<u64>("RAFT_IDLE_BURST_SECS") {
         let depth = env("RAFT_IDLE_BURST_DEPTH").unwrap_or(32);
         let idle = resident_mb();

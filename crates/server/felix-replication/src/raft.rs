@@ -39,6 +39,7 @@ mod membership;
 mod network;
 mod peer;
 mod propose;
+mod reach;
 mod read_rounds;
 mod root;
 mod runtime;
