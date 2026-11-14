@@ -4,8 +4,15 @@ use felix_wire::internal::InternalMessage;
 
 use super::*;
 
-/// Peers whose listeners offer what the map says. One not in it is down.
-struct Fleet(parking_lot::Mutex<HashMap<String, PeerCapabilities>>);
+/// Peers whose listeners offer what the first map says. One not in it is
+/// down. The second holds the peers with a live pooled connection open, and
+/// the count is how many probes were made. The check must never pool a
+/// connection of its own, so `capabilities` fails the test.
+struct Fleet(
+    parking_lot::Mutex<HashMap<String, PeerCapabilities>>,
+    parking_lot::Mutex<HashMap<String, PeerCapabilities>>,
+    std::sync::atomic::AtomicUsize,
+);
 
 impl PeerRequester for Fleet {
     async fn request(
@@ -19,14 +26,27 @@ impl PeerRequester for Fleet {
 
     async fn capabilities(
         &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<PeerCapabilities, PeerError> {
+        unreachable!("the check asks over a connection of its own, never a pooled one")
+    }
+
+    async fn probe_capabilities(
+        &self,
         node_id: &str,
         _addr: SocketAddr,
     ) -> Result<PeerCapabilities, PeerError> {
+        self.2.fetch_add(1, Ordering::Relaxed);
         let offered = self.0.lock().get(node_id).copied();
         match offered {
             Some(offered) => Ok(offered),
             None => std::future::pending().await,
         }
+    }
+
+    fn connected_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
+        self.1.lock().get(node_id).copied()
     }
 }
 
@@ -85,7 +105,11 @@ async fn check(raft: bool, fleet: &[(&str, PeerCapabilities)]) -> Arc<EngineMatc
         .collect();
     EngineMatch::new(
         Arc::new(broker),
-        Arc::new(Fleet(parking_lot::Mutex::new(fleet))),
+        Arc::new(Fleet(
+            parking_lot::Mutex::new(fleet),
+            parking_lot::Mutex::default(),
+            Default::default(),
+        )),
         Arc::new(|_: &str| Some(SocketAddr::from(([127, 0, 0, 1], 1)))),
         "broker-a".to_string(),
         raft,
@@ -209,19 +233,43 @@ async fn a_peer_reached_late_closes_the_shard_it_shares() {
 }
 
 /// **A refusal ends when the fleet agrees again**, as after the odd broker
-/// restarts on the right engine.
+/// restarts on the right engine. Its shards are closed here, so nothing
+/// pools a connection to it: the check has to keep asking it.
 #[tokio::test]
 async fn a_refusal_ends_once_the_engines_match() {
     let check = check(false, &[("broker-b", PeerCapabilities::RAFT)]).await;
     settled(&check, true).await;
     assert_eq!(pass(&check).await, ["scratch"]);
 
+    // It restarts on the hybrid.
     check
         .peers
         .0
         .lock()
         .insert("broker-b".to_string(), PeerCapabilities::NONE);
     settled(&check, false).await;
+    assert!(check.peers.1.lock().is_empty());
     assert_eq!(pass(&check).await, ["orders", "scratch"]);
     assert_eq!(refusal(&check, "orders"), None);
+}
+
+/// **A peer whose engine is known is not dialled again.** One that just
+/// restarted may still be at its old address in the catalog: a dial there
+/// fails and starts a reconnect backoff that holds up a move onto it.
+#[tokio::test]
+async fn a_peer_whose_engine_is_known_is_not_dialled_again() {
+    let check = check(false, &[("broker-b", PeerCapabilities::NONE)]).await;
+    settled(&check, false).await;
+    let dials = check.peers.2.load(Ordering::Relaxed);
+    for _ in 0..3 {
+        assert_eq!(pass(&check).await, ["orders", "scratch"]);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+    }
+    assert_eq!(
+        check.peers.2.load(Ordering::Relaxed),
+        dials,
+        "broker-b was dialled again"
+    );
 }

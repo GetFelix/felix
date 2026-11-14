@@ -4,6 +4,7 @@
 mod gate;
 mod judge;
 mod marks;
+mod reclaim;
 
 use std::io;
 use std::path::{Path, PathBuf};

@@ -293,3 +293,36 @@ async fn a_node_with_no_address_is_refused_without_backing_off() {
     pool.shutdown().await;
     listener.stop().await;
 }
+
+/// **A capabilities probe leaves nothing in the pool**: no connection, so a
+/// later request to a peer that restarted in between dials it again instead
+/// of taking a connection that only looks live, and no backoff after a
+/// failed probe, so that request is not refused either.
+#[tokio::test]
+async fn a_capabilities_probe_leaves_nothing_in_the_pool() {
+    let listener = Listener::start(PEER, Arc::new(CountingHandler::default())).await;
+    let pool = pool(PeerTransportConfig {
+        handshake_timeout: Duration::from_millis(100),
+        reconnect_base: Duration::from_secs(60),
+        reconnect_max: Duration::from_secs(60),
+        ..config()
+    });
+    pool.probe_capabilities(PEER, listener.addr)
+        .await
+        .expect("probe");
+    assert_eq!(pool.connection_count().await, 0);
+    assert_eq!(pool.connected_capabilities(PEER), None);
+
+    let dead: SocketAddr = {
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").expect("bind");
+        socket.local_addr().expect("addr")
+    };
+    pool.probe_capabilities(PEER, dead)
+        .await
+        .expect_err("nothing listens there");
+    pool.request(PEER, listener.addr, forward())
+        .await
+        .expect("a failed probe starts no backoff");
+    assert!(pool.connected_capabilities(PEER).is_some());
+    pool.shutdown().await;
+}

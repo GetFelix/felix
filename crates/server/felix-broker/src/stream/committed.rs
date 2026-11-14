@@ -388,6 +388,11 @@ impl ProposalOrder {
         Ok((hand_over(), turn))
     }
 
+    /// Whether every batch handed over has settled.
+    pub(crate) fn is_idle(&self) -> bool {
+        self.order.lock().pending.is_empty()
+    }
+
     /// The oldest unsettled batch joined the hold, or was given up on.
     pub(crate) fn settled(&self) {
         self.order.lock().pending.pop_front();

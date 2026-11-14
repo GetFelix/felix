@@ -33,12 +33,14 @@ fn batch(payloads: &[&'static [u8]], ack: AckAt) -> Batch {
         records: records.collect(),
         ack,
         term: None,
+        producer: None,
     }
 }
 
 fn admitted(term: u64, payloads: &[&'static [u8]]) -> Batch {
     Batch {
         term: Some(term),
+        producer: None,
         ..batch(payloads, AckAt::Flushed)
     }
 }
@@ -162,7 +164,7 @@ async fn a_member_that_does_not_lead_refuses_and_appends_nothing() {
 
 /// A leader that cannot commit still answers a publish by the stream's
 /// policy: both acknowledgements are of its own log. The commit index does
-/// not move, and no local acknowledgement is admitted.
+/// not move.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_ack_follows_the_policy_and_not_the_commit() {
     let (mut cluster, leader, engine, committed) = led().await;
@@ -187,7 +189,6 @@ async fn an_ack_follows_the_policy_and_not_the_commit() {
     assert!(now.flushed.is_some_and(|at| at.index >= end - 1));
     assert_eq!(now.committed, Some(committed));
 
-    assert!(engine.admit_local_ack(&shard(0), term).is_err());
     cluster.net.cut.lock().clear();
     cluster.stop().await;
 }
@@ -315,6 +316,7 @@ fn a_drain_stops_at_its_bounds() {
             .collect(),
         ack: AckAt::Written,
         term: None,
+        producer: None,
     };
     // The batches each drain takes.
     let drains = |batches: Vec<Batch>| {
@@ -541,12 +543,14 @@ impl RaftTransport for Wire {
 async fn a_token_does_not_leave_with_an_append() {
     let wire = Arc::new(Wire::default());
     let transport: Arc<dyn RaftTransport> = wire.clone();
+    let lease = super::super::lease::Lease::new(timers().lease);
     let reports = Arc::new(super::super::written::Reports::new());
-    let router = Router::new(transport, Arc::new(pace().0), reports);
+    let router = Router::new(transport, Arc::new(pace().0), Arc::new(lease), reports);
     let (token, written) = WrittenToken::channel();
     let command = Command {
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
+        producer: None,
         written: Some(token),
     };
     let leads = LeaderIdOf::<ShardTypes>::new(3, MemberId::new("a", 1));
@@ -667,6 +671,7 @@ pub(super) async fn cut_after_first(
     let command = |payload: &&'static [u8]| Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(payload),
+        producer: None,
         written: None,
     };
     let (first, rest) = payloads.split_first().expect("a record");
@@ -731,6 +736,7 @@ fn a_drain_takes_batches_admitted_at_one_term() {
     for term in [Some(4), Some(4), Some(5), None, None] {
         let one = Batch {
             term,
+            producer: None,
             ..batch(&[b"r"], AckAt::Written)
         };
         let (proposal, wait) = split(one).expect("split");

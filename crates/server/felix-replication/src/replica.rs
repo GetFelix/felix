@@ -99,6 +99,9 @@ pub struct ReplicaHandler {
     /// Whether a log in this process is poisoned. A test stands in for the
     /// process-wide flag, which never clears.
     poisoned: fn() -> bool,
+    /// Seal acknowledgements being checked. See [`Self::seal_ack`].
+    #[cfg(feature = "raft")]
+    seal_acks: seal::SealAcks,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -163,6 +166,8 @@ impl ReplicaHandler {
             fence_turns: parking_lot::Mutex::new(HashMap::default()),
             fenced_at: parking_lot::Mutex::new(HashMap::default()),
             poisoned: felix_storage::disk_log::any_log_poisoned,
+            #[cfg(feature = "raft")]
+            seal_acks: Default::default(),
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }
@@ -1551,6 +1556,20 @@ impl ReplicaHandler {
         {
             return refusal;
         }
+        // An election among sealed copies would reopen the shard without
+        // the control plane, so a promise refuses a candidate's ballot. A
+        // control-plane promotion carries the set too, with no candidate,
+        // and is how a sealed shard reopens. Refused before any write.
+        if request
+            .election
+            .as_ref()
+            .is_some_and(|election| election.candidate)
+            && let Some(refusal) = self
+                .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Ballot)
+                .await
+        {
+            return refusal;
+        }
         let confirming = log.accepted_generation() == generation;
         // Read before the ballot moves to this generation: a continuing
         // leader counts a rotated copy only on this (#2047).
@@ -1568,15 +1587,6 @@ impl ReplicaHandler {
         if !voter && let Err(err) = self.unkeep(&key, generation).await {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
-        }
-        // An election among sealed copies would reopen the shard without
-        // the control plane, so a promise refuses every election ballot.
-        if request.election.is_some()
-            && let Some(refusal) = self
-                .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Ballot)
-                .await
-        {
-            return refusal;
         }
         let accepted = match seal {
             None => accept_sender(&log, correlation_id, &key, generation, sender).await,

@@ -278,26 +278,32 @@ fn sync_data_unmarked(file: &File) -> io::Result<()> {
 /// Creating a file makes the *file* durable only once its parent directory
 /// entry is durable too; without this a crash can leave a segment that exists in
 /// the page cache but not in the directory after reboot.
+///
+/// Failing to open the directory is not marked as a failed sync: no sync was
+/// issued, so no page can have been dropped.
 pub(crate) fn sync_dir(path: &std::path::Path) -> io::Result<()> {
-    sync_dir_unmarked(path).map_err(SyncFailure::mark)
+    sync_dir_unmarked(path)?.map_err(SyncFailure::mark)
 }
 
-fn sync_dir_unmarked(path: &std::path::Path) -> io::Result<()> {
-    before_sync_dir(path)?;
+/// The outer error is the open, the inner one the sync.
+fn sync_dir_unmarked(path: &std::path::Path) -> io::Result<io::Result<()>> {
+    if let Err(err) = before_sync_dir(path) {
+        return Ok(Err(err));
+    }
     #[cfg(feature = "sim")]
     if let Some(flushed) = crate::fs::sync_simulated_dir(path) {
-        return flushed;
+        return Ok(flushed);
     }
     #[cfg(unix)]
     {
-        std::fs::File::open(path)?.sync_all()
+        Ok(std::fs::File::open(path)?.sync_all())
     }
     #[cfg(not(unix))]
     {
         // Windows has no directory-fsync equivalent; file handles carry their
         // own durability.
         let _ = path;
-        Ok(())
+        Ok(Ok(()))
     }
 }
 

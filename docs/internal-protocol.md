@@ -1250,7 +1250,7 @@ Moving a shard from the hybrid protocol to Raft starts with a seal: the
 hybrid leader of a new generation `G` fences the shard, appends one last
 record at offset `N`, the base, and counts the copies that hold it. The
 steps and why they are safe are in `docs/per-shard-raft.md`, "Moving a shard
-from the hybrid to Raft". Four kinds carry it, sent only to a peer that
+from the hybrid to Raft". Five kinds carry it, sent only to a peer that
 offered `SWITCH_SEAL`. No existing body changes, so two brokers that never
 seal exchange the same bytes as before.
 
@@ -1258,8 +1258,12 @@ seal exchange the same bytes as before.
   shard's own log, followed by the seal leader's 16-byte storage identity,
   its copy id. The replica takes it as a fence and, in place of a plain
   ballot, promises the seal on disk: from then on it takes the shard's
-  batches only from that copy, refuses rebuilds, bootstraps and election
-  ballots, and answers no pre-vote. The promise has no timeout. It ends only
+  batches only from that copy, refuses rebuilds and bootstraps at that
+  generation and election ballots from a candidate, and answers no
+  pre-vote. A rebuild or bootstrap from a later generation is not refused
+  by the promise: its own ballot decides it. A control-plane
+  promotion, which names the set with no candidate, is still taken. The
+  promise has no timeout. It ends only
   when the replica accepts a later generation.
 - **`SealFenceOk`** (kind 60) is the `FenceOk` body (never an attestation),
   a `u8` that is 1 for a kept ballot and 0 otherwise (any other value is
@@ -1273,18 +1277,36 @@ seal exchange the same bytes as before.
 - **`SealAckOk`** (kind 62) is the correlation id and the replica's own copy
   id, sent only once the record is on disk.
 
+The check behind `SealAck` reads every record from the seal's start, which
+can outlast a request on a large log. The replica runs it off the request.
+A request that has waited 2 s is answered `ReplicateError` `Unavailable`,
+and the check runs on: the leader's next `SealAck` for the same record joins
+it or reads its result, and no second check starts. A copy whose records
+matched the digest once does not read them again for a repeat of that seal.
+
+A `SealFence` or `SealAck` for an incarnated stream travels inside
+`Incarnated`, like `Fence`. Both go on the control stream.
+
 A replica refuses the seal's fence with `ReplicateError` when it keeps no
 dead-letter and cursor logs for the shard or any of the three logs does not
 fsync on commit, and refuses `SealAck` when its copy differs from the
 digests. A build without the Raft engine answers both with `UnsupportedKind`.
 
 While its own promise holds, the seal leader wraps each batch for the
-shard's log in **`FromCopy`** (kind 63): the correlation id, the 16-byte copy
+shard's log to a peer that offered `SWITCH_SEAL` in **`FromCopy`** (kind 63): the correlation id, the 16-byte copy
 id, the inner kind (`u16`), then the inner body as it would travel alone.
 `FromCopy` is always outermost and never nested, and its correlation id must
-equal the inner one. A promised replica takes a batch only when the copy id
+equal the inner one. Its 26 bytes count toward `MAX_BODY_BYTES`: a batch that
+would pass the limit once wrapped is `FrameTooLarge` on encode, and the
+shipping budget leaves room for it. A request inside `FromCopy` still needs
+every capability it needs alone, so a batch holding a trim goes only to a
+peer that also offered `HEAD_TRIM`. A promised replica takes a batch only when the copy id
 is the one its promise names, so the same broker back after a wipe, under a
-new copy id, cannot write past what the seal covers. Once the leader has
+new copy id, cannot write past what the seal covers. A batch from another
+copy id is refused `FencedEpoch`, which stops that leader's replication to
+the replica. A batch with no copy id at the promise's generation is the
+leader's own, sent before it took its promise: it is refused `Unavailable`,
+which the leader retries, and the retry carries the copy id. Once the leader has
 appended the record at `N`, it ships nothing from `N` on: a follower gets
 that record only through `SealAck`, which checks its copy first.
 

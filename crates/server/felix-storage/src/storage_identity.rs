@@ -12,7 +12,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::io::sync_dir;
 use crate::{Result, StorageError};
 
 /// `"FLID"`. Not `FLSI`, which a segment index already starts with.
@@ -159,18 +158,7 @@ pub fn replace(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
 
 /// A crash leaves the old file or the new one, never a mix.
 fn store(root: &Path, id: &StorageId) -> Result<()> {
-    use std::io::Write;
-
-    let path = path_in(root);
-    let temporary = path.with_extension("tmp");
-    {
-        let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
-        file.write_all(&id.encode()).map_err(StorageError::Io)?;
-        crate::io::sync_all(&file).map_err(StorageError::Io)?;
-    }
-    crate::fs::rename(&temporary, &path).map_err(StorageError::Io)?;
-    sync_dir(root).map_err(StorageError::Io)?;
-    Ok(())
+    crate::run_state::write_atomically(root, FILE_NAME, &id.encode(), true)
 }
 
 fn path_in(root: &Path) -> PathBuf {

@@ -295,3 +295,58 @@ fn copy_dir(from: &Path, to: &Path) {
         std::fs::copy(entry.path(), to.join(entry.file_name())).expect("copy");
     }
 }
+
+/// A failed sync of the snapshot or of its directory is safe to retry: each
+/// try writes a new file, and a snapshot a crash lost or left stale is only
+/// a full replay. Every flush of a snapshot write fails in turn, the next
+/// try installs one, and after a crash the cache reads every value right.
+#[cfg(feature = "sim")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_snapshot_sync_is_retried_and_a_crash_reads_right() {
+    use crate::sim_fs;
+
+    let mut retried = 0;
+    for skip in 0.. {
+        let root = std::env::temp_dir().join(format!(
+            "felix-simfs-snapshot-{}-{skip}",
+            std::process::id()
+        ));
+        sim_fs::register_root(&root);
+        let cache = cache(&root).await;
+        overwritten(&cache, KEYS).await;
+        compact(&cache).await;
+        write_past_the_snapshot(&cache).await;
+        let expected = contents(&cache).await;
+        let shard = cache.shard(T, NS, C, 0).expect("shard");
+        let log = shard.state.lock().await.log.clone();
+        log.sync().await.expect("sync");
+
+        sim_fs::fail_flush(&root, skip).expect("arm");
+        let first = shard.write_snapshot().await;
+        if !sim_fs::flush_failed(&root).expect("disarm") {
+            first.expect("a snapshot with no flush failing");
+            sim_fs::unregister_root(&root);
+            break;
+        }
+        first.expect_err("a failed flush was reported as a snapshot");
+        if !log.is_poisoned() {
+            assert!(shard.write_snapshot().await.expect("retry"));
+            retried += 1;
+        }
+
+        drop((shard, log, cache));
+        sim_fs::crash(&root, skip).expect("crash");
+        let reopened = super::cache(&root).await;
+        assert_eq!(
+            contents(&reopened).await,
+            expected,
+            "flush {skip} failed and a value read wrong after the crash"
+        );
+        drop(reopened);
+        sim_fs::unregister_root(&root);
+    }
+    assert!(
+        retried >= 2,
+        "the snapshot file and its directory each failed"
+    );
+}

@@ -94,7 +94,7 @@
 (*                        than the time a leader takes to notice a         *)
 (*                        restarted broker's new epoch.                    *)
 (*                                                                         *)
-(* Two more knobs drop rules the design page does not state. The model     *)
+(* Two more knobs drop rules the design page states and nobody built.     *)
 (* needs both to pass, and TLC finds the trace without each:               *)
 (*                                                                         *)
 (*   HeartbeatKeepsProposal -- a heartbeat sent while a sleep proposal is  *)

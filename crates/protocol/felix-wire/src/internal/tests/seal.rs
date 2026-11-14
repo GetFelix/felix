@@ -87,6 +87,31 @@ fn seal_messages_round_trip() {
     }
 }
 
+/// **The seal's requests carry the stream's incarnation**, so a seal for a
+/// deleted stream never promises its recreated namesake.
+#[test]
+fn seal_requests_carry_the_incarnation() {
+    let incarnated = ShardRef {
+        incarnation: Some(5),
+        ..shard()
+    };
+    for message in messages() {
+        let message = match message {
+            InternalMessage::SealFence(mut m) => {
+                m.fence.shard = incarnated.clone();
+                InternalMessage::SealFence(m)
+            }
+            InternalMessage::SealAck(mut m) => {
+                m.shard = incarnated.clone();
+                InternalMessage::SealAck(m)
+            }
+            _ => continue,
+        };
+        let frame = message.encode().expect("encode");
+        assert_eq!(InternalMessage::decode(frame).expect("decode"), message);
+    }
+}
+
 #[test]
 fn seal_requests_need_the_switch_seal_capability() {
     for message in messages() {
@@ -125,6 +150,45 @@ fn a_stamped_batch_is_the_plain_batch_behind_the_copy_id() {
     let inner = InternalHeader::decode(&plain).expect("header");
     assert_eq!(&body[24..26], &(inner.kind as u16).to_be_bytes());
     assert_eq!(&body[26..], &plain[InternalHeader::LEN..]);
+}
+
+/// The copy id's 26 bytes count toward the frame limit: a stamped batch
+/// fills the frame exactly, and one byte more is refused before it is sent,
+/// though the batch alone would still fit.
+#[test]
+fn a_stamped_batch_never_exceeds_the_frame_limit() {
+    let sized = |len: usize| ReplicateRecords {
+        payloads: vec![Bytes::from(vec![7u8; len])],
+        ..batch()
+    };
+    let stamped = |len: usize| {
+        InternalMessage::FromCopy(FromCopy {
+            copy: SEALER,
+            message: Box::new(InternalMessage::ReplicateRecords(sized(len))),
+        })
+    };
+    let plain = InternalMessage::ReplicateRecords(sized(0))
+        .encode()
+        .expect("encode");
+    let empty = stamped(0).encode().expect("encode");
+    assert_eq!(empty.len() - plain.len(), FROM_COPY_BYTES as usize);
+    let at_limit = MAX_BODY_BYTES as usize - (empty.len() - InternalHeader::LEN);
+
+    let message = stamped(at_limit);
+    let encoded = message.encode().expect("a stamped batch at the limit");
+    assert_eq!(
+        InternalHeader::decode(&encoded).expect("header").length,
+        MAX_BODY_BYTES
+    );
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), message);
+
+    assert!(matches!(
+        stamped(at_limit + 1).encode(),
+        Err(Error::FrameTooLarge)
+    ));
+    InternalMessage::ReplicateRecords(sized(at_limit + 1))
+        .encode()
+        .expect("the batch alone fits");
 }
 
 #[test]

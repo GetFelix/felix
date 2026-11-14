@@ -435,7 +435,7 @@ A killed leader's shards fail over only once it is back.
 
 The metadata nemesis (`FELIX_HISTORY_NEMESIS=metadata`, `RandomNemesis::metadata`)
 runs the control plane as a real three-member Raft group instead of one
-in-memory store: three members on their own redb directories, each serving the
+in-memory store: three members on their own data directories, each serving the
 API, the expiry sweep and placement only while it leads, behind one address
 that forwards to any live member. It picks `MetadataKill` (one member),
 `MetadataKillLeader` and `MetadataPartitionLeader` (the leader cut off from the

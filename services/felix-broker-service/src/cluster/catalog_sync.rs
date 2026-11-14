@@ -37,7 +37,7 @@ use std::time::Duration;
 use anyhow::Result;
 use felix_broker::Broker;
 
-use crate::cluster::controlplane_group::{Guard, Mismatch};
+use crate::cluster::controlplane_group::{Grouped, Guard, Mismatch};
 use crate::cluster::credential::NodeCredential;
 use crate::cluster::feed_cursor::BehindCursor;
 use pass::sync_into;
@@ -173,7 +173,7 @@ pub(crate) async fn sync_loop(
                 }
             }
             // Retrying cannot make another group's catalog this directory's.
-            Err(err) if err.is::<Mismatch>() => return Err(err),
+            Err(err) if err.is::<Mismatch>() || err.is::<Grouped>() => return Err(err),
             Err(err) => {
                 tracing::warn!(error = %err, "control plane sync iteration failed; retrying")
             }

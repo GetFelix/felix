@@ -755,6 +755,8 @@ expectations=(
   "FelixRaftLeaseTransferWrite pass"
   "FelixRaftLeaseTransferStepDown pass"
   "FelixRaftLeaseRestoreTransferStepDown pass"
+  "FelixRaftLeaseRestoreTransferThreeTerms pass"
+  "FelixRaftLeaseRestoreTransferStepDownWrite pass"
   "FelixRaftLeaseRestoreStepDown pass"
   "FelixRaftLeaseSuspend pass"
   "FelixRaftLeaseStepDownWrite pass"
@@ -770,6 +772,8 @@ expectations=(
   "FelixRaftLeaseReachRestoreLed violates NeverHoldSkipped"
   "FelixRaftLeaseRestoreNamedAny violates LeaseExclusive"
   "FelixRaftLeaseReachHeldGrant violates NeverHeldGrant"
+  "FelixRaftLeaseReachRestoreTransferThreeTerms violates NeverThirdTermOnHeldGrant"
+  "FelixRaftLeaseReachRestoreTransferThreeTermsWrite violates NeverThirdTermLocalAck"
   "FelixRaftLeaseStepDownNoVoid violates LeaseExclusive"
   "FelixRaftLeaseTransferKeepsLease violates LeaseExclusive"
   "FelixRaftLeaseTransferVoidLate violates LeaseExclusive"
@@ -1023,6 +1027,10 @@ fi
 # box run checks it. FelixRaftWrittenTerms and FelixRaftWrittenJointFailover
 # did not finish in two hours there (docs/formal/README.md has how far each
 # got).
+# FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
+# (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
+# runner by its siblings' times, past the nightly job's six. Run it on a
+# build box.
 # FelixRaftPlacementFull takes 160 minutes on a CI runner and runs nightly
 # (tla-walk.yml). FelixRaftPlacementMoveWipeFull did not finish in three
 # hours, so nothing checks it yet.
@@ -1260,6 +1268,9 @@ weights=(
   "FelixRaftLeaseRestoreNamed 38"
   "FelixRaftLeaseRestoreStepDown 6"
   "FelixRaftLeaseRestoreTransferStepDown 11"
+  "FelixRaftLeaseRestoreTransferThreeTerms 7"
+  "FelixRaftLeaseRestoreTransferStepDownWrite 40"
+  "FelixRaftLeaseReachRestoreTransferThreeTermsWrite 9"
   "FelixRaftLeaseStore 2"
   "FelixRaftLeaseStoreStall 2"
   "FelixRaftLeaseStoreWide 36"

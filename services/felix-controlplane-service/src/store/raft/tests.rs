@@ -17,6 +17,7 @@ pub(super) async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
     let store = unrecorded_store(dir).await;
     store
         .local()
+        .expect("caught up")
         .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
         .await;
     store
@@ -3304,6 +3305,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
     // that reach it, so a lagging member's head would bring back #1955.
     let head = leader
         .local()
+        .expect("caught up")
         .shard_assignment_changes(0)
         .await
         .expect("feed");
@@ -3311,6 +3313,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
     assert_eq!(
         behind
             .local()
+            .expect("caught up")
             .shard_assignment_changes(0)
             .await
             .expect("feed")
@@ -4426,6 +4429,7 @@ async fn creates_wait_while_a_member_level_is_unknown() {
     version.store(SILENT, std::sync::atomic::Ordering::SeqCst);
     store
         .local()
+        .expect("caught up")
         .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
         .await;
     store.create_stream(stream("audit")).await.expect("created");

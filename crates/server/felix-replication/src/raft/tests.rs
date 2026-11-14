@@ -24,7 +24,9 @@ use crate::{ShardKey, ShardKind};
 
 mod commit;
 mod deliver;
+mod idempotent;
 mod identity;
+mod lease;
 mod propose;
 mod switch;
 mod written;
@@ -94,6 +96,13 @@ struct Net {
     /// Cut appends as the peer transport does, and hold each for as long as
     /// its bytes take on a 1 Gbit/s link.
     gigabit: std::sync::atomic::AtomicBool,
+    /// Appends to this broker are answered with this vote, as a member
+    /// that has voted for a later candidate answers.
+    higher_vote: parking_lot::Mutex<Option<(String, VoteOf<ShardTypes>)>>,
+    /// While set, every transfer request is lost.
+    lose_transfers: std::sync::atomic::AtomicBool,
+    /// How long an append's answer takes to come back.
+    answer_after: parking_lot::Mutex<Option<Duration>>,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -132,17 +141,34 @@ impl RaftTransport for Net {
         if sender(&request.body).is_some_and(|from| self.muted.lock().contains(from))
             || (matches!(request.body, Request::Append(_)) && self.lose_appends.load(Relaxed))
             || (matches!(request.body, Request::Vote(_)) && self.lose_votes.load(Relaxed))
+            || (matches!(request.body, Request::TransferLeader(_))
+                && self.lose_transfers.load(Relaxed))
         {
             return Err(Refused::Unreachable("lost".into()));
+        }
+        if matches!(request.body, Request::Append(_))
+            && let Some((to, vote)) = &*self.higher_vote.lock()
+            && to == broker
+        {
+            let higher = openraft::raft::AppendError::HigherVote(vote.clone());
+            return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
         let runtime = match self.cut.lock().contains(broker) {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
-        match runtime {
+        let slow = match request.body {
+            Request::Append(_) => *self.answer_after.lock(),
+            _ => None,
+        };
+        let answer = match runtime {
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
+        };
+        if let Some(slow) = slow {
+            tokio::time::sleep(slow).await;
         }
+        answer
     }
 }
 
@@ -291,6 +317,7 @@ impl Cluster {
             let command = Command {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
+                producer: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -319,6 +346,7 @@ impl Cluster {
                 member.raft().client_write(Command {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
+                    producer: None,
                     written: None,
                 })
             });
@@ -580,6 +608,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         idle_after: millis(config.idle_after),
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
+        lease: millis(config.lease),
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -929,6 +958,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
     let command = Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
+        producer: None,
         written: Some(token),
     };
     let raft = member.raft().clone();
@@ -972,12 +1002,13 @@ fn a_commands_token_is_not_serialized() {
     let command = Command {
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
+        producer: None,
         written: Some(token),
     };
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
-        ["payload", "timestamp_micros"]
+        ["payload", "producer", "timestamp_micros"]
     );
     let received: Command = serde_json::from_value(sent).expect("json");
     assert!(received.written.is_none());
@@ -1146,11 +1177,24 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
     }
     assert!(!close.is_finished());
     assert_ne!(closing.status().role, Role::Stopped);
-    assert!(!runtime.close(&shard(0)).await, "closed twice");
+
+    // A caller that gave up on its close and tries again waits for the same
+    // stop. Told "no group" now, it would close the log under a member that
+    // can still write.
+    let retried = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.close(&shard(0)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !retried.is_finished(),
+        "a retried close returned while the member was still running"
+    );
 
     release.send(()).expect("release");
-    assert!(close.await.expect("close"));
+    assert!(retried.await.expect("retried close"));
     assert_eq!(closing.status().role, Role::Stopped);
+    assert!(close.await.expect("close"));
     drop(closing);
 
     let log = cluster.logs.remove(&("a".to_string(), 0)).expect("log");
@@ -1206,8 +1250,8 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.start(true);
     cluster.open(0).await;
 
-    // What each member read back from its log. The old leader's vote is
-    // still its own, so it may lead again at once and add an entry.
+    // What each member read back from its log, before a leader elected
+    // after the restart adds an entry.
     for runtime in cluster.runtimes() {
         let status = eventually(|| {
             runtime
@@ -1356,6 +1400,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
         let command = Command {
             timestamp_micros: 1_700_000_000,
             payload: record.clone(),
+            producer: None,
             written: None,
         };
         last = member
@@ -1417,6 +1462,22 @@ async fn a_log_that_does_not_fsync_on_commit_gets_no_group() {
             .await,
         Err(OpenError::AlreadyOpen)
     ));
+    runtime.shutdown().await;
+}
+
+/// The ticker visits groups in shard order whatever order they opened and
+/// closed in, so a simulation seed replays its run.
+#[tokio::test]
+async fn the_ticker_visits_groups_in_shard_order() {
+    let cluster = Cluster::new(false);
+    let runtime = cluster.runtime("a");
+    for n in [7, 2, 9, 0, 5, 3, 8, 1] {
+        let log = open_log(cluster.root.path(), "a", n, log_config());
+        runtime.open(group(n), 1, log).await.expect("open");
+    }
+    assert!(runtime.close(&shard(5)).await);
+    let want: Vec<_> = [0, 1, 2, 3, 7, 8, 9].map(shard).into();
+    assert_eq!(runtime.ticked_shards(), want);
     runtime.shutdown().await;
 }
 

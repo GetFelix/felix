@@ -142,3 +142,24 @@ async fn a_truncation_never_leaves_a_stale_index_for_a_reused_segment() {
         "again-029-with-a-longer-payload"
     );
 }
+
+#[tokio::test]
+async fn a_cache_reduced_after_creation_holds_no_more_than_the_new_bound() {
+    let dir = tempdir().expect("dir");
+    fill(&dir, 60).await;
+
+    let cache = crate::log::SealedFileCache::new(100);
+    cache.set_capacity(3);
+    let log = DiskLog::open(
+        dir.path(),
+        "t/ns/s/0",
+        LogConfig {
+            sealed_cache: Some(cache),
+            ..config(100)
+        },
+    )
+    .expect("reopen");
+    assert!(log.segments().len() > 6);
+    assert_eq!(read_from(&log, 0).await.len(), 60);
+    assert!(log.open_sealed_segments() <= 3);
+}

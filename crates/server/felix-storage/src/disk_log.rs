@@ -52,7 +52,11 @@ pub mod layout;
 mod append;
 mod ballot;
 pub(crate) mod crash_point;
-mod durable_mark;
+#[cfg(feature = "raft")]
+pub(crate) mod dir_lock;
+pub(crate) mod durable_mark;
+#[cfg(feature = "raft")]
+pub(crate) use durable_mark::left_poisoned;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -84,7 +88,7 @@ use parking_lot::{Mutex, RwLock};
 
 use self::append::RollState;
 use self::producers::ProducerState;
-use self::sealed::SealedFiles;
+pub(crate) use self::sealed::SealedFiles;
 use self::segments::SegmentSet;
 use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
@@ -104,15 +108,29 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 /// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Set the first time any log in this process is poisoned, and never
-/// cleared. A log closed since still counts: whatever it acknowledged may not
-/// be on disk.
+/// The file that makes a shard directory a Raft copy (`raft_copy`).
+pub(crate) const RAFT_COPY_FILE: &str = "raft-copy";
+
+/// How soon a Raft log's commit writer asks again when the replica state is
+/// locked and it cannot tell when the last write was.
+const COMMIT_WAIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(10);
+
+/// Set the first time any log in this process is poisoned, or a node
+/// record's sync fails, and never cleared. A log closed since still counts:
+/// whatever it acknowledged may not be on disk.
 static ANY_POISONED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether a failure has stopped any log in this process for good. A broker
-/// that saw one cannot say it stopped with everything it acknowledged synced.
+/// Whether a failure has stopped any log in this process for good, or a
+/// node record's sync failed. A broker that saw one cannot say it stopped
+/// with everything it acknowledged synced.
 pub fn any_log_poisoned() -> bool {
     ANY_POISONED.load(Ordering::Acquire)
+}
+
+/// Count a failed sync of a node record as a poisoned log: the broker may
+/// have lost what it vouched for.
+pub(crate) fn note_lost_durability() {
+    ANY_POISONED.store(true, Ordering::Release);
 }
 
 /// A log a failure stopped, for a readiness probe to report.
@@ -188,12 +206,19 @@ impl DiskLog {
     /// Must be called from inside a Tokio runtime when the configured policy is
     /// [`FsyncMode::Periodic`], which needs a background timer; the other
     /// policies have no such requirement.
+    ///
+    /// A Raft log ([`LogConfig::raft_log`]) locks `dir` until it is closed or
+    /// its last clone is dropped. Another open of the directory, from this
+    /// process or another, fails with [`std::io::ErrorKind::ResourceBusy`]
+    /// meanwhile. The lock goes with the process. To reopen in the same
+    /// process, close the log first: a dropped clone can live on for a moment
+    /// in a background task.
     pub fn open(
         dir: impl Into<PathBuf>,
         label: impl Into<String>,
         config: LogConfig,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -222,7 +247,7 @@ impl DiskLog {
         config: LogConfig,
         base_offset: Offset,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -248,7 +273,7 @@ impl DiskLog {
         config: LogConfig,
         keep_alive: Arc<dyn std::any::Any + Send + Sync>,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         let log = Self::open_shared(
             dir.into(),
             label.into(),
@@ -344,6 +369,11 @@ impl DiskLog {
     #[cfg(test)]
     pub(crate) fn open_sealed_segments(&self) -> usize {
         self.inner.segments.read().open_sealed_segments()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn uses_sealed_files(&self, files: &Arc<SealedFiles>) -> bool {
+        self.inner.segments.read().uses_sealed_files(files)
     }
 
     /// Every segment on disk, oldest first.
@@ -821,6 +851,18 @@ impl DiskLog {
         self.inner.commit_offset.load(Ordering::Acquire)
     }
 
+    /// The commit offset the replica state on disk holds: what a restart
+    /// reads back. At or below [`Self::commit_offset`], which is saved
+    /// behind the caller.
+    pub fn saved_commit_offset(&self) -> Offset {
+        // An open can lower the offset in memory below the saved one, to the
+        // log's end.
+        self.inner
+            .commit_persisted
+            .load(Ordering::Acquire)
+            .min(self.commit_offset())
+    }
+
     /// Record that every record below `offset` is committed.
     ///
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and
@@ -939,7 +981,8 @@ impl DiskLog {
     /// further change to the files, from this handle or any clone of it.
     ///
     /// For a shard this broker no longer holds: once this returns, another
-    /// `DiskLog` may be opened over the same directory. Reads, appends and
+    /// `DiskLog` may be opened over the same directory, and a Raft log has
+    /// let go of its lock on it. Reads, appends and
     /// flushes through an old handle fail with [`StorageError::Closed`]. The
     /// sealed segments' files are released at once; the active segment's
     /// when the last handle is dropped.
@@ -977,6 +1020,9 @@ impl DiskLog {
             inner
                 .closed
                 .store(true, std::sync::atomic::Ordering::Release);
+            // Only now: nothing can write through this log any more.
+            #[cfg(feature = "raft")]
+            inner.dir_lock.lock().take();
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
@@ -1056,6 +1102,15 @@ impl DiskLog {
         if !config.raft_log {
             engine_marker::refuse_raft_directory(&dir, &label)?;
         }
+        // Before recovery, which would repair a tail that another open log
+        // may still be writing.
+        #[cfg(feature = "raft")]
+        let dir_lock = if config.raft_log {
+            crate::io::create_dir_all_durable(&dir)?;
+            Some(dir_lock::DirLock::take(&dir)?)
+        } else {
+            None
+        };
 
         if let Some(base_offset) = base_offset.filter(|base| *base > 0) {
             recovery::place_empty_shard(&dir, &label, &config, base_offset)?;
@@ -1193,6 +1248,8 @@ impl DiskLog {
         let inner = Arc::new(LogInner {
             label,
             keep_alive: Mutex::new(None),
+            #[cfg(feature = "raft")]
+            dir_lock: Mutex::new(dir_lock),
             config: config.clone(),
             segments: RwLock::new(segments),
             append_lock: Mutex::new(()),
@@ -1211,6 +1268,8 @@ impl DiskLog {
             ballot: RwLock::new(accepted),
             #[cfg(feature = "raft")]
             switch_seal: Mutex::new(switch::seal::load(&epochs_dir)?),
+            #[cfg(feature = "raft")]
+            seal_matched: Mutex::new(None),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
             wiped: RwLock::new(wiped),
@@ -1244,8 +1303,10 @@ impl DiskLog {
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             extensions_done: AtomicU64::new(0),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "fault-injection"))]
             fail_next_flush: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(any(test, feature = "fault-injection"))]
+            fail_flush_past: AtomicU64::new(u64::MAX),
             #[cfg(test)]
             fail_next_rewind_sync: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -1400,6 +1461,22 @@ impl DiskLog {
     }
 }
 
+#[cfg(any(test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Fail this log's next flush, as a failed fsync would: the log is
+    /// poisoned and leaves its marker. For tests, in this crate and outside.
+    pub fn fail_next_flush(&self) {
+        self.inner.fail_next_flush.store(true, Ordering::Release);
+    }
+
+    /// Fail the first flush that would make the record at `offset` durable,
+    /// as [`Self::fail_next_flush`] does. Flushes of earlier records, such
+    /// as one with nothing new to sync, pass.
+    pub fn fail_flush_past(&self, offset: Offset) {
+        self.inner.fail_flush_past.store(offset, Ordering::Release);
+    }
+}
+
 /// A stalled device, for tests here and in other crates. Not in a plain
 /// release build, like [`crate::fault`].
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
@@ -1415,11 +1492,6 @@ impl DiskLog {
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
-    /// Fail the next flush, as a failed fsync would.
-    pub(crate) fn fail_next_flush(&self) {
-        self.inner.fail_next_flush.store(true, Ordering::Release);
-    }
-
     /// Wait until the commit offset in memory is the one on disk.
     pub(crate) async fn commit_offset_persisted(&self) {
         while self.inner.commit_persisted.load(Ordering::Acquire) < self.commit_offset() {
@@ -1815,6 +1887,10 @@ struct LogInner {
     /// Dropped with the log; see [`DiskLog::open_refusing_other_commit`].
     #[cfg_attr(not(feature = "raft"), allow(dead_code))]
     keep_alive: Mutex<Option<Arc<dyn std::any::Any + Send + Sync>>>,
+    /// A Raft log's hold on its directory, until the log is closed or the
+    /// last clone is dropped.
+    #[cfg(feature = "raft")]
+    dir_lock: Mutex<Option<dir_lock::DirLock>>,
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
     /// under the read lock and does its I/O after releasing it, and an append
@@ -1869,6 +1945,10 @@ struct LogInner {
     /// The switch seal this copy promised, as on disk. Held while the file
     /// is written, so two promises cannot interleave.
     switch_seal: Mutex<Option<switch::seal::SealPromise>>,
+    #[cfg(feature = "raft")]
+    /// The seal whose digest this process last found its records to match.
+    /// See [`DiskLog::ack_seal`].
+    seal_matched: Mutex<Option<switch::SwitchBase>>,
     /// The generation of `replica_set`, zero for none, read without a lock on
     /// every stamped batch. Raised only after the set is on disk.
     set_generation: AtomicU64,
@@ -1979,8 +2059,12 @@ struct LogInner {
     #[cfg(test)]
     extensions_done: AtomicU64,
     /// Makes the next flush report a failed fsync after the real one ran.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "fault-injection"))]
     fail_next_flush: std::sync::atomic::AtomicBool,
+    /// Makes the first flush that covers this offset fail the same way.
+    /// `u64::MAX` when unset.
+    #[cfg(any(test, feature = "fault-injection"))]
+    fail_flush_past: AtomicU64,
     /// Makes the next truncation or reset fail to sync the durable mark.
     #[cfg(test)]
     fail_next_rewind_sync: std::sync::atomic::AtomicBool,
@@ -2242,6 +2326,23 @@ impl LogInner {
 }
 
 impl LogInner {
+    /// How long the commit writer waits before its next write: the rest of
+    /// [`COMMIT_PERSIST_INTERVAL`] on a Raft log, nothing otherwise.
+    fn commit_write_wait(&self) -> Option<std::time::Duration> {
+        if !self.config.raft_log {
+            return None;
+        }
+        // Held by a write in flight or a replica-set change; ask again soon
+        // rather than wait out a whole interval.
+        let last = match self.replica_persisted.try_lock() {
+            Some(persisted) => persisted.1?,
+            None => return Some(COMMIT_WAIT_RECHECK),
+        };
+        COMMIT_PERSIST_INTERVAL
+            .checked_sub(last.elapsed())
+            .filter(|wait| !wait.is_zero())
+    }
+
     /// The replica state as memory has it.
     fn replica_state(&self) -> replica_state::ReplicaState {
         let committed = self.committed_generation.lock();
@@ -2277,12 +2378,14 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         // Not retried once poisoned: the write behind would otherwise try
         // again, and a retry after a failed flush proves nothing.
         inner.check_not_poisoned()?;
+        // Counted before the rename, so a test that sees the file sees the
+        // count too.
+        #[cfg(test)]
+        inner.replica_writes.fetch_add(1, Ordering::SeqCst);
         inner.poison_on_sync_failure(
             "the replica state",
             replica_state::store(&inner.dir, &state),
         )?;
-        #[cfg(test)]
-        inner.replica_writes.fetch_add(1, Ordering::Relaxed);
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
@@ -2297,6 +2400,12 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
 /// log; it loops until disk has caught up with memory, so an advance made
 /// while a write is in flight is carried by the next one rather than adding
 /// its own.
+///
+/// On a Raft log a write waits until [`COMMIT_PERSIST_INTERVAL`] has passed
+/// since the last one. Its commit index moves on almost every entry, and a
+/// write is a create, two fsyncs and a rename that the log's own fsyncs queue
+/// behind on the same disk (`docs/metadata-raft-benchmark.md`, "Saving the
+/// committed index").
 fn write_commit_behind(inner: &Arc<LogInner>) {
     if inner.commit_writer.swap(true, Ordering::AcqRel) {
         return;
@@ -2305,6 +2414,9 @@ fn write_commit_behind(inner: &Arc<LogInner>) {
     let weak = Arc::downgrade(inner);
     tokio::spawn(async move {
         loop {
+            while let Some(wait) = weak.upgrade().and_then(|inner| inner.commit_write_wait()) {
+                tokio::time::sleep(wait).await;
+            }
             let Some(inner) = weak.upgrade() else {
                 return;
             };

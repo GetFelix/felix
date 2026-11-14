@@ -24,6 +24,7 @@ use crate::disk_log::layout;
 use crate::io::{create_dir_all_durable, sync_dir};
 use crate::{Result, StorageError};
 
+pub(crate) mod kept_gauges;
 pub(crate) mod marker;
 pub use marker::{MarkerRead, StreamMarker};
 
@@ -194,7 +195,50 @@ impl DirIndex {
                 self.removed(&name);
             }
         }
-        Ok(())
+        // Copies a rotation moved aside outlive their live directory, and
+        // are not in the index, which holds live directories only.
+        let kept = root.join(layout::KEPT_DIR);
+        let entries = match crate::fs::read_dir(&kept) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => return Err(StorageError::Io(err)),
+        };
+        let mut retired = false;
+        let mut result = Ok(());
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(err) => {
+                    result = Err(StorageError::Io(err));
+                    break;
+                }
+            };
+            let owned = entry
+                .file_name()
+                .to_str()
+                .and_then(layout::kept_of)
+                .and_then(|(name, _)| layout::stream_shard_of(name, tenant, namespace, stream))
+                .is_some_and(|(_, held)| held == incarnation);
+            if owned {
+                match retire_dir(root, &entry.path()) {
+                    Ok(moved) => retired |= moved,
+                    // A reclaim of the same copy got there first.
+                    Err(StorageError::Io(err)) if err.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(err) => {
+                        result = Err(err);
+                        break;
+                    }
+                }
+            }
+        }
+        // retire_dir syncs the root and `.deleted/`, not `.kept/`, which a
+        // crash could otherwise bring back. Also after a failure part way.
+        if retired {
+            let synced = sync_dir(&kept).map_err(StorageError::Io);
+            kept_gauges::refresh(root);
+            result = result.and(synced);
+        }
+        result
     }
 }
 
@@ -247,26 +291,35 @@ pub(crate) fn retire_dir(root: &Path, dir: &Path) -> Result<bool> {
     let Some(name) = dir.file_name() else {
         return Ok(false);
     };
-    if !crate::fs::exists(dir) {
+    // Every sync here, the shortcut included, is under the durable root's
+    // stop: a retry after a failed sync finds `dir` gone and `.deleted`
+    // there, and would sync nothing that failed.
+    let retired = crate::run_state::durable_change(root, &name.to_string_lossy(), || {
+        if !crate::fs::exists(dir) {
+            return Ok(false);
+        }
+        let deleted = root.join(DELETED_DIR);
+        create_dir_all_durable(&deleted).map_err(StorageError::Io)?;
+        // Unique even when the same name is retired twice before the first
+        // copy is gone.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let stamp = felix_common::clock::system_time()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|since| since.as_nanos())
+            .unwrap_or(0);
+        let target = deleted.join(format!(
+            "{}-{stamp}-{}",
+            name.to_string_lossy(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        crate::fs::rename(dir, &target).map_err(StorageError::Io)?;
+        sync_dir(root).map_err(StorageError::Io)?;
+        sync_dir(&deleted).map_err(StorageError::Io)?;
+        Ok(true)
+    })?;
+    if !retired {
         return Ok(false);
     }
-    let deleted = root.join(DELETED_DIR);
-    create_dir_all_durable(&deleted).map_err(StorageError::Io)?;
-    // Unique even when the same name is retired twice before the first copy
-    // is gone.
-    static NEXT: AtomicU64 = AtomicU64::new(0);
-    let stamp = felix_common::clock::system_time()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|since| since.as_nanos())
-        .unwrap_or(0);
-    let target = deleted.join(format!(
-        "{}-{stamp}-{}",
-        name.to_string_lossy(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    crate::fs::rename(dir, &target).map_err(StorageError::Io)?;
-    sync_dir(root).map_err(StorageError::Io)?;
-    sync_dir(&deleted).map_err(StorageError::Io)?;
     purge_in_background(root.to_path_buf());
     Ok(true)
 }

@@ -1,13 +1,13 @@
 //! Seeds of the Raft group simulation (`felix_sim::raft`).
 //!
-//! `raft_seed_*` are pinned seeds. They are ignored here and run in CI's
-//! non-blocking `sim-seeds` job until a seed replays its run (#2449): today
-//! each run of a seed is a fresh sample. `raft_seeds` is the batch:
-//! `FELIX_SIM_SEED_START` and `FELIX_SIM_SEEDS` pick the seeds and
-//! `FELIX_SIM_CLOCKS=bounded` skews the members' timers.
-//! `each_raft_seed_runs_the_same_twice` takes the same variables. It fails
-//! today (#2449): a seed fixes the faults and the client plan, not when a
-//! member starts an election.
+//! Built with `RUSTFLAGS="--cfg tokio_unstable"`, a seed replays its run
+//! event for event. Without the flag `select!` is unseeded and two runs of a
+//! seed can differ, so the pinned seeds (`raft_seed_*`) and
+//! `each_raft_seed_runs_the_same_twice` are skipped; CI's `sim-seeds` job
+//! runs them with it. `raft_seeds` is the batch: `FELIX_SIM_SEED_START` and
+//! `FELIX_SIM_SEEDS` pick the seeds and `FELIX_SIM_CLOCKS=bounded` skews the
+//! members' timers. `each_raft_seed_runs_the_same_twice` takes the same
+//! variables.
 
 use std::time::Duration;
 
@@ -81,13 +81,19 @@ fn check(seed: u64, clocks: Clocks) {
 }
 
 #[test]
-#[ignore = "#2449: a sample, not a replay; runs in CI sim-seeds"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
 fn raft_seed_1() {
     check(1, Clocks::Off);
 }
 
 #[test]
-#[ignore = "#2449: a sample, not a replay; runs in CI sim-seeds"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
 fn raft_seed_2_with_skewed_timers() {
     check(2, Clocks::Bounded);
 }
@@ -108,6 +114,29 @@ fn a_run_past_its_virtual_bound_ends_with_a_finding() {
     assert!(outcome.history.acknowledged() > 100);
 }
 
+/// One member's flush fails while the faults run. The copy whose log it
+/// poisoned stops, every shard still gets a leader that acknowledges a
+/// write, nothing acknowledged is lost, and the member's other copy serves.
+#[test]
+fn a_failed_flush_stops_one_copy_and_the_group_carries_on() {
+    for seed in [1, 2] {
+        let config = RaftSimConfig {
+            failed_flush: true,
+            ..RaftSimConfig::default()
+        };
+        let outcome = run_seed(seed, config);
+        println!("{outcome}");
+        assert!(outcome.passed(), "{}", outcome.first_failure());
+        let stopped: Vec<_> = outcome
+            .history
+            .faults
+            .iter()
+            .filter(|fault| fault.what.contains("a failed flush stopped"))
+            .collect();
+        assert_eq!(stopped.len(), 1, "one copy stops: {stopped:?}");
+    }
+}
+
 fn clocks() -> Clocks {
     match std::env::var("FELIX_SIM_CLOCKS").as_deref() {
         Ok("bounded") => Clocks::Bounded,
@@ -115,9 +144,9 @@ fn clocks() -> Clocks {
     }
 }
 
-/// What the seed draws is the same in every run: the member count and
-/// every fault's time. Which member a leader isolation hits is not, since
-/// the runs can differ in who leads (#2449).
+/// What the seed draws is the same in every run, even without a seeded
+/// `select!`: the member count and every fault's time. Which member a leader
+/// isolation hits can differ there, since the runs can differ in who leads.
 #[test]
 fn a_seed_draws_the_same_faults_twice() {
     let config = || RaftSimConfig {
@@ -133,8 +162,12 @@ fn a_seed_draws_the_same_faults_twice() {
     assert_eq!(times(&first.history.faults), times(&second.history.faults));
 }
 
+/// Each seed, run twice in one process, is the same run event for event.
 #[test]
-#[ignore = "#2449: openraft draws election timeouts from an unseeded RNG"]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
 fn each_raft_seed_runs_the_same_twice() {
     let start = env("FELIX_SIM_SEED_START", 1);
     let count = env("FELIX_SIM_SEEDS", 2);

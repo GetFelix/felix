@@ -30,8 +30,9 @@ pub use inspect::SubscriptionPage;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use mounts::MountedStream;
 pub use publish::{
-    ClaimedPublish, IdempotentClaim, IdempotentOutcome, ProposalCommitted, ProposalFailed,
-    ProposedPublish, PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse,
+    ClaimedPublish, IdempotentClaim, IdempotentOutcome, IdempotentProposal, LogDelivery,
+    ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish, PublishOutcome,
+    RECORD_SEQUENCE_WRAP, SequenceReuse,
 };
 pub use read::ReadPage;
 pub use shard_logs::LogKind;

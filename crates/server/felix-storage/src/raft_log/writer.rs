@@ -74,8 +74,9 @@ where
     }
 
     /// Kept as the log's commit offset with the id's term beside it, written
-    /// behind the call: after a crash the id read back may be older, never
-    /// newer.
+    /// behind the call and at most once per
+    /// [`crate::disk_log::COMMIT_PERSIST_INTERVAL`]: after a crash the id
+    /// read back may be older, never newer.
     async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> io::Result<()> {
         match committed {
             None => Ok(()),
@@ -247,7 +248,7 @@ where
                         batch.first
                     ))
                 })?;
-            shared.tail.lock().extend(cuts, batch.into_log_records());
+            shared.tail.extend(cuts, batch.into_log_records());
             pending = Some(appended);
         }
         // Written, not yet on disk: the signal an acknowledgement that does
@@ -314,7 +315,7 @@ where
         // and would report the append failed. Each one finishes first.
         self.shared.flushes.drained().await;
         // Before the cut, so no read finds here an entry the log has lost.
-        self.shared.tail.lock().clear();
+        self.shared.tail.clear();
         let first = self.shared.first_index();
         let kept = last_log_id.as_ref().map(|id| LogPoint {
             term: **id.committed_leader_id(),

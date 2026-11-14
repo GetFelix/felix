@@ -27,6 +27,7 @@ mod handoff;
 mod identity;
 mod listeners;
 mod membership;
+mod open_files;
 pub(crate) mod peer_dispatch;
 mod shutdown;
 #[cfg(feature = "sim")]
@@ -99,6 +100,15 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // Before storage opens: every held shard keeps files open.
+    open_files::raise_limit(
+        durable_config
+            .as_ref()
+            .map_or(0, |durable| durable.log.max_open_sealed_segments),
+        durable_config
+            .as_ref()
+            .and_then(|durable| durable.log.sealed_cache.as_ref()),
+    );
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.
@@ -253,11 +263,13 @@ where
     };
     // Before storage opens, and before anything is written under a group:
     // the directory is refused, or recorded, on what the control plane says.
-    // A start from the view could not ask; `qualify` required a record, and
-    // the catalog sync compares it with the snapshots.
+    // A start from the view could not ask; `qualify` required a record, or
+    // one saying the control plane had no group, and the catalog sync
+    // compares a record with the snapshots.
     let group_refused = CancellationToken::new();
     let group = match (&durable_root, &config.controlplane_url, &view) {
-        (Some(root), _, Some(_)) => crate::cluster::controlplane_group::read(root)?,
+        // Judged once the control plane answers (`sync::GroupCheck`).
+        (Some(_), _, Some(_)) => None,
         (Some(root), Some(base_url), None) => tokio::select! {
             group = identity::admit(&membership_client, base_url, &credential, root) => group?,
             () = shutdown.as_mut() => {
@@ -269,10 +281,13 @@ where
         },
         _ => None,
     };
-    let group = group.map(|stored| crate::cluster::controlplane_group::Guard {
-        stored,
-        refused: group_refused.clone(),
-    });
+    let group = sync::GroupCheck::for_start(
+        durable_root.as_deref(),
+        view.is_some(),
+        group,
+        &membership_client,
+        &group_refused,
+    );
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let own_kept = stored.kept;
     stored.kept = stored.kept.attested(view.is_some());

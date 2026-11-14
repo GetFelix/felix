@@ -698,11 +698,55 @@ async fn a_repeated_acknowledgement_checks_the_side_logs_again() {
     ));
 }
 
-fn pause() -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
+/// **A repeated acknowledgement does not read the shard's records again.**
+/// The digest covers every record from the seal's start, so a retry that
+/// redid it could outlast each request's deadline on a large log and never
+/// answer. A copy that only holds the record, unchecked, is still read.
+#[tokio::test]
+async fn a_repeated_acknowledgement_digests_the_records_once() {
+    let root = tempdir().expect("tempdir");
+    let (_leader, follower, seal) = sealed(root.path()).await;
+    let digests = || DIGESTS.with(std::cell::Cell::get);
+    let before = digests();
+    assert_eq!(follower.ack(&seal, sealer()).await, Ok(()));
+    assert_eq!(digests(), before + 1);
+    for _ in 0..3 {
+        assert_eq!(follower.ack(&seal, sealer()).await, Ok(()));
+    }
+    assert_eq!(digests(), before + 1, "a repeat read the records again");
+
+    // Another process has matched nothing yet.
+    let dir = root.path().join("follower");
+    follower.shutdown().await;
+    let reopened = Copy::open(&dir, on_commit());
+    assert_eq!(reopened.ack(&seal, sealer()).await, Ok(()));
+    assert_eq!(digests(), before + 2);
+}
+
+fn pause(at: PauseAt) -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
     let reached = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());
-    PAUSE.with(|pause| *pause.borrow_mut() = Some((Arc::clone(&reached), Arc::clone(&resume))));
+    PAUSE.with(|pause| {
+        *pause.borrow_mut() = Some((at, Arc::clone(&reached), Arc::clone(&resume)));
+    });
     (reached, resume)
+}
+
+#[tokio::test]
+async fn a_seal_replaced_during_the_checks_leaves_no_record() {
+    let root = tempdir().expect("tempdir");
+    let (_leader, follower, seal) = sealed(root.path()).await;
+    let (reached, resume) = pause(PauseAt::Checked);
+    let (acked, ()) = tokio::join!(follower.ack(&seal, sealer()), async {
+        reached.notified().await;
+        assert_eq!(
+            follower.promise(SEAL + 1, sealer()).await,
+            GenerationCheck::Raised
+        );
+        resume.notify_one();
+    });
+    assert_eq!(acked, Err(SealRefused::NoPromise));
+    assert_eq!(follower.log.tail_offset().await.expect("tail"), seal.offset);
 }
 
 #[tokio::test]
@@ -714,7 +758,7 @@ async fn an_acknowledgement_is_refused_if_a_later_generation_lands_meanwhile() {
     follower.promise(SEAL, sealer()).await;
     let base = leader.claim(0).await.expect("claimed");
     let seal = leader.record_at(base.offset).await;
-    let (reached, resume) = pause();
+    let (reached, resume) = pause(PauseAt::Written);
     let (acked, ()) = tokio::join!(follower.ack(&seal, sealer()), async {
         reached.notified().await;
         follower
@@ -732,7 +776,7 @@ async fn a_claim_is_refused_if_a_later_generation_lands_meanwhile() {
     let root = tempdir().expect("tempdir");
     let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a", "b"]).await;
     leader.promise(SEAL, sealer()).await;
-    let (reached, resume) = pause();
+    let (reached, resume) = pause(PauseAt::Written);
     let (claimed, ()) = tokio::join!(leader.claim(0), async {
         reached.notified().await;
         leader
@@ -743,6 +787,60 @@ async fn a_claim_is_refused_if_a_later_generation_lands_meanwhile() {
         resume.notify_one();
     });
     assert_eq!(claimed, Err(SealRefused::NoPromise));
+}
+
+#[tokio::test]
+async fn a_claim_whose_promise_moved_before_its_record_writes_nothing() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a", "b"]).await;
+    leader.promise(SEAL, sealer()).await;
+    let (reached, resume) = pause(PauseAt::Marked);
+    let (claimed, ()) = tokio::join!(leader.claim(0), async {
+        reached.notified().await;
+        leader
+            .log
+            .accept_generation(SEAL + 1, Some(LEADER))
+            .await
+            .expect("accept");
+        resume.notify_one();
+    });
+    assert_eq!(claimed, Err(SealRefused::NoPromise));
+    assert_eq!(leader.log.tail_offset().await.expect("tail"), 2);
+}
+
+/// The promise is checked and the record written under one hold of the lock
+/// a later generation is accepted under, so none lands between the two.
+#[tokio::test]
+async fn a_later_generation_waits_for_a_seal_record_being_written() {
+    use crate::disk_log::append::HoldAt;
+    use std::time::Duration;
+
+    let root = tempdir().expect("tempdir");
+    let (_leader, follower, seal) = sealed(root.path()).await;
+    let (release, held) = std::sync::mpsc::channel();
+    *follower.log.inner.hold_next_append.lock() = Some((HoldAt::Write, held));
+    let (acked, ()) = tokio::join!(follower.ack(&seal, sealer()), async {
+        while !follower.log.inner.append_held.load(Ordering::Acquire) {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        let later = follower.promise(SEAL + 1, sealer());
+        tokio::pin!(later);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut later)
+                .await
+                .is_err(),
+            "a later generation was accepted while the seal's record was being written"
+        );
+        release.send(()).expect("release");
+        assert_eq!(later.await, GenerationCheck::Raised);
+    });
+    // The record went in under the promise; whether the acknowledgement
+    // still reports it depends on when the later generation landed.
+    assert!(matches!(acked, Ok(()) | Err(SealRefused::NoPromise)));
+    assert_eq!(
+        follower.log.tail_offset().await.expect("tail"),
+        seal.offset + 1
+    );
 }
 
 #[tokio::test]

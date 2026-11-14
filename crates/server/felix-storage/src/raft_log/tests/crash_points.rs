@@ -101,7 +101,7 @@ async fn recover(sim: &Sim, kept: usize, written: &[TestEntry], at: &str) -> usi
 
     let next = normal(1_000, found.len() as u64, "after the cut");
     append_flushed(&mut raft, std::slice::from_ref(&next)).await;
-    raft.disk_log().shutdown().await.expect("shutdown");
+    raft.disk_log().close().await.expect("close");
     drop(raft);
     let raft = sim.open();
     let reopened = all(&raft).await.expect("read");
@@ -380,7 +380,7 @@ async fn a_committed_id_never_reads_back_past_the_log() {
         raft.truncate_after(last)
             .await
             .expect("entries past the committed id can be cut");
-        raft.disk_log().shutdown().await.expect("shutdown");
+        raft.disk_log().close().await.expect("close");
         drop(raft);
         let mut raft = sim.open();
         assert_eq!(raft.read_committed().await.expect("committed"), last);
