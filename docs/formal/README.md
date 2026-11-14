@@ -795,10 +795,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseAck.cfg` | one write, lease 1 against an election timeout of 2 | pass every Part 1 check in [Raft leader leases](#raft-leader-leases) (1.7M distinct states) |
 | `FelixRaftLeaseAckWide.cfg` | one write at lease 2 against 4; not registered, run by dispatch | pass the same |
 | `FelixRaftLeaseDeliver.cfg` | two writes and the subscriber reading across a change of leader, no drift, lease and election timeout of one tick | pass the same (9.8M distinct states, 3.5 min) |
-| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold, which is not built (issue #2307), so it does not yet gate the lease pull request |
+| `FelixRaftLeaseRestart.cfg` | `FelixRaftLease.cfg` with one restart; a restarted broker refuses votes for one election timeout | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.1M distinct states) on the node layer's vote hold (issue #2307, `Group::open` and `Group::dispatch` in `raft/group.rs`) |
 | `FelixRaftLeaseRestartRenews.cfg` | the same with the hold off and openraft 0.10.0's rule on: at a start the window is renewed when the stored vote is a leader's whose message the member took | pass the same (3.5M distinct states) |
 | `FelixRaftLeaseRestartForgets.cfg` | neither rule: a restarted follower may vote at once | violate `LeaseExclusive` (issue #2307) |
-| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
+| `FelixRaftLeaseRestoreLed.cfg` | `FelixRaftLeaseRestart.cfg` with no drift, lease and election timeout of 1 tick, three terms and one write, and the hold skipped for campaigning by a restarted broker whose stored vote is its own committed one (`led`): it took no later leader's message, so it promised nobody, and its lease died with the process. As a voter it is still held | pass `LeaseExclusive`, `OneLeaderPerTerm`, `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (6.2M distinct states) |
 | `FelixRaftLeaseReachRestoreLed.cfg` | a witness for `FelixRaftLeaseRestoreLed.cfg` | violate `NeverHoldSkipped`: a restarted broker leads inside its hold |
 | `FelixRaftLeaseRestoreAnyVote.cfg` | the same with the hold skipped for any stored vote | violate `LeaseExclusive`: a follower that answered the leader restarts, campaigns at once, and a voter outside the leader's window elects it |
 | `FelixRaftLeaseRestoreSingle.cfg` | `FelixRaftLeaseRestoreLed.cfg` with one voter | pass the same (51 distinct states) |
@@ -3424,9 +3424,9 @@ acknowledged on local durability, as
 [Per-shard Raft](../per-shard-raft.md) ("Acknowledging a write") and
 [The replication engine interface](../replication-engine.md) (Decisions, 5)
 decide it. Its configurations gate the pull request that turns on
-`admit_local_ack`, but their passing does not open the gate yet: the passing
-ones either have no restart or pass on a rule that is not built (issue
-#2307, under "A restarted follower" below).
+`admit_local_ack`. The ones with a restart pass on the node layer's vote
+hold (issue #2307, under "A restarted follower" below), which is built in
+`raft/group.rs`.
 `FelixRaftLeaseRestartRenews` passes on openraft's own start-time renewal,
 but only if `save_vote` is durable when it returns, which waits on the Raft
 engine. The
@@ -3474,9 +3474,11 @@ that never heard the leader. Two rules close it, and the model checks each
 alone:
 
 - The node layer's vote hold (issue #2307): a restarted broker refuses votes
-  for one election timeout from its start, whatever vote it stored.
-  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule.
-  It is not built.
+  for one election timeout from its start, whatever vote it stored (the
+  code holds no member without a stored vote: it has taken no message).
+  `FelixRaftLeaseRestart.cfg` passes on it. The design page has this rule,
+  and `Group::open` and `Group::dispatch` (`raft/group.rs`) build it, with
+  the two exemptions the `FelixRaftLeaseRestore*` configurations check.
 - openraft 0.10.0's renewal (`RestartRenewsFollowed`): `Engine::startup`
   renews the window for one election timeout when the stored vote is
   committed and another broker's, which is the vote of a follower that took
@@ -3487,8 +3489,8 @@ alone:
   votes that get no window are not ones the lease rests on.
 
 The design does not rest the lease on the engine's rule staying as it is,
-so the gate still waits for the vote hold. Both configurations have one
-restart and two terms.
+so the lease rests on the vote hold. Both configurations have one restart
+and two terms.
 
 **Skipping the hold for a restored leader (pull request 2445).** openraft
 restores a member as leader at a start when its stored vote is its own and
@@ -3496,7 +3498,8 @@ committed. Such a member took no later leader's message, so it promised
 nobody, and its own lease died with the process; the other voters still keep
 their window and their hold. The model keeps that on disk as `led`, and
 `RestoreOwnLead` lets such a member, or the only voter, campaign without the
-hold. It campaigns in a new term rather than resuming the old one, which
+hold. It lifts only the campaign side: `MayGrant` still has the member grant
+no candidate but the one its stored vote names, itself, until the hold ends. It campaigns in a new term rather than resuming the old one, which
 gives it no more than a resumed leader has: no lease until a quorum answers
 again. `FelixRaftLeaseRestoreLed.cfg` passes with three terms and one write,
 and `FelixRaftLeaseReachRestoreLed.cfg` shows the skip is taken.
