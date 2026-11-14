@@ -3134,7 +3134,7 @@ listener. Until idle groups sleep, both report what ticking every group
 costs; nothing waits on them. A third step, the write burst, is described
 with the memory figures below.
 
-Idle memory fits, with openraft at `5c3ad1bc2d` (openraft#2313, openraft#2314 and openraft#2324).
+Idle memory fits, with openraft at `5c3ad1bc2d` (the pin when measured) (openraft#2313, openraft#2314 and openraft#2324).
 The design assumed 180 KB per leader member and 145 KB per follower. The
 runtime's memory test (Linux, release build, 120 idle members, a third
 leading) measures 150 KB of live heap per member and no large per-member
