@@ -25,6 +25,13 @@
 //! three. `RAFT_IDLE_PEERS=none` opens the same logs with no Raft member on
 //! them and writes two records to each, as a new member does, which is the
 //! figure to take off: what is left is what Raft adds.
+//!
+//! `RAFT_IDLE_BURST_SECS` adds a write burst after the idle window: every
+//! leader takes pipelined writes for that long (`RAFT_IDLE_BURST_DEPTH` in
+//! flight per group, 32), then the groups go idle again. The run prints
+//! resident memory at the end of the burst and once idle, which is what a
+//! member keeps after it has been busy. Use fewer groups for it: every log
+//! then holds its newest records in memory.
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
@@ -32,14 +39,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use felix_replication::peer::{PeerPool, PeerServer, PeerTransportConfig, UnavailableHandler};
 use felix_replication::raft::{
-    AgreeingPeers, GroupId, GroupRuntime, MemberId, PeerAddresses, PeerTransport, RaftReply,
-    RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
+    AckAt, AgreeingPeers, Batch, GroupId, GroupRuntime, MemberId, PeerAddresses, PeerTransport,
+    RaftEngine, RaftReply, RaftRequest, RaftTransport, Record, Refused, Role, RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, RecordMark};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use tokio_util::sync::CancellationToken;
 
 fn shard(n: u32) -> ShardKey {
@@ -148,6 +158,49 @@ async fn over_the_transport(timers: &RuntimeConfig, stop: &CancellationToken) ->
         runtimes.push(runtime);
     }
     runtimes
+}
+
+/// Keep `depth` writes in flight on every group `runtime` leads until
+/// `length` has passed. Returns the writes that were acknowledged.
+async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Duration) -> u64 {
+    let engine = RaftEngine::new(runtime.clone());
+    let deadline = tokio::time::Instant::now() + length;
+    let led =
+        (0..groups).filter(|n| runtime.status(&shard(*n)).map(|s| s.role) == Some(Role::Leader));
+    let writers: Vec<_> = led
+        .map(|n| {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                let write = || {
+                    engine.propose(
+                        &shard(n),
+                        Batch {
+                            records: vec![Record {
+                                timestamp_micros: 1_700_000_000,
+                                payload: Bytes::from_static(&[7; 100]),
+                            }],
+                            ack: AckAt::Written,
+                        },
+                    )
+                };
+                let mut flying: FuturesUnordered<_> = (0..depth).map(|_| write()).collect();
+                let mut written = 0u64;
+                while let Some(result) = flying.next().await {
+                    result.expect("write");
+                    written += 1;
+                    if tokio::time::Instant::now() < deadline {
+                        flying.push(write());
+                    }
+                }
+                written
+            })
+        })
+        .collect();
+    let mut written = 0;
+    for writer in writers {
+        written += writer.await.expect("writer");
+    }
+    written
 }
 
 fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
@@ -288,6 +341,46 @@ async fn idle_groups_cost_little_cpu() {
     assert_eq!(leading(), before, "a group changed leader while idle");
     assert_eq!(terms(), terms_before, "an election ran while idle");
     assert_eq!(before.iter().sum::<u32>(), groups, "a group has no leader");
+
+    if let Some(secs) = env::<u64>("RAFT_IDLE_BURST_SECS") {
+        let depth = env("RAFT_IDLE_BURST_DEPTH").unwrap_or(32);
+        let idle = resident_mb();
+        let calls = || -> u64 {
+            runtimes
+                .iter()
+                .flat_map(|runtime| (0..groups).filter_map(|n| runtime.status(&shard(n))))
+                .map(|status| status.client_writes)
+                .sum()
+        };
+        let calls_before = calls();
+        let length = Duration::from_secs(secs);
+        let written: u64 = futures::future::join_all(
+            runtimes
+                .iter()
+                .map(|runtime| burst(runtime, groups, depth, length)),
+        )
+        .await
+        .into_iter()
+        .sum();
+        let busy = resident_mb();
+        let calls = calls() - calls_before;
+        tokio::time::sleep(timers.idle_after + Duration::from_secs(20)).await;
+        let members = f64::from(groups) * each;
+        if let (Some(idle), Some(busy), Some(after)) = (idle, busy, resident_mb()) {
+            println!(
+                "{groups} groups after a {length:?} burst, {} writes in {} calls per group: \
+                 {:.0} MB resident per broker at its end and {:.0} MB once idle again, \
+                 {:.0} KB per member over the {:.0} MB before it",
+                written / u64::from(groups),
+                calls / u64::from(groups),
+                busy / each,
+                after / each,
+                1024.0 * (after - idle) / members,
+                idle / each,
+            );
+        }
+        assert_eq!(before.iter().sum::<u32>(), groups, "a group has no leader");
+    }
     for runtime in &runtimes {
         runtime.shutdown().await;
     }
