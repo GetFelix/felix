@@ -74,7 +74,8 @@ pub const RAFT_KEPT_COPIES: &str = "felix_storage_raft_kept_copies";
 /// Bytes those directories hold.
 pub const RAFT_KEPT_COPY_BYTES: &str = "felix_storage_raft_kept_copy_bytes";
 /// Sealed segments whose file and index are open, across every log. Bounded
-/// by `LogConfig::max_open_sealed_segments` per storage root.
+/// by `LogConfig::max_open_sealed_segments` for each cache, which the broker
+/// shares across all its logs.
 pub const OPEN_SEALED_SEGMENTS: &str = "felix_storage_open_sealed_segments";
 
 /// Sealed segments deleted by retention.

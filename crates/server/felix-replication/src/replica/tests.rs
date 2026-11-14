@@ -21,6 +21,8 @@ mod groups;
 mod headers;
 mod incarnation;
 mod non_voting;
+#[cfg(feature = "raft")]
+mod seal;
 mod trim;
 mod writers;
 

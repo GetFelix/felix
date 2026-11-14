@@ -5,7 +5,9 @@ mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{FsyncMode, GenerationGate, LogConfig, OffloadTarget, Retention, RetentionHold};
+pub use config::{
+    FsyncMode, GenerationGate, LogConfig, OffloadTarget, Retention, RetentionHold, SealedFileCache,
+};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -292,6 +294,16 @@ pub struct LogRecord {
     /// segment.
     pub generation: Option<u64>,
 }
+
+/// The files a shard's log keeps open while it is not being read: the active
+/// segment three times, its index, the durable mark, and, for a Raft log,
+/// its directory, which holds the lock that refuses a second open. A log
+/// without Raft holds one fewer; the budget is the larger. A Raft member
+/// adds none of its own. Sealed segments that were read stay open in a cache shared by every
+/// log opened with one `LogConfig::sealed_cache`, which the broker bounds
+/// for every log it opens, so they are a fixed amount per broker and not a
+/// cost per shard. The broker's open-file check counts this for each shard.
+pub const FDS_PER_SHARD_LOG: usize = 6;
 
 /// The generation a v9 segment stamps on a record whose writer nobody knows:
 /// one a sender held in an older segment, where no generation was kept. It

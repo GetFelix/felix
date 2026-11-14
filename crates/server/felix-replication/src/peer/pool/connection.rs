@@ -491,6 +491,8 @@ impl LaneClass {
         match message {
             InternalMessage::Hello(_)
             | InternalMessage::Fence(_)
+            | InternalMessage::SealFence(_)
+            | InternalMessage::SealAck(_)
             | InternalMessage::PreVote(_)
             | InternalMessage::ReplicateFetch(_)
             | InternalMessage::Ping(_) => Self::Control,
@@ -515,6 +517,28 @@ impl LaneClass {
 pub(super) fn with_correlation(message: InternalMessage, correlation_id: u64) -> InternalMessage {
     use felix_wire::internal::*;
     match message {
+        InternalMessage::SealFence(mut m) => {
+            m.fence.correlation_id = correlation_id;
+            InternalMessage::SealFence(m)
+        }
+        InternalMessage::SealFenceOk(mut m) => {
+            m.ok.correlation_id = correlation_id;
+            InternalMessage::SealFenceOk(m)
+        }
+        InternalMessage::SealAck(m) => InternalMessage::SealAck(SealAck {
+            correlation_id,
+            ..m
+        }),
+        InternalMessage::SealAckOk(m) => InternalMessage::SealAckOk(SealAckOk {
+            correlation_id,
+            ..m
+        }),
+        InternalMessage::FromCopy(FromCopy { copy, message }) => {
+            InternalMessage::FromCopy(FromCopy {
+                copy,
+                message: Box::new(with_correlation(*message, correlation_id)),
+            })
+        }
         InternalMessage::ForwardPublish(m) => InternalMessage::ForwardPublish(ForwardPublish {
             correlation_id,
             ..m

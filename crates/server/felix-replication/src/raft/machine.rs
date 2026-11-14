@@ -127,6 +127,33 @@ async fn store(snapshots: &SnapshotStore, meta: &SnapshotMetaOf<ShardTypes>) -> 
     snapshots.install(stored).await.map(|_| ())
 }
 
+/// The snapshot a voter of a switch from the hybrid starts from: everything
+/// up to the base's entry applied, and `voters` as the membership, held at
+/// that entry.
+pub(crate) fn base_snapshot(
+    base: LogPoint,
+    voters: &std::collections::BTreeSet<super::types::MemberId>,
+) -> io::Result<StoredSnapshot> {
+    let at = Some((base.term, base.index));
+    let meta = StoredMeta {
+        last_applied: at,
+        membership_at: at,
+        membership: StoredMembership {
+            version: super::codec::MEMBERSHIP_VERSION,
+            voters: vec![voters.clone()],
+            learners: std::collections::BTreeSet::new(),
+        },
+    };
+    Ok(StoredSnapshot {
+        last: Some(SnapshotId {
+            term: base.term,
+            index: base.index,
+        }),
+        meta: serde_json::to_vec(&meta).map_err(io::Error::other)?.into(),
+        data: bytes::Bytes::new(),
+    })
+}
+
 fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
     SnapshotMetaOf::<ShardTypes> {
         last_log_id: state.last_applied,

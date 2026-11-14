@@ -194,7 +194,7 @@ async fn enqueue(
                 _identity: identity_permit,
                 _conn: conn_permit,
                 _global: permit,
-                _share: Arc::clone(&publish_ctx.identity),
+                share: Arc::clone(&publish_ctx.identity),
             }
         }
     };
@@ -440,7 +440,7 @@ async fn acquire_permits(
         _identity: identity,
         _conn: conn,
         _global: global,
-        _share: Arc::clone(&publish_ctx.identity),
+        share: Arc::clone(&publish_ctx.identity),
     })
 }
 

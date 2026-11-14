@@ -764,6 +764,8 @@ pub fn required_capability(message: &InternalMessage) -> Option<PeerCapabilities
 
 fn message_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
     let (base, log) = match message {
+        // The envelope changes nothing about what the request inside needs.
+        InternalMessage::FromCopy(stamped) => return message_capability(&stamped.message),
         InternalMessage::Fence(fence) => (PeerCapabilities::FENCE, fence.log),
         InternalMessage::ReplicateFetch(fetch) => (PeerCapabilities::TAIL_FETCH, fetch.log),
         // An older follower refuses the mark and its replication stops there.

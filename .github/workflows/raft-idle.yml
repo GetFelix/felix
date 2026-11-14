@@ -4,11 +4,12 @@ name: Raft idle groups
 # below), which runs only when a dispatch asks for it.
 #
 # What idle per-shard Raft groups cost one broker in CPU and memory
-# (crates/server/felix-replication/tests/raft_idle_cpu.rs). Two runs:
+# (crates/server/felix-replication/tests/raft_idle_cpu.rs). Two idle runs:
 # 5,000 groups led by one runtime whose peers are stubs, the worst case for one
 # broker, and three runtimes in one process joined by the real peer transport
-# on loopback. A report, not a gate: nothing waits on it, and until idle groups
-# sleep it shows the cost of ticking every group.
+# on loopback. A third run adds a write burst and reports resident memory at
+# its end and after a settle delay. A report, not a gate: nothing waits on it,
+# and until idle groups sleep it shows the cost of ticking every group.
 
 on:
   schedule:
@@ -32,6 +33,10 @@ on:
         description: "Rounds of the publish latency report"
         required: false
         default: "3"
+      burst_groups:
+        description: "Groups in the write-burst run"
+        required: false
+        default: "300"
 
 permissions:
   contents: read
@@ -79,13 +84,29 @@ jobs:
           ulimit -n "$(ulimit -Hn)"
           cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu \
             -- --ignored --nocapture 2>&1 | tee raft-idle-transport.log
+      # What members keep resident after they were busy (#2415), as RSS, not
+      # live heap. Fewer groups: every log holds its newest records in memory
+      # after a burst.
+      - name: Write burst
+        if: always()
+        timeout-minutes: 15
+        env:
+          RAFT_IDLE_GROUPS: ${{ inputs.burst_groups || '300' }}
+          RAFT_IDLE_PEERS: transport
+          RAFT_IDLE_WINDOW_SECS: "10"
+          RAFT_IDLE_BURST_SECS: "120"
+        run: |
+          set -o pipefail
+          ulimit -n "$(ulimit -Hn)"
+          cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu \
+            -- --ignored --nocapture 2>&1 | tee raft-idle-burst.log
       - name: Summary
         if: always()
         run: |
           {
             echo "### Raft idle groups"
             echo
-            grep -hE 'idle groups|test result' raft-idle-stub.log raft-idle-transport.log || echo "no result"
+            grep -hE 'idle groups|groups after|test result' raft-idle-stub.log raft-idle-transport.log raft-idle-burst.log || echo "no result"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # What a publisher waits for on a three-broker Raft shard, at each level,
