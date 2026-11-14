@@ -29,6 +29,7 @@ mod idempotent;
 mod identity;
 mod lease;
 mod propose;
+mod read;
 mod switch;
 mod written;
 
@@ -109,6 +110,8 @@ struct Net {
     lose_transfers: std::sync::atomic::AtomicBool,
     /// How long an append's answer takes to come back.
     answer_after: parking_lot::Mutex<Option<Duration>>,
+    /// Appends carrying entries that were handed to a broker.
+    appends: std::sync::atomic::AtomicU64,
 }
 
 /// The broker that sent `request`, when it is a leader's or a candidate's.
@@ -163,6 +166,11 @@ impl RaftTransport for Net {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
+        if runtime.is_some()
+            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+        {
+            self.appends.fetch_add(1, Relaxed);
+        }
         let slow = match request.body {
             Request::Append(_) => *self.answer_after.lock(),
             _ => None,

@@ -330,6 +330,7 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
         cache_snapshot_every: shipped.cache_snapshot_every,
         cache_log_keep: shipped.cache_log_keep,
         tail_cache_bytes: shipped.tail_cache_bytes,
+        append_entries: shipped.append_entries,
     }
 }
 

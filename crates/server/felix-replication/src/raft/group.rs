@@ -34,6 +34,7 @@ use super::network::{
 use super::propose::{
     self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
 };
+use super::read_rounds::ReadRounds;
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
@@ -87,6 +88,8 @@ pub(crate) struct Group {
     /// Cancelled when the member is told to stop. Ends the publish task and
     /// every publisher's wait.
     stop: CancellationToken,
+    /// The read-index rounds the shard's reads share.
+    reads: Arc<ReadRounds<Round>>,
     /// The runtime the group was opened on, where its openraft core runs.
     /// The publish task starts there, not on the first publisher's runtime,
     /// which may end while the group lives on.
@@ -371,6 +374,24 @@ impl Drop for Dropped<'_> {
     }
 }
 
+/// What one read-index round answered, shared by the reads that joined it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Round {
+    /// A majority answered this member as leader of this term.
+    Leads {
+        term: u64,
+        /// One past the commit index a majority confirmed.
+        index: u64,
+    },
+    /// This member leads but its lease lapsed: ask again after a heartbeat.
+    /// The pinned openraft says this to writes only.
+    LeaseExpired,
+    NotLeader,
+    /// No majority answered in time.
+    QuorumNotEnough,
+    Stopped,
+}
+
 /// What a member is told and asks of the broker it runs on.
 pub(crate) struct Host {
     /// Who is told when the shard opens and closes here.
@@ -509,6 +530,7 @@ impl Group {
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
             stop,
+            reads: Arc::default(),
             runtime: tokio::runtime::Handle::current(),
         })
     }
@@ -1016,30 +1038,40 @@ impl Group {
         };
         let deadline = tokio::time::Instant::now() + patience;
         loop {
+            let raft = self.raft.clone();
+            let stop = self.stop.clone();
+            let entered =
+                self.reads
+                    .enter(&self.runtime, patience, Round::QuorumNotEnough, move || {
+                        read_round(raft.clone(), stop.clone())
+                    });
+            // A read that arrives during a round waits for the next one too,
+            // so the bound is on the wait, not on one round.
             let round = tokio::select! {
                 biased;
                 () = self.stop.cancelled() => return Err(propose::stopped()),
-                round = self.raft.get_read_log_id(ReadPolicy::ReadIndex) => round,
+                round = tokio::time::timeout_at(deadline, entered.answer()) => match round {
+                    Ok(Some(round)) => round,
+                    // The task asking rounds ended without an answer. A new
+                    // read starts a new task.
+                    Ok(None) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                    Err(_) => return Err(unanswered),
+                },
             };
-            let forward = match round {
-                Ok((read, _)) if **read.committed_leader_id() == term => {
-                    return Ok(read.index() + 1);
-                }
-                Ok(_) => {
+            match round {
+                Round::Leads { term: leads, index } if leads == term => return Ok(index),
+                Round::Leads { .. } => {
                     return Err(lost(
                         "this broker leads a later term than the read began in",
                     ));
                 }
-                Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(forward))) => {
-                    forward
-                }
-                Err(RaftError::APIError(LinearizableReadError::QuorumNotEnough(_))) => {
-                    return Err(unanswered);
-                }
-                Err(RaftError::Fatal(_)) => return Err(propose::stopped()),
-            };
-            if forward.reason != ForwardReason::LeaseExpired {
-                return Err(lost("this broker does not lead the shard"));
+                Round::LeaseExpired => {}
+                Round::NotLeader => return Err(lost("this broker does not lead the shard")),
+                Round::QuorumNotEnough => return Err(unanswered),
+                Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for
             // a majority to answer it, and ask again.
@@ -1481,7 +1513,38 @@ impl Group {
     }
 
     #[cfg(test)]
+    pub(crate) fn read_rounds_asked(&self) -> u64 {
+        self.reads.asked()
+    }
+
+    #[cfg(test)]
     pub(crate) fn raft(&self) -> &Raft<ShardTypes, Machine> {
         &self.raft
+    }
+}
+
+/// One read-index round, asked of the core after every read that shares it
+/// arrived.
+async fn read_round(raft: Raft<ShardTypes, Machine>, stop: CancellationToken) -> Round {
+    let round = tokio::select! {
+        biased;
+        () = stop.cancelled() => return Round::Stopped,
+        round = raft.get_read_log_id(ReadPolicy::ReadIndex) => round,
+    };
+    match round {
+        Ok((read, _)) => Round::Leads {
+            term: **read.committed_leader_id(),
+            index: read.index() + 1,
+        },
+        Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(forward)))
+            if forward.reason == ForwardReason::LeaseExpired =>
+        {
+            Round::LeaseExpired
+        }
+        Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(_))) => Round::NotLeader,
+        Err(RaftError::APIError(LinearizableReadError::QuorumNotEnough(_))) => {
+            Round::QuorumNotEnough
+        }
+        Err(RaftError::Fatal(_)) => Round::Stopped,
     }
 }

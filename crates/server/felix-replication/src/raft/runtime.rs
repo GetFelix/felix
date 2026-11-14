@@ -31,7 +31,7 @@ use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
 
 /// How often a kept-copy reclaim that waits only on a commit save looks
-/// again. A log not under `FsyncMode::OnCommit` saves at most this often.
+/// again. A Raft log saves its commit at most this often.
 const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 
 /// The timers every group on a broker shares.
@@ -83,6 +83,13 @@ pub struct RuntimeConfig {
     /// skipped until the next pass. The metadata group's log is not
     /// counted; it keeps its own 4 MiB.
     pub tail_cache_bytes: u64,
+    /// Most entries one append to a follower carries. openraft reads an
+    /// append's entries before it sends them and holds no permit for the
+    /// read, so each lagging follower of each group can hold one in memory:
+    /// 1 MiB of 1 KiB records at the default, about 2 GiB at 1000 groups
+    /// with two lagging followers each. Larger records are bounded by bytes:
+    /// by the log reader's 4 MiB page and by `wire::fit`.
+    pub append_entries: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -102,6 +109,7 @@ impl Default for RuntimeConfig {
             clock_drift_ppm: 100_000,
             log_mark: LogMarkMode::Exact,
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
+            append_entries: 1024,
         }
     }
 }
@@ -137,6 +145,7 @@ impl RuntimeConfig {
             heartbeat_interval: millis(self.heartbeat),
             election_timeout_min: millis(self.election_min),
             election_timeout_max: millis(self.election_max),
+            max_payload_entries: self.append_entries,
             // The node ticker runs the timer check. A tick task per group
             // costs most of a core per thousand idle members.
             enable_tick: false,
