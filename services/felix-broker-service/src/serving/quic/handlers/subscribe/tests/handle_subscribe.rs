@@ -1501,10 +1501,7 @@ mod on_raft {
                 ahead(),
                 Some(ingress),
                 Some(&endpoints),
-                "t1",
-                "ns",
-                "orders",
-                0,
+                ("t1", "ns", "orders", 0),
                 felix_wire::FEATURE_REDIRECT,
             )
         };
