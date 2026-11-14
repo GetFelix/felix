@@ -15,6 +15,7 @@
 pub mod catalog_sync;
 pub(crate) mod client_endpoints;
 pub(crate) mod controlplane_client;
+pub(crate) mod controlplane_group;
 pub(crate) mod controlplane_http;
 pub(crate) mod controlplane_view;
 pub mod credential;

@@ -217,6 +217,14 @@ impl RaftHandle {
         self.level().await.counting_unknown_at(unknown)
     }
 
+    /// The lowest level every member has said it can apply, or `None` while
+    /// some member of the current membership has never answered since this
+    /// process started. For a decision that may act only on evidence.
+    pub async fn cluster_version_if_known(&self) -> Option<u16> {
+        let level = self.level().await;
+        (!level.unknown).then_some(level.answered)
+    }
+
     async fn level(&self) -> Level {
         let cached = {
             let mut versions = self.versions.lock().expect("versions lock");

@@ -459,3 +459,100 @@ async fn a_poisoned_log_is_listed_with_its_cause() {
         "a truncation or reset failed: io error: unlink refused"
     );
 }
+
+/// A node record whose file or directory sync failed is never retried: the
+/// retry, and every later durable record in that directory, is refused, the
+/// broker lists the record as failed, and it counts as a poisoned log. A
+/// retried directory sync could succeed without making the rename durable.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_node_record_sync_is_not_retried() {
+    use crate::run_state::{self, copy_trust::CopyTrust};
+    use crate::storage_identity::StorageId;
+
+    type Write = fn(&std::path::Path) -> Result<()>;
+    let records: [(&str, Write); 12] = [
+        ("registration", |root| {
+            run_state::record_registration(root, 7)
+        }),
+        ("head-trimmed", run_state::record_head_trimmed),
+        ("record-headers", run_state::record_headers_stored),
+        ("record-generations", run_state::record_generations_written),
+        ("replaced", |root| {
+            run_state::record_replaced(root, StorageId::from_bytes([1; 16]), 3)
+        }),
+        ("lost-copy", |root| run_state::record_lost_copy(root, true)),
+        ("rotated-ids", |root| {
+            run_state::record_rotated_id(root, StorageId::from_bytes([2; 16]))
+        }),
+        ("view", |root| {
+            crate::controlplane_view::record(root, b"view")
+        }),
+        ("view-forgotten", crate::controlplane_view::forget),
+        ("storage-id", |root| {
+            crate::storage_identity::replace(root, [4; 16]).map(|_| ())
+        }),
+        // A new key each time: one already doubted on disk is not written.
+        ("copy-trust", |root| {
+            static KEY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+            let key = KEY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            CopyTrust::open(root)?.doubt(&[key])
+        }),
+        ("run-token", |root| {
+            run_state::witness::witness(root, None, None, [3; 16]).map(|_| ())
+        }),
+    ];
+    for (name, write) in records {
+        // Each of the record's syncs in turn: the file's, then the
+        // directory's.
+        for skip in 0.. {
+            let sim = Sim::new(&format!("record-{name}"), skip);
+            crate::fs::create_dir_all(&sim.0).expect("root");
+            sim_fs::fail_flush(&sim.0, skip).expect("arm");
+            let written = write(&sim.0);
+            if !sim_fs::flush_failed(&sim.0).expect("disarm") {
+                written.unwrap_or_else(|err| panic!("{name}: failed with no flush failing: {err}"));
+                assert!(skip > 0, "{name}: no flush");
+                break;
+            }
+            let failed = written.expect_err("the failed sync was reported as written");
+            assert!(failed.is_sync_failure(), "{name}, flush {skip}: {failed}");
+            assert!(
+                run_state::stopped_by(&sim.0).is_some(),
+                "{name}, flush {skip}: not listed as failed"
+            );
+            assert!(crate::disk_log::any_log_poisoned());
+
+            // The flush works again, and nothing may trust it.
+            let retried = write(&sim.0)
+                .err()
+                .unwrap_or_else(|| panic!("{name}, flush {skip}: written again"));
+            assert!(retried.is_sync_failure(), "{name}, flush {skip}: {retried}");
+            let other = run_state::record_lost_copy(&sim.0, false).expect_err("another record");
+            assert!(other.is_sync_failure(), "{name}, flush {skip}: {other}");
+        }
+    }
+}
+
+/// The incarnation record is written once and then found in place, so a
+/// retry after a failed sync of it must be refused rather than find it there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_incarnation_record_sync_is_not_retried() {
+    use crate::incarnation::marker;
+
+    for skip in 0.. {
+        let sim = Sim::new("in-play", skip);
+        crate::fs::create_dir_all(&sim.0).expect("root");
+        sim_fs::fail_flush(&sim.0, skip).expect("arm");
+        let written = marker::record_in_play(&sim.0);
+        if !sim_fs::flush_failed(&sim.0).expect("disarm") {
+            written.expect("no flush failing");
+            assert!(skip > 0, "no flush");
+            break;
+        }
+        written.expect_err("the failed sync was reported as written");
+        let retried = marker::record_in_play(&sim.0)
+            .err()
+            .unwrap_or_else(|| panic!("flush {skip}: written again"));
+        assert!(retried.is_sync_failure(), "flush {skip}: {retried}");
+    }
+}

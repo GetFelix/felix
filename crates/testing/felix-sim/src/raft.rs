@@ -317,6 +317,9 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
         idle_after: at(shipped.idle_after),
         election_min: at(shipped.election_min),
         election_max: at(shipped.election_max),
+        lease: at(shipped.lease),
+        clock_drift_ppm: shipped.clock_drift_ppm,
+        log_mark: shipped.log_mark,
     }
 }
 
@@ -457,7 +460,7 @@ impl Sim {
         let at = &self.members[member];
         let invoke = self.now();
         let payload = Bytes::from(value.to_le_bytes().to_vec());
-        // 4e: a Periodic shard publishes with the written-majority ack here.
+        // A Periodic shard publishes with the written-majority ack here.
         let key = key(shard);
         // The term the member leads in, as the broker's admission reads it.
         let term = at.engine.open_term(&key);

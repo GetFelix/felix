@@ -52,7 +52,7 @@ pub mod layout;
 mod append;
 mod ballot;
 pub(crate) mod crash_point;
-mod durable_mark;
+pub(crate) mod durable_mark;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -102,15 +102,22 @@ const APPEND_SPIN: std::time::Duration = std::time::Duration::from_micros(20);
 /// outlived them would guard nothing.
 pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
-/// Set the first time any log in this process is poisoned, and never
-/// cleared. A log closed since still counts: whatever it acknowledged may not
-/// be on disk.
+/// Set the first time any log in this process is poisoned, or a node
+/// record's sync fails, and never cleared. A log closed since still counts:
+/// whatever it acknowledged may not be on disk.
 static ANY_POISONED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether a failure has stopped any log in this process for good. A broker
-/// that saw one cannot say it stopped with everything it acknowledged synced.
+/// Whether a failure has stopped any log in this process for good, or a
+/// node record's sync failed. A broker that saw one cannot say it stopped
+/// with everything it acknowledged synced.
 pub fn any_log_poisoned() -> bool {
     ANY_POISONED.load(Ordering::Acquire)
+}
+
+/// Count a failed sync of a node record as a poisoned log: the broker may
+/// have lost what it vouched for.
+pub(crate) fn note_lost_durability() {
+    ANY_POISONED.store(true, Ordering::Release);
 }
 
 /// A log a failure stopped, for a readiness probe to report.
@@ -819,6 +826,18 @@ impl DiskLog {
         self.inner.commit_offset.load(Ordering::Acquire)
     }
 
+    /// The commit offset the replica state on disk holds: what a restart
+    /// reads back. At or below [`Self::commit_offset`], which is saved
+    /// behind the caller.
+    pub fn saved_commit_offset(&self) -> Offset {
+        // An open can lower the offset in memory below the saved one, to the
+        // log's end.
+        self.inner
+            .commit_persisted
+            .load(Ordering::Acquire)
+            .min(self.commit_offset())
+    }
+
     /// Record that every record below `offset` is committed.
     ///
     /// Takes effect at once for [`AppendOnlyLog::truncate`] and
@@ -1396,14 +1415,21 @@ impl DiskLog {
     }
 }
 
+/// A stalled device, for tests here and in other crates. Not in a plain
+/// release build, like [`crate::fault`].
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+impl DiskLog {
+    /// Hold every flush of this log until the guard is dropped. Writes
+    /// still land.
+    #[doc(hidden)]
+    pub async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.durability.lock_flushes().await
+    }
+}
+
 /// Hooks for tests outside this module.
 #[cfg(test)]
 impl DiskLog {
-    /// Hold every flush until the guard is dropped.
-    pub(crate) async fn hold_flushes(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.inner.durability.lock_flushes().await
-    }
-
     /// Fail the next flush, as a failed fsync would.
     pub(crate) fn fail_next_flush(&self) {
         self.inner.fail_next_flush.store(true, Ordering::Release);

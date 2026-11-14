@@ -155,11 +155,23 @@ pub(crate) fn write_floors(root: &Path, floors: &Floors) -> Result<()> {
     write_file(root, &root.join(STREAMS_DIR).join(FLOORS), text.as_bytes())
 }
 
+/// Under the durable root's stop: creating `.streams` syncs the root itself.
 fn write_file(root: &Path, path: &Path, contents: &[u8]) -> Result<()> {
+    crate::run_state::durable_change(root, &record_name(path), || {
+        write_file_in(&root.join(STREAMS_DIR), path, contents)
+    })
+}
+
+fn record_name(path: &Path) -> String {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+fn write_file_in(dir: &Path, path: &Path, contents: &[u8]) -> Result<()> {
     use std::io::Write;
 
-    let dir = root.join(STREAMS_DIR);
-    create_dir_all_durable(&dir).map_err(StorageError::Io)?;
+    create_dir_all_durable(dir).map_err(StorageError::Io)?;
     let temporary = path.with_extension("tmp");
     {
         let mut file = crate::fs::File::create(&temporary).map_err(StorageError::Io)?;
@@ -167,7 +179,7 @@ fn write_file(root: &Path, path: &Path, contents: &[u8]) -> Result<()> {
         crate::io::sync_all(&file).map_err(StorageError::Io)?;
     }
     crate::fs::rename(&temporary, path).map_err(StorageError::Io)?;
-    sync_dir(&dir).map_err(StorageError::Io)
+    sync_dir(dir).map_err(StorageError::Io)
 }
 
 /// Name of the file recording that this broker has seen a stream with an
@@ -176,11 +188,16 @@ const IN_PLAY: &str = ".incarnations";
 
 /// Record, durably, that streams here carry incarnations.
 pub(crate) fn record_in_play(root: &Path) -> Result<()> {
-    let path = root.join(STREAMS_DIR).join(IN_PLAY);
-    if crate::fs::exists(&path) {
-        return Ok(());
-    }
-    write_file(root, &path, b"felix-stream-incarnations 1\n")
+    let dir = root.join(STREAMS_DIR);
+    let path = dir.join(IN_PLAY);
+    // The shortcut is under the stop: after a failed directory sync the
+    // file can be there without its entry being durable.
+    crate::run_state::durable_change(root, IN_PLAY, || {
+        if crate::fs::exists(&path) {
+            return Ok(());
+        }
+        write_file_in(&dir, &path, b"felix-stream-incarnations 1\n")
+    })
 }
 
 /// Whether this broker has seen a stream with an incarnation: the record of
@@ -215,11 +232,13 @@ pub(crate) fn in_play(root: &Path) -> Result<bool> {
 
 pub(crate) fn remove(root: &Path, tenant: &str, namespace: &str, stream: &str) -> Result<()> {
     let path = path(root, tenant, namespace, stream);
-    match crate::fs::remove_file(&path) {
-        Ok(()) => sync_dir(&root.join(STREAMS_DIR)).map_err(StorageError::Io),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(StorageError::Io(err)),
-    }
+    crate::run_state::durable_change(root, &record_name(&path), || {
+        match crate::fs::remove_file(&path) {
+            Ok(()) => sync_dir(&root.join(STREAMS_DIR)).map_err(StorageError::Io),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(err) => Err(StorageError::Io(err)),
+        }
+    })
 }
 
 /// Every marker whose delete has not finished.
