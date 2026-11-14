@@ -451,7 +451,7 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
     };
     assert!(matches!(
         cluster.runtime(failing).handle(request).await,
-        Err(Refused::NoSuchMember(_))
+        Err(Refused::OtherCopy(_, copy)) if copy == new.copy
     ));
     let member = cluster
         .runtime(&leader.broker)

@@ -1326,7 +1326,7 @@ impl ControlPlaneStore for RaftStore {
         &self,
         node_id: &str,
     ) -> StoreResult<Option<crate::model::RootSequence>> {
-        self.local().root_sequence(node_id).await
+        self.local()?.root_sequence(node_id).await
     }
 
     /// One entry per heartbeat in which the sequence moved: what the local
@@ -1338,7 +1338,7 @@ impl ControlPlaneStore for RaftStore {
         node_id: &str,
         heard: crate::model::RootSequence,
     ) -> StoreResult<bool> {
-        let held = self.local().root_sequence(node_id).await?;
+        let held = self.local()?.root_sequence(node_id).await?;
         if !crate::model::RootSequence::moved_by(held.as_ref(), &heard) {
             return Ok(false);
         }
@@ -1358,7 +1358,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
-        self.local().root_sequences().await
+        self.local()?.root_sequences().await
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {
