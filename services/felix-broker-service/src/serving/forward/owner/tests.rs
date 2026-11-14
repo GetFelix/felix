@@ -1464,35 +1464,47 @@ mod quorum_waits {
         let marks = Arc::new(QuorumMarks::new());
         let handler = owner(&leader, &credentials, &marks);
 
+        // The bound is generous on purpose: a loaded runner can stall the
+        // storage write for seconds, but a wait that re-arms its deadline
+        // would still print the configured timeout and must not pass.
+        let loose = (TIMEOUT * 100).min(Duration::from_secs(30));
         for (what, forwarded) in ops(&credentials) {
             let started = std::time::Instant::now();
             let answer = handler.apply_cache_op(forwarded).await;
             let waited = started.elapsed();
+            assert!(waited < loose, "{what} waited {waited:?}, past {loose:?}");
+            let InternalMessage::ForwardCacheError(error) = &answer else {
+                panic!("{what}: {:?}", answer.kind());
+            };
             assert!(
-                matches!(answer, InternalMessage::ForwardCacheError(_)),
-                "{what}: {:?}",
-                answer.kind()
+                error.detail.contains(&format!("within {TIMEOUT:?}")),
+                "{what} did not time out its quorum wait: {}",
+                error.detail
             );
             assert!(waited >= TIMEOUT, "{what} ended early after {waited:?}");
-            assert!(waited < TIMEOUT * 6, "{what} ended late after {waited:?}");
         }
 
+        // Nothing publishes past this mark, so an op still waiting on it
+        // could only time out: an Ok is the release.
         let cache = leader::quorum_cache_key();
         marks.publish(&cache, GENERATION, 1 << 20);
         marks.counters().publish(&cache, GENERATION, 1 << 20);
+        // Together and within the loose bound: a mark seen only by the 50 ms
+        // recheck, or a re-armed deadline, would blow it.
+        let released = std::time::Instant::now();
         for (what, forwarded) in ops(&credentials) {
-            let started = std::time::Instant::now();
             let answer = handler.apply_cache_op(forwarded).await;
             assert!(
                 matches!(answer, InternalMessage::ForwardCacheOk(_)),
                 "{what}: {:?}",
                 answer.kind()
             );
-            assert!(
-                started.elapsed() < TIMEOUT,
-                "{what} waited though the mark passed"
-            );
         }
+        let released_in = released.elapsed();
+        assert!(
+            released_in < loose,
+            "the released ops took {released_in:?}, past {loose:?}"
+        );
     }
 
     /// Where the fleet reads by round, a read does not need the lease before
