@@ -5,8 +5,9 @@ use felix_wire::internal::InternalMessage;
 use super::*;
 
 /// Peers whose listeners offer what the first map says. One not in it is
-/// down. The second holds the peers with a live connection open, and the
-/// count is how many dials were made.
+/// down. The second holds the peers with a live pooled connection open, and
+/// the count is how many probes were made. The check must never pool a
+/// connection of its own, so `capabilities` fails the test.
 struct Fleet(
     parking_lot::Mutex<HashMap<String, PeerCapabilities>>,
     parking_lot::Mutex<HashMap<String, PeerCapabilities>>,
@@ -24,6 +25,14 @@ impl PeerRequester for Fleet {
     }
 
     async fn capabilities(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<PeerCapabilities, PeerError> {
+        unreachable!("the check asks over a connection of its own, never a pooled one")
+    }
+
+    async fn probe_capabilities(
         &self,
         node_id: &str,
         _addr: SocketAddr,
@@ -224,20 +233,22 @@ async fn a_peer_reached_late_closes_the_shard_it_shares() {
 }
 
 /// **A refusal ends when the fleet agrees again**, as after the odd broker
-/// restarts on the right engine.
+/// restarts on the right engine. Its shards are closed here, so nothing
+/// pools a connection to it: the check has to keep asking it.
 #[tokio::test]
 async fn a_refusal_ends_once_the_engines_match() {
     let check = check(false, &[("broker-b", PeerCapabilities::RAFT)]).await;
     settled(&check, true).await;
     assert_eq!(pass(&check).await, ["scratch"]);
 
-    // It restarts on the hybrid, and replication connects to it again.
+    // It restarts on the hybrid.
     check
         .peers
-        .1
+        .0
         .lock()
         .insert("broker-b".to_string(), PeerCapabilities::NONE);
     settled(&check, false).await;
+    assert!(check.peers.1.lock().is_empty());
     assert_eq!(pass(&check).await, ["orders", "scratch"]);
     assert_eq!(refusal(&check, "orders"), None);
 }

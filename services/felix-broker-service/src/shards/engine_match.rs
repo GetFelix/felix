@@ -89,17 +89,21 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
     /// answers, its shards are served.
     ///
     /// The ask dials a connection of its own and closes it, and a peer whose
-    /// engine is known is not dialled again: a live pooled connection to it
-    /// answers, and without one the last answer stands. A pooled dial would
-    /// leave a connection that looks live for an idle timeout after the peer
-    /// restarts, and a failed one a reconnect backoff, and either would hold
-    /// up a move onto the restarted peer.
-    fn ask(&self, peer: &str) {
+    /// engine is known is not dialled again unless it is `refused`: a live
+    /// pooled connection to it answers, and without one the last answer
+    /// stands. A pooled dial would leave a connection that looks live for an
+    /// idle timeout after the peer restarts, and a failed one a reconnect
+    /// backoff, and either would hold up a move onto the restarted peer.
+    ///
+    /// A refused peer is dialled on every pass because nothing else reaches
+    /// it: its shards are closed here, so no request pools a connection to
+    /// it, and without the dial a peer fixed by a restart stays refused.
+    fn ask(&self, peer: &str, refused: bool) {
         if let Some(offered) = self.peers.connected_capabilities(peer) {
             learn(&self.engines, &self.wake, peer.to_string(), offered);
             return;
         }
-        if self.engines.lock().contains_key(peer) {
+        if !refused && self.engines.lock().contains_key(peer) {
             return;
         }
         let Some(addr) = (self.addresses)(peer) else {
@@ -177,8 +181,13 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
                 .iter()
                 .map(|assignment| assignment.key.clone())
                 .collect();
+            let odd: HashSet<String> = if self.any_refused.load(Ordering::Acquire) {
+                self.refused.lock().values().cloned().collect()
+            } else {
+                HashSet::default()
+            };
             for peer in &peers {
-                self.ask(peer);
+                self.ask(peer, odd.contains(peer));
             }
 
             let mut refused = HashMap::default();
