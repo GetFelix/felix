@@ -30,7 +30,7 @@ use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
 
 /// How often a kept-copy reclaim that waits only on a commit save looks
-/// again. A log not under `FsyncMode::OnCommit` saves at most this often.
+/// again. A Raft log saves its commit at most this often.
 const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 
 /// The timers every group on a broker shares.

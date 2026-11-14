@@ -398,16 +398,17 @@ cannot be read, a delete failed) is not retried until the next open. Deleting
 a stream deletes the kept copies of that stream's incarnation too, even when
 the live directory is gone.
 
-Two cases are never reclaimed automatically yet, and are tracked in #2442:
+A Raft log saves its committed index behind the commit, at most once a
+second, because a save is a file create, two fsyncs and a rename that the
+log's own fsyncs would queue behind. The last commit before a group goes idle
+is saved within that second, so a kept directory waits at most that long on
+the save.
 
-- A group that has purged its log. After a snapshot the copy's first index is
-  above the base of the kept directory's lowest segment unless the purge fell
-  exactly on a segment boundary, so the kept directory stays. That is safe,
-  only wasteful.
-- A log not under `FsyncMode::OnCommit` (`None` or `Periodic`). It saves its
-  committed index at most once a second, and only when the commit moves, so
-  an idle group may not save the last one, and the kept directories it would
-  cover stay until a later commit or a restart.
+One case is never reclaimed automatically yet, and is tracked in #2442: a
+group that has purged its log. After a snapshot the copy's first index is
+above the base of the kept directory's lowest segment unless the purge fell
+exactly on a segment boundary, so the kept directory stays. That is safe,
+only wasteful.
 
 A re-form that starts a copy at a base without the base's records must not
 count that as holding them (issue #2441): the rule above reads the copy's

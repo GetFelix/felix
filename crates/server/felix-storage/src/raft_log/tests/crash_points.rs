@@ -337,6 +337,55 @@ async fn a_cut_tail_never_returns_under_a_committed_id() {
     }
 }
 
+/// A committed id is saved at most once an interval, so a power cut can keep
+/// one older than the last the member heard. It reads back as the older id
+/// over a whole log, still guards what is below it, and moves up again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_committed_id_saved_before_the_cut_reads_back_older() {
+    use crate::disk_log::COMMIT_PERSIST_INTERVAL;
+    for seed in 0..4 {
+        let sim = Sim::new("stale-commit", seed);
+        let mut raft = sim.open();
+        let written = entries(0..26);
+        append_flushed(&mut raft, &written).await;
+        let log = raft.disk_log().clone();
+        raft.save_committed(Some(written[9].log_id))
+            .await
+            .expect("save");
+        log.commit_offset_persisted().await;
+        let saved_at = std::time::Instant::now();
+        raft.save_committed(Some(written[25].log_id))
+            .await
+            .expect("save");
+        // Long enough for a write started by the save to land.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let saved = log.saved_commit_offset();
+        assert_eq!(log.commit_offset(), 26, "seed {seed}");
+        // A starved runner can take most of the interval to get here.
+        if saved_at.elapsed() < COMMIT_PERSIST_INTERVAL / 2 {
+            assert_eq!(saved, 10, "seed {seed}: a write within the interval");
+        }
+        sim_fs::crash(&sim.0, seed).expect("crash");
+
+        let mut raft = sim.open();
+        assert_eq!(all(&raft).await.expect("read after the cut"), written);
+        let committed = saved as usize - 1;
+        assert_eq!(
+            raft.read_committed().await.expect("committed"),
+            Some(written[committed].log_id),
+            "seed {seed}"
+        );
+        raft.truncate_after(Some(written[committed - 1].log_id))
+            .await
+            .expect_err("below the committed id");
+        raft.save_committed(Some(written[25].log_id))
+            .await
+            .expect("save");
+        raft.disk_log().commit_offset_persisted().await;
+        raft.disk_log().shutdown().await.expect("shutdown");
+    }
+}
+
 /// openraft saves a committed id before the entry it names is flushed here.
 /// A power cut can then take the entry and keep the id. The id read back is
 /// never past the log, and stays where it was lowered to: entries another
