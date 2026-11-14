@@ -88,6 +88,12 @@ pub(crate) struct StreamState {
     /// Held across a pass that delivers from the engine's log, and across a
     /// new leader's move to the committed tail, so the two never interleave.
     pub(crate) log_pass: tokio::sync::Mutex<()>,
+    /// How many callers wait to lead the shard on its engine's log. While
+    /// one does, a pass ends a `Block` subscriber it finds full instead of
+    /// waiting on it: a slow reader must not hold up a term's writes.
+    pub(crate) leads_wanted: AtomicUsize,
+    /// Wakes a pass waiting on full subscribers when `leads_wanted` rises.
+    pub(crate) lead_wanted: tokio::sync::Notify,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -206,6 +212,8 @@ impl StreamState {
             engine_log: false,
             leads_engine_log: AtomicBool::new(false),
             log_pass: tokio::sync::Mutex::new(()),
+            leads_wanted: AtomicUsize::new(0),
+            lead_wanted: tokio::sync::Notify::new(),
             commits: CommitScan::default(),
         }
     }
@@ -287,6 +295,10 @@ impl StreamState {
             state.state_view = None;
             state.next_seq = end;
         }
+    }
+
+    pub(crate) fn has_subscribers(&self) -> bool {
+        !self.subscribers.lock().senders.is_empty()
     }
 
     /// Start again at `to` with an empty ring, if nobody is registered to
@@ -528,6 +540,14 @@ impl StreamState {
             }
         }
         if turn.is_some_and(|turn| !turn.is_current()) {
+            return None;
+        }
+        // On an engine's log a batch can come twice: released from a deposed
+        // term's hold, and read from the log by the pass that followed.
+        if self.engine_log
+            && let Some(first) = first_seq
+            && first + payloads.len() as u64 <= state.next_seq
+        {
             return None;
         }
 

@@ -88,6 +88,7 @@ pub(crate) async fn handle_subscribe_message(
     subscriptions: &Arc<IdentityLimits>,
     lane_manager: &Arc<WriterLaneManager>,
     ingress: Option<&crate::shards::routing::IngressRouter>,
+    client_endpoints: Option<&crate::cluster::client_endpoints::ClientEndpoints>,
     out_ack_tx: &mpsc::Sender<Outgoing>,
     out_ack_depth: &Arc<std::sync::atomic::AtomicUsize>,
     ack_throttle_tx: &tokio::sync::watch::Sender<bool>,
@@ -213,6 +214,7 @@ pub(crate) async fn handle_subscribe_message(
                         subscribe_refusal(
                             err,
                             ingress,
+                            client_endpoints,
                             &tenant_id,
                             &namespace,
                             &stream,
@@ -252,6 +254,7 @@ pub(crate) async fn handle_subscribe_message(
                             subscribe_refusal(
                                 err,
                                 ingress,
+                                client_endpoints,
                                 &tenant_id,
                                 &namespace,
                                 &stream,
@@ -289,6 +292,7 @@ pub(crate) async fn handle_subscribe_message(
                             subscribe_refusal(
                                 err,
                                 ingress,
+                                client_endpoints,
                                 &tenant_id,
                                 &namespace,
                                 &stream,
@@ -766,6 +770,7 @@ pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message
 fn subscribe_refusal(
     err: felix_broker::BrokerError,
     ingress: Option<&crate::shards::routing::IngressRouter>,
+    client_endpoints: Option<&crate::cluster::client_endpoints::ClientEndpoints>,
     tenant_id: &str,
     namespace: &str,
     stream: &str,
@@ -781,7 +786,7 @@ fn subscribe_refusal(
             kind: crate::shards::ShardKind::Stream,
         };
         if let Some(redirect) =
-            super::redirect::to_leader_from_follower(ingress, &key, peer_features)
+            super::redirect::to_leader_from_follower(ingress, client_endpoints, &key, peer_features)
         {
             return redirect;
         }

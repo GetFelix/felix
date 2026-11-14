@@ -261,6 +261,32 @@ impl Completion {
         })
     }
 
+    /// [`Self::deliver`] for a batch read from an engine's log. Once a
+    /// caller waits to lead the shard here, a `Block` subscriber still full
+    /// is ended, with the batch counted as its drop, instead of waited on.
+    async fn deliver_unless_led(&mut self) {
+        let state = Arc::clone(&self.handle.state);
+        let wanted = state.lead_wanted.notified();
+        tokio::pin!(wanted);
+        wanted.as_mut().enable();
+        let waiting = state.leads_wanted.load(Ordering::SeqCst) > 0;
+        tokio::select! {
+            biased;
+            _ = self.deliver() => return,
+            _ = async { if !waiting { wanted.await } } => {}
+        }
+        let Some(delivery) = self.delivery.as_mut() else {
+            return;
+        };
+        let mut ended = std::mem::take(&mut delivery.closed);
+        for index in std::mem::take(&mut delivery.full) {
+            let subscriber = &delivery.senders[index];
+            record_drop(&state, subscriber, &delivery.envelope);
+            ended.push(subscriber.id);
+        }
+        state.remove_subscribers(&ended);
+    }
+
     /// Fan the batch out and settle what the fanout found.
     async fn deliver(&mut self) -> Result<PublishOutcome> {
         self.fan_out().await;
@@ -577,7 +603,7 @@ async fn release(handle: StreamHandle) {
         };
         for batch in ready {
             if batch.gap {
-                state.restart_ring(batch.gap_end);
+                state.restart_ring(gap_end(state, batch.gap_end));
                 continue;
             }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
@@ -590,6 +616,26 @@ async fn release(handle: StreamHandle) {
                 let _ = completion.deliver().await;
             }
         }
+    }
+}
+
+/// How far a batch the engine gave up on moves the stream's sequence.
+///
+/// On an engine's log its offsets may be cut, and the next leader may commit
+/// other records there. So the sequence moves only over what is committed,
+/// and not at all on a broker that no longer leads, whose pass then
+/// delivers whatever commits at those offsets.
+fn gap_end(state: &StreamState, written_end: Option<u64>) -> Option<u64> {
+    if !state.engine_log {
+        return written_end;
+    }
+    if !state.leads_engine_log.load(Ordering::Acquire) {
+        return None;
+    }
+    match state.read_bound() {
+        crate::ReadBound::Committed(bound) => written_end.map(|end| end.min(bound)),
+        crate::ReadBound::Unbounded => written_end,
+        crate::ReadBound::Settling | crate::ReadBound::Refused => None,
     }
 }
 
@@ -628,7 +674,9 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
     }
     // Batches handed over while this broker led are released in their own
     // order first. Reading under them would deliver their records twice.
-    if state.held.is_busy() || !state.proposals.is_idle() {
+    // A settling batch joins the hold before it leaves the order, so the
+    // order is checked first: idle, then not busy, means nothing is between.
+    if !state.proposals.is_idle() || state.held.is_busy() {
         return Ok(LogDelivery::Waiting);
     }
     let crate::ReadBound::Committed(bound) = state.read_bound() else {
@@ -641,6 +689,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
     // not here to deliver. Readers are ended and resume where they stood,
     // on a broker that holds them.
     let base = log.readable_base();
+    // The hold is idle (checked above), so `advance_to` discards nothing.
     if next < base && base <= bound {
         state.advance_to(base, || crate::broker::shard_logs::accepted_leader(state));
         next = state.tail_seq();
@@ -684,7 +733,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
             }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
             if completion.append().is_ok() {
-                let _ = completion.deliver().await;
+                completion.deliver_unless_led().await;
             }
         }
     }

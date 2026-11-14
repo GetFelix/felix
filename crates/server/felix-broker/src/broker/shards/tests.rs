@@ -172,11 +172,20 @@ mod engine_log {
 
     /// [`broker`], with a ring of `capacity` records.
     async fn broker_with(bound: ReadBound, capacity: Option<usize>) -> (Broker, Arc<Bound>) {
+        broker_from(bound, |broker| match capacity {
+            Some(capacity) => broker.with_log_capacity(capacity).expect("capacity"),
+            None => broker,
+        })
+        .await
+    }
+
+    /// [`broker`], configured by `make`.
+    async fn broker_from(
+        bound: ReadBound,
+        make: impl FnOnce(Broker) -> Broker,
+    ) -> (Broker, Arc<Bound>) {
         let bounds = Arc::new(Bound(Mutex::new(bound)));
-        let mut broker = Broker::new(EphemeralCache::new().into());
-        if let Some(capacity) = capacity {
-            broker = broker.with_log_capacity(capacity).expect("capacity");
-        }
+        let broker = make(Broker::new(EphemeralCache::new().into()));
         broker.leave_durable_streams_to_engines();
         broker.set_read_bounds(Arc::clone(&bounds) as Arc<dyn ReadBounds>);
         broker.register_tenant("t1").await.expect("tenant");
@@ -624,7 +633,7 @@ mod engine_log {
     #[tokio::test]
     async fn a_follower_far_behind_skips_ahead_only_with_no_subscriber() {
         let dir = tempfile::tempdir().expect("dir");
-        let log = engine_log(dir.path(), 10).await;
+        let log = engine_log(dir.path(), 12).await;
         let (broker, bound) = broker_with(ReadBound::Committed(0), Some(4)).await;
         let handle = open(&broker, &log).await;
         let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
@@ -637,8 +646,238 @@ mod engine_log {
 
         drop(guard);
         drop(receiver);
-        *bound.0.lock() = ReadBound::Committed(10);
+        *bound.0.lock() = ReadBound::Committed(12);
         handle.deliver_from_log().await.expect("pass");
+        assert_eq!(handle.tail_seq(), 12);
+        // Jumped, not read: the ring holds none of what was passed.
+        assert!(
+            handle.state.log_state.lock().log.is_empty(),
+            "the ring was filled from the log"
+        );
+    }
+
+    /// Wait until the batches `handle` was handed have settled and been
+    /// released, so a pass can run.
+    async fn settled(handle: &StreamHandle) {
+        for _ in 0..200 {
+            if handle.state.proposals.is_idle() && !handle.state.held.is_busy() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("the handed-over batches never settled");
+    }
+
+    /// **A batch that reaches the ring after the log already delivered its
+    /// offsets is not delivered again.** A deposed term's batch can settle
+    /// just as a pass reads the same records from the log.
+    #[tokio::test]
+    async fn a_batch_the_log_delivered_is_not_delivered_again() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 1).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        *bound.0.lock() = ReadBound::Committed(1);
+        handle.deliver_from_log().await.expect("pass");
+        assert_eq!(batch(&mut receiver).await, (0, 0, payloads(&["0"])));
+
+        let proposed = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"0")],
+                Duration::MAX,
+                |_| async {
+                    Ok::<_, ProposalFailed<()>>(ProposalCommitted {
+                        end: 1,
+                        skipped_before: 0,
+                    })
+                },
+            )
+            .expect("handed over");
+        proposed.complete().await.expect("committed");
+        settled(&handle).await;
+        quiet(&mut receiver).await;
+        assert_eq!(handle.tail_seq(), 1);
+    }
+
+    /// **A deposed leader's failed batch leaves its offsets to the next
+    /// leader.** The engine wrote it but may cut it, and the next leader
+    /// may commit another record at the same offset. Moving past it, a
+    /// follower would never deliver that record.
+    #[tokio::test]
+    async fn a_deposed_leaders_failed_batch_leaves_its_offsets_to_the_next_leader() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        assert!(
+            broker
+                .lead_from_tail("t1", "ns", "orders", 0)
+                .await
+                .expect("lead")
+        );
+        let proposed = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"cut")],
+                Duration::MAX,
+                |_| async {
+                    Err::<ProposalCommitted, _>(ProposalFailed {
+                        error: (),
+                        written_end: Some(1),
+                    })
+                },
+            )
+            .expect("handed over");
+        broker.follow_engine_log("t1", "ns", "orders", 0).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        assert!(proposed.complete().await.is_err());
+        settled(&handle).await;
+
+        // The next leader cut the entry and committed its own at offset 0.
+        append(&log, &["r"], 7).await;
+        *bound.0.lock() = ReadBound::Committed(1);
+        let pass = handle.deliver_from_log().await.expect("pass");
+        assert_eq!(pass, LogDelivery::CaughtUp);
+        assert_eq!(batch(&mut receiver).await, (0, 0, payloads(&["r"])));
+    }
+
+    /// **A deposal that lands as the term opens leaves the stream followed.**
+    /// The mark is set before the term is asked about, so a deposal after
+    /// the answer clears it rather than being overwritten.
+    #[tokio::test]
+    async fn a_deposal_as_the_term_opens_leaves_the_stream_followed() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 2).await;
+        let (broker, bound) = broker(ReadBound::Committed(1)).await;
+        let handle = open(&broker, &log).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+
+        // The term holds when asked, and is deposed right after.
+        let deposed = handle.clone();
+        let led = broker
+            .lead_from_tail_if("t1", "ns", "orders", 0, move || {
+                deposed
+                    .state
+                    .leads_engine_log
+                    .store(false, std::sync::atomic::Ordering::Release);
+                true
+            })
+            .await;
+        assert!(led.expect("lead"));
+
+        *bound.0.lock() = ReadBound::Committed(2);
+        handle.deliver_from_log().await.expect("pass");
+        assert_eq!(batch(&mut receiver).await, (1, 0, payloads(&["1"])));
+    }
+
+    /// **A full `Block` subscriber does not hold up a new term.** The pass
+    /// that waits on it is told a term wants to open, and ends it with the
+    /// batch counted as its drop, so the subscriber knows where to resume.
+    #[tokio::test]
+    async fn a_full_block_subscriber_does_not_hold_up_a_new_term() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        append(&log, &["a"], 1).await;
+        append(&log, &["b"], 2).await;
+        append(&log, &["c"], 3).await;
+        let (broker, bound) = broker_from(ReadBound::Committed(0), |broker| {
+            broker.with_subscriber_queue_policy(crate::SubQueuePolicy::Block)
+        })
+        .await;
+        let handle = open(&broker, &log).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker
+                .subscribe_sized("t1", "ns", "orders", 0, Some(1))
+                .await;
+            subscription.expect("subscribe").into_parts()
+        };
+        *bound.0.lock() = ReadBound::Committed(3);
+        let pass = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.deliver_from_log().await }
+        });
+        // The pass is now waiting on the full queue.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!pass.is_finished(), "the subscriber's queue was not full");
+
+        let led = tokio::time::timeout(
+            Duration::from_secs(5),
+            broker.lead_from_tail("t1", "ns", "orders", 0),
+        )
+        .await
+        .expect("the term opened while the subscriber was full");
+        assert!(led.expect("lead"));
+        pass.await.expect("pass task").expect("pass");
+
+        assert_eq!(batch(&mut receiver).await, (0, 0, payloads(&["a"])));
+        let ended = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+        assert!(
+            ended.expect("ended in time").is_none(),
+            "kept the subscriber"
+        );
+        assert_eq!(receiver.lagged(), Some(1));
+        assert_eq!(handle.tail_seq(), 3);
+    }
+
+    /// **A member sent a snapshot ends its readers where they stood.** The
+    /// records below the log's new base are not here to deliver, so they
+    /// resume on a broker that holds them; the pass goes on from the base.
+    #[tokio::test]
+    async fn a_snapshot_ends_readers_where_they_stood() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 2).await;
+        let (broker, bound) = broker(ReadBound::Committed(2)).await;
+        let handle = open(&broker, &log).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+
+        log.rebuild_at(10).await.expect("snapshot");
+        append(&log, &["s"], 5).await;
+        *bound.0.lock() = ReadBound::Committed(11);
+        let pass = handle.deliver_from_log().await.expect("pass");
+        assert_eq!(pass, LogDelivery::CaughtUp);
+
+        let ended = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+        assert!(
+            ended.expect("ended in time").is_none(),
+            "kept the subscriber"
+        );
+        let moved = receiver.moved().expect("ended as moved");
+        assert_eq!(moved.resume_from, Some(2));
+        assert_eq!(handle.tail_seq(), 11);
+    }
+
+    /// **A tail-only subscriber of a follower behind its engine joins at the
+    /// committed end**, not at records committed long before it asked.
+    #[tokio::test]
+    async fn a_tail_only_subscriber_joins_at_the_committed_end() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 10).await;
+        let (broker, bound) = broker_with(ReadBound::Committed(0), Some(4)).await;
+        let handle = open(&broker, &log).await;
+        *bound.0.lock() = ReadBound::Committed(10);
+
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
         assert_eq!(handle.tail_seq(), 10);
+        append(&log, &["new"], 9).await;
+        *bound.0.lock() = ReadBound::Committed(11);
+        handle.deliver_from_log().await.expect("pass");
+        assert_eq!(batch(&mut receiver).await, (10, 0, payloads(&["new"])));
     }
 }

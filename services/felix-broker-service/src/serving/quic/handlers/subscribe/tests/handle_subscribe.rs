@@ -41,6 +41,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
             &IdentityLimits::unlimited(),
             &server_lane_manager,
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -150,6 +151,7 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
             &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -233,6 +235,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
             config,
             &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             None,
             &out_ack_tx,
             &out_ack_depth,
@@ -358,6 +361,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
             &IdentityLimits::unlimited(),
             &server_lane_manager,
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -462,6 +466,7 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
             &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -544,6 +549,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             test_config(),
             &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             None,
             &out_ack_tx,
             &out_ack_depth,
@@ -721,6 +727,7 @@ async fn frames_across_generation_starts(
             test_config(),
             &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             None,
             &out_ack_tx,
             &out_ack_depth,
@@ -907,6 +914,7 @@ async fn subscribe_after_admission(
             &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
             Some(&ingress),
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -1187,6 +1195,7 @@ async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
             &IdentityLimits::unlimited(),
             &lane_manager,
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -1360,6 +1369,7 @@ mod on_raft {
                 &IdentityLimits::unlimited(),
                 &server_lanes,
                 Some(&ingress),
+                None,
                 &out_ack_tx,
                 &out_ack_depth,
                 &ack_throttle_tx,
@@ -1474,10 +1484,23 @@ mod on_raft {
             requested: 9,
             tail: 2,
         };
+        // The client follows a redirect only to an address it is given.
+        let endpoints = crate::cluster::client_endpoints::ClientEndpoints::new();
+        let leader_endpoint = felix_wire::BrokerEndpoint {
+            node_id: members[leader].name.to_string(),
+            addr: "10.0.0.4:5000".to_string(),
+        };
+        endpoints.refresh(&crate::cluster::node_catalog::NodeCatalog {
+            nodes: Default::default(),
+            client_endpoints: vec![leader_endpoint.clone()],
+            redirect_endpoints: vec![leader_endpoint],
+            kafka_endpoints: Vec::new(),
+        });
         let refusal = |ingress: &crate::shards::routing::IngressRouter| {
             subscribe_refusal(
                 ahead(),
                 Some(ingress),
+                Some(&endpoints),
                 "t1",
                 "ns",
                 "orders",
@@ -1490,7 +1513,7 @@ mod on_raft {
             refusal(&ingress),
             Message::NotLeader {
                 node_id: members[leader].name.to_string(),
-                addr: None,
+                addr: Some("10.0.0.4:5000".to_string()),
                 generation: term,
             }
         );

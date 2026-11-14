@@ -24,6 +24,13 @@ use crate::{ShardKey, ShardKind};
 /// How soon a follower's delivery from the log that had to wait looks again.
 const LOG_RECHECK: Duration = Duration::from_millis(100);
 
+/// The longest a failing delivery from the log waits before trying again.
+const LOG_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Failed deliveries from the log in a row after which the stream's
+/// subscribers are ended, so their clients resubscribe where the log reads.
+const LOG_FAILURES_TO_END: u32 = 5;
+
 const OTHER_TERM: &str = "the batch was written at a later term than it was admitted at";
 
 impl RaftEngine {
@@ -93,14 +100,30 @@ impl RaftEngine {
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
         Some(tokio::spawn(async move {
+            let mut failures = 0u32;
             loop {
                 stream.release_committed();
                 stream.appended().notify_waiters();
-                let caught_up = match stream.deliver_from_log().await {
-                    Ok(delivery) => delivery == LogDelivery::CaughtUp,
+                let recheck = match stream.deliver_from_log().await {
+                    Ok(LogDelivery::CaughtUp) => {
+                        failures = 0;
+                        None
+                    }
+                    Ok(LogDelivery::Waiting) => Some(LOG_RECHECK),
                     Err(err) => {
-                        tracing::warn!(error = %err, "could not deliver a shard's committed records from its log");
-                        false
+                        failures = failures.saturating_add(1);
+                        tracing::warn!(error = %err, failures, "could not deliver a shard's committed records from its log");
+                        // Subscribers left here would wait, told nothing.
+                        if failures >= LOG_FAILURES_TO_END {
+                            stream.end_subscribers();
+                        }
+                        if !stream.is_active() {
+                            return;
+                        }
+                        // Not woken early by commits: they keep moving.
+                        let backoff = LOG_RECHECK.saturating_mul(1 << failures.min(6));
+                        tokio::time::sleep(backoff.min(LOG_RETRY_MAX)).await;
+                        continue;
                     }
                 };
                 if !stream.is_active() {
@@ -109,9 +132,9 @@ impl RaftEngine {
                 // A pass that had to wait is not told when it may go on: a
                 // deposed term's batches settle without the commit index
                 // moving.
-                let moved = match caught_up {
-                    true => commits.changed().await,
-                    false => tokio::time::timeout(LOG_RECHECK, commits.changed())
+                let moved = match recheck {
+                    None => commits.changed().await,
+                    Some(after) => tokio::time::timeout(after, commits.changed())
                         .await
                         .unwrap_or(Ok(())),
                 };

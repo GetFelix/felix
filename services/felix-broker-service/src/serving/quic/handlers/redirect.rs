@@ -81,6 +81,7 @@ pub(crate) fn redirect_for(
 /// to serve.
 pub(crate) fn to_leader_from_follower(
     ingress: Option<&crate::shards::routing::IngressRouter>,
+    client_endpoints: Option<&crate::cluster::client_endpoints::ClientEndpoints>,
     key: &crate::shards::ShardKey,
     peer_features: u32,
 ) -> Option<Message> {
@@ -90,7 +91,7 @@ pub(crate) fn to_leader_from_follower(
     }
     match ingress.engine_dispatch(key)? {
         crate::shards::routing::Dispatch::Local { .. } => None,
-        dispatched => redirect_from(dispatched, None, &key.stream, peer_features),
+        dispatched => redirect_from(dispatched, client_endpoints, &key.stream, peer_features),
     }
 }
 
