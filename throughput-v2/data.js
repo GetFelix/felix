@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794675013796,
+  "lastUpdate": 1794675741636,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56680,6 +56680,58 @@ window.BENCHMARK_DATA = {
             "range": "8796.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1226897.40\nmean: 1230212.29\nstdev: 8796.23\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e23fdf706b7da3c8eced2ccfed06ff7b002c23d",
+          "message": "deps(replication): openraft at 5c3ad1bc2d, 64 client responder slots (#2537)\n\n* deps(replication): openraft at 5c3ad1bc2d: 64 client responder slots (#2415)\n\nUpstream main past 30c947ef38: openraft#2324 starts each member's client\nresponder queue at 64 slots instead of 8,192 (openraft#2323). The other\nfive commits are jepsen test changes, additive runtime helpers, and two\nrefactors of the read and write paths that keep the calls Felix makes.\n\n* WIP test(replication): the memory test counts large allocations for the process\n\nNot linted or run on the box yet.\n\n* deps(replication): openraft at 5c3ad1bc2d: docs, changelog, memory test counts the process reserve (#2415)\n\n* docs(replication): pin date and idle-memory figures for openraft 5c3ad1bc2d (#2415)\n\n* docs(replication): list every commit in the openraft pin range, fix the memory arithmetic and units\n\n* deps(demos): demo lockfiles at openraft 5c3ad1bc2d\n\nSpec-Unaffected: lockfiles only",
+          "timestamp": "2026-11-14T16:52:03Z",
+          "tree_id": "ff5453a4195873521c0a4e09e100d19498afe04b",
+          "url": "https://github.com/GetFelix/felix/commit/7e23fdf706b7da3c8eced2ccfed06ff7b002c23d"
+        },
+        "date": 1794675740874,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 411449.08,
+            "range": "10298.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 411449.08\nmean: 411236.56\nstdev: 10298.18\ncv: 2.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 411449.08,
+            "range": "10298.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 411449.08\nmean: 411236.56\nstdev: 10298.18\ncv: 2.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 98315.91,
+            "range": "473.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 98315.91\nmean: 98202.70\nstdev: 473.44\ncv: 0.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 983159.06,
+            "range": "4734.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 983159.06\nmean: 982026.99\nstdev: 4734.43\ncv: 0.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
