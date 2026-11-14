@@ -280,7 +280,7 @@ fn a_delete_of_an_expired_key_answers_absent() {
         Some(Answer::Absent)
     );
     // It changed nothing but the answer it keeps.
-    assert_eq!(state.entries, before.entries);
+    assert!(state.view().entries().eq(before.view().entries()));
 }
 
 /// OneClock and CondExact for putAbsent, putIf and deleteIf.
@@ -339,8 +339,8 @@ fn a_member_restored_from_a_snapshot_answers_like_one_that_replayed() {
     replayed.apply(2, 10, &add("n", 1, request(1, 2)));
     let mut restored = CacheState::restore(&replayed.snapshot(), true).unwrap();
     // The snapshot left the expired record out; the other member holds it.
-    assert!(replayed.entries.contains_key("k"));
-    assert!(!restored.entries.contains_key("k"));
+    assert!(replayed.view().entry("k").is_some());
+    assert!(restored.view().entry("k").is_none());
     for command in [
         delete("k", None, request(1, 3)),
         delete("k", Some(1), request(1, 4)),
@@ -560,7 +560,7 @@ fn a_restored_value_is_its_own_copy() {
     state.apply(1, 3, &put("k", "v", request(1, 1)));
     let snapshot = state.snapshot();
     let restored = CacheState::restore(&snapshot, true).unwrap();
-    let value = &restored.entries["k"].value;
+    let value = &restored.view().entry("k").unwrap().value;
     let within = snapshot.as_ptr_range();
     assert!(!within.contains(&value.as_ptr()));
 }
@@ -579,5 +579,253 @@ fn apply_and_snapshot_read_no_clock() {
                 "{clock} in the cache state machine"
             );
         }
+    }
+}
+
+/// What reads of `state` find for the keys, producers and sequences the
+/// tests here use, and the snapshot it would write.
+fn seen(state: &CacheState) -> String {
+    let mut seen = Vec::new();
+    for key in ["a", "b", "c", "d"] {
+        for clock in [0, 15, u64::MAX] {
+            seen.push(format!("{key}@{clock}: {:?}", state.read(key, clock)));
+        }
+        seen.push(format!("{key} sum: {:?}", state.sum(key)));
+    }
+    for producer in 0..3 {
+        for sequence in 0..90 {
+            if let Some(answer) = state.answer(producer, sequence) {
+                seen.push(format!("{producer}/{sequence}: {answer:?}"));
+            }
+        }
+    }
+    seen.push(format!("next expiry {:?}", state.next_expiry()));
+    for clock in [0, 15, u64::MAX] {
+        seen.push(format!("due@{clock}: {:?}", state.due(clock, 2)));
+        seen.push(format!("all due@{clock}: {:?}", state.due(clock, 100)));
+    }
+    seen.push(format!("snapshot {:?}", state.snapshot()));
+    seen.join("\n")
+}
+
+/// Applies `before`, cuts, then applies `during`. Throughout, the layered
+/// state answers like a plain one that applied the same, the cut stays
+/// the state as of its entry, and once the cut is let go the writes made
+/// during it fold back without loss. Returns the folded state.
+fn layered_like_plain(before: &[CacheCommand], during: &[CacheCommand]) -> CacheState {
+    let (mut layered, mut plain) = (CacheState::default(), CacheState::default());
+    let mut index = 0;
+    for command in before {
+        index += 1;
+        layered.apply(index, 10, command);
+        plain.apply(index, 10, command);
+    }
+    let cut = layered.cut();
+    let at_cut = plain.snapshot();
+    assert!(layered.layered());
+    for command in during {
+        index += 1;
+        let answer = layered.apply(index, 10, command);
+        assert_eq!(answer, plain.apply(index, 10, command), "{command:?}");
+        assert_eq!(seen(&layered), seen(&plain), "after {command:?}");
+        assert!(layered == plain);
+    }
+    assert_eq!(cut.snapshot(), at_cut, "the cut holds later writes");
+    assert!(
+        !layered.fold(usize::MAX),
+        "folded while a cut holds the base"
+    );
+    assert!(layered.layered());
+    drop(cut);
+    while layered.fold(1) {
+        assert_eq!(seen(&layered), seen(&plain), "part way through the fold");
+    }
+    assert!(!layered.layered(), "the fold did not finish");
+    assert_eq!(seen(&layered), seen(&plain), "after the fold");
+    layered
+}
+
+/// A put during a build is read back; the cut does not hold it.
+#[test]
+fn a_put_during_a_build_is_read_from_the_delta() {
+    let state = layered_like_plain(
+        &[put("a", "v", request(1, 1))],
+        &[put("b", "w", request(1, 2))],
+    );
+    assert_eq!(value(&state, "b", 0), Some(("w".into(), 2)));
+}
+
+/// An overwrite during a build hides the base's value.
+#[test]
+fn an_overwrite_during_a_build_hides_the_base_value() {
+    let state = layered_like_plain(
+        &[put("a", "v", request(1, 1))],
+        &[put("a", "w", request(1, 2))],
+    );
+    assert_eq!(value(&state, "a", 0), Some(("w".into(), 2)));
+}
+
+/// A delete during a build of a key the base holds leaves it absent.
+#[test]
+fn a_delete_during_a_build_hides_the_base_key() {
+    let state = layered_like_plain(
+        &[put_with("a", "v", 30, Condition::None, request(1, 1))],
+        &[delete("a", None, request(1, 2))],
+    );
+    assert_eq!(state.read("a", 0), Read::Absent);
+    assert_eq!(state.next_expiry(), None);
+}
+
+/// A key deleted and put again during a build holds the new value.
+#[test]
+fn a_delete_then_put_during_a_build_holds_the_new_value() {
+    let state = layered_like_plain(
+        &[put_with("a", "v", 30, Condition::None, request(1, 1))],
+        &[
+            delete("a", None, request(1, 2)),
+            put_with("a", "w", 0, Condition::Absent, request(1, 3)),
+            delete("a", None, request(1, 4)),
+            put_with("a", "x", 0, Condition::Absent, request(1, 5)),
+        ],
+    );
+    assert_eq!(value(&state, "a", u64::MAX), Some(("x".into(), 5)));
+    assert_eq!(state.next_expiry(), None);
+}
+
+/// A floor raised during a build drops the base's answers below it, and a
+/// retry from below it is forgotten, not applied again.
+#[test]
+fn a_floor_raised_during_a_build_drops_the_base_answers_below_it() {
+    let before: Vec<_> = (1..=5)
+        .map(|sequence| add("a", 1, request(1, sequence)))
+        .collect();
+    let state = layered_like_plain(
+        &before,
+        &[
+            CacheCommand::Retire {
+                producer: 1,
+                floor: 4,
+            },
+            add("a", 1, request(1, 2)),
+            add("a", 1, request(1, 6)),
+        ],
+    );
+    assert_eq!(state.answer(1, 2), None);
+    assert_eq!(state.answer(1, 4), Some(Answer::Sum(4)));
+    assert_eq!(state.answer(1, 6), Some(Answer::Sum(6)));
+    assert_eq!(state.sum("a"), Some(6));
+}
+
+/// Expiry walks the base and the delta as one order.
+#[test]
+fn expiry_during_a_build_walks_both_layers() {
+    let state = layered_like_plain(
+        &[
+            put_with("a", "v", 10, Condition::None, request(1, 1)),
+            put_with("c", "v", 30, Condition::None, request(1, 2)),
+        ],
+        &[
+            put_with("b", "v", 20, Condition::None, request(1, 3)),
+            delete("c", None, request(1, 4)),
+            put_with("d", "v", 5, Condition::None, request(1, 5)),
+        ],
+    );
+    let due: Vec<_> = state
+        .due(u64::MAX, 10)
+        .into_iter()
+        .map(|(key, _)| key)
+        .collect();
+    assert_eq!(due, ["d", "a", "b"]);
+    assert_eq!(state.next_expiry(), Some(5));
+}
+
+/// A cut taken while an earlier one still holds the base shares the base
+/// and copies the delta; one taken while a fold is part way finishes the
+/// fold first. Each stays as of its own entry.
+#[test]
+fn a_second_cut_is_exact_while_the_first_is_held_or_folding() {
+    let (mut layered, mut plain) = (CacheState::default(), CacheState::default());
+    let apply = |layered: &mut CacheState, plain: &mut CacheState, index: u64| {
+        let command = put(
+            ["a", "b", "c", "d"][index as usize % 4],
+            "v",
+            request(1, index),
+        );
+        layered.apply(index, 10, &command);
+        plain.apply(index, 10, &command);
+    };
+    for index in 1..=8 {
+        apply(&mut layered, &mut plain, index);
+    }
+    let first = layered.cut();
+    let at_first = plain.snapshot();
+    for index in 9..=12 {
+        apply(&mut layered, &mut plain, index);
+    }
+    let second = layered.cut();
+    let at_second = plain.snapshot();
+    for index in 13..=16 {
+        apply(&mut layered, &mut plain, index);
+    }
+    assert_eq!(first.snapshot(), at_first);
+    drop(first);
+    assert!(
+        !layered.fold(usize::MAX),
+        "folded while the second cut holds the base"
+    );
+    assert_eq!(second.snapshot(), at_second);
+    drop(second);
+    assert!(layered.fold(1), "a fold of one should leave more");
+    let third = layered.cut();
+    let at_third = plain.snapshot();
+    for index in 17..=20 {
+        apply(&mut layered, &mut plain, index);
+    }
+    assert_eq!(third.snapshot(), at_third);
+    drop(third);
+    while layered.fold(1) {}
+    assert!(!layered.layered());
+    assert!(layered == plain);
+    assert_eq!(seen(&layered), seen(&plain));
+}
+
+/// MembersAgree across snapshot builds: with cuts taken, held, let go and
+/// folded back at random points, a member answers like one that never
+/// built a snapshot, and each cut holds exactly the state at its entry.
+#[test]
+fn a_member_building_snapshots_answers_like_one_that_does_not() {
+    for run in 0..300u64 {
+        let mut seed = run;
+        let (mut layered, mut plain) = (CacheState::default(), CacheState::default());
+        let mut cuts = Vec::new();
+        let mut stamp = 0;
+        for index in 1..=80 {
+            stamp += next(&mut seed) % 2;
+            let command = random_command(&mut seed, index, stamp);
+            let answer = layered.apply(index, stamp, &command);
+            assert_eq!(
+                answer,
+                plain.apply(index, stamp, &command),
+                "run {run} index {index}"
+            );
+            match next(&mut seed) % 6 {
+                0 if cuts.len() < 2 => cuts.push((layered.cut(), plain.snapshot())),
+                1 if !cuts.is_empty() => {
+                    let (cut, at): (super::Cut, Bytes) = cuts.remove(0);
+                    assert_eq!(cut.snapshot(), at, "run {run} index {index}");
+                }
+                2 => {
+                    layered.fold(1 + next(&mut seed) as usize % 3);
+                }
+                _ => {}
+            }
+            assert_eq!(seen(&layered), seen(&plain), "run {run} index {index}");
+        }
+        for (cut, at) in cuts {
+            assert_eq!(cut.snapshot(), at, "run {run}");
+        }
+        while layered.fold(2) {}
+        assert!(!layered.layered(), "run {run}");
+        assert!(layered == plain, "run {run}");
     }
 }

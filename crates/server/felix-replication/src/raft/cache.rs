@@ -8,6 +8,7 @@
 //! state. `docs/formal/FelixRaftCache.tla` is the model, and
 //! `docs/per-shard-raft.md`, "Cache and counters", the design.
 
+mod layers;
 #[cfg(test)]
 mod measure;
 mod record;
@@ -25,7 +26,7 @@ pub(crate) use record::{CacheCommand, Request};
 pub(crate) use snapshot::{ENCODED, restores_of};
 #[cfg(test)]
 pub(crate) use state::floor;
-pub(crate) use state::{Answer, CacheState, Read, stamp};
+pub(crate) use state::{Answer, CacheState, Cut, Read, stamp};
 
 use super::codec::invalid;
 

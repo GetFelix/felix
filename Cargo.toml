@@ -136,9 +136,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ahash = "0.8"
 arc-swap = "1"
-# Persistent maps: a Raft cache group snapshots a copy that costs nothing to
-# take while apply goes on changing the original.
-imbl = "7"
 async-trait = "0.1"
 axum = "0.8"
 base64 = "0.23"
