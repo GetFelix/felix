@@ -1856,6 +1856,10 @@ way a held `Quorum` batch is released on the hybrid.
 - A batch that reaches the stream at offsets the log already delivered is
   dropped, so a deposed term's batch settling just as the pass reads the
   same records is not delivered twice.
+- A deposed term's batch that failed with an unknown outcome leaves its
+  offsets to the log. A batch behind it that did commit is dropped too and
+  delivered by the pass, in order, after whatever committed at those
+  offsets.
 - A member that becomes leader finishes the pass first, then marks the
   stream as led. If a `Block` subscriber's queue is still full 50 ms after
   a term asks to open, the pass stops waiting for it: the subscriber is
@@ -2023,6 +2027,7 @@ fence are not asked.
 > `a_follower_far_behind_skips_ahead_only_with_no_subscriber`,
 > `a_batch_the_log_delivered_is_not_delivered_again`,
 > `a_deposed_leaders_failed_batch_leaves_its_offsets_to_the_next_leader`,
+> `a_deposed_leaders_batch_behind_a_failed_one_is_left_to_the_log`,
 > `a_deposal_as_the_term_opens_leaves_the_stream_followed`,
 > `a_full_block_subscriber_does_not_hold_up_a_new_term`,
 > `a_snapshot_ends_readers_where_they_stood` and

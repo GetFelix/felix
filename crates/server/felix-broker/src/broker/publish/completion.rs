@@ -612,6 +612,9 @@ async fn release(handle: StreamHandle) {
                 state.restart_ring(gap_end(state, batch.gap_end));
                 continue;
             }
+            if left_to_the_log(state, &batch) {
+                continue;
+            }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
             if let Some(floor) = completion.trim {
                 let _ = completion.apply_trim(floor);
@@ -643,6 +646,19 @@ fn gap_end(state: &StreamState, written_end: Option<u64>) -> Option<u64> {
         crate::ReadBound::Unbounded => written_end,
         crate::ReadBound::Settling | crate::ReadBound::Refused => None,
     }
+}
+
+/// Whether a released batch is dropped for the pass over the engine's log
+/// to deliver instead.
+///
+/// A gap on a broker that no longer leads keeps the sequence below offsets
+/// that may hold committed records. A batch behind it, appended here, would
+/// carry the sequence past them, and no subscriber would get them.
+fn left_to_the_log(state: &StreamState, batch: &HeldBatch) -> bool {
+    state.engine_log
+        && batch.trim.is_none()
+        && !state.leads_engine_log.load(Ordering::Acquire)
+        && batch.first_offset.saturating_sub(batch.skipped_before) > state.tail_seq()
 }
 
 /// What a pass over an engine's log found.

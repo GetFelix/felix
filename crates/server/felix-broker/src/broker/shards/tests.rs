@@ -749,6 +749,73 @@ mod engine_log {
         assert_eq!(batch(&mut receiver).await, (0, 0, payloads(&["r"])));
     }
 
+    /// **A deposed leader's batch behind a failed one waits for the log.**
+    /// The failed batch may have committed all the same, and its offsets are
+    /// left to the pass. The batch behind it, appended from the hold, would
+    /// move the sequence past them, and a subscriber would never get them.
+    #[tokio::test]
+    async fn a_deposed_leaders_batch_behind_a_failed_one_is_left_to_the_log() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        assert!(
+            broker
+                .lead_from_tail("t1", "ns", "orders", 0)
+                .await
+                .expect("lead")
+        );
+        let unknown = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"a")],
+                Duration::MAX,
+                |_| async {
+                    Err::<ProposalCommitted, _>(ProposalFailed {
+                        error: (),
+                        written_end: Some(1),
+                    })
+                },
+            )
+            .expect("handed over");
+        let (commit, committed) = tokio::sync::oneshot::channel::<()>();
+        let behind = broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"b")],
+                Duration::MAX,
+                |_| async {
+                    let _ = committed.await;
+                    Ok::<_, ProposalFailed<()>>(ProposalCommitted {
+                        end: 2,
+                        skipped_before: 0,
+                    })
+                },
+            )
+            .expect("handed over");
+        broker.follow_engine_log("t1", "ns", "orders", 0).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        assert!(unknown.complete().await.is_err());
+
+        // Both entries reached the next leader, which committed them.
+        append(&log, &["a"], 7).await;
+        append(&log, &["b"], 8).await;
+        *bound.0.lock() = ReadBound::Committed(2);
+        commit.send(()).expect("commit");
+        behind.complete().await.expect("committed");
+        handle.release_committed();
+        settled(&handle).await;
+
+        let pass = handle.deliver_from_log().await.expect("pass");
+        assert_eq!(pass, LogDelivery::CaughtUp);
+        assert_eq!(batch(&mut receiver).await, (0, 0, payloads(&["a"])));
+        assert_eq!(batch(&mut receiver).await, (1, 0, payloads(&["b"])));
+        quiet(&mut receiver).await;
+    }
+
     /// **A deposal that lands as the term opens leaves the stream followed.**
     /// The mark is set before the term is asked about, so a deposal after
     /// the answer clears it rather than being overwritten.
