@@ -23,7 +23,7 @@ static LIVE: AtomicUsize = AtomicUsize::new(0);
 /// The same in allocations of [`RESERVATION`] or more.
 static RESERVED: AtomicUsize = AtomicUsize::new(0);
 /// An allocation this large is not a member's working memory. openraft
-/// builds its histogram scale tables once in a process, about 26 MB however
+/// builds its histogram scale tables once in a process, about 26 MiB however
 /// many members there are, so they are counted apart from what the gate
 /// measures.
 const RESERVATION: usize = 128 * 1024;
@@ -148,7 +148,7 @@ const GROUPS: u32 = 40;
 /// groups-per-broker gate" in the design.
 const MEMBER_BUDGET: usize = 256 * 1024;
 /// What the process may hold in allocations of [`RESERVATION`] or more.
-/// openraft's tables are 26 MB. One such buffer in every member would add
+/// openraft's tables are 26 MiB. One such buffer in every member would add
 /// at least 15 MB, as the 8,192-slot responder queue once did (openraft#2323).
 const PROCESS_RESERVE: usize = 32 * 1024 * 1024;
 
@@ -312,7 +312,7 @@ async fn an_idle_member_stays_within_the_designs_memory() {
         .saturating_sub(reserved_before);
     println!(
         "{members} idle members, leaders per broker {leaders:?}: {} KB each, after {} KB for a \
-         written log, and {} MB in large allocations for the whole process that are not counted",
+         written log, and {} MiB in large allocations for the whole process that are not counted",
         each / 1024,
         a_written_log / 1024,
         reserved / (1024 * 1024)

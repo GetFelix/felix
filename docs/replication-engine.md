@@ -813,7 +813,16 @@ queue to its start, so an idle member stops touching every page of its
 queues, and openraft#2314 starts those queues at 64 slots instead of
 reserving room for 4,096 commands and 1,024-slot response buffers, so a member's
 resident memory stays small. openraft#2324 starts the client responder
-queue at 64 slots instead of 8,192. The others are a `#[non_exhaustive]` on some name enums,
+queue at 64 slots instead of 8,192. The range from the previous pin
+(`30c947ef38`) to `5c3ad1bc2d` has six commits: two that only touch the
+jepsen test app, `7628ad401a` (cancellable runtime futures, additive),
+`3b1f7fa446` (the read state keeps the no-op and committed log ids
+separately), `e2986754ef` (`expected_leader` moves into a `WriteOption`, and
+`client_write_many` sends `WriteOption::default()`), and the responder queue
+change `5c3ad1bc2d`. The read path
+(`get_read_log_id` still returns the larger of the no-op and committed ids)
+and the term-bound write path (`raft/propose.rs`, `with_leader`) behave
+the same for Felix. The pin as a whole also carries a `#[non_exhaustive]` on some name enums,
 benchmark changes, and one change to the state-machine worker: it merges
 `Apply` commands that are already queued into one `apply()` call. That
 call still gets the committed entries in log order, each once, with each

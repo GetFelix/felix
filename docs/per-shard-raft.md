@@ -3092,11 +3092,13 @@ Idle memory fits, with openraft at `5c3ad1bc2d` (openraft#2313, openraft#2314 an
 The design assumed 180 KB per leader member and 145 KB per follower. The
 runtime's memory test (Linux, release build, 120 idle members, a third
 leading) measures 150 KB of live heap per member and no large per-member
-reserve. The process reserves about 26 MB once, for openraft's latency
-histogram tables, however many members it hosts (#2415, part a). The same
+reserve. The process reserves about 26 MiB once, for openraft's latency
+histogram tables, however many members it hosts. The same
 three-runtime run, 1,500 members per broker, holds 232 MB resident per
-broker, 17 MB of it the logs alone. That is about 138 KB per member,
-and 5,000 members at 150 KB are about 0.75 GB.
+broker, 17 MB of it the logs alone. Subtracting the logs and the 26 MiB of
+tables leaves about 189 MB, or 126 KB per member; counting the tables as
+part of each member, (232 - 17) / 1500 is 143 KB. Either way it is under
+150 KB, and 5,000 members at 150 KB are about 0.72 GB.
 
 What a member keeps after it was busy is measured by the workflow's write
 burst step (`RAFT_IDLE_BURST_SECS`, #2415): 300 groups on three runtimes over
