@@ -1891,14 +1891,18 @@ directory was found to replace a copy the node lost: a directory the control
 plane last registered under another id than the one it had before this start
 rotated it (a wipe, or a copy from elsewhere), or one older than the node's
 last registration (a restore). Unlike `replaced-storage` it is not written
-when a crash rotated the directory's own id. It never goes back to `kept`
-and is never removed. Anything other than `kept` reads as `lost`. A directory
+when a crash rotated the directory's own id. Nor when the registered id is one
+`rotated-ids` names: a start that rotated the id and stopped before the new
+id registered (a port it could not bind, say) leaves the old id registered
+for the next start, and that id is still this directory's own copy. It never
+goes back to `kept` and is never removed. Anything other than `kept` reads as `lost`. A directory
 without it that has `replaced-storage` counts as `lost`, since older releases
 also wrote that marker after their own crashes.
 
 After an unclean crash, a broker attests a kept ballot to a continuing
 leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
-`kept` and the control plane's record names the id from before the crash.
+`kept` and the control plane's record names the id from before the crash,
+or one `rotated-ids` names.
 An older release neither reads nor writes the file.
 
 ## `rotated-ids`: ids a crash rotated away on this directory
@@ -1914,7 +1918,8 @@ rotated_ids
 
 The first line is fixed. Each later line names an id this directory had until
 an unclean crash rotated it, at a start that found every ballot kept: the
-lost-copy marker says `kept`, and the control plane's record names that id.
+lost-copy marker says `kept`, and the control plane's record names that id
+or one already listed (a second crash before the new id registered).
 Newest first, at most 16. A restore or a replacement for a lost copy adds
 nothing. A set that names this node under one of these ids names this
 directory's own copy, so it is no evidence of a wipe, while the directory
