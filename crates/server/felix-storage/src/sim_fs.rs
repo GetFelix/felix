@@ -26,6 +26,7 @@ pub fn claim_root(root: &Path) -> bool {
 /// Forget `root` and drop every file under it.
 pub fn unregister_root(root: &Path) {
     crate::fs::unregister(root);
+    gone(root);
 }
 
 /// Replace what is under `root` with what a power loss now would leave.
@@ -43,6 +44,7 @@ pub fn unregister_root(root: &Path) {
 /// `NotFound` when `root` was not registered.
 pub fn crash(root: &Path, seed: u64) -> io::Result<()> {
     tree(root)?.crash(seed, Writeback::AnySubset);
+    gone(root);
     Ok(())
 }
 
@@ -93,7 +95,18 @@ pub fn cut_power(root: &Path, seed: u64) -> io::Result<()> {
 /// # Errors
 /// `NotFound` when `root` was not registered.
 pub fn reboot(root: &Path) -> io::Result<bool> {
-    Ok(tree(root)?.reboot())
+    let rebooted = tree(root)?.reboot();
+    if rebooted {
+        gone(root);
+    }
+    Ok(rebooted)
+}
+
+/// The process that had logs open under `root` is gone, and with it their
+/// locks on its directories.
+fn gone(#[cfg_attr(not(feature = "raft"), allow(unused_variables))] root: &Path) {
+    #[cfg(feature = "raft")]
+    crate::disk_log::dir_lock::release_under(root);
 }
 
 /// The segments, as paths below `root`, whose torn tails recovery has

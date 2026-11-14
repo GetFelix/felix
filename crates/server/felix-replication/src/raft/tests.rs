@@ -22,14 +22,18 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod cache;
 mod commit;
 mod deliver;
 mod idempotent;
 mod identity;
 mod lease;
 mod propose;
+mod switch;
 mod written;
 
+/// Shards numbered from here are cache shards.
+const CACHE: u32 = 1000;
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
 
@@ -45,7 +49,10 @@ fn shard(n: u32) -> ShardKey {
         namespace: "ns".into(),
         stream: "orders".into(),
         shard: n,
-        kind: ShardKind::Stream,
+        kind: match n >= CACHE {
+            true => ShardKind::Cache,
+            false => ShardKind::Stream,
+        },
     }
 }
 
@@ -1176,11 +1183,24 @@ async fn an_open_that_races_a_close_is_refused_until_the_member_stops() {
     }
     assert!(!close.is_finished());
     assert_ne!(closing.status().role, Role::Stopped);
-    assert!(!runtime.close(&shard(0)).await, "closed twice");
+
+    // A caller that gave up on its close and tries again waits for the same
+    // stop. Told "no group" now, it would close the log under a member that
+    // can still write.
+    let retried = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.close(&shard(0)).await }
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        !retried.is_finished(),
+        "a retried close returned while the member was still running"
+    );
 
     release.send(()).expect("release");
-    assert!(close.await.expect("close"));
+    assert!(retried.await.expect("retried close"));
     assert_eq!(closing.status().role, Role::Stopped);
+    assert!(close.await.expect("close"));
     drop(closing);
 
     let log = cluster.logs.remove(&("a".to_string(), 0)).expect("log");
@@ -1339,6 +1359,9 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
             meta,
+            data_len: 0,
+            offset: 0,
+            data: Bytes::new(),
         },
     };
     let answer = cluster.runtime(behind).handle(request).await;
@@ -1451,6 +1474,22 @@ async fn a_log_that_does_not_fsync_on_commit_gets_no_group() {
     runtime.shutdown().await;
 }
 
+/// The ticker visits groups in shard order whatever order they opened and
+/// closed in, so a simulation seed replays its run.
+#[tokio::test]
+async fn the_ticker_visits_groups_in_shard_order() {
+    let cluster = Cluster::new(false);
+    let runtime = cluster.runtime("a");
+    for n in [7, 2, 9, 0, 5, 3, 8, 1] {
+        let log = open_log(cluster.root.path(), "a", n, log_config());
+        runtime.open(group(n), 1, log).await.expect("open");
+    }
+    assert!(runtime.close(&shard(5)).await);
+    let want: Vec<_> = [0, 1, 2, 3, 7, 8, 9].map(shard).into();
+    assert_eq!(runtime.ticked_shards(), want);
+    runtime.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_member_forms_a_group_only_from_a_set_that_names_it() {
     let mut cluster = Cluster::new(false);
@@ -1550,22 +1589,25 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
 
 #[test]
 fn the_timers_must_make_sense() {
-    assert!(RuntimeConfig::default().raft().is_ok());
+    assert!(RuntimeConfig::default().raft(ShardKind::Stream).is_ok());
+    assert!(RuntimeConfig::default().raft(ShardKind::Cache).is_ok());
     let zero_tick = RuntimeConfig {
         tick: Duration::ZERO,
         ..RuntimeConfig::default()
     };
-    assert!(zero_tick.raft().is_err());
+    assert!(zero_tick.raft(ShardKind::Stream).is_err());
     let heartbeat_past_election = RuntimeConfig {
         heartbeat: Duration::from_secs(3),
         ..RuntimeConfig::default()
     };
-    assert!(heartbeat_past_election.raft().is_err());
+    assert!(heartbeat_past_election.raft(ShardKind::Stream).is_err());
 }
 
 #[test]
 fn the_default_timers_are_the_designs() {
-    let raft = RuntimeConfig::default().raft().expect("timers");
+    let raft = RuntimeConfig::default()
+        .raft(ShardKind::Stream)
+        .expect("timers");
     assert_eq!(RuntimeConfig::default().tick, Duration::from_millis(50));
     assert_eq!(raft.heartbeat_interval, 200);
     assert_eq!(

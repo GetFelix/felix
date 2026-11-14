@@ -609,6 +609,21 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
+| `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
+| `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
+| `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
+| `FelixRaftBatchRewrite.cfg` | the re-send of a cut batch is written whole (#2516) | violate `BatchExactlyOnce`: the held prefix is in the log twice |
+| `FelixRaftBatchRewriteOrder.cfg` | the same, checked for order | violate `BatchInOrder` |
+| `FelixRaftBatchForgetsCut.cfg` | a purge past a cut batch drops it from the table snapshot | violate `BatchExactlyOnce`: the member takes the re-send as new |
+| `FelixRaftBatchForgetsCutPlace.cfg` | the same, checked one step earlier | violate `ProducerPlaceAgrees`: two members place one re-send differently |
+| `FelixRaftBatchTableAtApply.cfg` | the leader's table reads committed entries only; no change of leader | violate `BatchExactlyOnce`: a send that arrives while the first is in flight is written too |
+| `FelixRaftBatchHeldBeforeCommit.cfg` | a send is answered as held while its pieces are uncommitted | violate `BatchExactlyOnce`: a batch is acknowledged with nothing committed |
+| `FelixRaftBatchReachFinish.cfg` | witness: a cut batch is finished by its re-send and acknowledged | violate `NeverFinishesACut` |
+| `FelixRaftBatchReachFinishOverTail.cfg` | witness: a new leader finishes a cut batch while the held pieces it took over are uncommitted. The code never does this, since it serves a term only once every earlier entry is applied; the model allows more | violate `NeverFinishesOverTail` |
+| `FelixRaftBatchReachRefusal.cfg` | witness: a member that purged past a cut batch refuses its re-send | violate `NeverRefuses` |
+| `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
+| `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
+| `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
 | `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.8M distinct states) |
@@ -2757,8 +2772,8 @@ and is not counted, so the shard waits (issue #2423).
 A failed flush counts as a power cut for that copy. A Raft log whose flush
 failed is cut back to its last sync when it restarts, so it comes back without
 the record just as if it had lost power, and the model's power cut covers it.
-Such a copy must not vote with the cut log once the acknowledgement is wired
-(issue #2469).
+The code is stricter: such a copy restarts under a new copy id and does not
+vote with the cut log (`docs/per-shard-raft.md`, "A poisoned log").
 
 Each knob drops one rule, and each twin fails with no power cut at all:
 
@@ -3840,6 +3855,142 @@ Two trim cases are not modelled either:
 - A retry that sends a floor recomputed since the first copy. The model keeps the first
   floor. This is safe by inspection: a retry that finds its answer in the table is a
   dedup hit, and a dedup hit never raises the floor.
+
+### Idempotent batches on a Raft shard
+
+`FelixRaftBatch.tla` models an idempotent batch of several records on a Raft
+stream shard (#2524). A Raft shard does not take such a batch yet. The model
+is the design the code is being built to, so its configurations cite no tests.
+
+An idempotent batch carries a producer id and a sequence number, and the shard
+must store each of its records once however often the producer sends it. On
+Raft every record is its own log entry, so a batch can be cut: some of its
+entries commit and the rest do not. The model asks what a re-send must do
+then.
+
+What is modelled:
+
+- Each entry of a batch carries a piece mark with the batch's full identity:
+  producer, sequence, the record's position in the batch, and the batch's
+  length.
+- A batch is one message bound to the leader's term. The term and the lease
+  are checked once, so the leader appends every piece or none, at consecutive
+  indexes.
+- The commit is not atomic. A change of leader hands the new leader a prefix
+  of the old leader's uncommitted entries and drops the rest, and the new
+  leader's blank entry follows. A batch with only its first pieces kept is a
+  cut batch.
+- A batch is acknowledged when every piece its message carried has committed
+  under the leader that took it. Otherwise the producer sends it again, at
+  any time, also while its first send is still in flight. A producer starts
+  its next batch only after the one before is acknowledged.
+- The producer table is a function of a member's table snapshot and the log
+  it retains. The leader's includes its uncommitted entries: its own appends
+  and the ones it took over at a change of leader. Per producer it holds the
+  highest sequence seen, how many of its pieces are held, and its length.
+  Pieces only land in order, so a piece at position j means positions 0 to j
+  are held. That is why the count can be read from any suffix of the log.
+- The leader places a send by its table: answered as held when every piece
+  is and the committed log has them all, finished from the first missing
+  position when the batch is cut, written whole when no piece is held, and
+  refused when the table cannot say. Placing and appending are one step:
+  the leader takes one producer's sends in turn and holds the turn until
+  the pieces are appended, so two sends of one batch are never both placed
+  as new.
+- A purge writes the table as of the new base into the table snapshot. A
+  snapshot install gives a member another member's base and table snapshot.
+  So a member can lead with none of a cut batch's held pieces in its log.
+
+What it promises:
+
+- `BatchExactlyOnce`: no (producer, sequence, position) is in the committed
+  log twice, and an acknowledged batch has every position in it.
+- `BatchInOrder`: a producer's records are in the log in sequence and
+  position order, and a batch starts only after the one before it is whole.
+- `ProducerPlaceAgrees`: every member places a batch the way the whole log
+  does, or refuses it. Two members never place one re-send differently,
+  whatever each has purged or installed.
+
+`AtPurge` is what a purge does with a batch that is cut at the new base, and
+two choices are safe. `"refuse"` keeps the sequence and drops the count: the
+member refuses the re-send, and a member that still holds the pieces finishes
+it (`FelixRaftBatch.cfg`). `"keep"` keeps the count too, so any member can
+finish it (`FelixRaftBatchKeepsCut.cfg`). The design uses `"refuse"`, with
+the expired-sequence error. The model shows both are safe and does not weigh
+them: it has no record payloads, so it cannot say whether a member without
+the held records can tell that a re-send repeats the same batch. Nor does it
+follow a producer past that error. A refused producer keeps re-sending the
+same sequence and never starts the next one, so what a producer may do after
+giving a sequence up is not checked.
+
+Each knob drops one rule, and each twin fails:
+
+- `TermBoundBatch = FALSE`: each record is its own message with its own term
+  and lease check (#2472). A lease that lapses and comes back inside the batch
+  refuses some records and takes others. A batch of three lands its first and
+  last records, the table counts it whole by its last position, and the
+  re-send is acknowledged with the middle record missing. No change of leader
+  is needed. The count is read from the highest position, which is only
+  right when pieces land in order, and one message per batch is what keeps
+  them in order.
+- `ResendFinishes = FALSE`: the re-send of a cut batch is written whole
+  (#2516). The held prefix is in the log twice, and out of order.
+- `AtPurge = "forget"`: a purge past a cut batch drops it from the table
+  snapshot. That member, or one that installs its snapshot, takes the re-send
+  as a new batch and writes the held records again.
+- `TableAtAppend = FALSE`: the leader's table reads committed entries only. A
+  send that arrives while the first is in flight is placed as new too. So is
+  a re-send that reaches a new leader before the pieces it took over commit.
+  Either way the records are in the log twice.
+- `HeldAfterCommit = FALSE`: a send is answered as held as soon as the
+  leader's log has every piece. The batch is acknowledged before it commits,
+  and a change of leader can still drop it.
+
+Abstracted: elections, replication and followers' uncommitted tails
+(`FelixRaft.tla` has them; here a change of leader is one step), the lease
+itself, record payloads and producers that expire. A restart with a torn
+tail is not modelled either. It leaves a prefix with no blank entry after it,
+and the table here needs no marker to see a cut, so the model says nothing
+about how the code recognises one. Every member holds the committed log up
+to its tail. Readers see the records of a cut batch
+before it is finished.
+
+A new leader in the model places sends as soon as it leads. The code serves a
+term only once every earlier entry is applied (`raft/deliver.rs`), so it never
+places a send over a tail it took over. The model allows more than the code,
+so its passes still hold for the code. `FelixRaftBatchReachFinishOverTail.cfg`
+and the second case of `FelixRaftBatchTableAtApply.cfg` are behaviour only the
+model has.
+
+What the code has to change. The model describes the producer table as #2524
+will leave it, not as it is today. The code change for #2524 has to make
+these true. "Today" is `origin/main`; "the first storage change" is the branch
+`raft/idem-batch-2524`, which adds batch pieces and cut batches to storage but
+still refuses a batch of several records in `raft/propose.rs`.
+
+1. Every entry of a batch names the batch: producer, sequence, position and
+   length. Today only the first record does (`RecordMark::Opens`); the rest
+   are `Continues`, matched by offset (`log.rs`, `RecordMark::for_batch`). The
+   first storage change adds `RecordMark::Piece` for the later records of a
+   batch on a Raft log.
+2. A leader's blank entry, or any other record, does not abandon a cut batch.
+   Today `ProducerState::observe` drops the open batch on `GenerationStart`
+   and every other mark (`disk_log/producers.rs`). The first storage change
+   keeps it as a cut batch on a Raft log.
+3. The table keeps an unfinished batch per producer, not one per shard.
+   Today `ProducerState` has one `open` batch, and another producer's batch
+   opening drops it. The first storage change keeps one open batch plus a cut
+   batch per producer. It caps the cut batches at `MAX_CUTS` and forgets the
+   producer of the oldest when the cap is passed, which the model, with two
+   producers, never reaches.
+4. A purge keeps a cut batch or refuses its re-send. It never drops it. Today
+   `ProducerState::prune` drops an open batch whose first record is purged,
+   which is `AtPurge = "forget"`. The first storage change keeps a cut batch
+   that cannot be finished while one of its records is still in the log (the
+   `"refuse"` choice). Once the purge passes its last record it still drops
+   it. A re-send is then refused when the producer is unknown and its
+   sequence is not 0, but a cut first batch (sequence 0) is taken as new.
+   That is the `"forget"` case, and the code change has to close it.
 
 ## How CI checks the models
 

@@ -1,1 +1,0 @@
-{"log_id":{"leader_id":{"term":3,"node_id":2},"index":19},"payload":{"Membership":{"configs":[[1,2],[2,3]],"nodes":{"1":{"addr":"a:1"},"2":{"addr":"b:1"},"3":{"addr":"c:1"}}}}}

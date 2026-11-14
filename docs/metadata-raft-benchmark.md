@@ -1,14 +1,14 @@
 # The metadata Raft benchmark
 
 This page says how to measure the control plane's Raft group, and records the
-numbers for today's store (redb, openraft 0.10). The store change in
+numbers for the redb store (openraft 0.10) that 0.8 replaced. The store change in
 [metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store) is held to
 "no cell worse than these".
 
 ## What it measures
 
 The benchmark runs real control-plane members in one process. Each has its own
-redb directory and peer listener, and is driven through the store traits the
+data directory and peer listener, and is driven through the store traits the
 HTTP API uses. A write sent to a follower is forwarded to the leader, as it is
 behind a load balancer. The code is
 `services/felix-controlplane-service/tests/metadata_bench.rs`.
@@ -20,7 +20,7 @@ behind a load balancer. The code is
 | `placement_update` | Shard assignments rewritten by four proposers, three members | the same |
 | `replica_report` | Replica reports for every shard of one stream from 16 proposers, the steady write load of the log | the same |
 | `failover` | The leader is stopped; the time until a write through a survivor is acknowledged | `p50_ms`, `max_ms`, `rounds` (acknowledged), `failed_rounds` |
-| `snapshot_build/<1MiB,32MiB>` | A snapshot of that much metadata, with a writer running | `build_ms` (the state machine's snapshot call), `longest_write_ms` |
+| `snapshot_build/<1MiB,32MiB>` | A snapshot of that much metadata, with a writer running | `build_ms` (the state machine's snapshot call), `build_idle_ms` (the same call with no writer, just before), `snapshot_bytes`, `longest_write_ms` |
 | `restart_to_ready/<size>` | Stop a member behind that snapshot and start it again; time until it confirms leadership | `ready_ms` |
 | `snapshot_install/<size>` | Add an empty learner to a one-member group whose log is gone behind that snapshot; the time until the learner has restored the snapshot | `install_ms`, `ok` (the learner restored) |
 | `idle/m3` | Three idle members, whole process; runs first so the memory is the process plus the members | `cpu_percent`, `process_rss_mib` (Linux) |
@@ -52,6 +52,42 @@ better higher; every other metric is better lower, so a failed round or a
 snapshot install that did not complete fails the cell. Both sides run the head
 commit's benchmark file, so a base that predates it still works as long as the
 store traits it uses have not changed.
+
+## Saving the committed index
+
+openraft tells the store its committed index on almost every entry. The
+segment store keeps it in the log's replica-state file, and a write of that
+file is a create, two fsyncs and a rename. Written after every advance, back
+to back, those writes sat in front of the log's own fsyncs on the same disk.
+`propose/m3/256B/p16 p99_ms` read about 8.5 ms against redb's 5.5 ms in six
+runs out of six, while its p50 was already lower (Actions run 43468194429).
+
+A Raft log now writes the committed index at most once a second
+(`COMMIT_PERSIST_INTERVAL`), off the write path. In the next run the same
+cell read 2.4 ms at p99 and 10390 entries a second, against redb's 8.9 ms
+and 5471 on that runner session (run 43486950653), and `replica_report
+p99_ms` read 2.7 against 13.9 ms. The cost is that after a crash the saved
+index may be up to a second behind. A restarted member then waits for a
+leader to commit its log tail before it serves reads
+([metadata-raft-design.md](metadata-raft-design.md), "Start").
+
+## Snapshot build with a writer running
+
+On the segment store, `snapshot_build/1MiB build_ms` reads about 20% higher
+than on redb (8.4 against 7.0 ms, Actions run 43468194429). The timed call is
+the state machine's own serialization, which no store code runs inside. With
+nothing else running the two are equal (`build_idle_ms` 6.8 against 6.6 ms,
+32 MiB 272 against 279 ms), and so is the snapshot (`snapshot_bytes`). The
+gap is the writer: on the segment store it keeps applying while the build
+runs, where on redb it sits in a commit (`longest_write_ms` 28 against
+161 ms). At 32 MiB the same holds, and its `build_ms` has read up to 29%
+higher in one run, against a 10% band, while `longest_write_ms` fell from
+10 s to about 0.2 s.
+
+That one cell metric, `snapshot_build/32MiB build_ms`, is waived in the
+workflow's Compare step (`--waive`): it is still shown, marked "waived", and
+does not fail the run. The cost is inherent to not stalling the writer.
+Every other cell, `build_idle_ms` at 32 MiB included, still gates.
 
 ## The redb baseline
 

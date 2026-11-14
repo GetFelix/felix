@@ -63,9 +63,9 @@ flowchart LR
 - **Raft is fine here even though stream replication rejected it.** The
   [replication design](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md)
   rejected Raft for stream payloads because Raft truncates divergent log
-  suffixes and the segment store never rewrites. The metadata Raft log is a
-  separate, kilobyte-scale log that never touches `felix-storage`, so the
-  two don't conflict.
+  suffixes and the segment store never rewrote records. It now cuts a log
+  back to a given offset, which is what a Raft follower needs, and the
+  metadata Raft log runs on it.
 
 ## What operators would see
 
@@ -78,8 +78,9 @@ flowchart LR
 Library: [openraft](https://github.com/databendlabs/openraft), pinned to one
 exact version (0.10.0), wrapped behind a seam so its pre-1.0 API churn stays
 contained. What members send each other and store is Felix's own format,
-unchanged from the releases that ran openraft 0.9, so a group is upgraded
-one member at a time and a member can be rolled back.
+not the library's, so an openraft upgrade does not change it. 0.8 changed
+it once, with the move off redb: a 0.7 group does not upgrade member by
+member ([Upgrades](/deployment/upgrades/#control-plane-metadata-in-08)).
 
 ## Configuring it
 
@@ -186,7 +187,13 @@ never costs a consensus round trip): the member knows a leader, its applied
 state trails its own log by no more than a bound, and, when it *is* the
 leader, a quorum has acknowledged it within the last 5s. That last check
 takes a partitioned, quorumless leader out of rotation before it serves
-stale reads, and a test covers it. `/v1/system/live` stays
+stale reads, and a test covers it. A member restarted after a crash also
+stays out of rotation, and answers reads with 503, until a leader has
+committed the entries at the end of its log. It saves its committed index at
+most once a second, so it may have applied and served past what it saved.
+Waiting means its reads never show an older state than before the crash.
+A member removed from the group while it was down never gets that commit,
+so it stays unready until it is added back or wiped. `/v1/system/live` stays
 process-local, exactly as before: losing quorum is not fixed by a restart.
 The probe settings on [Control-plane HA](/deployment/control-plane-ha/)
 (intervals, thresholds) carry over unchanged.
@@ -229,8 +236,9 @@ serving, followers restart with no pause, and brokers are unaffected: they
 retry heartbeats and keep their catalogs through far longer outages than
 this. openraft 0.10, which the control plane now runs, can transfer
 leadership, and the seam owns the shutdown path, so adopting it is a
-contained change that comes after the move to the segment store. Until then
-the pause is expected behaviour.
+contained change still to come
+([#2237](https://github.com/GetFelix/felix/issues/2237)). Until then the
+pause is expected behaviour.
 
 ### Deploying on Kubernetes
 
@@ -325,21 +333,25 @@ byte-identical replicas, settled by nothing but the order the log assigned.
 no consensus type escapes it. Outside the seam there are exactly two things: a
 `RaftHandle` (start, initialize, write, add-learner, promote, snapshot,
 status, shutdown) and an `AppStateMachine` trait whose contract is the
-determinism rule above. Consensus state (log, vote, current snapshot)
-lives in one crash-safe [redb](https://github.com/cberner/redb) file per
-instance. An embedded ACID store was chosen over hand-rolled files because
-votes and entries that get acknowledged and then lost are how one term
-elects two leaders, and that is no place for custom plumbing.
-The store passes openraft's own storage conformance suite on every test
-run, just as the node/shard contract suites run against every metadata
-backend.
+determinism rule above.
 
-The same group can be built on Felix's own segment store instead, so a node
-has one storage engine. That build exists and CI tests it, but no release
-turns it on: it needs `RUSTFLAGS="--cfg felix_segment_store"`, and a group
-on redb has no conversion tool yet. Members of the two builds serve their
-peer routes under different prefixes and never exchange Raft messages. The
-plan is in
+Consensus state lives in `store/` under `FELIX_RAFT_DATA_DIR`, on the same
+storage engine the brokers use, so a Felix node has one set of durability
+rules. The Raft log is a segment log that fsyncs before an entry counts as
+written; the vote and the committed index sit beside it; the current
+snapshot is one file, replaced by a rename; a member file names the cluster
+and whether this member's vote is withheld. Votes and entries that are
+acknowledged and then lost are how one term elects two leaders, so the store
+passes openraft's own storage conformance suite and crash tests at every
+write on every test run, just as the node/shard contract suites run against
+every metadata backend.
+
+Releases up to 0.7 kept the same state in one [redb](https://github.com/cberner/redb)
+file, `raft.redb`. 0.8 cannot read it and refuses to start beside it, so an
+existing group does not upgrade in place: see
+[Upgrades](/deployment/upgrades/#control-plane-metadata-in-08). Members of
+the two kinds serve their peer routes under different prefixes and never
+exchange Raft messages. The design is in
 [the design document](https://github.com/GetFelix/felix/blob/main/docs/metadata-raft-design.md#moving-to-the-segment-store).
 
 ## Why not SWIM gossip

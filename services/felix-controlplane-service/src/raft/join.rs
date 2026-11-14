@@ -24,7 +24,7 @@
 //! that a peer has recorded, and that holds no mark, lost a volume that may
 //! have voted. It never forms; it waits for a leader and catches up.
 //!
-//! The mark does not show the log survived: the segment store keeps the
+//! The mark does not show the log survived: the store keeps the
 //! vote in `store/log/` and the mark beside it. So a member also records,
 //! before it first votes, that it reached the vote. One that holds that
 //! record and finds its log blank lost its log, and catches up too.

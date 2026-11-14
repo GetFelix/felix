@@ -1,6 +1,6 @@
 //! The groups one broker holds, and their lifecycle.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -14,14 +14,15 @@ use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
     CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
 };
-use felix_storage::raft_log::{LogPoint, LogPositions};
+use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::impls::leader_id_std::LeaderId;
 use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
-use super::group::{Group, Timers};
+use super::group::{self, Group, Timers};
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
+use super::propose::Clock;
 use super::ticker;
 use super::types::{GroupId, MemberId, ShardTypes};
 use crate::driver::WriteFence;
@@ -30,7 +31,7 @@ use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
 
 /// How often a kept-copy reclaim that waits only on a commit save looks
-/// again. A log not under `FsyncMode::OnCommit` saves at most this often.
+/// again. A Raft log saves its commit at most this often.
 const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 
 /// The timers every group on a broker shares.
@@ -54,6 +55,14 @@ pub struct RuntimeConfig {
     /// two starts an election.
     pub election_min: Duration,
     pub election_max: Duration,
+    /// A cache shard snapshots its state each time this many entries have
+    /// committed since its last snapshot. Zero never snapshots, and the
+    /// shard's log then grows without bound.
+    pub cache_snapshot_every: u64,
+    /// How many of the entries under a cache shard's snapshot stay in its
+    /// log, so a member a little behind catches up from the log and only
+    /// one further behind is sent the snapshot.
+    pub cache_log_keep: u64,
     /// How long after a majority's last answer a leader still acknowledges
     /// a `Leader` write on its own log. A follower promises its leader
     /// `election_max` on its own clock, so the lease must end before that
@@ -66,6 +75,14 @@ pub struct RuntimeConfig {
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
     /// mark at the data root.
     pub log_mark: LogMarkMode,
+    /// Record bytes the shard groups' Raft logs of this runtime keep in
+    /// memory for replication reads, all groups together. Each log keeps at
+    /// most 4 MiB. Over the limit, logs that have not appended since the
+    /// last pass are emptied first, then busy ones are trimmed to their
+    /// newest records. The bound is soft: a log whose cache is in use is
+    /// skipped until the next pass. The metadata group's log is not
+    /// counted; it keeps its own 4 MiB.
+    pub tail_cache_bytes: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -77,17 +94,29 @@ impl Default for RuntimeConfig {
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
+            cache_snapshot_every: 16_384,
+            cache_log_keep: 1_024,
             // A quarter under the follower's promise, which holds for
             // clocks up to 10% off.
             lease: Duration::from_millis(1500),
             clock_drift_ppm: 100_000,
             log_mark: LogMarkMode::Exact,
+            tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
         }
     }
 }
 
+/// How long one piece of a snapshot may take to send and be answered. The
+/// last piece's answer waits for the install as well.
+pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
+
+fn wall_clock_micros() -> u64 {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
+    now.map_or(0, |now| now.as_micros() as u64)
+}
+
 impl RuntimeConfig {
-    pub(crate) fn raft(&self) -> Result<Config, InvalidTimers> {
+    pub(crate) fn raft(&self, kind: ShardKind) -> Result<Config, InvalidTimers> {
         if self.tick.is_zero() {
             return Err(InvalidTimers("the tick interval is zero".into()));
         }
@@ -111,12 +140,25 @@ impl RuntimeConfig {
             // The node ticker runs the timer check. A tick task per group
             // costs most of a core per thousand idle members.
             enable_tick: false,
-            // A shard's log is its data. Entries leave it by retention,
-            // never because a snapshot was taken.
-            snapshot_policy: SnapshotPolicy::Never,
-            // A snapshot that is taken anyway purges nothing. The default
-            // keeps only the last 1,000 entries under one.
-            max_in_snapshot_log_to_keep: u64::MAX,
+            // A stream shard's log is its data. Entries leave it by
+            // retention, never because a snapshot was taken. A cache
+            // shard's state is in its snapshot, so its log is cut to it.
+            // openraft checks the policy after each batch of messages, not
+            // on its tick, which is off.
+            snapshot_policy: match kind {
+                ShardKind::Cache if self.cache_snapshot_every > 0 => {
+                    SnapshotPolicy::LogsSinceLast(self.cache_snapshot_every)
+                }
+                _ => SnapshotPolicy::Never,
+            },
+            // For a stream shard a snapshot that is taken anyway purges
+            // nothing. The default keeps only the last 1,000 entries.
+            max_in_snapshot_log_to_keep: match kind {
+                ShardKind::Cache if self.cache_snapshot_every > 0 => self.cache_log_keep,
+                _ => u64::MAX,
+            },
+            // The deadline of one piece of a snapshot, which also sizes it.
+            install_snapshot_timeout: SNAPSHOT_PIECE_MILLIS,
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
@@ -302,6 +344,8 @@ pub(crate) struct Registry {
     ticked: ArcSwap<Vec<Arc<Group>>>,
     /// Times the ticker ended on a panic and was started again.
     pub(crate) ticker_restarts: AtomicU64,
+    /// Shared by every group's log, and read by the ticker for its gauge.
+    pub(crate) tail_budget: Arc<TailBudget>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -309,7 +353,9 @@ pub(crate) struct Registry {
 
 #[derive(Default)]
 struct Slots {
-    by_shard: HashMap<Arc<ShardKey>, Slot>,
+    /// Ordered, so the ticked view comes out in shard order without a sort
+    /// under the lock: a fixed tick order lets a simulation seed replay.
+    by_shard: BTreeMap<Arc<ShardKey>, Slot>,
     closed: bool,
 }
 
@@ -319,7 +365,7 @@ impl Registry {
     }
 
     fn publish(&self, slots: &Slots) {
-        let open = slots
+        let open: Vec<_> = slots
             .by_shard
             .values()
             .filter_map(|slot| match slot {
@@ -352,10 +398,14 @@ struct Inner {
     log_mark: LogMarkMode,
     timers: Timers,
     raft: Arc<Config>,
+    /// What a cache shard's member runs on: it snapshots and purges.
+    raft_cache: Arc<Config>,
     transport: Arc<dyn RaftTransport>,
     registry: Arc<Registry>,
     /// Who is told when a shard opens and closes here.
     host: OnceLock<Arc<dyn EngineHost>>,
+    /// The clock cache shards opened from here on stamp by.
+    clock: parking_lot::RwLock<Clock>,
     stop: CancellationToken,
     ticker: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
@@ -393,12 +443,15 @@ impl GroupRuntime {
                     election_max: config.election_max.as_millis() as u64,
                     lease: config.lease.as_millis() as u64,
                 },
-                raft: Arc::new(config.raft()?),
+                raft: Arc::new(config.raft(ShardKind::Stream)?),
+                raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
                 transport,
+                clock: parking_lot::RwLock::new(Arc::new(wall_clock_micros)),
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
                     ticker_restarts: AtomicU64::new(0),
+                    tail_budget: TailBudget::new(config.tail_cache_bytes),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -422,6 +475,11 @@ impl GroupRuntime {
         F: WriteFence + ?Sized + 'static,
     {
         self.set_host(Arc::new(Host::new(serving, fence)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_clock(&self, clock: Clock) {
+        *self.inner.clock.write() = clock;
     }
 
     pub(crate) fn set_host(&self, host: Arc<dyn EngineHost>) {
@@ -464,8 +522,9 @@ impl GroupRuntime {
     ///
     /// The directory keeps its copy id only if it may: an empty directory,
     /// one minted under another storage id, one whose copy the root's marks
-    /// do not name, or one whose vote or log is below its marks gets a new
-    /// copy id that never voted and an empty log. The member id is this
+    /// do not name, one whose vote or log is below its marks, or one whose
+    /// log was poisoned in its last run gets a new copy id that never voted and an
+    /// empty log. The member id is this
     /// broker and the copy id in the directory. From here on the vote mark
     /// is synced before a vote is answered and the log mark follows the log
     /// as [`RuntimeConfig::log_mark`] says. See `docs/per-shard-raft.md`,
@@ -618,18 +677,28 @@ impl GroupRuntime {
     ) -> Result<(), OpenError> {
         let inner = &self.inner;
         let registry = &inner.registry;
+        let host = group::Host {
+            engine: inner.host.get().cloned(),
+            clock: Arc::clone(&inner.clock.read()),
+        };
+        let raft = match group.shard.kind {
+            ShardKind::Stream => &inner.raft,
+            ShardKind::Cache => &inner.raft_cache,
+        };
         let group = Group::open(
             group,
             member,
             log,
             marks.map(|marks| (marks, inner.log_mark)),
-            Arc::clone(&inner.raft),
+            Arc::clone(raft),
             Arc::clone(&inner.transport),
             inner.timers,
-            inner.host.get().cloned(),
+            host,
+            Arc::clone(&registry.tail_budget),
         )
         .await?;
         let group = Arc::new(group);
+        group.start_expiry();
         let placed = {
             let mut slots = registry.slots.write();
             let placed = !slots.closed;
@@ -742,16 +811,20 @@ impl GroupRuntime {
     ///
     /// The shard cannot be opened again until the member has stopped: an
     /// open before that is refused with [`OpenError::Closing`]. That holds
-    /// even if the caller drops this future.
+    /// even if the caller drops this future. A close that finds an earlier
+    /// one still stopping the member waits for it too, and returns true,
+    /// unless [`Self::shutdown`] has taken the member over by then.
     pub async fn close(&self, shard: &ShardKey) -> bool {
         let registry = Arc::clone(&self.inner.registry);
         let (shard, group) = {
             let mut slots = registry.slots.write();
-            // A slot still opening is its open's to place or free.
-            let Some((shard, Slot::Open(group))) = slots.by_shard.get_key_value(shard) else {
-                return false;
+            let (shard, group) = match slots.by_shard.get_key_value(shard) {
+                Some((shard, Slot::Open(group) | Slot::Closing(group))) => {
+                    (Arc::clone(shard), Arc::clone(group))
+                }
+                // A slot still opening is its open's to place or free.
+                Some((_, Slot::Opening)) | None => return false,
             };
-            let (shard, group) = (Arc::clone(shard), Arc::clone(group));
             slots
                 .by_shard
                 .insert(Arc::clone(&shard), Slot::Closing(Arc::clone(&group)));
@@ -759,11 +832,15 @@ impl GroupRuntime {
             (shard, group)
         };
         // In its own task, so the slot is freed when the member has
-        // stopped and not when the caller stops waiting.
+        // stopped and not when the caller stops waiting. A retried close
+        // waits on the same stop.
         let stopped = tokio::spawn(async move {
             group.shutdown().await;
             let mut slots = registry.slots.write();
-            if matches!(slots.by_shard.get(&shard), Some(Slot::Closing(_))) {
+            // Only this member's slot: after the first close freed it, the
+            // shard may have been opened and be closing again.
+            if matches!(slots.by_shard.get(&shard), Some(Slot::Closing(closing)) if Arc::ptr_eq(closing, &group))
+            {
                 slots.by_shard.remove(&shard);
             }
         });
@@ -782,10 +859,9 @@ impl GroupRuntime {
         let groups: Vec<Arc<Group>> = {
             let mut slots = inner.registry.slots.write();
             slots.closed = true;
-            let groups = slots
-                .by_shard
-                .drain()
-                .filter_map(|(_, slot)| match slot {
+            let groups = std::mem::take(&mut slots.by_shard)
+                .into_values()
+                .filter_map(|slot| match slot {
                     // A member being closed is stopped by its close too.
                     // Both wait for the same stop.
                     Slot::Open(group) | Slot::Closing(group) => Some(group),
@@ -852,6 +928,16 @@ impl GroupRuntime {
 
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         self.inner.registry.get(shard)
+    }
+
+    /// The shards the ticker visits, in its order.
+    #[cfg(test)]
+    pub(crate) fn ticked_shards(&self) -> Vec<ShardKey> {
+        let ticked = self.inner.registry.ticked();
+        ticked
+            .iter()
+            .map(|group| (*group.id.shard).clone())
+            .collect()
     }
 
     #[cfg(test)]

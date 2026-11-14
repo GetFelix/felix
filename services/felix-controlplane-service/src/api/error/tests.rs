@@ -58,6 +58,16 @@ fn a_raft_write_out_of_budget_is_a_retryable_503() {
 }
 
 #[test]
+fn a_read_from_a_member_catching_up_is_a_retryable_503() {
+    let err = StoreError::Unexpected(
+        crate::raft::Replaying("applied 3 of a log tail at 5".to_string()).into(),
+    );
+    let api = api_internal("failed to get stream", &err);
+    assert_eq!(api.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(api.body.code, "unavailable");
+}
+
+#[test]
 fn a_create_before_the_identity_is_a_retryable_503() {
     let err = StoreError::Unexpected(crate::store::identity::IdentityPending.into());
     let api = api_internal("failed to create stream", &err);

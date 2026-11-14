@@ -82,7 +82,7 @@ async fn a_seeded_broker_holds_every_tenants_keys_before_the_control_plane_goes(
             checked
         },
         crate::cluster::catalog_sync::Provisional::default(),
-        None,
+        GroupCheck::Decided(None),
     )
     .expect("a control plane is configured");
 
@@ -219,4 +219,156 @@ async fn a_drain_before_the_listeners_are_bound_stays_unready() {
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(!readiness.is_ready());
     assert!(!seeded.is_cancelled());
+}
+
+/// A data directory a broker has run on, checked against a control plane with
+/// no metadata group.
+fn marked_directory() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    felix_storage::storage_identity::load_or_create(dir.path(), || [1; 16]).expect("id");
+    std::fs::write(dir.path().join(controlplane_group::NO_GROUP_FILE), "").expect("mark");
+    dir
+}
+
+#[test]
+fn a_start_from_the_view_judges_its_group_after_the_restore_check() {
+    let dir = marked_directory();
+    let client = reqwest::Client::new();
+    let refused = CancellationToken::new();
+    let check = GroupCheck::for_start(Some(dir.path()), true, None, &client, &refused);
+    assert!(matches!(check, GroupCheck::Deferred { .. }), "{check:?}");
+    let check = GroupCheck::for_start(Some(dir.path()), false, None, &client, &refused);
+    assert!(
+        matches!(&check, GroupCheck::Decided(Some(guard)) if guard.stored.is_none()),
+        "a marked directory expects no group: {check:?}"
+    );
+    let unmarked = tempfile::tempdir().expect("dir");
+    let check = GroupCheck::for_start(Some(unmarked.path()), false, None, &client, &refused);
+    assert!(matches!(check, GroupCheck::Decided(None)), "{check:?}");
+}
+
+/// A control plane that knows tenant `t1` and names no group in its answers,
+/// with an identity route that answers 503 while `pending` holds, then
+/// `identity`.
+fn identified_control_plane(
+    pending: Arc<std::sync::atomic::AtomicBool>,
+    identity: serde_json::Value,
+) -> Router {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    control_plane().route(
+        "/v1/cluster/identity",
+        get(move || {
+            let pending = Arc::clone(&pending);
+            let identity = identity.clone();
+            async move {
+                if pending.load(std::sync::atomic::Ordering::SeqCst) {
+                    StatusCode::SERVICE_UNAVAILABLE.into_response()
+                } else {
+                    Json(identity).into_response()
+                }
+            }
+        }),
+    )
+}
+
+/// Spawn the catalog sync of a broker that started from its view on `dir`.
+async fn sync_from_view(
+    dir: &std::path::Path,
+    router: Router,
+) -> Result<(
+    Arc<Broker>,
+    CancellationToken,
+    CancellationToken,
+    oneshot::Sender<()>,
+)> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let (stop, _served) = spawn_axum_with_shutdown(listener, router);
+    wait_for_listen(addr).await?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let config = BrokerConfig {
+        controlplane_url: Some(format!("http://{addr}")),
+        controlplane_sync_interval_ms: 10,
+        ..BrokerConfig::default()
+    };
+    let key_store = Arc::new(ControlPlaneKeyStore::new(
+        format!("http://{addr}"),
+        Arc::new(TenantKeyCache::default()),
+    ));
+    let sync_shutdown = CancellationToken::new();
+    let refused = CancellationToken::new();
+    let checked = CancellationToken::new();
+    checked.cancel();
+    let (seeded_tx, _seeded_rx) = oneshot::channel();
+    spawn_catalog_sync(
+        &config,
+        &broker,
+        &Some(NodeCredential::new("node-token")),
+        &sync_shutdown,
+        false,
+        seeded_tx,
+        &CancellationToken::new(),
+        &key_store,
+        &checked,
+        crate::cluster::catalog_sync::Provisional::default(),
+        GroupCheck::for_start(Some(dir), true, None, &reqwest::Client::new(), &refused),
+    )
+    .expect("a control plane is configured");
+    Ok((broker, refused, sync_shutdown, stop))
+}
+
+/// The operator moved a broker from a control plane with no group to a Raft
+/// one formed on an empty catalog, and the broker started from its view. The
+/// Raft group answers with no group id until it records one, which a
+/// snapshot cannot tell from the in-memory control plane: nothing is applied
+/// until the identity answers, and then the directory, which holds data, is
+/// refused.
+#[tokio::test]
+async fn a_start_from_the_view_applies_nothing_from_a_new_group() -> Result<()> {
+    let dir = marked_directory();
+    let pending = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let router = identified_control_plane(
+        Arc::clone(&pending),
+        json!({ "group_id": "g-1", "shard_engine": "hybrid" }),
+    );
+    let (broker, refused, sync_shutdown, _stop) = sync_from_view(dir.path(), router).await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !broker.tenant_exists("t1").await,
+        "nothing is applied while the identity is pending"
+    );
+    assert!(!refused.is_cancelled());
+    pending.store(false, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(10), refused.cancelled())
+        .await
+        .expect("the broker is told to stop");
+    assert!(!broker.tenant_exists("t1").await);
+    assert_eq!(
+        controlplane_group::read(dir.path())?,
+        None,
+        "nothing is recorded"
+    );
+    sync_shutdown.cancel();
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_start_from_the_view_under_a_control_plane_without_a_group_syncs() -> Result<()> {
+    let dir = marked_directory();
+    let router = identified_control_plane(
+        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        json!({ "shard_engine": "hybrid" }),
+    );
+    let (broker, refused, sync_shutdown, _stop) = sync_from_view(dir.path(), router).await?;
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !broker.tenant_exists("t1").await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the catalog is applied");
+    assert!(!refused.is_cancelled());
+    sync_shutdown.cancel();
+    Ok(())
 }

@@ -187,6 +187,7 @@ async fn ending_subscribers_drains_then_closes_each_one() {
             &[Bytes::from_static(b"queued")],
             None,
             None,
+            None,
             16,
             None,
             None,
@@ -304,6 +305,7 @@ fn ring_stream(per_ring: usize, broker: usize) -> StreamState {
 fn append_with_block(stream: &StreamState, payload: &'static [u8], block: Option<Bytes>) {
     stream.append_batch_at(
         &[Bytes::from_static(payload)],
+        None,
         None,
         None,
         16,

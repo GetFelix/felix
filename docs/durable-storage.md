@@ -616,6 +616,15 @@ Four properties:
    A marker that cannot be read cuts and rewrites nothing; the open logs a warning and still
    writes the state files again.
 
+   A per-shard Raft copy is the exception. A leader can count what a copy
+   has written, before it is synced, toward a `Quorum` acknowledgement
+   (`await_quorum_ack`), so the cut could remove a record that was
+   acknowledged. An open refuses a poisoned directory that
+   holds a copy file (`raft-copy`) and leaves the marker. The copy root
+   rotates the copy instead: it moves the directory aside as it is and
+   starts an empty one under a new copy id. See `docs/per-shard-raft.md`,
+   "Group and member identity".
+
    If the marker itself did not survive, the restart is a reboot or a power
    loss and the rules above apply. The run record also stops vouching for the
    boot: under every fsync mode the next start takes a new storage id, so a
@@ -927,9 +936,14 @@ Invalid combinations fail at startup, not at the first publish.
 
 Sealed segments are opened lazily: an open reads only each sealed segment's
 header and last index entry, and the first read that reaches a segment opens
-its file and loads its sparse index into a cache shared per storage root,
-bounded by `LogConfig::max_open_sealed_segments` (default 256, least recently
-used evicted). Retention chooses segments and deletes their files outside the
+its file and loads its sparse index into a cache shared by every log opened
+with the same `LogConfig::sealed_cache` (a provider's logs together when it
+is unset), bounded by `LogConfig::max_open_sealed_segments` (default 256 for a
+standalone log; the broker sets 4,096 through
+`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` and shares one cache across all its
+logs; least recently used evicted). A read in flight when a segment is
+deleted, truncated or its log closed may still use the handle it opened, but
+never caches it. Retention chooses segments and deletes their files outside the
 segment lock; the lock is held only to drop them from the list.
 
 ### Opening and closing shards
@@ -1440,7 +1454,11 @@ nothing is acknowledged while it is still only in the process's memory.
 - The one exception is a replicated log's commit offset, which is written
   behind in every mode: under `OnCommit` by a write that starts at once and
   serves every advance made while it runs, otherwise at most once a second
-  (`DiskLog::advance_commit_offset`). After a crash it can read back behind, so
+  (`DiskLog::advance_commit_offset`). A Raft log's committed index is also
+  written at most once a second, and once more after the last advance, since
+  it moves on almost every entry ([storage-format.md](storage-format.md),
+  "`replica`: the accepted generation and the commit offset"). After a crash
+  it can read back behind, so
   a follower's refusal to
   truncate below it guards less until the leader's next batch carries it
   again. It is not a record and not what the id vouches for: a follower

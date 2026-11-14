@@ -546,6 +546,9 @@ impl LaneWork {
             }
             // A job that names no connection has nothing to queue the
             // publishes behind it under, so the lane keeps them in order.
+            // Only tests get here: control/batch.rs, control/message.rs,
+            // control/binary.rs and uni.rs build their jobs with no permit,
+            // and ingress `enqueue` attaches one to every job it queues.
             None => {
                 self.work.spawn(async move {
                     let turn = turn.await;
@@ -1129,7 +1132,17 @@ fn settle(
                 "dropping an unacknowledged publish with record headers"
             );
         }
-        (None, _) => {}
+        // Counted as accepted when it was queued, and nobody is told it
+        // was not written.
+        (None, Err(err)) => {
+            crate::serving::quic::telemetry::count_publish("unacked_failed");
+            tracing::debug!(
+                shard = ?shard,
+                error = %err,
+                "an unacknowledged publish was not written"
+            );
+        }
+        (None, Ok(_)) => {}
     }
 }
 

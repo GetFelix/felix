@@ -21,14 +21,17 @@
 //!
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
+mod cache;
 mod codec;
 mod commit;
 mod deliver;
+mod draws;
 mod engine;
 #[cfg(feature = "fuzzing")]
 #[doc(hidden)]
 pub mod fuzzing;
 mod group;
+mod install;
 mod lead;
 mod lease;
 mod machine;
@@ -36,6 +39,7 @@ mod network;
 mod peer;
 mod propose;
 mod runtime;
+pub mod switch;
 #[cfg(test)]
 mod tests;
 mod ticker;
@@ -44,6 +48,8 @@ mod wire;
 mod written;
 
 pub use deliver::{IdempotentPublish, RaftReads};
+#[cfg(any(test, feature = "testing"))]
+pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
