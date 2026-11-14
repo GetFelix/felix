@@ -47,7 +47,7 @@ pub use deliver::RaftReads;
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
-pub use propose::{AckAt, Batch, Record};
+pub use propose::{AckAt, AnswerAt, Batch, Record};
 pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
     Role, RuntimeConfig,

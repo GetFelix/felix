@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_storage::CommitTurn;
+use tokio::sync::oneshot;
 
 use super::PublishOutcome;
 use super::completion::spawn_release;
@@ -69,6 +70,8 @@ impl Broker {
         if payloads.is_empty() {
             return Ok(ProposedPublish {
                 finishing: None,
+                count: 0,
+                answer_at: None,
                 answer_within: None,
             });
         }
@@ -80,6 +83,8 @@ impl Broker {
             })
             .map_err(|waited| BrokerError::ProposalsStalled { waited })?;
         Ok(ProposedPublish {
+            count: payloads.len() as u64,
+            answer_at: None,
             finishing: Some(Box::pin(finish(
                 handle.clone(),
                 payloads,
@@ -138,12 +143,27 @@ impl<E> ProposalFailed<E> {
 #[must_use = "a proposed publish reports its outcome only through `complete`"]
 pub struct ProposedPublish<E: Send + 'static> {
     finishing: Option<Finishing<E>>,
+    /// How many records the batch holds.
+    count: u64,
+    answer_at: Option<oneshot::Receiver<u64>>,
     answer_within: Option<AnswerWithin<E>>,
 }
 
 type AnswerWithin<E> = (Duration, Box<dyn FnOnce() -> E + Send>);
 
 impl<E: Send + 'static> ProposedPublish<E> {
+    /// Answer [`Self::complete`] as soon as `written` is sent the batch's
+    /// end (one past its last offset), without waiting for the commit: an
+    /// acknowledgement on the leader's own log. Delivery does not move. The
+    /// batch still goes out only once the engine commits it, in its place,
+    /// and not at all if the engine gives up on it, though its publisher
+    /// was answered. A sender dropped unsent leaves the answer at the
+    /// commit.
+    pub fn answer_at(mut self, written: oneshot::Receiver<u64>) -> Self {
+        self.answer_at = Some(written);
+        self
+    }
+
     /// Answer [`Self::complete`] with `timed_out` if the batch is not
     /// committed within `timeout`. The batch keeps its place and is still
     /// delivered if it commits.
@@ -157,8 +177,9 @@ impl<E: Send + 'static> ProposedPublish<E> {
     }
 
     /// Wait until the batch is committed and queued for delivery behind
-    /// every batch handed over before it. Reports its offsets and no
-    /// subscribers: the fanout runs after this returns.
+    /// every batch handed over before it, or until [`Self::answer_at`]
+    /// says it may be answered. Reports its offsets and no subscribers:
+    /// the fanout runs after this returns.
     pub async fn complete(mut self) -> std::result::Result<PublishOutcome, E> {
         let Some(finishing) = self.finishing.as_mut() else {
             return Ok(PublishOutcome {
@@ -166,18 +187,44 @@ impl<E: Send + 'static> ProposedPublish<E> {
                 offsets: None,
             });
         };
-        let outcome = match self.answer_within.take() {
-            None => finishing.await,
+        let count = self.count;
+        let written = self.answer_at.take();
+        // The batch's offsets, if the engine says it may be answered where
+        // it was written.
+        let written = async move {
+            let end = written?.await.ok()?;
+            Some((end.checked_sub(count)?, end - 1))
+        };
+        let answered = async {
+            tokio::select! {
+                biased;
+                // First: this is what sends `written`, and a commit that is
+                // already known wins.
+                outcome = finishing => Ok(outcome),
+                Some(offsets) = written => Err(offsets),
+            }
+        };
+        let answered = match self.answer_within.take() {
+            None => answered.await,
             Some((timeout, timed_out)) => {
-                match tokio::time::timeout(timeout, finishing).await {
-                    Ok(outcome) => outcome,
+                match tokio::time::timeout(timeout, answered).await {
+                    Ok(answered) => answered,
                     // `Drop` finishes the batch on a task.
                     Err(_) => return Err(timed_out()),
                 }
             }
         };
-        self.finishing = None;
-        outcome
+        match answered {
+            Ok(outcome) => {
+                self.finishing = None;
+                outcome
+            }
+            // Not committed yet. `Drop` runs the rest on a task.
+            Err(offsets) => Ok(PublishOutcome {
+                subscribers: 0,
+                offsets: Some(offsets),
+            }),
+        }
     }
 }
 
