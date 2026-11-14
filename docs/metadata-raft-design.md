@@ -1241,6 +1241,11 @@ nothing a 0.9 member reads has changed:
 - **The stored snapshot meta keeps its id field**, so a 0.9 binary started
   on a store a 0.10 binary wrote still parses it.
 
+The way back closes when the upgrade finishes. Once every member has
+reported this build's metadata level, the group records its identity
+(level 32), and a 0.9 member refuses a store that holds it. Roll a member
+back while the upgrade is still under way, or not at all.
+
 Chunks and the snapshot id go away with the new peer prefix, in the store
 step, where no 0.9 member can be on the other end.
 

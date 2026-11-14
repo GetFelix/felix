@@ -120,6 +120,18 @@ tasks:
       - |
         CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
           cargo test -p felix-sim --release --test seeds replay -- --nocapture
+  # Runs one Raft group seed (FELIX_SIM_SEED, default 1) the way the nightly
+  # sweep does, so a seed the sweep reports fails the same way here
+  # (docs/simulation.md, "Raft groups"). FELIX_SIM_CLOCKS=bounded skews the
+  # members' timers.
+  sim:raft-replay:
+    env:
+      RUSTFLAGS: "--cfg tokio_unstable"
+    cmds:
+      - |
+        FELIX_SIM_SEED_START="${FELIX_SIM_SEED:-1}" FELIX_SIM_SEEDS=1 \
+        CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+          cargo test -p felix-sim --release --test raft_seeds -- --ignored --exact raft_seeds --nocapture
   # Runs each simulator seed twice in one process and fails on the first
   # event that differs, then the seeds pinned to an issue (`seed_*`).
   # FELIX_SIM_SEEDS and FELIX_SIM_SEED_START pick the seeds the first test

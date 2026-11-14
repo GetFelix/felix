@@ -146,7 +146,7 @@ impl Led {
     }
 }
 
-fn lost(result: &Result<(), CommitError>) -> &'static str {
+pub(super) fn lost(result: &Result<(), CommitError>) -> &'static str {
     match result {
         Err(CommitError::LeadershipLost { detail, .. }) => detail,
         other => panic!("not an unknown outcome: {other:?}"),
@@ -335,29 +335,91 @@ async fn a_leader_opens_only_once_its_blank_entry_commits() {
             .await
             .expect("initialize");
     }
-    let leads = |cluster: &Cluster| {
-        let statuses = cluster.statuses(0);
-        statuses
-            .into_iter()
-            .find(|status| status.role == Role::Leader)
-    };
-    let elected = eventually(|| leads(&cluster)).await;
+    eventually(|| leads(&cluster)).await;
     tokio::time::sleep(Duration::from_millis(300)).await;
     let opened: Vec<_> = hosts.values().flat_map(|told| told.all()).collect();
     assert_eq!(opened, [], "opened before any entry of the term committed");
 
     cluster.net.lose_appends.store(false, Relaxed);
-    let leader = cluster.elected(0).await;
-    let told = &hosts[&*leader.broker];
-    let (what, term) = eventually(|| told.all().first().copied()).await;
-    let status = cluster.runtime(&leader.broker).status(&shard(0));
-    let status = status.expect("status");
-    assert_eq!((what, term), ("opened", status.term));
-    assert!(status.committed.is_some(), "opened with nothing committed");
-    if leader == elected.member {
-        assert_eq!(term, elected.term);
-    }
+    // A follower that has heard no append may start an election before the
+    // first one reaches it, so the member that opens can be another one, or
+    // the same one at a later term.
+    opens_at_its_term(&cluster, &hosts).await;
     cluster.stop().await;
+}
+
+/// While appends are lost, a follower hears from no leader, so its election
+/// timer runs out and it can win a later term. No leader opens while it
+/// commits nothing, and the one that leads once appends flow opens alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leaders_that_commit_nothing_open_nothing() {
+    let (mut cluster, hosts) = hosted();
+    cluster.open(0).await;
+    cluster.net.lose_appends.store(true, Relaxed);
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members())
+            .await
+            .expect("initialize");
+    }
+    let elected = eventually(|| leads(&cluster)).await;
+    let later = |cluster: &Cluster| {
+        let statuses = cluster.statuses(0).into_iter();
+        let mut later = statuses.filter(|status| status.term > elected.term);
+        later.find(|status| status.role == Role::Leader)
+    };
+    eventually(|| later(&cluster)).await;
+    let opened: Vec<_> = hosts.values().flat_map(|told| told.all()).collect();
+    assert_eq!(opened, [], "opened before any entry of the term committed");
+
+    cluster.net.lose_appends.store(false, Relaxed);
+    opens_at_its_term(&cluster, &hosts).await;
+    cluster.stop().await;
+}
+
+/// The member of group 0 that leads the highest term now. Two can both
+/// say they lead while appends are lost.
+fn leads(cluster: &Cluster) -> Option<GroupStatus> {
+    let statuses = cluster.statuses(0).into_iter();
+    statuses
+        .filter(|status| status.role == Role::Leader)
+        .max_by_key(|status| status.term)
+}
+
+/// Wait for the leader every member follows to open at its own term with
+/// something committed and every other host to be closed, then check that
+/// every host was told of its terms in order: each term opened at most once,
+/// and closed before a later one opened.
+async fn opens_at_its_term(cluster: &Cluster, hosts: &HashMap<&'static str, Arc<Told>>) {
+    let opened = || {
+        let leader = cluster.leader(0)?;
+        let status = cluster.runtime(&leader.broker).status(&shard(0))?;
+        let told = hosts[&*leader.broker].all();
+        (told.last() == Some(&("opened", status.term))).then_some(status)
+    };
+    let status = eventually(opened).await;
+    assert!(status.committed.is_some(), "opened with nothing committed");
+    let others_closed = || {
+        let mut others = hosts
+            .iter()
+            .filter(|(broker, _)| **broker != &*status.member.broker);
+        let open = |told: &Told| told.all().last().is_some_and(|(what, _)| *what == "opened");
+        others.all(|(_, told)| !open(told)).then_some(())
+    };
+    eventually(others_closed).await;
+    for (broker, told) in hosts {
+        let told = told.all();
+        let mut open = None;
+        let mut last = 0;
+        for &(what, term) in &told {
+            match (what, open) {
+                ("opened", None) if term > last => open = Some(term),
+                ("deposed", Some(at)) if term == at => open = None,
+                _ => panic!("{broker} was told out of order: {told:?}"),
+            }
+            last = term;
+        }
+    }
 }
 
 /// A transfer closes the shard before it is asked for, and the term does
