@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794623060420,
+  "lastUpdate": 1794629401259,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55536,6 +55536,58 @@ window.BENCHMARK_DATA = {
             "range": "14440.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1746102.27\nmean: 1748234.81\nstdev: 14440.20\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ad9d9ab95a432385df0a94087339a97a8fb8b9c8",
+          "message": "fix(ci): unbreak main: openraft containment allows the copy root's tests; felix-sim enables felix-replication/testing (#2517)\n\n* fix(ci): the openraft containment check allows the copy root's tests\n\n#2490 added crates/server/felix-storage/src/raft_copy/tests/reclaim.rs, which\ndrives the Raft log adapter through openraft's RaftLogStorage trait. The\ncontainment check already allows the tests of the store built on the\nadapter; the copy root's tests are the same kind. Without this, task lint\nfails on main and on every PR.\n\n* fix(sim): the Raft simulation turns on felix-replication's testing feature\n\nGroupRuntime::open is behind felix-replication's testing feature since #2440,\nand felix-sim calls it, so felix-sim --features raft stopped compiling. Carried\nhere with the containment fix because each one's CI fails without the other.\nSame change as #2489.",
+          "timestamp": "2026-11-13T20:01:42-08:00",
+          "tree_id": "295da84d403c7d1ea0adbb79d3b52285e6124d01",
+          "url": "https://github.com/GetFelix/felix/commit/ad9d9ab95a432385df0a94087339a97a8fb8b9c8"
+        },
+        "date": 1794629400604,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358687.51,
+            "range": "13573.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358687.51\nmean: 356067.85\nstdev: 13573.46\ncv: 3.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358687.51,
+            "range": "13573.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358687.51\nmean: 356067.85\nstdev: 13573.46\ncv: 3.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81629.55,
+            "range": "702.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81629.55\nmean: 81826.11\nstdev: 702.93\ncv: 0.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816295.46,
+            "range": "7029.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816295.46\nmean: 818261.10\nstdev: 7029.29\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
