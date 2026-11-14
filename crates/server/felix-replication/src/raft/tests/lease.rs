@@ -105,6 +105,24 @@ async fn restart(cluster: &mut Cluster, broker: &str) {
     runtime.open(group(0), 1, log).await.expect("reopen");
 }
 
+/// Watch `broker`'s member of group 0 until its hold ends: it is not
+/// ticked, so it never campaigns, and its term stays `term`.
+async fn quiet_through_hold(cluster: &Cluster, broker: &str, term: u64) {
+    let runtime = cluster.runtime(broker);
+    let member = runtime.group(&shard(0)).expect("group");
+    assert!(member.holds_votes(), "{broker} is not held");
+    loop {
+        let status = runtime.status(&shard(0)).expect("status");
+        // Read after the status: the hold only ends, so it was on at the read.
+        if !member.holds_votes() {
+            return;
+        }
+        assert_eq!(status.ticks, 0, "{broker} was ticked inside its hold");
+        assert_eq!(status.term, term, "{broker} campaigned inside its hold");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 /// Start `broker`'s member of group 0 on its log.
 async fn open_on(cluster: &mut Cluster, broker: &str) {
     let log = open_log(cluster.root.path(), broker, 0, log_config());
@@ -689,11 +707,20 @@ async fn a_restarted_sole_voter_stands_at_once() {
             .await;
         assert!(dropped(&answer), "a sole voter granted y inside its hold");
     }
+    // Its stored vote names x, so only being the sole voter lets it stand.
+    let runtime = cluster.runtime("a");
+    let member = runtime.group(&shard(0)).expect("group");
+    soon("a sole voter was not ticked", || {
+        runtime.status(&shard(0)).is_some_and(|now| now.ticks > 0)
+    })
+    .await;
+    // Read after the tick: the hold only ends, so it was on at the tick.
+    assert!(member.holds_votes(), "the hold ended before the first tick");
     cluster.stop().await;
 }
 
-/// **Only the sole voter itself is not held.** A learner of a one-voter
-/// group took that voter's messages, and is held like any follower.
+/// **A learner beside a sole voter is held.** It took that voter's
+/// messages, and is held like any follower.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_restarted_learner_beside_a_sole_voter_is_held() {
     let mut cluster = Cluster::new(true);
@@ -731,6 +758,7 @@ async fn a_restarted_learner_beside_a_sole_voter_is_held() {
         let asked = b.handle(to("b", request(term + 9, "x"))).await;
         assert!(dropped(&asked), "the learner took a vote request");
     }
+    quiet_through_hold(&cluster, "b", term).await;
     cluster.stop().await;
 }
 
@@ -766,6 +794,7 @@ async fn a_restarted_member_alone_in_a_set_not_committed_is_held() {
         .handle(to(&b, vote_request(led.term + 9, "x")))
         .await;
     assert!(dropped(&asked), "{b} took a vote request");
+    quiet_through_hold(&led.cluster, &b, led.term).await;
     led.cluster.stop().await;
 }
 

@@ -1457,8 +1457,8 @@ stored. The node layer drops vote and pre-vote requests for a group, before
 they reach openraft, until `election_timeout_max` has passed on the
 monotonic clock since that member started, not since the process started.
 The member started after the last message the old one took, so the wait
-covers the promise. A held member is not ticked. One request is let
-through (below).
+covers the promise. A held member is not ticked, unless it stands at
+once (below). One request is let through (below).
 Nothing is written, on the heartbeat path or anywhere else, and no clock
 has to survive the restart. Dropping is enough, because a candidate asks
 again at its next timeout.
