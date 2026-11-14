@@ -56,7 +56,6 @@ fn assigned(key: ShardKey, replicas: &[&str]) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         switch: None,
-        switch: None,
     }
 }
 

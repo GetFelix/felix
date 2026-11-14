@@ -2120,11 +2120,14 @@ that fsyncs on commit, and the leader's count and report:
   takes the shard's records only from that copy id, refuses rebuilds,
   bootstraps and election ballots, and grants no pre-vote. Retention
   deletes nothing from its log, so it keeps the start it answered with.
+  Its dead-letter and cursor logs take no local write and are not
+  compacted either: a cursor commit or a dead letter is refused, and a
+  compaction pass already running stops before it copies or trims again.
+  A follower answers the fence only once such a write has finished.
   Nothing reopens the shard on a timeout: the promise
   lapses only when the copy accepts a later generation, which only the
   control plane's promotion gives it.
-- *The claim.* Once a majority answered and the shard's fence is quiet (no
-  write admitted before the seal is still on its way to an offset), the
+- *The claim.* Once a majority answered and the shard is quiet, the
   leader marks the claim in its `switch-seal` file, then appends the
   generation-start record at `N`. Its payload is the generation, then `S`,
   the digest of `S..N`, and for each side log the range the leader holds
@@ -2132,7 +2135,11 @@ that fsyncs on commit, and the leader's count and report:
   copies that answered. The claim mark comes first, so a leader that
   crashes or loses its tail never appends a second record at `G`; the
   control plane seals again at a later generation instead. The side logs
-  are synced before the claim, so the ranges it names are on disk.
+  are synced before the claim, so the ranges it names are on disk. Quiet
+  means three things at once: the shard's write fence is closed with no
+  write still inside it, the leader's own promise holds (so nothing new
+  starts on the side logs), and no cursor commit, dead letter or
+  compaction pass that began earlier is still running.
 - *The acknowledgement.* A follower appends the record at `N` only if its
   log ends at `N - 1`, starts at or below `S`, matches the digest from
   `S`, and each side log holds the leader's range and nothing past it. It
@@ -2148,9 +2155,47 @@ that fsyncs on commit, and the leader's count and report:
 pass of the leader's round over the wire: the seal's fence to each copy, the
 claim, `SealAck` to each copy, and the report. The messages are in
 `docs/internal-protocol.md`, "Sealing a shard for the switch to Raft", and
-only a build with the Raft engine offers them. Nothing calls `step` yet: the
-control plane's seal flag, the leader's quiesce and the compare-and-swap that
-records the report come next, so nothing seals a shard.
+only a build with the Raft engine offers them.
+
+**What the leader does with a seal order.** The control plane orders a seal
+by promoting the shard to a new generation `G` under the same leader, with
+a `switch` field on the assignment that names `G` and the sealer. The
+broker reads it like this (`shards/lifecycle.rs`, `Phase::Sealed`, and
+`felix_replication::sealing`):
+
+- The shard closes at once and does not go through the ordinary open: no
+  promotion fence, and no generation-start record of its own, because the
+  seal's record is the one that starts `G`. Nothing is acknowledged to a
+  client at `G`.
+- The leader runs one round per shard and generation, one pass every
+  50 ms, and keeps shipping so its followers reach `N - 1`.
+- It runs the round only if this process was serving generation `G - 1`.
+  Such a leader holds every acknowledged record. Any other leader (one
+  that restarted, or was promoted straight to `G`) would first have to take
+  the longest tail from its followers, which the seal's fence does not do,
+  so it ships nothing and gives the order up.
+- When a majority holds the record it sends the report
+  (`POST /v1/nodes/{node_id}/seal-report`) and keeps it in memory until the
+  control plane answers. A report that gets no answer is sent again as it
+  was. The round itself never runs twice.
+- When the round is refused or abandoned, including a restart that finds
+  the claim already made, it sends `POST /v1/nodes/{node_id}/seal-give-up`
+  until that is answered. A report the control plane keeps refusing with a
+  conflict is given up the same way after about ten seconds.
+- It never reopens the shard, on a timer or otherwise. The shard opens
+  again only when the control plane writes a later generation without a
+  seal, which goes through the ordinary fence.
+
+Once the control plane has accepted a report, the assignment carries it
+(`switch.report`), at the same generation. From then on the hybrid does
+nothing for the shard on the broker that led it: no open, no fence, no
+shipping and no replica report. Starting the Raft member from the recorded
+base is the next step and is not wired yet, so a shard whose report was
+accepted stays closed. The control plane therefore orders no seal outside
+tests until that lands.
+
+A build without the Raft engine cannot seal. Given a seal order it keeps
+the shard closed and gives the order up.
 
 **Only the sealing copy leads.** A follower takes catch-up records for the
 seal only from the copy that sealed. Catch-up batches carry the leader's

@@ -357,8 +357,8 @@ async fn a_seal_fence_without_side_logs_or_with_an_election_is_refused() {
 /// Followers reached in process: each seal message goes to the named
 /// node's handler, as the pool would send it, and a node that did not offer
 /// the seal is refused before anything is sent.
-struct Followers<'a> {
-    nodes: Vec<(&'static str, &'a ReplicaHandler, PeerCapabilities)>,
+pub(super) struct Followers<'a> {
+    pub(super) nodes: Vec<(&'static str, &'a ReplicaHandler, PeerCapabilities)>,
 }
 
 impl crate::peer::PeerRequester for Followers<'_> {
@@ -390,7 +390,7 @@ impl crate::peer::PeerRequester for Followers<'_> {
 }
 
 /// A follower copy: its broker and its handler at the seal's generation.
-async fn follower(dir: &std::path::Path, copy: u8) -> (Arc<Broker>, ReplicaHandler) {
+pub(super) async fn follower(dir: &std::path::Path, copy: u8) -> (Arc<Broker>, ReplicaHandler) {
     let broker = sealing_broker(dir);
     holding(&broker).await;
     let handler = ReplicaHandler::new(Arc::clone(&broker), router_with(&[LOCAL], SEAL))
@@ -398,7 +398,7 @@ async fn follower(dir: &std::path::Path, copy: u8) -> (Arc<Broker>, ReplicaHandl
     (broker, handler)
 }
 
-async fn logs_of(broker: &Broker) -> [felix_broker::StreamLog; 3] {
+pub(super) async fn logs_of(broker: &Broker) -> [felix_broker::StreamLog; 3] {
     let log = |kind| broker.shard_log(kind, TENANT, NAMESPACE, STREAM, 0);
     [
         log(felix_broker::LogKind::Stream).await.expect("log"),

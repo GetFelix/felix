@@ -23,6 +23,8 @@ mod incarnation;
 mod non_voting;
 #[cfg(feature = "raft")]
 mod seal;
+#[cfg(feature = "raft")]
+mod sealing;
 mod trim;
 mod writers;
 

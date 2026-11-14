@@ -240,7 +240,6 @@ impl PreviousSet {
             previous_generation: None,
             readmitted: Default::default(),
             switch: None,
-            switch: None,
         }
     }
 }
@@ -322,8 +321,19 @@ impl ShardOwnership {
                     && (next.incarnation, next.generation)
                         <= (current.incarnation, current.generation)
                 {
-                    mm::record_stale_change();
-                    return false;
+                    // The one change written in place: the control plane
+                    // accepting a seal report keeps the seal's generation.
+                    let switched = (next.incarnation, next.generation)
+                        == (current.incarnation, current.generation)
+                        && next.is_switched()
+                        && !current.is_switched();
+                    if !switched {
+                        mm::record_stale_change();
+                        return false;
+                    }
+                    self.assignments.insert(key.clone(), next);
+                    self.changed();
+                    return true;
                 }
                 let prior = prior_of(self.assignments.get(key), &next);
                 self.set_prior(key, prior);

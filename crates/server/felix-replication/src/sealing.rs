@@ -78,8 +78,9 @@ enum Stage {
     #[cfg(feature = "raft")]
     Sealing(Box<crate::seal::SealRound>),
     /// A majority holds the record. The report is kept until the control
-    /// plane answers it; the round is never run again.
-    Reporting(serde_json::Value),
+    /// plane answers it, with how often it was refused; the round is never
+    /// run again.
+    Reporting(serde_json::Value, u32),
     /// Given up, for this reason, until the control plane hears it.
     GivingUp(String),
     /// The control plane answered. Nothing more happens at this generation.
@@ -161,7 +162,7 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
                     Stage::Starting => self.start(&order).await,
                     #[cfg(feature = "raft")]
                     Stage::Sealing(round) => self.seal(&order, round).await,
-                    Stage::Reporting(report) => self.report(&order, report).await,
+                    Stage::Reporting(report, refused) => self.report(&order, report, refused).await,
                     Stage::GivingUp(reason) => self.give_up(&order, reason).await,
                     Stage::Done => Step::Stay(Stage::Done),
                 };
@@ -175,7 +176,7 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
             }
             let wait = match stage {
                 Stage::Done => None,
-                Stage::Reporting(_) | Stage::GivingUp(_) => Some(SEND_RETRY),
+                Stage::Reporting(..) | Stage::GivingUp(_) => Some(SEND_RETRY),
                 _ => Some(SEAL_RETRY),
             };
             again = match (again, wait) {
@@ -300,7 +301,7 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
                     voters = report.voters.len(),
                     "sealed: a majority holds the seal's record",
                 );
-                Step::Next(Stage::Reporting(report_body(&order.key, &report)))
+                Step::Next(Stage::Reporting(report_body(&order.key, &report), 0))
             }
             Ok(SealProgress::Refused(why)) => Step::Next(Stage::GivingUp(format!("{why:?}"))),
             Ok(SealProgress::Abandoned) => {
@@ -358,10 +359,13 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
             .is_some_and(|held| !held.is_cancelled())
     }
 
-    /// Send the report. Any answer but a 200 leaves it to send again.
-    async fn report(&self, order: &SealOrder, report: serde_json::Value) -> Step {
+    /// Send the report. A 200 ends the round, accepted or not. A refusal
+    /// that may pass (a control plane not yet at the level that takes
+    /// reports) is sent again for a while and then given up; anything else
+    /// is sent again.
+    async fn report(&self, order: &SealOrder, report: serde_json::Value, refused: u32) -> Step {
         if self.held() {
-            return Step::Stay(Stage::Reporting(report));
+            return Step::Stay(Stage::Reporting(report, refused));
         }
         let bearer = self.to.token.as_ref().map(|token| token.bearer());
         let answer = self
@@ -374,7 +378,7 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
             )
             .await;
         match answered::<ReportAnswer>(answer) {
-            Some(answer) => {
+            Answer::Ok(answer) => {
                 tracing::info!(
                     stream = %order.key.stream,
                     shard = order.key.shard,
@@ -384,7 +388,12 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
                 );
                 Step::Next(Stage::Done)
             }
-            None => Step::Stay(Stage::Reporting(report)),
+            Answer::NotSealer => Step::Next(Stage::Done),
+            Answer::Conflict if refused + 1 >= REPORT_REFUSALS => Step::Next(Stage::GivingUp(
+                "the control plane keeps refusing the seal report".to_string(),
+            )),
+            Answer::Conflict => Step::Stay(Stage::Reporting(report, refused + 1)),
+            Answer::Later => Step::Stay(Stage::Reporting(report, refused)),
         }
     }
 
@@ -410,7 +419,7 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
             )
             .await;
         match answered::<GiveUpAnswer>(answer) {
-            Some(answer) => {
+            Answer::Ok(answer) => {
                 tracing::warn!(
                     stream = %order.key.stream,
                     shard = order.key.shard,
@@ -421,21 +430,41 @@ impl<R: PeerRequester + Send + Sync, L: ControlPlaneLink> Sealing<R, L> {
                 );
                 Step::Next(Stage::Done)
             }
-            None => Step::Stay(Stage::GivingUp(reason)),
+            // Not this broker's seal to give up: nothing more to say.
+            Answer::NotSealer => Step::Next(Stage::Done),
+            Answer::Conflict | Answer::Later => Step::Stay(Stage::GivingUp(reason)),
         }
     }
 }
 
-/// The decoded body of a 200, or `None` for anything else: no answer,
-/// another status, or a body that does not parse.
+/// How many refusals of a report are sent again before the round is given
+/// up: about ten seconds at [`SEND_RETRY`].
+const REPORT_REFUSALS: u32 = 20;
+
+/// What the control plane said to a report or a give-up.
+enum Answer<T> {
+    /// A 200 and its body.
+    Ok(T),
+    /// A 409 `not_sealer`: the switch record names another sealer.
+    NotSealer,
+    /// Any other 409.
+    Conflict,
+    /// No answer, another status, or a body that does not parse.
+    Later,
+}
+
 fn answered<T: serde::de::DeserializeOwned>(
     answer: anyhow::Result<crate::controlplane_link::LinkResponse>,
-) -> Option<T> {
-    let answer = answer.ok()?;
-    if answer.status != reqwest::StatusCode::OK {
-        return None;
+) -> Answer<T> {
+    let Ok(answer) = answer else {
+        return Answer::Later;
+    };
+    match answer.status {
+        reqwest::StatusCode::OK => answer.json().map_or(Answer::Later, Answer::Ok),
+        reqwest::StatusCode::CONFLICT if answer.text().contains("not_sealer") => Answer::NotSealer,
+        reqwest::StatusCode::CONFLICT => Answer::Conflict,
+        _ => Answer::Later,
     }
-    answer.json().ok()
 }
 
 #[cfg(feature = "raft")]

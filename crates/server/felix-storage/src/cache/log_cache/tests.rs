@@ -9,6 +9,7 @@ mod compaction;
 mod concurrency;
 mod conditional;
 mod expiry;
+mod held;
 mod legacy_swap;
 mod observer;
 #[cfg(target_os = "linux")]

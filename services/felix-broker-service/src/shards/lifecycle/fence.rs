@@ -524,10 +524,15 @@ impl felix_replication::driver::WriteFence for ShardFence {
     }
 
     fn opened_since(&self, key: &ShardKey, generation: u64) -> bool {
-        self.gates
-            .read()
-            .get(key)
-            .is_some_and(|gate| gate.opened_below.load(SeqCst) > generation)
+        // A seal this broker runs continues the generation it was serving,
+        // on the same members: to replication it is a plain bump, though
+        // the gate never opens at it.
+        self.seals.read().get(key) == Some(&(generation, true))
+            || self
+                .gates
+                .read()
+                .get(key)
+                .is_some_and(|gate| gate.opened_below.load(SeqCst) > generation)
     }
 
     fn promoting(&self, key: &ShardKey, generation: u64) -> bool {

@@ -30,7 +30,6 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         switch: None,
-        switch: None,
     }
 }
 
@@ -254,7 +253,6 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
-        switch: None,
         switch: None,
     }
 }
@@ -791,4 +789,32 @@ async fn a_renewal_after_a_surrender_waits_for_the_feed_head_it_was_accepted_at(
     shutdown.cancel();
     watch.await.expect("watch");
     server.abort();
+}
+
+/// The control plane accepts a seal report in place, at the seal's
+/// generation. That one same-generation change is applied, once; without it
+/// the leader would never learn its shard switched.
+#[test]
+fn an_accepted_seal_report_at_the_same_generation_is_applied() {
+    let sealed = |report: Option<serde_json::Value>| ShardAssignment {
+        switch: Some(Switch {
+            generation: 4,
+            sealer: "broker-a".to_string(),
+            sealer_copy: None,
+            report,
+        }),
+        ..assignment(0, "broker-a", 4)
+    };
+    let accepted = sealed(Some(serde_json::json!({"generation": 4, "offset": 9})));
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(sealed(None))));
+    assert!(!owned.apply(&key(0), Some(sealed(None))));
+
+    assert!(owned.apply(&key(0), Some(accepted.clone())));
+    assert!(owned.get(&key(0)).is_some_and(ShardAssignment::is_switched));
+    assert!(!owned.apply(&key(0), Some(accepted)), "a duplicate");
+    assert!(
+        !owned.apply(&key(0), Some(sealed(None))),
+        "the order again must not undo the switch"
+    );
 }

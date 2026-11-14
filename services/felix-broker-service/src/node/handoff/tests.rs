@@ -35,7 +35,6 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         switch: None,
-        switch: None,
     }
 }
 
