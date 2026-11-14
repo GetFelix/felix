@@ -1556,18 +1556,22 @@ async fn answered_alone(
     panic!("no publish was answered while the leader reached nobody");
 }
 
-/// The shard takes a publish again on whichever member leads now.
+/// The shard takes a publish again on whichever member leads now. Until
+/// the batches held through the cut settle, or a new leader is elected, a
+/// publish is refused at once, so attempts are spread over a deadline
+/// rather than counted.
 async fn publishes_again(members: &[Member]) {
     let orders = key("orders", 0);
-    for _ in 0..40 {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
         let leader = served(members).await;
-        let Some(term) = members[leader].shards.leading(&orders) else {
-            continue;
-        };
-        let answered = members[leader].publish_within(term, b"again", Duration::from_secs(2));
-        if answered.await.is_some() {
-            return;
+        if let Some(term) = members[leader].shards.leading(&orders) {
+            let answered = members[leader].publish_within(term, b"again", Duration::from_secs(2));
+            if answered.await.is_some() {
+                return;
+            }
         }
+        tokio::time::sleep(timers().heartbeat).await;
     }
     panic!("the shard took no publish once its members were back");
 }
