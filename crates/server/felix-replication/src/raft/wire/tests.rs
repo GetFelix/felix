@@ -241,7 +241,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 4);
+    assert_eq!(read.entries.len(), 5);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);

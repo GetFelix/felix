@@ -202,7 +202,6 @@ impl Broker {
             position = unfinished.held;
             batch_first = Some(first);
         } else {
-            Self::engine_takes_idempotent(len)?;
             match log.producer_sequence(producer_id, sequence) {
                 ProducerSequence::Held {
                     first,
@@ -225,6 +224,9 @@ impl Broker {
                 }
                 ProducerSequence::Unknown | ProducerSequence::Next => {}
             }
+            // After the look: a multi-record batch the log holds whole is
+            // still answered as held.
+            Self::engine_takes_idempotent(len)?;
         }
         let owed = OwedRecords {
             payloads: payloads.clone(),
