@@ -1199,15 +1199,14 @@ async fn writer_drops_resume_from_the_feeders_offsets() -> Result<()> {
         writer_config,
     ));
 
-    let last = loop {
-        match tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
+    let LaneCommand::Unregister { last, .. } =
+        tokio::time::timeout(Duration::from_secs(2), lane_rx.recv())
             .await?
             .expect("lane open")
-        {
-            LaneCommand::Unregister { last, .. } => break last.expect("a last frame"),
-            other => panic!("unexpected lane command: {other:?}"),
-        }
+    else {
+        panic!("expected the unregister");
     };
+    let last = last.expect("a last frame");
     assert_eq!(
         Message::decode(felix_wire::Frame::decode(last)?)?,
         Message::SubscriptionLagged {
