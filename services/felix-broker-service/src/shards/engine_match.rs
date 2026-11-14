@@ -86,7 +86,17 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
     /// must not slow the feed. Every pass asks again, so a peer not reached
     /// yet is learnt once it is up, and one that restarted on the other
     /// engine is noticed. Until a peer answers, its shards are served.
+    ///
+    /// A peer that has handshaken with this broker, in either direction, is
+    /// not dialled: its latest handshake is the answer, and a restarted peer
+    /// dials this broker when it asks in turn. A dial to a peer that just
+    /// restarted goes to the address the catalog had before, fails, and
+    /// starts a reconnect backoff that would hold up a move onto that peer.
     fn ask(&self, peer: &str) {
+        if let Some(offered) = self.peers.recorded_capabilities(peer) {
+            learn(&self.engines, &self.wake, peer.to_string(), offered);
+            return;
+        }
         let Some(addr) = (self.addresses)(peer) else {
             return;
         };
@@ -99,14 +109,8 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
         tokio::spawn(async move {
             let answer = tokio::time::timeout(ASK_WITHIN, peers.capabilities(&name, addr)).await;
             asking.lock().remove(&name);
-            let Ok(Ok(offered)) = answer else {
-                return;
-            };
-            let raft = offered.contains(PeerCapabilities::RAFT);
-            if engines.lock().insert(name, raft) != Some(raft)
-                && let Some(wake) = wake.get()
-            {
-                wake.notify_one();
+            if let Ok(Ok(offered)) = answer {
+                learn(&engines, &wake, name, offered);
             }
         });
     }
@@ -122,6 +126,21 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
 
     fn engine_name(raft: bool) -> &'static str {
         if raft { "raft" } else { "hybrid" }
+    }
+}
+
+/// Record which engine `peer` runs, and run a pass if that changed.
+fn learn(
+    engines: &parking_lot::Mutex<HashMap<String, bool>>,
+    wake: &std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+    peer: String,
+    offered: PeerCapabilities,
+) {
+    let raft = offered.contains(PeerCapabilities::RAFT);
+    if engines.lock().insert(peer, raft) != Some(raft)
+        && let Some(wake) = wake.get()
+    {
+        wake.notify_one();
     }
 }
 

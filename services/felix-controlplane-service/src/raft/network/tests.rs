@@ -105,12 +105,59 @@ async fn every_rpc_names_the_member_it_is_for() {
 
     let _: Reply = network.send("vote", &serde_json::json!({})).await;
     let _: Reply = network.send("append-entries", &serde_json::json!({})).await;
-    // The streamed snapshot send goes through the same `answer`.
     let _: Reply = network
         .send("install-snapshot", &serde_json::json!({}))
         .await;
     let seen = seen.lock().expect("seen");
     assert_eq!(*seen, vec![Some("9".to_string()); 3]);
+}
+
+/// The streamed snapshot is built apart from `send`, so it gets its own
+/// check. A request without the header is still served (older senders), so
+/// nothing else would notice it going missing.
+#[cfg(felix_segment_store)]
+#[tokio::test]
+async fn a_streamed_snapshot_names_the_member_it_is_for() {
+    use crate::raft::types::{Snapshot, SnapshotData, SnapshotMeta, StoredMembership};
+
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let record = {
+        let seen = std::sync::Arc::clone(&seen);
+        move |headers: axum::http::HeaderMap, _body: axum::body::Bytes| {
+            let target = headers.get(crate::raft::TARGET_HEADER);
+            let target = target.map(|value| value.to_str().expect("text").to_string());
+            seen.lock().expect("seen").push(target);
+            async { StatusCode::SERVICE_UNAVAILABLE }
+        }
+    };
+    let app = axum::Router::new().route(
+        &crate::raft::peer_route("install-snapshot"),
+        axum::routing::post(record),
+    );
+    let addr = serve(app).await;
+    let hold = crate::raft::hold::tests::hold_at(Default::default());
+    let mut network = HttpNetwork::for_tests_as(9, &addr, hold);
+
+    let snapshot = Snapshot {
+        meta: SnapshotMeta {
+            last_log_id: Some(crate::raft::types::test_log_id(1, 1, 7)),
+            last_membership: StoredMembership::default(),
+        },
+        snapshot: SnapshotData::Memory(bytes::Bytes::from_static(b"state at seven")),
+    };
+    let sent = network
+        .full_snapshot(
+            Vote::new_committed(1, 1),
+            snapshot,
+            std::future::pending(),
+            openraft::network::RPCOption::new(Duration::from_secs(5)),
+        )
+        .await;
+    assert!(
+        matches!(sent, Err(StreamingError::Unreachable(_))),
+        "{sent:?}"
+    );
+    assert_eq!(*seen.lock().expect("seen"), vec![Some("9".to_string())]);
 }
 
 /// A 2xx that is not a raft reply is a fault in the peer, not an outage.

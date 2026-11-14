@@ -182,6 +182,11 @@ pub struct TenantListResponse {
 pub struct TenantSnapshotResponse {
     pub items: Vec<Tenant>,
     pub next_seq: u64,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -190,6 +195,11 @@ pub struct TenantChangesResponse {
     /// Where to ask from next: the seq after the last item when the page is
     /// full, otherwise the feed's tail.
     pub next_seq: u64,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -205,6 +215,11 @@ pub struct NamespaceListResponse {
 pub struct NamespaceSnapshotResponse {
     pub items: Vec<Namespace>,
     pub next_seq: u64,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -213,6 +228,11 @@ pub struct NamespaceChangesResponse {
     /// Where to ask from next: the seq after the last item when the page is
     /// full, otherwise the feed's tail.
     pub next_seq: u64,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -233,6 +253,11 @@ pub struct StreamSnapshotResponse {
     /// while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tombstones: Vec<crate::model::StreamTombstone>,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -241,6 +266,11 @@ pub struct StreamChangesResponse {
     /// Where to ask from next: the seq after the last item when the page is
     /// full, otherwise the feed's tail.
     pub next_seq: u64,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -261,6 +291,26 @@ pub struct CacheSnapshotResponse {
     /// while empty.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tombstones: Vec<crate::model::CacheTombstone>,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+}
+
+/// The cluster's identity, recorded once when the metadata group forms.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct ClusterIdentityResponse {
+    /// Left out where there is no group (the in-memory backend).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
+    /// `hybrid` or `raft`.
+    pub shard_engine: String,
+    /// The group recorded its id over streams or caches it already held (an
+    /// in-place upgrade), so a broker whose directory holds data and records
+    /// no group adopts this one. Left out when false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub adopts_existing: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
@@ -269,6 +319,11 @@ pub struct CacheChangesResponse {
     /// Where to ask from next: the seq after the last item when the page is
     /// full, otherwise the feed's tail.
     pub next_seq: u64,
+    /// The metadata group's id, once recorded, so a broker can tell it has
+    /// reached a different group than the one it kept data from. Left out
+    /// where there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
 }
 
 /// A broker's report that it is alive.

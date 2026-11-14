@@ -3,14 +3,16 @@
 //! what it has applied.
 
 use felix_broker::{
-    Broker, ConsistencyLevel, DeliveryEnvelope, ReadBound, StreamHandle, StreamMetadata,
-    SubscriptionGuard, SubscriptionReceiver,
+    Broker, BrokerError, ConsistencyLevel, DeliveryEnvelope, ReadBound, StartPosition,
+    StreamHandle, StreamMetadata, SubscriptionGuard, SubscriptionReceiver,
 };
 use felix_storage::EphemeralCache;
 
+use super::super::deliver::settled;
 use super::commit::{Led, led};
+use super::propose::cut_after_first;
 use super::*;
-use crate::engine::CommitError;
+use crate::engine::{CommitError, Written};
 
 /// A broker whose `orders` stream is bounded by `engine` at every level and
 /// told each time the commit index moves.
@@ -154,30 +156,32 @@ async fn a_record_a_later_leader_replaced_reaches_no_subscriber() {
 async fn a_followers_readers_stop_at_what_it_applied() {
     let mut led = led().await;
     let follower = led.followers().next().expect("a follower");
-    let runtime = led.cluster.runtime(&follower);
-    let engine = RaftEngine::new(runtime.clone());
+    let engine = RaftEngine::new(led.cluster.runtime(&follower));
     let (_broker, handle) = broker_on(&engine).await;
     let applied = |handle: &StreamHandle| match handle.read_bound() {
         ReadBound::Committed(bound) => bound,
         other => panic!("not bounded by the commit index: {other:?}"),
     };
-    let within = |handle: &StreamHandle| {
+    let within = async |handle: &StreamHandle| {
         let bound = applied(handle);
-        let leader = led.status().committed.map_or(0, |index| index + 1);
-        let status = runtime.status(&shard(0)).expect("status");
-        let here = status.committed.map_or(0, |index| index + 1);
+        let leader = led.committed_on(&led.leader.broker).await;
+        let here = led.committed_on(&follower).await;
         assert!(bound <= leader, "bound {bound} past the leader's {leader}");
         assert!(bound <= here, "bound {bound} past this member's {here}");
         bound
     };
-    eventually(|| (within(&handle) == led.committed + 1).then_some(())).await;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while within(&handle).await != led.committed + 1 {
+        assert!(tokio::time::Instant::now() < deadline, "never applied");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
 
     // The leader's log runs ahead of every follower's.
     led.cut_followers();
     let mut end = 0;
     for round in 0..4 {
         end = led.propose(round % 3 + 1).await.end;
-        assert_eq!(within(&handle), led.committed + 1);
+        assert_eq!(within(&handle).await, led.committed + 1);
     }
 
     let appended = handle.appended();
@@ -188,7 +192,7 @@ async fn a_followers_readers_stop_at_what_it_applied() {
     // Sampled while the follower stores, flushes and applies, racing the
     // leader's commit: the bound never runs ahead of either.
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while within(&handle) < end {
+    while within(&handle).await < end {
         assert!(tokio::time::Instant::now() < deadline, "never applied");
         tokio::task::yield_now().await;
     }
@@ -262,12 +266,12 @@ async fn entries_holding_no_record_reach_subscribers_as_skipped() {
     cluster.stop().await;
 }
 
-/// **A batch written at another term than its caller was admitted at is
-/// given up, not delivered.** A broker deposed and elected again between
-/// the caller's look and the proposal writes it in a term whose stream may
-/// not be at the committed tail yet.
+/// **A batch admitted at another term than the one this broker leads is
+/// not written and not delivered.** A broker deposed and elected again
+/// between the caller's look and the proposal leads a term whose stream
+/// may not be at the committed tail yet.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_batch_written_at_another_term_is_given_up() {
+async fn a_batch_admitted_at_another_term_is_not_written() {
     let mut led = led().await;
     let (broker, handle) = broker_on(&led.engine).await;
     let (mut receiver, _guard) = subscriber(&broker).await;
@@ -293,11 +297,84 @@ async fn a_batch_written_at_another_term_is_given_up() {
     );
     nothing(&mut receiver).await;
 
+    // The next batch takes the offset the stale one would have.
     let outcome = at(term, b"current").await.expect("joined");
-    let offset = led.committed + 2;
+    let offset = led.committed + 1;
     assert_eq!(outcome.expect("committed").offsets, Some((offset, offset)));
     let envelope = next(&mut receiver).await;
     assert_eq!(envelope.base_offset(), Some(offset));
     assert_eq!(envelope.payloads(), [Bytes::from_static(b"current")]);
+    led.cluster.stop().await;
+}
+
+/// **A batch written in part moves the stream's offsets past what was
+/// written.** Its first record commits. A reader resuming at that record
+/// is sent below the ring, to the log, and is not joined live above it;
+/// a reader joining at the tail starts after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reader_resuming_in_a_batch_written_in_part_goes_to_the_log() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let term = led.status().term;
+    let before = led.engine.publish(
+        &broker,
+        &handle,
+        &shard(0),
+        Some(term),
+        vec![Bytes::from_static(b"before")],
+        AckAt::Flushed,
+        PATIENCE,
+    );
+    let before = before.expect("proposed").complete().await;
+    let first = led.committed + 2;
+    assert_eq!(
+        before.expect("committed").offsets,
+        Some((first - 1, first - 1))
+    );
+
+    let raft = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let raft = raft.expect("group").raft().clone();
+    let engine = led.engine.clone();
+    let payloads = vec![Bytes::from_static(b"in"), Bytes::from_static(b"out")];
+    let proposed = broker.propose_publish(&handle, payloads, PATIENCE, |_| {
+        let written = async move {
+            match cut_after_first(&raft, term, &[b"in", b"out"]).await {
+                Ok(span) => panic!("written whole at {span:?}"),
+                Err(unacked) => Err::<Written, _>(unacked),
+            }
+        };
+        settled(engine, shard(0), Some(term), 2, PATIENCE, written)
+    });
+    let outcome = proposed.expect("proposed").complete().await;
+    assert!(
+        matches!(outcome, Err(CommitError::LeadershipLost { .. })),
+        "{outcome:?}"
+    );
+
+    // The failed batch's place is released on a task of its own. A tail
+    // read just before it moves is refused as too old.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    loop {
+        let latest = broker.subscribe_from("t", "ns", "orders", 0, StartPosition::Latest);
+        let latest = latest.await.map(|latest| latest.backlog_start);
+        if latest.is_ok_and(|start| start == first + 1) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the stream's tail stayed below the written record"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let resumed = broker.subscribe_from("t", "ns", "orders", 0, StartPosition::Offset(first));
+    let resumed = resumed.await.map(|resumed| resumed.backlog_start);
+    assert!(
+        matches!(
+            resumed,
+            Err(BrokerError::CursorTooOld { oldest, requested, .. })
+                if oldest == first + 1 && requested == first
+        ),
+        "joined above a record in the log: {resumed:?}"
+    );
     led.cluster.stop().await;
 }

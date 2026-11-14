@@ -436,7 +436,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
                 let source = FetcherSource(catalog);
                 tokio::select! {
                     () = shutdown.cancelled() => {}
-                    result = catalog_sync::sync_loop(broker, &source, interval, Some(applied_tx), None, Default::default()) => {
+                    result = catalog_sync::sync_loop(broker, &source, interval, Some(applied_tx), None, Default::default(), None) => {
                         if let Err(err) = result {
                             tracing::warn!(error = %err, "catalog sync exited");
                         }

@@ -24,6 +24,7 @@ mod cache_expiry;
 mod cluster;
 mod from_view;
 mod handoff;
+mod identity;
 mod listeners;
 mod membership;
 pub(crate) mod peer_dispatch;
@@ -250,6 +251,29 @@ where
         membership::Start::Asked(registered) => (registered, None),
         membership::Start::FromView(view) => (None, Some(*view)),
     };
+    // Before storage opens, and before anything is written under a group:
+    // the directory is refused, or recorded, on what the control plane says.
+    // A start from the view could not ask; `qualify` required a record, or
+    // one saying the control plane had no group, and the catalog sync
+    // compares a record with the snapshots.
+    let group_refused = CancellationToken::new();
+    let group = match (&durable_root, &config.controlplane_url, &view) {
+        (Some(root), _, Some(_)) => crate::cluster::controlplane_group::read(root)?,
+        (Some(root), Some(base_url), None) => tokio::select! {
+            group = identity::admit(&membership_client, base_url, &credential, root) => group?,
+            () = shutdown.as_mut() => {
+                tracing::info!("stopped before the control plane answered; nothing was opened");
+                sync_shutdown.cancel();
+                peer_shutdown.cancel();
+                return Ok(());
+            }
+        },
+        _ => None,
+    };
+    let group = group.map(|stored| crate::cluster::controlplane_group::Guard {
+        stored,
+        refused: group_refused.clone(),
+    });
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let own_kept = stored.kept;
     stored.kept = stored.kept.attested(view.is_some());
@@ -511,6 +535,7 @@ where
         &key_store,
         &restore_checked,
         provisional,
+        group,
     );
     sync::spawn_readiness_flip(
         gate_readiness_on_sync,
@@ -674,6 +699,7 @@ where
         credential_refresh,
         shard_tasks,
         sync_shutdown,
+        group_refused,
         controlplane_task,
         controlplane_view,
         storage: shutdown::Storage {
@@ -686,8 +712,8 @@ where
         metrics_task,
         metrics_shutdown,
     };
-    let membership_rejected = running.wait(shutdown).await;
-    running.drain(membership_rejected).await
+    let stopped = running.wait(shutdown).await;
+    running.drain(stopped).await
 }
 
 /// A v9 segment, or a committed vote, is a format an older build refuses, so

@@ -60,6 +60,9 @@ pub(super) struct Running {
     pub(super) credential_refresh: Option<JoinHandle<()>>,
     pub(super) shard_tasks: Option<ShardTasks>,
     pub(super) sync_shutdown: CancellationToken,
+    /// Cancelled by the catalog sync when a snapshot names another
+    /// control-plane metadata group.
+    pub(super) group_refused: CancellationToken,
     pub(super) controlplane_task: Option<JoinHandle<()>>,
     /// Writes the control-plane view once more when stopped.
     pub(super) controlplane_view: Option<crate::cluster::controlplane_view::ViewWriter>,
@@ -68,33 +71,51 @@ pub(super) struct Running {
     pub(super) metrics_shutdown: CancellationToken,
 }
 
+/// Why the node stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Stopped {
+    /// The shutdown signal.
+    Signal,
+    /// The control plane refused this node's registration.
+    MembershipRejected,
+    /// The control plane is another metadata group than the data directory's.
+    WrongGroup,
+}
+
+impl Stopped {
+    /// Whether the node was refused, and so leaves nothing behind it.
+    fn refused(self) -> bool {
+        self != Self::Signal
+    }
+}
+
 impl Running {
     /// Block until the shutdown signal resolves so the process stays alive.
-    /// Returns whether the control plane refused this node's registration.
+    /// Returns why it stopped.
     ///
     /// A refused registration ends the process too: a broker that is not a
     /// cluster member should say so and stop, not serve traffic nobody routes.
-    pub(super) async fn wait<F>(&self, shutdown: F) -> bool
+    /// So does a catalog from another metadata group.
+    pub(super) async fn wait<F>(&self, shutdown: F) -> Stopped
     where
         F: Future<Output = ()>,
     {
-        let mut membership_rejected = false;
-        match &self.membership {
-            Some(task) => {
-                tokio::select! {
-                    _ = shutdown => {}
-                    _ = task.fatal.cancelled() => {
-                        membership_rejected = true;
-                    }
-                }
+        let rejected = async {
+            match &self.membership {
+                Some(task) => task.fatal.cancelled().await,
+                None => std::future::pending().await,
             }
-            None => shutdown.await,
+        };
+        tokio::select! {
+            () = shutdown => Stopped::Signal,
+            () = rejected => Stopped::MembershipRejected,
+            () = self.group_refused.cancelled() => Stopped::WrongGroup,
         }
-        membership_rejected
     }
 
     /// Drain in order against one shared deadline, then report what was left.
-    pub(super) async fn drain(self, membership_rejected: bool) -> Result<()> {
+    pub(super) async fn drain(self, stopped: Stopped) -> Result<()> {
+        let membership_rejected = stopped.refused();
         let Running {
             config,
             ownership,
@@ -113,6 +134,7 @@ impl Running {
             credential_refresh,
             shard_tasks,
             sync_shutdown,
+            group_refused: _,
             controlplane_task,
             controlplane_view,
             storage,
@@ -441,6 +463,14 @@ impl Running {
         }
 
         budget.report();
+        if stopped == Stopped::WrongGroup {
+            tracing::error!("broker stopped: the control plane is another metadata group");
+            return Err(anyhow::anyhow!(
+                "the control plane is a different metadata group than this data directory was \
+                 written under (logged above). {}",
+                crate::cluster::controlplane_group::RECOVER
+            ));
+        }
         if membership_rejected {
             tracing::error!("broker stopped: the control plane refused this node's registration");
             // The refusal itself is logged where it arrived: a wrong identity

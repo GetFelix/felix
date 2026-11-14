@@ -40,6 +40,7 @@ pub(super) fn spawn_catalog_sync(
     key_store: &Arc<ControlPlaneKeyStore>,
     checked: &CancellationToken,
     provisional: crate::cluster::catalog_sync::Provisional,
+    group: Option<crate::cluster::controlplane_group::Guard>,
 ) -> Option<JoinHandle<()>> {
     if let Some(base_url) = config.controlplane_url.clone() {
         let sync_credential = credential.clone();
@@ -103,6 +104,7 @@ pub(super) fn spawn_catalog_sync(
                         Some(applied_tx),
                         sync_credential,
                         provisional,
+                        group,
                     )
                     .await
                 } => {
