@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794676134038,
+  "lastUpdate": 1794677293565,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56784,6 +56784,58 @@ window.BENCHMARK_DATA = {
             "range": "13537.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1171195.27\nmean: 1169939.32\nstdev: 13537.03\ncv: 1.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56b0996c4253c9845f0a2ffdf3ac64352ba8559c",
+          "message": "fix(broker): count connection-writer drops as the subscriber's drops (#2539)\n\n* fix(subscribe): count connection writer drops as the subscriber's drops (#2531)\n\nThe writer's per-subscriber bound moved only felix_sub_queue_dropped_total.\nIt now also records the drop in the subscriber's stats, its lag note and\nfelix_subscribe_dropped_total, by record.\n\n* fix(subscribe): resume from the lowest drop and shed after a writer drop (#2531)\n\nThe connection writer can drop a frame below one the subscriber queue\nalready dropped, so the lag note now keeps the lowest drop, not the\nfirst. Once the writer drops a frame with offsets it sheds every later\ndelivery for that subscriber until it unregisters, so the client never\nsees a hole followed by later records. The last frame still bypasses.\n\nSpec-Unaffected: drop accounting and lag note only; no protocol or ordering change\n\n* fix(subscribe): shed after a writer drop only when the subscription ends at it (#2531)\n\nA subscription that does not end at a drop sees it as an offset jump and\ncarries on, so shedding everything after would starve it.\n\nSpec-Unaffected: drop accounting and lag note only; no protocol or ordering change\n\n* test(subscribe): read the feeder's unregister without a loop (#2531)\n\nSpec-Unaffected: drop accounting and lag note only; no protocol or ordering change\n\n* fix(subscribe): the writer picks the last frame after its own drops (#2531)\n\nThe feeder chose the subscription's last frame before the connection writer\nhad taken its final deliveries, so a writer drop after that could leave a\nlagged frame with a resume offset above the shed records, or an ended frame\nover a hole. The writer now replaces the last frame with subscription_lagged\nfrom the drop account's resume offset whenever it is shedding for the\nsubscriber, and never sends ended over a shed.\n\nA live frame dropped below the catch-up floor now counts as a drop from the\nfloor, so a shedding writer always has a lag to report.\n\nSpec-Unaffected: broker-local delivery framing; no replication or storage state changes.\n\n* fix(subscribe): keep a revoked last frame over a writer shed (#2531)\n\nThe writer swaps only subscription_ended and subscription_lagged for the\nlower lagged frame; a revocation is terminal and tells the client why.\n\nSpec-Unaffected: broker-local delivery framing; no replication or storage state changes.\n\n* fix(subscribe): a writer drop turns a move into a lag, and one lag counts once\n\nWhile the writer is shedding, a shard_moved last frame resumed the client\nat the move's offset and skipped the records the writer dropped. Replace\nit with subscription_lagged at the account's resume point, as the feeder\ndoes. Replacing an already-lagged frame no longer bumps\nfelix_subscription_lagged_total a second time.\n\nSpec-Unaffected: subscriber-side delivery framing, no protocol state change",
+          "timestamp": "2026-11-14T17:21:53Z",
+          "tree_id": "94def9a92cb58688aca38df312d8a291e0c34256",
+          "url": "https://github.com/GetFelix/felix/commit/56b0996c4253c9845f0a2ffdf3ac64352ba8559c"
+        },
+        "date": 1794677292686,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353582.33,
+            "range": "12780.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353582.33\nmean: 349024.91\nstdev: 12780.65\ncv: 3.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353582.33,
+            "range": "12780.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353582.33\nmean: 349024.91\nstdev: 12780.65\ncv: 3.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81085.56,
+            "range": "525.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81085.56\nmean: 81373.17\nstdev: 525.43\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810855.58,
+            "range": "5254.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810855.58\nmean: 813731.70\nstdev: 5254.30\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
