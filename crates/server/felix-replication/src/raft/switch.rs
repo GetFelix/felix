@@ -6,7 +6,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use felix_storage::disk_log::switch::{NotAVoter, SwitchBase};
+use felix_storage::disk_log::switch::{NotAVoter, SideDir, SwitchBase};
 use felix_storage::log::LogConfig;
 use felix_storage::raft_log::{EntryCodec, LogPoint};
 
@@ -16,7 +16,8 @@ use super::types::{MemberId, ShardTypes};
 
 /// Make `dir` ready for `member`'s start as one of `voters`, the voters the
 /// switch recorded with `base`. `hybrid` is the configuration the hybrid
-/// opened the directory with.
+/// opened the directory with. `side` is the shard's dead-letter and
+/// cursor logs, which must hold what the seal recorded.
 ///
 /// On `Ok(Ok(()))` the directory opens as a Raft log
 /// ([`LogConfig::raft_log`], fsync on commit) and
@@ -34,12 +35,15 @@ pub async fn start_voter(
     label: &str,
     hybrid: LogConfig,
     base: &SwitchBase,
+    side: [SideDir<'_>; 2],
     member: &MemberId,
     voters: &BTreeSet<MemberId>,
 ) -> felix_storage::Result<Result<(), NotAVoter>> {
     let (vote_for, snapshot) = prepare(base, member, voters)?;
-    felix_storage::disk_log::switch::start_voter(dir, label, hybrid, base, &vote_for, snapshot)
-        .await
+    felix_storage::disk_log::switch::start_voter(
+        dir, label, hybrid, base, side, &vote_for, snapshot,
+    )
+    .await
 }
 
 fn prepare(
