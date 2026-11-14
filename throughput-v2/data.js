@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794660249787,
+  "lastUpdate": 1794662545389,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56420,6 +56420,58 @@ window.BENCHMARK_DATA = {
             "range": "11723.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 940286.05\nmean: 942562.97\nstdev: 11723.06\ncv: 1.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee67d87b6ffd250914bb020e3d122f7f32746d95",
+          "message": "fix(broker): take the hard open-file limit at start (#2351) (#2518)\n\n* fix(broker): take the hard open-file limit at start (#2351)\n\nA shard's log keeps five files open, with or without a Raft member, so the\nusual soft limit of 1,024 stopped a broker near 200 shards. The broker now\nraises its soft limit to the hard one before storage opens, reports it in\nfelix_broker_open_file_limit, and warns when it holds fewer than 2,000\nshards. raft_open_files measures the files per member and fails if a\nmember holds more than the count the check assumes.\n\n* fix(broker): one sealed-segment cache per storage root, macOS limit ceiling, read back the granted limit (#2351)\n\n* fix(storage): a forgotten sealed segment is never cached; one broker-wide cache with a setting (#2351)\n\n* fix(broker): hold the sealed-segment cache to a quarter of the open-file limit, default 1,024 (#2351)\n\n* fix(broker): OPEN_MAX is not in the libc crate on macOS (#2351)\n\n* fix(storage): the open-file budget counts a Raft log's directory lock (#2351)\n\nA Raft log holds its directory open for the flock that refuses a second\nopen (#2499), so a member keeps six files open, not five. The broker's\nstart-time check and raft_open_files read the same constant. Docs and the\nchangelog fragment say six.",
+          "timestamp": "2026-11-14T13:15:43Z",
+          "tree_id": "496716861cf571fc0c43a0f90063366f9fbaef14",
+          "url": "https://github.com/GetFelix/felix/commit/ee67d87b6ffd250914bb020e3d122f7f32746d95"
+        },
+        "date": 1794662544929,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 482441.2,
+            "range": "3951.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 482441.20\nmean: 481113.38\nstdev: 3951.79\ncv: 0.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 482441.2,
+            "range": "3951.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 482441.20\nmean: 481113.38\nstdev: 3951.79\ncv: 0.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119462.93,
+            "range": "8114.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119462.93\nmean: 115067.05\nstdev: 8114.99\ncv: 7.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1194629.26,
+            "range": "81149.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1194629.26\nmean: 1150670.51\nstdev: 81149.90\ncv: 7.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
