@@ -87,6 +87,8 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
 done
 echo "replication: $st"
 sleep 8
+cpu_ticks() { local t=0 i u s; for i in 1 2 3; do read -r u s < <(awk '{print $14, $15}' "/proc/$(cat "$dir/broker$i.pid")/stat"); t=$((t + u + s)); done; echo $t; }
+cpu0=$(cpu_ticks)
 if [ "${STRACE:-0}" = 1 ]; then
   for i in 1 2 3; do
     sudo -n strace -f -c -e trace=fdatasync,fsync,sync_file_range -o "$dir/strace$i.txt" -p "$(cat "$dir/broker$i.pid")" > /dev/null 2>&1 &
@@ -97,6 +99,13 @@ timeout -k 10 $((secs + 240)) "$BIN/felix-loadgen" --tenant "$TENANT" --token-fi
   --brokers "$brokers" --environment "onebox-$engine" --scenario ingest --stream bench --payload-bytes "$PAYLOAD" \
   --batch "$BATCH" --concurrency "$PUBLISHERS" --in-flight "$IN_FLIGHT" --duration-secs "$secs" --keys "$KEYS" \
   --shards "$SHARDS" --cluster 2>&1 | grep -v '^LOADGEN_JSON' | tee "$dir/loadgen.log"
+cpu1=$(cpu_ticks)
+python3 - "$dir/loadgen.log" "$cpu0" "$cpu1" "$(getconf CLK_TCK)" <<'PY'
+import re, sys
+log = open(sys.argv[1]).read(); m = re.search(r"acked = (\d+)", log)
+cpu = (int(sys.argv[3]) - int(sys.argv[2])) / int(sys.argv[4])
+if m: print("broker cpu (3 brokers): %.1f s, %.2f us/msg" % (cpu, cpu * 1e6 / int(m.group(1))))
+PY
 if [ "${STRACE:-0}" = 1 ]; then sudo -n pkill -INT -P $$ strace 2>/dev/null || true; sudo -n kill -INT $(jobs -p) 2>/dev/null || true; sleep 2; fi
 stop
 for i in 1 2 3; do
