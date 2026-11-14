@@ -24,6 +24,7 @@ use crate::{ShardKey, ShardKind};
 
 mod commit;
 mod deliver;
+mod idempotent;
 mod identity;
 mod lease;
 mod propose;
@@ -315,6 +316,7 @@ impl Cluster {
             let command = Command {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
+                producer: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -343,6 +345,7 @@ impl Cluster {
                 member.raft().client_write(Command {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
+                    producer: None,
                     written: None,
                 })
             });
@@ -954,6 +957,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
     let command = Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
+        producer: None,
         written: Some(token),
     };
     let raft = member.raft().clone();
@@ -997,12 +1001,13 @@ fn a_commands_token_is_not_serialized() {
     let command = Command {
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
+        producer: None,
         written: Some(token),
     };
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
-        ["payload", "timestamp_micros"]
+        ["payload", "producer", "timestamp_micros"]
     );
     let received: Command = serde_json::from_value(sent).expect("json");
     assert!(received.written.is_none());
@@ -1381,6 +1386,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
         let command = Command {
             timestamp_micros: 1_700_000_000,
             payload: record.clone(),
+            producer: None,
             written: None,
         };
         last = member

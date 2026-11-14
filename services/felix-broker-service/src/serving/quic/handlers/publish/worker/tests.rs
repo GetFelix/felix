@@ -1112,4 +1112,95 @@ mod on_raft {
         EngineShards::shutdown(&*shards).await;
         Ok(())
     }
+
+    fn idempotent(
+        handle: &felix_broker::StreamHandle,
+        shard: &crate::shards::ShardKey,
+        term: u64,
+        sequence: u64,
+        payload: &'static [u8],
+    ) -> (PublishJob, Answer) {
+        let (mut job, answer) = job(handle, shard, term, payload, None);
+        job.target = PublishTarget::Idempotent {
+            handle: handle.clone(),
+            shard: Some(shard.clone()),
+            generation: term,
+            fenced: None,
+            producer_id: 9,
+            sequence,
+            reuse: felix_broker::SequenceReuse::Refuse,
+        };
+        (job, answer)
+    }
+
+    /// **Idempotent publishes queued to a Raft shard are written once each,
+    /// in lane order, and a batch queued again is answered with the offset
+    /// its first arrival got.** The producer's batches are queued back to
+    /// back, so each is checked against a log that holds the one before.
+    #[tokio::test]
+    async fn queued_idempotent_publishes_to_a_raft_shard_are_written_once() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let (mut receiver, _guard) = broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await?
+            .into_parts();
+
+        let (zero, first) = idempotent(&handle, &orders, term, 0, b"zero");
+        let (one, second) = idempotent(&handle, &orders, term, 1, b"one");
+        let (again, resent) = idempotent(&handle, &orders, term, 0, b"zero");
+        let (skips, gap) = idempotent(&handle, &orders, term, 3, b"three");
+        let (plain, after) = job(&handle, &orders, term, b"plain", None);
+        for job in [zero, one, again, skips, plain] {
+            publish_ctx.scheduler.send(job).await;
+        }
+
+        let first = first.await?.expect("acknowledged").expect("an offset");
+        let second = second.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(second, first + 1);
+        let resent = resent.await?.expect("answered").expect("an offset");
+        assert_eq!(resent, first, "a re-send got an offset of its own");
+        let err = gap.await?.expect_err("a sequence was skipped");
+        // The broker's own refusal, which the control stream names to the client.
+        assert!(
+            matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::SequenceGap { expected: 2 })
+            ),
+            "{err}"
+        );
+        let after = after.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(after, second + 1, "a re-send or a refusal took an offset");
+        for (offset, payload) in [(first, &b"zero"[..]), (second, b"one"), (after, b"plain")] {
+            assert_eq!(
+                fixture::delivered(&mut receiver).await,
+                (offset, Bytes::copy_from_slice(payload))
+            );
+        }
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
 }

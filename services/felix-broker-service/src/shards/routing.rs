@@ -132,7 +132,7 @@ impl std::fmt::Display for Reason {
 /// the hot path for a lookup that is two loads.
 pub type ServableShards = HashMap<ShardKey, u64>;
 
-pub use super::engine::{RaftPublish, RaftRefusal, StreamEngine};
+pub use super::engine::{RaftIdempotentPublish, RaftPublish, RaftRefusal, StreamEngine};
 
 /// Resolves ingress requests against cluster ownership.
 ///

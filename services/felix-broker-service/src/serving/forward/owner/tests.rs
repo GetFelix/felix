@@ -1593,15 +1593,40 @@ mod on_raft {
             other => panic!("expected an acknowledgement, got {other:?}"),
         }
 
+        // A sequenced forward is written once however often it arrives.
+        let plain = |payload| ForwardPublish {
+            headers: None,
+            ..sequenced(payload)
+        };
+        let third = match handler.apply(plain(b"sequenced")).await {
+            InternalMessage::ForwardPublishOk(ok) => ok.offsets().expect("offsets"),
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        };
+        assert_eq!(third, (first.0 + 2, first.0 + 2));
+        match handler.apply(plain(b"sequenced")).await {
+            InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(third)),
+            other => panic!("expected the first send's answer, got {other:?}"),
+        }
+        // A different batch under the sequence is refused, as on the hybrid.
+        match handler.apply(plain(b"another")).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::StorageFailed);
+                assert!(err.detail.contains("sequence"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => {
+                assert_eq!(ok.offsets(), Some((third.0 + 1, third.0 + 1)));
+            }
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
+
         // What a Raft stream cannot carry is refused by name.
-        match handler.apply(sequenced(b"sequenced")).await {
+        match handler.apply(sequenced(b"headered")).await {
             InternalMessage::ForwardPublishError(err) => {
                 assert_eq!(err.code, ErrorCode::UnsupportedKind);
-                assert!(
-                    err.detail.contains("idempotent publishes"),
-                    "{}",
-                    err.detail
-                );
+                assert!(err.detail.contains("record headers"), "{}", err.detail);
             }
             other => panic!("expected a refusal, got {other:?}"),
         }

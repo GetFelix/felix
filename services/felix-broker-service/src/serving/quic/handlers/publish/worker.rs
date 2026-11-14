@@ -431,29 +431,30 @@ impl LaneWork {
     /// A publish to a shard a Raft group runs. Proposed on the lane, so the
     /// group's order is the lane's, and answered at its commit off the lane.
     /// It never enters the hybrid's fence or touches its log.
-    fn publish_on_raft(&self, mut job: PublishJob, lane: LaneGuard) {
-        let (handle, shard, term, refused) = match &job.target {
+    fn publish_on_raft(self: &Arc<Self>, mut job: PublishJob, lane: LaneGuard) {
+        let (handle, shard, term) = match &job.target {
             PublishTarget::Resolved {
                 handle,
                 shard: Some(shard),
                 generation,
                 ..
-            } => (
-                handle,
-                shard,
-                *generation,
-                job.headers.as_ref().map(|_| "record headers"),
-            ),
+            } => (handle, shard, *generation),
+            PublishTarget::Idempotent { shard: Some(_), .. } if job.headers.is_none() => {
+                return self.publish_idempotent_on_raft(job, lane);
+            }
             PublishTarget::Idempotent {
                 handle,
                 shard: Some(shard),
                 generation,
                 ..
-            } => (handle, shard, *generation, Some("idempotent publishes")),
+            } => (handle, shard, *generation),
             _ => unreachable!("only local publishes with a shard are proposed"),
         };
-        let proposed = match refused {
-            Some(what) => Err(felix_broker::BrokerError::NotOnEngineStream { what }.into()),
+        let proposed = match job.headers.as_ref() {
+            Some(_) => Err(felix_broker::BrokerError::NotOnEngineStream {
+                what: "record headers",
+            }
+            .into()),
             None => self
                 .engine
                 .publish_on_raft(
@@ -480,6 +481,53 @@ impl LaneWork {
             }
             Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
         }
+    }
+
+    /// An idempotent publish to a shard a Raft group runs. The lane is held
+    /// for the sequence check and the proposal, which wait for the
+    /// producer's batch before to be on this broker's log, so it runs off
+    /// the executor. The commit is not ordered and does not hold the lane.
+    fn publish_idempotent_on_raft(self: &Arc<Self>, mut job: PublishJob, lane: LaneGuard) {
+        let this = Arc::clone(self);
+        self.work.spawn(async move {
+            let PublishTarget::Idempotent {
+                handle,
+                shard: Some(shard),
+                generation,
+                producer_id,
+                sequence,
+                reuse,
+                ..
+            } = &job.target
+            else {
+                unreachable!("only idempotent publishes with a shard are proposed here")
+            };
+            let term = *generation;
+            let proposed = this
+                .engine
+                .publish_idempotent_on_raft(
+                    &this.broker,
+                    handle,
+                    shard,
+                    term,
+                    *producer_id,
+                    *sequence,
+                    *reuse,
+                    std::mem::take(&mut job.payloads),
+                    this.quorum_timeout,
+                )
+                .await
+                .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
+                    term,
+                }))
+                .map_err(crate::shards::routing::RaftRefusal::into_anyhow);
+            drop(lane);
+            let result = match proposed {
+                Ok(proposed) => proposed.complete().await.map_err(Into::into),
+                Err(err) => Err(err),
+            };
+            settle(job.response, job.acked_on_enqueue, Some(shard), result);
+        });
     }
 
     /// An ephemeral stream's publish has no flush to wait for, so it runs on

@@ -24,7 +24,7 @@ use openraft::{EntryPayload, LogId, StoredMembership, Vote};
 
 use super::codec::invalid;
 use super::network::{Addressee, RaftReply, RaftRequest, Refused, Reply, Request};
-use super::types::{Command, GroupId, MemberId, Membership, ShardTypes};
+use super::types::{Command, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
 /// The first byte of every body. A reader refuses any other, so a peer
@@ -422,12 +422,34 @@ fn take_append_result(buf: &mut Bytes) -> io::Result<AppendResult<ShardTypes>> {
     })
 }
 
+/// Entry payload tags. 0 is a blank entry and 2 a membership.
+const ENTRY_RECORD: u8 = 1;
+/// A record that opens an idempotent producer's batch: the producer id, the
+/// sequence and the batch's record count come before the record.
+const ENTRY_OPENS: u8 = 3;
+/// A record that continues the batch of the entry before it.
+const ENTRY_CONTINUES: u8 = 4;
+
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {
     put_log_id(buf, &entry.log_id);
     match &entry.payload {
         EntryPayload::Blank => buf.put_u8(0),
         EntryPayload::Normal(command) => {
-            buf.put_u8(1);
+            // A record of no producer's batch keeps the layout it always had.
+            match command.producer {
+                None => buf.put_u8(ENTRY_RECORD),
+                Some(ProducerMark::Opens {
+                    producer_id,
+                    sequence,
+                    len,
+                }) => {
+                    buf.put_u8(ENTRY_OPENS);
+                    buf.put_u64(producer_id);
+                    buf.put_u64(sequence);
+                    buf.put_u32(len);
+                }
+                Some(ProducerMark::Continues) => buf.put_u8(ENTRY_CONTINUES),
+            }
             buf.put_u64(command.timestamp_micros);
             buf.put_u32(len_u32(command.payload.len())?);
             buf.extend_from_slice(&command.payload);
@@ -444,7 +466,16 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
     let log_id = take_log_id(buf)?;
     Ok(match take_u8(buf)? {
         0 => EntryOf::<ShardTypes>::new_blank(log_id),
-        1 => {
+        tag @ (ENTRY_RECORD | ENTRY_OPENS | ENTRY_CONTINUES) => {
+            let producer = match tag {
+                ENTRY_OPENS => Some(ProducerMark::Opens {
+                    producer_id: take_u64(buf)?,
+                    sequence: take_u64(buf)?,
+                    len: take_u32(buf)?,
+                }),
+                ENTRY_CONTINUES => Some(ProducerMark::Continues),
+                _ => None,
+            };
             let timestamp_micros = take_u64(buf)?;
             let len = take_u32(buf)? as usize;
             if buf.remaining() < len {
@@ -457,6 +488,7 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
                 Command {
                     timestamp_micros,
                     payload,
+                    producer,
                     written: None,
                 },
             )

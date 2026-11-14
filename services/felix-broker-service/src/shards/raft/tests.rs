@@ -837,6 +837,31 @@ impl Member {
         .expect("published")
         .expect("an offset")
     }
+
+    /// Publish `payload` as batch `sequence` of producer 5 and return its
+    /// offset: where it was written, or where the batch it repeats was.
+    async fn publish_idempotent(&self, term: u64, sequence: u64, payload: &'static [u8]) -> u64 {
+        let orders = key("orders", 0);
+        let handle = self
+            .broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await
+            .expect("handle");
+        let proposed = self.engine.publish_idempotent_on_raft(
+            &self.broker,
+            &handle,
+            &orders,
+            term,
+            5,
+            sequence,
+            felix_broker::SequenceReuse::Refuse,
+            vec![bytes::Bytes::from_static(payload)],
+            Duration::from_secs(10),
+        );
+        let proposed = proposed.await.expect("a Raft shard").expect("proposed");
+        let first = proposed.complete().await.expect("committed");
+        first.expect("an offset")
+    }
 }
 
 /// `orders` on three brokers, placed with `broker-a` as leader.
@@ -1070,6 +1095,41 @@ async fn a_stopped_leader_is_replaced_and_no_acked_record_is_lost() {
         other.engine.committed_bound(&orders) == felix_broker::ReadBound::Committed(after + 1)
     })
     .await;
+    stop(&members).await;
+}
+
+/// **An idempotent batch sent again after its leader stopped is answered by
+/// the next leader with the offset it first got, and the producer carries
+/// on in sequence.** The next leader knows the producer from the entries in
+/// its own log. Known only to the leader that took it, the batch would be
+/// written twice, or the producer refused as unknown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once() {
+    let (net, mut members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let zero = members[leader].publish_idempotent(term, 0, b"zero").await;
+    let one = members[leader].publish_idempotent(term, 1, b"one").await;
+    assert_eq!(one, zero + 1);
+
+    let old = members.remove(leader);
+    net.runtimes.lock().remove(old.name);
+    EngineShards::shutdown(&*old.shards).await;
+    let next = served(&members).await;
+    let next_term = members[next].shards.leading(&orders).expect("term");
+    assert!(next_term > term);
+
+    let again = members[next].publish_idempotent(next_term, 1, b"one").await;
+    assert_eq!(again, one, "the re-send was written again");
+    let two = members[next].publish_idempotent(next_term, 2, b"two").await;
+    assert!(two > one);
+    let read = members[next]
+        .broker
+        .read_durable("t1", "ns", "orders", 0, zero, 1 << 20)
+        .await
+        .expect("read");
+    let payloads: Vec<&[u8]> = read.iter().map(|record| &record.payload[..]).collect();
+    assert_eq!(payloads, [&b"zero"[..], b"one", b"two"]);
     stop(&members).await;
 }
 

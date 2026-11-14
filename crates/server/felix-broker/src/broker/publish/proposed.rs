@@ -14,9 +14,10 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_storage::CommitTurn;
+use felix_storage::disk_log::ProducerSequence;
 
-use super::PublishOutcome;
 use super::completion::spawn_release;
+use super::{PublishOutcome, SequenceReuse};
 use crate::broker::Broker;
 use crate::broker::shards::StreamHandle;
 use crate::error::{BrokerError, Result};
@@ -90,6 +91,96 @@ impl Broker {
             answer_within: None,
         })
     }
+}
+
+impl Broker {
+    /// [`Self::propose_publish`] for an idempotent producer's batch: the
+    /// sequence is checked against the stream's log first, as
+    /// [`Self::claim_batch_idempotent`] checks it, and only the producer's
+    /// next batch is handed to the engine.
+    ///
+    /// The log learns a batch when the engine writes it, not when it is
+    /// handed over. So the producer's batches take turns: `propose` is
+    /// given the turn and must drop it once the engine has written the
+    /// batch to this broker's log or given up on it, whether or not the
+    /// future it returns is polled by then. This waits for the turn of the
+    /// producer's batch before. `propose` must store the records with the
+    /// producer's marks.
+    ///
+    /// A batch the log already holds is [`IdempotentProposal::Held`], with
+    /// nothing handed over. Its records may not be committed yet; the
+    /// caller answers once they are. A batch the log holds only the start
+    /// of was abandoned and is written again whole.
+    ///
+    /// Call it in the stream's publish order, as [`Self::propose_publish`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn propose_idempotent<F, E>(
+        &self,
+        handle: &StreamHandle,
+        producer_id: u64,
+        sequence: u64,
+        payloads: Vec<Bytes>,
+        reuse: SequenceReuse,
+        stalled_after: Duration,
+        propose: impl FnOnce(u64, ProducerTurn) -> F,
+    ) -> Result<IdempotentProposal<E>>
+    where
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
+        E: Send + 'static,
+    {
+        let Some(log) = &handle.state.durable else {
+            return Err(BrokerError::Storage(
+                "an idempotent batch was proposed on a stream with no log".to_string(),
+            ));
+        };
+        let turn = handle.state.producers.serialise(producer_id);
+        let turn = ProducerTurn(turn.lock_owned().await);
+        match log.producer_sequence(producer_id, sequence) {
+            ProducerSequence::Held {
+                first,
+                last,
+                digest,
+            } => {
+                reuse.check(sequence, digest, &payloads)?;
+                return Ok(IdempotentProposal::Held { first, last });
+            }
+            ProducerSequence::Unknown if sequence != 0 => {
+                return Err(BrokerError::UnknownProducer { producer_id });
+            }
+            ProducerSequence::Gap { expected } => {
+                return Err(BrokerError::SequenceGap { expected });
+            }
+            ProducerSequence::Expired => {
+                return Err(BrokerError::SequenceExpired { sequence });
+            }
+            // The rest of an open batch cannot be written in its place: a
+            // batch handed over earlier may land between. Opening the batch
+            // again abandons the start.
+            ProducerSequence::Unknown
+            | ProducerSequence::Next
+            | ProducerSequence::Partial { .. } => {}
+        }
+        self.propose_publish(handle, payloads, stalled_after, |timestamp_micros| {
+            propose(timestamp_micros, turn)
+        })
+        .map(IdempotentProposal::Proposed)
+    }
+}
+
+/// A producer's turn on a stream. While it is held, no other batch of the
+/// producer is checked against the log. See [`Broker::propose_idempotent`].
+pub struct ProducerTurn(#[allow(dead_code)] tokio::sync::OwnedMutexGuard<()>);
+
+/// What [`Broker::propose_idempotent`] did with a batch.
+#[must_use = "a proposed publish reports its outcome only through `complete`"]
+pub enum IdempotentProposal<E: Send + 'static> {
+    /// The log already holds the batch at these offsets, inclusive. Nothing
+    /// was handed to the engine.
+    Held { first: u64, last: u64 },
+    /// The batch was new and is on its way.
+    Proposed(ProposedPublish<E>),
 }
 
 /// Where an engine committed a proposed batch.

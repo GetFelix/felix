@@ -1872,7 +1872,9 @@ The broker never appends to that log, and four rules follow from it.
   `NotOnEngineStream`: an ordinary publish, a conditional or idempotent
   one, an atomic commit and a head trim. A record the broker appended by
   itself would be an entry the group never agreed on. Publishes go through
-  `propose_publish` only (#2446 lists what is refused).
+  `propose_publish`, and an idempotent producer's through
+  `propose_idempotent` ("Idempotent publishes", below). #2446 lists what
+  is still refused.
 - The commit hold survives deposition. A batch joins the hold only after
   `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
   what a deposed leader held, drops nothing here.
@@ -2000,6 +2002,79 @@ string `raft_stream`.
 > `a_produce_to_a_raft_shard_is_refused_for_good`;
 > `services/felix-broker-service/src/serving/mqtt/writes/tests.rs`,
 > `a_message_for_a_raft_shard_is_refused_by_name`.
+
+**Idempotent publishes.** A producer that names itself and numbers its
+batches (`publish_idempotent`, `docs/protocol.md`) gets the same contract on
+a Raft shard as on the hybrid: the next sequence is written, a batch sent
+again is answered with the offsets its first arrival got and nothing is
+written, and a gap, an unknown producer, an expired sequence and a reused
+one are refused with the same errors.
+
+What makes it hold across a leader change is where the sequences live.
+Each record of a producer's batch is an entry that carries the producer's
+mark: the first names the producer, the sequence and the batch's length,
+and the rest say they continue it. The mark is stored in the record and
+sent with the entry, so every member's log holds it, and each member
+derives every producer's place from its own log, the same way a hybrid
+replica does (`docs/storage-format.md`, "Producer marks"). A log that a
+later leader cuts back forgets the batches that were cut. Nothing about a
+producer is kept in a leader's memory alone.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant A as Leader A
+    participant B as Leader B, elected later
+    P->>A: producer 7, sequence 4
+    A->>B: entries marked producer 7, sequence 4
+    Note over A: stops before its answer reaches the producer
+    P->>B: producer 7, sequence 4, again
+    B->>B: its log holds sequence 4 at offsets 20 to 21
+    B-->>P: publish_ok at offset 20, nothing written
+    P->>B: producer 7, sequence 5
+    B-->>P: publish_ok, written
+```
+
+The leader checks a batch against its own log before it proposes it. That
+is safe because of two rules.
+
+- A term is served only once its stream is at the committed tail, so by
+  then the log holds everything earlier leaders committed, and the check
+  sees it.
+- The log learns a batch when openraft writes it, not when the batch is
+  handed over. So one producer's batches take turns: the next is checked
+  only once the one before is written to this leader's log or was given
+  up on. A batch that fails stays unwritten, because an idempotent batch
+  is written only while the broker leads the term it was routed at. The
+  producer's next batch is then refused as a gap instead of landing ahead
+  of it. Batches of different producers do not wait for each other.
+
+A batch the log already holds is answered once it is committed. Below the
+read bound it already is. Above it, the leader wrote it in this term and
+the answer waits for that entry's commit, so a re-send is never
+acknowledged ahead of the batch it repeats.
+
+The records of a batch are separate entries, so a batch of several records
+is not written atomically. If a leader stops with only the start of a
+batch replicated, the next leader's first entry closes it: the start stays
+in the stream, and the re-send writes the whole batch after it. The same
+happens on the hybrid when a promoted leader holds only the start of a
+batch (#2516). A batch of one record is always written exactly once.
+
+The publisher id is still not stored, and a batch with record headers is
+still refused.
+
+> `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
+> `a_batch_sent_again_is_answered_and_not_written_again`,
+> `a_resend_of_an_uncommitted_batch_waits_for_its_commit`,
+> `a_producers_next_batch_is_checked_once_the_one_before_is_written` and
+> `a_batch_resent_to_the_next_leader_is_not_written_again`;
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
+> `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
+> `queued_idempotent_publishes_to_a_raft_shard_are_written_once`;
+> `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
+> `a_forward_to_a_raft_leader_commits_through_its_group`.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on

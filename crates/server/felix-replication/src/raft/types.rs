@@ -5,6 +5,7 @@ use std::fmt;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use felix_storage::log::{ProducerBatch, RecordMark};
 use felix_storage::raft_log::WrittenToken;
 use serde::{Deserialize, Serialize};
 
@@ -81,11 +82,63 @@ impl fmt::Display for MemberId {
     }
 }
 
+/// Where a record stands in an idempotent producer's batch. Stored as the
+/// record's mark, so every member's log knows the producer's place the way
+/// the leader's does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum ProducerMark {
+    /// The batch's first record. `len` counts the batch's records.
+    Opens {
+        producer_id: u64,
+        sequence: u64,
+        len: u32,
+    },
+    /// A later record of the batch the entry before it belongs to.
+    Continues,
+}
+
+impl ProducerMark {
+    pub(crate) fn record_mark(mark: Option<Self>) -> RecordMark {
+        match mark {
+            None => RecordMark::None,
+            Some(Self::Opens {
+                producer_id,
+                sequence,
+                len,
+            }) => RecordMark::Opens(ProducerBatch {
+                producer_id,
+                sequence,
+                len,
+            }),
+            Some(Self::Continues) => RecordMark::Continues,
+        }
+    }
+
+    /// The producer mark a stored record carries, if it carries one.
+    pub(crate) fn of_record(mark: RecordMark) -> Option<Self> {
+        match mark {
+            RecordMark::Opens(ProducerBatch {
+                producer_id,
+                sequence,
+                len,
+            }) => Some(Self::Opens {
+                producer_id,
+                sequence,
+                len,
+            }),
+            RecordMark::Continues => Some(Self::Continues),
+            _ => None,
+        }
+    }
+}
+
 /// One record of a shard, as an entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Command {
     pub(crate) timestamp_micros: u64,
     pub(crate) payload: Bytes,
+    /// Set on the records of an idempotent producer's batch.
+    pub(crate) producer: Option<ProducerMark>,
     /// Set by a proposer that waits to hear where the record was written.
     /// It rides on the entry from `client_write` to the leader's own append
     /// and nowhere else: it is not in the record and not in a message, so a
@@ -101,9 +154,12 @@ impl PartialEq for Command {
         let Self {
             timestamp_micros,
             payload,
+            producer,
             written: _,
         } = self;
-        *timestamp_micros == other.timestamp_micros && *payload == other.payload
+        *timestamp_micros == other.timestamp_micros
+            && *payload == other.payload
+            && *producer == other.producer
     }
 }
 

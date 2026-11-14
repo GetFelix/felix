@@ -77,10 +77,33 @@ fn every_request() -> Vec<RaftRequest> {
             Command {
                 timestamp_micros: 99,
                 payload: Bytes::from_static(b"a record"),
+                producer: None,
                 written: None,
             },
         ),
         EntryOf::<ShardTypes>::new_membership(log_id(2, 7), membership()),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 8),
+            Command {
+                timestamp_micros: 100,
+                payload: Bytes::from_static(b"opens a batch"),
+                producer: Some(ProducerMark::Opens {
+                    producer_id: 0xA1B2_C3D4_E5F6_0718,
+                    sequence: 41,
+                    len: 2,
+                }),
+                written: None,
+            },
+        ),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 9),
+            Command {
+                timestamp_micros: 100,
+                payload: Bytes::from_static(b"continues it"),
+                producer: Some(ProducerMark::Continues),
+                written: None,
+            },
+        ),
     ];
     vec![
         request(Request::Append(AppendEntriesRequest {
@@ -209,7 +232,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 3);
+    assert_eq!(read.entries.len(), 5);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -401,6 +424,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                 Command {
                     timestamp_micros: 1,
                     payload: record.clone(),
+                    producer: None,
                     written: None,
                 },
             )
@@ -446,6 +470,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                 Command {
                     timestamp_micros: 1,
                     payload: record.clone(),
+                    producer: None,
                     written: None,
                 },
             )
