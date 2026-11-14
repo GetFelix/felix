@@ -2,7 +2,7 @@
 //!
 //! A shard's log keeps [`FDS_PER_SHARD_LOG`] files open for as long as the
 //! broker holds the shard, so the limit caps the shards a broker can hold.
-//! Most systems start a process with a soft limit of 1,024, which is under
+//! Most Linux systems start a process with a soft limit of 1,024, which is under
 //! 200 shards, and a hard limit far above it. The broker takes the hard
 //! limit at start, and says so when even that is small.
 
@@ -11,11 +11,11 @@ use std::io;
 use felix_storage::log::FDS_PER_SHARD_LOG;
 
 /// The open-file limit this broker runs with.
-pub const OPEN_FILE_LIMIT: &str = "felix_broker_open_file_limit";
+pub(crate) const OPEN_FILE_LIMIT: &str = "felix_broker_open_file_limit";
 
 /// Files kept back for everything that is not a held shard's log: sockets,
 /// the runtime, segments being read, files being replaced.
-const RESERVED: u64 = 512;
+const RESERVED: u64 = 1024;
 /// A limit that holds fewer shards than this is worth a warning. It is the
 /// design point of the groups-per-broker gate.
 const EXPECTED_SHARDS: u64 = 2_000;
@@ -58,39 +58,92 @@ pub(super) fn shards_within(limit: u64) -> u64 {
     limit.saturating_sub(RESERVED) / FDS_PER_SHARD_LOG as u64
 }
 
-/// The soft limit to ask for, given the current pair.
-fn target(soft: u64, hard: u64) -> u64 {
-    // macOS reports an unlimited hard limit and refuses a soft limit above
-    // `OPEN_MAX`.
-    #[cfg(target_os = "macos")]
-    let hard = hard.min(libc::OPEN_MAX as u64);
-    soft.max(hard)
+/// The soft limit to ask for, given the current pair and the most the
+/// platform grants one process.
+fn target(soft: u64, hard: u64, ceiling: u64) -> u64 {
+    soft.max(hard.min(ceiling))
 }
 
-/// `(before, after)` soft limits, or the limit still in force and why it
-/// could not be raised.
+/// macOS reports an unlimited hard limit and refuses a soft limit above
+/// `kern.maxfilesperproc`, which sits well over `OPEN_MAX`.
+#[cfg(target_os = "macos")]
+fn ceiling() -> u64 {
+    let mut value: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: the name is NUL-terminated, and `value` and `len` describe a
+    // buffer the call fills.
+    let rc = unsafe {
+        libc::sysctlbyname(
+            c"kern.maxfilesperproc".as_ptr(),
+            (&raw mut value).cast(),
+            &mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if rc == 0 && value > 0 {
+        value as u64
+    } else {
+        libc::OPEN_MAX as u64
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ceiling() -> u64 {
+    u64::MAX
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn raise() -> Result<(u64, u64), (u64, io::Error)> {
+fn limits() -> io::Result<libc::rlimit> {
     let mut limit = libc::rlimit {
         rlim_cur: 0,
         rlim_max: 0,
     };
     // SAFETY: `limit` is a valid `rlimit` for the call to fill.
     if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
-        return Err((0, io::Error::last_os_error()));
+        return Err(io::Error::last_os_error());
     }
-    let before = limit.rlim_cur;
-    let wanted = target(before, limit.rlim_max);
-    if wanted == before {
-        return Ok((before, before));
+    Ok(limit)
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn set_soft(limit: &libc::rlimit, soft: u64) -> io::Result<()> {
+    let wanted = libc::rlimit {
+        rlim_cur: soft as libc::rlim_t,
+        rlim_max: limit.rlim_max,
+    };
+    // SAFETY: `wanted` is a valid `rlimit`, the one read with its soft value
+    // changed to at most the hard one.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &wanted) } != 0 {
+        return Err(io::Error::last_os_error());
     }
-    limit.rlim_cur = wanted;
-    // SAFETY: `limit` is a valid `rlimit`, read above and changed only in
-    // its soft value, which stays at or under the hard one.
-    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
-        return Err((before, io::Error::last_os_error()));
+    Ok(())
+}
+
+/// `(before, after)` soft limits, or the limit still in force and why it
+/// could not be raised. `after` is what the kernel reports once the change
+/// is made, not what was asked for.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn raise() -> Result<(u64, u64), (u64, io::Error)> {
+    let limit = limits().map_err(|err| (0, err))?;
+    let before = limit.rlim_cur as u64;
+    let wanted = target(before, limit.rlim_max as u64, ceiling());
+    if wanted > before {
+        let result = set_soft(&limit, wanted);
+        // The ceiling is a guess on some systems; fall back to the one
+        // number macOS always accepts.
+        #[cfg(target_os = "macos")]
+        let result = if result.is_err() && wanted > libc::OPEN_MAX as u64 {
+            set_soft(&limit, (libc::OPEN_MAX as u64).max(before))
+        } else {
+            result
+        };
+        if let Err(err) = result {
+            return Err((before, err));
+        }
     }
-    Ok((before, wanted))
+    let after = limits().map_err(|err| (before, err))?;
+    Ok((before, after.rlim_cur as u64))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

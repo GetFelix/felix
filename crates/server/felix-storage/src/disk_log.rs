@@ -350,6 +350,11 @@ impl DiskLog {
         self.inner.segments.read().open_sealed_segments()
     }
 
+    #[cfg(test)]
+    pub(crate) fn uses_sealed_files(&self, files: &Arc<SealedFiles>) -> bool {
+        self.inner.segments.read().uses_sealed_files(files)
+    }
+
     /// Every segment on disk, oldest first.
     pub fn segments(&self) -> Vec<SegmentDescriptor> {
         self.inner.segments.read().descriptors()

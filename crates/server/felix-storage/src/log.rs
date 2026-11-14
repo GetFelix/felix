@@ -294,9 +294,11 @@ pub struct LogRecord {
 }
 
 /// The files a shard's log keeps open while it is not being read: the active
-/// segment three times, its index, and the durable mark. Sealed segments
-/// hold none, and a Raft member adds none. The broker's open-file check
-/// counts this for each shard.
+/// segment three times, its index, and the durable mark. A Raft member adds
+/// none. Sealed segments that were read stay open in a cache shared by every
+/// log under one provider, bounded by `LogConfig::max_open_sealed_segments`
+/// for the whole root, so they are a fixed amount per broker and not a cost
+/// per shard. The broker's open-file check counts this for each shard.
 pub const FDS_PER_SHARD_LOG: usize = 5;
 
 /// The generation a v9 segment stamps on a record whose writer nobody knows:

@@ -2380,11 +2380,15 @@ is not set to the gate size because the gate names it. Placement answers
 
 A Raft member opens no file of its own. The count is the log's: five
 files per held shard (the active segment three times, its index and the
-durable mark), the same with or without Raft, and none for a sealed
-segment. Votes and replica state are written to a temporary file, renamed
+durable mark), the same with or without Raft. Sealed segments that were
+read stay open in one cache for the whole storage root, at most 256 of
+them (`max_open_sealed_segments`), so they add a fixed amount per broker
+and nothing per shard. Votes and replica state are written to a temporary file, renamed
 and closed. `crates/server/felix-replication/tests/raft_open_files.rs`
-measures it on 120 idle members and fails if a member holds more than
-`felix_storage::log::FDS_PER_SHARD_LOG`.
+measures it on 120 idle members, and on logs that rolled several segments
+and were read back, and fails if the count passes
+`felix_storage::log::FDS_PER_SHARD_LOG` per shard plus a few files of
+slack.
 
 So 1,500 members are 7,500 open files and 5,000 are 25,000, against the
 soft limit of 1,024 a process usually starts with (issue #2351). That

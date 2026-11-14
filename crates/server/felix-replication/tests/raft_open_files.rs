@@ -13,13 +13,19 @@ use felix_replication::raft::{
     RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
-use felix_storage::DiskLog;
 use felix_storage::log::{
     AppendOnlyLog, AppendRecord, FDS_PER_SHARD_LOG, FsyncMode, LogConfig, RecordMark,
+    ShardKey as LogShard,
 };
+use felix_storage::{DiskLogProvider, log::ReadRange};
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const GROUPS: u32 = 40;
+/// Sealed segments the provider may keep open, for the whole root.
+const SEALED_OPEN: usize = 16;
+/// Open files beyond the per-shard budget the count may show: the
+/// provider's sealed cache and a few files in flight.
+const SLACK: usize = SEALED_OPEN + 8;
 
 #[derive(Default)]
 struct Net {
@@ -58,6 +64,15 @@ fn open_files() -> usize {
     std::fs::read_dir(dir).expect("fd dir").count() - 1
 }
 
+fn log_shard(root: &str, n: u32) -> LogShard {
+    LogShard {
+        tenant: "t".into(),
+        namespace: root.into(),
+        stream: "orders".into(),
+        shard: n,
+    }
+}
+
 fn record() -> AppendRecord {
     AppendRecord {
         payload: Bytes::from_static(b"record"),
@@ -79,38 +94,69 @@ async fn a_member_stays_within_the_open_file_budget() {
         net.brokers.lock().insert(broker.into(), runtime);
     }
     let runtime = |broker: &str| net.brokers.lock()[broker].clone();
+    let mut providers = Vec::new();
+    // Small segments, so a few records roll several of them.
     let config = LogConfig {
         fsync_mode: FsyncMode::OnCommit,
         preallocate_segments: false,
         raft_log: true,
+        segment_size_bytes: 1024,
+        max_open_sealed_segments: SEALED_OPEN,
         ..LogConfig::default()
     };
 
-    // A shard's log without Raft, written to, for comparison.
+    // A shard's log without Raft, written to and read back across many
+    // sealed segments, for comparison. One provider, as the broker has.
     let start = open_files();
     let plain = LogConfig {
         raft_log: false,
         ..config.clone()
     };
+    let plain_provider =
+        DiskLogProvider::new(root.path().join("plain"), plain).expect("plain provider");
     let mut plain_logs = Vec::new();
     for n in 0..GROUPS {
-        let dir = root.path().join("plain").join(n.to_string());
-        std::fs::create_dir_all(&dir).expect("dir");
-        let log = DiskLog::open(dir, format!("t/ns/plain/{n}"), plain.clone()).expect("log");
-        log.append(&[record()]).await.expect("append");
+        let log = plain_provider
+            .open_shard(&log_shard("plain", n))
+            .expect("log");
+        for _ in 0..200 {
+            log.append(&[record()]).await.expect("append");
+        }
+        // Rollover runs in the background.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while log.segments().len() <= 3 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the log should have rolled"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        log.read_range(ReadRange {
+            start: 0,
+            max_bytes: usize::MAX,
+        })
+        .await
+        .expect("read back");
         plain_logs.push(log);
     }
-    let a_plain_log = (open_files() - start) as f64 / f64::from(GROUPS);
+    let plain_files = open_files() - start;
+    let a_plain_log = plain_files as f64 / f64::from(GROUPS);
+    assert!(
+        plain_files <= FDS_PER_SHARD_LOG * GROUPS as usize + SLACK,
+        "{GROUPS} written logs hold {plain_files} files open, over {FDS_PER_SHARD_LOG} each \
+         plus the {SEALED_OPEN} sealed segments one root may keep open"
+    );
 
     let before = open_files();
     let mut logs = Vec::new();
     for broker in BROKERS {
+        let provider =
+            DiskLogProvider::new(root.path().join(broker), config.clone()).expect("provider");
         for n in 0..GROUPS {
-            let dir = root.path().join(broker).join(n.to_string());
-            std::fs::create_dir_all(&dir).expect("dir");
-            let log = DiskLog::open(dir, format!("t/ns/orders/{n}"), config.clone()).expect("log");
+            let log = provider.open_shard(&log_shard(broker, n)).expect("log");
             logs.push((broker, n, log));
         }
+        providers.push(provider);
     }
     let members: BTreeSet<_> = BROKERS.iter().map(|b| MemberId::new(*b, 1)).collect();
     for (broker, n, log) in &logs {
@@ -153,13 +199,14 @@ async fn a_member_stays_within_the_open_file_budget() {
     tokio::time::sleep(Duration::from_secs(1)).await;
 
     let count = BROKERS.len() * GROUPS as usize;
-    let each = (open_files() - before) as f64 / count as f64;
+    let held = open_files() - before;
+    let each = held as f64 / count as f64;
     println!(
         "{count} idle members: {each:.2} open files each, against {a_plain_log:.2} for a \
          written log without Raft"
     );
     assert!(
-        each <= FDS_PER_SHARD_LOG as f64,
+        held <= FDS_PER_SHARD_LOG * count + SLACK,
         "a member holds {each:.2} files open, over the {FDS_PER_SHARD_LOG} the broker's \
          open-file check assumes"
     );

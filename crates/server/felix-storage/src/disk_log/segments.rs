@@ -63,6 +63,14 @@ pub(super) struct SegmentSet {
     closed: bool,
 }
 
+impl Drop for SegmentSet {
+    // A log under a provider shares its cache; a dropped log must not leave
+    // descriptors open on files it no longer owns.
+    fn drop(&mut self) {
+        self.close_files();
+    }
+}
+
 impl SegmentSet {
     /// Take ownership of an already recovered set of segments.
     pub(super) fn new(
@@ -99,10 +107,19 @@ impl SegmentSet {
         self.files.len()
     }
 
+    #[cfg(test)]
+    pub(super) fn uses_sealed_files(&self, files: &Arc<SealedFiles>) -> bool {
+        Arc::ptr_eq(&self.files, files)
+    }
+
     /// Refuse every later change to the files, and let go of the sealed
     /// segments' cached handles.
     pub(super) fn close(&mut self) {
         self.closed = true;
+        self.close_files();
+    }
+
+    fn close_files(&self) {
         for entry in &self.sealed {
             self.files.remove(entry.key());
         }

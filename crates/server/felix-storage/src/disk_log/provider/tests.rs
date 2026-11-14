@@ -672,3 +672,53 @@ async fn a_retire_that_fails_partway_completes_on_retry() {
         .expect("retry completes, copies already gone count as done");
     assert!(!local.exists() && !copied.exists());
 }
+
+#[tokio::test]
+async fn logs_under_one_provider_share_the_open_sealed_segment_bound() {
+    use crate::segment::SEGMENT_HEADER_LEN;
+
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        segment_size_bytes: SEGMENT_HEADER_LEN + 120,
+        max_open_sealed_segments: 3,
+        ..config()
+    };
+    let provider = DiskLogProvider::new(dir.path(), config).expect("provider");
+    let mut logs = Vec::new();
+    for n in 0..4 {
+        let log = provider.open_shard(&shard(&format!("s{n}"))).expect("open");
+        for i in 0..30 {
+            log.append(&[record(&format!("value-{i:03}"))])
+                .await
+                .expect("append");
+        }
+        logs.push(log);
+    }
+    // Every log has far more than 3 sealed segments; read them all back.
+    for log in &logs {
+        assert!(log.segments().len() > 6);
+        for descriptor in log.segments() {
+            log.read_range(ReadRange {
+                start: descriptor.base_offset,
+                max_bytes: usize::MAX,
+            })
+            .await
+            .expect("read");
+            assert!(provider.sealed_files.len() <= 3);
+        }
+    }
+    assert!(provider.sealed_files.len() <= 3);
+    assert!(
+        logs.iter()
+            .all(|log| log.uses_sealed_files(&provider.sealed_files))
+    );
+
+    // A closed shard leaves nothing of its own in the shared cache.
+    for n in 0..4 {
+        provider
+            .close_shard(&shard(&format!("s{n}")))
+            .await
+            .expect("close");
+    }
+    assert_eq!(provider.sealed_files.len(), 0);
+}
