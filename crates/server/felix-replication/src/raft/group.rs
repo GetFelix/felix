@@ -1004,14 +1004,24 @@ impl Group {
     ///
     /// A majority that does not answer is a timeout, and so is a lapsed
     /// lease: neither says another leader exists, and neither closes the
-    /// shard.
+    /// shard. Ok only once this member has applied the read index, so a
+    /// value the reader takes after this returns has every answered write.
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
-        self.read_index(term).await.map(drop)
+        let patience = Duration::from_millis(self.pace.timers.election_max);
+        let deadline = tokio::time::Instant::now() + patience;
+        let bound = self.read_index(term).await?;
+        let unanswered = CommitError::TimedOut {
+            what: "read",
+            timeout: patience,
+        };
+        self.applied_through(bound - 1, deadline, unanswered).await
     }
 
-    /// [`Self::confirm_read`], and one past the index a reader must have
-    /// applied before it reads: the leader's commit index when a majority
-    /// confirmed it.
+    /// One past the index a reader must have applied before it reads: the
+    /// leader's commit index when a majority confirmed that this member
+    /// still leads `term`. `confirm_read` then waits for the apply, bounded
+    /// by `election_max` from its start; the cache read waits under the
+    /// caller's deadline.
     async fn read_index(&self, term: u64) -> Result<u64, CommitError> {
         let lost = |detail| CommitError::LeadershipLost {
             what: "read",
@@ -1074,6 +1084,34 @@ impl Group {
             let answered = lead::quorum_answered(&self.raft);
             let again = Duration::from_millis(timers.heartbeat);
             let _ = tokio::time::timeout(again, answered).await;
+        }
+    }
+
+    /// Wait until this member has applied `index`. A write can be answered
+    /// after it commits but before it is applied here, and a value taken
+    /// from below the read index would miss it. `timed_out` once `deadline`
+    /// passes.
+    async fn applied_through(
+        &self,
+        index: u64,
+        deadline: tokio::time::Instant,
+        timed_out: CommitError,
+    ) -> Result<(), CommitError> {
+        let mut commits = self.commits.clone();
+        let applied = commits.wait_for(|commits| {
+            commits
+                .applied()
+                .is_some_and(|applied| applied.index >= index)
+        });
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => Err(propose::stopped()),
+            waited = tokio::time::timeout_at(deadline, applied) => match waited {
+                Ok(Ok(_)) => Ok(()),
+                // The state machine is gone with the member.
+                Ok(Err(_)) => Err(propose::stopped()),
+                Err(_) => Err(timed_out),
+            },
         }
     }
 
