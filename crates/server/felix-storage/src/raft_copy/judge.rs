@@ -62,6 +62,10 @@ pub enum RotateReason {
     VoteBelowMark,
     /// Its last log id is below the log mark.
     LogBelowMark,
+    /// Its log was poisoned in its last run: a flush failed, or a rollover
+    /// or truncation failed partway. The directory can hold less than the
+    /// copy reported as written.
+    Poisoned,
 }
 
 /// A shard directory an earlier rotation moved aside. Its records are
@@ -76,13 +80,19 @@ pub struct KeptCopy {
 impl CopyRoot {
     /// Open the root the gate passed. `mint` makes copy ids; a 0 it returns
     /// is asked again.
+    ///
+    /// Watches the root for poison ([`crate::run_state::watch_poison`]): if
+    /// a copy's poison marker cannot be written, the forgotten run record
+    /// still rotates the storage id, and every copy with it, on restart.
     pub fn open(
         root: impl Into<PathBuf>,
         passed: GatePassed,
         mint: impl Fn() -> u64 + Send + Sync + 'static,
     ) -> Self {
+        let root = root.into();
+        crate::run_state::watch_poison(passed.marks.root());
         Self {
-            root: root.into(),
+            root,
             marks: passed.marks,
             mint: Box::new(mint),
         }
@@ -188,6 +198,9 @@ impl CopyRoot {
         let reason = match self.marks.marks(shard) {
             None => Some(RotateReason::NoMarks),
             Some(marks) if marks.copy != found.copy => Some(RotateReason::OtherCopy),
+            // Before any open of the log, which would cut it back to its
+            // last sync. A marker that cannot be read counts the same.
+            Some(_) if crate::disk_log::left_poisoned(dir)? => Some(RotateReason::Poisoned),
             Some(_) => None,
         };
         Ok((Some(found), reason))

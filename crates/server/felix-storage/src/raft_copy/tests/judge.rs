@@ -1,6 +1,7 @@
 //! When a directory keeps its copy id and when it rotates.
 
 use super::*;
+use crate::DiskLog;
 use crate::disk_log::crash_point;
 use crate::raft_log::RaftLog;
 use crate::raft_log::tests::writes::append;
@@ -231,6 +232,143 @@ async fn a_directory_restored_to_a_shorter_log_rotates() {
         );
         close(restored).await;
     }
+}
+
+/// A copy wrote an entry, which a leader could count toward a written
+/// majority (#2233), and then its flush failed. A restart cuts a poisoned log back
+/// to its last sync, so the copy must not come back under its id: it
+/// rotates, and the old directory does not open as a log on its own.
+#[tokio::test]
+async fn a_copy_whose_flush_failed_rotates() {
+    let root = Root::new();
+    let copies = root.open();
+    let opened = open_copy(&copies, &root.shard_dir()).await;
+    save_vote(&opened, 2).await;
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    log.mark_with(opened.marks.clone(), LogMarkMode::Exact)
+        .expect("marks");
+    let flushed = append(&mut log, &[normal(1, 0, "synced")])
+        .await
+        .expect("append");
+    flushed.await.expect("flush");
+
+    let positions = log.positions();
+    opened.log.fail_next_flush();
+    let flushed = append(&mut log, &[normal(1, 1, "written")])
+        .await
+        .expect("append");
+    flushed.await.expect_err("the flush failed");
+    assert_eq!(positions.borrow().written, Some(point(1, 1)));
+    drop(log);
+    let old = opened.copy;
+    // A poisoned log has nothing left to flush, so its close may fail.
+    let _ = opened.log.close().await;
+
+    // An open that goes round the copy root would cut the log and drop the
+    // marker. It is refused, and the marker stays.
+    let marker = root.shard_dir().join("poisoned");
+    assert!(marker.exists(), "the failed flush left its marker");
+    let refused = DiskLog::open(root.shard_dir(), "t/ns/orders/0", config())
+        .expect_err("the direct open is refused");
+    assert!(
+        refused
+            .to_string()
+            .contains("holds a Raft copy whose log was poisoned"),
+        "{refused}"
+    );
+    assert!(marker.exists());
+
+    let reopened = open_copy(&copies, &root.shard_dir()).await;
+    let rotation = reopened.rotation.clone().expect("rotated");
+    assert_eq!(rotation.reason, RotateReason::Poisoned);
+    assert_eq!(rotation.replaced, Some(old));
+    assert_ne!(reopened.copy, old);
+    assert_eq!(
+        reopened.log.accepted_generation(),
+        0,
+        "the new copy never voted"
+    );
+    assert_eq!(
+        crate::raft_log::last_point(&reopened.log)
+            .await
+            .expect("last"),
+        None,
+        "the new copy holds no entry"
+    );
+    let kept = rotation.kept.expect("kept");
+    assert!(kept.join("poisoned").exists(), "kept as it was left");
+    assert_eq!(
+        kept_copies(&root.shard_dir()).expect("kept"),
+        vec![KeptCopy {
+            path: kept,
+            copy: Some(old)
+        }]
+    );
+    let new = close(reopened).await;
+    assert_eq!(root.marks_on_disk(), Some(ShardMarks::fresh(new)));
+
+    let again = open_copy(&copies, &root.shard_dir()).await;
+    assert_eq!((again.copy, again.rotation.clone()), (new, None));
+    close(again).await;
+}
+
+/// The marker write failed, so only the run record knows the log was
+/// poisoned. The copy root watches its root, so the failed flush forgets the
+/// boot, and the restart rotates the storage id and with it every copy.
+#[tokio::test]
+async fn a_poisoned_copy_with_no_marker_rotates_every_copy_on_restart() {
+    let other_shard = "t/ns/orders/1/Stream";
+    let root = Root::new();
+    let other_dir = root.path().join("shards").join("1");
+    let first = crate::run_state::begin(root.path(), false, None, None, || false, || [7; 16])
+        .expect("begin");
+    let copies = root.open();
+    let opened = open_copy(&copies, &root.shard_dir()).await;
+    let other = copies
+        .open_copy(other_shard, &other_dir, "t/ns/orders/1", config())
+        .await
+        .expect("open copy");
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    log.mark_with(opened.marks.clone(), LogMarkMode::Exact)
+        .expect("marks");
+    opened.log.fail_next_flush();
+    let flushed = append(&mut log, &[normal(1, 0, "written")])
+        .await
+        .expect("append");
+    flushed.await.expect_err("the flush failed");
+    drop(log);
+    std::fs::remove_file(root.shard_dir().join("poisoned")).expect("drop the marker");
+    let old = (opened.copy, other.copy);
+    let _ = opened.log.close().await;
+    other.log.close().await.expect("close");
+    assert_eq!(
+        crate::run_state::read(root.path(), first.id).expect("read"),
+        crate::run_state::LastRun::Crashed {
+            relaxed: true,
+            boot: None
+        },
+        "the failed flush forgot the boot"
+    );
+
+    // The process crashes and starts again.
+    let begun = crate::run_state::begin(root.path(), false, None, None, || false, || [8; 16])
+        .expect("begin");
+    assert!(begun.rotated);
+    root.witness_current_id();
+    let copies = root.open();
+    let reopened = open_copy(&copies, &root.shard_dir()).await;
+    let other = copies
+        .open_copy(other_shard, &other_dir, "t/ns/orders/1", config())
+        .await
+        .expect("open copy");
+    for (opened, old) in [(&reopened, old.0), (&other, old.1)] {
+        let rotation = opened.rotation.clone().expect("rotated");
+        assert_eq!(rotation.reason, RotateReason::StorageId);
+        assert_eq!(rotation.replaced, Some(old));
+        assert_ne!(opened.copy, old);
+    }
+    close(reopened).await;
+    close(other).await;
 }
 
 #[tokio::test]

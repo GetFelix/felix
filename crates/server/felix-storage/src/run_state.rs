@@ -589,9 +589,15 @@ pub fn forget_boot(root: &Path) -> Result<()> {
 }
 
 /// Call [`forget_boot`] for `root` as soon as any log in this process is
-/// poisoned, or now if one already is.
+/// poisoned, or now if one already is. Watching a root twice is the same as
+/// once.
 pub fn watch_poison(root: &Path) {
-    WATCHED.lock().push(root.to_path_buf());
+    {
+        let mut watched = WATCHED.lock();
+        if !watched.iter().any(|watched| watched == root) {
+            watched.push(root.to_path_buf());
+        }
+    }
     if crate::disk_log::any_log_poisoned() {
         forget_watched();
     }
