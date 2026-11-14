@@ -1,6 +1,6 @@
 //! The groups one broker holds, and their lifecycle.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -14,7 +14,7 @@ use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
     CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
 };
-use felix_storage::raft_log::{LogPoint, LogPositions};
+use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
 
@@ -64,6 +64,14 @@ pub struct RuntimeConfig {
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
     /// mark at the data root.
     pub log_mark: LogMarkMode,
+    /// Record bytes the shard groups' Raft logs of this runtime keep in
+    /// memory for replication reads, all groups together. Each log keeps at
+    /// most 4 MiB. Over the limit, logs that have not appended since the
+    /// last pass are emptied first, then busy ones are trimmed to their
+    /// newest records. The bound is soft: a log whose cache is in use is
+    /// skipped until the next pass. The metadata group's log is not
+    /// counted; it keeps its own 4 MiB.
+    pub tail_cache_bytes: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -80,6 +88,7 @@ impl Default for RuntimeConfig {
             lease: Duration::from_millis(1500),
             clock_drift_ppm: 100_000,
             log_mark: LogMarkMode::Exact,
+            tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
         }
     }
 }
@@ -289,6 +298,8 @@ pub(crate) struct Registry {
     ticked: ArcSwap<Vec<Arc<Group>>>,
     /// Times the ticker ended on a panic and was started again.
     pub(crate) ticker_restarts: AtomicU64,
+    /// Shared by every group's log, and read by the ticker for its gauge.
+    pub(crate) tail_budget: Arc<TailBudget>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -296,7 +307,9 @@ pub(crate) struct Registry {
 
 #[derive(Default)]
 struct Slots {
-    by_shard: HashMap<Arc<ShardKey>, Slot>,
+    /// Ordered, so the ticked view comes out in shard order without a sort
+    /// under the lock: a fixed tick order lets a simulation seed replay.
+    by_shard: BTreeMap<Arc<ShardKey>, Slot>,
     closed: bool,
 }
 
@@ -306,7 +319,7 @@ impl Registry {
     }
 
     fn publish(&self, slots: &Slots) {
-        let open = slots
+        let open: Vec<_> = slots
             .by_shard
             .values()
             .filter_map(|slot| match slot {
@@ -386,6 +399,7 @@ impl GroupRuntime {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
                     ticker_restarts: AtomicU64::new(0),
+                    tail_budget: TailBudget::new(config.tail_cache_bytes),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -614,6 +628,7 @@ impl GroupRuntime {
             Arc::clone(&inner.transport),
             inner.timers,
             inner.host.get().cloned(),
+            Arc::clone(&registry.tail_budget),
         )
         .await?;
         let group = Arc::new(group);
@@ -710,10 +725,9 @@ impl GroupRuntime {
         let groups: Vec<Arc<Group>> = {
             let mut slots = inner.registry.slots.write();
             slots.closed = true;
-            let groups = slots
-                .by_shard
-                .drain()
-                .filter_map(|(_, slot)| match slot {
+            let groups = std::mem::take(&mut slots.by_shard)
+                .into_values()
+                .filter_map(|slot| match slot {
                     // A member being closed is stopped by its close too.
                     // Both wait for the same stop.
                     Slot::Open(group) | Slot::Closing(group) => Some(group),
@@ -780,6 +794,16 @@ impl GroupRuntime {
 
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         self.inner.registry.get(shard)
+    }
+
+    /// The shards the ticker visits, in its order.
+    #[cfg(test)]
+    pub(crate) fn ticked_shards(&self) -> Vec<ShardKey> {
+        let ticked = self.inner.registry.ticked();
+        ticked
+            .iter()
+            .map(|group| (*group.id.shard).clone())
+            .collect()
     }
 
     #[cfg(test)]

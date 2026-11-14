@@ -210,6 +210,7 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
 | `felix_broker_raft_ticker_restarts_total` | counter | - | Times the per-shard Raft ticker ended on a panic and was started again. Any increase is a bug: no Raft group on the broker heartbeats or notices a timeout while the ticker is down. Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_raft_dropped_ticks_total` | counter | - | Timer checks the per-shard Raft ticker dropped because a group had not taken the previous one by the next interval, across every group on the broker. A dropped check loses nothing, since the next one does the same work; a rising count means some group is too busy to look at its timers. Only in builds with the `raft` feature, which no release enables. |
+| `felix_broker_raft_tail_cache_bytes` | gauge | - | Record bytes the Raft logs on the broker hold in memory so replication reads the newest entries without the segments, across the shard groups (the metadata group's log is not counted). Bounded, softly, by `RuntimeConfig::tail_cache_bytes` (256 MiB by default). With several runtimes in one process, the last to report wins. A read the cache cannot serve goes to the segments, so a value at the cap costs reads, not correctness. Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_replication_rebuilds_total` | counter | `outcome` | Follower rebuilds by outcome. |
 | `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
 | `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
@@ -373,7 +374,7 @@ Present when the control plane runs its metadata Raft group.
 | `felix_meta_raft_last_log_index` | gauge | - | Index of the last log entry. |
 | `felix_meta_raft_last_applied_index` | gauge | - | Index of the last entry applied. A gap to the last log index is apply lag. |
 | `felix_meta_raft_snapshot_index` | gauge | - | Index of the last snapshot. |
-| `felix_meta_raft_snapshot_bytes` | gauge | - | Size of the last snapshot this member built, in bytes. Only a build on the segment store sets it. A follower refuses a snapshot over `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, so alert well before this reaches it; the member logs an error once it passes half. |
+| `felix_meta_raft_snapshot_bytes` | gauge | - | Size of the last snapshot this member built, in bytes. A follower refuses a snapshot over `FELIX_RAFT_SNAPSHOT_MAX_BYTES`, so alert well before this reaches it; the member logs an error once it passes half. |
 | `felix_meta_raft_member_below_floor` | gauge | `member` | `1` while replication to a Raft `member` is held back because its log is below the group's join floor, as after a wiped volume. Clears when the member catches up. |
 | `felix_meta_raft_forwarded_proposals_total` | counter | - | Proposals a follower forwarded to the leader. Informational; forwarding is correct, one hop more. |
 | `felix_meta_raft_deduplicated_proposals_total` | counter | - | Proposals answered from the applied record because a retry carried an id already applied. |

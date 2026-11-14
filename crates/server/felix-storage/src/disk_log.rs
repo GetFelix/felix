@@ -108,6 +108,10 @@ pub const COMMIT_PERSIST_INTERVAL: std::time::Duration = std::time::Duration::fr
 /// The file that makes a shard directory a Raft copy (`raft_copy`).
 pub(crate) const RAFT_COPY_FILE: &str = "raft-copy";
 
+/// How soon a Raft log's commit writer asks again when the replica state is
+/// locked and it cannot tell when the last write was.
+const COMMIT_WAIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// Set the first time any log in this process is poisoned, or a node
 /// record's sync fails, and never cleared. A log closed since still counts:
 /// whatever it acknowledged may not be on disk.
@@ -2297,6 +2301,23 @@ impl LogInner {
 }
 
 impl LogInner {
+    /// How long the commit writer waits before its next write: the rest of
+    /// [`COMMIT_PERSIST_INTERVAL`] on a Raft log, nothing otherwise.
+    fn commit_write_wait(&self) -> Option<std::time::Duration> {
+        if !self.config.raft_log {
+            return None;
+        }
+        // Held by a write in flight or a replica-set change; ask again soon
+        // rather than wait out a whole interval.
+        let last = match self.replica_persisted.try_lock() {
+            Some(persisted) => persisted.1?,
+            None => return Some(COMMIT_WAIT_RECHECK),
+        };
+        COMMIT_PERSIST_INTERVAL
+            .checked_sub(last.elapsed())
+            .filter(|wait| !wait.is_zero())
+    }
+
     /// The replica state as memory has it.
     fn replica_state(&self) -> replica_state::ReplicaState {
         let committed = self.committed_generation.lock();
@@ -2332,12 +2353,14 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         // Not retried once poisoned: the write behind would otherwise try
         // again, and a retry after a failed flush proves nothing.
         inner.check_not_poisoned()?;
+        // Counted before the rename, so a test that sees the file sees the
+        // count too.
+        #[cfg(test)]
+        inner.replica_writes.fetch_add(1, Ordering::SeqCst);
         inner.poison_on_sync_failure(
             "the replica state",
             replica_state::store(&inner.dir, &state),
         )?;
-        #[cfg(test)]
-        inner.replica_writes.fetch_add(1, Ordering::Relaxed);
         inner
             .commit_persisted
             .store(state.commit_offset, Ordering::Release);
@@ -2352,6 +2375,12 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
 /// log; it loops until disk has caught up with memory, so an advance made
 /// while a write is in flight is carried by the next one rather than adding
 /// its own.
+///
+/// On a Raft log a write waits until [`COMMIT_PERSIST_INTERVAL`] has passed
+/// since the last one. Its commit index moves on almost every entry, and a
+/// write is a create, two fsyncs and a rename that the log's own fsyncs queue
+/// behind on the same disk (`docs/metadata-raft-benchmark.md`, "Saving the
+/// committed index").
 fn write_commit_behind(inner: &Arc<LogInner>) {
     if inner.commit_writer.swap(true, Ordering::AcqRel) {
         return;
@@ -2360,6 +2389,9 @@ fn write_commit_behind(inner: &Arc<LogInner>) {
     let weak = Arc::downgrade(inner);
     tokio::spawn(async move {
         loop {
+            while let Some(wait) = weak.upgrade().and_then(|inner| inner.commit_write_wait()) {
+                tokio::time::sleep(wait).await;
+            }
             let Some(inner) = weak.upgrade() else {
                 return;
             };

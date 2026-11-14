@@ -243,7 +243,8 @@ where
     // compares a record with the snapshots.
     let group_refused = CancellationToken::new();
     let group = match (&durable_root, &config.controlplane_url, &view) {
-        (Some(root), _, Some(_)) => crate::cluster::controlplane_group::read(root)?,
+        // Judged once the control plane answers (`sync::GroupCheck`).
+        (Some(_), _, Some(_)) => None,
         (Some(root), Some(base_url), None) => tokio::select! {
             group = identity::admit(&membership_client, base_url, &credential, root) => group?,
             () = shutdown.as_mut() => {
@@ -255,10 +256,13 @@ where
         },
         _ => None,
     };
-    let group = group.map(|stored| crate::cluster::controlplane_group::Guard {
-        stored,
-        refused: group_refused.clone(),
-    });
+    let group = sync::GroupCheck::for_start(
+        durable_root.as_deref(),
+        view.is_some(),
+        group,
+        &membership_client,
+        &group_refused,
+    );
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let own_kept = stored.kept;
     stored.kept = stored.kept.attested(view.is_some());
