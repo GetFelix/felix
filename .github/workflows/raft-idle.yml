@@ -36,7 +36,7 @@ jobs:
           set -euo pipefail
           git worktree add "$RUNNER_TEMP/base" f8422f87f
           f=crates/server/felix-replication/src/raft/cache
-          cp "$f/measure.rs" "$RUNNER_TEMP/base/$f/measure.rs"
+          cp bench/measure-base.rs "$RUNNER_TEMP/base/$f/measure.rs"
           printf '#[cfg(test)]\nmod measure;\n' >> "$RUNNER_TEMP/base/$f.rs"
       - name: Build
         run: |
