@@ -2418,8 +2418,15 @@ refused.
 > `a_producers_next_batch_is_checked_once_the_one_before_is_written`,
 > `a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap`,
 > `a_batch_of_several_records_is_refused_with_nothing_written`,
-> `a_record_of_a_longer_batch_is_not_a_raft_entry` and
+> `a_record_of_a_batch_names_its_place_in_the_log`,
+> `a_batch_cut_by_a_leader_change_is_finished_by_its_resend` and
 > `a_batch_resent_to_the_next_leader_is_not_written_again`;
+> `crates/server/felix-storage/src/disk_log/producers/tests.rs`,
+> `a_purge_past_a_cut_first_batch_refuses_its_resend`,
+> `a_purge_past_an_open_batch_refuses_its_resend` and
+> `past_the_bound_a_cut_first_batch_is_still_refused`;
+> `crates/server/felix-storage/src/disk_log/tests/producers.rs`,
+> `a_purge_past_a_cut_batch_refuses_its_resend`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
