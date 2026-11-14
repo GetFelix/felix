@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794671840291,
+  "lastUpdate": 1794672492752,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -71808,6 +71808,72 @@ window.BENCHMARK_DATA = {
             "range": "48.30",
             "unit": "us",
             "extra": "trials: 5\nmedian: 276.00\nmean: 281.80\nstdev: 48.30\ncv: 17.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "334ff021fcffb8b51f8c95154111b3f43e2ecf00",
+          "message": "spec: idempotent batches on a Raft shard in FelixRaftBatch (#2534)\n\n* WIP spec: idempotent batches on a Raft shard in FelixRaftBatch (#2524)\n\nNot model-checked yet: TLC has not run on this spec. README state counts\nare placeholders (STATES_MAIN, STATES_KEEP).\n\n* spec: idempotent batches on a Raft shard in FelixRaftBatch (#2524)\n\nModel-checked on a build box: FelixRaftBatch and FelixRaftBatchKeepsCut pass\n(8,525,374 distinct states each, depth 19); the twelve twins and witnesses each\nviolate the invariant they name. State counts filled in, CI weights added for\nthe two passing configurations.\n\nReview follow-ups: the header and README state that placing a send and\nappending its pieces is one step, and NeverFinishesFromSnapshot no longer\ntrips on a count read from the uncommitted tail.\n\n* spec: review fixes for FelixRaftBatch (#2524)\n\nThe README lists the code changes the model assumes, checked against main and\nthe first storage change, and says the model lets a new leader place sends\nbefore the code would. New witness FelixRaftBatchReachHeld for the held\nanswer with every rule on. Re-run on a build box: FelixRaftBatch and\nFelixRaftBatchKeepsCut both pass with 8,525,374 distinct states (42.9M and\n43.2M generated, depth 19 and 20); the changed twins and the new witness\nviolate what they name.\n\nSpec-Unaffected: spec and docs only",
+          "timestamp": "2026-11-14T16:00:52Z",
+          "tree_id": "55435a34b8ebff7bab2c64d059b879711bf2ab90",
+          "url": "https://github.com/GetFelix/felix/commit/334ff021fcffb8b51f8c95154111b3f43e2ecf00"
+        },
+        "date": 1794672481961,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 123,
+            "range": "6.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 121.80\nstdev: 6.91\ncv: 5.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 179,
+            "range": "7.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 179.00\nstdev: 7.28\ncv: 4.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 225,
+            "range": "19.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 225.00\nmean: 230.40\nstdev: 19.27\ncv: 8.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 136,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 136.00\nmean: 135.60\nstdev: 1.14\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 292,
+            "range": "11.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 292.00\nmean: 292.40\nstdev: 11.80\ncv: 4.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 462,
+            "range": "835.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 462.00\nmean: 813.00\nstdev: 835.21\ncv: 102.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
