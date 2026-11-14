@@ -491,6 +491,8 @@ impl LaneClass {
         match message {
             InternalMessage::Hello(_)
             | InternalMessage::Fence(_)
+            | InternalMessage::SealFence(_)
+            | InternalMessage::SealAck(_)
             | InternalMessage::PreVote(_)
             | InternalMessage::ReplicateFetch(_)
             | InternalMessage::Ping(_) => Self::Control,

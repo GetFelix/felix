@@ -1233,7 +1233,22 @@ async fn eligible_log<R>(ctx: &Ctx<R>, key: &ShardKey) -> Option<StreamLog> {
     if !followers_decide(ctx, key).await {
         return None;
     }
-    shard_log(&ctx.broker, key).await
+    // A copy that promised a seal stands for nothing: its own ballot at a
+    // later generation would end the promise and reopen the shard without
+    // the control plane.
+    shard_log(&ctx.broker, key)
+        .await
+        .filter(|log| key.kind != ShardKind::Stream || !sealed(log))
+}
+
+#[cfg(feature = "raft")]
+fn sealed(log: &StreamLog) -> bool {
+    log.disk_log().seal_promise().is_some()
+}
+
+#[cfg(not(feature = "raft"))]
+fn sealed(_: &StreamLog) -> bool {
+    false
 }
 
 /// Whether `key`'s followers decide its acknowledgements, which an elected

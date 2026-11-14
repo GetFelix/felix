@@ -270,6 +270,15 @@ impl SealRound {
                 self.acked(node, StorageId::from_bytes(ok.copy));
             }
         }
+        // A later generation this copy accepted since the claim reopened
+        // the shard: nothing may be reported from this seal.
+        if logs
+            .log
+            .seal_promise()
+            .is_none_or(|promise| promise.generation != self.generation)
+        {
+            return Ok(self.give_up(SealRefused::NoPromise));
+        }
         Ok(self
             .report()
             .map_or(SealProgress::Waiting, SealProgress::Reported))

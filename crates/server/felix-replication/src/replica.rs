@@ -1551,6 +1551,20 @@ impl ReplicaHandler {
         {
             return refusal;
         }
+        // An election among sealed copies would reopen the shard without
+        // the control plane, so a promise refuses a candidate's ballot. A
+        // control-plane promotion carries the set too, with no candidate,
+        // and is how a sealed shard reopens. Refused before any write.
+        if request
+            .election
+            .as_ref()
+            .is_some_and(|election| election.candidate)
+            && let Some(refusal) = self
+                .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Ballot)
+                .await
+        {
+            return refusal;
+        }
         let confirming = log.accepted_generation() == generation;
         // Read before the ballot moves to this generation: a continuing
         // leader counts a rotated copy only on this (#2047).
@@ -1568,15 +1582,6 @@ impl ReplicaHandler {
         if !voter && let Err(err) = self.unkeep(&key, generation).await {
             metrics::record_replicated(metrics::OUTCOME_ERROR);
             return refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string());
-        }
-        // An election among sealed copies would reopen the shard without
-        // the control plane, so a promise refuses every election ballot.
-        if request.election.is_some()
-            && let Some(refusal) = self
-                .sealed_refusal(correlation_id, &request.shard, None, SealedWrite::Ballot)
-                .await
-        {
-            return refusal;
         }
         let accepted = match seal {
             None => accept_sender(&log, correlation_id, &key, generation, sender).await,

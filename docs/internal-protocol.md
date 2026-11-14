@@ -1250,7 +1250,7 @@ Moving a shard from the hybrid protocol to Raft starts with a seal: the
 hybrid leader of a new generation `G` fences the shard, appends one last
 record at offset `N`, the base, and counts the copies that hold it. The
 steps and why they are safe are in `docs/per-shard-raft.md`, "Moving a shard
-from the hybrid to Raft". Four kinds carry it, sent only to a peer that
+from the hybrid to Raft". Five kinds carry it, sent only to a peer that
 offered `SWITCH_SEAL`. No existing body changes, so two brokers that never
 seal exchange the same bytes as before.
 
@@ -1259,7 +1259,9 @@ seal exchange the same bytes as before.
   its copy id. The replica takes it as a fence and, in place of a plain
   ballot, promises the seal on disk: from then on it takes the shard's
   batches only from that copy, refuses rebuilds, bootstraps and election
-  ballots, and answers no pre-vote. The promise has no timeout. It ends only
+  ballots from a candidate, and answers no pre-vote. A control-plane
+  promotion, which names the set with no candidate, is still taken. The
+  promise has no timeout. It ends only
   when the replica accepts a later generation.
 - **`SealFenceOk`** (kind 60) is the `FenceOk` body (never an attestation),
   a `u8` that is 1 for a kept ballot and 0 otherwise (any other value is
@@ -1273,13 +1275,16 @@ seal exchange the same bytes as before.
 - **`SealAckOk`** (kind 62) is the correlation id and the replica's own copy
   id, sent only once the record is on disk.
 
+A `SealFence` or `SealAck` for an incarnated stream travels inside
+`Incarnated`, like `Fence`. Both go on the control stream.
+
 A replica refuses the seal's fence with `ReplicateError` when it keeps no
 dead-letter and cursor logs for the shard or any of the three logs does not
 fsync on commit, and refuses `SealAck` when its copy differs from the
 digests. A build without the Raft engine answers both with `UnsupportedKind`.
 
 While its own promise holds, the seal leader wraps each batch for the
-shard's log in **`FromCopy`** (kind 63): the correlation id, the 16-byte copy
+shard's log to a peer that offered `SWITCH_SEAL` in **`FromCopy`** (kind 63): the correlation id, the 16-byte copy
 id, the inner kind (`u16`), then the inner body as it would travel alone.
 `FromCopy` is always outermost and never nested, and its correlation id must
 equal the inner one. A promised replica takes a batch only when the copy id

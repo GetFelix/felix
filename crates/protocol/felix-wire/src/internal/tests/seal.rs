@@ -87,6 +87,31 @@ fn seal_messages_round_trip() {
     }
 }
 
+/// **The seal's requests carry the stream's incarnation**, so a seal for a
+/// deleted stream never promises its recreated namesake.
+#[test]
+fn seal_requests_carry_the_incarnation() {
+    let incarnated = ShardRef {
+        incarnation: Some(5),
+        ..shard()
+    };
+    for message in messages() {
+        let message = match message {
+            InternalMessage::SealFence(mut m) => {
+                m.fence.shard = incarnated.clone();
+                InternalMessage::SealFence(m)
+            }
+            InternalMessage::SealAck(mut m) => {
+                m.shard = incarnated.clone();
+                InternalMessage::SealAck(m)
+            }
+            _ => continue,
+        };
+        let frame = message.encode().expect("encode");
+        assert_eq!(InternalMessage::decode(frame).expect("decode"), message);
+    }
+}
+
 #[test]
 fn seal_requests_need_the_switch_seal_capability() {
     for message in messages() {
