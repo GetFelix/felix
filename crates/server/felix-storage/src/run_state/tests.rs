@@ -789,3 +789,38 @@ fn a_deleted_storage_id_starts_the_raft_marks_over() {
     assert_eq!(begun.origin, Origin::Created);
     assert!(!marks.exists());
 }
+
+/// Lets a test hold [`name_boot`] between its read and its rewrite.
+static NAME_BOOT_PAUSE: Mutex<Option<(PathBuf, std::sync::mpsc::SyncSender<()>)>> =
+    Mutex::new(None);
+
+pub(super) fn name_boot_read(root: &Path) {
+    let paused = NAME_BOOT_PAUSE.lock().take_if(|(dir, _)| dir == root);
+    if let Some((_, read)) = paused {
+        read.send(()).expect("test waits");
+        // Long enough for an unlocked `mark_clean` to land in between.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
+/// A clean stop while a detached vouch names the boot stays a clean stop.
+#[test]
+fn a_clean_stop_is_not_undone_by_a_late_boot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    let mut fresh = counter(0);
+    let first = begin_on(&root, ON_COMMIT, &mut fresh);
+    let (paused, reached) = std::sync::mpsc::sync_channel(1);
+    *NAME_BOOT_PAUSE.lock() = Some((root.clone(), paused));
+    let vouch = {
+        let root = root.clone();
+        std::thread::spawn(move || record_vouched_unsynced(&root).expect("record"))
+    };
+    reached.recv().expect("name_boot read the record");
+    mark_clean(&root, first.id).expect("mark clean");
+    vouch.join().expect("vouch");
+    assert_eq!(read(&root, first.id).expect("read"), LastRun::Clean);
+    let next = begin_on(&root, ON_COMMIT, &mut fresh);
+    assert!(!next.rotated);
+    assert_eq!(next.id, first.id);
+}

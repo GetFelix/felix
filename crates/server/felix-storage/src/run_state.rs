@@ -99,7 +99,8 @@ static WATCHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 static BEGAN_IN: Mutex<Vec<(PathBuf, Option<BootId>)>> = Mutex::new(Vec::new());
 
 /// Held across a read and rewrite of the record of a run under way, so
-/// [`forget_boot`] is never undone by a boot written from an older read.
+/// [`forget_boot`] or [`mark_clean`] is never undone by a boot written from
+/// an older read. Also keeps writers of the shared temporary file apart.
 static REWRITE: Mutex<()> = Mutex::new(());
 
 /// What the record says about the run before this one.
@@ -400,6 +401,8 @@ fn name_boot(root: &Path) -> Result<()> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(err) => return Err(StorageError::Io(err)),
     };
+    #[cfg(test)]
+    tests::name_boot_read(root);
     // A record that already lost its boot is relaxed, and keeps none.
     match decode(&bytes) {
         Some(Record {
@@ -662,7 +665,12 @@ pub(crate) fn decode_registration(bytes: &[u8]) -> Option<u64> {
 /// Record that the run under `id` stopped with everything it acknowledged
 /// synced. Only once nothing will write to the directory again.
 pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
-    write(root, &encode(STOPPED, 0, id), true)
+    // A detached vouch may still be naming the boot of this run. The lock is
+    // let go before a failed sync runs `forget_watched`, which takes it too.
+    durable_change(root, FILE_NAME, || {
+        let _rewrite = REWRITE.lock();
+        replace_file(root, FILE_NAME, &encode(STOPPED, 0, id), true)
+    })
 }
 
 /// Record that the run under way on `root` may have lost records it
