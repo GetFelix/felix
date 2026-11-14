@@ -225,13 +225,111 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
     }
 }
 
+/// A copy syncs its root's vouched-unsynced marker before its written
+/// position reaches a leader, and the leader does before it counts its own
+/// unsynced write. A copy whose marker does not sync says nothing, so its
+/// root still shows every record it was counted for as synced.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.push(opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let before = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, before).await;
+    let vouched = |broker: &str| {
+        run_state::vouched_unsynced(&roots.dir.path().join(broker)).expect("read the marker")
+    };
+    for broker in BROKERS {
+        assert!(!vouched(broker), "{broker} vouched with no report asked");
+    }
+
+    let leader = cluster.elected(0).await;
+    let mut followers = BROKERS
+        .iter()
+        .copied()
+        .filter(|broker| *broker != &*leader.broker);
+    let silent = followers.next().expect("a follower");
+    let telling = followers.next().expect("another follower");
+    roots.roots[silent].mark_log().fail_vouch();
+
+    let engine = RaftEngine::new(cluster.runtime(&leader.broker));
+    let member_of = |broker: &str| {
+        let status = cluster.runtime(broker).status(&shard(0));
+        status.expect("status").member
+    };
+    let group = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    // The first wait makes the leader ask; later appends carry the ask.
+    while group.reports().from(&member_of(telling)).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "no written report arrived"
+        );
+        let batch = Batch {
+            records: vec![Record {
+                timestamp_micros: 1_700_000_000,
+                payload: Bytes::from_static(b"relaxed"),
+            }],
+            ack: AckAt::Written,
+            term: None,
+            producer: None,
+        };
+        let written = engine.propose(&shard(0), batch).await.expect("written");
+        engine
+            .await_quorum_ack(&shard(0), written, AckAt::Written, PATIENCE)
+            .await
+            .expect("acknowledged");
+        cluster.committed_everywhere(0, written.end - 1).await;
+    }
+    assert!(vouched(telling), "a report left before its marker");
+    assert!(
+        vouched(&leader.broker),
+        "the leader counted its own unsynced write before its marker"
+    );
+    assert!(!vouched(silent));
+    assert_eq!(
+        group.reports().from(&member_of(silent)),
+        None,
+        "a copy whose marker did not sync reported"
+    );
+
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.ok();
+    }
+}
+
 /// Start a run on `root`, which is on the simulated filesystem, as a broker
-/// with Raft copies whose own fsync mode is `OnCommit`, and open it as a
+/// whose own fsync mode is `OnCommit`, and open it as a
 /// copy root. `control_plane` stands in for the control plane's copy of the
 /// root sequence, which a restart compares against.
 fn start_sim_run(root: &Path, mint_from: u64, control_plane: Option<ControlPlaneCopy>) -> CopyRoot {
     static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    let relaxed = run_state::relaxed(&log_config().fsync_mode, true);
+    let relaxed = run_state::relaxed(&log_config().fsync_mode);
     run_state::begin(
         root,
         relaxed,
@@ -267,8 +365,8 @@ fn start_sim_run(root: &Path, mint_from: u64, control_plane: Option<ControlPlane
 /// reports a record written before its fsync, and the leader counts that for
 /// a relaxed stream. The leader and follower F1 write record R, and R is
 /// acknowledged on the written count while F2 is cut off. Then F1 loses
-/// power before R is synced. Its run was recorded as relaxed, so it boots
-/// under a new storage id and its copy with it. With the leader cut off, F1
+/// power before R is synced. It synced its root's marker before the report
+/// left, so it boots under a new storage id and its copy with it. With the leader cut off, F1
 /// and F2 cannot elect a leader without R, and once the leader is back R
 /// commits.
 ///
@@ -341,6 +439,26 @@ async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
         .filter(|broker| *broker != &*leader.broker);
     let failing = followers.next().expect("a follower");
     let other = followers.next().expect("another follower");
+    // A first report waits on its root's marker, and is dropped if the
+    // append's answer is ready before it. Later ones do not wait.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while !run_state::vouched_unsynced(&root_of(failing)).expect("read the marker") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never vouched"
+        );
+        let again = engine
+            .propose(&shard(0), batch(b"primed"))
+            .await
+            .expect("written");
+        // The leader asks for reports only once a wait has had to count
+        // them, which a commit that is already there never does.
+        engine
+            .await_quorum_ack(&shard(0), again, AckAt::Written, PATIENCE)
+            .await
+            .expect("acknowledged");
+        cluster.committed_everywhere(0, again.end - 1).await;
+    }
     let old = cluster
         .runtime(failing)
         .status(&shard(0))
@@ -589,6 +707,26 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
         .filter(|broker| *broker != &*leader.broker);
     let failing = followers.next().expect("a follower");
     let other = followers.next().expect("another follower");
+    // A first report waits on its root's marker, and is dropped if the
+    // append's answer is ready before it. Later ones do not wait.
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while !run_state::vouched_unsynced(&roots.dir.path().join(failing)).expect("read the marker") {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the follower never vouched"
+        );
+        let again = engine
+            .propose(&shard(0), batch(b"primed"))
+            .await
+            .expect("written");
+        // The leader asks for reports only once a wait has had to count
+        // them, which a commit that is already there never does.
+        engine
+            .await_quorum_ack(&shard(0), again, AckAt::Written, PATIENCE)
+            .await
+            .expect("acknowledged");
+        cluster.committed_everywhere(0, again.end - 1).await;
+    }
     let old = cluster
         .runtime(failing)
         .status(&shard(0))

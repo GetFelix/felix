@@ -70,6 +70,9 @@ struct Inner {
     /// Set once a write fails, for callers that cannot wait on the writer.
     failed: parking_lot::Mutex<Option<Arc<str>>>,
     compact_floor: AtomicU64,
+    /// The root's vouched-unsynced marker was synced in this process.
+    vouched: AtomicBool,
+    fail_vouch: AtomicBool,
     #[cfg(test)]
     stall: tokio::sync::RwLock<()>,
     #[cfg(test)]
@@ -178,6 +181,8 @@ impl MarkLog {
                 batcher: AtomicBool::new(false),
                 failed: parking_lot::Mutex::default(),
                 compact_floor: AtomicU64::new(COMPACT_FLOOR),
+                vouched: AtomicBool::new(false),
+                fail_vouch: AtomicBool::new(false),
                 #[cfg(test)]
                 stall: tokio::sync::RwLock::default(),
                 #[cfg(test)]
@@ -199,6 +204,33 @@ impl MarkLog {
     /// The storage id the witness records the sequence under.
     pub fn storage_id(&self) -> StorageId {
         *self.inner.storage_id.lock()
+    }
+
+    /// Sync the root's vouched-unsynced marker, once per process. A copy
+    /// calls this before it reports a record written ahead of its fsync, and
+    /// says nothing if it fails. See `run_state::record_vouched_unsynced`.
+    pub async fn vouch_unsynced(&self) -> io::Result<()> {
+        if self.inner.vouched.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        if self.inner.fail_vouch.load(Ordering::Relaxed) {
+            return Err(io::Error::other("the vouched-unsynced marker was failed"));
+        }
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            crate::run_state::record_vouched_unsynced(&inner.root).map_err(io::Error::other)?;
+            inner.vouched.store(true, Ordering::Release);
+            Ok(())
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    /// Fail every later [`Self::vouch_unsynced`] that has to write, as a
+    /// failed fsync would. For tests.
+    #[doc(hidden)]
+    pub fn fail_vouch(&self) {
+        self.inner.fail_vouch.store(true, Ordering::Relaxed);
     }
 
     pub(crate) fn root(&self) -> &Path {

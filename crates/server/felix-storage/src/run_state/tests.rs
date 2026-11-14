@@ -284,6 +284,40 @@ fn a_clean_stop_keeps_the_id_under_every_fsync_mode() {
     }
 }
 
+/// A Raft copy that told a leader it had written a record before syncing it
+/// is counted for that record, so a machine crash rotates the id under
+/// `OnCommit` too (#2423). The run it first vouched in recorded no boot, so
+/// any crash of it rotates. Later runs record one and keep the id through a
+/// process crash. The marker outlives the rotation.
+#[test]
+fn a_crash_after_vouching_for_an_unsynced_record_rotates_under_on_commit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!vouched_unsynced(dir.path()).expect("read"));
+    let kept = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!kept.rotated, "nothing was vouched for");
+    assert_eq!(kept.id, first.id);
+
+    record_vouched_unsynced(dir.path()).expect("record");
+    let second = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert_eq!(second.last_run, relaxed_crash(None));
+    assert!(second.rotated);
+    assert_ne!(second.id, first.id);
+    assert!(vouched_unsynced(dir.path()).expect("read"));
+    assert_eq!(
+        read(dir.path(), second.id).expect("read"),
+        relaxed_crash(BOOT),
+        "a run on a directory that vouched is recorded as relaxed"
+    );
+
+    let elsewhere = begin_in(dir.path(), ON_COMMIT, REBOOTED, &mut fresh);
+    assert!(elsewhere.rotated, "a crash in another boot");
+    mark_clean(dir.path(), elsewhere.id).expect("clean stop");
+    let clean = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!clean.rotated, "a clean stop keeps the id");
+}
+
 /// Under `OnCommit` nothing acknowledged was unsynced, so a crash loses
 /// nothing peers counted.
 #[test]

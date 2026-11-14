@@ -136,7 +136,8 @@ pub(crate) fn poison_file_name() -> &'static str {
 /// find nothing (#2475).
 #[cfg(feature = "raft")]
 pub(crate) fn left_poisoned(dir: &Path) -> std::io::Result<bool> {
-    if POISONED_DIRS.lock().iter().any(|poisoned| poisoned == dir) {
+    let canonical = canonical_dir(dir);
+    if POISONED_DIRS.lock().contains(&canonical) {
         return Ok(true);
     }
     crate::fs::try_exists(dir.join(poison_file_name()))
@@ -148,16 +149,31 @@ static POISONED_DIRS: Mutex<Vec<std::path::PathBuf>> = Mutex::new(Vec::new());
 
 /// Count `dir` as poisoned for the rest of this process.
 pub(super) fn note_poisoned_dir(dir: &Path) {
+    let dir = canonical_dir(dir);
     let mut dirs = POISONED_DIRS.lock();
-    if !dirs.iter().any(|poisoned| poisoned == dir) {
-        dirs.push(dir.to_path_buf());
+    if !dirs.contains(&dir) {
+        dirs.push(dir);
+    }
+}
+
+/// `dir` with its links resolved, so one directory reached by two paths is
+/// one entry. A directory that was moved aside resolves through its parent.
+fn canonical_dir(dir: &Path) -> std::path::PathBuf {
+    if let Ok(resolved) = std::fs::canonicalize(dir) {
+        return resolved;
+    }
+    match (dir.parent(), dir.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+            .map_or_else(|_| dir.to_path_buf(), |parent| parent.join(name)),
+        _ => dir.to_path_buf(),
     }
 }
 
 /// `dir` now holds a new copy, so its old log's poison no longer applies.
 #[cfg(feature = "raft")]
 pub(crate) fn forget_poisoned_dir(dir: &Path) {
-    POISONED_DIRS.lock().retain(|poisoned| poisoned != dir);
+    let dir = canonical_dir(dir);
+    POISONED_DIRS.lock().retain(|poisoned| *poisoned != dir);
 }
 
 /// The poison marker's mode byte for each fsync mode. Zero is a marker that
@@ -264,7 +280,6 @@ impl MarkFile {
     /// anyway. Syncing could also fail on the device that just failed.
     pub(super) fn record_poison(&self, mode: &FsyncMode) -> std::io::Result<()> {
         use std::io::Write;
-        note_poisoned_dir(&self.dir);
         #[cfg(any(test, feature = "fault-injection"))]
         if self
             .fail_poison_marker
@@ -278,6 +293,11 @@ impl MarkFile {
         let bytes = synced.map_or([0u8; MARK_LEN], |mark| Poison::encode(mark, mode));
         let mut file = File::create(self.dir.join(poison_file_name()))?;
         file.write_all(&bytes)
+    }
+
+    /// The log's directory.
+    pub(super) fn dir(&self) -> &Path {
+        &self.dir
     }
 
     /// [`MarkFile::record_since`] as of now.

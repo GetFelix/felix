@@ -402,8 +402,9 @@ pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
 }
 
 /// Start a run on the data directory at `root` and return the id to announce.
-/// A machine crash under `Periodic` or `None`, or on a broker with Raft
-/// copies, may have lost records peers counted, and a directory older than the node's last registration may hold
+/// A machine crash under `Periodic` or `None`, or after a Raft copy here
+/// vouched for a record before syncing it, may have lost records peers
+/// counted, and a directory older than the node's last registration may hold
 /// fewer than they counted, so either comes back with a new id. On Linux a
 /// process crash in the same boot keeps it. See `felix_storage::run_state`.
 fn begin_run(
@@ -411,7 +412,7 @@ fn begin_run(
     log: &felix_storage::log::LogConfig,
     registered: Option<u64>,
 ) -> Result<felix_storage::run_state::Begun> {
-    let relaxed = felix_storage::run_state::relaxed(&log.fsync_mode, hosts_raft_copies()?);
+    let relaxed = felix_storage::run_state::relaxed(&log.fsync_mode);
     let begun = felix_storage::run_state::begin(
         root,
         relaxed,
@@ -430,16 +431,6 @@ fn begin_run(
         );
     }
     Ok(begun)
-}
-
-/// Whether this broker opens its shards as Raft copies. Every copy can be
-/// asked for a written report before its fsync, so its runs are relaxed even
-/// under `OnCommit`.
-fn hosts_raft_copies() -> Result<bool> {
-    Ok(
-        cfg!(feature = "raft")
-            && crate::config::shard_engine()? == crate::config::ShardEngine::Raft,
-    )
 }
 
 /// Where run witnesses are kept. See `felix_storage::run_state::witness`.

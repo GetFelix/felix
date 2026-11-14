@@ -22,6 +22,10 @@
 //! removes it, so a broker can refuse to join a fleet that has not finalized
 //! `head_trim` without opening every log. See [`record_head_trimmed`].
 //!
+//! `<durable root>/vouched-unsynced` says a Raft copy here told a leader it
+//! had written a record before syncing it, so a machine crash rotates the id
+//! whatever the fsync mode. See [`record_vouched_unsynced`].
+//!
 //! `<durable root>/record-headers` says the same of a record with a key or
 //! headers block (storage format v8) and `record_headers`. See
 //! [`record_headers_stored`].
@@ -147,13 +151,13 @@ pub struct Begun {
     pub rotated: bool,
 }
 
-/// Whether a run may vouch for records it has not synced, so that a machine
-/// crash of it must rotate the storage id. True under `Periodic` and `None`,
-/// and under any mode when the broker hosts Raft copies: a copy reports a
-/// record written before its fsync, and the leader counts that report for a
-/// relaxed stream whatever this broker's own mode is (#2423).
-pub fn relaxed(fsync_mode: &crate::log::FsyncMode, raft_copies: bool) -> bool {
-    raft_copies || !matches!(fsync_mode, crate::log::FsyncMode::OnCommit)
+/// Whether a run under `fsync_mode` acknowledges records before they are
+/// synced, so that a machine crash of it must rotate the storage id. True
+/// under `Periodic` and `None`. A run under `OnCommit` is relaxed too once a
+/// Raft copy in the directory has vouched for an unsynced record, which
+/// [`begin`] reads from [`vouched_unsynced`] itself.
+pub fn relaxed(fsync_mode: &crate::log::FsyncMode) -> bool {
+    !matches!(fsync_mode, crate::log::FsyncMode::OnCommit)
 }
 
 /// Start a run on the directory at `root`: read its storage id, give it a new
@@ -192,7 +196,21 @@ pub fn begin(
     }
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
     copy_trust::ensure(root, origin == Origin::Created)?;
-    let last_run = read(root, loaded)?;
+    // A copy that vouched for unsynced records did so after the run's record
+    // was written, so the marker speaks for the last run and for this one.
+    // That first run recorded no boot, so a crash of it always rotates.
+    let vouched = vouched_unsynced(root)?;
+    let relaxed = relaxed || vouched;
+    let last_run = match read(root, loaded)? {
+        LastRun::Crashed {
+            relaxed: false,
+            boot,
+        } if vouched => LastRun::Crashed {
+            relaxed: true,
+            boot,
+        },
+        last_run => last_run,
+    };
     let recorded = read_registration(root)?;
     let restored = origin == Origin::Loaded && recorded.behind(registered);
     // A new id already tells peers to start over. `||` order matters: the
@@ -319,6 +337,27 @@ pub fn record_head_trimmed(root: &Path) -> Result<()> {
 /// counts: it is renamed into place whole, and it is never removed.
 pub fn head_trimmed(root: &Path) -> Result<bool> {
     crate::fs::try_exists(root.join(HEAD_TRIMMED_FILE_NAME)).map_err(StorageError::Io)
+}
+
+/// The name, under the durable root, of the marker a Raft copy leaves before
+/// it vouches for a record it has not synced. Not a directory, so shard
+/// discovery passes over it.
+pub const VOUCHED_UNSYNCED_FILE_NAME: &str = "vouched-unsynced";
+
+/// Record, durably, that a Raft copy under `root` is about to tell a leader
+/// it has written a record it has not synced, or to count its own such
+/// write toward an acknowledgement. Call before the first one leaves. Always
+/// written and synced, even over a marker already there: one a crashed
+/// process left may be in the page cache only.
+pub fn record_vouched_unsynced(root: &Path) -> Result<()> {
+    write_atomically(root, VOUCHED_UNSYNCED_FILE_NAME, b"written\n", true)
+}
+
+/// Whether a copy under `root` may have vouched for an unsynced record. The
+/// marker is never removed: a copy that vouched once may have a leader still
+/// counting it, and only a rotation ends that.
+pub fn vouched_unsynced(root: &Path) -> Result<bool> {
+    crate::fs::try_exists(root.join(VOUCHED_UNSYNCED_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The record-headers marker's name under the durable root. Not a directory,
