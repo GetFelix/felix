@@ -1454,10 +1454,13 @@ mod on_raft {
         );
         let third = members[leader].publish(term, b"three").await;
         let fourth = members[leader].publish(term, b"four").await;
-        assert_eq!(
-            fixture::delivered(&mut receiver).await,
-            (third, Bytes::from_static(b"three"))
-        );
+        // The follower joined at what it had applied, which can trail the
+        // leader's first two records.
+        let mut next = fixture::delivered(&mut receiver).await;
+        while next.0 < third {
+            next = fixture::delivered(&mut receiver).await;
+        }
+        assert_eq!(next, (third, Bytes::from_static(b"three")));
         assert_eq!(
             fixture::delivered(&mut receiver).await,
             (fourth, Bytes::from_static(b"four"))
