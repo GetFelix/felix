@@ -470,7 +470,7 @@ async fn a_failed_node_record_sync_is_not_retried() {
     use crate::storage_identity::StorageId;
 
     type Write = fn(&std::path::Path) -> Result<()>;
-    let records: [(&str, Write); 13] = [
+    let records: [(&str, Write); 14] = [
         ("registration", |root| {
             run_state::record_registration(root, 7)
         }),
