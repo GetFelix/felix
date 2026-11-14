@@ -9,17 +9,13 @@ use crate::raft::{
     AppStateMachine, CLUSTER_ID_HEADER, PEER_PREFIX, PeerSecurity, RaftHandle, RaftSettings,
 };
 
-#[cfg(felix_segment_store)]
 mod snapshot;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
-/// The prefix the other kind of member serves and calls.
-const OTHER_PREFIX: &str = if cfg!(felix_segment_store) {
-    "/internal/raft"
-} else {
-    "/internal/raft/v2"
-};
+/// The prefix a member of a release that kept its store in redb serves and
+/// calls.
+const OTHER_PREFIX: &str = "/internal/raft";
 
 const ROUTES: [(Method, &str); 8] = [
     (Method::POST, "append-entries"),
@@ -61,9 +57,10 @@ async fn status(router: &axum::Router, method: &Method, path: String) -> StatusC
         .status()
 }
 
-/// A member on the segment store and a member on redb must never exchange
-/// Raft messages. Each serves every peer route under its own prefix only,
-/// so a request from the other kind, credentials and all, is a 404.
+/// A member of a release that kept its store in redb and this one must
+/// never exchange Raft messages. Each serves every peer route under its own
+/// prefix only, so a request from the other kind, credentials and all, is a
+/// 404.
 #[tokio::test]
 async fn every_peer_route_is_served_under_this_stores_prefix_only() {
     let dir = tempfile::tempdir().expect("tempdir");

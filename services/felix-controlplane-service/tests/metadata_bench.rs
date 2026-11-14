@@ -9,7 +9,7 @@
 //!   cargo test -p felix-controlplane-service --release --test metadata_bench -- --ignored --nocapture
 //! ```
 //!
-//! Members run in this process, each on its own redb directory and its own
+//! Members run in this process, each on its own data directory and its own
 //! peer listener, driven through the store traits the HTTP API uses. The
 //! output is a JSON map of cell name to metrics, read by
 //! `scripts/ci/metadata_bench.py`. The cells are listed in
@@ -85,6 +85,7 @@ struct Probe {
     snapshots: AtomicU64,
     restores: AtomicU64,
     last_snapshot_nanos: AtomicU64,
+    last_snapshot_bytes: AtomicU64,
 }
 
 #[async_trait::async_trait]
@@ -97,6 +98,8 @@ impl AppStateMachine for Probe {
         let bytes = self.inner.snapshot().await;
         self.last_snapshot_nanos
             .store(started.elapsed().as_nanos() as u64, Ordering::SeqCst);
+        self.last_snapshot_bytes
+            .store(bytes.len() as u64, Ordering::SeqCst);
         self.snapshots.fetch_add(1, Ordering::SeqCst);
         bytes
     }
@@ -155,6 +158,7 @@ async fn try_open_member(
         snapshots: AtomicU64::new(0),
         restores: AtomicU64::new(0),
         last_snapshot_nanos: AtomicU64::new(0),
+        last_snapshot_bytes: AtomicU64::new(0),
     });
     let handle = match RaftHandle::start(
         settings(id, dir.path(), snapshot_every, 0),
@@ -679,6 +683,25 @@ async fn fill(store: &Arc<RaftStore>, bytes: usize) {
     }
 }
 
+/// Trigger a snapshot on `member` and wait until the state machine has
+/// built it; the build's time in milliseconds.
+async fn build_once(member: &Member) -> f64 {
+    let before = member.probe.snapshots.load(Ordering::SeqCst);
+    let deadline = Instant::now() + Duration::from_secs(120);
+    // openraft drops a trigger while the previous snapshot is still being
+    // stored (seconds for a large one on redb), so ask again until it builds.
+    let mut asked: Option<Instant> = None;
+    while member.probe.snapshots.load(Ordering::SeqCst) == before {
+        assert!(Instant::now() < deadline, "snapshot never built");
+        if asked.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+            member.handle.trigger_snapshot().await.expect("snapshot");
+            asked = Some(Instant::now());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    member.probe.last_snapshot_nanos.load(Ordering::SeqCst) as f64 / 1e6
+}
+
 /// Snapshot build, the write stall it causes, restart to ready behind it, and
 /// an empty member catching up from it.
 async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
@@ -686,14 +709,23 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
         let group = Group::start(1, 1_000_000).await;
         fill(&group.members[0].store, *bytes).await;
 
+        // The same build with nothing else running: separates the cost of
+        // building from what the writer below does to it.
+        let idle_ms = build_once(&group.members[0]).await;
+        // Mostly stored before the writer starts, so its stall is this
+        // cell's own.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+
         // A writer runs through the snapshot; its slowest write is the stall.
         let writer = Arc::clone(&group.members[0].store);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worst = Arc::new(AtomicU64::new(0));
+        let written = Arc::new(AtomicU64::new(0));
         let probe = Arc::clone(&group.members[0].probe);
         let background = tokio::spawn({
             let stop = Arc::clone(&stop);
             let worst = Arc::clone(&worst);
+            let written = Arc::clone(&written);
             async move {
                 let mut i = 0u64;
                 while !stop.load(Ordering::SeqCst) {
@@ -702,21 +734,19 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
                         .create_namespace(namespace(&format!("during-{i}"), 256))
                         .await;
                     worst.fetch_max(begun.elapsed().as_nanos() as u64, Ordering::SeqCst);
+                    written.fetch_add(1, Ordering::SeqCst);
                     i += 1;
                 }
             }
         });
-        let before = probe.snapshots.load(Ordering::SeqCst);
-        group.members[0]
-            .handle
-            .trigger_snapshot()
-            .await
-            .expect("snapshot");
-        let deadline = Instant::now() + Duration::from_secs(120);
-        while probe.snapshots.load(Ordering::SeqCst) == before {
-            assert!(Instant::now() < deadline, "snapshot never built");
-            tokio::time::sleep(Duration::from_millis(10)).await;
+        // openraft builds nothing when nothing was applied since the last
+        // snapshot, so the idle one above must be behind a write first.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while written.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the writer never wrote");
+            tokio::time::sleep(Duration::from_millis(1)).await;
         }
+        let build_ms = build_once(&group.members[0]).await;
         // Let the snapshot reach the store before the stall is read.
         tokio::time::sleep(Duration::from_secs(2)).await;
         stop.store(true, Ordering::SeqCst);
@@ -724,7 +754,9 @@ async fn snapshot_cells(scale: &Scale, cells: &mut BTreeMap<String, Value>) {
         cells.insert(
             format!("snapshot_build/{label}"),
             json!({
-                "build_ms": probe.last_snapshot_nanos.load(Ordering::SeqCst) as f64 / 1e6,
+                "build_ms": build_ms,
+                "build_idle_ms": idle_ms,
+                "snapshot_bytes": probe.last_snapshot_bytes.load(Ordering::SeqCst) as f64,
                 "longest_write_ms": worst.load(Ordering::SeqCst) as f64 / 1e6,
             }),
         );
