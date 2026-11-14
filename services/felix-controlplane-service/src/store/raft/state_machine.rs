@@ -465,6 +465,11 @@ impl MetadataStateMachine {
                     .await;
                 Ok(MetaResponse::ClusterIdentity { identity })
             }
+            MetaCommand::RecordRootSequence { node_id, heard } => store
+                .record_root_sequence(&node_id, heard)
+                .await
+                .map(|_| MetaResponse::Unit)
+                .map_err(Into::into),
             MetaCommand::SetMovesPaused { paused } => store
                 .set_moves_paused(paused)
                 .await

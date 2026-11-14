@@ -28,7 +28,7 @@ use crate::StorageId;
 use crate::raft_log::{LogPoint, LogPositions, state_file};
 use crate::run_state::witness;
 
-pub(crate) const FILE_NAME: &str = "raft-marks";
+pub(crate) const FILE_NAME: &str = crate::run_state::copy_trust::RAFT_MARKS;
 /// `"FLMK"`.
 const MAGIC: u32 = 0x464C_4D4B;
 const VERSION: u16 = 1;
@@ -201,12 +201,12 @@ impl MarkLog {
         *self.inner.storage_id.lock()
     }
 
-    pub(crate) fn set_storage_id(&self, id: StorageId) {
-        *self.inner.storage_id.lock() = id;
-    }
-
     pub(crate) fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    pub(crate) fn witness_dir(&self) -> Option<&Path> {
+        self.inner.witness.as_deref()
     }
 
     /// Tell the witness the root's sequence under its current storage id.

@@ -481,6 +481,78 @@ async fn a_suspicion_is_sent_without_waiting_for_the_next_beat() {
     let _ = handle.await;
 }
 
+/// The heartbeat carries the open Raft root's storage id and synced root
+/// sequence once the root opens, read fresh on every beat, and leaves the
+/// field out before, so an older control plane reads the body it always did.
+#[tokio::test]
+async fn the_heartbeat_carries_the_root_sequence_once_the_root_opens() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        heartbeat_interval_ms: Some(60_000),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let mut registration = register(
+        &link(&client, &base_url),
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+    registration.heartbeat_interval_ms = 60_000;
+    let root = registration.root.clone();
+
+    let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        link(&client, &base_url),
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(crate::cluster::lease::LeaseState::new(
+            std::time::Duration::from_secs(30),
+        )),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::clone(&suspects),
+    ));
+    let beats = |n: usize| {
+        let calls = Arc::clone(&calls);
+        async move {
+            for _ in 0..200 {
+                if calls.lock().expect("lock").heartbeat_bodies.len() >= n {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            calls.lock().expect("lock").heartbeat_bodies.clone()
+        }
+    };
+    let bodies = beats(1).await;
+    assert!(bodies[0].get("root").is_none(), "{bodies:?}");
+
+    let id = StorageId::from_bytes([0xcd; 16]);
+    let sequence = Arc::new(AtomicU64::new(4));
+    assert!(root.set({
+        let sequence = Arc::clone(&sequence);
+        move || (id, sequence.load(Ordering::Acquire))
+    }));
+    sequence.store(6, Ordering::Release);
+    // A new suspicion sends a beat now rather than a minute later.
+    suspects.publish(["broker-b".to_string()].into_iter().collect());
+    let bodies = beats(2).await;
+    assert_eq!(
+        bodies[1]["root"],
+        json!({ "storage_id": id.to_hex(), "sequence": 6 }),
+        "{bodies:?}"
+    );
+
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
 /// The control plane being briefly unreachable must not stop a broker that is
 /// otherwise serving. The failure has to be visible, not fatal.
 #[tokio::test]
@@ -705,6 +777,7 @@ async fn a_control_plane_answering_down_is_not_hammered() {
         None,
         Some(data.path().to_path_buf()),
         None,
+        Default::default(),
     );
     tokio::time::sleep(Duration::from_millis(1500)).await;
     shutdown.cancel();
@@ -753,6 +826,7 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         None,
         Some(data.path().to_path_buf()),
         None,
+        Default::default(),
     );
 
     for _ in 0..300 {
@@ -818,6 +892,7 @@ async fn a_stalled_heartbeat_is_abandoned_within_the_lease() {
         incarnation: 0,
         heartbeat_interval_ms: 20,
         fleet_features: Default::default(),
+        root: Default::default(),
     };
     let shutdown = CancellationToken::new();
     let failures = Arc::new(AtomicU64::new(0));
@@ -1001,6 +1076,7 @@ async fn serve_lookup(
                                 },
                             },
                             "placement": { "eligible": true },
+                            "root_sequence": { "storage_id": LOOKUP_STORAGE_ID, "sequence": 9 },
                         }))),
                         _ => Err(axum::http::StatusCode::NOT_FOUND),
                     }
@@ -1019,6 +1095,11 @@ async fn serve_lookup(
 
 const LOOKUP_STORAGE_ID: &str = "0123456789abcdef0123456789abcdef";
 
+/// The root sequence [`serve_lookup`] holds for the node.
+fn lookup_root() -> Option<(StorageId, u64)> {
+    Some((StorageId::from_hex(LOOKUP_STORAGE_ID).expect("hex"), 9))
+}
+
 /// The startup check reads the node's current incarnation and the storage id
 /// it registered with, and a node the control plane has never registered is
 /// no evidence either way.
@@ -1033,6 +1114,7 @@ async fn the_lookup_reads_the_registration() {
             .await
             .expect("lookup"),
         Some(Registered {
+            root_sequence: lookup_root(),
             incarnation: 7,
             storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
         })
@@ -1132,6 +1214,7 @@ async fn join_with(calls: &Shared, data: &std::path::Path) -> MembershipTask {
         None,
         Some(data.to_path_buf()),
         None,
+        Default::default(),
     );
     for _ in 0..300 {
         if task.fatal.is_cancelled() || !calls.lock().expect("lock").heartbeats.is_empty() {
@@ -1282,6 +1365,7 @@ async fn the_bounded_lookup_tells_down_from_refusing() {
     assert_eq!(
         bounded,
         Bounded::Answered(Some(Registered {
+            root_sequence: lookup_root(),
             incarnation: 3,
             storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
         }))
@@ -1310,6 +1394,7 @@ fn a_directory_behind_the_control_plane_is_a_restore() {
     let dir = tempfile::tempdir().expect("dir");
     let id = directory(dir.path(), 2);
     let registered = Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
@@ -1345,6 +1430,7 @@ fn a_directory_the_control_plane_registered_is_current() {
     let dir = tempfile::tempdir().expect("dir");
     let id = directory(dir.path(), 5);
     let registered = Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some(id.to_hex()),
     };
@@ -1364,6 +1450,7 @@ fn a_node_registered_under_another_id_is_replaced() {
     let dir = tempfile::tempdir().expect("dir");
     let id = directory(dir.path(), 5);
     let registered = Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
     };
@@ -1388,6 +1475,7 @@ async fn a_replacement_judged_through_the_view_file_stops_its_writer() {
     let id = directory(dir.path(), 5);
     let view = ViewFile::new(dir.path().to_path_buf());
     let registered = Registered {
+        root_sequence: None,
         incarnation: 5,
         storage_id: Some(LOOKUP_STORAGE_ID.to_string()),
     };
@@ -1453,6 +1541,7 @@ async fn join_from_view(
         Some(data.to_path_buf()),
         Some(view.clone()),
         Some(check),
+        Default::default(),
         true,
     );
     for _ in 0..500 {
@@ -1516,6 +1605,7 @@ async fn a_current_directory_registers_once_the_check_passes() {
     assert_eq!(
         *passed.lock().expect("lock"),
         vec![Some(Registered {
+            root_sequence: None,
             incarnation: 5,
             storage_id: Some(id.to_hex()),
         })],
@@ -1812,6 +1902,7 @@ async fn heartbeats_continue_while_every_runtime_worker_is_blocked() {
         None,
         None,
         None,
+        Default::default(),
     );
     for _ in 0..300 {
         if !calls.lock().expect("lock").heartbeats.is_empty() {
