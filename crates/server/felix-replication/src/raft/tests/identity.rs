@@ -222,6 +222,7 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
             payload: Bytes::from_static(payload),
         }],
         ack: AckAt::Written,
+        term: None,
     };
     // A wait on the written count makes the leader ask for reports.
     let primed = engine
