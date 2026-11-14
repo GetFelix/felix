@@ -11,8 +11,6 @@ name: Raft read and catch-up benchmark
 # report, not a gate.
 
 on:
-  push:
-    branches: [raft/read-batch-2329]
   workflow_dispatch:
     inputs:
       read_seconds:
@@ -53,15 +51,17 @@ jobs:
       - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: raft-read-perf
+      # The crate's tests seed jitter, which an optimised build has only
+      # with felix-common's `sim` feature.
       - name: Build
-        run: cargo test --locked --release -p felix-replication --lib --no-run
+        run: cargo test --locked --release -p felix-replication --features felix-common/sim --lib --no-run
       - name: Reads
         env:
           RAFT_READ_BENCH_SECONDS: ${{ inputs.read_seconds || '5' }}
           RAFT_READ_BENCH_ROUNDS: ${{ inputs.rounds || '6' }}
         run: |
           set -o pipefail
-          cargo test --locked --release -p felix-replication --lib read_index_rounds_benchmark \
+          cargo test --locked --release -p felix-replication --features felix-common/sim --lib read_index_rounds_benchmark \
             -- --ignored --nocapture 2>&1 | tee raft-read.log
       - name: Catch-up
         if: always()
@@ -70,7 +70,7 @@ jobs:
           RAFT_CATCH_UP_ROUNDS: ${{ inputs.rounds || '6' }}
         run: |
           set -o pipefail
-          cargo test --locked --release -p felix-replication --lib catch_up_benchmark \
+          cargo test --locked --release -p felix-replication --features felix-common/sim --lib catch_up_benchmark \
             -- --ignored --nocapture 2>&1 | tee raft-catch-up.log
       - name: Summary
         if: always()
