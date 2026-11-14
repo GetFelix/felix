@@ -230,14 +230,24 @@ members wait for the control plane too, even with a witness: the check's
 verdict is one of the gate's inputs, and a rotation it makes removes the
 mark log, which must not be open by then.
 
-The witness keeps a root's sequence under its storage id. If the id
-changes anywhere but the gate's own rotation (a start after a crash or a
-restore, `felix-broker restore-point`, or a restore the cluster's
-registration reveals), or the broker crashes after the gate rotates the id
-but before it records the witness, the witness has nothing under the new
-id. A root with marks then reads as Unchecked on the next start and holds.
-That is safe, since a hold never lets a copy vote twice, but the broker
-waits for the control plane's copy like a rebooted one.
+**A hold that no evidence can end.** A held root reports nothing, so the
+control plane learns a root's sequence only from a broker whose root is
+open. Two starts therefore hold for good. One is a root that wrote its
+first marks and lost its broker before a heartbeat carried them, on a
+machine that then rebooted or has no witness directory. The other is any
+start without a witness while a control-plane member is below metadata
+level 33, since nothing is stored below it. The broker logs the hold once
+at error level and keeps serving its other shards. To end it, stop the
+broker and run `felix-broker rotate-storage-id`: the root starts over
+under a new storage id and its copies come back as new members. That is
+safe, since a hold never lets a copy vote twice, and the rotation gives up
+only what the root could not prove.
+
+When the gate finds a root behind while the broker runs, it rotates the
+storage id in place and the broker goes on: nothing is open under the old
+id yet, and the broker's registration keeps naming the old id until the
+next start, which then treats the directory as a replaced copy. That is
+the conservative reading, the same one a start that asked first makes.
 
 **The root sequence.** The incarnation and the run token change once per
 start. A root put back from a backup taken during the run it interrupts
@@ -403,7 +413,10 @@ ready". No release ran Raft shards, so only test clusters hold such
 directories. To clear one, delete the stream and create it again, or stop
 every broker that holds the shard and remove the shard's directory on each.
 Removing a copy file by hand is refused the same way; to make a copy start
-over, remove its whole shard directory.
+over, remove its whole shard directory. A directory from such a build that
+never wrote a segment, a follower that only saved a vote for one, is not
+refused and rotates. That is safe: its group's leader wrote segments and is
+refused, so the group does not form again.
 
 ### Reclaiming kept copies
 
@@ -2101,9 +2114,12 @@ Membership changes are not built yet
   copies the others named, only when each one answers that it holds no
   vote and no entry. A broker that does not answer, that has not opened its
   member yet (its data root may be held by the restore gate), or whose copy
-  holds either, stops it, and it asks again on the next routing pass. A
-  copy that rotates after it answered is not in the set: it stays a member
-  no group knows, like any copy wiped after its group formed. The question names the stream's incarnation,
+  holds either, stops it, and it asks again on the next routing pass. If a
+  copy rotates after it answered, the set names its old copy id and not the
+  new one. The new copy is a member no group knows, like any copy wiped
+  after its group formed, and the group runs with one voter that never
+  answers: at three replicas it cannot lose another until membership
+  changes are built. The question names the stream's incarnation,
   so a member still on an older incarnation of the stream (its broker has
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They

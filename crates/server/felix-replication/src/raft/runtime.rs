@@ -704,8 +704,8 @@ impl GroupRuntime {
     /// A copy id is minted where the copy is, so the broker that forms a
     /// group asks for each: a question to a copy id the broker does not
     /// hold is refused with the one it does, and is asked again of that
-    /// one. A copy that rotates after it answered is not in the set, and
-    /// joins no group until membership changes are built.
+    /// one. If a copy rotates after it answered, the set names its old id:
+    /// the new copy joins no group until membership changes are built.
     pub async fn first_members(
         &self,
         shard: &ShardKey,

@@ -118,7 +118,7 @@ fn unbound_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
 }
 
 /// [`unbound_shards`] whose data root has not passed the restore gate.
-fn held_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
+pub(crate) fn held_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     let runtime =
         GroupRuntime::start("broker-a", timers(), Arc::new(AgreeingPeers)).expect("runtime");
     RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
