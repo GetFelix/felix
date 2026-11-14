@@ -11,7 +11,9 @@ use std::path::Path;
 
 use felix_storage::DiskLog;
 use felix_storage::log::LogConfig;
-use felix_storage::raft_copy::{CopyMarks, CopyRoot, LogMarkMode, Rotation};
+use felix_storage::raft_copy::{
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
+};
 use felix_storage::raft_log::{LogPoint, LogPositions};
 use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
@@ -24,6 +26,10 @@ use crate::driver::WriteFence;
 use crate::engine::{EngineHost, Host};
 use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
+
+/// How often a kept-copy reclaim that waits only on a commit save looks
+/// again. A log not under `FsyncMode::OnCommit` saves at most this often.
+const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +52,15 @@ pub struct RuntimeConfig {
     /// two starts an election.
     pub election_min: Duration,
     pub election_max: Duration,
+    /// How long after a majority's last answer a leader still acknowledges
+    /// a `Leader` write on its own log. A follower promises its leader
+    /// `election_max` on its own clock, so the lease must end before that
+    /// on any two clocks within the drift bound:
+    /// `lease * (1 + p) / (1 - p) <= election_max`.
+    pub lease: Duration,
+    /// `p` above, in parts per million: how much faster or slower than real
+    /// time a broker's clock may run.
+    pub clock_drift_ppm: u32,
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
     /// mark at the data root.
     pub log_mark: LogMarkMode,
@@ -60,6 +75,10 @@ impl Default for RuntimeConfig {
             idle_after: Duration::from_secs(5),
             election_min: Duration::from_secs(1),
             election_max: Duration::from_secs(2),
+            // A quarter under the follower's promise, which holds for
+            // clocks up to 10% off.
+            lease: Duration::from_millis(1500),
+            clock_drift_ppm: 100_000,
             log_mark: LogMarkMode::Exact,
         }
     }
@@ -74,6 +93,12 @@ impl RuntimeConfig {
             return Err(InvalidTimers(
                 "the idle heartbeat is shorter than the heartbeat".into(),
             ));
+        }
+        if !self.lease_fits() {
+            return Err(InvalidTimers(format!(
+                "a lease of {:?} can outlast a follower's promise of {:?} on clocks {} ppm off",
+                self.lease, self.election_max, self.clock_drift_ppm
+            )));
         }
         let millis = |duration: Duration| duration.as_millis() as u64;
         Config {
@@ -93,6 +118,10 @@ impl RuntimeConfig {
             // A voter that comes back with a shorter log stops its leader.
             // A copy that lost records rejoins under a new copy id instead.
             allow_log_reversion: Some(false),
+            // A member whose stored vote is its own committed one stands
+            // for the next term as it starts. It promised nobody, so it
+            // skips the vote hold too (`Group::open`).
+            enable_leader_restore: Some(true),
             // openraft keeps six ring buffers of this many slots per member
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
@@ -101,6 +130,18 @@ impl RuntimeConfig {
         }
         .validate()
         .map_err(|err| InvalidTimers(err.to_string()))
+    }
+}
+
+impl RuntimeConfig {
+    /// `lease * (1 + p) / (1 - p) <= election_max`: the leader's lease on
+    /// a fast clock ends before a follower's promise on a slow one.
+    fn lease_fits(&self) -> bool {
+        const MILLION: u128 = 1_000_000;
+        let drift = u128::from(self.clock_drift_ppm);
+        drift < MILLION
+            && self.lease.as_nanos() * (MILLION + drift)
+                <= self.election_max.as_nanos() * (MILLION - drift)
     }
 }
 
@@ -146,6 +187,9 @@ pub struct OpenedMember {
     pub log: DiskLog,
     /// Set when the directory's copy was rotated.
     pub rotation: Option<Rotation>,
+    /// What reclaiming the copies earlier rotations kept did at open. The
+    /// ones it held are tried again as the group commits.
+    pub kept: KeptReport,
 }
 
 /// The name a shard's marks go by at the data root. It is on disk, so it
@@ -334,6 +378,7 @@ impl GroupRuntime {
                     idle_after: config.idle_after.as_millis() as u64,
                     election_min: config.election_min.as_millis() as u64,
                     election_max: config.election_max.as_millis() as u64,
+                    lease: config.lease.as_millis() as u64,
                 },
                 raft: Arc::new(config.raft()?),
                 transport,
@@ -420,6 +465,8 @@ impl GroupRuntime {
         root: &CopyRoot,
     ) -> Result<OpenedMember, OpenError> {
         let reserved = self.reserve(&group)?;
+        let kept_config = config.clone();
+        let shard = group.shard.clone();
         let opened = root
             .open_copy(&mark_name(&group.shard), dir, group.to_string(), config)
             .await?;
@@ -438,11 +485,94 @@ impl GroupRuntime {
             let _ = log.close().await;
             return Err(err);
         }
+        let kept = self.reclaim_kept(&shard, dir, kept_config).await;
         Ok(OpenedMember {
             member,
             log,
             rotation: opened.rotation,
+            kept,
         })
+    }
+
+    /// Delete the kept copies the running member already covers. For the
+    /// ones it is behind, a task waits for its saved commit and flushed tail
+    /// to reach them and tries again. It ends when the group or the runtime
+    /// stops and never deletes anything after that. Failures are logged: a
+    /// kept copy left on disk is never worse than one deleted early.
+    async fn reclaim_kept(&self, shard: &ShardKey, dir: &Path, config: LogConfig) -> KeptReport {
+        let Some(group) = self.inner.registry.get(shard) else {
+            return KeptReport::default();
+        };
+        let (stop, stopped) = (self.inner.stop.clone(), group.stopped());
+        let halted = {
+            let (stop, stopped) = (stop.clone(), stopped.clone());
+            move || stop.is_cancelled() || stopped.is_cancelled()
+        };
+        let report = match reclaim_kept(dir, group.current_copy(), config.clone(), &halted).await {
+            Ok(report) => report,
+            Err(err) => {
+                tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
+                return KeptReport::default();
+            }
+        };
+        let Some(mut wait) = report.wait_for() else {
+            return report;
+        };
+        let dir = dir.to_path_buf();
+        let (mut commits, mut positions) = (group.commits(), group.positions());
+        let covers = |group: &Group, wait: u64| {
+            let at = group.current_copy();
+            at.committed().is_some_and(|at| at >= wait)
+                && at.flushed_last().is_some_and(|at| at >= wait)
+        };
+        // The saved commit follows the one in memory with nothing to wake
+        // on, so a wait that lacks only the save polls for it.
+        let saving = |group: &Group, wait: u64| {
+            let at = group.current_copy();
+            at.committed_in_memory().is_some_and(|at| at >= wait)
+                && !at.committed().is_some_and(|at| at >= wait)
+        };
+        tokio::spawn(async move {
+            loop {
+                while !covers(&group, wait) {
+                    let poll = saving(&group, wait);
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        () = stopped.cancelled() => return,
+                        changed = commits.changed() => if changed.is_err() { return },
+                        changed = positions.changed() => if changed.is_err() { return },
+                        () = tokio::time::sleep(SAVE_POLL), if poll => {}
+                    }
+                }
+                if halted() {
+                    return;
+                }
+                let report = match reclaim_kept(&dir, group.current_copy(), config.clone(), &halted)
+                    .await
+                {
+                    Ok(report) => report,
+                    Err(err) => {
+                        tracing::warn!(dir = %dir.display(), error = %err, "could not reclaim kept shard copies");
+                        return;
+                    }
+                };
+                let Some(next) = report.wait_for() else {
+                    return;
+                };
+                // Covered, yet still held: the pass saw an older state. Wait
+                // for the next change instead of spinning.
+                if covers(&group, next) {
+                    tokio::select! {
+                        () = stop.cancelled() => return,
+                        () = stopped.cancelled() => return,
+                        changed = commits.changed() => if changed.is_err() { return },
+                        changed = positions.changed() => if changed.is_err() { return },
+                    }
+                }
+                wait = next;
+            }
+        });
+        report
     }
 
     /// Hold `group`'s shard while a member starts on it.

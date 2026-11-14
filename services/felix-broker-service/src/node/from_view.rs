@@ -22,9 +22,10 @@ pub(super) enum Refusal {
     /// No view, or one that does not decode or is another node's: a new,
     /// wiped or upgraded directory, or one whose node deregistered.
     NoView,
-    /// The directory records no control-plane metadata group: it has not yet
-    /// been checked against the control plane, and only that check can tell a
-    /// recreated control plane (`crate::cluster::controlplane_group`).
+    /// The directory records no control-plane metadata group, nor that the
+    /// control plane had none: it has not yet been checked against the control
+    /// plane, and only that check can tell a recreated control plane
+    /// (`crate::cluster::controlplane_group`).
     NoGroup,
     /// The storage id on disk is not the one the view was registered under:
     /// a new or rotated id the control plane never registered, which must
@@ -86,7 +87,8 @@ impl std::fmt::Display for Refusal {
 
 /// The view under `root` for `node_id`, if this directory may start from it:
 /// it is present and this node's, the directory records a control-plane
-/// metadata group, the storage id on disk is the one it was
+/// metadata group or that the control plane had none, the storage id on disk
+/// is the one it was
 /// registered under, it was written after any replaced-storage marker, the
 /// run witness in `witness` names it in `boot`, its fleet finalized
 /// `replica_election`, and `reported` has every feature its fleet finalized.
@@ -101,11 +103,10 @@ pub(super) fn qualify(
 ) -> Result<View, Refusal> {
     let view = controlplane_view::read(root, node_id).ok_or(Refusal::NoView)?;
     // Unreadable reads as none: a start that cannot tell waits.
-    if crate::cluster::controlplane_group::read(root)
+    let group = crate::cluster::controlplane_group::read(root)
         .ok()
-        .flatten()
-        .is_none()
-    {
+        .flatten();
+    if group.is_none() && !crate::cluster::controlplane_group::checked_without_group(root) {
         return Err(Refusal::NoGroup);
     }
     // Unreadable reads as no id: a start that cannot tell waits.

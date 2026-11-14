@@ -1,7 +1,7 @@
 //! Members opened as copies of their shard directories, through a root that
 //! passed the gate.
 
-use felix_storage::raft_copy::{CopyRoot, Evidence, Gate, RotateReason, check};
+use felix_storage::raft_copy::{CopyRoot, Evidence, Gate, RotateReason, check, kept_copies};
 use felix_storage::storage_identity;
 use openraft::async_runtime::watch::WatchReceiver;
 
@@ -405,4 +405,127 @@ fn the_mark_name_is_stable_and_unambiguous() {
         mark_name(&key("a/b", "c", "d", ShardKind::Stream)),
         mark_name(&key("a", "b/c", "d", ShardKind::Stream))
     );
+}
+
+/// A rotated copy's kept directory is held while the new copy has committed
+/// less than it holds, and deleted once the group commits past it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kept_copy_is_reclaimed_once_the_new_copy_commits_past_it() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let dir = roots.shard_dir("a");
+    let open = |runtime: GroupRuntime| {
+        let (dir, roots) = (dir.clone(), &roots);
+        async move {
+            runtime
+                .open_copy(group(0), &dir, log_config(), &roots.roots["a"])
+                .await
+        }
+    };
+
+    let first = open(cluster.runtime("a")).await.expect("open copy");
+    let set = BTreeSet::from([first.member.clone()]);
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), set)
+        .await
+        .expect("initialize");
+    let mut last = 0;
+    for _ in 0..5 {
+        last = cluster.write(0, b"before").await;
+    }
+    assert!(cluster.runtime("a").close(&shard(0)).await);
+    first.log.close().await.expect("close");
+
+    // Without its copy file the directory rotates, keeping these records.
+    std::fs::remove_file(dir.join("raft-copy")).expect("copy file");
+    let second = open(cluster.runtime("a")).await.expect("reopen");
+    assert_eq!(
+        second.rotation.as_ref().map(|rotation| rotation.reason),
+        Some(RotateReason::NoCopyFile)
+    );
+    assert_eq!(second.kept.reclaimed, Vec::<std::path::PathBuf>::new());
+    assert_eq!(second.kept.held.len(), 1, "{:?}", second.kept);
+    assert!(second.kept.wait_for().is_some_and(|held| held >= 5));
+    assert_eq!(kept_copies(&dir).expect("kept").len(), 1);
+
+    let set = BTreeSet::from([second.member.clone()]);
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), set)
+        .await
+        .expect("initialize");
+    while last < second.kept.wait_for().expect("held") + 1 {
+        last = cluster.write(0, b"after").await;
+    }
+    eventually(|| kept_copies(&dir).expect("kept").is_empty().then_some(())).await;
+
+    second.log.close().await.ok();
+    cluster.stop().await;
+}
+
+/// The commit that covers a kept copy is the shard's last: no later write
+/// wakes the reclaim task, so the save of that commit has to be polled for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_kept_copy_is_reclaimed_when_the_last_commit_is_exactly_the_covering_one() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let dir = roots.shard_dir("a");
+    let open = |runtime: GroupRuntime| {
+        let (dir, roots) = (dir.clone(), &roots);
+        async move {
+            runtime
+                .open_copy(group(0), &dir, log_config(), &roots.roots["a"])
+                .await
+        }
+    };
+
+    let first = open(cluster.runtime("a")).await.expect("open copy");
+    let set = BTreeSet::from([first.member.clone()]);
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), set)
+        .await
+        .expect("initialize");
+    for _ in 0..5 {
+        cluster.write(0, b"before").await;
+    }
+    assert!(cluster.runtime("a").close(&shard(0)).await);
+    first.log.close().await.expect("close");
+
+    // Without its copy file the directory rotates, keeping these records.
+    std::fs::remove_file(dir.join("raft-copy")).expect("copy file");
+    let second = open(cluster.runtime("a")).await.expect("reopen");
+    assert_eq!(
+        second.rotation.as_ref().map(|rotation| rotation.reason),
+        Some(RotateReason::NoCopyFile)
+    );
+    assert_eq!(second.kept.reclaimed, Vec::<std::path::PathBuf>::new());
+    assert_eq!(second.kept.held.len(), 1, "{:?}", second.kept);
+    assert!(second.kept.wait_for().is_some_and(|held| held >= 5));
+    assert_eq!(kept_copies(&dir).expect("kept").len(), 1);
+
+    let set = BTreeSet::from([second.member.clone()]);
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), set)
+        .await
+        .expect("initialize");
+    // Stop at the wait index: nothing later wakes the watchers, so only the
+    // save poll can notice the commit landing on disk.
+    let wait = second.kept.wait_for().expect("held");
+    let mut last = 0;
+    while last < wait {
+        last = cluster.write(0, b"after").await;
+    }
+    assert_eq!(last, wait, "the last write must be the covering one");
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        eventually(|| kept_copies(&dir).expect("kept").is_empty().then_some(())),
+    )
+    .await
+    .expect("the kept copy was not reclaimed after the last commit");
+
+    second.log.close().await.ok();
+    cluster.stop().await;
 }

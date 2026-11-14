@@ -20,6 +20,11 @@ use tokio_util::sync::CancellationToken;
 /// The record's name in the data directory.
 pub(crate) const FILE_NAME: &str = "controlplane_group";
 
+/// Written when the control plane answered that it has no metadata group (the
+/// in-memory store): the directory was checked, so a later start may
+/// go on from its view while the control plane is down.
+pub(crate) const NO_GROUP_FILE: &str = "controlplane_group_none";
+
 /// Where the operator is told what to do about a refusal.
 const UPGRADES: &str = "https://docs.getfelix.dev/deployment/upgrades/#a-recreated-control-plane";
 
@@ -92,11 +97,12 @@ pub(crate) fn holds_data(root: &Path) -> bool {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return false,
         Err(_) => return true,
     };
-    let own = Path::new(FILE_NAME).with_extension("tmp");
+    let own = [FILE_NAME, NO_GROUP_FILE].map(|name| Path::new(name).with_extension("tmp"));
     for entry in entries {
         let Ok(entry) = entry else { return true };
         let name = entry.file_name();
-        if name != FILE_NAME && name != own.as_os_str() && name != "lost+found" {
+        let ours = name == FILE_NAME || name == NO_GROUP_FILE || own.iter().any(|tmp| name == *tmp);
+        if !ours && name != "lost+found" {
             return true;
         }
     }
@@ -120,12 +126,22 @@ pub(crate) fn read(root: &Path) -> Result<Option<String>> {
 
 /// Record `id` under `root`, durably: a crash leaves no record or this one.
 pub(crate) fn write(root: &Path, id: &str) -> Result<()> {
+    write_file(root, FILE_NAME, id)
+}
+
+/// Whether a start found the control plane without a metadata group
+/// ([`NO_GROUP_FILE`]).
+pub(crate) fn checked_without_group(root: &Path) -> bool {
+    root.join(NO_GROUP_FILE).is_file()
+}
+
+fn write_file(root: &Path, name: &str, contents: &str) -> Result<()> {
     std::fs::create_dir_all(root).with_context(|| format!("create {}", root.display()))?;
-    let path = root.join(FILE_NAME);
+    let path = root.join(name);
     let temporary = path.with_extension("tmp");
     let mut file = std::fs::File::create(&temporary)
         .with_context(|| format!("create {}", temporary.display()))?;
-    file.write_all(id.as_bytes())
+    file.write_all(contents.as_bytes())
         .and_then(|()| file.sync_all())
         .with_context(|| format!("write {}", temporary.display()))?;
     drop(file);
@@ -263,6 +279,10 @@ pub(crate) fn admit(root: &Path, identity: &Identity) -> Result<Option<String>> 
         identity.adopts_existing,
         holds_data(root),
     ) {
+        Verdict::Skip if stored.is_none() && !checked_without_group(root) => {
+            write_file(root, NO_GROUP_FILE, "")?;
+            Ok(None)
+        }
         Verdict::Skip | Verdict::Matches => Ok(stored),
         Verdict::Adopt => {
             write(root, current)?;
