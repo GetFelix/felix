@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794640863543,
+  "lastUpdate": 1794641194334,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55744,6 +55744,58 @@ window.BENCHMARK_DATA = {
             "range": "7626.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1615561.29\nmean: 1615010.55\nstdev: 7626.20\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "79be212954f79017c0e6828cb0136cef11ef8d03",
+          "message": "fix(sim): a Raft group seed replays its run exactly (#2449) (#2493)\n\nA Raft group seed replays its run exactly: ShardTypes runs on ShardRuntime (tokio, with election draws a test can seed; the seeding is test-only), the Raft sim installs the sim clock, and the ticker visits groups in shard order (a BTreeMap registry, no sort under the lock). Production draws stay OS-seeded per draw. Fixes #2449.",
+          "timestamp": "2026-11-14T07:17:13Z",
+          "tree_id": "fa75ea0fdad20d22935a4dcbe6d6632688bea112",
+          "url": "https://github.com/GetFelix/felix/commit/79be212954f79017c0e6828cb0136cef11ef8d03"
+        },
+        "date": 1794641193601,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 526924.21,
+            "range": "40053.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526924.21\nmean: 518386.38\nstdev: 40053.32\ncv: 7.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 526924.21,
+            "range": "40053.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 526924.21\nmean: 518386.38\nstdev: 40053.32\ncv: 7.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121356.48,
+            "range": "9713.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121356.48\nmean: 116142.41\nstdev: 9713.76\ncv: 8.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1213564.84,
+            "range": "97137.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1213564.84\nmean: 1161424.09\nstdev: 97137.64\ncv: 8.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
