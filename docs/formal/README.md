@@ -806,6 +806,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftLeaseReachHeldGrant.cfg` | a witness for `FelixRaftLeaseRestoreNamed.cfg` | violate `NeverHeldGrant`: a broker inside its hold grants a vote |
 | `FelixRaftLeaseRestoreNamedAny.cfg` | the same with the stored vote exempting any candidate, not only the leader it names (`HoldExemptsAny`) | violate `LeaseExclusive` |
 | `FelixRaftLeaseRestoreTransferStepDown.cfg` | `FelixRaftLeaseTransferStepDown.cfg` with both restart fast paths, one restart, two terms, no write and `ElectionTimeoutMin` = 1 (the parent has 0, so a stepped-down leader campaigning in the same tick is not checked): a leader that authorized a transfer restarts with its own vote stored and its transfer wiped, and campaigns at once | pass `LeaseExclusive`, `OneLeaderPerTerm` (4.8M distinct states) |
+| `FelixRaftLeaseRestoreTransferThreeTerms.cfg` | `FelixRaftLeaseRestoreTransferStepDown.cfg` with three terms, under the view `RestartView` | pass `LeaseExclusive`, `OneLeaderPerTerm` (2.7M distinct states under the view) |
+| `FelixRaftLeaseRestoreTransferStepDownWrite.cfg` | `FelixRaftLeaseRestoreTransferStepDown.cfg` with one write, under `RestartView` | pass the same and `NoAckBehindNewLeader`, `AckedSurvive`, `StateMachineSafety` (15.3M distinct states under the view) |
+| `FelixRaftLeaseRestoreTransferThreeTermsWrite.cfg` | `FelixRaftLeaseRestoreTransferThreeTerms.cfg` with one write; not registered, run on a build box | pass the same as the two-term one (191M distinct states under the view, 90 minutes on 16 cores) |
+| `FelixRaftLeaseReachRestoreTransferThreeTerms.cfg` | a witness for it, with the second term won on the transfer (`SecondTermByTransfer`) | violate `NeverThirdTermOnHeldGrant`: the transfer's target leads a third term on the grant of a voter inside its hold, while the leader that started the transfer still leads the first |
+| `FelixRaftLeaseReachRestoreTransferThreeTermsWrite.cfg` | the same with one write | violate `NeverThirdTermLocalAck`: that third-term leader acknowledges the write under its lease |
 | `FelixRaftLeaseRestoreStepDown.cfg` | the same with three terms and no transfer (`ElectionTimeoutMin` = 1 as well): a leader that voided a term restarts with its void wiped and campaigns in a third term | pass `LeaseExclusive`, `OneLeaderPerTerm` (2.6M distinct states) |
 | `FelixRaftLeaseStepDown.cfg` | `FelixRaftLease.cfg` with no drift, lease 2 against an election timeout of 2, the role read late, one step-down on a higher term (the leader adopts and grants the candidate's vote), openraft's grant to the leader a voter follows, `ElectionTimeoutMin` = 1 below the lease, the void on a higher term, three terms | pass `LeaseExclusive`, `OneLeaderPerTerm` (3.6M distinct states) |
 | `FelixRaftLeaseReachLeaseAfterVoid.cfg` | `FelixRaftLeaseStepDown.cfg` with two terms | violate the witness `NeverLeaseAfterVoid`: a broker that voided a term passes the check in a later one |
@@ -3524,11 +3529,28 @@ a third term. Both leave out the write, and the first has two terms and the
 second no transfer, so each finishes in CI; with all of them the run does
 not finish in 40 minutes. Both also set `ElectionTimeoutMin` to 1 where
 `FelixRaftLeaseTransferStepDown.cfg` has 0, so a stepped-down leader that
-campaigns in the same tick is not checked with a restart. Nothing checks a
-restart with a write together with a step-down, a transfer or a void
-(`FelixRaftLeaseRestoreNamed.cfg` has the write but reads the role in sync,
-with no bypass, step-down, transfer or void), nor a restart with a transfer
-in three terms. Issue #2471 tracks both.
+campaigns in the same tick is not checked with a restart.
+
+The write and the third term come back under a view (issue #2471).
+`RestartView` has TLC explore once the states that differ only in what no
+step and no check can tell apart: an answer no newer than the one its leader
+already has, a `TransferLeader` to a broker already past its term, Felix's
+view of the role while the check refuses on it, and `votedFor`, which these
+configurations do not read. The comment on `RestartView` argues each one.
+`FelixRaftLeaseRestoreTransferStepDownWrite.cfg` adds one write to the
+two-term configuration, and `FelixRaftLeaseRestoreTransferThreeTerms.cfg`
+the third term to the one with no write.
+`FelixRaftLeaseReachRestoreTransferThreeTerms.cfg` shows the case the third
+term is for: a transfer's target wins the second term, then a third on the
+grant of a voter inside its hold, while the leader that started the transfer
+still leads the first. With both, in
+`FelixRaftLeaseRestoreTransferThreeTermsWrite.cfg`, the run passes but takes
+90 minutes on 16 cores. By its siblings' times that is about ten hours on a
+CI runner, past the nightly job's six, so it is not registered and nothing
+in CI checks it.
+`FelixRaftLeaseReachRestoreTransferThreeTermsWrite.cfg`, which stops at the
+first state where that third-term leader has acknowledged the write under
+its lease, is registered.
 
 **Late metrics, step-down, transfer and suspend (issue #2249).** Felix reads
 openraft's role and `last_quorum_acked` from metrics, which arrive late
