@@ -285,6 +285,9 @@ async fn cache_back_to_back() {
         last += 10_000;
     }
 
+    for (_, h) in super::super::machine::lockstat::all() {
+        h.reset()
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let worst_read_ns = Arc::new(AtomicU64::new(0));
     let reads = Arc::new(AtomicU64::new(0));
@@ -300,7 +303,12 @@ async fn cache_back_to_back() {
                     .wrapping_add(1_442_695_040_888_963_407);
                 let key = &names[((x >> 33) % keys) as usize];
                 let started = Instant::now();
-                black_box(cache.read().read(key, 0));
+                let guard = cache.read();
+                let got = Instant::now();
+                READ_WAIT.addn((got - started).as_nanos() as u64);
+                black_box(guard.read(key, 0));
+                drop(guard);
+                READ_HOLD.add(got);
                 worst.fetch_max(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 reads.fetch_add(1, Ordering::Relaxed);
             }
@@ -354,4 +362,18 @@ async fn cache_back_to_back() {
         worst_read_ns.load(Ordering::Relaxed) as f64 / 1e6,
         reads.load(Ordering::Relaxed),
     );
+    let mut line = format!(
+        "cache_lockstat label={label} keys={keys} {} {}",
+        READ_WAIT.show("read_wait"),
+        READ_HOLD.show("read_hold")
+    );
+    for (name, h) in super::super::machine::lockstat::all() {
+        line.push(' ');
+        line.push_str(&h.show(name));
+    }
+    println!("{line}");
 }
+static READ_WAIT: super::super::machine::lockstat::Hist =
+    super::super::machine::lockstat::Hist::new();
+static READ_HOLD: super::super::machine::lockstat::Hist =
+    super::super::machine::lockstat::Hist::new();
