@@ -791,6 +791,7 @@ Existing broker data directories name no group id, and they keep their data:
    existing catalog. `GET /v1/cluster/identity` then answers with
    `"adopts_existing": true`. Until every member has reported its version
    once, stream and cache creates answer `503`.
+   From then on a member cannot roll back to a release before level 32.
 2. Then roll the brokers as usual. Each one finds data and no group id, sees
    `adopts_existing`, records the group id and starts. Nothing is wiped.
 
