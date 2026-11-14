@@ -247,7 +247,7 @@ where
                         batch.first
                     ))
                 })?;
-            shared.tail.lock().extend(cuts, batch.into_log_records());
+            shared.tail.extend(cuts, batch.into_log_records());
             pending = Some(appended);
         }
         // Written, not yet on disk: the signal an acknowledgement that does
@@ -314,7 +314,7 @@ where
         // and would report the append failed. Each one finishes first.
         self.shared.flushes.drained().await;
         // Before the cut, so no read finds here an entry the log has lost.
-        self.shared.tail.lock().clear();
+        self.shared.tail.clear();
         let first = self.shared.first_index();
         let kept = last_log_id.as_ref().map(|id| LogPoint {
             term: **id.committed_leader_id(),

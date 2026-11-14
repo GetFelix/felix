@@ -14,7 +14,7 @@ use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
     CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
 };
-use felix_storage::raft_log::{LogPoint, LogPositions};
+use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::{Config, SnapshotPolicy};
 use tokio_util::sync::CancellationToken;
 
@@ -64,6 +64,14 @@ pub struct RuntimeConfig {
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
     /// mark at the data root.
     pub log_mark: LogMarkMode,
+    /// Record bytes the shard groups' Raft logs of this runtime keep in
+    /// memory for replication reads, all groups together. Each log keeps at
+    /// most 4 MiB. Over the limit, logs that have not appended since the
+    /// last pass are emptied first, then busy ones are trimmed to their
+    /// newest records. The bound is soft: a log whose cache is in use is
+    /// skipped until the next pass. The metadata group's log is not
+    /// counted; it keeps its own 4 MiB.
+    pub tail_cache_bytes: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -80,6 +88,7 @@ impl Default for RuntimeConfig {
             lease: Duration::from_millis(1500),
             clock_drift_ppm: 100_000,
             log_mark: LogMarkMode::Exact,
+            tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
         }
     }
 }
@@ -289,6 +298,8 @@ pub(crate) struct Registry {
     ticked: ArcSwap<Vec<Arc<Group>>>,
     /// Times the ticker ended on a panic and was started again.
     pub(crate) ticker_restarts: AtomicU64,
+    /// Shared by every group's log, and read by the ticker for its gauge.
+    pub(crate) tail_budget: Arc<TailBudget>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -388,6 +399,7 @@ impl GroupRuntime {
                     slots: parking_lot::RwLock::default(),
                     ticked: ArcSwap::default(),
                     ticker_restarts: AtomicU64::new(0),
+                    tail_budget: TailBudget::new(config.tail_cache_bytes),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -615,6 +627,7 @@ impl GroupRuntime {
             Arc::clone(&inner.transport),
             inner.timers,
             inner.host.get().cloned(),
+            Arc::clone(&registry.tail_budget),
         )
         .await?;
         let group = Arc::new(group);
