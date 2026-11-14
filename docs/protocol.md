@@ -1541,10 +1541,16 @@ A stream shard run by a Raft group (`FELIX_SHARD_ENGINE=raft`) keeps the same
 contract. The producer id and sequence are in each entry, so every member's
 log holds them and a leader elected later answers a re-send from its own log.
 A batch of several records whose leader stopped partway is finished by the
-re-send only while its start is still the last thing in the log. Once the
-next leader has written a record of its own, on either engine, the re-send
-writes the whole batch again and the start stays in the stream (#2516). See
-`docs/per-shard-raft.md`, "Idempotent publishes".
+re-send: the next leader writes only the records its log does not hold, so
+every record is in the stream once. The offsets it answers with then run from
+the batch's first record to its last and are not one unbroken run, because
+the new leader's own entry, and anything published meanwhile, lies between
+the two pieces. See `docs/per-shard-raft.md`, "Idempotent publishes".
+
+On the hybrid engine a batch is finished this way only while its start is
+still the last thing in the log. Once a promoted leader has written a record
+of its own, the re-send writes the whole batch again and the start stays in
+the stream (#2516).
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch

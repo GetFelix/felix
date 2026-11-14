@@ -320,3 +320,102 @@ async fn a_batch_resent_to_the_next_leader_is_not_written_again() {
     led.heal();
     led.cluster.stop().await;
 }
+
+/// **A batch of several records whose leader stopped after only its start
+/// was replicated is finished by the re-send, not written again.** The
+/// next leader's log holds the start, and its own first entry has closed
+/// it. The re-send writes just the records still owed and is answered from
+/// the start's first offset. Written again whole, the start would be in
+/// the stream twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
+    use crate::raft::types::ProducerMark;
+
+    let mut led = led().await;
+    let first = led.committed + 1;
+    {
+        let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+        let producer = Producer {
+            engine: &led.engine,
+            broker: &broker,
+            handle: &handle,
+            term: led.term,
+        };
+        let sent = producer.publish(0, &[b"a"]).await.expect("committed");
+        assert_eq!(offsets(&sent), (first, first));
+    }
+    // What a leader that stops partway leaves: the first two of batch 1's
+    // three records, as their entries.
+    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let group = group.expect("group");
+    let marks = [
+        ProducerMark::Opens {
+            producer_id: PRODUCER,
+            sequence: 1,
+            len: 3,
+        },
+        ProducerMark::Continues,
+    ];
+    for (payload, mark) in [b"b", b"c"].into_iter().zip(marks) {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+            producer: Some(mark),
+            written: None,
+        };
+        group.raft().client_write(command).await.expect("written");
+    }
+
+    let old = led.leader.broker.to_string();
+    led.cluster.net.muted.lock().insert(old.clone());
+    *led.cluster.net.cut.lock() = HashSet::from([old]);
+    let theirs = led.cluster.write(0, b"theirs").await;
+    let leader = led.cluster.elected(0).await;
+    assert_ne!(leader, led.leader);
+    let runtime = led.cluster.runtime(&leader.broker);
+    let term = runtime.status(&shard(0)).expect("status").term;
+    let engine = RaftEngine::new(runtime);
+    eventually(|| (engine.read_bound(&shard(0)) == Ok(theirs + 1)).then_some(())).await;
+
+    let (broker, handle, _root) = broker_over(&led.cluster, &leader, &engine).await;
+    let producer = Producer {
+        engine: &engine,
+        broker: &broker,
+        handle: &handle,
+        term,
+    };
+    // The start has to be the start of this batch.
+    let other = producer
+        .propose(1, &[b"b", b"x", b"d"], SequenceReuse::Refuse)
+        .await;
+    assert!(matches!(
+        other.map(|_| ()),
+        Err(BrokerError::SequenceReused { sequence: 1 })
+    ));
+
+    let sent = producer.publish(1, &[b"b", b"c", b"d"]).await;
+    let sent = sent.expect("committed");
+    assert_eq!(
+        (offsets(&sent), sent.duplicate),
+        ((first + 1, theirs + 1), false)
+    );
+    assert_eq!(
+        log_from(&broker, first).await,
+        ["a", "b", "c", "theirs", "d"]
+    );
+
+    let again = producer.publish(1, &[b"b", b"c", b"d"]).await;
+    let again = again.expect("answered");
+    assert_eq!(
+        (offsets(&again), again.duplicate),
+        ((first + 1, theirs + 1), true)
+    );
+    let next = producer.publish(2, &[b"e"]).await.expect("committed");
+    assert_eq!(offsets(&next), (theirs + 2, theirs + 2));
+    assert_eq!(
+        log_from(&broker, first).await,
+        ["a", "b", "c", "theirs", "d", "e"]
+    );
+    led.heal();
+    led.cluster.stop().await;
+}

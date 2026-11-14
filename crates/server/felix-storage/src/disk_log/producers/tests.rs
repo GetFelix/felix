@@ -294,3 +294,116 @@ fn a_version_1_snapshot_reads_as_batches_without_digests() {
     unknown[4..6].copy_from_slice(&(SNAPSHOT_VERSION + 1).to_be_bytes());
     assert_eq!(decode(&unknown), None);
 }
+
+/// Observe `marks` from `first` on, with the payloads `sent[from..]`.
+fn piece(
+    state: &mut ProducerState,
+    first: Offset,
+    marks: impl Iterator<Item = RecordMark>,
+    sent: &[Vec<u8>],
+) {
+    for ((offset, mark), payload) in (first..).zip(marks).zip(sent) {
+        state.observe(offset, mark, marked_digest(mark, payload));
+    }
+}
+
+/// A batch cut short is finished by a record that opens the same sequence
+/// with exactly the records still owed, however many times it is cut, and
+/// is then held as one batch whose digest is the whole batch's.
+#[test]
+fn a_cut_batch_is_finished_by_a_piece_with_the_records_it_owes() {
+    let mut state = ProducerState::default();
+    batch(&mut state, 3, 0, 0, 1);
+    let sent = payloads(3, 1, 4);
+
+    piece(&mut state, 1, RecordMark::for_batch(3, 1, 4).take(1), &sent);
+    state.observe(2, RecordMark::GenerationStart, 0);
+    assert!(!state.is_open());
+    assert_eq!(
+        state.unfinished(3, 1),
+        Some(UnfinishedBatch {
+            first: 1,
+            held: 1,
+            len: 4,
+            digest: Some(PayloadDigest::of(&sent[..1])),
+        })
+    );
+    // Asked the way a log that rewrites the batch asks, it is owed whole.
+    assert_eq!(state.classify(3, 1), ProducerSequence::Next);
+    assert_eq!(state.unfinished(3, 0), None);
+    assert_eq!(state.unfinished(4, 1), None);
+
+    // The rest starts, and is cut again after one record.
+    piece(
+        &mut state,
+        3,
+        RecordMark::for_batch(3, 1, 3).take(1),
+        &sent[1..],
+    );
+    assert!(state.is_open());
+    assert_eq!(
+        state
+            .unfinished(3, 1)
+            .map(|batch| (batch.first, batch.held)),
+        Some((1, 2))
+    );
+    state.observe(4, RecordMark::None, 0);
+    state.observe(5, RecordMark::None, 0);
+
+    piece(&mut state, 6, RecordMark::for_batch(3, 1, 2), &sent[2..]);
+    assert_eq!(state.unfinished(3, 1), None);
+    assert_eq!(
+        state.classify(3, 1),
+        ProducerSequence::Held {
+            first: 1,
+            last: 7,
+            digest: Some(PayloadDigest::of(&sent)),
+        }
+    );
+    assert_eq!(state.classify(3, 2), ProducerSequence::Next);
+    assert_eq!(state.classify(3, 0), held(3, 0, 0, 0));
+}
+
+/// Only the records still owed finish a cut batch. The same sequence opened
+/// with any other count is the batch written again, and the start is
+/// abandoned.
+#[test]
+fn a_cut_batch_opened_again_whole_is_abandoned() {
+    let mut state = ProducerState::default();
+    piece(
+        &mut state,
+        0,
+        RecordMark::for_batch(3, 0, 3).take(2),
+        &payloads(3, 0, 3),
+    );
+    state.observe(2, RecordMark::None, 0);
+    assert!(state.unfinished(3, 0).is_some());
+
+    batch(&mut state, 3, 0, 3, 3);
+    assert_eq!(state.unfinished(3, 0), None);
+    assert_eq!(state.classify(3, 0), held(3, 0, 3, 5));
+}
+
+/// A cut batch is in the log like any other, so it is forgotten when
+/// retention removes its start and saved with the rest.
+#[test]
+fn a_cut_batch_is_saved_and_goes_with_its_first_record() {
+    let mut state = ProducerState::default();
+    piece(
+        &mut state,
+        5,
+        RecordMark::for_batch(3, 0, 3).take(2),
+        &payloads(3, 0, 3),
+    );
+    state.observe(7, RecordMark::None, 0);
+    let cut = state.unfinished(3, 0).expect("cut");
+
+    let (decoded, _) = decode(&encode(&state, 8)).expect("decodes");
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.unfinished(3, 0), Some(cut));
+
+    state.prune(5);
+    assert_eq!(state.unfinished(3, 0), Some(cut));
+    state.prune(6);
+    assert_eq!(state, ProducerState::default());
+}

@@ -2055,11 +2055,29 @@ the answer waits for that entry's commit, so a re-send is never
 acknowledged ahead of the batch it repeats.
 
 The records of a batch are separate entries, so a batch of several records
-is not written atomically. If a leader stops with only the start of a
-batch replicated, the next leader's first entry closes it: the start stays
-in the stream, and the re-send writes the whole batch after it. The same
-happens on the hybrid when a promoted leader holds only the start of a
-batch (#2516). A batch of one record is always written exactly once.
+is not written atomically. A leader can stop with only the start of a
+batch replicated, and the next leader's first entry then follows that
+start in the log. The batch is still written exactly once:
+
+- Every member's log remembers a batch that was cut short: whose it is,
+  its sequence, how many records it should have and how many are there.
+  This is derived from the marks like the rest of a producer's place.
+- When the re-send arrives, the leader compares the records its log holds
+  with the start of the re-send (a different batch under the sequence is
+  refused with `sequence_reused`) and writes only the records still owed.
+- Those records are stored as a piece that opens the same producer and
+  sequence with the count still owed. Every member reads that as the rest
+  of the cut batch, so a leader elected after this one answers a second
+  re-send without writing anything. A piece that is cut is finished the
+  same way.
+
+The answer gives the offsets from the batch's first record to its last.
+They are not one unbroken run: the new leader's blank entry, and anything
+published in between, lies between the pieces. Subscribers get each record
+once, in offset order.
+
+The hybrid does not do this. There, a promoted leader that holds only the
+start of a batch writes the whole batch again (#2516).
 
 The publisher id (the principal that published a record, which is not the
 producer id) is still not stored, and a batch with record headers is still

@@ -1,2 +1,3 @@
 - A durable stream shard on Raft (`FELIX_SHARD_ENGINE=raft`) takes idempotent publishes (#2446).
   The producer id and sequence are stored in each entry, so every member's log knows each producer's place. A batch sent again after a leader change is answered with the offsets it first got and is not written a second time. The refusals (`sequence_gap`, `unknown_producer`, `sequence_expired`, `sequence_reused`) are the hybrid's.
+  A batch of several records that a leader change cut partway is finished by its re-send: the new leader writes only the records its log does not hold, and answers with offsets from the batch's first record to its last (#2516 on Raft; the hybrid still writes such a batch again whole).

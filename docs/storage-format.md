@@ -350,8 +350,17 @@ every copy of the log says whose it is:
 Marking every record rather than only the first is what lets a log tell a
 batch it holds all of from one whose leader stopped partway: a batch is held
 once its last record is, and one whose next record does not continue it was
-abandoned. The step to the next record is `28 + (20 if bit 31) + payload_len`,
+cut short. The step to the next record is `28 + (20 if bit 31) + payload_len`,
 still from the header alone.
+
+A batch that was cut can still be finished. A record that opens the same
+producer's same sequence, and whose count is exactly the records the cut batch
+still owes, carries on from where the batch stopped instead of starting a new
+one. The batch is then held once, from the first record of its start to its
+last record, with whatever landed in between inside that range. The same
+sequence opened with any other count is the batch written again, and the start
+is abandoned. A stream shard on Raft finishes a cut batch this way; the hybrid
+writes it again whole.
 
 Only a v3 or later segment may hold marks. A v2 build reading a mark's bits would see a
 length past the limit, and recovery could take that for a torn tail and cut it
@@ -1556,16 +1565,17 @@ as of the new segment's base offset, once the retired segment is sealed.
 
 ```text
  0   4  magic        u32  "FLPS"
- 4   2  version      u16  2 (1 is still read; see below)
+ 4   2  version      u16  3 (1 and 2 are still read; see below)
  6   2  reserved     u16
  8   8  as_of        u64  the state covers every record below this offset
 16   4  producers    u32
 20   4  body_crc     u32  crc32 over what follows
 24   1  open              1 when a batch is waiting for records, then:
                           producer_id u64, sequence u64, len u32, first u64, held u32,
-                          digest
+                          next u64, digest
+     4  cuts         u32  batches cut short, each laid out as the open batch
      …  producers × { id u64, last_sequence u64, batches u16,
-                      batches × { first u64, len u32, digest } }
+                      batches × { first u64, last u64, digest } }
 
 digest = present u8 (0 or 1), value u64 (0 when absent)
 ```
@@ -1573,7 +1583,7 @@ digest = present u8 (0 or 1), value u64 (0 when absent)
 The digest is CRC-64/XZ, chained over the batch's records in order: starting
 from 0, each record takes it to `crc64(digest u64 ‖ r u64)`, where
 `r = crc64(payload_len u64 ‖ payload)`. For an open batch it covers the
-`held` records so far. It is not stored in the records: every replica computes
+`held` records so far, as it does for a cut batch. It is not stored in the records: every replica computes
 it from the payloads it holds, on append and when replaying the log, so it is
 the same everywhere a batch is. Changing the function is a snapshot format
 change.
@@ -1581,8 +1591,18 @@ change.
 Version 1 has no digest fields. It is still read, and its batches have no
 digest, which a leader treats as matching whatever is re-sent under them: the
 answer a re-send got before digests were kept. They age out as the producers
-write, and the next snapshot is written as version 2. Any other version is
-ignored, like a damaged snapshot.
+write. Version 2 has no cut batches and no `next`, and stores each batch's
+record count (`len u32`) where version 3 stores `last`: every batch it
+describes is one run of offsets, so `next` is `first + held` and `last` is
+`first + len - 1`. The next snapshot is written as version 3. Any other
+version is ignored, like a damaged snapshot.
+
+`len` is the count the batch's first record named, `held` how many of them the
+log has, `first` the offset of the first one and `next` the offset the next
+one has to be at to continue it. A producer has at most one cut batch: it is
+dropped when the producer next opens a batch, whether that finishes it or not,
+and when retention removes its first record. Past 4096 cut batches the one
+that starts lowest is forgotten.
 
 An open reads it and replays only the marks after `as_of`. Those are normally
 all in the active segment, which recovery scans in full anyway, so a current

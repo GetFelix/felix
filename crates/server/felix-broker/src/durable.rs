@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use felix_storage::disk_log::{DiskLog, PendingAppend, ProducerSequence};
+use felix_storage::disk_log::{DiskLog, PendingAppend, ProducerSequence, UnfinishedBatch};
 use felix_storage::log::{
     AppendOnlyLog, AppendRecord, AppendResult, FsyncMode, LogConfig, LogRecord, Offset, ReadPage,
     ReadRange, RecordMark, ShardKey,
@@ -589,6 +589,11 @@ impl StreamLog {
     /// Where an idempotent producer's batch stands in this log.
     pub fn producer_sequence(&self, producer_id: u64, sequence: u64) -> ProducerSequence {
         self.log.producer_sequence(producer_id, sequence)
+    }
+
+    /// An idempotent producer's batch this log holds only the start of.
+    pub fn producer_unfinished(&self, producer_id: u64, sequence: u64) -> Option<UnfinishedBatch> {
+        self.log.producer_unfinished(producer_id, sequence)
     }
 
     /// The sequence an idempotent producer owes next in this log, or `None`

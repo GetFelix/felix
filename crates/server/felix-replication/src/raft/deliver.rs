@@ -105,9 +105,10 @@ impl RaftEngine {
     /// written after the broker stopped leading the term would be missed by
     /// the check of its own re-send.
     ///
-    /// A batch of several records is not written atomically. A leader that
-    /// stops partway can leave the start of one committed, and its re-send
-    /// then writes the whole batch after it.
+    /// A batch of several records is not written atomically: a leader that
+    /// stops partway can leave the start of one in the log. Its re-send
+    /// then writes only the records the log does not hold, as a piece that
+    /// finishes the batch, and is answered from the start's first offset.
     #[allow(clippy::too_many_arguments)]
     pub async fn publish_idempotent(
         &self,
@@ -120,7 +121,6 @@ impl RaftEngine {
         reuse: SequenceReuse,
         timeout: Duration,
     ) -> Result<IdempotentPublish, BrokerError> {
-        let records = payloads.clone();
         let Sequenced {
             producer_id,
             sequence,
@@ -133,7 +133,7 @@ impl RaftEngine {
                 payloads,
                 reuse,
                 timeout,
-                |timestamp_micros, turn| {
+                |timestamp_micros, turn, records| {
                     let count = records.len() as u64;
                     let records = records
                         .into_iter()

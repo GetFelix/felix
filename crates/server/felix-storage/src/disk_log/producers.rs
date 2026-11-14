@@ -18,6 +18,12 @@
 //! Each remembered batch also keeps a [`PayloadDigest`] of its payloads,
 //! computed from the records as they are observed, so a leader can tell a
 //! re-send from a different batch reusing the sequence.
+//!
+//! A batch whose writer stopped partway is remembered as cut, with how many
+//! of its records the log holds. A record that opens the same producer's
+//! same sequence with exactly the records still owed finishes it, so a
+//! leader can write only what is missing. See `docs/storage-format.md`,
+//! "Producer marks".
 
 use felix_common::random::HashMap;
 use std::collections::VecDeque;
@@ -65,12 +71,28 @@ pub enum ProducerSequence {
     Expired,
 }
 
+/// A batch the log holds only the first `held` of `len` records of, whether
+/// it is still at the tail or other records have followed it. `first` is the
+/// offset of its first record. `digest` covers the `held` records, and is
+/// `None` for a batch known only from a snapshot written before digests were
+/// kept.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnfinishedBatch {
+    pub first: Offset,
+    pub held: u32,
+    pub len: u32,
+    pub digest: Option<PayloadDigest>,
+}
+
 /// Every producer a shard's log holds batches for.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProducerState {
     producers: HashMap<u64, Producer>,
     /// The newest batch, while records of it are still to come.
     open: Option<OpenBatch>,
+    /// Per producer, the batch another record cut short. It stays until the
+    /// producer opens a batch again: the rest of this one, or another.
+    cuts: HashMap<u64, OpenBatch>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,25 +106,28 @@ struct Producer {
 
 impl Producer {
     fn last_offset(&self) -> Offset {
-        self.recent
-            .back()
-            .map(|batch| batch.first + u64::from(batch.len) - 1)
-            .unwrap_or(0)
+        self.recent.back().map(|batch| batch.last).unwrap_or(0)
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HeldBatch {
     first: Offset,
-    len: u32,
+    /// Not `first` plus the length for a batch finished after a cut: other
+    /// records lie between its pieces.
+    last: Offset,
     digest: Option<PayloadDigest>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OpenBatch {
+    /// As the batch's first record named it, so `len` counts every record
+    /// of the batch, not those of the piece being written.
     batch: ProducerBatch,
     first: Offset,
     held: u32,
+    /// Where the batch's next record has to be to continue it.
+    next: Offset,
     /// Of the `held` records so far.
     digest: Option<PayloadDigest>,
 }
@@ -137,12 +162,28 @@ impl ProducerState {
                 let batch = producer.recent[index];
                 ProducerSequence::Held {
                     first: batch.first,
-                    last: batch.first + u64::from(batch.len) - 1,
+                    last: batch.last,
                     digest: batch.digest,
                 }
             }
             None => ProducerSequence::Expired,
         }
+    }
+
+    /// The batch `sequence` of `producer_id` if the log holds only its start:
+    /// open at the tail, or cut by a record that did not continue it. A
+    /// record opening the same sequence with `len - held` records finishes it.
+    pub(crate) fn unfinished(&self, producer_id: u64, sequence: u64) -> Option<UnfinishedBatch> {
+        self.open
+            .iter()
+            .chain(self.cuts.get(&producer_id))
+            .find(|open| open.batch.producer_id == producer_id && open.batch.sequence == sequence)
+            .map(|open| UnfinishedBatch {
+                first: open.first,
+                held: open.held,
+                len: open.batch.len,
+                digest: open.digest,
+            })
     }
 
     /// The sequence `producer_id` owes next, or `None` for a producer the log
@@ -167,32 +208,51 @@ impl ProducerState {
         match mark {
             RecordMark::Continues => {
                 if let Some(open) = &mut self.open
-                    && open.first + u64::from(open.held) == offset
+                    && open.next == offset
                 {
                     open.held += 1;
+                    open.next = offset + 1;
                     open.digest = open.digest.map(|digest| digest.then(record));
                     if open.held >= open.batch.len {
                         let open = self.open.take().expect("open batch");
-                        self.complete(open);
+                        self.complete(open, offset);
                     }
                 } else {
                     // Its opening record is not here (trimmed, or before the
                     // base a replica was rebuilt at), so the batch is unusable.
-                    self.open = None;
+                    self.cut_open();
                 }
             }
             RecordMark::Opens(batch) => {
-                // A batch still open is abandoned: whatever wrote it stopped,
-                // and the records after it belong to someone else.
-                self.open = None;
-                let open = OpenBatch {
-                    batch,
-                    first: offset,
-                    held: 1,
-                    digest: Some(PayloadDigest::EMPTY.then(record)),
+                // Whatever wrote a batch still open stopped, and the records
+                // after it belong to someone else.
+                self.cut_open();
+                // The producer's cut batch ends here either way: this record
+                // carries on with exactly the records it still owed, or the
+                // producer has moved on and the start is abandoned.
+                let open = match self.cuts.remove(&batch.producer_id) {
+                    Some(cut)
+                        if cut.batch.sequence == batch.sequence
+                            && u64::from(cut.held) + u64::from(batch.len)
+                                == u64::from(cut.batch.len) =>
+                    {
+                        OpenBatch {
+                            held: cut.held + 1,
+                            next: offset + 1,
+                            digest: cut.digest.map(|digest| digest.then(record)),
+                            ..cut
+                        }
+                    }
+                    _ => OpenBatch {
+                        batch,
+                        first: offset,
+                        held: 1,
+                        next: offset + 1,
+                        digest: Some(PayloadDigest::EMPTY.then(record)),
+                    },
                 };
-                if batch.len <= 1 {
-                    self.complete(open);
+                if open.held >= open.batch.len {
+                    self.complete(open, offset);
                 } else {
                     self.open = Some(open);
                 }
@@ -203,17 +263,30 @@ impl ProducerState {
             | RecordMark::Trim { .. }
             | RecordMark::Membership
             | RecordMark::CounterDelta
-            | RecordMark::CounterCheckpoint => self.open = None,
+            | RecordMark::CounterCheckpoint => self.cut_open(),
+        }
+    }
+
+    /// The open batch, if any, will not be continued where it stands.
+    fn cut_open(&mut self) {
+        let Some(open) = self.open.take() else { return };
+        self.cuts.insert(open.batch.producer_id, open);
+        if self.cuts.len() > MAX_PRODUCERS
+            && let Some(oldest) = self
+                .cuts
+                .iter()
+                .min_by_key(|(_, cut)| cut.first)
+                .map(|(id, _)| *id)
+        {
+            self.cuts.remove(&oldest);
         }
     }
 
     /// Close an open batch the log has moved past without finishing: the next
     /// record is at `tail` and did not continue it.
     pub(crate) fn settle(&mut self, tail: Offset) {
-        if let Some(open) = &self.open
-            && open.first + u64::from(open.held) < tail
-        {
-            self.open = None;
+        if self.open.as_ref().is_some_and(|open| open.next < tail) {
+            self.cut_open();
         }
     }
 
@@ -222,6 +295,7 @@ impl ProducerState {
         if self.open.as_ref().is_some_and(|open| open.first < base) {
             self.open = None;
         }
+        self.cuts.retain(|_, cut| cut.first >= base);
         self.producers.retain(|_, producer| {
             while producer
                 .recent
@@ -234,7 +308,8 @@ impl ProducerState {
         });
     }
 
-    fn complete(&mut self, open: OpenBatch) {
+    /// `last` is the offset of the batch's last record.
+    fn complete(&mut self, open: OpenBatch, last: Offset) {
         let OpenBatch {
             batch,
             first,
@@ -260,7 +335,7 @@ impl ProducerState {
         }
         producer.recent.push_back(HeldBatch {
             first,
-            len: batch.len,
+            last,
             digest,
         });
         if self.producers.len() > MAX_PRODUCERS
@@ -285,16 +360,19 @@ impl ProducerState {
 // magic "FLPS" u32, version u16, reserved u16, as_of u64, producers u32,
 // crc32 u32 over everything after the header, then:
 //   open batch: present u8, and when 1: producer_id u64, sequence u64, len u32,
-//               first u64, held u32, digest
+//               first u64, held u32, next u64, digest
+//   cut batches: count u32, then per batch the open batch's fields
 //   per producer: id u64, last_sequence u64, batches u16,
-//                 then per batch: first u64, len u32, digest
+//                 then per batch: first u64, last u64, digest
 // where digest is present u8 then value u64 (zero when absent).
 //
 // Version 1 has no digest fields. Its batches read as having none, and a
 // re-send of one is answered the way it was before digests were kept.
+// Versions 1 and 2 have no cut batches and no `next`, and store a batch's
+// length (u32) in place of `last`: every batch they describe is one run.
 
 const SNAPSHOT_MAGIC: u32 = 0x464C_5053;
-const SNAPSHOT_VERSION: u16 = 2;
+const SNAPSHOT_VERSION: u16 = 3;
 pub(super) const SNAPSHOT_HEADER_LEN: usize = 24;
 
 pub(super) fn snapshot_file_name() -> &'static str {
@@ -311,13 +389,12 @@ pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
         None => body.push(0),
         Some(open) => {
             body.push(1);
-            body.extend_from_slice(&open.batch.producer_id.to_be_bytes());
-            body.extend_from_slice(&open.batch.sequence.to_be_bytes());
-            body.extend_from_slice(&open.batch.len.to_be_bytes());
-            body.extend_from_slice(&open.first.to_be_bytes());
-            body.extend_from_slice(&open.held.to_be_bytes());
-            encode_digest(&mut body, open.digest);
+            encode_open(&mut body, open);
         }
+    }
+    body.extend_from_slice(&(state.cuts.len() as u32).to_be_bytes());
+    for cut in state.cuts.values() {
+        encode_open(&mut body, cut);
     }
     for (id, producer) in &state.producers {
         body.extend_from_slice(&id.to_be_bytes());
@@ -325,7 +402,7 @@ pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
         body.extend_from_slice(&(producer.recent.len() as u16).to_be_bytes());
         for batch in &producer.recent {
             body.extend_from_slice(&batch.first.to_be_bytes());
-            body.extend_from_slice(&batch.len.to_be_bytes());
+            body.extend_from_slice(&batch.last.to_be_bytes());
             encode_digest(&mut body, batch.digest);
         }
     }
@@ -340,6 +417,16 @@ pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
     out
 }
 
+fn encode_open(body: &mut Vec<u8>, open: &OpenBatch) {
+    body.extend_from_slice(&open.batch.producer_id.to_be_bytes());
+    body.extend_from_slice(&open.batch.sequence.to_be_bytes());
+    body.extend_from_slice(&open.batch.len.to_be_bytes());
+    body.extend_from_slice(&open.first.to_be_bytes());
+    body.extend_from_slice(&open.held.to_be_bytes());
+    body.extend_from_slice(&open.next.to_be_bytes());
+    encode_digest(body, open.digest);
+}
+
 fn encode_digest(body: &mut Vec<u8>, digest: Option<PayloadDigest>) {
     body.push(u8::from(digest.is_some()));
     body.extend_from_slice(&digest.map_or(0, PayloadDigest::to_bits).to_be_bytes());
@@ -350,11 +437,12 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
     if reader.u32()? != SNAPSHOT_MAGIC {
         return None;
     }
-    let with_digests = match reader.u16()? {
-        1 => false,
-        SNAPSHOT_VERSION => true,
-        _ => return None,
-    };
+    let version = reader.u16()?;
+    if !(1..=SNAPSHOT_VERSION).contains(&version) {
+        return None;
+    }
+    let with_digests = version >= 2;
+    let with_cuts = version >= 3;
     reader.u16()?;
     let as_of = reader.u64()?;
     let count = reader.u32()? as usize;
@@ -364,18 +452,16 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
     }
     let open = match reader.u8()? {
         0 => None,
-        1 => Some(OpenBatch {
-            batch: ProducerBatch {
-                producer_id: reader.u64()?,
-                sequence: reader.u64()?,
-                len: reader.u32()?,
-            },
-            first: reader.u64()?,
-            held: reader.u32()?,
-            digest: reader.digest(with_digests)?,
-        }),
+        1 => Some(reader.open(with_digests, with_cuts)?),
         _ => return None,
     };
+    let mut cuts = HashMap::default();
+    if with_cuts {
+        for _ in 0..reader.u32()? {
+            let cut = reader.open(with_digests, with_cuts)?;
+            cuts.insert(cut.batch.producer_id, cut);
+        }
+    }
     let mut producers =
         HashMap::with_capacity_and_hasher(count.min(MAX_PRODUCERS), Default::default());
     for _ in 0..count {
@@ -384,9 +470,17 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
         let batches = reader.u16()? as usize;
         let mut recent = VecDeque::with_capacity(batches.min(WINDOW));
         for _ in 0..batches {
+            let first = reader.u64()?;
+            let last = if with_cuts {
+                reader.u64()?
+            } else {
+                first
+                    .checked_add(u64::from(reader.u32()?))?
+                    .checked_sub(1)?
+            };
             recent.push_back(HeldBatch {
-                first: reader.u64()?,
-                len: reader.u32()?,
+                first,
+                last,
                 digest: reader.digest(with_digests)?,
             });
         }
@@ -398,10 +492,14 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
             },
         );
     }
-    reader
-        .0
-        .is_empty()
-        .then_some((ProducerState { producers, open }, as_of))
+    reader.0.is_empty().then_some((
+        ProducerState {
+            producers,
+            open,
+            cuts,
+        },
+        as_of,
+    ))
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -424,6 +522,28 @@ impl Reader<'_> {
     fn u64(&mut self) -> Option<u64> {
         self.take().map(u64::from_be_bytes)
     }
+    fn open(&mut self, with_digests: bool, with_next: bool) -> Option<OpenBatch> {
+        let batch = ProducerBatch {
+            producer_id: self.u64()?,
+            sequence: self.u64()?,
+            len: self.u32()?,
+        };
+        let first = self.u64()?;
+        let held = self.u32()?;
+        let next = if with_next {
+            self.u64()?
+        } else {
+            first.checked_add(u64::from(held))?
+        };
+        Some(OpenBatch {
+            batch,
+            first,
+            held,
+            next,
+            digest: self.digest(with_digests)?,
+        })
+    }
+
     /// A batch's digest, `Some(None)` when the snapshot has none for it.
     fn digest(&mut self, with_digests: bool) -> Option<Option<PayloadDigest>> {
         if !with_digests {
