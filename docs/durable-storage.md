@@ -619,7 +619,9 @@ Four properties:
    A per-shard Raft copy is the exception. On a `Quorum` stream under
    `Periodic` or `None`, a leader answers the publisher once a majority has
    written the record, before it is synced (`await_quorum_ack`), as the
-   hybrid does. So the cut could remove a record that was acknowledged. An open refuses a poisoned directory that
+   hybrid does. So the cut could remove a record that was acknowledged. Such a
+   record is lost only if a majority of copies each lose their unsynced tail,
+   by a power cut or a failed flush. An open refuses a poisoned directory that
    holds a copy file (`raft-copy`) and leaves the marker. The copy root
    rotates the copy instead: it moves the directory aside as it is and
    starts an empty one under a new copy id. See `docs/per-shard-raft.md`,

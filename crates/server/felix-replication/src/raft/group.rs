@@ -1074,8 +1074,9 @@ impl Group {
     ///
     /// A majority that does not answer is a timeout, and so is a lapsed
     /// lease: neither says another leader exists, and neither closes the
-    /// shard. Ok only once this member has applied the read index, so a
-    /// value the reader takes after this returns has every answered write.
+    /// shard. Ok only once this member has applied the read index and
+    /// still has `term` open, so a value the reader takes after this
+    /// returns has every answered write.
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
         let patience = Duration::from_millis(self.pace.timers.election_max);
         let deadline = tokio::time::Instant::now() + patience;
@@ -1092,7 +1093,16 @@ impl Group {
             timeout: patience,
         };
         self.applied_through(bound.max(answered) - 1, deadline, unanswered)
-            .await
+            .await?;
+        // The wait can outlast the term: a member deposed during it still
+        // applies the index as a follower.
+        if self.open_term() != Some(term) {
+            return Err(CommitError::LeadershipLost {
+                what: "read",
+                detail: "the shard closed while the read waited for its apply",
+            });
+        }
+        Ok(())
     }
 
     /// One past the index a reader must have applied before it reads: the

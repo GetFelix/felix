@@ -1821,7 +1821,7 @@ point and the loss are the same on Raft and on the hybrid:
 | Stream | Answered on Raft | Answered on the hybrid | Lost by |
 | --- | --- | --- | --- |
 | `Quorum`, fsync on commit | At the commit: a majority has fsynced it | A majority has fsynced it | Losing the disks of a majority |
-| `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | A majority losing power before the fsync, on both. One cut does not: that copy comes back under a new copy id and cannot vote the record away (issue #2423) |
+| `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | Lost only if a majority of copies each lose their unsynced tail, by a power cut or a failed flush, on both. One such loss does not: that copy comes back under a new copy id and cannot vote the record away (issues #2423, #2469) |
 | `Leader` | On the leader's log while the lease holds, else at the commit | On the leader's log | A change of leader before the commit |
 
 A record a majority has written in the leader's term survives a change of
@@ -2190,8 +2190,10 @@ commit index.
 `ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
 first, then calls `RaftEngine::confirm_read` with that term, then takes its
 value. The read is confirmed only if the shard is still open in that term,
-the round's answer is for it, and this broker has applied the read index
-before the same deadline. The value comes after that wait, because a write
+the round's answer is for it, this broker has applied the read index
+before the same deadline, and the shard is still open in that term after
+the apply. A broker deposed during the wait still applies the index as a
+follower, so the apply alone does not show it still leads. The value comes after that wait, because a write
 can be answered before the leader applies it. A value taken from the read
 bound before the wait could miss a write whose client already has its
 answer. The term open at confirm time is not
@@ -2213,7 +2215,8 @@ to answer and asks again within the same bound.
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused` and
-> `a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused`.
+> `a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused` and
+> `a_read_is_refused_if_the_shard_closes_while_it_waits_for_the_apply`.
 
 Which answered writes a confirmed read observes depends on when the write
 was answered:
@@ -2222,7 +2225,7 @@ was answered:
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused |
+| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read` |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.

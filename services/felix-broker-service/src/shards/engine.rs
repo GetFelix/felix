@@ -197,7 +197,8 @@ impl StreamEngine {
             // majority has written the batch, the hybrid's periodic promise.
             // A copy that lost its unsynced tail to a failed flush (#2469) or
             // a power cut (#2423) restarts under a new copy id and does not
-            // vote with its cut log, so only a majority's power cuts lose it.
+            // vote with its cut log, so the batch is lost only if a majority
+            // of copies each lose their unsynced tail that way.
             let answer = match (handle.consistency(), ack) {
                 (felix_broker::ConsistencyLevel::Leader, _) => AnswerAt::Lease,
                 (felix_broker::ConsistencyLevel::Quorum, AckAt::Written) => AnswerAt::Majority,

@@ -1097,6 +1097,43 @@ async fn a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused()
     led.cluster.stop().await;
 }
 
+/// **A read that waits for an answered write to apply is refused if the
+/// shard closes during the wait.** A member deposed after its read-index
+/// round still applies the write as a follower, so the apply alone does not
+/// say it still leads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_is_refused_if_the_shard_closes_while_it_waits_for_the_apply() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    primed(&led, &broker, &handle).await;
+
+    let followers: Vec<String> = led.followers().collect();
+    let logs = logs_of(&led, &followers);
+    let held = futures::future::join_all(logs.iter().map(|log| log.hold_flushes())).await;
+    let published = publish_on_majority(&led, &broker, &handle, Bytes::from_static(b"answered"));
+    let outcome = tokio::time::timeout(ON_MAJORITY, published).await;
+    let outcome = outcome
+        .expect("answered before its commit")
+        .expect("joined");
+    assert!(outcome.expect("answered").offsets.is_some());
+
+    let term = led.engine.open_term(&shard(0)).expect("open");
+    let engine = led.engine.clone();
+    let read = tokio::spawn(async move { engine.confirm_read(&shard(0), term).await });
+    // Past its read-index round, waiting on the unsynced write's apply.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!read.is_finished(), "the read did not wait for the apply");
+    assert_eq!(led.engine.transfer_starting(&shard(0)).await, Some(term));
+
+    drop(held);
+    let confirmed = read.await.expect("joined");
+    assert!(
+        matches!(confirmed, Err(CommitError::LeadershipLost { .. })),
+        "a read confirmed after its shard closed: {confirmed:?}"
+    );
+    led.cluster.stop().await;
+}
+
 /// **A `Quorum` publish answered on a written majority survives the loss
 /// of its leader.** The leader and one follower hold it, unsynced; the
 /// other follower never got it. With the leader gone, the follower without
