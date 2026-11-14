@@ -2044,10 +2044,10 @@ is safe because of two rules.
 - The log learns a batch when openraft writes it, not when the batch is
   handed over. So one producer's batches take turns: the next is checked
   only once the one before is written to this leader's log or was given
-  up on. A batch that fails stays unwritten, because an idempotent batch
-  is written only while the broker leads the term it was routed at. The
-  producer's next batch is then refused as a gap instead of landing ahead
-  of it. Batches of different producers do not wait for each other.
+  up on. A batch refused before it is written stays unwritten, because an
+  idempotent batch is written only while the broker leads the term it was
+  routed at. The producer's next batch is then refused as a gap instead
+  of landing ahead of it. Batches of different producers do not wait for each other.
 
 A batch the log already holds is answered once it is committed. Below the
 read bound it already is. Above it, the leader wrote it in this term and
@@ -2061,8 +2061,9 @@ in the stream, and the re-send writes the whole batch after it. The same
 happens on the hybrid when a promoted leader holds only the start of a
 batch (#2516). A batch of one record is always written exactly once.
 
-The publisher id is still not stored, and a batch with record headers is
-still refused.
+The publisher id (the principal that published a record, which is not the
+producer id) is still not stored, and a batch with record headers is still
+refused.
 
 > `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
 > `a_batch_sent_again_is_answered_and_not_written_again`,

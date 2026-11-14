@@ -324,9 +324,10 @@ async fn a_producer_keeps_its_sequence_when_its_raft_leader_dies() {
         .await
         .expect("a producer id");
     let record = |i: u32| format!("record-{i}").into_bytes();
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
     let publish = |i: u32| {
         let (producer, payload) = (&producer, record(i));
-        let (tenant, namespace) = (&cluster.tenant_id, &cluster.namespace);
+        let (tenant, namespace) = (&tenant, &namespace);
         async move { producer.publish(tenant, namespace, STREAM, payload).await }
     };
     // Acknowledged at the commit, so a majority holds each batch.

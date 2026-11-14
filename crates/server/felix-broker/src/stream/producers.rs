@@ -78,6 +78,10 @@ impl ProducerTable {
             && let Some(coldest) = table
                 .producers
                 .iter()
+                // A turn someone holds or waits for stays: a new lock for
+                // the same producer would let two of its batches be checked
+                // at once.
+                .filter(|(_, producer)| Arc::strong_count(&producer.turn) == 1)
                 .min_by_key(|(_, producer)| producer.last_used)
                 .map(|(id, _)| *id)
         {

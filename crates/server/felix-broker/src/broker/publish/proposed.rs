@@ -158,9 +158,15 @@ impl Broker {
             // The rest of an open batch cannot be written in its place: a
             // batch handed over earlier may land between. Opening the batch
             // again abandons the start.
-            ProducerSequence::Unknown
-            | ProducerSequence::Next
-            | ProducerSequence::Partial { .. } => {}
+            ProducerSequence::Partial {
+                held, len, digest, ..
+            } => {
+                if payloads.len() != len as usize {
+                    return Err(BrokerError::SequenceExpired { sequence });
+                }
+                reuse.check(sequence, digest, &payloads[..held as usize])?;
+            }
+            ProducerSequence::Unknown | ProducerSequence::Next => {}
         }
         self.propose_publish(handle, payloads, stalled_after, |timestamp_micros| {
             propose(timestamp_micros, turn)

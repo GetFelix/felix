@@ -468,11 +468,18 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
         0 => EntryOf::<ShardTypes>::new_blank(log_id),
         tag @ (ENTRY_RECORD | ENTRY_OPENS | ENTRY_CONTINUES) => {
             let producer = match tag {
-                ENTRY_OPENS => Some(ProducerMark::Opens {
-                    producer_id: take_u64(buf)?,
-                    sequence: take_u64(buf)?,
-                    len: take_u32(buf)?,
-                }),
+                ENTRY_OPENS => {
+                    let (producer_id, sequence) = (take_u64(buf)?, take_u64(buf)?);
+                    let len = take_u32(buf)?;
+                    if len == 0 {
+                        return Err(invalid("an entry opens a batch of no records".into()));
+                    }
+                    Some(ProducerMark::Opens {
+                        producer_id,
+                        sequence,
+                        len,
+                    })
+                }
                 ENTRY_CONTINUES => Some(ProducerMark::Continues),
                 _ => None,
             };
