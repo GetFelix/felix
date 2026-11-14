@@ -66,7 +66,8 @@ case "$cmd" in
   release) rm -f "$R/hold/$1" ;;
 
   # quiet: one line, load=<1 min load> java=<java processes>.
-  quiet) echo "load=$(cut -d' ' -f1 /proc/loadavg) java=$(pgrep -cx java || true)" ;;
+  # quiet: 1 min load, foreign heavy processes (TLC, builds), and the runnable count right now.
+  quiet) echo "load=$(cut -d' ' -f1 /proc/loadavg) busy=$(pgrep -c -x 'java|cargo|rustc|cc1|cc1plus|ld' || true) run=$(awk '/^procs_running/{print $2}' /proc/stat)" ;;
 
   # cp <dir>: the control plane, in memory, bootstrap with dev tokens on loopback.
   cp)

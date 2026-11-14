@@ -115,19 +115,25 @@ while :; do
 done
 log "slots held on all boxes"
 
-deadline=$(( $(date +%s) + QUIET_WAIT_SECS ))
-while :; do
-  quiet=1; report=""
-  for b in "${BOXES[@]}"; do
-    q=$(on "$b" quiet); report="$report box$b:$q"
-    echo "$q" | awk -F'[= ]' '{ exit !($2 <= 2 && $4 == 0) }' || quiet=0
+# wait_quiet <start|cell>: no TLC or builds on any box. At the start the 1 min load must
+# also be under 1. Between cells the previous cluster's load is still decaying, so the
+# gate there is the runnable count right now (the probe itself is one or two of them).
+wait_quiet() {
+  local mode=$1 deadline=$(( $(date +%s) + QUIET_WAIT_SECS )) quiet b q
+  while :; do
+    quiet=1; report=""
+    for b in "${BOXES[@]}"; do
+      q=$(on "$b" quiet); report="$report box$b:$q"
+      echo "$q" | awk -F'[= ]' -v m="$mode" '{ ok = ($4 == 0) && (m == "start" ? $2 < 1 : $6 <= 3); exit !ok }' || quiet=0
+    done
+    [ "$quiet" = 1 ] && return 0
+    if [ "$(date +%s)" -ge "$deadline" ]; then
+      echo "!! boxes not quiet ($mode):$report" >&2; return 3
+    fi
+    log "waiting for quiet ($mode):$report"; sleep 20
   done
-  [ "$quiet" = 1 ] && break
-  if [ "$(date +%s)" -ge "$deadline" ]; then
-    echo "!! boxes not quiet (need load <= 2 and no java):$report" >&2; exit 3
-  fi
-  log "waiting for quiet:$report"; sleep 20
-done
+}
+wait_quiet start || exit 3
 log "quiet:$report"
 echo "quiet at start:$report" >> "$OUT/run.env"
 
@@ -150,6 +156,8 @@ run_cell() {
   CUR=$dir
   log "== $name: $SCEN, $CONS, fsync $FSYNC, loadgen on felix-build-$lg"
   for b in "${BOXES[@]}"; do on "$b" touch "$RUNID"; done
+  wait_quiet cell || exit 3
+  echo "$report" > "$loc/quiet.txt"
   status=ok
   {
     on "$CP_BOX" cp "$dir" && on "$CP_BOX" seed "$dir" 3
