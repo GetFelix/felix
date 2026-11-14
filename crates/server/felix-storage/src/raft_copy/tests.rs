@@ -4,6 +4,7 @@
 mod gate;
 mod judge;
 mod marks;
+mod placement_ack;
 mod reclaim;
 
 use std::io;
