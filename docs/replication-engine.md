@@ -597,6 +597,27 @@ A stream shard sends no snapshot body at all. Its state is its log, so a
 member that is behind is sent entries or copied segments
 ([per-shard Raft](per-shard-raft.md), "Group runtime").
 
+A cache shard's snapshot is its whole state, which each member already
+holds in memory, so it is not staged in a file. It goes over the broker
+transport as snapshot messages, one piece each, and follows the same rules
+in its own way (`raft/install.rs`):
+
+- **Cap.** Every piece names the whole snapshot's size. One over 1 GiB is
+  refused at its first piece.
+- **One install.** A member holds one incoming snapshot. A first piece
+  replaces what is held when its sender's vote is the same or newer, and is
+  refused otherwise. A piece that does not follow the last one kept is
+  refused, and the sender starts again.
+- **Stale sender.** A sender the member has outvoted is answered with the
+  member's vote before any of its data is kept, and stops sending.
+- **Idle.** Pieces held for 30 s with no next piece are dropped.
+- **Unreadable.** At the last piece the member reads the whole snapshot,
+  on a blocking thread, before openraft is handed it. One it cannot read,
+  such as a newer build's format, is refused and the member stays behind
+  but running. openraft would treat the failed restore as a storage error
+  and stop the member. The state read here is what the install puts in
+  place, so the snapshot is parsed once.
+
 **The body.** A form byte, the head's length, the data's length, the head,
 the data, then a crc32 of the data:
 
@@ -806,13 +827,23 @@ used by every shard group and by the control plane, tested once.
 The adapter targets openraft 0.10, pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`. 0.10.0 is released (2026-11-10).
 `[workspace.dependencies]` pins one commit of openraft's main branch,
-`30c947ef38` (2026-11-12), past the 0.10.0 tag, for changes that ship
+`5c3ad1bc2d` (2026-11-14), past the 0.10.0 tag, for changes that ship
 in 0.10.1. The node ticker needs `Trigger::tick()` (`docs/per-shard-raft.md`,
 "One timer for every group"). openraft#2313 (issue #2312) resets a drained
 queue to its start, so an idle member stops touching every page of its
 queues, and openraft#2314 starts those queues at 64 slots instead of
 reserving room for 4,096 commands and 1,024-slot response buffers, so a member's
-resident memory stays small. The others are a `#[non_exhaustive]` on some name enums,
+resident memory stays small. openraft#2324 starts the client responder
+queue at 64 slots instead of 8,192. The range from the previous pin
+(`30c947ef38`) to `5c3ad1bc2d` has six commits: two that only touch the
+jepsen test app, `7628ad401a` (cancellable runtime futures, additive),
+`3b1f7fa446` (the read state keeps the no-op and committed log ids
+separately), `e2986754ef` (`expected_leader` moves into a `WriteOption`, and
+`client_write_many` sends `WriteOption::default()`), and the responder queue
+change `5c3ad1bc2d`. The read path
+(`get_read_log_id` still returns the larger of the no-op and committed ids)
+and the term-bound write path (`raft/propose.rs`, `with_leader`) behave
+the same for Felix. The pin as a whole also carries a `#[non_exhaustive]` on some name enums,
 benchmark changes, and one change to the state-machine worker: it merges
 `Apply` commands that are already queued into one `apply()` call. That
 call still gets the committed entries in log order, each once, with each
