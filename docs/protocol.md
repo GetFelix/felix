@@ -438,15 +438,15 @@ sees it. A stream that closes without it did not reach `end`.
 { "type": "subscription_lagged", "subscription_id": <u64>, "resume_from": <u64> }
 ```
 
-The last frame on the event stream of a durable-stream subscription whose queue
-on the broker dropped records. `resume_from` is the first offset that queue
-dropped, or where a resumed subscription's catch-up ended when the drops before
-that were filled from disk. Nothing at or above it was sent. Below it, a frame
-can still have been dropped after the queue, by the connection writer's queue
-for this subscription (`felix_sub_queue_dropped_total`), which ends nothing and
-is not reported. So a client resumes after the last event it received, and
-from `resume_from` only when it received none; felix-client's
-`ClusterSubscription` and `ShardedSubscription` do that. The broker sends it as
+The last frame on the event stream of a durable-stream subscription that had
+records dropped, either by its queue on the broker or by the connection
+writer's queue for it. `resume_from` is the lowest offset either dropped, or
+where a resumed subscription's catch-up ended when the drops before that were
+filled from disk. Nothing at or above it was sent: once the writer drops a
+frame, it drops every later one for that subscription too. A client can resume
+from `resume_from`, or after the last event it received, which is never past
+it; felix-client's `ClusterSubscription` and `ShardedSubscription` do the
+latter. The broker sends it as
 soon as the events queued before the drop are written, not when the next
 publish arrives, and finishes the stream after it.
 

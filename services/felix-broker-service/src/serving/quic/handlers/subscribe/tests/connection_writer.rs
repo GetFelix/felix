@@ -759,12 +759,18 @@ pub(super) async fn quic_pair() -> Result<(
     Ok((connection, client_conn))
 }
 
-/// Once the writer drops a frame with offsets, it sheds the rest for that
-/// subscriber too, though there is room again: delivering them would leave a
-/// hole the client sees only as the later records arriving.
+/// Once the writer drops a frame for a subscription that ends at a drop, it
+/// sheds the rest for that subscriber too, though there is room again:
+/// delivering them would leave a hole the client sees only as the later
+/// records arriving. One that does not end at a drop carries on past it.
 #[tokio::test]
 #[serial]
 async fn after_a_writer_drop_later_frames_are_shed_until_the_unregister() -> Result<()> {
+    shed_after_a_writer_drop(true).await?;
+    shed_after_a_writer_drop(false).await
+}
+
+async fn shed_after_a_writer_drop(ends_on_lag: bool) -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -776,10 +782,13 @@ async fn after_a_writer_drop_later_frames_are_shed_until_the_unregister() -> Res
             felix_broker::StreamMetadata::default(),
         )
         .await?;
-    let (rx, guard) = broker
+    let (mut rx, guard) = broker
         .subscribe("t1", "default", "orders", 0)
         .await?
         .into_parts();
+    if ends_on_lag {
+        rx.end_on_lag();
+    }
     let (connection, client_conn) = quic_pair().await?;
     let connection_id = connection.info().id.0;
 
@@ -847,9 +856,10 @@ async fn after_a_writer_drop_later_frames_are_shed_until_the_unregister() -> Res
     assert_eq!(next().await?.as_deref(), Some(&b"0"[..]));
     assert_eq!(next().await?.as_deref(), Some(&b"1"[..]));
 
-    // The queue has room again; 3 is shed anyway, and the last frame is not.
+    // The queue has room again; 3 is shed anyway when the subscription ends
+    // at the drop, and the last frame never is.
     tx.send(delivery(3)?).await.context("delivery 3")?;
-    wait_for_dropped(&broker, 2).await;
+    wait_for_dropped(&broker, if ends_on_lag { 2 } else { 1 }).await;
     assert_eq!(rx.lagged(), Some(2));
     tx.send(ConnectionCommand::Unregister {
         subscriber_id: 1,
@@ -860,6 +870,9 @@ async fn after_a_writer_drop_later_frames_are_shed_until_the_unregister() -> Res
     })
     .await
     .context("unregister")?;
+    if !ends_on_lag {
+        assert_eq!(next().await?.as_deref(), Some(&b"3"[..]));
+    }
     assert_eq!(next().await?.as_deref(), Some(&b"last"[..]));
     assert_eq!(next().await?, None, "nothing follows the last frame");
 

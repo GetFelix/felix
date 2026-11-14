@@ -237,9 +237,9 @@ pub(super) async fn run_connection_writer(
     let mut subscribers: HashMap<u64, LaneSubscriber> = HashMap::default();
     // Kept apart from `subscribers`, which is empty for one mid-write.
     let mut drop_accounts: HashMap<u64, felix_broker::SubscriberDrops> = HashMap::default();
-    // Subscribers that lost a frame with offsets here. Everything after it is
-    // shed too, so the client sees the drop as where its stream stops rather
-    // than a hole followed by later records.
+    // Subscribers that end at a drop and lost a frame here. Everything after
+    // it is shed too, so the client sees the drop as where its stream stops
+    // rather than a hole followed by later records.
     let mut shedding: HashSet<u64> = HashSet::default();
     let mut deliveries: HashMap<u64, VecDeque<LaneDelivery>> = HashMap::default();
     // Unregistered, but still writing what was queued before the unregister.
@@ -440,9 +440,11 @@ pub(super) async fn run_connection_writer(
                                     .increment(item_count as u64);
                                 if let Some(account) = drop_accounts.get(&subscriber_id) {
                                     account.dropped(base_offset, item_count as u64);
-                                }
-                                if base_offset.is_some() {
-                                    shedding.insert(subscriber_id);
+                                    // A subscription that does not end at a drop
+                                    // sees it as an offset jump and carries on.
+                                    if base_offset.is_some() && account.ends_subscription() {
+                                        shedding.insert(subscriber_id);
+                                    }
                                 }
                                 continue;
                             }

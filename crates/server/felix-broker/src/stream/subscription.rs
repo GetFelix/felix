@@ -2,6 +2,7 @@
 //! unregisters the subscriber from its stream on drop.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use bytes::Bytes;
@@ -205,6 +206,7 @@ impl SubscriptionReceiver {
     /// above that offset is yielded.
     pub fn end_on_lag(&mut self) {
         self.end_on_lag = true;
+        self.lag.ends_subscription.store(true, Ordering::Relaxed);
     }
 
     /// Where to resume, when [`Self::end_on_lag`] ended the subscription.
@@ -421,6 +423,12 @@ impl SubscriberDrops {
         self.stats.dropped(records);
         metrics::counter!("felix_subscribe_dropped_total").increment(records);
     }
+
+    /// Whether a drop ends the subscription, so that nothing after it should
+    /// be delivered either.
+    pub fn ends_subscription(&self) -> bool {
+        self.lag.ends_subscription.load(Ordering::Relaxed)
+    }
 }
 
 impl Drop for SubscriptionGuard {
@@ -439,6 +447,8 @@ mod tests;
 pub(crate) struct Lag {
     drops: std::sync::Mutex<Drops>,
     notify: tokio::sync::Notify,
+    /// Set by [`SubscriptionReceiver::end_on_lag`].
+    ends_subscription: AtomicBool,
 }
 
 #[derive(Debug, Default)]
