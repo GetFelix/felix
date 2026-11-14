@@ -24,6 +24,8 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         // stopped leading it. A metadata refresh finds where it went.
         BrokerError::StreamHandleInactive(_)
         | BrokerError::NotReadable { .. }
+        | BrokerError::ShardNotOpen { .. }
+        | BrokerError::ProposalsStalled { .. }
         | BrokerError::PublishSuperseded { .. } => ResponseError::NotLeaderOrFollower,
         BrokerError::Storage(_)
         | BrokerError::StorageFull(_)
@@ -62,6 +64,8 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::StateViewBusy
         | BrokerError::StateNotReadable(_)
         | BrokerError::ReleaseInFlight => ResponseError::UnknownServerError,
+        // The same on every broker, so not to be retried.
+        BrokerError::NotOnEngineStream { .. } => ResponseError::InvalidRequest,
     }
 }
 

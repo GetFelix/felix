@@ -371,11 +371,23 @@ pub(super) fn discover_segment_ids(dir: &Path) -> Result<Vec<SegmentId>> {
 /// written again for real. The mode is the poisoned run's, from the marker.
 /// The small state files are written again too. The marker goes last, so a
 /// crash part way repeats all of this.
+///
+/// A Raft copy's directory is refused, and the marker stays. A peer may have
+/// counted records past the mark, so the copy must not come back under its
+/// id without them: `CopyRoot::open_copy` rotates it before opening the log.
 pub(super) fn after_poison(
     dir: &Path,
     label: &str,
     marker: Option<durable_mark::Poison>,
 ) -> Result<()> {
+    if crate::fs::try_exists(dir.join(super::RAFT_COPY_FILE))? {
+        return Err(std::io::Error::other(format!(
+            "{label}: {} holds a Raft copy whose log was poisoned; it opens only \
+             through its copy root, which gives it a new copy id",
+            dir.display()
+        ))
+        .into());
+    }
     match marker {
         Some(poison) if poison.on_commit => cut_to_mark(dir, label, poison.mark)?,
         Some(poison) => rewrite_past_mark(dir, label, poison.mark)?,
@@ -391,7 +403,7 @@ pub(super) fn after_poison(
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
             Err(err) => return Err(err.into()),
         };
-        crate::run_state::write_atomically(dir, name, &bytes, true)?;
+        crate::run_state::replace_file(dir, name, &bytes, true)?;
     }
     match crate::fs::remove_file(dir.join(durable_mark::poison_file_name())) {
         Ok(()) => Ok(sync_dir(dir)?),
@@ -433,8 +445,8 @@ thread_local! {
 const STATE_FILES: [&str; 4] = ["ballot", "replica", "replica-set", "epochs"];
 
 /// Drop everything past `mark`: the segments after its own, and its own
-/// bytes past `synced_bytes`. A mark naming a segment that is gone, or a
-/// segment already that short, leaves the log as it is.
+/// bytes past `synced_bytes`, then write `mark` as the durable mark. A mark
+/// naming a segment that is gone leaves the log as it is.
 fn cut_to_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
     let ids = discover_segment_ids(dir)?;
     if !ids.contains(&mark.segment) {
@@ -443,16 +455,17 @@ fn cut_to_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
     let path = dir.join(segment_file_name(mark.segment));
     let len = crate::fs::metadata(&path)?.len();
     let newer: Vec<SegmentId> = ids.into_iter().filter(|id| *id > mark.segment).collect();
-    if newer.is_empty() && len <= mark.synced_bytes {
-        return Ok(());
+    // Nothing past the mark does not end the cut early: a crash after the
+    // cut but before the mark is written leaves exactly that.
+    if !newer.is_empty() || len > mark.synced_bytes {
+        tracing::warn!(
+            shard = label,
+            segment = mark.segment,
+            synced_bytes = mark.synced_bytes,
+            later_segments = newer.len(),
+            "the last run poisoned this log; cutting it back to its last synced point"
+        );
     }
-    tracing::warn!(
-        shard = label,
-        segment = mark.segment,
-        synced_bytes = mark.synced_bytes,
-        later_segments = newer.len(),
-        "the last run poisoned this log; cutting it back to its last synced point"
-    );
     // Newest first, so a crash part way leaves a longer log and no gap.
     for id in newer.into_iter().rev() {
         crate::fs::note_torn_tail(&dir.join(segment_file_name(id)));
@@ -479,7 +492,7 @@ fn cut_to_mark(dir: &Path, label: &str, mark: DurableMark) -> Result<()> {
     }
     // A flush in flight at the poison can have moved the mark past the
     // marker's. Left there, it would make damage past the cut look like rot.
-    crate::run_state::write_atomically(dir, durable_mark::mark_file_name(), &mark.encode(), true)?;
+    crate::run_state::replace_file(dir, durable_mark::mark_file_name(), &mark.encode(), true)?;
     Ok(())
 }
 

@@ -34,6 +34,7 @@
 
 mod codec;
 mod flush_queue;
+pub(crate) mod held;
 mod hide;
 mod purged;
 mod reader;
@@ -54,6 +55,7 @@ pub use reader::LogReader;
 pub use snapshot::{
     SnapshotData, SnapshotId, SnapshotStore, StagedSnapshot, StoredReader, StoredSnapshot,
 };
+pub use tail_cache::TailBudget;
 pub use written::{WrittenAt, WrittenToken};
 
 use std::io;
@@ -67,7 +69,7 @@ use openraft::type_config::alias::LogIdOf;
 
 use self::flush_queue::FlushQueue;
 use self::hide::{Bounds, Covering, PastSnapshot};
-use self::tail_cache::TailCache;
+use self::tail_cache::Tail;
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
 use crate::log::{FsyncMode, Offset};
@@ -160,7 +162,7 @@ struct Shared<K> {
     /// empty.
     flushes: FlushQueue,
     /// The newest entries, so replication reads them without the segments.
-    tail: parking_lot::Mutex<TailCache>,
+    tail: Arc<Tail>,
     /// Holds the next paged read after its first page: the read signals the
     /// sender, then waits for the receiver.
     #[cfg(test)]
@@ -204,6 +206,12 @@ where
     /// other mode an append's callback fires before the fsync, and Raft
     /// would count toward a quorum an entry that a power cut can still take.
     pub fn new(log: DiskLog, codec: K) -> io::Result<Self> {
+        Self::with_tail_budget(log, codec, TailBudget::process())
+    }
+
+    /// As [`Self::new`], with this log's tail cache counted against `budget`
+    /// instead of the process's. Every log of one broker shares one.
+    pub fn with_tail_budget(log: DiskLog, codec: K, budget: Arc<TailBudget>) -> io::Result<Self> {
         if !log.config().raft_log {
             return Err(invalid(format!(
                 "{} was not opened as a Raft log",
@@ -229,7 +237,7 @@ where
                 }),
                 covering: std::sync::OnceLock::new(),
                 flushes: FlushQueue::default(),
-                tail: parking_lot::Mutex::default(),
+                tail: Tail::new(budget),
                 #[cfg(test)]
                 pause_after_page: parking_lot::Mutex::new(None),
                 #[cfg(test)]
@@ -270,6 +278,16 @@ where
     /// The log's written and flushed positions, as they change.
     pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.shared.positions.subscribe()
+    }
+
+    /// The first index the log holds or will hold, read live: one past a
+    /// purge that is hidden or on disk, else where the oldest segment starts.
+    pub fn first_index_reader(&self) -> Arc<dyn Fn() -> Offset + Send + Sync>
+    where
+        K: Send + Sync + 'static,
+    {
+        let shared = Arc::clone(&self.shared);
+        Arc::new(move || shared.first_index())
     }
 
     /// The log underneath.
@@ -337,6 +355,16 @@ where
             last_log_id,
         })
     }
+}
+
+/// Write `dir`'s purged id: the log starts after `index`, whose entry is
+/// of generation `generation`. For a directory no log has open.
+pub(crate) fn store_purged(
+    dir: &std::path::Path,
+    index: Offset,
+    generation: u64,
+) -> io::Result<()> {
+    purged::store(dir, &purged::Purged { index, generation })
 }
 
 /// The last entry `log` holds as a Raft log, or the purged id when it holds

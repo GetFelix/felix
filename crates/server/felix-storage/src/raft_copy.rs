@@ -8,7 +8,8 @@
 //! id. A member opens its directory through [`CopyRoot::open_copy`], which
 //! rotates the copy (new copy id, never voted, empty log) when the directory
 //! is empty, was minted under another storage id, names another copy than
-//! its marks, or holds a vote or a log below them.
+//! its marks, holds a vote or a log below them, or was poisoned in its last
+//! run.
 //!
 //! A root opens only through the gate ([`check`]): its sequence, which rises with
 //! every synced mark write, is compared with the run witness's and the
@@ -24,6 +25,7 @@ mod copy_file;
 mod gate;
 mod judge;
 mod marks;
+mod reclaim;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -31,6 +33,7 @@ pub use copy_file::CopyFile;
 pub use gate::{Behind, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, kept_copies};
 pub use marks::{CopyMarks, MarkLog};
+pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
 
 use std::sync::Arc;
 use std::time::Duration;

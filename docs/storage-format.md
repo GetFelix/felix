@@ -76,6 +76,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     replica                                  ← accepted generation and commit offset, once replicated
     ballot                                   ← the leader that generation was accepted from
     replica-set                              ← the replicas this one counts, and the set it is leaving
+    engine                                   ← only in a Raft shard's directory: which engine writes it
     raft-purged                              ← a Raft log's last purged id
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
@@ -87,6 +88,9 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   acme_default_orders_0-0d3aed4b998d2798-0006411a0ccf2e40/
                                              ← the same shard of a stream with incarnation 0x6411a0ccf2e40
   .deleted/                                  ← directories of deleted streams, waiting to be removed
+  .kept/
+    acme_default_orders_0-0d3aed4b998d2798.00000000000000a1
+                                             ← a Raft shard directory a copy rotation moved aside, by copy id
   .streams/
     acme_default_orders-5c1b0e2fd3a4b7c8      ← which incarnation of a stream this broker holds
     .floors                                   ← deleted floors from catalog tombstones
@@ -157,6 +161,11 @@ Moving a directory there is a rename, so a crash leaves it either where it was
 or where nothing opens it; the broker deletes what is there in the background
 and again at startup. Being dotted, it is never read as a shard. See
 `docs/durable-storage.md` ("Deleting a stream").
+
+`.kept/` holds the shard directories a Raft copy rotation moved aside, named
+`<shard directory>.<copy id>`. Each stays until the copy now in the shard
+directory has committed past its last record, or until its stream is deleted.
+See `docs/per-shard-raft.md` ("Reclaiming kept copies").
 
 File names are zero-padded to 20 digits so lexicographic and numeric order agree.
 Recovery still parses the number and sorts on it rather than trusting directory
@@ -547,7 +556,7 @@ can hold several terms. Truncation is the log's suffix truncation, and a
 vote is saved to the `ballot` file.
 
 A log opened as a Raft log (`LogConfig::raft_log`) differs from a stream log
-in seven ways:
+in eight ways:
 
 - **It fsyncs on commit.** The adapter refuses a log under any other fsync
   mode: a member acknowledges an entry only once it is on disk.
@@ -577,6 +586,19 @@ in seven ways:
   through the adapter's `save_committed`: `advance_commit_offset` is
   refused on a Raft log and `note_commit_offset` does nothing. An offline
   `restore_to` saves the generation of the entry it lowers the offset to.
+- **One open at a time.** The open takes an exclusive, non-blocking `flock`
+  on the log's directory before recovery looks at it, and holds it until
+  the log is closed or its last clone is dropped. A second open fails with
+  "resource busy", whether it comes from the same process, another process,
+  or through a symlink. Only a Raft open takes the lock: stream logs and
+  `felix-log-tool` do not check it yet
+  ([#2488](https://github.com/GetFelix/felix/issues/2488)). The kernel
+  releases the lock when the holder exits, so a crash leaves nothing to
+  clean up. The lock is on the directory itself: no file
+  is added, and no segment file is opened or resized for it. On the
+  simulator's in-memory filesystem the claim is kept in the process, and a
+  simulated crash gives it up. On Linux NFS, `flock` is emulated with
+  byte-range locks, which a directory cannot take, so the open fails there.
 
 A Raft log's directory also holds `raft-purged` and, when its state machine
 keeps a snapshot there, `raft-snapshot`. Both are described below. The log
@@ -1000,7 +1022,10 @@ restart too, whatever the routing view says by then.
 The commit offset is written behind the advance that raised it, so no batch or
 replication pass waits on this file. Under `FsyncMode::OnCommit` the write
 starts at once, and one write in flight carries every advance made while it
-runs, so a busy shard writes it far less often than once per batch. Under
+runs, so a busy shard writes it far less often than once per batch. A Raft
+log is the exception: its commit index moves on almost every entry, so it is
+written at most once a second whatever the mode, and after a crash it can read
+back up to about a second older than what the log had committed. Under
 `Periodic` and `None` it is written at most once a second, as its records are
 written behind too. In every mode it is written with a raised generation and at
 shutdown, and a write that fails is retried once a second until it lands,
@@ -1044,6 +1069,44 @@ The one thing that lowers the commit offset is a restore to a backup point
 (`DiskLog::restore_to`), run offline against a copy: it writes the lowered
 offset here first, then cuts the log to it. See `docs/durable-storage.md`,
 "Restoring to a backup point".
+
+## `engine`: which engine writes the directory
+
+A stream shard runs on one of two engines, the hybrid or a Raft group, and
+the two must never open each other's directory. A Raft log holds entries
+above its commit index that no majority agreed on, and the hybrid would read
+them as its own records. The segments do not say which engine wrote them, so
+a Raft shard's directory holds an `engine` file with the one line `raft`.
+
+- `engine_marker::claim_for_raft` writes it before the shard's log is opened
+  for the first time: a temporary file, fsynced, renamed, then the directory
+  fsynced. No entry is written to an unmarked directory. It refuses a
+  directory that holds segments and no marker, because the hybrid wrote those.
+- Every open without `LogConfig::raft_log` refuses a directory that holds the
+  marker.
+- Any other content is refused by both: a newer build wrote it.
+
+A directory the hybrid wrote becomes a Raft log only through the switch to
+Raft (`docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft").
+Its marker has a second line, `base <G> <N>`: the seal's generation and the
+offset of its generation-start record. `disk_log::switch::start_voter`
+writes it last, after the member's snapshot, purged id, vote and commit, so a
+directory with this marker holds all of them and one without it is started
+again from the beginning. A second start from another base is refused. A
+build that predates the line refuses the directory as a newer build's.
+
+> `crates/server/felix-storage/src/disk_log/switch/tests.rs`,
+> `a_crash_before_the_marker_starts_the_voter_again_with_the_same_result` and
+> `a_member_never_starts_from_a_second_base`.
+
+The hybrid writes no marker, so a directory from before the file existed
+opens as it always did. A metadata store's log is a Raft log with no marker:
+nothing else ever opens its directory.
+
+> `crates/server/felix-storage/src/disk_log/engine_marker/tests.rs`,
+> `a_raft_directory_is_refused_by_the_hybrid`,
+> `a_hybrid_directory_is_refused_by_raft` and
+> `an_unknown_engine_is_refused_by_both`.
 
 ## `raft-purged`: a Raft log's last purged id
 
@@ -1137,12 +1200,10 @@ local build can finish while a receive is in flight. The open deletes a
 The control plane's metadata store keeps one small file beside its Raft log
 and its snapshot. It says which cluster the store belongs to, whether the
 member's vote is withheld, and carries two marks the upgrade from redb
-uses. No release build of the control plane runs on this store. It is built
-in only with `--cfg felix_segment_store`, which CI sets to test it; the
-design is in
+uses. The control plane runs on this store from 0.8; the design is in
 [metadata-raft-design.md](metadata-raft-design.md#moving-to-the-segment-store).
 
-In that build the snapshot's metadata is JSON: the last log id as a term
+The snapshot's metadata is JSON: the last log id as a term
 and an index, and the last membership with the id of its entry. The data is
 the state machine's bytes as they are. A membership entry's payload in the
 log is the same JSON membership.
@@ -1236,9 +1297,8 @@ the open. Read as "no file", it would forget a record that another member's
 vote depends on. A failed write of this file or of the member file stops
 every later change of both.
 
-On redb the same values are the `forming`, `formed` and `reached` keys of
-the store's meta table. There the log is in the same file, so the reached
-flag is kept in step but a blank log beside it cannot happen.
+Releases that kept the store in redb held the same values as the
+`forming`, `formed` and `reached` keys of its meta table.
 
 ### `lock`: one holder at a time
 
@@ -1270,8 +1330,8 @@ byte-range locks, which belong to the process: two opens in one process do
 not exclude each other, and closing any descriptor of the file drops the
 lock. Keep the data directory on a local disk.
 
-Per-shard log directories are not locked yet
-([#2344](https://github.com/GetFelix/felix/issues/2344)).
+The store's log is a Raft log, so its directory, `store/log`, is locked
+too, by the log itself ("Records as Raft entries", above).
 
 ### Opening the store
 
@@ -1699,6 +1759,11 @@ way it writes the state files again and removes `poisoned` last. A file that
 does not decode cuts and rewrites nothing, logs a warning, and still triggers
 the rewrite of the state files.
 
+A directory that also holds a `raft-copy` file is not opened this way. The
+open is refused and `poisoned` stays, and the copy root moves the directory
+aside and starts a new copy (`docs/per-shard-raft.md`, "A poisoned log"
+under "Group and member identity").
+
 ## `storage-id`: the data directory's identity
 
 One file at the durable root, beside the shard directories, holding 16 random
@@ -1857,14 +1922,18 @@ directory was found to replace a copy the node lost: a directory the control
 plane last registered under another id than the one it had before this start
 rotated it (a wipe, or a copy from elsewhere), or one older than the node's
 last registration (a restore). Unlike `replaced-storage` it is not written
-when a crash rotated the directory's own id. It never goes back to `kept`
-and is never removed. Anything other than `kept` reads as `lost`. A directory
+when a crash rotated the directory's own id. Nor when the registered id is one
+`rotated-ids` names: a start that rotated the id and stopped before the new
+id registered (a port it could not bind, say) leaves the old id registered
+for the next start, and that id is still this directory's own copy. It never
+goes back to `kept` and is never removed. Anything other than `kept` reads as `lost`. A directory
 without it that has `replaced-storage` counts as `lost`, since older releases
 also wrote that marker after their own crashes.
 
 After an unclean crash, a broker attests a kept ballot to a continuing
 leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
-`kept` and the control plane's record names the id from before the crash.
+`kept` and the control plane's record names the id from before the crash,
+or one `rotated-ids` names.
 An older release neither reads nor writes the file.
 
 ## `rotated-ids`: ids a crash rotated away on this directory
@@ -1880,7 +1949,8 @@ rotated_ids
 
 The first line is fixed. Each later line names an id this directory had until
 an unclean crash rotated it, at a start that found every ballot kept: the
-lost-copy marker says `kept`, and the control plane's record names that id.
+lost-copy marker says `kept`, and the control plane's record names that id
+or one already listed (a second crash before the new id registered).
 Newest first, at most 16. A restore or a replacement for a lost copy adds
 nothing. A set that names this node under one of these ids names this
 directory's own copy, so it is no evidence of a wipe, while the directory

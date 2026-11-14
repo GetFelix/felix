@@ -41,6 +41,7 @@ async fn handle_subscribe_message_sends_event_stream_binary_batch() -> Result<()
             &IdentityLimits::unlimited(),
             &server_lane_manager,
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -150,6 +151,7 @@ async fn handle_subscribe_message_errors_when_stream_missing() -> Result<()> {
             &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -233,6 +235,7 @@ async fn handle_subscribe_message_batches_by_bytes() -> Result<()> {
             config,
             &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             None,
             &out_ack_tx,
             &out_ack_depth,
@@ -358,6 +361,7 @@ async fn handle_subscribe_message_hashed_pool_with_generated_id() -> Result<()> 
             &IdentityLimits::unlimited(),
             &server_lane_manager,
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -462,6 +466,7 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
             &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -544,6 +549,7 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             test_config(),
             &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             None,
             &out_ack_tx,
             &out_ack_depth,
@@ -721,6 +727,7 @@ async fn frames_across_generation_starts(
             test_config(),
             &IdentityLimits::unlimited(),
             &server_lane_manager,
+            None,
             None,
             &out_ack_tx,
             &out_ack_depth,
@@ -907,6 +914,7 @@ async fn subscribe_after_admission(
             &IdentityLimits::unlimited(),
             &WriterLaneManager::new(&test_config()),
             Some(&ingress),
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -1187,6 +1195,7 @@ async fn revoked_mid_replay(end: Option<u64>) -> Result<(usize, Message)> {
             &IdentityLimits::unlimited(),
             &lane_manager,
             None,
+            None,
             &out_ack_tx,
             &out_ack_depth,
             &ack_throttle_tx,
@@ -1301,4 +1310,276 @@ async fn a_revoke_ends_the_replay_before_live_delivery() -> Result<()> {
     let (events, last) = revoked_mid_replay(None).await?;
     assert_revoked(events, last);
     Ok(())
+}
+
+#[cfg(feature = "raft")]
+mod on_raft {
+    use super::*;
+    use crate::serving::quic::handlers::redirect::redirect_for;
+    use crate::shards::raft::tests as fixture;
+
+    /// What the control stream answers a subscribe to `orders` with before
+    /// it registers anything, to a client that follows redirects.
+    fn redirected(ingress: &crate::shards::routing::IngressRouter) -> Option<Message> {
+        redirect_for(
+            Some(ingress),
+            None,
+            "t1",
+            "ns",
+            "orders",
+            0,
+            crate::shards::ShardKind::Stream,
+            felix_wire::FEATURE_REDIRECT,
+        )
+    }
+
+    /// **A subscribe to a Raft shard is served on the group's leader, on its
+    /// term alone, and gets each committed record. A follower that knows the
+    /// leader serves it too, with the same records at the same offsets.**
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_raft_shard_is_subscribed_to_on_its_leader_and_followers() -> Result<()> {
+        let (_net, members, leader) = fixture::trio().await;
+        let orders = fixture::key("orders", 0);
+        let term = members[leader].shards.leading(&orders).expect("term");
+        let ingress = fixture::ingress(&members[leader].shards);
+        // The broker lease is not held; the term is what serves the shard.
+        assert_eq!(redirected(&ingress), None);
+
+        let (server_config, cert) = make_server_config()?;
+        let transport = TransportConfig::default();
+        let server = QuicServer::bind("127.0.0.1:0".parse()?, server_config, transport.clone())?;
+        let addr = server.local_addr()?;
+        let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
+        let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
+        let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+            std::time::Instant::now(),
+        )));
+        let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+        let broker = Arc::clone(&members[leader].broker);
+        // Kept past the handler: the lanes write the events.
+        let lane_manager = WriterLaneManager::new(&test_config());
+        let server_lanes = Arc::clone(&lane_manager);
+        let server_task = tokio::spawn(async move {
+            let connection = server.accept().await?;
+            handle_subscribe_message(
+                broker,
+                connection,
+                test_config(),
+                &IdentityLimits::unlimited(),
+                &server_lanes,
+                Some(&ingress),
+                None,
+                &out_ack_tx,
+                &out_ack_depth,
+                &ack_throttle_tx,
+                &ack_timeout_state,
+                &cancel_tx,
+                "t1".to_string(),
+                "ns".to_string(),
+                "orders".to_string(),
+                Some(21),
+                None,
+                None,
+                None,
+                None,
+                felix_wire::ORIGINAL_V1_FLAGS,
+                0,
+                0,
+                0,
+                None,
+            )
+            .await
+        });
+        let client = QuicClient::bind("0.0.0.0:0".parse()?, make_client_config(cert)?, transport)?;
+        let connection = client.connect(addr, "localhost").await?;
+        let ack = tokio::time::timeout(Duration::from_secs(10), out_ack_rx.recv())
+            .await
+            .context("ack timeout")?
+            .context("ack missing")?;
+        assert!(
+            matches!(
+                ack,
+                Outgoing::Message(Message::Subscribed {
+                    subscription_id: 21,
+                    ..
+                })
+            ),
+            "the leader refused the subscribe: {ack:?}"
+        );
+        let mut events = tokio::time::timeout(Duration::from_secs(10), connection.accept_uni())
+            .await
+            .context("accept uni timeout")??;
+        let mut scratch = crate::serving::quic::FrameScratch::new();
+        let hello =
+            crate::serving::quic::codec::read_message_limited(&mut events, 16 * 1024, &mut scratch)
+                .await?;
+        assert!(matches!(hello, Some(Message::EventStreamHello { .. })));
+
+        members[leader].publish(term, b"one").await;
+        let second = members[leader].publish(term, b"two").await;
+
+        for expected in [&b"one"[..], b"two"] {
+            let frame = tokio::time::timeout(
+                Duration::from_secs(10),
+                crate::serving::quic::codec::read_frame_limited_into(
+                    &mut events,
+                    16 * 1024,
+                    &mut scratch,
+                ),
+            )
+            .await
+            .context("event timeout")??
+            .expect("event frame");
+            let payloads = decode_delivery_payloads(&frame).context("decode batch")?;
+            assert_eq!(payloads, [Bytes::copy_from_slice(expected)]);
+        }
+        assert!(server_task.await.context("server join")??);
+
+        let follower = &members[(leader + 1) % 3];
+        let ingress = fixture::ingress(&follower.shards);
+        fixture::until("the follower serves the shard's readers", || {
+            redirected(&ingress).is_none()
+        })
+        .await;
+        // The follower has delivered the leader's first two records before
+        // its reader joins, so the reader's first record is the third. Its
+        // cursor tail would not say so: that follows the member's log, which
+        // holds a record before it is delivered.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let from = felix_broker::StartPosition::Offset(second);
+            let probe = follower
+                .broker
+                .subscribe_from("t1", "ns", "orders", 0, from);
+            // A follower whose log has not reached the record yet says the
+            // offset is in the future.
+            match probe.await {
+                Ok(probe) if !probe.backlog.is_empty() => break,
+                Ok(_) | Err(felix_broker::BrokerError::CursorInFuture { .. }) => {}
+                Err(error) => panic!("probe: {error:?}"),
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the follower never delivered the second record"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (mut receiver, _guard) = {
+            let subscription = follower.broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        let orders_key = fixture::key("orders", 0);
+        assert!(
+            crate::serving::quic::handlers::redirect::stopped_serving(Some(&ingress), &orders_key)
+                .is_none(),
+            "a follower's subscriber was let go"
+        );
+        let third = members[leader].publish(term, b"three").await;
+        let fourth = members[leader].publish(term, b"four").await;
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (third, Bytes::from_static(b"three"))
+        );
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (fourth, Bytes::from_static(b"four"))
+        );
+        fixture::stop(&members).await;
+        Ok(())
+    }
+
+    /// **A resume offset a follower's log has not reached is answered with a
+    /// redirect to the leader.** The offset came from a broker that is
+    /// ahead, so "in the future" would be wrong. The leader still says so.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_follower_behind_a_resume_offset_redirects_to_its_leader() {
+        let (_net, members, leader) = fixture::trio().await;
+        let orders = fixture::key("orders", 0);
+        let term = members[leader].shards.leading(&orders).expect("term");
+        let follower = &members[(leader + 1) % 3];
+        let ingress = fixture::ingress(&follower.shards);
+        fixture::until("the follower serves the shard's readers", || {
+            redirected(&ingress).is_none()
+        })
+        .await;
+        let ahead = || felix_broker::BrokerError::CursorInFuture {
+            requested: 9,
+            tail: 2,
+        };
+        // The client follows a redirect only to an address it is given.
+        let endpoints = crate::cluster::client_endpoints::ClientEndpoints::new();
+        let leader_endpoint = felix_wire::BrokerEndpoint {
+            node_id: members[leader].name.to_string(),
+            addr: "10.0.0.4:5000".to_string(),
+        };
+        endpoints.refresh(&crate::cluster::node_catalog::NodeCatalog {
+            nodes: Default::default(),
+            client_endpoints: vec![leader_endpoint.clone()],
+            redirect_endpoints: vec![leader_endpoint],
+            kafka_endpoints: Vec::new(),
+        });
+        let refusal = |ingress: &crate::shards::routing::IngressRouter| {
+            subscribe_refusal(
+                ahead(),
+                Some(ingress),
+                Some(&endpoints),
+                ("t1", "ns", "orders", 0),
+                felix_wire::FEATURE_REDIRECT,
+            )
+        };
+
+        assert_eq!(
+            refusal(&ingress),
+            Message::NotLeader {
+                node_id: members[leader].name.to_string(),
+                addr: Some("10.0.0.4:5000".to_string()),
+                generation: term,
+            }
+        );
+        let on_leader = fixture::ingress(&members[leader].shards);
+        assert_eq!(refusal(&on_leader), subscribe_error_message(ahead()));
+        fixture::stop(&members).await;
+    }
+
+    /// **A member that knows no leader serves no reader.** Its commit index
+    /// has stopped, so a subscriber there would wait and be told nothing:
+    /// a new one is refused and those registered are ended.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_member_with_no_leader_serves_no_reader() {
+        use crate::shards::routing::EngineShards;
+
+        let (net, mut members, leader) = fixture::trio().await;
+        let follower = members.remove((leader + 1) % 3);
+        let ingress = fixture::ingress(&follower.shards);
+        fixture::until("the follower serves the shard's readers", || {
+            redirected(&ingress).is_none()
+        })
+        .await;
+        let (mut receiver, _guard) = {
+            let subscription = follower.broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+
+        // The rest of the group goes away: the follower is cut off.
+        for member in &members {
+            net.forget(member.name);
+        }
+        fixture::stop(&members).await;
+        fixture::until("the follower knows no leader", || {
+            redirected(&ingress).is_some()
+        })
+        .await;
+        follower
+            .shards
+            .take(&mut fixture::assignments([fixture::replicated()]))
+            .await;
+
+        let ended = tokio::time::timeout(Duration::from_secs(20), receiver.recv()).await;
+        assert!(
+            ended.expect("ended in time").is_none(),
+            "a cut-off member kept its subscriber"
+        );
+        EngineShards::shutdown(&*follower.shards).await;
+    }
 }

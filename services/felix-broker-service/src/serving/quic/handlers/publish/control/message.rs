@@ -26,7 +26,7 @@ use crate::serving::quic::handlers::publish::ingress::{
 };
 use crate::serving::quic::handlers::publish::route::{
     internal_ack, needs_quorum, publish_target, resolve_publish_shard, resolve_route,
-    targets_durable,
+    targets_durable, targets_raft,
 };
 use crate::serving::quic::handlers::publish::{
     CommitAcks, PublishAs, PublishContext, PublishJob, PublishReply, StreamHandleCache,
@@ -220,6 +220,7 @@ pub(crate) async fn handle_publish_message(
         || (publish_ctx.ack_durable_on_commit && targets_durable(&target))
         || forwarding
         || quorum
+        || targets_raft(publish_ctx, &target)
         || (ack_mode != felix_wire::AckMode::None && publish_ctx.must_wait_for_write());
     let Some(target) = target else {
         count_publish("error");

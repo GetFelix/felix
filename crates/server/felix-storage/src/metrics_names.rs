@@ -67,6 +67,12 @@ pub const SEGMENT_RESERVE_FAILED_TOTAL: &str = "felix_storage_segment_reserve_fa
 pub const SEGMENT_ROLL_DISCARDED_TOTAL: &str = "felix_storage_segment_roll_discarded_total";
 /// Segments currently on disk for a shard.
 pub const SEGMENT_COUNT: &str = "felix_storage_segment_count";
+/// Shard directories a Raft rotation moved aside that are still on disk, as
+/// of the last rotation or reclaim pass. Not labelled: with several data roots
+/// in one process it shows the one measured last.
+pub const RAFT_KEPT_COPIES: &str = "felix_storage_raft_kept_copies";
+/// Bytes those directories hold.
+pub const RAFT_KEPT_COPY_BYTES: &str = "felix_storage_raft_kept_copy_bytes";
 /// Sealed segments whose file and index are open, across every log. Bounded
 /// by `LogConfig::max_open_sealed_segments` per storage root.
 pub const OPEN_SEALED_SEGMENTS: &str = "felix_storage_open_sealed_segments";
@@ -114,3 +120,6 @@ pub const RECOVERY_INDEX_REBUILDS_TOTAL: &str = "felix_storage_recovery_index_re
 /// Opens (or truncations) that rebuilt producer state by reading sealed
 /// segments, because the producer snapshot was missing or out of date.
 pub const PRODUCER_STATE_REBUILT_TOTAL: &str = "felix_storage_producer_state_rebuilt_total";
+
+/// Record bytes held in the tail caches of every Raft log on the broker.
+pub const RAFT_TAIL_CACHE_BYTES: &str = "felix_broker_raft_tail_cache_bytes";

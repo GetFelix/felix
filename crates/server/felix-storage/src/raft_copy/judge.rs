@@ -9,14 +9,13 @@ use super::gate::GatePassed;
 use super::marks::{CopyMarks, MarkLog};
 use super::{VoteMark, log_below};
 use crate::disk_log::crash_point;
+use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::log::LogConfig;
 use crate::raft_log::state_file;
 use crate::{DiskLog, StorageId};
 
 /// Longer shard names do not fit a mark.
 const MAX_SHARD_NAME: usize = 4096;
-/// What a kept directory's name adds to the shard directory's.
-const KEPT: &str = ".kept-";
 
 /// A data root that passed the gate, opening shard directories as copies.
 pub struct CopyRoot {
@@ -63,6 +62,10 @@ pub enum RotateReason {
     VoteBelowMark,
     /// Its last log id is below the log mark.
     LogBelowMark,
+    /// Its log was poisoned in its last run: a flush failed, or a rollover
+    /// or truncation failed partway. The directory can hold less than the
+    /// copy reported as written.
+    Poisoned,
 }
 
 /// A shard directory an earlier rotation moved aside. Its records are
@@ -77,13 +80,19 @@ pub struct KeptCopy {
 impl CopyRoot {
     /// Open the root the gate passed. `mint` makes copy ids; a 0 it returns
     /// is asked again.
+    ///
+    /// Watches the root for poison ([`crate::run_state::watch_poison`]): if
+    /// a copy's poison marker cannot be written, the forgotten run record
+    /// still rotates the storage id, and every copy with it, on restart.
     pub fn open(
         root: impl Into<PathBuf>,
         passed: GatePassed,
         mint: impl Fn() -> u64 + Send + Sync + 'static,
     ) -> Self {
+        let root = root.into();
+        crate::run_state::watch_poison(passed.marks.root());
         Self {
-            root: root.into(),
+            root,
             marks: passed.marks,
             mint: Box::new(mint),
         }
@@ -106,8 +115,8 @@ impl CopyRoot {
     ///
     /// A rotated copy has a new copy id that never voted and an empty log,
     /// with fresh marks synced before this returns. The old directory, if it
-    /// held more than a copy file, is moved beside `dir` (see [`kept_copies`]). A crash
-    /// part way leaves the old directory, or one this rotates again.
+    /// held more than a copy file, is moved into `.kept` beside `dir` (see
+    /// [`kept_copies`]). A crash part way leaves the old directory, or one this rotates again.
     pub async fn open_copy(
         &self,
         shard: &str,
@@ -189,6 +198,9 @@ impl CopyRoot {
         let reason = match self.marks.marks(shard) {
             None => Some(RotateReason::NoMarks),
             Some(marks) if marks.copy != found.copy => Some(RotateReason::OtherCopy),
+            // Before any open of the log, which would cut it back to its
+            // last sync. A marker that cannot be read counts the same.
+            Some(_) if crate::disk_log::left_poisoned(dir)? => Some(RotateReason::Poisoned),
             Some(_) => None,
         };
         Ok((Some(found), reason))
@@ -210,10 +222,12 @@ impl CopyRoot {
         let kept = if holds_no_records(dir)? {
             None
         } else {
-            let kept = kept_path(dir, replaced)?;
+            let kept = kept_path(dir, &parent, replaced)?;
             crate::fs::rename(dir, &kept)?;
             step()?;
+            crate::io::sync_dir(&parent.join(KEPT_DIR))?;
             crate::io::sync_dir(&parent)?;
+            crate::incarnation::kept_gauges::refresh(&parent);
             Some(kept)
         };
         step()?;
@@ -245,8 +259,7 @@ pub fn kept_copies(dir: &Path) -> io::Result<Vec<KeptCopy>> {
     let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
         return Ok(Vec::new());
     };
-    let prefix = format!("{name}{KEPT}");
-    let entries = match crate::fs::read_dir(&parent) {
+    let entries = match crate::fs::read_dir(parent.join(KEPT_DIR)) {
         Ok(entries) => entries,
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(err) => return Err(err),
@@ -255,17 +268,15 @@ pub fn kept_copies(dir: &Path) -> io::Result<Vec<KeptCopy>> {
     for entry in entries {
         let entry = entry?;
         let file_name = entry.file_name();
-        let Some(rest) = file_name
-            .to_str()
-            .and_then(|name| name.strip_prefix(&prefix))
-        else {
+        let Some((of, copy)) = file_name.to_str().and_then(kept_of) else {
             continue;
         };
-        let hex = rest.split('-').next().unwrap_or_default();
-        kept.push(KeptCopy {
-            path: entry.path(),
-            copy: u64::from_str_radix(hex, 16).ok().filter(|copy| *copy != 0),
-        });
+        if of == name {
+            kept.push(KeptCopy {
+                path: entry.path(),
+                copy: Some(copy).filter(|copy| *copy != 0),
+            });
+        }
     }
     kept.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(kept)
@@ -328,7 +339,7 @@ fn is_empty(dir: &Path) -> io::Result<bool> {
     }
 }
 
-fn parent_of(dir: &Path) -> io::Result<PathBuf> {
+pub(super) fn parent_of(dir: &Path) -> io::Result<PathBuf> {
     dir.parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .map(Path::to_path_buf)
@@ -340,8 +351,9 @@ fn parent_of(dir: &Path) -> io::Result<PathBuf> {
         })
 }
 
-/// `<dir>.kept-<old copy id>`, with a number after it if that is taken.
-fn kept_path(dir: &Path, replaced: Option<u64>) -> io::Result<PathBuf> {
+/// `<parent>/.kept/<name>.<old copy id>`, with a number after it if that is
+/// taken. The directory holding it is made durably before the rename.
+fn kept_path(dir: &Path, parent: &Path, replaced: Option<u64>) -> io::Result<PathBuf> {
     let name = dir
         .file_name()
         .and_then(|name| name.to_str())
@@ -351,12 +363,15 @@ fn kept_path(dir: &Path, replaced: Option<u64>) -> io::Result<PathBuf> {
                 "a shard directory needs a name",
             )
         })?;
-    let base = format!("{name}{KEPT}{:016x}", replaced.unwrap_or(0));
-    let mut candidate = dir.with_file_name(&base);
-    let mut n = 1u32;
-    while crate::fs::try_exists(&candidate)? {
-        candidate = dir.with_file_name(format!("{base}-{n}"));
+    let kept = parent.join(KEPT_DIR);
+    crate::io::create_dir_all_durable(&kept)?;
+    let copy = replaced.unwrap_or(0);
+    let mut n = 0u32;
+    loop {
+        let candidate = kept.join(kept_name(name, copy, n));
+        if !crate::fs::try_exists(&candidate)? {
+            return Ok(candidate);
+        }
         n += 1;
     }
-    Ok(candidate)
 }

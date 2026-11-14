@@ -795,7 +795,8 @@ A storage id rotates for three reasons, and only the first keeps the ballots:
 - **A restore**: the directory is older than the node's last registration. Its
   ballots rolled back. The `lost-copy` marker says `lost` for good.
 - **A wipe or a directory from elsewhere**: the control plane last registered
-  another id. Also `lost`.
+  another id. Also `lost`. An id `rotated-ids` names is not another id: the
+  start that rotated it may have stopped before the new one registered.
 
 A set written before the crash still names the copy under its old id. Under
 `joint_fence` a set naming another id for a copy is the evidence of a wipe

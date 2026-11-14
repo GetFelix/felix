@@ -388,6 +388,11 @@ kubectl -n felix exec felix-broker-0 -- wget -qO- http://127.0.0.1:8080/replicat
 `[]` is the answer to want. A release that changes `INTERNAL_VERSION` is not
 rolling: scale brokers to zero, upgrade, scale back.
 
+From 0.7 to 0.8 nothing rolls. A 0.8 control-plane pod refuses its 0.7
+volume and restarts in a loop while the others keep the group. Follow
+[Control plane metadata in 0.8](/deployment/upgrades/#control-plane-metadata-in-08)
+instead: scale everything to zero, start on new volumes.
+
 ### Scaling out
 
 ```bash

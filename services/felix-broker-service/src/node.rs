@@ -108,6 +108,21 @@ where
     {
         peer.unified_fence = false;
     }
+    // Before anything opens: a broker asked for Raft shards that came up as
+    // a hybrid one would write a shard its peers run under Raft.
+    let shard_engine = crate::config::shard_engine()?;
+    if shard_engine == crate::config::ShardEngine::Raft {
+        let missing = crate::config::RaftPrerequisites {
+            compiled: cfg!(feature = "raft"),
+            membership: config.membership.is_some(),
+            peer_transport: config.peer_transport.is_some(),
+            durable_storage: durable_config.is_some(),
+        }
+        .missing();
+        if let Some(missing) = missing {
+            anyhow::bail!("FELIX_SHARD_ENGINE=raft is refused: {missing}");
+        }
+    }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
     let gate_readiness_on_sync = durable_storage_configured && config.controlplane_url.is_some();
@@ -238,11 +253,13 @@ where
     };
     // Before storage opens, and before anything is written under a group:
     // the directory is refused, or recorded, on what the control plane says.
-    // A start from the view could not ask; `qualify` required a record, and
-    // the catalog sync compares it with the snapshots.
+    // A start from the view could not ask; `qualify` required a record, or
+    // one saying the control plane had no group, and the catalog sync
+    // compares a record with the snapshots.
     let group_refused = CancellationToken::new();
     let group = match (&durable_root, &config.controlplane_url, &view) {
-        (Some(root), _, Some(_)) => crate::cluster::controlplane_group::read(root)?,
+        // Judged once the control plane answers (`sync::GroupCheck`).
+        (Some(_), _, Some(_)) => None,
         (Some(root), Some(base_url), None) => tokio::select! {
             group = identity::admit(&membership_client, base_url, &credential, root) => group?,
             () = shutdown.as_mut() => {
@@ -254,10 +271,13 @@ where
         },
         _ => None,
     };
-    let group = group.map(|stored| crate::cluster::controlplane_group::Guard {
-        stored,
-        refused: group_refused.clone(),
-    });
+    let group = sync::GroupCheck::for_start(
+        durable_root.as_deref(),
+        view.is_some(),
+        group,
+        &membership_client,
+        &group_refused,
+    );
     let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
     let own_kept = stored.kept;
     stored.kept = stored.kept.attested(view.is_some());
@@ -327,6 +347,29 @@ where
         storage_id,
         unclean,
     } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks, &engine).await?;
+    // Before the catalog, the view or a peer registers a stream: one
+    // registered earlier would have its shard 0 opened by the broker itself,
+    // beside the log its Raft member opens.
+    if shard_engine == crate::config::ShardEngine::Raft {
+        broker.leave_durable_streams_to_engines();
+    }
+    #[cfg(feature = "raft")]
+    let raft_shards = if shard_engine == crate::config::ShardEngine::Raft {
+        cluster::start_raft_shards(&config, &cluster, &peers, &broker, &engine)?
+    } else {
+        cluster::RaftShards::default()
+    };
+    #[cfg(not(feature = "raft"))]
+    let raft_shards = cluster::RaftShards::default();
+    let raft_shards = cluster::match_engines(
+        &config,
+        &cluster,
+        &peers,
+        &broker,
+        &engine,
+        shard_engine == crate::config::ShardEngine::Raft,
+        raft_shards,
+    );
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config
@@ -582,6 +625,7 @@ where
         // for the shards it leads instead of waiting on it. After a start from
         // the view that lasts until it has registered.
         gate_readiness_on_sync.then_some(&clients),
+        raft_shards.handler,
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -606,6 +650,7 @@ where
         nodes: view.as_ref().map(from_view::nodes).unwrap_or_default(),
         reports_held: view.as_ref().map(|_| restore_checked.clone()),
         leads_after: view.as_ref().map(|_| clients.clone()),
+        engine_shards: raft_shards.engine_shards.clone(),
         sync_shutdown: &sync_shutdown,
     });
 
@@ -662,6 +707,7 @@ where
         controlplane_task,
         controlplane_view,
         storage: shutdown::Storage {
+            engine_shards: raft_shards.engine_shards,
             broker: Arc::clone(&broker),
             run: durable_storage
                 .as_ref()
