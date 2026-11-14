@@ -142,6 +142,8 @@ impl Delta {
         let mut left = budget;
         while left > 0 {
             let cost = if let Some((key, entry)) = self.entries.pop_first() {
+                // fold_key must leave base.expiring matching base.entries:
+                // in_base relies on it, and only debug builds check it.
                 self.fold_key(base, key, entry);
                 1
             } else if let Some(member) = self.expired.pop_first() {
