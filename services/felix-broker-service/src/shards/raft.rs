@@ -699,6 +699,9 @@ impl WriteFence for Leading {
             #[cfg(test)]
             let _ = stall.wait_for(|stalled| !stalled).await;
             loop {
+                if !terms.lock().get(&key).is_some_and(|lead| lead.term == term) {
+                    return;
+                }
                 // The term opens in the same step that marks the stream as
                 // led. Marked after a deposal, the stream would stay marked
                 // on a follower and its subscribers would get nothing.

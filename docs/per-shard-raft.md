@@ -1420,15 +1420,17 @@ way a held `Quorum` batch is released on the hybrid.
   dropped, so a deposed term's batch settling just as the pass reads the
   same records is not delivered twice.
 - A member that becomes leader finishes the pass first, then marks the
-  stream as led. If a `Block` subscriber's queue is full, the pass does not
-  wait for it: the subscriber is ended, with the batch counted as its drop,
-  so it knows where to resume. A slow reader never holds up a new term's
+  stream as led. If a `Block` subscriber's queue is still full 50 ms after
+  a term asks to open, the pass stops waiting for it: the subscriber is
+  ended, with the batch counted as its drop, so it knows where to resume. A slow reader never holds up a new term's
   writes.
 - A pass that keeps failing (a read error on the member's log) backs off,
-  and after five failures in a row ends the stream's subscribers so they
+  and on the fifth failure in a row ends the stream's subscribers so they
   resubscribe instead of waiting.
-- A tail-only subscribe on a follower that is behind its member joins at
-  what is committed, not at older records the pass has yet to reach.
+- A tail-only subscribe on a follower that nobody else reads yet first
+  brings the stream up to what is committed, so it joins there and not at
+  older records. While a pass is already running, it joins where that
+  pass stands and may get the rest of its backlog.
 
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_record_a_later_leader_replaced_reaches_no_subscriber`,
@@ -1560,8 +1562,9 @@ fence are not asked.
   them from its log. A subscribe that registers after the deposal is kept.
 - A resume offset past the end of a follower's log is answered with a
   redirect to the leader, with the leader's client address, since the
-  leader may hold records the follower has not received yet. An offset between the follower's applied index and its
-  log's tail is accepted, and waits.
+  leader may hold records the follower has not received yet. An offset
+  between the follower's applied index and its log's tail is accepted,
+  and waits.
 
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_raft_shard_is_subscribed_to_on_its_leader_and_followers`,

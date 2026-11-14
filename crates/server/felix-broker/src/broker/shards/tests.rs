@@ -781,6 +781,36 @@ mod engine_log {
         assert_eq!(batch(&mut receiver).await, (1, 0, payloads(&["1"])));
     }
 
+    /// **A stale term's retry leaves a later term's mark alone.** A term
+    /// that was superseded while it retried is told no, and must not clear
+    /// the mark the later term set: the stream would then deliver from its
+    /// log beside the leader's own batches.
+    #[tokio::test]
+    async fn a_stale_terms_retry_leaves_the_next_terms_mark() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 2).await;
+        let (broker, _bound) = broker(ReadBound::Committed(2)).await;
+        let handle = open(&broker, &log).await;
+        assert!(
+            broker
+                .lead_from_tail("t1", "ns", "orders", 0)
+                .await
+                .expect("lead")
+        );
+
+        let stale = broker
+            .lead_from_tail_if("t1", "ns", "orders", 0, || false)
+            .await;
+        assert!(!stale.expect("lead"));
+        assert!(
+            handle
+                .state
+                .leads_engine_log
+                .load(std::sync::atomic::Ordering::Acquire),
+            "the later term's mark was cleared"
+        );
+    }
+
     /// **A full `Block` subscriber does not hold up a new term.** The pass
     /// that waits on it is told a term wants to open, and ends it with the
     /// batch counted as its drop, so the subscriber knows where to resume.

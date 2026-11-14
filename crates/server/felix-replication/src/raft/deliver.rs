@@ -114,7 +114,7 @@ impl RaftEngine {
                         failures = failures.saturating_add(1);
                         tracing::warn!(error = %err, failures, "could not deliver a shard's committed records from its log");
                         // Subscribers left here would wait, told nothing.
-                        if failures >= LOG_FAILURES_TO_END {
+                        if failures == LOG_FAILURES_TO_END {
                             stream.end_subscribers();
                         }
                         if !stream.is_active() {

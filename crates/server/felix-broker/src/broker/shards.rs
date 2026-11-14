@@ -225,11 +225,11 @@ impl Broker {
         }
         // Marked before asking, with the pass locked out: a deposal that
         // lands after the answer clears the mark, and is not overwritten.
-        if state.engine_log {
-            state.leads_engine_log.store(true, Ordering::Release);
-        }
+        // A stale term's retry clears only a mark it set itself, never one
+        // a later term holds.
+        let marked = state.engine_log && !state.leads_engine_log.swap(true, Ordering::AcqRel);
         let led = still_led();
-        if !led && state.engine_log {
+        if !led && marked {
             state.leads_engine_log.store(false, Ordering::Release);
         }
         Ok(led)
@@ -672,8 +672,6 @@ impl Broker {
     }
 }
 
-/// A resolved stream shard, held by the publish path so it does not look the
-/// stream up again.
 /// Counts a caller waiting to lead a stream on its engine's log, for as
 /// long as it lives. See `StreamState::leads_wanted`.
 struct LeadWanted<'a>(&'a StreamState);
@@ -692,6 +690,8 @@ impl Drop for LeadWanted<'_> {
     }
 }
 
+/// A resolved stream shard, held by the publish path so it does not look the
+/// stream up again.
 #[derive(Clone, Debug)]
 pub struct StreamHandle {
     pub(super) state: Arc<StreamState>,

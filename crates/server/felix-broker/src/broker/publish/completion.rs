@@ -273,7 +273,13 @@ impl Completion {
         tokio::select! {
             biased;
             _ = self.deliver() => return,
-            _ = async { if !waiting { wanted.await } } => {}
+            _ = async {
+                if !waiting {
+                    wanted.await;
+                }
+                // A queue that drains at once is not worth ending a reader for.
+                tokio::time::sleep(FULL_GRACE).await;
+            } => {}
         }
         let Some(delivery) = self.delivery.as_mut() else {
             return;
@@ -649,6 +655,10 @@ pub enum LogDelivery {
     /// or batches from a term this broker led are still settling. Ask again.
     Waiting,
 }
+
+/// How long a pass waits on a full `Block` subscriber once a term wants
+/// to open, before ending it.
+const FULL_GRACE: Duration = Duration::from_millis(50);
 
 /// How much of the log one read of a pass takes.
 const LOG_PAGE_BYTES: usize = 1 << 20;
