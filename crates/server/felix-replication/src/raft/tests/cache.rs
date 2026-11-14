@@ -791,6 +791,119 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     cluster.stop().await;
 }
 
+/// A message for `broker`'s member of the cache group.
+fn sent(broker: &str, body: super::super::network::Request) -> RaftRequest {
+    RaftRequest {
+        group: group(N),
+        to: MemberId::new(broker, 1),
+        beat: 0,
+        report: false,
+        deadline: Duration::from_secs(10),
+        body,
+    }
+}
+
+/// **A snapshot installed under another vote ends what the stored vote
+/// lets through**, as a later leader's append does. A member restarts on
+/// its old leader's committed vote and, inside its hold, installs a later
+/// leader's snapshot. Its promise is now to that leader, so the old one's
+/// vote request is dropped like anyone's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_later_leaders_snapshot_ends_what_the_stored_vote_lets_through() {
+    use super::lease::{dropped, stands, vote_of};
+    use openraft::async_runtime::watch::WatchReceiver;
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let last = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, last).await;
+    let old = cluster.elected(N).await;
+    let leading = cluster.runtime(&old.broker).group(&shard(N));
+    let leading = leading.expect("group");
+    let term = leading.status().term;
+    cluster.snapshot(&old.broker, N, last).await;
+    let snapshot = leading.raft().get_snapshot().await.expect("read");
+    let snapshot = snapshot.expect("snapshot");
+    let data = snapshot.snapshot.bytes.clone();
+    drop(leading);
+    cluster.stop().await;
+    cluster.start(false);
+    let mut followers = BROKERS.into_iter().filter(|broker| *broker != &*old.broker);
+    let held = followers.next().expect("a follower");
+    let later = followers.next().expect("another");
+
+    let log = open_log(cluster.root.path(), held, N, log_config());
+    cluster.logs.insert((held.into(), N), log.clone());
+    let runtime = cluster.runtime(held);
+    runtime.open(group(N), 1, log).await.expect("open");
+    let member = runtime.group(&shard(N)).expect("group");
+    assert!(member.holds_votes(), "{held} is not held");
+
+    let vote = vote_of(term + 1, later, true);
+    let whole = super::super::network::Request::Snapshot {
+        vote: vote.clone(),
+        meta: snapshot.meta.clone(),
+        data_len: data.len() as u64,
+        offset: 0,
+        data,
+    };
+    let installed = runtime.handle(sent(held, whole)).await;
+    assert!(installed.is_ok(), "the snapshot was not taken");
+    // openraft publishes the vote after it answers.
+    eventually(|| (member.raft().metrics().borrow_watched().vote == vote).then_some(())).await;
+
+    let asked = runtime.handle(sent(held, stands(term + 2, &old.broker)));
+    assert!(dropped(&asked.await), "the old leader was let through");
+    cluster.stop().await;
+}
+
+/// **A cache shard's snapshot gives the lease up at every piece.** Only
+/// the last piece reaches openraft, so a piece before it must void the
+/// lease here. A sender this member has outvoted names a term at or below
+/// its own and costs it nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_piece_of_a_higher_terms_snapshot_voids_the_lease() {
+    use super::lease::{soon, vote_of};
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let first = write(&cluster, 10, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let (engine, member) = leading(&cluster).await;
+    let leader = cluster.elected(N).await;
+    let term = member.status().term;
+    let admit = || engine.admit_local_ack(&shard(N), term);
+    soon("the lease never held", || admit().is_ok()).await;
+    let from = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker);
+    let from = from.expect("a follower");
+    let runtime = cluster.runtime(&leader.broker);
+    // The first half of a snapshot of eight bytes.
+    let piece = |term| {
+        let body = super::super::network::Request::Snapshot {
+            vote: vote_of(term, from, true),
+            meta: Default::default(),
+            data_len: 8,
+            offset: 0,
+            data: Bytes::from_static(b"half"),
+        };
+        runtime.handle(sent(&leader.broker, body))
+    };
+
+    let outvoted = piece(term - 1).await;
+    let Ok(RaftReply(super::super::network::Reply::Snapshot(answer))) = outvoted else {
+        panic!("an outvoted sender was not answered");
+    };
+    assert_eq!(answer.vote.leader_id().term(), term);
+    assert_eq!(member.incoming().held(), None);
+    assert!(member.lease().void() < term, "an outvoted sender voided");
+
+    assert!(piece(term + 3).await.is_ok());
+    assert_eq!(member.incoming().held(), Some(4));
+    assert_eq!(member.lease().void(), term + 2);
+    assert!(admit().is_err());
+    cluster.stop().await;
+}
+
 /// A stream's batch is never written to a cache shard: its raw record
 /// would fail to apply on every member and on every restart. It is refused
 /// at the call and again by the publish task, and the group goes on taking

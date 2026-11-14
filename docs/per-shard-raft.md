@@ -1698,8 +1698,9 @@ The vote is read from the log, not from openraft, which at a start
 demotes a member's own committed vote in memory.
 
 The stored vote stops counting once anything can have replaced it: an
-append under another vote, a `TransferLeader` request (the member may
-stand), and the grant itself, after which the vote on disk is the
+append under another vote, a cache shard's snapshot installed under another
+vote, a `TransferLeader` request (the member may stand), and the grant
+itself, after which the vote on disk is the
 candidate's new one and is not committed. A second request from the same
 leader is dropped like any other. Only a vote request is let through,
 never a pre-vote: openraft refuses a pre-vote inside the window whoever

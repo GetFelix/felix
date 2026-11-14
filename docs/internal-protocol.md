@@ -1158,7 +1158,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 2 (layout 1 had no report byte). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 3 (layout 1 had no report byte, layout 2 no snapshot data). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |

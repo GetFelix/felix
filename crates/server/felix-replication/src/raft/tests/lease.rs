@@ -15,7 +15,7 @@ use crate::engine::CommitError;
 
 const SOON: Duration = Duration::from_secs(10);
 
-fn vote_of(term: u64, broker: &str, committed: bool) -> VoteOf<ShardTypes> {
+pub(super) fn vote_of(term: u64, broker: &str, committed: bool) -> VoteOf<ShardTypes> {
     let leader = LeaderIdOf::<ShardTypes>::new(term, MemberId::new(broker, 1));
     <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, committed)
 }
@@ -40,7 +40,7 @@ fn pre_vote_request(term: u64, from: &str) -> Request {
 }
 
 /// A candidacy `from` a member whose log is behind nobody's.
-fn stands(term: u64, from: &str) -> Request {
+pub(super) fn stands(term: u64, from: &str) -> Request {
     let last = LogIdOf::<ShardTypes>::new((term - 1).into(), 1 << 40);
     Request::Vote(VoteRequest::new(vote_of(term, from, false), Some(last)))
 }
@@ -54,7 +54,7 @@ fn heartbeat(vote: VoteOf<ShardTypes>) -> Request {
     })
 }
 
-fn dropped(answer: &Result<RaftReply, Refused>) -> bool {
+pub(super) fn dropped(answer: &Result<RaftReply, Refused>) -> bool {
     matches!(answer, Err(Refused::Unreachable(_)))
 }
 
@@ -68,7 +68,7 @@ fn granted(answer: Result<RaftReply, Refused>) -> bool {
 
 /// Poll `check` for a short while: a rule that is missing fails the test
 /// in seconds.
-async fn soon(what: &str, mut check: impl FnMut() -> bool) {
+pub(super) async fn soon(what: &str, mut check: impl FnMut() -> bool) {
     let deadline = tokio::time::Instant::now() + SOON;
     while !check() {
         assert!(tokio::time::Instant::now() < deadline, "{what}");

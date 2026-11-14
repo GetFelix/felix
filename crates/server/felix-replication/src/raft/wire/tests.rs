@@ -257,7 +257,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[2, 3][..],
+        &[3, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -313,12 +313,12 @@ fn trailing_bytes_and_other_layouts_are_refused() {
     longer.put_u8(0);
     assert!(decode_request(longer.freeze()).is_err());
     let mut other = BytesMut::from(&bytes[..]);
-    other[0] = 3;
+    other[0] = 4;
     assert!(decode_request(other.freeze()).is_err());
 
     let reply = encode_reply(&every_reply()[0]);
     let mut other = BytesMut::from(&reply[..]);
-    other[0] = 3;
+    other[0] = 4;
     assert!(decode_reply(other.freeze()).is_err());
 }
 
@@ -350,6 +350,34 @@ fn a_layout_1_header_is_refused_by_layout() {
         panic!("a layout 1 answer was read");
     };
     assert!(refused.to_string().contains("layout 1"), "{refused}");
+}
+
+/// A build from before snapshots carried data writes layout 2, whose
+/// snapshot ends at the membership. It is refused by its layout: read as
+/// this one it would only look cut short.
+#[test]
+fn a_layout_2_snapshot_is_refused_by_layout() {
+    let sent = every_request().remove(4);
+    let Request::Snapshot { data, .. } = &sent.body else {
+        panic!("not the snapshot");
+    };
+    let bytes = encode_request(&sent).expect("encode");
+    // The data's length, the piece's offset, its length and its bytes.
+    let mut old = bytes[..bytes.len() - (8 + 8 + 4 + data.len())].to_vec();
+    old[0] = 2;
+    let refused = decode_request(Bytes::from(old)).expect_err("refused");
+    assert!(
+        refused.to_string().contains("layout 2"),
+        "refused for something else: {refused}"
+    );
+
+    let reply = encode_reply(&every_reply()[0]);
+    let mut old = BytesMut::from(&reply[..]);
+    old[0] = 2;
+    let Err(refused) = decode_reply(old.freeze()) else {
+        panic!("a layout 2 answer was read");
+    };
+    assert!(refused.to_string().contains("layout 2"), "{refused}");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does

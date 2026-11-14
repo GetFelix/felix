@@ -344,7 +344,8 @@ impl Hold {
     }
 
     /// openraft is about to take a message that can replace the stored
-    /// vote: an append under `vote`, or one that has this member stand.
+    /// vote: an append or a snapshot under `vote`, or one that has this
+    /// member stand.
     fn vote_may_change(&self, vote: Option<&VoteOf<ShardTypes>>) {
         let mut follows = self.follows.lock();
         if follows.as_ref() != vote {
@@ -717,7 +718,8 @@ impl Group {
         let asks = match &body {
             Request::Vote(rpc) => !(held && self.hold.lets_through(&rpc.vote)),
             Request::PreVote(_) => true,
-            // Anything else openraft takes may replace the stored vote.
+            // Anything else openraft takes may replace the stored vote. A
+            // cache snapshot is handed over at its last piece, below.
             Request::Append(rpc) => {
                 self.hold.vote_may_change(Some(&rpc.vote));
                 false
@@ -815,6 +817,7 @@ impl Group {
                             bytes,
                             restored: Some(restored),
                         };
+                        self.hold.vote_may_change(Some(&vote));
                         self.raft
                             .install_full_snapshot(vote, Snapshot { meta, snapshot })
                             .await
