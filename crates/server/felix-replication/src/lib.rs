@@ -62,6 +62,7 @@ mod replica_set;
 pub mod reporter;
 #[cfg(feature = "raft")]
 pub mod seal;
+pub mod sealing;
 mod shard;
 mod ship;
 pub mod status;

@@ -425,7 +425,54 @@ impl Broker {
             storage.require_registration();
         }
         self.durable_storage = Some(storage);
+        self.hold_group_logs_while_sealed();
         self
+    }
+
+    /// A stream shard's cursors and dead letters take no local write, and
+    /// are not compacted, while the shard's own log holds a seal promise:
+    /// the seal names their ranges, and a copy that changed one afterwards
+    /// could not acknowledge or start from it. See "The seal on the hybrid
+    /// side" in `docs/per-shard-raft.md`.
+    fn hold_group_logs_while_sealed(&self) {
+        let (Some(storage), Some(groups), Some(reader)) = (
+            &self.durable_storage,
+            &self.consumer_groups,
+            &self.group_reader,
+        ) else {
+            return;
+        };
+        let held = |streams: DurableStorage| {
+            move |tenant: &str, namespace: &str, stream: &str, shard: u32| {
+                streams
+                    .opened_stream(tenant, namespace, stream, shard)
+                    .is_some_and(|log| log.disk_log().holds_seal())
+            }
+        };
+        groups.hold_writes_when(held(storage.clone()));
+        reader
+            .dead_letters()
+            .hold_writes_when(held(storage.clone()));
+    }
+
+    /// Whether no local write or compaction pass is under way on a stream
+    /// shard's cursor and dead-letter logs. Once the shard's log holds a
+    /// seal promise, true means those logs stay as they are until it lapses.
+    pub fn group_logs_quiet(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> bool {
+        self.consumer_groups
+            .as_ref()
+            .is_none_or(|groups| groups.writes_quiet(tenant_id, namespace, stream, shard))
+            && self.group_reader.as_ref().is_none_or(|reader| {
+                reader
+                    .dead_letters()
+                    .writes_quiet(tenant_id, namespace, stream, shard)
+            })
     }
 
     /// Where consumer groups keep their positions, and how long a claim stands.
@@ -441,6 +488,7 @@ impl Broker {
                 .waking(Arc::clone(&self.appended)),
         ));
         self.consumer_groups = Some(groups);
+        self.hold_group_logs_while_sealed();
         self
     }
 

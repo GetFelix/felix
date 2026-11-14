@@ -74,6 +74,27 @@ impl DeadLetters {
         })
     }
 
+    /// Refuse writes and stop compaction on a shard while `held` says so;
+    /// see `LogCache::hold_local_writes_when`.
+    pub(crate) fn hold_writes_when(
+        &self,
+        held: impl Fn(&str, &str, &str, u32) -> bool + Send + Sync + 'static,
+    ) {
+        self.entries.hold_local_writes_when(held);
+    }
+
+    /// Whether no write or compaction pass is under way on a shard.
+    pub(crate) fn writes_quiet(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> bool {
+        self.entries
+            .local_writes_quiet(tenant_id, namespace, stream, shard)
+    }
+
     /// Record that `group` gave up on `offset`.
     ///
     /// Also how a redriven record that failed again goes back to being dead:

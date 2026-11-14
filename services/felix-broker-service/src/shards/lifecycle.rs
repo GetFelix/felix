@@ -56,6 +56,11 @@ pub enum Phase {
     /// the assignment changes -- a failure that repeats every poll is noise,
     /// and the operator needs the state to stay visible.
     Failed,
+    /// Ours, and closed for the switch to Raft: the assignment carries a
+    /// seal order at this generation, or the recorded switch. Nothing is
+    /// fenced, promoted or served by the hybrid, and nothing here reopens
+    /// it. Only a later generation without a seal does.
+    Sealed,
 }
 
 impl Phase {
@@ -68,6 +73,7 @@ impl Phase {
             Phase::Draining => "draining",
             Phase::Closed => "closed",
             Phase::Failed => "failed",
+            Phase::Sealed => "sealed",
         }
     }
 
@@ -366,6 +372,10 @@ impl ShardLifecycle {
             }
         }
 
+        if ours && let Some(a) = assignment.filter(|a| a.is_sealed()) {
+            return self.seal(key, a, renewal);
+        }
+
         match (ours, current) {
             // Newly ours: open before serving.
             (true, None) => self.begin_open(key, generation, incarnation, draining, replicated),
@@ -439,6 +449,9 @@ impl ShardLifecycle {
                     // each time buries the failure in noise while hammering a
                     // log that is not opening. A new generation is real news.
                     Phase::Failed if generation == existing.generation => Action::None,
+                    // Sealed at this generation stays closed, whatever the
+                    // assignment says now: a seal ends only at a later one.
+                    Phase::Sealed if generation == existing.generation => Action::None,
                     // Released for a drain at this generation: stays released.
                     Phase::Draining | Phase::Closed
                         if existing.draining && generation == existing.generation =>
@@ -447,7 +460,11 @@ impl ShardLifecycle {
                     }
                     // Ours again after we let it go, or after a failure at an
                     // older generation.
-                    Phase::Draining | Phase::Closed | Phase::Unassigned | Phase::Failed => {
+                    Phase::Draining
+                    | Phase::Closed
+                    | Phase::Unassigned
+                    | Phase::Failed
+                    | Phase::Sealed => {
                         self.begin_open(key, generation, incarnation, draining, replicated)
                     }
                 }
@@ -472,7 +489,7 @@ impl ShardLifecycle {
                         Action::None
                     }
                 }
-                Phase::Active | Phase::Opening | Phase::Fencing => {
+                Phase::Active | Phase::Opening | Phase::Fencing | Phase::Sealed => {
                     self.set(key, Phase::Draining, existing.generation, false);
                     Action::Release {
                         key: key.clone(),
@@ -481,6 +498,62 @@ impl ShardLifecycle {
                 }
             },
         }
+    }
+
+    /// Close a shard this broker leads whose assignment carries a seal order
+    /// at its generation, or the recorded switch to Raft. No open, no fence:
+    /// the seal's round runs on the log as it stands
+    /// (`felix_replication::sealing`), and a switched shard is no longer the
+    /// hybrid's to serve.
+    fn seal(&mut self, key: &ShardKey, assignment: &ShardAssignment, renewal: u64) -> Action {
+        let generation = assignment.generation;
+        let incarnation = assignment.incarnation;
+        let switched = assignment.is_switched();
+        let existing = self.shards.get(key).cloned();
+        let same_shard =
+            |shard: &LocalShard| shard.incarnation == incarnation && shard.renewal == renewal;
+        if let Some(shard) = &existing {
+            if incarnation < shard.incarnation
+                || (same_shard(shard) && generation < shard.generation)
+            {
+                mm::record_stale_event();
+                return Action::None;
+            }
+            if shard.phase == Phase::Sealed && same_shard(shard) && generation == shard.generation {
+                // The order's report was accepted since.
+                if switched {
+                    self.fence.switched(key, generation);
+                }
+                return Action::None;
+            }
+        }
+        // Only a leader that was serving the generation right before holds
+        // every acknowledged record without taking a follower's tail, which
+        // a seal's fence does not do. Any other gives the order up.
+        let continues = !switched
+            && assignment.seals_here(&self.node_id)
+            && existing.as_ref().is_some_and(|shard| {
+                shard.phase == Phase::Active
+                    && !shard.draining
+                    && same_shard(shard)
+                    && generation == shard.generation + 1
+            });
+        self.promoting.remove(key);
+        self.fence.set_continuing(key, None);
+        // Marked before the phase is set, so replication never sees the
+        // generation led here without the mark.
+        if switched {
+            self.fence.switched(key, generation);
+        } else {
+            self.fence.seal_ordered(key, generation, continues);
+        }
+        self.set(key, Phase::Sealed, generation, false);
+        if let Some(shard) = self.shards.get_mut(key) {
+            shard.incarnation = incarnation;
+            shard.renewal = renewal;
+            shard.replicated = assignment.replicas.iter().any(|r| *r != assignment.leader);
+        }
+        Action::None
     }
 
     /// Note a move naming this broker as the destination. Prepares once per
@@ -794,6 +867,10 @@ impl ShardLifecycle {
             self.fence.await_promotion(key, generation);
         } else if phase != Phase::Opening {
             self.fence.promotion_settled(key);
+        }
+        // `seal` marks the order before it comes here; any other phase ends it.
+        if phase != Phase::Sealed {
+            self.fence.seal_settled(key);
         }
         self.fence.record_phase(key, phase, generation);
         let previous = self.shards.get(key).map(|shard| shard.phase);

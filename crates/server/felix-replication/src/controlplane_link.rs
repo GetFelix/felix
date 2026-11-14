@@ -111,6 +111,29 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
         body: &(impl Serialize + Sync),
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
 
+    /// `POST /v1/nodes/{node_id}/seal-report`: a seal leader's report that a
+    /// majority holds the seal's record. A link that does not carry it
+    /// fails the call, and the leader keeps the report to send again.
+    fn seal_report(
+        &self,
+        _bearer: Option<&str>,
+        _node_id: &str,
+        _body: &(impl Serialize + Sync),
+    ) -> impl Future<Output = Result<LinkResponse>> + Send {
+        async { Err(anyhow::anyhow!("this link carries no seal report")) }
+    }
+
+    /// `POST /v1/nodes/{node_id}/seal-give-up`: a seal leader gave its
+    /// round up.
+    fn seal_give_up(
+        &self,
+        _bearer: Option<&str>,
+        _node_id: &str,
+        _body: &(impl Serialize + Sync),
+    ) -> impl Future<Output = Result<LinkResponse>> + Send {
+        async { Err(anyhow::anyhow!("this link carries no seal report")) }
+    }
+
     /// `GET /v1/shard-assignments/confirmed` for `key`, abandoned after
     /// `timeout`.
     fn confirmed_assignment(
@@ -303,6 +326,32 @@ impl ControlPlaneLink for HttpControlPlaneLink {
         let request = self
             .client
             .post(self.url(&format!("/v1/nodes/{node_id}/replica-status")))
+            .json(body);
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn seal_report(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        body: &(impl Serialize + Sync),
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .post(self.url(&format!("/v1/nodes/{node_id}/seal-report")))
+            .json(body);
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn seal_give_up(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        body: &(impl Serialize + Sync),
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .post(self.url(&format!("/v1/nodes/{node_id}/seal-give-up")))
             .json(body);
         finish(bearer_if(request, bearer)).await
     }

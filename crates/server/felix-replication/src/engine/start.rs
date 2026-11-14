@@ -90,6 +90,9 @@ pub struct StartDeps<S: ?Sized, F: ?Sized, R, L> {
     /// Until cancelled this broker only votes in elections.
     pub leads_after: Option<CancellationToken>,
     pub unclean: Option<Arc<crate::unclean::UncleanStart>>,
+    /// The seal orders on shards this broker leads. `None` where nothing
+    /// orders a seal; with no `report` there is nobody to answer one.
+    pub seals: Option<Arc<dyn crate::sealing::SealOrders>>,
     pub shutdown: CancellationToken,
 }
 
@@ -141,9 +144,30 @@ impl<S: ShardServing + ?Sized + 'static> Hybrid<S> {
             suspects,
             leads_after,
             unclean,
+            seals,
             shutdown,
         } = deps;
         let marks = Arc::clone(&published.marks);
+        if let (Some(to), Some(orders)) = (&report, seals) {
+            spawned("sealing");
+            drop(crate::sealing::spawn(
+                crate::sealing::Sealing::new(
+                    Arc::clone(&requester),
+                    Arc::clone(&broker),
+                    Arc::clone(&router),
+                    orders,
+                    crate::sealing::SealTo {
+                        link: to.link.clone(),
+                        node_id: to.node_id.clone(),
+                        token: to.token.clone(),
+                        held: to.held.clone(),
+                        storage_id: to.storage_id,
+                    },
+                ),
+                interval,
+                shutdown.clone(),
+            ));
+        }
         let reporter = report.map(|to| {
             spawned("reporter");
             let (reporter, _task) = Reporter::spawn(to, shutdown.clone());

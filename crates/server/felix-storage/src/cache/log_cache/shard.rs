@@ -8,7 +8,7 @@
 use felix_common::random::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 
 use bytes::Bytes;
@@ -37,6 +37,9 @@ pub(super) struct CacheShard {
     pub(super) compactor: Arc<Compactor>,
     /// Set while a background compaction pass runs, so only one does.
     pub(super) compacting: AtomicBool,
+    /// Local writes and compaction passes under way, and what refuses new
+    /// ones. See [`super::LogCache::hold_local_writes_when`].
+    pub(super) local: LocalWrites,
     /// Keys with a write staged but not yet applied, and how many. Compaction
     /// must not copy these forward; see `compaction::copy_forward`.
     pub(super) keys_in_flight: SyncMutex<HashMap<String, usize>>,
@@ -53,7 +56,56 @@ pub(super) struct CacheShard {
     pub(super) sequencer: Arc<CommitSequencer>,
 }
 
+/// The local writes to one shard: puts, deletes, expiries and compaction.
+/// Records a replica stores from its leader are not counted.
+pub(super) struct LocalWrites {
+    in_flight: AtomicUsize,
+    held: Box<dyn Fn() -> bool + Send + Sync>,
+}
+
+impl LocalWrites {
+    pub(super) fn new(held: Box<dyn Fn() -> bool + Send + Sync>) -> Self {
+        Self {
+            in_flight: AtomicUsize::new(0),
+            held,
+        }
+    }
+
+    /// Whether new local writes are refused now.
+    pub(super) fn held(&self) -> bool {
+        (self.held)()
+    }
+
+    /// Whether no local write or compaction pass is under way.
+    pub(super) fn quiet(&self) -> bool {
+        self.in_flight.load(Ordering::SeqCst) == 0
+    }
+}
+
+/// One local write or compaction pass under way.
+pub(super) struct LocalWrite<'a>(&'a AtomicUsize);
+
+impl Drop for LocalWrite<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 impl CacheShard {
+    /// Enter a local write or a compaction pass, refused while the shard is
+    /// held. Keep the guard until the write has applied.
+    pub(super) fn enter_local(&self) -> Result<LocalWrite<'_>> {
+        // Counted before the check, as a write fence counts: whoever sets
+        // the hold and then sees nothing in flight cannot miss a write that
+        // got in.
+        self.local.in_flight.fetch_add(1, Ordering::SeqCst);
+        let entered = LocalWrite(&self.local.in_flight);
+        if self.local.held() {
+            return Err(StorageError::Sealed(self.label.clone()));
+        }
+        Ok(entered)
+    }
+
     /// The log this shard is writing to right now.
     ///
     /// Takes the state lock so it cannot race a close.

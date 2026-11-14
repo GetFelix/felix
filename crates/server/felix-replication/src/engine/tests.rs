@@ -732,6 +732,7 @@ mod start {
             suspects: Arc::new(Suspects::default()),
             leads_after: None,
             unclean: None,
+            seals: None,
             shutdown: shutdown.clone(),
         });
         drop(started);

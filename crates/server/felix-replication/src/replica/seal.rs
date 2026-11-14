@@ -77,6 +77,19 @@ impl ReplicaHandler {
                 "this broker has no log for that shard".to_string(),
             );
         };
+        // The promise refuses new commits, dead letters and compaction
+        // passes on this copy. One begun before it, while this broker led,
+        // could still move a side log's start after it is answered. Not
+        // answering keeps the promise, and the sealer asks again.
+        if !self.side_logs_settle(&shard).await {
+            metrics::record_replicated(metrics::OUTCOME_REFUSED);
+            return refused(
+                correlation_id,
+                ErrorCode::Unavailable,
+                0,
+                "a write to this copy's dead-letter or cursor log is still finishing".to_string(),
+            );
+        }
         InternalMessage::SealFenceOk(SealFenceOk {
             ok,
             starts: SealStarts {
@@ -195,6 +208,26 @@ impl ReplicaHandler {
     /// The promise `shard`'s copy holds, if any.
     pub(crate) async fn seal_promise(&self, shard: &ShardRef) -> Option<SealPromise> {
         self.stream_log(shard).await?.disk_log().seal_promise()
+    }
+
+    /// Wait, briefly, until no local write or compaction pass is under way
+    /// on `shard`'s dead-letter and cursor logs. False if one still is.
+    async fn side_logs_settle(&self, shard: &ShardRef) -> bool {
+        const TRIES: u32 = 100;
+        for attempt in 0..TRIES {
+            if self.broker.group_logs_quiet(
+                &shard.tenant_id,
+                &shard.namespace,
+                &shard.stream,
+                shard.shard,
+            ) {
+                return true;
+            }
+            if attempt + 1 < TRIES {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+        false
     }
 
     async fn stream_log(&self, shard: &ShardRef) -> Option<StreamLog> {

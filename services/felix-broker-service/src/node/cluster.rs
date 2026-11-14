@@ -603,6 +603,8 @@ where
                         suspects: Arc::clone(suspects),
                         leads_after: leads_after.clone(),
                         unclean: unclean.clone(),
+                        seals: Some(Arc::clone(ingress.fence())
+                            as Arc<dyn replication::sealing::SealOrders>),
                         shutdown: sync_shutdown.clone(),
                     },
                 )

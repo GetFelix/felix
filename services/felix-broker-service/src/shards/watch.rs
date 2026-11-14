@@ -92,6 +92,28 @@ pub struct ShardAssignment {
     /// [`felix_router::Route::readmitted`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readmitted: Vec<Readmitted>,
+    /// The shard's switch from the hybrid to Raft, once the control plane
+    /// has ordered its seal. Absent from every other assignment, and from a
+    /// control plane that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch: Option<Switch>,
+}
+
+/// [`ShardAssignment::switch`]: a seal order, then the recorded switch.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct Switch {
+    /// The seal's generation. The order stands only while the assignment is
+    /// at it.
+    pub generation: u64,
+    /// The leader that seals.
+    pub sealer: String,
+    /// The sealer's storage identity as the control plane knows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sealer_copy: Option<String>,
+    /// The seal report the control plane accepted: the base and the voters.
+    /// Present means the shard's engine is Raft, at every generation after.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<serde_json::Value>,
 }
 
 /// One entry of [`ShardAssignment::readmitted`].
@@ -115,6 +137,31 @@ impl ShardAssignment {
     /// generation so the shard can move.
     pub fn is_draining(&self) -> bool {
         self.state == "draining"
+    }
+
+    /// The control plane recorded the shard's switch to Raft. One way, so
+    /// it holds at whatever generation the assignment is.
+    pub fn is_switched(&self) -> bool {
+        self.switch
+            .as_ref()
+            .is_some_and(|switch| switch.report.is_some())
+    }
+
+    /// The hybrid does not open the shard at this generation: it is under a
+    /// seal order here, or switched.
+    pub fn is_sealed(&self) -> bool {
+        self.is_switched()
+            || self
+                .switch
+                .as_ref()
+                .is_some_and(|switch| switch.generation == self.generation)
+    }
+
+    /// The seal order at this generation names `node` as the sealer.
+    pub fn seals_here(&self, node: &str) -> bool {
+        self.switch.as_ref().is_some_and(|switch| {
+            switch.report.is_none() && switch.generation == self.generation && switch.sealer == node
+        })
     }
 }
 
@@ -192,6 +239,8 @@ impl PreviousSet {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            switch: None,
+            switch: None,
         }
     }
 }

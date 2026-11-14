@@ -37,6 +37,8 @@ fn assignment(key: ShardKey, leader: &str, replicas: &[&str]) -> ShardAssignment
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        switch: None,
+        switch: None,
     }
 }
 

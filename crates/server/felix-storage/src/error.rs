@@ -70,6 +70,11 @@ pub enum StorageError {
     /// The log was closed, because the shard it holds moved away. Names the
     /// shard. Reopening it through its provider gives a working log.
     Closed(String),
+    /// A local write to a log that is held for its shard's seal: the shard
+    /// is moving to Raft, and its dead letters and cursors must stay as the
+    /// seal names them. Names the shard. Lifts when a later generation
+    /// reopens the shard.
+    Sealed(String),
     /// A shard directory holds a different shard than the one being opened:
     /// two keys whose directory names collide. Refused rather than mixing
     /// two shards' records in one log.
@@ -128,6 +133,10 @@ impl fmt::Display for StorageError {
                 "offset {offset} is outside this log, which holds [{base}, {tail})"
             ),
             StorageError::Closed(shard) => write!(f, "the log for {shard} is closed"),
+            StorageError::Sealed(shard) => write!(
+                f,
+                "the log for {shard} takes no writes while its shard is sealed for the switch to Raft"
+            ),
             StorageError::ShardMismatch {
                 dir,
                 expected,

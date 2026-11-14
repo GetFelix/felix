@@ -77,6 +77,27 @@ impl ConsumerGroups {
         })
     }
 
+    /// Refuse commits and stop compaction on a shard while `held` says so;
+    /// see `LogCache::hold_local_writes_when`.
+    pub(crate) fn hold_writes_when(
+        &self,
+        held: impl Fn(&str, &str, &str, u32) -> bool + Send + Sync + 'static,
+    ) {
+        self.cursors.hold_local_writes_when(held);
+    }
+
+    /// Whether no commit or compaction pass is under way on a shard.
+    pub(crate) fn writes_quiet(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> bool {
+        self.cursors
+            .local_writes_quiet(tenant_id, namespace, stream, shard)
+    }
+
     /// Write each commit's dependency on the dead-letter log only while
     /// `enabled` says so. A build that predates it refuses such a value, so a
     /// cluster waits for its fleet; until then a cursor carries only its

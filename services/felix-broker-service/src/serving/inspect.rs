@@ -327,6 +327,10 @@ fn not_serving(
                     .unwrap_or_else(|| "the local log could not be opened".to_string()),
             ),
         ),
+        Phase::Sealed => (
+            Some("sealed"),
+            Some("closed for the switch to Raft; only a later generation reopens it".to_string()),
+        ),
         Phase::Draining | Phase::Closed => (
             Some("draining"),
             Some(match route.and_then(|route| route.successor.as_deref()) {

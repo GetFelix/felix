@@ -272,7 +272,7 @@ impl LogInner {
     }
 
     /// Whether a seal promise holds: no later generation accepted since.
-    fn holds_seal(&self) -> bool {
+    pub(super) fn holds_seal(&self) -> bool {
         #[cfg(feature = "raft")]
         {
             self.switch_seal.lock().is_some_and(|promise| {

@@ -163,6 +163,14 @@ impl DiskLog {
         self.inner.accepted_generation.load(Ordering::Acquire)
     }
 
+    /// Whether this copy holds a promise to a seal that moves its shard to
+    /// Raft. While it does, the shard's dead-letter and cursor logs take no
+    /// local write and are not compacted: the seal names their ranges.
+    /// Always false in a build without the Raft engine.
+    pub fn holds_seal(&self) -> bool {
+        self.inner.holds_seal()
+    }
+
     /// The leader this log accepted its generation from, if it was named.
     pub fn accepted_leader(&self) -> Option<Arc<str>> {
         self.inner.ballot.read().leader.clone()

@@ -80,6 +80,13 @@ pub struct ShardFence {
     reclaimable: RwLock<HashMap<ShardKey, u64>>,
     /// Shards whose failed open was reported refused since they last opened.
     failed_reported: parking_lot::Mutex<felix_common::random::HashSet<ShardKey>>,
+    /// Shards closed under a seal order: the seal's generation, and whether
+    /// this process was serving the generation before it. See
+    /// [`felix_replication::sealing::SealOrder`].
+    seals: RwLock<HashMap<ShardKey, (u64, bool)>>,
+    /// Shards whose switch to Raft the control plane recorded, and the
+    /// generation this broker saw it at. The hybrid does nothing for them.
+    switched: RwLock<HashMap<ShardKey, u64>>,
 }
 
 impl ShardFence {
@@ -214,6 +221,31 @@ impl ShardFence {
     /// acknowledged before it.
     pub fn continuing(&self, key: &ShardKey, generation: u64) -> bool {
         self.continuing.read().get(key) == Some(&generation)
+    }
+
+    /// `key` is closed under a seal order at `generation`.
+    pub(crate) fn seal_ordered(&self, key: &ShardKey, generation: u64, continues: bool) {
+        self.seals
+            .write()
+            .insert(key.clone(), (generation, continues));
+    }
+
+    /// `key`'s switch to Raft is recorded, as of `generation`.
+    pub(crate) fn switched(&self, key: &ShardKey, generation: u64) {
+        // Marked before the order goes, so the shard is never neither.
+        self.switched.write().insert(key.clone(), generation);
+        self.seals.write().remove(key);
+    }
+
+    /// `key` is no longer sealed here: a later generation reopened it, or
+    /// it moved away.
+    pub(crate) fn seal_settled(&self, key: &ShardKey) {
+        if self.seals.read().contains_key(key) {
+            self.seals.write().remove(key);
+        }
+        if self.switched.read().contains_key(key) {
+            self.switched.write().remove(key);
+        }
     }
 
     /// The generation `key` waits at for the promotion fence, if it does.
@@ -503,11 +535,37 @@ impl felix_replication::driver::WriteFence for ShardFence {
     }
 
     fn withheld(&self, key: &ShardKey, generation: u64) -> bool {
-        self.gave_up.read().get(key) == Some(&generation)
+        // A switched shard is not the hybrid's to ship. Nor is one whose
+        // seal this broker cannot run: it was not serving the generation
+        // before, and shipping from an unfenced copy could cut a follower's
+        // acknowledged tail.
+        self.switched.read().contains_key(key)
+            || self.seals.read().get(key) == Some(&(generation, false))
+            || self.gave_up.read().get(key) == Some(&generation)
             || self
                 .unclean
                 .get()
                 .is_some_and(|unclean| !unclean.leads_at(key, generation))
+    }
+}
+
+impl felix_replication::sealing::SealOrders for ShardFence {
+    fn orders(&self) -> Vec<felix_replication::sealing::SealOrder> {
+        self.seals
+            .read()
+            .iter()
+            .map(
+                |(key, (generation, continues))| felix_replication::sealing::SealOrder {
+                    key: key.clone(),
+                    generation: *generation,
+                    continues: *continues,
+                },
+            )
+            .collect()
+    }
+
+    fn quiesced(&self, key: &ShardKey) -> bool {
+        ShardFence::quiesced(self, key)
     }
 }
 

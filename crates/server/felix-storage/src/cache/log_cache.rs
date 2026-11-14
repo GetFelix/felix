@@ -59,6 +59,21 @@ pub struct LogCache {
     /// Markers and floors under `.streams/` in this store's root, for a
     /// store whose names are caches; see `crate::incarnation::marker`.
     markers: Arc<crate::incarnation::marker::MarkerFiles>,
+    /// When a shard's local writes are refused; see
+    /// [`Self::hold_local_writes_when`].
+    local_hold: LocalHold,
+}
+
+/// Says whether one shard, by tenant, namespace, name and index, is held.
+type HeldFn = dyn Fn(&str, &str, &str, u32) -> bool + Send + Sync;
+
+#[derive(Clone, Default)]
+struct LocalHold(Arc<parking_lot::RwLock<Option<Arc<HeldFn>>>>);
+
+impl std::fmt::Debug for LocalHold {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LocalHold")
+    }
 }
 
 impl LogCache {
@@ -82,7 +97,48 @@ impl LogCache {
             compactor: Arc::new(Compactor::from_env()),
             observer: Arc::new(SyncMutex::new(None)),
             holds: SyncMutex::new(felix_common::random::HashMap::default()),
+            local_hold: LocalHold::default(),
         })
+    }
+
+    /// Refuse every local write to a shard, and stop its compaction, while
+    /// `held` says so for it: puts, deletes and expiries fail with
+    /// [`StorageError::Sealed`], and a compaction pass neither starts nor
+    /// copies or trims further. Records a replica stores from its leader go
+    /// through the shard's log and are not affected.
+    ///
+    /// For a store whose logs travel with a stream shard, held while that
+    /// shard is sealed. `held` is asked on every local write.
+    pub fn hold_local_writes_when(
+        &self,
+        held: impl Fn(&str, &str, &str, u32) -> bool + Send + Sync + 'static,
+    ) {
+        *self.local_hold.0.write() = Some(Arc::new(held));
+    }
+
+    /// Whether no local write or compaction pass is under way on a shard.
+    /// Read after the hold is in place, true means nothing local changes the
+    /// shard's log until the hold lifts. True for a shard not open here.
+    pub fn local_writes_quiet(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+    ) -> bool {
+        let Some(incarnation) = self.incarnations.resolve(tenant, namespace, cache) else {
+            return true;
+        };
+        let id = (
+            tenant.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+            shard,
+            incarnation,
+        );
+        self.shards
+            .get_open(&id)
+            .is_none_or(|shard| shard.local.quiet())
     }
 
     pub fn root(&self) -> &Path {
@@ -158,6 +214,7 @@ impl LogCache {
     ) -> Result<ConditionalWrite> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
+        let _local = shard.enter_local()?;
         let expires_at_millis = ttl.map_or(0, |ttl| now_millis() + ttl.as_millis() as u64);
         let op = CacheOp::Put {
             key: key.to_string(),
@@ -455,6 +512,7 @@ impl LogCache {
     ) -> Result<Deleted> {
         let shard_index = shard;
         let shard = self.shard(tenant_id, namespace, cache, shard_index)?;
+        let _local = shard.enter_local()?;
         let op = CacheOp::Delete {
             key: key.to_string(),
         };
@@ -1071,11 +1129,17 @@ impl LogCache {
                     Some(base) => DiskLog::open_at(dir.clone(), label.clone(), config, base)?,
                     None => DiskLog::open(dir.clone(), label.clone(), config)?,
                 };
+                let hold = self.local_hold.clone();
+                let (tenant, namespace, cache) = owned(tenant, namespace, cache);
                 Ok(Arc::new(CacheShard {
                     label,
                     dir,
                     compactor: Arc::clone(&self.compactor),
                     compacting: Default::default(),
+                    local: shard::LocalWrites::new(Box::new(move || {
+                        let held = hold.0.read().clone();
+                        held.is_some_and(|held| held(&tenant, &namespace, &cache, shard))
+                    })),
                     keys_in_flight: Default::default(),
                     key_settled: Default::default(),
                     state: Mutex::new(ShardState {

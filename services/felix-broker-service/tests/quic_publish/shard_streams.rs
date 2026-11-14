@@ -50,6 +50,7 @@ fn leading_both_shards() -> Arc<IngressRouter> {
                     pending_set: None,
                     previous_generation: None,
                     readmitted: Default::default(),
+                    switch: None,
                 },
             )
         })

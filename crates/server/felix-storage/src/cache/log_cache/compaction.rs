@@ -50,7 +50,7 @@ impl CacheShard {
         let shard = Arc::clone(self);
         let spawned = self.compactor.spawn(async move {
             match shard.compact().await {
-                Ok(()) | Err(StorageError::Closed(_)) => {}
+                Ok(()) | Err(StorageError::Closed(_) | StorageError::Sealed(_)) => {}
                 Err(err) => tracing::warn!(
                     shard = %shard.label, error = %err,
                     "cache compaction failed; it is retried on a later write",
@@ -72,6 +72,9 @@ impl CacheShard {
     /// One compaction pass. Returns early, having changed nothing a replay
     /// would notice, when the shard closes or the store shuts down.
     pub(super) async fn compact(&self) -> Result<()> {
+        // A held shard is not compacted: a pass moves the log's start and
+        // tail, which a seal has named.
+        let _local = self.enter_local()?;
         let log = self.live_log().await?;
         let cut = log.roll_now().await?;
 
@@ -98,7 +101,7 @@ impl CacheShard {
                 break;
             }
             for batch in below.chunks(COPY_BATCH) {
-                if !self.copy_forward(&log, batch).await? {
+                if self.local.held() || !self.copy_forward(&log, batch).await? {
                     return Ok(());
                 }
             }
@@ -135,6 +138,11 @@ impl CacheShard {
         // The copies must be on the device before the originals leave it,
         // whatever the fsync mode says about ordinary writes.
         log.sync().await?;
+        // Held since the pass began: the copies restate what the log holds,
+        // and the start stays where it is.
+        if self.local.held() {
+            return Ok(());
+        }
         let removed = log.trim_before(cut).await?;
         let reclaimed: u64 = removed.iter().map(payload_bytes).sum();
         {

@@ -196,7 +196,7 @@ impl SealRound {
             return Ok(SealProgress::Abandoned);
         }
         if self.base.is_none() {
-            match self.promise_own(logs.log).await? {
+            match Self::promise(logs.log, self.generation, &self.own).await? {
                 Ok(()) => {}
                 Err(why) => return Ok(self.give_up(why)),
             }
@@ -275,28 +275,27 @@ impl SealRound {
             .map_or(SealProgress::Waiting, SealProgress::Reported))
     }
 
-    /// The leader's own promise, taken once per round. A claim already
-    /// made at this generation is an earlier run's.
-    async fn promise_own(
-        &mut self,
+    /// The leader's own promise to the seal at `generation`, on its copy
+    /// `own` of `log`. Taken before the round is built, so the starts the
+    /// round begins from are read under it, and again by every pass until
+    /// the claim. A claim already made at this generation is an earlier
+    /// run's, and refuses.
+    pub async fn promise(
         log: &DiskLog,
+        generation: u64,
+        own: &(String, StorageId),
     ) -> felix_storage::Result<std::result::Result<(), SealRefused>> {
         if let Some(promise) = log.seal_promise()
-            && promise.generation == self.generation
+            && promise.generation == generation
         {
             if promise.claimed {
-                return Ok(Err(SealRefused::Claimed {
-                    generation: self.generation,
-                }));
+                return Ok(Err(SealRefused::Claimed { generation }));
             }
-            if promise.sealer == self.own.1 {
+            if promise.sealer == own.1 {
                 return Ok(Ok(()));
             }
         }
-        match log
-            .promise_seal(self.generation, &self.own.0, self.own.1)
-            .await?
-        {
+        match log.promise_seal(generation, &own.0, own.1).await? {
             Ok(GenerationCheck::Raised | GenerationCheck::Current) => Ok(Ok(())),
             Ok(_) => Ok(Err(SealRefused::NoPromise)),
             Err(why) => Ok(Err(why)),
