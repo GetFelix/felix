@@ -420,13 +420,15 @@ kernel may have dropped pages, which then read as one. Two cases:
   the same disk without a sync. If both writes are lost, nothing on disk
   says a flush failed and the copy keeps its id. For that copy it is the
   same as a power cut (issue #2423).
-- **The copy is closed and opened again in the same process.** Nothing
-  catches this. The process does not re-read the run record, so the copy
-  keeps its id. Today the broker opens its groups once, at startup,
-  through the restore check (issue #2441), and a rotation that check
-  makes stops the broker instead of reopening in place. Anything that
-  later reopens a group in a running broker has to rotate a poisoned copy
-  first.
+- **The copy is closed and opened again in the same process.** This
+  happens: a member whose engine log fails to open after `open_copy` is
+  closed, and the next routing pass reopens the same directory. The
+  process does not re-read the run record, so on its own the copy would
+  keep its id (issue #2475). Whatever reopens a member in a running
+  broker has to rotate a poisoned copy first. A storage id rotation by
+  the restore check (issue #2441) stops the broker instead of reopening
+  in place; a per-copy rotation inside `open_copy` opens the member under
+  its new copy id.
 
 **A kept directory that was poisoned** still holds its copy file and its
 marker, so `DiskLog::open` refuses it for good. That is intended: a
