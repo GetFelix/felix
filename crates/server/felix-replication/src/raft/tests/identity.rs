@@ -323,6 +323,92 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
     }
 }
 
+/// The leader's own marker syncs before it counts its unsynced write, but a
+/// slow sync holds up only the written count. The commit still acknowledges,
+/// and a write that cannot commit still times out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_slow_marker_sync_does_not_hold_the_commit_or_the_timeout() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.push(opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let before = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, before).await;
+    let leader = cluster.elected(0).await;
+    let stalled = roots.roots[&*leader.broker].mark_log().stall_vouch().await;
+
+    let engine = RaftEngine::new(cluster.runtime(&leader.broker));
+    let batch = |payload: &'static [u8]| Batch {
+        records: vec![Record {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+        }],
+        ack: AckAt::Written,
+        term: None,
+        producer: None,
+    };
+    // Well inside the wait's own timeout, so a wait stuck behind the marker
+    // fails here.
+    let soon = Duration::from_secs(20);
+    let written = engine
+        .propose(&shard(0), batch(b"commits"))
+        .await
+        .expect("written");
+    let acked = engine.await_quorum_ack(&shard(0), written, AckAt::Written, PATIENCE);
+    tokio::time::timeout(soon, acked)
+        .await
+        .expect("the commit waited on the marker")
+        .expect("acknowledged at its commit");
+
+    // No follower answers, so nothing commits.
+    for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
+        cluster.net.cut.lock().insert((*broker).into());
+    }
+    let stuck = engine
+        .propose(&shard(0), batch(b"stuck"))
+        .await
+        .expect("written");
+    let brief = Duration::from_millis(200);
+    let timed_out = engine.await_quorum_ack(&shard(0), stuck, AckAt::Written, brief);
+    let timed_out = tokio::time::timeout(soon, timed_out)
+        .await
+        .expect("the timeout waited on the marker");
+    assert!(
+        matches!(timed_out, Err(crate::engine::CommitError::TimedOut { .. })),
+        "{timed_out:?}"
+    );
+    assert!(
+        !run_state::vouched_unsynced(&roots.dir.path().join(&*leader.broker)).expect("read"),
+        "the marker was written while stalled"
+    );
+    drop(stalled);
+
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.ok();
+    }
+}
+
 /// Start a run on `root`, which is on the simulated filesystem, as a broker
 /// whose own fsync mode is `OnCommit`, and open it as a
 /// copy root. `control_plane` stands in for the control plane's copy of the
@@ -441,8 +527,17 @@ async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
     let other = followers.next().expect("another follower");
     // A first report waits on its root's marker, and is dropped if the
     // append's answer is ready before it. Later ones do not wait.
+    let old = cluster
+        .runtime(failing)
+        .status(&shard(0))
+        .expect("status")
+        .member;
+    let heard = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
     let deadline = tokio::time::Instant::now() + PATIENCE;
-    while !run_state::vouched_unsynced(&root_of(failing)).expect("read the marker") {
+    while heard.reports().from(&old).is_none() {
         assert!(
             tokio::time::Instant::now() < deadline,
             "the follower never vouched"
@@ -459,11 +554,13 @@ async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
             .expect("acknowledged");
         cluster.committed_everywhere(0, again.end - 1).await;
     }
-    let old = cluster
-        .runtime(failing)
-        .status(&shard(0))
-        .expect("status")
-        .member;
+    // The leader counts this copy from here on, so the marker has to be on
+    // the device already, not only in the page cache.
+    assert!(
+        sim_fs::entry_is_durable(&root_of(failing), run_state::VOUCHED_UNSYNCED_FILE_NAME)
+            .expect("simulated root"),
+        "a report left before its marker was synced"
+    );
     let log = logs.remove(failing).expect("log");
     let deadline = tokio::time::Instant::now() + PATIENCE;
     while log.durable_offset() < log.tail_offset().await.expect("tail") {

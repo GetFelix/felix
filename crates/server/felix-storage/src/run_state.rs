@@ -94,6 +94,14 @@ const RELAXED: u8 = 1;
 /// process is poisoned. See [`watch_poison`].
 static WATCHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
+/// The boot each directory's run began in, which [`record_vouched_unsynced`]
+/// names in the record of a run that began strict.
+static BEGAN_IN: Mutex<Vec<(PathBuf, Option<BootId>)>> = Mutex::new(Vec::new());
+
+/// Held across a read and rewrite of the record of a run under way, so
+/// [`forget_boot`] is never undone by a boot written from an older read.
+static REWRITE: Mutex<()> = Mutex::new(());
+
 /// What the record says about the run before this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LastRun {
@@ -198,7 +206,8 @@ pub fn begin(
     copy_trust::ensure(root, origin == Origin::Created)?;
     // A copy that vouched for unsynced records did so after the run's record
     // was written, so the marker speaks for the last run and for this one.
-    // That first run recorded no boot, so a crash of it always rotates.
+    // That run's record gets its boot right after the marker. A record still
+    // without one is a crash in between, which rotates.
     let vouched = vouched_unsynced(root)?;
     let relaxed = relaxed || vouched;
     let last_run = match read(root, loaded)? {
@@ -267,6 +276,11 @@ pub fn begin(
         (false, _) => encode(RUNNING, 0, id).to_vec(),
     };
     write(root, &record, true)?;
+    {
+        let mut began = BEGAN_IN.lock();
+        began.retain(|(began, _)| began != root);
+        began.push((root.to_path_buf(), boot));
+    }
     Ok(Begun {
         id,
         origin,
@@ -349,8 +363,53 @@ pub const VOUCHED_UNSYNCED_FILE_NAME: &str = "vouched-unsynced";
 /// write toward an acknowledgement. Call before the first one leaves. Always
 /// written and synced, even over a marker already there: one a crashed
 /// process left may be in the page cache only.
+///
+/// Then the run's record, if it began strict, becomes a relaxed one naming
+/// the boot [`begin`] was given, so a process crash from here on keeps the
+/// id as it does for a run that began relaxed.
 pub fn record_vouched_unsynced(root: &Path) -> Result<()> {
-    write_atomically(root, VOUCHED_UNSYNCED_FILE_NAME, b"written\n", true)
+    write_atomically(root, VOUCHED_UNSYNCED_FILE_NAME, b"written\n", true)?;
+    if let Err(err) = name_boot(root) {
+        tracing::warn!(
+            root = %root.display(),
+            error = %err,
+            "could not name the boot in the run record; a process crash of this run \
+             takes a new storage id"
+        );
+    }
+    Ok(())
+}
+
+/// Make the strict record of the run under way on `root` a relaxed one with
+/// its boot. Only after the marker is synced: the strict record with the
+/// marker rotates on any crash, and without it a machine crash would keep
+/// the id. Not synced, as in [`forget_boot`]: a machine crash rotates under
+/// either record.
+fn name_boot(root: &Path) -> Result<()> {
+    let began = BEGAN_IN
+        .lock()
+        .iter()
+        .find(|(began, _)| began == root)
+        .map(|(_, boot)| *boot);
+    let Some(Some(boot)) = began else {
+        return Ok(());
+    };
+    let _rewrite = REWRITE.lock();
+    let bytes = match crate::fs::read(path_in(root)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    // A record that already lost its boot is relaxed, and keeps none.
+    match decode(&bytes) {
+        Some(Record {
+            state: RUNNING,
+            flags: 0,
+            id,
+            boot: None,
+        }) => write(root, &encode_boot(id, boot), false),
+        _ => Ok(()),
+    }
 }
 
 /// Whether a copy under `root` may have vouched for an unsynced record. The
@@ -619,6 +678,7 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 /// keeps it for that; a crash of the machine rotates anyway. Syncing could
 /// also fail on the very device that just failed a sync.
 pub fn forget_boot(root: &Path) -> Result<()> {
+    let _rewrite = REWRITE.lock();
     let bytes = match crate::fs::read(path_in(root)) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),

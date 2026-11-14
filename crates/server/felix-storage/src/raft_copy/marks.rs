@@ -73,6 +73,8 @@ struct Inner {
     /// The root's vouched-unsynced marker was synced in this process.
     vouched: AtomicBool,
     fail_vouch: AtomicBool,
+    /// Write-held by a test to stall the marker's sync.
+    stall_vouch: Arc<tokio::sync::RwLock<()>>,
     #[cfg(test)]
     stall: tokio::sync::RwLock<()>,
     #[cfg(test)]
@@ -183,6 +185,7 @@ impl MarkLog {
                 compact_floor: AtomicU64::new(COMPACT_FLOOR),
                 vouched: AtomicBool::new(false),
                 fail_vouch: AtomicBool::new(false),
+                stall_vouch: Arc::default(),
                 #[cfg(test)]
                 stall: tokio::sync::RwLock::default(),
                 #[cfg(test)]
@@ -216,6 +219,7 @@ impl MarkLog {
         if self.inner.fail_vouch.load(Ordering::Relaxed) {
             return Err(io::Error::other("the vouched-unsynced marker was failed"));
         }
+        let _stalled = self.inner.stall_vouch.read().await;
         let inner = Arc::clone(&self.inner);
         tokio::task::spawn_blocking(move || {
             crate::run_state::record_vouched_unsynced(&inner.root).map_err(io::Error::other)?;
@@ -231,6 +235,13 @@ impl MarkLog {
     #[doc(hidden)]
     pub fn fail_vouch(&self) {
         self.inner.fail_vouch.store(true, Ordering::Relaxed);
+    }
+
+    /// Hold every [`Self::vouch_unsynced`] that has to write until the guard
+    /// drops, as a slow fsync would. For tests.
+    #[doc(hidden)]
+    pub async fn stall_vouch(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        Arc::clone(&self.inner.stall_vouch).write_owned().await
     }
 
     pub(crate) fn root(&self) -> &Path {

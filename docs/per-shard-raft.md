@@ -191,8 +191,10 @@ cases:
   may still count what the copy said. A copy under `on_commit` that
   never vouched was only ever counted for records it had synced, so it
   keeps its id as a 0.7 broker does (issue #2423). On Linux a process
-  crash alone keeps the id: the kernel still has the writes. Elsewhere,
-  macOS included, a killed relaxed run rotates too.
+  crash alone keeps the id: the kernel still has the writes. That holds
+  for the run that first vouched too, since its run record names the boot
+  once the marker is synced. Elsewhere, macOS included, a killed relaxed
+  run rotates too.
 - The directory fails the restore check below.
 - The copy's log was poisoned in its last run ("A poisoned log" below).
 
@@ -729,7 +731,8 @@ holds the floor's entry, a record that no copy holding it can vouch for
 (see "Offsets are not reused" below). `plan` marks every
 group where a dead broker was a voter, since those are the groups that may
 have lost something. On Linux a process crash does not rotate ids and never
-needs a re-form. A power cut rotates that broker's copy, and its old voter seat
+needs a re-form. A power cut rotates a broker's copy only when its run was
+relaxed or a copy in its root had vouched, and the old voter seat then
 stays empty until membership changes exist, so a group that loses a
 majority of its voters to power cuts is in the same place as one whose
 voters died.
@@ -1045,9 +1048,11 @@ What the acknowledgement promises, and what it does not
   where every broker is on `on_commit`, a leader acknowledges at its flush
   or the commit and asks for no written report, so no copy vouches, every
   broker keeps its id, and the shard reopens with every acknowledged
-  record. Brokers on `periodic` or `none` all rotate, and so does an
-  `on_commit` broker that ever followed a leader on a relaxed mode, since
-  it answered that leader's ask. A shard whose every voter rotated
+  record. Brokers on `periodic` or `none` all rotate. Once written
+  acknowledgements are on, so does an `on_commit` broker that ever
+  followed a leader on a relaxed mode, since it answered that leader's
+  ask. Today the broker acknowledges at the commit only (#2469), so no
+  leader asks and no `on_commit` copy vouches. A shard whose every voter rotated
   has no voter left and needs a re-form, as a 0.7 shard whose copies all
   rotated stays closed.
 - The cost is a voter seat. The rotated copy rejoins only through a

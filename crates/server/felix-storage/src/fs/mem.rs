@@ -572,6 +572,12 @@ impl Tree {
         )
     }
 
+    /// Whether the root's listing on the device holds `name`.
+    pub(crate) fn root_entry_is_durable(&self, name: &std::ffi::OsStr) -> bool {
+        let state = self.structure.lock();
+        state.root.data.lock().durable.contains_key(name)
+    }
+
     /// The length of the file at `path` below the root.
     pub(crate) fn len_of(&self, path: &Path) -> io::Result<u64> {
         let stat = self.stat(path)?;

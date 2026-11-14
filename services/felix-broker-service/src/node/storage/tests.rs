@@ -111,7 +111,7 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
 /// **A Raft copy under `OnCommit` keeps its storage id through a machine
 /// crash until it has vouched for a record it had not synced (#2423).** Its
 /// run record names no boot, so the crash below stands for one in any boot.
-/// After the marker the same crash rotates the id, as a hybrid `Periodic`
+/// After the marker a machine crash rotates the id, as a hybrid `Periodic`
 /// crash does, and the runs after it are recorded as relaxed.
 #[test]
 fn a_crash_under_on_commit_rotates_only_after_an_unsynced_record_was_vouched_for() {
@@ -127,6 +127,8 @@ fn a_crash_under_on_commit_rotates_only_after_an_unsynced_record_was_vouched_for
     assert_eq!(crashed.id, first);
 
     record_vouched_unsynced(root.path()).expect("marker");
+    // Without a boot to compare, as after a machine crash.
+    forget_boot(root.path()).expect("forget the boot");
     let vouched = begin_run(root.path(), &log, None).expect("after a crash");
     assert!(
         vouched.rotated,

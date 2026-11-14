@@ -1000,18 +1000,23 @@ impl Group {
             let Some(at) = early else {
                 return commit.await;
             };
-            // The written count includes this leader's own unsynced write.
-            if let Some(root) = &root
-                && root.vouch_unsynced().await.is_err()
-            {
-                return commit.await;
-            }
+            // The written count includes this leader's own unsynced write,
+            // so the marker syncs before the count is read. In this arm, so
+            // a slow sync holds up neither the commit nor the timeout.
+            let majority = async {
+                if let Some(root) = &root
+                    && root.vouch_unsynced().await.is_err()
+                {
+                    std::future::pending::<()>().await;
+                }
+                reports.majority(&raft, &me, at).await;
+            };
             tokio::select! {
                 biased;
                 // First, so a member that no longer leads is refused even
                 // with a majority's reports in hand.
                 committed = commit => committed,
-                () = reports.majority(&raft, &me, at) => Ok(()),
+                () = majority => Ok(()),
             }
         }
     }
