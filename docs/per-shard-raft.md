@@ -2394,9 +2394,11 @@ that fsyncs on commit, and the leader's count and report:
 - *The promise.* A copy that takes the seal's fence accepts `G` for the
   seal leader in its ballot, then writes a `switch-seal` file naming `G`
   and the sealing copy id, and only then answers. While it holds, the copy
-  takes the shard's records only from that copy id, refuses rebuilds,
-  bootstraps and a candidate's ballots, grants no pre-vote, and never
-  stands for election itself. Retention
+  takes the shard's records only from that copy id, refuses rebuilds and
+  bootstraps at `G` and a candidate's ballots, grants no pre-vote, and
+  never stands for election itself. A batch the leader sent before its own
+  promise names no copy id; the copy asks for it again instead of treating
+  the leader as replaced. Retention
   deletes nothing from its log, so it keeps the start it answered with.
   Nothing reopens the shard on a timeout: the promise
   lapses only when the copy accepts a later generation, which only the
@@ -2414,7 +2416,10 @@ that fsyncs on commit, and the leader's count and report:
 - *The acknowledgement.* A follower appends the record at `N` only if its
   log ends at `N - 1`, starts at or below `S`, matches the digest from
   `S`, and each side log holds the leader's range and nothing past it. It
-  answers once the record is on disk.
+  answers once the record is on disk. The digest reads the whole range, so
+  the check runs apart from the request that asked for it: a request that
+  cannot wait is told to ask again, and the next one finds the check
+  running or done.
 - *The report.* The leader counts acknowledgements by copy id and reports
   `(G, N)`, the base and the copy ids once a majority holds `N`. A leader
   that restarted before it reported has lost its count and reports

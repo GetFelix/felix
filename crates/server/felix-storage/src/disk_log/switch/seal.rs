@@ -301,6 +301,12 @@ impl DiskLog {
     /// below the seal's start, and holds the leader's records from there,
     /// and each side log holds the leader's range and nothing past it. A
     /// copy that already holds the record answers again.
+    ///
+    /// The digest reads every record from the seal's start, so it is taken
+    /// once per seal in a process: a repeat of a seal whose digest matched
+    /// runs every other check and skips that read. A promised copy takes
+    /// its records only from the sealer and is never rebuilt, so what
+    /// matched once still does.
     pub async fn ack_seal(
         &self,
         record: &LogRecord,
@@ -344,8 +350,12 @@ impl DiskLog {
                 start: base.start,
             }));
         }
-        if digest(self, base.start, base.offset).await? != base.digest {
-            return Ok(Err(SealRefused::DigestDiffers));
+        if *self.inner.seal_matched.lock() != Some(base) {
+            count_digest();
+            if digest(self, base.start, base.offset).await? != base.digest {
+                return Ok(Err(SealRefused::DigestDiffers));
+            }
+            *self.inner.seal_matched.lock() = Some(base);
         }
         for (log, range) in [(dead_letters, &base.dead_letters), (cursors, &base.cursors)] {
             if !side_holds(log, range).await? {
@@ -550,6 +560,20 @@ fn crash_point(step: u8) -> Result<()> {
 fn crash_point(_: u8) -> Result<()> {
     Ok(())
 }
+
+#[cfg(test)]
+thread_local! {
+    /// How many times [`DiskLog::ack_seal`] digested the shard's records.
+    static DIGESTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn count_digest() {
+    DIGESTS.with(|count| count.set(count.get() + 1));
+}
+
+#[cfg(not(test))]
+fn count_digest() {}
 
 #[cfg(test)]
 type Pause = (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>);

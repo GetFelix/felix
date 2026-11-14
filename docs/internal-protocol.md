@@ -1258,8 +1258,10 @@ seal exchange the same bytes as before.
   shard's own log, followed by the seal leader's 16-byte storage identity,
   its copy id. The replica takes it as a fence and, in place of a plain
   ballot, promises the seal on disk: from then on it takes the shard's
-  batches only from that copy, refuses rebuilds, bootstraps and election
-  ballots from a candidate, and answers no pre-vote. A control-plane
+  batches only from that copy, refuses rebuilds and bootstraps at that
+  generation and election ballots from a candidate, and answers no
+  pre-vote. A rebuild or bootstrap from a later generation is not refused
+  by the promise: its own ballot decides it. A control-plane
   promotion, which names the set with no candidate, is still taken. The
   promise has no timeout. It ends only
   when the replica accepts a later generation.
@@ -1274,6 +1276,13 @@ seal exchange the same bytes as before.
   appends the record at `N`.
 - **`SealAckOk`** (kind 62) is the correlation id and the replica's own copy
   id, sent only once the record is on disk.
+
+The check behind `SealAck` reads every record from the seal's start, which
+can outlast a request on a large log. The replica runs it off the request.
+A request that has waited 2 s is answered `ReplicateError` `Unavailable`,
+and the check runs on: the leader's next `SealAck` for the same record joins
+it or reads its result, and no second check starts. A copy whose records
+matched the digest once does not read them again for a repeat of that seal.
 
 A `SealFence` or `SealAck` for an incarnated stream travels inside
 `Incarnated`, like `Fence`. Both go on the control stream.
@@ -1293,7 +1302,11 @@ shipping budget leaves room for it. A request inside `FromCopy` still needs
 every capability it needs alone, so a batch holding a trim goes only to a
 peer that also offered `HEAD_TRIM`. A promised replica takes a batch only when the copy id
 is the one its promise names, so the same broker back after a wipe, under a
-new copy id, cannot write past what the seal covers. Once the leader has
+new copy id, cannot write past what the seal covers. A batch from another
+copy id is refused `FencedEpoch`, which stops that leader's replication to
+the replica. A batch with no copy id at the promise's generation is the
+leader's own, sent before it took its promise: it is refused `Unavailable`,
+which the leader retries, and the retry carries the copy id. Once the leader has
 appended the record at `N`, it ships nothing from `N` on: a follower gets
 that record only through `SealAck`, which checks its copy first.
 

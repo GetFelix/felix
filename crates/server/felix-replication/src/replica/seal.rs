@@ -13,8 +13,65 @@ use felix_wire::internal::{
     ShardRef,
 };
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use felix_common::random::HashMap;
+use tokio::sync::watch;
+
 use super::{ReplicaHandler, refuse_other_leader, refused, shard_key};
 use crate::peer::metrics;
+
+/// The longest a seal's acknowledgement holds its request before answering
+/// that the check is still running. Under the default 5 s peer request
+/// timeout, so the leader hears that rather than nothing.
+const ACK_ANSWER_WAIT: Duration = Duration::from_secs(2);
+
+/// Seal acknowledgements being checked, one per shard at most.
+///
+/// The check reads every record from the seal's start, which on a large
+/// log outlasts a request's deadline. It runs off the request that asked:
+/// a request that cannot wait it out is answered as retryable, and the
+/// leader's next one finds the check running or its result.
+pub(super) struct SealAcks {
+    checks: Arc<parking_lot::Mutex<HashMap<felix_router::ShardKey, SealCheck>>>,
+    pub(super) answer_wait: Duration,
+    /// Each check takes a permit before it starts, so a test holds one up.
+    #[cfg(test)]
+    pub(super) gate: Option<Arc<tokio::sync::Semaphore>>,
+    #[cfg(test)]
+    pub(super) started: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Default for SealAcks {
+    fn default() -> Self {
+        Self {
+            checks: Default::default(),
+            answer_wait: ACK_ANSWER_WAIT,
+            #[cfg(test)]
+            gate: None,
+            #[cfg(test)]
+            started: Default::default(),
+        }
+    }
+}
+
+/// What a check concluded; a storage error as its text.
+type Checked = Result<Result<(), SealRefused>, String>;
+
+struct SealCheck {
+    /// The request it checks, without its correlation id.
+    of: SealAck,
+    done: watch::Receiver<Option<Checked>>,
+}
+
+fn same_seal(a: &SealAck, b: &SealAck) -> bool {
+    a.shard == b.shard
+        && a.sealer == b.sealer
+        && a.offset == b.offset
+        && a.timestamp_micros == b.timestamp_micros
+        && a.payload == b.payload
+}
 
 impl ReplicaHandler {
     /// Take the seal's fence: the fence's checks and ballot, and the
@@ -88,7 +145,8 @@ impl ReplicaHandler {
     }
 
     /// Check this copy against the seal's record and append it; answered
-    /// with this broker's copy id once the record is on disk.
+    /// with this broker's copy id once the record is on disk, or as
+    /// unavailable while the check still runs. See [`SealAcks`].
     pub(crate) async fn seal_ack(&self, sender: Option<&str>, request: SealAck) -> InternalMessage {
         let correlation_id = request.correlation_id;
         let Some(copy) = self.local_storage else {
@@ -119,32 +177,34 @@ impl ReplicaHandler {
         {
             return refusal;
         }
-        let record = LogRecord {
-            offset: request.offset,
-            timestamp_micros: request.timestamp_micros,
-            checksum: 0,
-            payload: request.payload,
-            mark: RecordMark::GenerationStart,
-            publisher: None,
-            headers: None,
-            generation: Some(request.shard.generation),
+        let generation = request.shard.generation;
+        let offset = request.offset;
+        let checked = match self.seal_checked(&key, request, &log, dead_letters, cursors) {
+            Ok(done) => self.await_check(&key, done).await,
+            Err(busy) => Err(busy),
         };
-        match log
-            .disk_log()
-            .ack_seal(
-                &record,
-                StorageId::from_bytes(request.sealer),
-                dead_letters.disk_log(),
-                cursors.disk_log(),
-            )
-            .await
-        {
+        let checked = match checked {
+            Ok(checked) => checked,
+            Err(why) => {
+                metrics::record_replicated(metrics::OUTCOME_REFUSED);
+                return refused(correlation_id, ErrorCode::Unavailable, 0, why.to_string());
+            }
+        };
+        // The check may have finished before this request came: a later
+        // generation taken since has ended the promise it answered under.
+        let lapsed = || {
+            log.disk_log()
+                .seal_promise()
+                .is_none_or(|promise| promise.generation != generation)
+        };
+        match checked {
+            Ok(Ok(())) if lapsed() => seal_refusal(correlation_id, &SealRefused::NoPromise),
             Ok(Ok(())) => {
                 tracing::info!(
                     stream = %key.stream,
                     shard = key.shard,
-                    generation = request.shard.generation,
-                    offset = request.offset,
+                    generation,
+                    offset,
                     "acknowledged the seal's record; this copy may vote from its base",
                 );
                 InternalMessage::SealAckOk(SealAckOk {
@@ -155,16 +215,115 @@ impl ReplicaHandler {
             Ok(Err(why)) => seal_refusal(correlation_id, &why),
             Err(err) => {
                 metrics::record_replicated(metrics::OUTCOME_ERROR);
-                refused(correlation_id, ErrorCode::StorageFailed, 0, err.to_string())
+                refused(correlation_id, ErrorCode::StorageFailed, 0, err)
             }
         }
     }
 
+    /// The check of `request`'s record against this copy: the one already
+    /// running or finished for the shard, or a new one. Refused while the
+    /// shard's check is of another record.
+    fn seal_checked(
+        &self,
+        key: &felix_router::ShardKey,
+        request: SealAck,
+        log: &StreamLog,
+        dead_letters: StreamLog,
+        cursors: StreamLog,
+    ) -> Result<watch::Receiver<Option<Checked>>, &'static str> {
+        let mut checks = self.seal_acks.checks.lock();
+        if let Some(check) = checks.get(key) {
+            if same_seal(&check.of, &request) {
+                return Ok(check.done.clone());
+            }
+            if check.done.borrow().is_none() {
+                return Err("this copy is still checking another seal's record");
+            }
+        }
+        let (finished, done) = watch::channel(None);
+        checks.insert(
+            key.clone(),
+            SealCheck {
+                of: request.clone(),
+                done: done.clone(),
+            },
+        );
+        #[cfg(test)]
+        let gate = {
+            self.seal_acks
+                .started
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.seal_acks.gate.clone()
+        };
+        let log = log.clone();
+        tokio::spawn(async move {
+            #[cfg(test)]
+            let _open = match &gate {
+                Some(gate) => gate.acquire().await.ok(),
+                None => None,
+            };
+            let record = LogRecord {
+                offset: request.offset,
+                timestamp_micros: request.timestamp_micros,
+                checksum: 0,
+                payload: request.payload,
+                mark: RecordMark::GenerationStart,
+                publisher: None,
+                headers: None,
+                generation: Some(request.shard.generation),
+            };
+            let checked = log
+                .disk_log()
+                .ack_seal(
+                    &record,
+                    StorageId::from_bytes(request.sealer),
+                    dead_letters.disk_log(),
+                    cursors.disk_log(),
+                )
+                .await
+                .map_err(|err| err.to_string());
+            // Kept by the map until a request reads it.
+            let _ = finished.send(Some(checked));
+        });
+        Ok(done)
+    }
+
+    /// Wait for a check as long as a request may, and take its result out
+    /// of the map: a repeat after that checks the copy again.
+    async fn await_check(
+        &self,
+        key: &felix_router::ShardKey,
+        mut done: watch::Receiver<Option<Checked>>,
+    ) -> Result<Checked, &'static str> {
+        let wait = self.seal_acks.answer_wait;
+        let checked = match tokio::time::timeout(wait, done.wait_for(Option::is_some)).await {
+            Ok(Ok(checked)) => checked.clone(),
+            // The task ended without a result: it panicked.
+            Ok(Err(_)) => Some(Err("the seal's check did not finish".to_string())),
+            Err(_) => None,
+        };
+        let Some(checked) = checked else {
+            return Err("this copy is still checking its records against the seal");
+        };
+        let mut checks = self.seal_acks.checks.lock();
+        if checks
+            .get(key)
+            .is_some_and(|check| check.done.same_channel(&done))
+        {
+            checks.remove(key);
+        }
+        Ok(checked)
+    }
+
     /// The refusal a write to `shard` gets while this copy holds a seal
-    /// promise: a rebuild, a bootstrap or an election's ballot always, a
-    /// batch unless it comes from the sealing copy. `None` when no promise
-    /// holds. Read after the write's own ballot: a later generation taken
-    /// there has already ended the promise.
+    /// promise: a rebuild or a bootstrap at the promise's generation, an
+    /// election's ballot always, a batch unless it comes from the sealing
+    /// copy. `None` when no promise holds.
+    ///
+    /// A batch is checked after its own ballot, so a later generation taken
+    /// there has already ended the promise. A rebuild is checked before
+    /// its ballot, and a side log's ballot never ends the shard's promise,
+    /// so one from a later generation is let through to its ballot here.
     pub(crate) async fn sealed_refusal(
         &self,
         correlation_id: u64,
@@ -173,15 +332,21 @@ impl ReplicaHandler {
         write: SealedWrite,
     ) -> Option<InternalMessage> {
         let promise = self.seal_promise(shard).await?;
-        if write == SealedWrite::Batch
-            && from.is_some_and(|from: StorageId| promise.admits_batch(from))
-        {
-            return None;
-        }
+        let code = match (write, from) {
+            (SealedWrite::Batch, Some(from)) if promise.admits_batch(from) => return None,
+            (SealedWrite::Rebuild, _) if shard.generation > promise.generation => return None,
+            // The sealing leader's own batch, sent before it took its
+            // promise. Its next one names its copy, so this is no fence:
+            // a fenced answer would halt this follower for the generation.
+            (SealedWrite::Batch, None) if shard.generation == promise.generation => {
+                ErrorCode::Unavailable
+            }
+            _ => ErrorCode::FencedEpoch,
+        };
         metrics::record_replicated(metrics::OUTCOME_REFUSED);
         Some(refused(
             correlation_id,
-            ErrorCode::FencedEpoch,
+            code,
             0,
             format!(
                 "this copy is sealed at generation {} for the switch to Raft: {}, until a later \

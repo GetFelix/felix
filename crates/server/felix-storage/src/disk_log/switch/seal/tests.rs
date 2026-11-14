@@ -698,6 +698,31 @@ async fn a_repeated_acknowledgement_checks_the_side_logs_again() {
     ));
 }
 
+/// **A repeated acknowledgement does not read the shard's records again.**
+/// The digest covers every record from the seal's start, so a retry that
+/// redid it could outlast each request's deadline on a large log and never
+/// answer. A copy that only holds the record, unchecked, is still read.
+#[tokio::test]
+async fn a_repeated_acknowledgement_digests_the_records_once() {
+    let root = tempdir().expect("tempdir");
+    let (_leader, follower, seal) = sealed(root.path()).await;
+    let digests = || DIGESTS.with(std::cell::Cell::get);
+    let before = digests();
+    assert_eq!(follower.ack(&seal, sealer()).await, Ok(()));
+    assert_eq!(digests(), before + 1);
+    for _ in 0..3 {
+        assert_eq!(follower.ack(&seal, sealer()).await, Ok(()));
+    }
+    assert_eq!(digests(), before + 1, "a repeat read the records again");
+
+    // Another process has matched nothing yet.
+    let dir = root.path().join("follower");
+    follower.shutdown().await;
+    let reopened = Copy::open(&dir, on_commit());
+    assert_eq!(reopened.ack(&seal, sealer()).await, Ok(()));
+    assert_eq!(digests(), before + 2);
+}
+
 fn pause() -> (Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>) {
     let reached = Arc::new(tokio::sync::Notify::new());
     let resume = Arc::new(tokio::sync::Notify::new());

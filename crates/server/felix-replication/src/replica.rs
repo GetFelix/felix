@@ -99,6 +99,9 @@ pub struct ReplicaHandler {
     /// Whether a log in this process is poisoned. A test stands in for the
     /// process-wide flag, which never clears.
     poisoned: fn() -> bool,
+    /// Seal acknowledgements being checked. See [`Self::seal_ack`].
+    #[cfg(feature = "raft")]
+    seal_acks: seal::SealAcks,
     /// Run after an incarnation check passes, to change the catalog between
     /// the check and the open.
     #[cfg(test)]
@@ -163,6 +166,8 @@ impl ReplicaHandler {
             fence_turns: parking_lot::Mutex::new(HashMap::default()),
             fenced_at: parking_lot::Mutex::new(HashMap::default()),
             poisoned: felix_storage::disk_log::any_log_poisoned,
+            #[cfg(feature = "raft")]
+            seal_acks: Default::default(),
             #[cfg(test)]
             incarnation_checked: parking_lot::Mutex::new(None),
         }

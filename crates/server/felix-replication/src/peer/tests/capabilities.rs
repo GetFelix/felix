@@ -452,6 +452,52 @@ async fn an_older_broker_is_never_sent_the_fence() {
     old.stop();
 }
 
+/// **A broker without the seal's bit is never sent a seal message.** It
+/// would refuse the kind as unknown; the seal leader must see a copy that
+/// takes no part, before anything is sent.
+#[tokio::test]
+async fn a_broker_without_the_seal_is_never_sent_a_seal_message() {
+    use felix_wire::internal::{SealAck, SealFence};
+    let old = OldBroker::start(PEER).await;
+    let pool = pool(config());
+    assert_eq!(
+        pool.capabilities(PEER, old.addr).await.expect("handshake"),
+        PeerCapabilities::NONE
+    );
+    let refused_after_handshake = old.refused.load(Ordering::SeqCst);
+
+    let InternalMessage::Fence(fence) = fence() else {
+        unreachable!()
+    };
+    let seal_fence = InternalMessage::SealFence(SealFence {
+        fence,
+        sealer: [1; 16],
+    });
+    let seal_ack = InternalMessage::SealAck(SealAck {
+        correlation_id: 0,
+        shard: shard(),
+        sealer: [1; 16],
+        offset: 3,
+        timestamp_micros: 0,
+        payload: Bytes::new(),
+    });
+    for message in [seal_fence, seal_ack] {
+        let err = pool
+            .request(PEER, old.addr, message)
+            .await
+            .expect_err("a seal message must not be sent");
+        assert!(matches!(err, PeerError::Unsupported { .. }), "{err:?}");
+    }
+    assert_eq!(
+        old.refused.load(Ordering::SeqCst),
+        refused_after_handshake,
+        "a seal message reached a broker that never offered the seal",
+    );
+
+    pool.shutdown().await;
+    old.stop();
+}
+
 /// **An older broker dialling this one is answered as it expects** -- the
 /// original `HelloOk`, which is all it can read -- and noted as having none
 /// of the capabilities.

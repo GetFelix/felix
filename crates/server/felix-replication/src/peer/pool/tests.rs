@@ -248,6 +248,48 @@ fn a_trim_named_by_a_copy_still_needs_head_trim() {
     );
 }
 
+/// **The seal's fence and its acknowledgement need the seal's bit and go on
+/// the control stream**, where the listener answers them as they finish: a
+/// seal's fence behind a batch would wait out that batch's fsync.
+#[test]
+fn seal_messages_need_the_seal_bit_and_go_on_the_control_stream() {
+    use felix_wire::internal::{Fence, SealAck, SealFence, ShardRef};
+    let shard = ShardRef {
+        tenant_id: "t1".into(),
+        namespace: "ns".into(),
+        stream: "orders".into(),
+        shard: 0,
+        generation: 5,
+        incarnation: None,
+    };
+    let fence = InternalMessage::SealFence(SealFence {
+        fence: Fence {
+            correlation_id: 0,
+            shard: shard.clone(),
+            log: ReplicaLog::Stream,
+            election: None,
+        },
+        sealer: [1; 16],
+    });
+    let ack = InternalMessage::SealAck(SealAck {
+        correlation_id: 0,
+        shard,
+        sealer: [1; 16],
+        offset: 3,
+        timestamp_micros: 0,
+        payload: bytes::Bytes::new(),
+    });
+    for message in [fence, ack] {
+        assert_eq!(
+            required_capability(&message),
+            Some(PeerCapabilities::SWITCH_SEAL),
+            "{:?}",
+            message.kind()
+        );
+        assert_eq!(LaneClass::of(&message), LaneClass::Control);
+    }
+}
+
 /// **The election messages go only to a peer that offers `ELECTION`**, on top
 /// of whatever the request already needs.
 #[test]
