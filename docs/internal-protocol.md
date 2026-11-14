@@ -1226,9 +1226,12 @@ could not arrive in time would be cut the same way on every retry, so a
 follower far behind would never catch up.
 
 Two smaller limits apply first, when the leader builds the append: at most
-4,096 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records
-read from the log. So the cut above only shortens an append whose deadline
-is under about 130 ms, or one record larger than the budget's rest.
+1,024 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records
+read from the log (the log reader's page). At 1 KiB records that is about
+1 MiB per append, and never more than 4 MiB. The wire budget (256 KiB
+to 32 MiB) still cuts an append that does not fit. So the cut above only
+shortens an append whose deadline is under about 130 ms, or one record
+larger than the budget's rest.
 openraft's default of 300 entries would cap an append of
 1 KiB records at about 300 KB, and a follower behind would take over ten
 times the round trips to catch up.
