@@ -49,6 +49,7 @@ async fn leave_one_behind(led: &Led, records: usize) -> (String, u64) {
         let batch = Batch {
             records: vec![record.clone(); n],
             ack: AckAt::Flushed,
+            term: None,
         };
         led.engine.propose(&shard(0), batch).await.expect("written");
         left -= n;
