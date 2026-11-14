@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794620092099,
+  "lastUpdate": 1794622469631,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55432,6 +55432,58 @@ window.BENCHMARK_DATA = {
             "range": "9084.81",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1270489.37\nmean: 1268475.88\nstdev: 9084.81\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ce411f1a50149a9aeb3eb23bf9ab69d980796899",
+          "message": "feat(replication): the Raft leader lease (#2249) (#2445)\n\n* wip(replication): the Raft leader lease (#2249)\n\nVote hold, admit_local_ack on last_quorum_acked, the void, the transfer\nentry point, the suspend check and the config inequality. One lease test\nstill fails on the box; lint not run. See plans/lanes/lease-impl-2249.md.\n\n* feat(replication): the Raft leader lease (#2249)\n\nThe vote hold for restarted members, admit_local_ack on\nlast_quorum_acked with await_ack falling back to the commit wait, the\nmonotone void, the transfer entry point, the suspend check and the\nconfig inequality. A restarted leader no longer stands as it starts\n(enable_leader_restore off): the model holds a restarted member from\ncampaigning for one election timeout. Behind the raft feature.\n\nRefs #2249\n\n* fix(replication): a restarted leader or sole voter is not held (#2249)\n\nA member whose stored vote is its own committed one promised nobody, so\nopenraft's leader restore is back on and the vote hold skips it. A sole\nvoter is not held either. The lease check reads its clocks after\nopenraft's answer, so a suspend between the two is seen.\n\n* fix(raft): a held member grants the leader its stored vote names (#2249)\n\nA member inside its vote hold lets one vote request through: the first\nfrom the candidate its committed stored vote names. A group restarted\nwhole has its leader back within one vote round. A sole voter is exempt\nonly when its newest set names it alone and the committed set names no\nother voter. The docs state that a paused VM is not seen by the suspend\ncheck.\n\n* fix(sim): the simulator's Raft timers carry the lease (#2249)\n\nMain's simulator groups build a RuntimeConfig field by field, so the\nmerge left it without the lease and the drift bound.\n\n* docs(formal): the vote hold the lease configs pass on is built (#2249)\n\n* docs(raft): the simulator runs Raft groups, and none asks the lease check (#2249)\n\n* docs(raft): review fixes: status rows, the lease check in the engine design, tests pin the leader they assume (#2249)\n\n* test(raft): the sole voter test waits for the metrics to name the later leader (#2249)\n\n* fix(replication): a restarted leader or sole voter still holds its grants\n\nThe model lifts only the campaign side of the vote hold for a member that\nled or is the only voter (HoldSkipped in Elect); MayGrant still has it grant\nno candidate but its stored vote's leader until the hold ends. Group::open\nnow keeps the grant hold for every member with a stored vote and exempts\nonly the campaign/tick skip.\n\nAlso: FelixRaftLease.tla header no longer calls the vote hold unbuilt, the\nhanded-leadership test reads held-ness from the group instead of wall\nclock, and per-shard-raft.md status rows match what is built.\n\n* test(replication): check the campaign side of the restart hold\n\nA held member must not be ticked inside its hold, and a sole voter whose\nstored vote names another leader must be. Fix the doc line that said a\nheld member is never ticked.",
+          "timestamp": "2026-11-13T17:15:55-08:00",
+          "tree_id": "41b8c4f04c5dfb4afb3051bf51cb062f73ec4416",
+          "url": "https://github.com/GetFelix/felix/commit/ce411f1a50149a9aeb3eb23bf9ab69d980796899"
+        },
+        "date": 1794622468858,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 481398.45,
+            "range": "34455.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 481398.45\nmean: 496903.24\nstdev: 34455.77\ncv: 6.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 481398.45,
+            "range": "34455.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 481398.45\nmean: 496903.24\nstdev: 34455.77\ncv: 6.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120016.04,
+            "range": "1295.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120016.04\nmean: 119978.89\nstdev: 1295.72\ncv: 1.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1200160.37,
+            "range": "12957.26",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1200160.37\nmean: 1199788.89\nstdev: 12957.26\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
