@@ -102,6 +102,9 @@ fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
+/// One trial of the read benchmark: reads/s, p50 ms, p99 ms.
+type Trial = (f64, f64, f64);
+
 /// One reader's loop: confirm reads one after another until `until`.
 async fn read_loop(led: Arc<Led>, shared: bool, until: Instant) -> Vec<Duration> {
     let member = led
@@ -148,7 +151,7 @@ async fn read_index_rounds_benchmark() {
         .group(&shard(0))
         .expect("group");
     // (shared, readers) -> per round: reads/s, p50 ms, p99 ms.
-    let mut results: HashMap<(bool, usize), Vec<(f64, f64, f64)>> = HashMap::new();
+    let mut results: HashMap<(bool, usize), Vec<Trial>> = HashMap::new();
     for round in 0..rounds {
         let sides = if round % 2 == 0 {
             [false, true]
