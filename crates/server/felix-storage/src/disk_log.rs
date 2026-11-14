@@ -404,9 +404,20 @@ impl DiskLog {
     /// refuse by name: the ones this log refuses so already, and the ones a
     /// purge to `base` would forget. A copy that takes them in with
     /// [`Self::remember_forgotten_cuts`] answers a re-send the way this log
-    /// would once purged to `base`.
-    pub fn forgotten_cuts_from(&self, base: Offset) -> ForgottenCuts {
-        self.inner.producers.lock().forgotten_from(base)
+    /// would once purged to `base`. Read from the records below `base`
+    /// alone, so it is the same whatever this log holds past them.
+    pub async fn forgotten_cuts_from(&self, base: Offset) -> Result<ForgottenCuts> {
+        if !self.inner.config.raft_log {
+            return Ok(ForgottenCuts::default());
+        }
+        let inner = Arc::clone(&self.inner);
+        felix_common::blocking::spawn(move || {
+            let segments = inner.segments.read();
+            segments.check_open()?;
+            producers::forgotten_from(&inner.dir, &segments, base)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
     /// Refuse the re-send of `cuts` as if this log had forgotten them
@@ -2049,8 +2060,10 @@ struct LogInner {
     /// `segments` without `append_lock`, so taking `segments` first and then
     /// this one deadlocks.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
-    /// Each idempotent producer's place in the log. Written only under the
-    /// `segments` write lock, in offset order, so it always matches the tail.
+    /// Each idempotent producer's place in the log. Its records are observed
+    /// only under the `segments` write lock, in offset order, so it always
+    /// matches the tail. Carried forgotten batches are taken in under the
+    /// read lock: they add refusals and change no offset.
     producers: Mutex<producers::ProducerState>,
     /// What `producers.forgotten` holds on disk. Taken under `producers`.
     forgotten_saved: Mutex<felix_common::random::HashMap<u64, u64>>,

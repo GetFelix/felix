@@ -2710,7 +2710,9 @@ read those refusals from its log. They travel in the snapshot instead. A
 stream shard's snapshot data is the list of cut batches, by producer and
 sequence, that a log starting right after the snapshot's last entry has to
 refuse: the ones its sender refuses by name already, and the ones a purge
-to that point would forget. The member saves them to its own
+to that point would forget. It is read from the records up to that entry,
+which are committed, never from what the sender holds past it, so every
+member's snapshot at one entry carries the same list. The member saves them to its own
 `producers.forgotten` before it stores the snapshot, so from the moment it
 holds nothing below the snapshot it refuses those re-sends the way its
 sender would once purged there. A crash in between leaves the old snapshot

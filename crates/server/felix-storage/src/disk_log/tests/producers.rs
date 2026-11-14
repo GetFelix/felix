@@ -878,10 +878,24 @@ async fn a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts() {
     let (source, tail) = cut_then_filled(&source_dir).await;
     // The cut batch is still in the source's log, so a copy from its first
     // record could finish it. One from past it can only refuse it.
-    assert!(source.forgotten_cuts_from(0).is_empty());
-    let cuts = source.forgotten_cuts_from(tail);
+    assert!(
+        source
+            .forgotten_cuts_from(0)
+            .await
+            .expect("cuts")
+            .is_empty()
+    );
+    let cuts = source.forgotten_cuts_from(tail).await.expect("cuts");
     assert_eq!(cuts.sequence(9), Some(0));
     assert_eq!(ForgottenCuts::decode(&cuts.encode()), Some(cuts.clone()));
+    // Records past the base, here a batch left open at the tail, change
+    // nothing: they may be uncommitted and cut back.
+    source.append(&[piece(1, 0, 3, "c")]).await.expect("append");
+    assert_eq!(source.forgotten_cuts_from(tail).await.expect("cuts"), cuts);
+    assert_eq!(
+        source.forgotten_cuts_from(0).await.expect("cuts"),
+        ForgottenCuts::default()
+    );
     source.shutdown().await.expect("shutdown");
 
     let dir = tempdir().expect("dir");

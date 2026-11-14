@@ -539,14 +539,6 @@ impl ProducerState {
         &self.forgotten
     }
 
-    /// The forgotten batches of this table pruned to `base`: what a log
-    /// that starts at `base` has to refuse by name.
-    pub(super) fn forgotten_from(&self, base: Offset) -> ForgottenCuts {
-        let mut pruned = self.clone();
-        pruned.prune(base);
-        ForgottenCuts(pruned.forgotten)
-    }
-
     /// Take in forgotten batches saved earlier, or carried from another copy.
     /// The higher sequence wins.
     pub(super) fn remember(&mut self, saved: HashMap<u64, u64>) {
@@ -877,8 +869,25 @@ pub(super) fn rebuild(
     active_marks: Option<&[(Offset, RecordMark, u64)]>,
     keeps_cuts: bool,
 ) -> crate::Result<(ProducerState, HashMap<u64, u64>)> {
+    rebuild_to(
+        dir,
+        segments,
+        active_marks,
+        keeps_cuts,
+        segments.tail_offset(),
+    )
+}
+
+/// [`rebuild`] over the records below `end` alone, at most the tail.
+fn rebuild_to(
+    dir: &Path,
+    segments: &SegmentSet,
+    active_marks: Option<&[(Offset, RecordMark, u64)]>,
+    keeps_cuts: bool,
+    end: Offset,
+) -> crate::Result<(ProducerState, HashMap<u64, u64>)> {
     let base = segments.base_offset();
-    let tail = segments.tail_offset();
+    let tail = end.min(segments.tail_offset());
     let (mut state, from) = match load(dir) {
         Some((state, as_of)) if base <= as_of && as_of <= tail => (state, as_of),
         // Nothing before the first v3 segment can carry a mark, so a log
@@ -925,7 +934,10 @@ pub(super) fn rebuild(
         next = after;
     }
     if let Some(marks) = active_marks {
-        for (offset, mark, digest) in marks.iter().filter(|(offset, ..)| *offset >= from) {
+        let marks = marks
+            .iter()
+            .filter(|(offset, ..)| *offset >= from && *offset < tail);
+        for (offset, mark, digest) in marks {
             state.observe(*offset, *mark, *digest);
         }
     }
@@ -1034,6 +1046,20 @@ fn decode_forgotten(bytes: &[u8]) -> Option<HashMap<u64, u64>> {
         forgotten.insert(reader.u64()?, reader.u64()?);
     }
     Some(forgotten)
+}
+
+/// The cut batches a log that starts at `base` has to refuse by name, read
+/// from this log's records below `base` and its saved forgotten batches.
+/// Not from the live table: that also holds records above `base`, which may
+/// be uncommitted and cut back later, and would change what is carried.
+pub(super) fn forgotten_from(
+    dir: &Path,
+    segments: &SegmentSet,
+    base: Offset,
+) -> crate::Result<ForgottenCuts> {
+    let (mut state, _) = rebuild_to(dir, segments, None, true, base)?;
+    state.prune(base);
+    Ok(ForgottenCuts(state.forgotten))
 }
 
 /// The forgotten batches saved by [`store_forgotten`]; none when the file is

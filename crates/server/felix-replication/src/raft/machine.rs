@@ -296,11 +296,13 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
     async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<ShardTypes, SnapshotData>> {
         let meta = meta(&self.state);
         // A panic or JoinError in the encode fails the build, which stops
-        // the member. A receiver whose parse fails in `Group::dispatch`
-        // refuses the snapshot and keeps running.
+        // the member. A cache member whose parse fails in `Group::dispatch`
+        // refuses the snapshot and keeps running. A stream member parses
+        // in `install_snapshot` and stops: without the refusals it would
+        // write a cut batch again.
         let data = match (self.cut.take(), &self.log) {
             (Some(cut), _) => cpu(move || cut.snapshot()).await?,
-            (None, Some(log)) => stream_data(log, &self.state),
+            (None, Some(log)) => stream_data(log, &self.state).await?,
             (None, None) => Bytes::new(),
         };
         store(&self.snapshots, &meta, data.clone()).await?;
@@ -315,15 +317,20 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
 /// right after the snapshot's last entry has to refuse by name. A member
 /// that installs the snapshot holds no record below it, so the batches the
 /// log forgot, or would forget once purged there, are known to it only from
-/// here. Empty when there are none.
-fn stream_data(log: &DiskLog, state: &State) -> Bytes {
+/// here. Read from the records up to the snapshot's last entry, which are
+/// committed, so every member's snapshot at one entry carries the same.
+/// Empty when there are none.
+async fn stream_data(log: &DiskLog, state: &State) -> io::Result<Bytes> {
     let base = state.last_applied.map_or(0, |id| id.index + 1);
-    let cuts = log.forgotten_cuts_from(base);
-    if cuts.is_empty() {
+    let cuts = log
+        .forgotten_cuts_from(base)
+        .await
+        .map_err(io::Error::other)?;
+    Ok(if cuts.is_empty() {
         Bytes::new()
     } else {
         cuts.encode().into()
-    }
+    })
 }
 
 /// The cut batches a stream shard's snapshot carries. Empty data carries
