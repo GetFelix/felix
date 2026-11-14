@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794697493107,
+  "lastUpdate": 1794698839971,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -72798,6 +72798,72 @@ window.BENCHMARK_DATA = {
             "range": "866.97",
             "unit": "us",
             "extra": "trials: 5\nmedian: 758.00\nmean: 995.40\nstdev: 866.97\ncv: 87.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d7dd69694035c2e71cfc913f305045177fa6d367",
+          "message": "test(broker): the startup lookup returns the registration time (#2568)\n\n#2550 added registered_at_millis to Registered, and the control plane\nfills it in. The test still expected None, so Coverage on main fails\nevery run. It now expects the time the registration returned.",
+          "timestamp": "2026-11-14T15:21:20-08:00",
+          "tree_id": "4a662a327cf0eca7eb780090134a78061bc7371b",
+          "url": "https://github.com/GetFelix/felix/commit/d7dd69694035c2e71cfc913f305045177fa6d367"
+        },
+        "date": 1794698829983,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.60\nstdev: 0.89\ncv: 0.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 131,
+            "range": "10.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 134.60\nstdev: 10.43\ncv: 7.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 180,
+            "range": "31.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 180.00\nmean: 196.40\nstdev: 31.66\ncv: 16.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.00\nstdev: 0.71\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 261,
+            "range": "10.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 261.00\nmean: 267.00\nstdev: 10.56\ncv: 3.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 362,
+            "range": "1404.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 362.00\nmean: 1377.00\nstdev: 1404.96\ncv: 102.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
