@@ -704,10 +704,9 @@ async fn a_purge_refuses_the_cut_batch_without_a_snapshot() {
     log.shutdown().await.expect("shutdown");
 }
 
-/// A purge that cannot save the batches it forgets removes nothing.
-#[tokio::test]
-async fn a_purge_that_cannot_save_what_it_forgets_fails() {
-    let dir = tempdir().expect("dir");
+/// Appends a cut batch and enough records after it for a purge to pass it.
+/// Returns the log and the last offset written.
+async fn cut_then_filled(dir: &TempDir) -> (DiskLog, Offset) {
     let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
     lead(&log).await;
     log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
@@ -721,14 +720,139 @@ async fn a_purge_that_cannot_save_what_it_forgets_fails() {
             .expect("append")
             .last_offset;
     }
-    let temporary = crate::disk_log::producers::forgotten_temporary_name();
-    std::fs::create_dir(dir.path().join(temporary)).expect("blocker");
+    (log, tail)
+}
+
+async fn reads_from(log: &DiskLog, start: Offset) -> usize {
+    log.read_range(ReadRange {
+        start,
+        max_bytes: 1 << 20,
+    })
+    .await
+    .expect("read")
+    .records
+    .len()
+}
+
+/// A purge that cannot save the batches it forgets changes nothing, and
+/// succeeds once it can.
+#[tokio::test]
+async fn a_purge_that_cannot_save_what_it_forgets_fails() {
+    let dir = tempdir().expect("dir");
+    let (log, tail) = cut_then_filled(&dir).await;
+    let temporary = dir
+        .path()
+        .join(crate::disk_log::producers::forgotten_temporary_name());
+    std::fs::create_dir(&temporary).expect("blocker");
     let segments = std::fs::read_dir(dir.path()).expect("dir").count();
+    let base = log.base_offset();
     log.trim_before(tail).await.expect_err("the purge fails");
     assert_eq!(
         std::fs::read_dir(dir.path()).expect("dir").count(),
         segments
     );
+    assert_eq!(log.base_offset(), base);
+    assert!(reads_from(&log, base).await > 0);
+    assert!(
+        log.producer_unfinished(9, 0)
+            .is_some_and(|cut| cut.held == 2)
+    );
+
+    std::fs::remove_dir(&temporary).expect("remove blocker");
+    assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+    assert!(log.base_offset() > base);
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// A purge that forgets nothing new leaves the forgotten file alone, on a
+/// Raft log and a hybrid one. A directory in its place fails any read.
+#[tokio::test]
+async fn a_purge_that_forgets_nothing_does_not_read_the_forgotten_file() {
+    for raft in [true, false] {
+        let dir = tempdir().expect("dir");
+        let log = if raft {
+            let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+            lead(&log).await;
+            log
+        } else {
+            open(&dir, FsyncMode::OnCommit)
+        };
+        let mut tail = 0;
+        for sequence in 0..12 {
+            tail = log
+                .append(&marked(9, sequence, FILLED))
+                .await
+                .expect("append")
+                .last_offset;
+        }
+        std::fs::create_dir(
+            dir.path()
+                .join(crate::disk_log::producers::forgotten_file_name()),
+        )
+        .expect("blocker");
+        assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+        log.shutdown().await.expect("shutdown");
+    }
+}
+
+/// A power loss after the forgotten batches are saved and before the files
+/// go leaves a longer log. The cut batch is still not taken as new, and the
+/// next purge finishes the job.
+#[tokio::test]
+async fn a_power_loss_between_the_save_and_the_unlinks_keeps_the_refusal() {
+    let dir = tempdir().expect("dir");
+    let (log, tail) = cut_then_filled(&dir).await;
+    let base = log.base_offset();
+    log.stop_after_unlinks(0);
+    log.trim_before(tail).await.expect_err("stopped");
+    drop(log);
+    assert!(
+        dir.path()
+            .join(crate::disk_log::producers::forgotten_file_name())
+            .exists()
+    );
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.base_offset(), base);
+    let after = log.producer_sequence(9, 0);
+    assert!(
+        !matches!(after, ProducerSequence::Unknown | ProducerSequence::Next),
+        "{after:?}"
+    );
+    lead(&log).await;
+    assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// An open and a truncation's rebuild both refuse a damaged forgotten file:
+/// without it a purged cut batch's re-send would be taken as new.
+#[tokio::test]
+async fn a_damaged_forgotten_file_fails_the_open_and_the_rebuild() {
+    let dir = tempdir().expect("dir");
+    let log = purged_past_a_cut_batch(&dir).await;
+    let forgotten = dir
+        .path()
+        .join(crate::disk_log::producers::forgotten_file_name());
+    let saved = std::fs::read(&forgotten).expect("read");
+    let mut damaged = saved.clone();
+    *damaged.last_mut().expect("not empty") ^= 0xFF;
+    std::fs::write(&forgotten, &damaged).expect("damage");
+    let next = log
+        .append(&records(&["c"]))
+        .await
+        .expect("append")
+        .last_offset;
+    log.truncate(next).await.expect_err("the rebuild fails");
+    drop(log);
+
+    DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect_err("the open fails");
+    std::fs::write(&forgotten, &saved).expect("restore");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
 }
 
 /// Only a Raft log writes batch pieces: the hybrid's replication cannot

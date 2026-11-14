@@ -2554,8 +2554,9 @@ it holds of the batch:
 Refusing is the only safe answer there. Writing the batch again would put
 the records that are still in the log into the stream a second time. The
 cut batch is remembered for as long as one of its records is in the log,
-and by name after that. A restart keeps it, because the producer snapshot
-stores it and the log's marks rebuild it. A member that was caught up by
+and by name after that. A restart keeps it: while records of it are in the
+log, the log's marks rebuild it, and the by-name entry is in a flushed
+`producers.forgotten` file in the log's directory. A member that was caught up by
 copying segments derives it from the records it was sent, since a shard
 group's snapshot carries no records and no producer state, so it does not
 know a cut batch none of whose records it was sent.

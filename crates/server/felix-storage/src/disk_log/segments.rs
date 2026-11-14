@@ -350,6 +350,22 @@ impl SegmentSet {
     /// segment and can read it, or sees a raised base offset and gets
     /// `Trimmed`. A read planned before this is redone because the generation
     /// moves, so none trusts a file about to be deleted.
+    /// The base offset [`Self::remove_head`] would leave for `ids`, or `None`
+    /// when it would remove nothing.
+    pub(super) fn base_after_head(&self, ids: &[SegmentId]) -> Option<Offset> {
+        let removed = ids
+            .iter()
+            .zip(&self.sealed)
+            .take_while(|(id, entry)| entry.descriptor.id == **id)
+            .count();
+        (removed > 0).then(|| {
+            self.sealed
+                .get(removed)
+                .map(|entry| entry.descriptor.base_offset)
+                .unwrap_or_else(|| self.active.base_offset())
+        })
+    }
+
     pub(super) fn remove_head(&mut self, ids: &[SegmentId]) -> Result<Vec<SegmentDescriptor>> {
         self.check_open()?;
         let mut removed = Vec::new();

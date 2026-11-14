@@ -831,13 +831,14 @@ impl Reader<'_> {
 /// the oldest record otherwise, then replays the marks up to the tail. On open
 /// the active segment's marks come from recovery's scan (`active_marks`), so
 /// with a current snapshot nothing is read that recovery did not already read.
-/// `keeps_cuts` is whether this is a Raft log.
+/// `keeps_cuts` is whether this is a Raft log. Also returns what the forgotten
+/// file holds, so a purge that changes nothing need not read it again.
 pub(super) fn rebuild(
     dir: &Path,
     segments: &SegmentSet,
     active_marks: Option<&[(Offset, RecordMark, u64)]>,
     keeps_cuts: bool,
-) -> crate::Result<ProducerState> {
+) -> crate::Result<(ProducerState, HashMap<u64, u64>)> {
     let base = segments.base_offset();
     let tail = segments.tail_offset();
     let (mut state, from) = match load(dir) {
@@ -850,10 +851,12 @@ pub(super) fn rebuild(
         ),
     };
     state.keeps_cuts = keeps_cuts;
+    let mut saved = HashMap::default();
     if keeps_cuts {
         // Not in the records and maybe not in the snapshot: see
         // `store_forgotten`.
-        state.remember(load_forgotten(dir)?);
+        saved = load_forgotten(dir)?;
+        state.remember(saved.clone());
     } else {
         state.cuts.clear();
         state.forgotten.clear();
@@ -892,7 +895,7 @@ pub(super) fn rebuild(
     if from < active_base {
         metrics::counter!(metrics_names::PRODUCER_STATE_REBUILT_TOTAL).increment(1);
     }
-    Ok(state)
+    Ok((state, saved))
 }
 
 /// A record's contribution to its batch's [`PayloadDigest`]: the payload's

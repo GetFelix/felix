@@ -1239,7 +1239,7 @@ impl DiskLog {
         }
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
-        let producer_state = producers::rebuild(
+        let (producer_state, forgotten_saved) = producers::rebuild(
             &epochs_dir,
             &segments,
             Some(&recovered.active_marks),
@@ -1309,6 +1309,7 @@ impl DiskLog {
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
+            forgotten_saved: Mutex::new(forgotten_saved),
             head: Mutex::new(head),
             head_pending: std::sync::atomic::AtomicBool::new(true),
             head_floor: AtomicU64::new(0),
@@ -2020,6 +2021,8 @@ struct LogInner {
     /// Each idempotent producer's place in the log. Written only under the
     /// `segments` write lock, in offset order, so it always matches the tail.
     producers: Mutex<producers::ProducerState>,
+    /// What `producers.forgotten` holds on disk. Taken under `producers`.
+    forgotten_saved: Mutex<felix_common::random::HashMap<u64, u64>>,
     /// The log's trim records and the floor they set. Taken under `segments`
     /// when both are held.
     head: Mutex<head::Head>,
@@ -2358,10 +2361,12 @@ impl LogInner {
         producers::discard(&self.dir).map_err(StorageError::Io)?;
         crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
         crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
-        let state = producers::rebuild(&self.dir, segments, None, self.config.raft_log)?;
+        let (state, saved) = producers::rebuild(&self.dir, segments, None, self.config.raft_log)?;
         self.batch_open
             .store(state.is_open(), std::sync::atomic::Ordering::Release);
-        *self.producers.lock() = state;
+        let mut producers = self.producers.lock();
+        *producers = state;
+        *self.forgotten_saved.lock() = saved;
         Ok(())
     }
 }
