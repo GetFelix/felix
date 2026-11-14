@@ -165,7 +165,12 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::HEAD_TRIM)
         .union(PeerCapabilities::RECORD_HEADERS)
         .union(PeerCapabilities::SEQUENCED_FORWARDS)
-        .union(PeerCapabilities::WRITER_GENERATIONS);
+        .union(PeerCapabilities::WRITER_GENERATIONS)
+        .union(if cfg!(feature = "raft") {
+            PeerCapabilities::SWITCH_SEAL
+        } else {
+            PeerCapabilities::NONE
+        });
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
@@ -990,6 +995,25 @@ fn election_is_offered_only_when_switched_on_with_the_fence() {
             .capabilities()
             .contains(PeerCapabilities::ELECTION)
     );
+}
+
+/// **Only a Raft build offers the seal, and only with the fence it rides
+/// on.** A peer without the bit is sent no seal message, so a hybrid-only
+/// build is never asked to promise one.
+#[test]
+fn the_seal_is_offered_by_a_raft_build_with_the_fence() {
+    for fence in [true, false] {
+        let offered = PeerTransportConfig {
+            fence,
+            ..PeerTransportConfig::default()
+        }
+        .capabilities();
+        assert_eq!(
+            offered.contains(PeerCapabilities::SWITCH_SEAL),
+            fence && cfg!(feature = "raft"),
+            "fence {fence}"
+        );
+    }
 }
 
 /// A broker offers `RECORD_HEADERS` with what a headered batch rides on, with

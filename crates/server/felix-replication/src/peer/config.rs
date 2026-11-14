@@ -263,6 +263,15 @@ fn env_millis(name: &str) -> Option<Duration> {
     ))
 }
 
+/// A build with the Raft engine takes part in the seal that moves a shard
+/// to it; the seal rides on the fence, so it is offered only with it.
+#[cfg(feature = "raft")]
+const SWITCH_SEAL: felix_wire::internal::PeerCapabilities =
+    felix_wire::internal::PeerCapabilities::SWITCH_SEAL;
+#[cfg(not(feature = "raft"))]
+const SWITCH_SEAL: felix_wire::internal::PeerCapabilities =
+    felix_wire::internal::PeerCapabilities::NONE;
+
 impl PeerTransportConfig {
     /// What this broker offers its peers in the handshake.
     pub fn capabilities(&self) -> felix_wire::internal::PeerCapabilities {
@@ -283,6 +292,7 @@ impl PeerTransportConfig {
                 .union(PeerCapabilities::CACHE_FENCE)
                 .union(PeerCapabilities::GROUP_FENCE)
                 .union(PeerCapabilities::BALLOTS)
+                .union(SWITCH_SEAL)
                 .union(if self.election {
                     PeerCapabilities::ELECTION.union(PeerCapabilities::KEPT_SETS)
                 } else {

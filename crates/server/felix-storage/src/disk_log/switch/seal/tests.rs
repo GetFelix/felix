@@ -766,3 +766,66 @@ async fn a_crash_between_the_ballot_and_the_promise_leaves_no_promise() {
     );
     assert!(follower.log.seal_promise().is_some());
 }
+
+/// **Retention keeps a promised copy's log.** The copy answered the seal's
+/// fence with where its log starts, and the record at `N` digests from
+/// there; a voter that deleted past it could not start from the base. A
+/// later generation ends the promise and retention runs again.
+#[tokio::test]
+async fn retention_holds_while_a_promise_holds() {
+    let dir = tempdir().expect("tempdir");
+    let small = crate::segment::SEGMENT_HEADER_LEN + 120;
+    let config = LogConfig {
+        segment_size_bytes: small,
+        index_spacing_bytes: 48,
+        retention_bytes: Some(small),
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        fsync_mode: FsyncMode::OnCommit,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let log = DiskLog::open(dir.path(), LABEL, config).expect("open");
+    for i in 0..24 {
+        crate::log::AppendOnlyLog::append(&log, &[record(&format!("record-{i:02}"))])
+            .await
+            .expect("append");
+    }
+    log.sync().await.expect("sync");
+    log.promise_seal(SEAL, LEADER, sealer())
+        .await
+        .expect("promise")
+        .expect("one sealer");
+
+    let held = log.enforce_retention_now().await.expect("retention");
+    assert_eq!(held.segments_deleted, 0, "{held:?}");
+    assert_eq!(log.base_offset(), 0);
+
+    log.accept_generation(SEAL + 1, Some(LEADER))
+        .await
+        .expect("accept");
+    assert_eq!(log.seal_promise(), None);
+    let released = log.enforce_retention_now().await.expect("retention");
+    assert!(released.segments_deleted > 0, "{released:?}");
+    assert!(log.base_offset() > 0);
+}
+
+/// **A closed log marks no claim.** Once `close` has run, the directory may
+/// already be another log's, so the claim's mark is checked against the
+/// closed flag under the lock `close` takes, and nothing is written.
+#[tokio::test]
+async fn a_closed_log_marks_no_claim() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("leader");
+    let leader = Copy::with(&dir, on_commit(), 0, &["a", "b"]).await;
+    leader.promise(SEAL, sealer()).await;
+    leader.log.close().await.expect("close");
+    let claimed = leader
+        .log
+        .claim_seal(sealer(), 0, (&leader.dead_letters, 0), (&leader.cursors, 0))
+        .await;
+    assert!(claimed.is_err(), "{claimed:?}");
+
+    let reopened = DiskLog::open(dir.join("log"), LABEL, on_commit()).expect("reopen");
+    let promise = reopened.seal_promise().expect("the promise");
+    assert!(!promise.claimed, "{promise:?}");
+}

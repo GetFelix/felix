@@ -2162,9 +2162,10 @@ that fsyncs on commit, and the leader's count and report:
 - *The promise.* A copy that takes the seal's fence accepts `G` for the
   seal leader in its ballot, then writes a `switch-seal` file naming `G`
   and the sealing copy id, and only then answers. While it holds, the copy
-  is to take the shard's records only from that copy id and refuse hybrid
-  ballots and rebuild writes (enforced once the seal is wired to the
-  fence). Nothing reopens the shard on a timeout: the promise
+  takes the shard's records only from that copy id, refuses rebuilds,
+  bootstraps and election ballots, and grants no pre-vote. Retention
+  deletes nothing from its log, so it keeps the start it answered with.
+  Nothing reopens the shard on a timeout: the promise
   lapses only when the copy accepts a later generation, which only the
   control plane's promotion gives it.
 - *The claim.* Once a majority answered and the shard's fence is quiet (no
@@ -2188,8 +2189,13 @@ that fsyncs on commit, and the leader's count and report:
 
 `DiskLog::promise_seal`, `claim_seal` and `ack_seal` in
 `felix_storage::disk_log::switch::seal` do the disk steps, and
-`felix_replication::seal::SealRound` the count. They are not wired to the
-fence or the wire protocol yet, so nothing seals a shard.
+`felix_replication::seal::SealRound` the count. `SealRound::step` runs one
+pass of the leader's round over the wire: the seal's fence to each copy, the
+claim, `SealAck` to each copy, and the report. The messages are in
+`docs/internal-protocol.md`, "Sealing a shard for the switch to Raft", and
+only a build with the Raft engine offers them. Nothing calls `step` yet: the
+control plane's seal flag, the leader's quiesce and the compare-and-swap that
+records the report come next, so nothing seals a shard.
 
 **Only the sealing copy leads.** A follower takes catch-up records for the
 seal only from the copy that sealed. Catch-up batches carry the leader's
