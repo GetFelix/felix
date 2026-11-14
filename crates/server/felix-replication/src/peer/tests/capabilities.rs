@@ -165,7 +165,12 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::HEAD_TRIM)
         .union(PeerCapabilities::RECORD_HEADERS)
         .union(PeerCapabilities::SEQUENCED_FORWARDS)
-        .union(PeerCapabilities::WRITER_GENERATIONS);
+        .union(PeerCapabilities::WRITER_GENERATIONS)
+        .union(if cfg!(feature = "raft") {
+            PeerCapabilities::SWITCH_SEAL
+        } else {
+            PeerCapabilities::NONE
+        });
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
