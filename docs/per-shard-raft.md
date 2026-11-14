@@ -1860,13 +1860,14 @@ way a held `Quorum` batch is released on the hybrid.
   offsets to the log. A batch behind it that did commit is dropped too and
   delivered by the pass, in order, after whatever committed at those
   offsets. Whether the broker still leads is decided together with the
-  append, under the lock a reader registers under, so a reader that joins
-  after the deposal either joins above the batch or gets it from the pass.
+  append, under the lock that ending the deposed term's readers takes, so a
+  reader that joins after they are ended either joins above the batch or
+  gets it from the pass.
 - A member that becomes leader finishes the pass first, then marks the
   stream as led. A deposal clears that mark under the same lock the pass
   and an opening term hold, so an earlier term's deposal that runs late
   cannot clear the mark of the term that is opening. If a `Block` subscriber's queue is still full 50 ms after
-  a term asks to open, the pass stops waiting for it: the subscriber is
+  a term asks to open, or after a deposal asks for the lock, the pass stops waiting for it: the subscriber is
   ended, with the batch counted as its drop, so it knows where to resume. A slow reader never holds up a new term's
   writes.
 - A pass that keeps failing (a read error on the member's log) backs off,

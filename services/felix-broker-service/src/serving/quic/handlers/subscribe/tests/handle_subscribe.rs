@@ -1452,8 +1452,12 @@ mod on_raft {
             let probe = follower
                 .broker
                 .subscribe_from("t1", "ns", "orders", 0, from);
-            if !probe.await.expect("probe").backlog.is_empty() {
-                break;
+            // A follower whose log has not reached the record yet says the
+            // offset is in the future.
+            match probe.await {
+                Ok(probe) if !probe.backlog.is_empty() => break,
+                Ok(_) | Err(felix_broker::BrokerError::CursorInFuture { .. }) => {}
+                Err(error) => panic!("probe: {error:?}"),
             }
             assert!(
                 tokio::time::Instant::now() < deadline,

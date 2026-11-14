@@ -564,9 +564,10 @@ impl StreamState {
         // A failed batch on a broker that no longer leads keeps the sequence
         // below offsets that may hold committed records. A batch released
         // behind it would carry the sequence past them, so it is left to the
-        // pass over the log. Decided under the lock a reader registers
-        // under: a reader that joins after the deposal is either above this
-        // batch or gets it, and what lies below it, from the pass.
+        // pass over the log. Decided under the log lock, which ending the
+        // deposed term's readers takes too: a reader that joins after they
+        // are ended is either above this batch or gets it, and what lies
+        // below it, from the pass.
         if self.engine_log
             && released_from.is_some_and(|from| from > state.next_seq)
             && !self.leads_engine_log.load(Ordering::Acquire)

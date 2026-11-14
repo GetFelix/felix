@@ -1068,6 +1068,62 @@ mod engine_log {
         assert_eq!(handle.tail_seq(), 3);
     }
 
+    /// **A full `Block` subscriber does not hold up a deposal.** A term
+    /// deposed before it opened never asked the pass for the lock, so the
+    /// deposal has to: left waiting, no later term would open here.
+    #[tokio::test]
+    async fn a_full_block_subscriber_does_not_hold_up_a_deposal() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        append(&log, &["a"], 1).await;
+        append(&log, &["b"], 2).await;
+        append(&log, &["c"], 3).await;
+        let (broker, bound) = broker_from(ReadBound::Committed(0), |broker| {
+            broker.with_subscriber_queue_policy(crate::SubQueuePolicy::Block)
+        })
+        .await;
+        let handle = open(&broker, &log).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker
+                .subscribe_sized("t1", "ns", "orders", 0, Some(1))
+                .await;
+            subscription.expect("subscribe").into_parts()
+        };
+        *bound.0.lock() = ReadBound::Committed(3);
+        let pass = tokio::spawn({
+            let handle = handle.clone();
+            async move { handle.deliver_from_log().await }
+        });
+        // The pass is now waiting on the full queue.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!pass.is_finished(), "the subscriber's queue was not full");
+
+        // The term was reported and deposed before it asked to lead.
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            broker.follow_engine_log("t1", "ns", "orders", 0),
+        )
+        .await
+        .expect("the deposal finished while the subscriber was full");
+        pass.await.expect("pass task").expect("pass");
+        assert_eq!(batch(&mut receiver).await, (0, 0, payloads(&["a"])));
+        let ended = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+        assert!(
+            ended.expect("ended in time").is_none(),
+            "kept the subscriber"
+        );
+        assert_eq!(receiver.lagged(), Some(1));
+
+        let led = tokio::time::timeout(
+            Duration::from_secs(5),
+            broker.lead_from_tail("t1", "ns", "orders", 0),
+        )
+        .await
+        .expect("the later term opened");
+        assert!(led.expect("lead"));
+        assert_eq!(handle.tail_seq(), 3);
+    }
+
     /// **A member sent a snapshot ends its readers where they stood.** The
     /// records below the log's new base are not here to deliver, so they
     /// resume on a broker that holds them; the pass goes on from the base.

@@ -262,8 +262,9 @@ impl Completion {
     }
 
     /// [`Self::deliver`] for a batch read from an engine's log. Once a
-    /// caller waits to lead the shard here, a `Block` subscriber still full
-    /// is ended, with the batch counted as its drop, instead of waited on.
+    /// caller waits to lead the shard here, or a deposal waits to end the
+    /// deposed term's subscribers, a `Block` subscriber still full is ended,
+    /// with the batch counted as its drop, instead of waited on.
     async fn deliver_unless_led(&mut self) {
         let state = Arc::clone(&self.handle.state);
         let wanted = state.lead_wanted.notified();
