@@ -1450,8 +1450,12 @@ entries above it, so its log is cut to the snapshot:
   written, the answers kept for each producer that wrote, and the expiry
   entries added or removed. A wait for a CPU slot (see below) lengthens
   that window. That is the build's memory cost, plus the encoded snapshot.
-- The fold runs on its own thread, not the blocking pool, so a pool
-  backed up with disk flushes does not keep the overlay up.
+- The fold runs on the state machine's task, after each run of applied
+  entries: a few hundred changes, or eight per entry in the run if that is
+  more, so the overlay shrinks however fast writes come. A fold on another
+  thread would compete with apply for the lock and a core. A group that
+  stops writing keeps its overlay until its next write; reads still see
+  the right values.
 - A snapshot due while the last build's overlay is still folding back is
   deferred: taking it would mean finishing the fold, or copying the
   overlay, on the state machine's task. openraft asks again once another

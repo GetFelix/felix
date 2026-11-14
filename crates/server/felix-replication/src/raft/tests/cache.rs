@@ -640,9 +640,56 @@ fn mixed_upto(upto: u64) -> super::super::cache::CacheState {
     state
 }
 
-/// The writes a build let go of are folded back into the live maps.
-async fn folded(cache: &super::super::machine::Cache) {
-    eventually(|| (!cache.read().layered()).then_some(())).await;
+/// Applies empty runs until the writes a build let go of are folded back
+/// into the live maps. Apply is what folds, so nothing else would.
+async fn folded(
+    machine: &mut super::super::machine::Machine,
+    cache: &super::super::machine::Cache,
+) {
+    use openraft::storage::RaftStateMachine;
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while cache.read().layered() {
+        assert!(tokio::time::Instant::now() < deadline, "never folded");
+        machine
+            .apply(futures::stream::empty())
+            .await
+            .expect("apply");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// A released cut folds back through apply, a chunk per run, and not on
+/// a thread of its own: one competing with apply for the lock and a core
+/// is what held reads up during back to back builds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_released_cut_folds_back_on_the_apply_task() {
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    let dir = tempdir().expect("dir");
+    let (mut machine, cache) = cache_machine(dir.path()).await;
+    machine
+        .apply(entries(1, 20_000, mixed))
+        .await
+        .expect("apply");
+    let mut builder = machine.get_snapshot_builder().await;
+    machine
+        .apply(entries(20_001, 25_000, mixed))
+        .await
+        .expect("apply");
+    builder.build_snapshot().await.expect("build");
+    drop(builder);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(
+        cache.read().layered(),
+        "the overlay folded off the apply task"
+    );
+    // One run folds one bounded share, not the whole overlay.
+    machine
+        .apply(futures::stream::empty())
+        .await
+        .expect("apply");
+    assert!(cache.read().layered(), "one run folded the whole overlay");
+    folded(&mut machine, &cache).await;
+    assert!(*cache.read() == mixed_upto(25_000), "a write was lost");
 }
 
 /// A build cancelled part way, its encode still running, leaves the
@@ -667,7 +714,7 @@ async fn a_build_dropped_part_way_folds_back_with_nothing_lost() {
         .apply(entries(21_001, 22_000, mixed))
         .await
         .expect("apply");
-    folded(&cache).await;
+    folded(&mut machine, &cache).await;
     assert!(*cache.read() == mixed_upto(22_000), "a write was lost");
 
     // A builder dropped before it built anything folds back too.
@@ -677,7 +724,7 @@ async fn a_build_dropped_part_way_folds_back_with_nothing_lost() {
         .await
         .expect("apply");
     drop(builder);
-    folded(&cache).await;
+    folded(&mut machine, &cache).await;
     assert!(*cache.read() == mixed_upto(23_000), "a write was lost");
 }
 
@@ -731,7 +778,7 @@ async fn a_second_build_while_the_first_holds_or_folds_is_exact() {
             "round {round}: the second build is not the state at its entry"
         );
     }
-    folded(&cache).await;
+    folded(&mut machine, &cache).await;
     assert!(*cache.read() == mixed_upto(last), "a write was lost");
 }
 
@@ -796,7 +843,7 @@ async fn a_snapshot_asked_for_while_a_fold_runs_is_deferred() {
         .expect("apply");
     let last = last + 1_000;
     drop(hold);
-    folded(&cache).await;
+    folded(&mut machine, &cache).await;
     assert!(*cache.read() == mixed_upto(last), "a write was lost");
     // Once folded, the snapshot is taken, exact at its entry.
     let mut builder = machine
@@ -817,7 +864,7 @@ async fn an_install_while_a_fold_is_due_takes_the_sent_state() {
     let sent = mixed_upto(30_000);
     install(&mut machine, 30_000, &sent).await;
     drop(hold);
-    folded(&cache).await;
+    folded(&mut machine, &cache).await;
     assert!(
         *cache.read() == sent,
         "the fold wrote over the installed state"
@@ -846,7 +893,7 @@ async fn an_install_while_a_build_holds_its_cut_takes_the_sent_state() {
     let built = builder.build_snapshot().await.expect("build");
     assert!(built.snapshot.bytes == mixed_upto(20_000).snapshot());
     drop(builder);
-    folded(&cache).await;
+    folded(&mut machine, &cache).await;
     assert!(
         *cache.read() == sent,
         "the fold wrote over the installed state"
