@@ -1214,3 +1214,41 @@ fn the_record_round_trips_and_is_omitted_when_absent() {
     let back: ShardAssignment = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(back.placed, started.placed);
 }
+
+/// The report is checked against the sealer's copy id, so neither an order
+/// for a leader with none nor a report against such an order passes.
+#[test]
+fn a_seal_needs_the_sealers_copy_id() {
+    let mut shard = assignment();
+    assert_eq!(shard.can_seal(), Err(SealOrderError::NoSealerCopy));
+    shard.member_storage_ids = ids(&[("broker-a", "000102030405060708090a0b0c0d0e0f")]);
+    assert_eq!(shard.can_seal(), Ok(()));
+
+    let side = SealedSideLog {
+        start: 0,
+        end: 0,
+        digest: "cd".repeat(32),
+    };
+    let report = SealReport {
+        generation: 7,
+        offset: 1,
+        start: 0,
+        digest: "ab".repeat(32),
+        dead_letters: side.clone(),
+        cursors: side,
+        voters: ids(&[
+            ("broker-a", "000102030405060708090a0b0c0d0e0f"),
+            ("broker-b", "101112131415161718191a1b1c1d1e1f"),
+        ]),
+    };
+    let order = shard.seal_order(7);
+    assert_eq!(report.names_voters_of(&shard, &order), Ok(()));
+    let silent = ShardSwitch {
+        sealer_copy: None,
+        ..order
+    };
+    assert_eq!(
+        report.names_voters_of(&shard, &silent),
+        Err(SealReportError::AnotherSealer("broker-a".to_string()))
+    );
+}
