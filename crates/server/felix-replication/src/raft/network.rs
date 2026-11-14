@@ -286,7 +286,6 @@ impl Router {
 /// [`Timeout`].
 fn kind_and_sender(body: &Request) -> (RPCTypes, MemberId) {
     use openraft::vote::RaftLeaderId;
-    use openraft::vote::RaftVote;
     let (action, vote) = match body {
         Request::Append(rpc) => (RPCTypes::AppendEntries, &rpc.vote),
         Request::Vote(rpc) | Request::PreVote(rpc) => (RPCTypes::Vote, &rpc.vote),
