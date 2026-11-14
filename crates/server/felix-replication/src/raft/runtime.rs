@@ -74,10 +74,12 @@ pub struct RuntimeConfig {
     /// skipped until the next pass. The metadata group's log is not
     /// counted; it keeps its own 4 MiB.
     pub tail_cache_bytes: u64,
-    /// Most entries one append to a follower carries. The default fills the
-    /// log reader's 4 MiB page with 1 KiB records, so a follower that is
-    /// behind catches up in fewer round trips. Larger records are bounded
-    /// by bytes: by that page and by `wire::fit`.
+    /// Most entries one append to a follower carries. openraft reads an
+    /// append's entries before it sends them and holds no permit for the
+    /// read, so each lagging follower of each group can hold one in memory:
+    /// 1 MiB of 1 KiB records at the default, about 2 GiB at 1000 groups
+    /// with two lagging followers each. Larger records are bounded by bytes:
+    /// by the log reader's 4 MiB page and by `wire::fit`.
     pub append_entries: u64,
 }
 
@@ -96,7 +98,7 @@ impl Default for RuntimeConfig {
             clock_drift_ppm: 100_000,
             log_mark: LogMarkMode::Exact,
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
-            append_entries: 4096,
+            append_entries: 1024,
         }
     }
 }

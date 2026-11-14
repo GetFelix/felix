@@ -10,6 +10,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use tokio::sync::watch;
 
@@ -47,10 +48,14 @@ impl<A> Default for ReadRounds<A> {
 impl<A: Clone + Send + Sync + 'static> ReadRounds<A> {
     /// Join the next round to be asked. If no task is asking rounds, one
     /// starts on `runtime` and calls `round` once per round until no read
-    /// is left waiting.
+    /// is left waiting. A round that has not answered after `limit` is
+    /// dropped and answers `unanswered`, so one call that never returns
+    /// cannot stop every later round.
     pub(crate) fn enter<F, Fut>(
         self: &Arc<Self>,
         runtime: &tokio::runtime::Handle,
+        limit: Duration,
+        unanswered: A,
         round: F,
     ) -> Entered<A>
     where
@@ -69,7 +74,7 @@ impl<A: Clone + Send + Sync + 'static> ReadRounds<A> {
                 rounds: Arc::clone(self),
                 ended: false,
             };
-            runtime.spawn(reset.run(round));
+            runtime.spawn(reset.run(limit, unanswered, round));
         }
         Entered { answer }
     }
@@ -90,8 +95,9 @@ struct Reset<A> {
 }
 
 impl<A> Reset<A> {
-    async fn run<F, Fut>(mut self, round: F)
+    async fn run<F, Fut>(mut self, limit: Duration, unanswered: A, round: F)
     where
+        A: Clone,
         F: Fn() -> Fut,
         Fut: Future<Output = A>,
     {
@@ -115,7 +121,9 @@ impl<A> Reset<A> {
                 continue;
             }
             rounds.asked.fetch_add(1, Ordering::Relaxed);
-            let answer = round().await;
+            let answer = tokio::time::timeout(limit, round())
+                .await
+                .unwrap_or_else(|_| unanswered.clone());
             current.send_replace(Some(answer));
         }
     }

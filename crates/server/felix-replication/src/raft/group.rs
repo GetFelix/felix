@@ -898,9 +898,11 @@ impl Group {
         loop {
             let raft = self.raft.clone();
             let stop = self.stop.clone();
-            let entered = self.reads.enter(&self.runtime, move || {
-                read_round(raft.clone(), stop.clone())
-            });
+            let entered =
+                self.reads
+                    .enter(&self.runtime, patience, Round::QuorumNotEnough, move || {
+                        read_round(raft.clone(), stop.clone())
+                    });
             // A read that arrives during a round waits for the next one too,
             // so the bound is on the wait, not on one round.
             let round = tokio::select! {
@@ -908,8 +910,12 @@ impl Group {
                 () = self.stop.cancelled() => return Err(propose::stopped()),
                 round = tokio::time::timeout_at(deadline, entered.answer()) => match round {
                     Ok(Some(round)) => round,
-                    // The task asking rounds ended without an answer.
-                    Ok(None) => return Err(unanswered),
+                    // The task asking rounds ended without an answer. A new
+                    // read starts a new task.
+                    Ok(None) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
                     Err(_) => return Err(unanswered),
                 },
             };

@@ -1864,10 +1864,12 @@ enough. A broker that was deposed and elected again after the read is open
 in a later term, and the value it read can miss a record the leader in
 between committed. A member that does not lead is refused as leadership lost. A majority that does not
 answer within the longest election timeout is a timeout, not a lost
-leadership. A read-index round does not use the leader's lease: openraft
-answers it only from a majority's acknowledgements of a heartbeat sent after
-the round was asked, so a lapsed lease costs a read that round and nothing
-more. openraft reports a lapsed lease to writes only. If a later openraft
+leadership. A read-index round does not use the leader's lease: the pinned
+openraft always asks the core for a fresh quorum confirmation for
+`ReadPolicy::ReadIndex` (`Raft::get_local_read_linearizer` in
+`openraft/src/raft/mod.rs`), so a lapsed lease costs a read that round and
+nothing more. A round that has not answered within the longest election
+timeout is dropped and the next one is asked. openraft reports a lapsed lease to writes only. If a later openraft
 reports one to a read, the engine asks for a heartbeat, waits for a majority
 to answer and asks again within the same bound.
 

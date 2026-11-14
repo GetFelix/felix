@@ -65,7 +65,7 @@ async fn leave_one_behind(led: &Led, records: usize) -> (String, u64) {
 }
 
 /// A follower behind by 6,000 records of 1 KiB catches up in a few
-/// appends of about 4 MiB each. openraft's default of 300 entries an
+/// appends of about 1 MiB each. openraft's default of 300 entries an
 /// append would take 20.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_follower_behind_by_small_records_catches_up_in_few_appends() {
@@ -75,7 +75,7 @@ async fn a_follower_behind_by_small_records_catches_up_in_few_appends() {
     led.heal();
     led.cluster.committed_everywhere(0, last).await;
     let appends = led.cluster.net.appends.load(Relaxed);
-    assert!(appends <= 6, "{appends} appends to catch up 6,000 records");
+    assert!(appends <= 10, "{appends} appends to catch up 6,000 records");
     led.cluster.stop().await;
 }
 

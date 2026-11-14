@@ -12,12 +12,16 @@ async fn answered(read: Entered<u64>) -> Option<u64> {
         .expect("the read was told something")
 }
 
+/// What a round that did not answer in time says.
+const UNANSWERED: u64 = u64::MAX;
+
 /// Rounds the test answers. Each round asked sends the test its number
 /// and a slot, and answers what the test puts in the slot.
 struct Scripted {
     rounds: Arc<ReadRounds<u64>>,
     started: mpsc::UnboundedSender<(u64, oneshot::Sender<u64>)>,
     calls: Arc<AtomicU64>,
+    limit: Duration,
 }
 
 impl Scripted {
@@ -27,6 +31,7 @@ impl Scripted {
             rounds: Arc::default(),
             started,
             calls: Arc::default(),
+            limit: Duration::from_secs(60),
         };
         (scripted, asked)
     }
@@ -34,8 +39,11 @@ impl Scripted {
     fn enter(&self) -> Entered<u64> {
         let started = self.started.clone();
         let calls = Arc::clone(&self.calls);
-        self.rounds
-            .enter(&tokio::runtime::Handle::current(), move || {
+        self.rounds.enter(
+            &tokio::runtime::Handle::current(),
+            self.limit,
+            UNANSWERED,
+            move || {
                 let started = started.clone();
                 let n = calls.fetch_add(1, Ordering::Relaxed) + 1;
                 async move {
@@ -43,7 +51,8 @@ impl Scripted {
                     started.send((n, answer)).expect("test is listening");
                     answered.await.expect("test answers")
                 }
-            })
+            },
+        )
     }
 }
 
@@ -173,7 +182,12 @@ fn a_task_dropped_before_it_ran_does_not_strand_later_reads() {
     let gone = tokio::runtime::Builder::new_current_thread()
         .build()
         .expect("runtime");
-    let stranded = rounds.enter(gone.handle(), || async { 1 });
+    let stranded = rounds.enter(
+        gone.handle(),
+        Duration::from_secs(60),
+        UNANSWERED,
+        || async { 1 },
+    );
     drop(gone);
 
     let live = tokio::runtime::Builder::new_current_thread()
@@ -182,7 +196,27 @@ fn a_task_dropped_before_it_ran_does_not_strand_later_reads() {
         .expect("runtime");
     live.block_on(async {
         assert_eq!(answered(stranded).await, None);
-        let read = rounds.enter(&tokio::runtime::Handle::current(), || async { 2 });
+        let read = rounds.enter(
+            &tokio::runtime::Handle::current(),
+            Duration::from_secs(60),
+            UNANSWERED,
+            || async { 2 },
+        );
         assert_eq!(answered(read).await, Some(2));
     });
+}
+
+/// One call that never returns must not stop every later round.
+#[tokio::test]
+async fn a_round_that_never_answers_is_dropped_and_later_reads_get_a_new_one() {
+    let (mut scripted, mut asked) = Scripted::new();
+    scripted.limit = Duration::from_millis(100);
+    let stuck = scripted.enter();
+    let (_, _never) = asked.recv().await.expect("a round started");
+    assert_eq!(answered(stuck).await, Some(UNANSWERED));
+
+    let later = scripted.enter();
+    let (n, answer) = asked.recv().await.expect("a new round started");
+    answer.send(n).expect("waiting");
+    assert_eq!(answered(later).await, Some(n));
 }
