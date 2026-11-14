@@ -606,7 +606,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenJointOneHalf.cfg` | a majority of either half of a joint configuration is enough | violate `AckedHeld` |
 | `FelixRaftWrittenCommits.cfg` | the commit index counts written reports | violate `CommittedHeld` |
 | `FelixRaftWrittenPowerCut.cfg` | every rule on and one power cut that rotates the cut broker's copy (`CutRotates`), as a broker whose copy vouched for an unsynced record does | pass the same and `AckedNeverLost` (16.8k distinct states) |
-| `FelixRaftWrittenFailoverPowerCut.cfg` | `CutRotates` at failover bounds: two terms, one write, one process crash, two power cuts | pass the same and `AckedNeverLost`; not registered: TLC_OUTCOME |
+| `FelixRaftWrittenFailoverPowerCut.cfg` | `CutRotates` at failover bounds: two terms, one write, one process crash, two power cuts | pass the same and `AckedNeverLost` (32.3M distinct states, depth 35, finished in 15 minutes with 8 workers on a 32-core machine); not registered for pull requests |
 | `FelixRaftWrittenPowerCutKeeps.cfg` | the same with the copy kept: the loss the early acknowledgement would leave open | violate `AckedNeverLost` |
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
