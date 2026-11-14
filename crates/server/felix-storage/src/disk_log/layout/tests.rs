@@ -137,3 +137,21 @@ fn a_directory_name_gives_back_its_streams_prefix() {
     assert_eq!(prefix_of(".deleted"), None);
     assert_eq!(prefix_of("caches"), None);
 }
+
+#[test]
+fn a_kept_entry_gives_back_its_shard_directory_and_copy() {
+    let name = incarnation_dir_name(&shard("acme", "default", "orders", 3), 0xa51f);
+    for (copy, n) in [(0, 0), (0xdead_beef, 0), (u64::MAX, 3)] {
+        let entry = kept_name(&name, copy, n);
+        assert_eq!(kept_of(&entry), Some((name.as_str(), copy)), "{entry}");
+    }
+    for entry in [
+        "acme_default_orders_3-0123456789abcdef",
+        ".0123456789abcdef",
+        "x.12",
+        "x.0123456789abcdef-",
+        "x.0123456789abcdef-z",
+    ] {
+        assert_eq!(kept_of(entry), None, "{entry}");
+    }
+}

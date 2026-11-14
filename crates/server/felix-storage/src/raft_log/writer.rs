@@ -27,6 +27,7 @@ use crate::disk_log::WriterAt;
 use crate::log::{
     AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, UNKNOWN_WRITER, WrittenBy,
 };
+use crate::raft_copy::VoteMark;
 use crate::segment::{GENERATION_VERSION, SEGMENT_HEADER_LEN, record_header_len};
 
 impl<C, K> RaftLogStorage<C> for RaftLog<C, K>
@@ -46,16 +47,30 @@ where
     }
 
     /// On disk before this returns. See [`DiskLog::save_vote`] for what is
-    /// refused.
+    /// refused. With marks set, the vote mark is synced at the root too,
+    /// after the vote: a crash between the two leaves a vote above its mark,
+    /// which passes and was never answered.
     async fn save_vote(&mut self, vote: &VoteOf<C>) -> io::Result<()> {
         let leader_id = vote.leader_id();
         let generation = generation_of(leader_id.term())?;
         let leader = self.shared.codec.encode_node_id(leader_id.node_id());
+        let committed = vote.is_committed();
         self.shared
             .log
-            .save_vote(generation, &leader, vote.is_committed())
+            .save_vote(generation, &leader, committed)
             .await
-            .map_err(io_error)
+            .map_err(io_error)?;
+        if let Some(marking) = self.shared.marking.get() {
+            marking
+                .marks
+                .vote(VoteMark {
+                    generation,
+                    leader: Some(Arc::from(leader)),
+                    committed,
+                })
+                .await?;
+        }
+        Ok(())
     }
 
     /// Kept as the log's commit offset with the id's term beside it, written
@@ -115,6 +130,13 @@ where
         I::IntoIter: OptionalSend,
     {
         let shared = &self.shared;
+        // A batched log mark that can no longer move would let the log run
+        // ahead of it without bound. Exact marks fail each flush instead.
+        if let Some(marking) = shared.marking.get().filter(|marking| !marking.exact)
+            && let Some(err) = marking.marks.mark_log().failure()
+        {
+            return Err(err);
+        }
         let log = &shared.log;
         let now = now_micros();
         // The log writes a batch into one segment whole, so the entries go
@@ -242,9 +264,17 @@ where
         // stands for the append.
         let pending = pending.expect("at least one batch");
 
+        // The exact log mark is synced before Raft hears the entries are on
+        // disk, so the callback waits for the flush task.
+        let mark = shared
+            .marking
+            .get()
+            .filter(|marking| marking.exact)
+            .zip(last)
+            .map(|(marking, last)| (marking.marks.clone(), last));
         // Fired here only when no earlier callback is still to come, so
         // callbacks keep the order of their appends.
-        let flushed = if shared.flushes.is_empty() {
+        let flushed = if shared.flushes.is_empty() && mark.is_none() {
             log.commit_now(&pending)
         } else {
             None
@@ -268,7 +298,7 @@ where
         };
         match flushed {
             Some(flushed) => done(flushed.map_err(io_error)),
-            None => shared.flushes.push(log, pending, Box::new(done)),
+            None => shared.flushes.push(log, pending, Box::new(done), mark),
         }
         Ok(())
     }
@@ -331,6 +361,17 @@ where
         if keep >= log.tail_now() {
             return Ok(());
         }
+        // The mark comes down before the cut, so a crash after it leaves no
+        // mark above the log. The batch stays off the shard until the
+        // positions have come down too.
+        let _held = match self.shared.marking.get() {
+            Some(marking) => {
+                let held = marking.marks.hold_batched();
+                marking.marks.lower_log(kept).await?;
+                Some(held)
+            }
+            None => None,
+        };
         log.truncate(keep).await.map_err(io_error)?;
         self.shared.positions.send_modify(|at| at.cut_to(kept));
         Ok(())

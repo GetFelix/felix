@@ -1325,11 +1325,10 @@ poll. A `Leader` write is acknowledged only if
 where `last_quorum_ack_sent` is when the leader sent the heartbeat or append
 that a majority last acknowledged. openraft reports it as an instant
 (`last_quorum_acked`, the acknowledged message's send time; 0.10 deprecates
-the older `millis_since_quorum_ack`). If the check fails, the write fence closes and the write is refused
-with leadership lost; a group that has been idle first runs one quorum round
-(see "Many groups on one broker"). The check reads the same lease clock as
-today (`CLOCK_BOOTTIME` on Linux, see "The clock assumption, stated
-precisely" in `replication-design.md`).
+the older `millis_since_quorum_ack`). If the check fails, the write waits for its commit and the shard stays
+open. The check measures on the monotonic clock and compares it with
+`CLOCK_BOOTTIME` on Linux to see a suspend. As built:
+`per-shard-raft.md`, "Acknowledging a write".
 
 **The margin.** Followers refuse to vote for `election_timeout_max` after they
 last heard the leader. openraft 0.10 sets its follower-side `leader_lease` to

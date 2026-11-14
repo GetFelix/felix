@@ -217,7 +217,12 @@ mod tests {
             target_rate: 5_000,
             subscribers: 3,
             payload_bytes: 64,
-            queue_capacity: 64,
+            // Every consumer drops at its own client queue once it is full, so a
+            // healthy one loses events whenever its task goes unscheduled for
+            // longer than the queue lasts: 13 ms at 64, which a busy host
+            // exceeds. 1024 lasts 200 ms, and the 4 s stall overflows it many
+            // times over.
+            queue_capacity: 1024,
             phase_secs: 2,
             policies: vec![Policy::DropNew],
             tui: false,
@@ -240,11 +245,9 @@ mod tests {
 
         // Isolation is a claim about orders of magnitude, not about perfection.
         //
-        // A healthy consumer has its own bounded client-side queue, and on a loaded
-        // machine that queue can briefly overflow for reasons that have nothing to do
-        // with the stalled consumer — CI caught exactly this, with one healthy
-        // consumer shedding 3 events out of 33,933 while the stalled one shed 20,108.
-        // An exact-zero assertion was testing how busy the runner was.
+        // A healthy consumer's own queue can still overflow briefly on a loaded
+        // machine, for reasons unrelated to the stalled consumer, so an exact-zero
+        // bound would test how busy the host is.
         let healthy_lost = run.healthy_gaps();
         let healthy_received = run.healthy_received();
         let stalled_lost = run.stalled_gaps();

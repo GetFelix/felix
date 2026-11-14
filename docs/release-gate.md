@@ -49,10 +49,9 @@ is the campaign on real processes
 Three terms have one meaning in every row:
 
 - **Served**: 60 s after the heal the shard has exactly one leader, and a
-  `Quorum` write to it is acknowledged. A group that must re-form gets 90 s,
-  counted from when the last of its voters' brokers is reachable again: the
-  re-form time, then the same 60 s. The design gives the re-form time no
-  value yet (#2296). The gate assumes 30 s.
+  `Quorum` write to it is acknowledged. A group that must re-form is
+  judged 60 s after the operator's re-form command finishes. Nothing starts
+  a re-form by itself, so there is no re-form time to bound.
 - **Fails over**: a `Quorum` write to the shard is acknowledged by a new
   leader within 20 s of the kill. This applies only while a majority of the
   shard's voters stays reachable. Without one the shard cannot elect, and
@@ -91,7 +90,7 @@ liveness check of the history campaign is today
 | 20 | Two records at one offset on a `Leader` stream | History duplicate-offset nemesis (gap 13) | 20 minutes, three seeds | No QUIC subscriber, Kafka consumer or cache watcher holds two records at one offset |
 | 21 | A 0.7 control plane's data directory | `tests/raft_runtime.rs` starts this build on a data directory v0.7.1 wrote. No conversion tool in 0.8 (#2234 is not planned) | Every CI coverage run | This build refuses to start, names `raft.redb` and changes nothing in the directory |
 | 22 | Re-form races | Sim aimed schedules (gap 3) | A pinned seed each, and 2000 seeds with the schedules on | A voter of a newer membership that the control plane does not know is waited for. A voter missing from a forced re-form that comes back under its old id stops, and nothing it sends is accepted. A retired copy whose group elected anyway rotates its copy id and rejoins as a learner |
-| 23 | Power loss under relaxed fsync, one broker and a majority | Sim modes `relaxed-power-loss` and `majority-cut-relaxed` (gap 10) | 2000 seeds, at least 200 with a majority cut | Every copy that lost unsynced bytes rotates its id. A cut majority re-forms and is served. Only records no surviving disk holds are lost |
+| 23 | Power loss under relaxed fsync, one broker and a majority | Sim modes `relaxed-power-loss` and `majority-cut-relaxed` (gap 10) | 2000 seeds, at least 200 with a majority cut | Every copy that lost unsynced bytes rotates its id. After the operator re-form command, a cut majority is served. Only records no surviving disk holds are lost |
 
 Rows 1, 2, 10 and 12 run today on the hybrid. The sim modes of rows 3, 4, 5
 and 23 run too, but they check only part of each row. The modes have no

@@ -87,6 +87,9 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   acme_default_orders_0-0d3aed4b998d2798-0006411a0ccf2e40/
                                              ← the same shard of a stream with incarnation 0x6411a0ccf2e40
   .deleted/                                  ← directories of deleted streams, waiting to be removed
+  .kept/
+    acme_default_orders_0-0d3aed4b998d2798.00000000000000a1
+                                             ← a Raft shard directory a copy rotation moved aside, by copy id
   .streams/
     acme_default_orders-5c1b0e2fd3a4b7c8      ← which incarnation of a stream this broker holds
     .floors                                   ← deleted floors from catalog tombstones
@@ -157,6 +160,11 @@ Moving a directory there is a rename, so a crash leaves it either where it was
 or where nothing opens it; the broker deletes what is there in the background
 and again at startup. Being dotted, it is never read as a shard. See
 `docs/durable-storage.md` ("Deleting a stream").
+
+`.kept/` holds the shard directories a Raft copy rotation moved aside, named
+`<shard directory>.<copy id>`. Each stays until the copy now in the shard
+directory has committed past its last record, or until its stream is deleted.
+See `docs/per-shard-raft.md` ("Reclaiming kept copies").
 
 File names are zero-padded to 20 digits so lexicographic and numeric order agree.
 Recovery still parses the number and sorts on it rather than trusting directory
