@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use openraft::EntryPayload;
 use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
@@ -23,6 +24,7 @@ use felix_storage::raft_log::LogPoint;
 
 use super::group::Pace;
 use super::lease::Lease;
+use super::machine::SnapshotData;
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 
@@ -47,10 +49,19 @@ pub(crate) enum Request {
     Append(AppendEntriesRequest<ShardTypes>),
     Vote(VoteRequest<ShardTypes>),
     PreVote(VoteRequest<ShardTypes>),
-    /// A shard group's snapshot has no data, only its metadata.
+    /// One piece of a snapshot. A cache group's snapshot is its state and
+    /// goes in as many pieces as it takes, in order; the member installs it
+    /// when the last one arrives. A stream group's has no data, and no
+    /// member takes it.
     Snapshot {
         vote: VoteOf<ShardTypes>,
         meta: SnapshotMetaOf<ShardTypes>,
+        /// The whole snapshot's size, the same on every piece, so the
+        /// member can refuse one over its cap at the first.
+        data_len: u64,
+        /// Where `data` starts in it.
+        offset: u64,
+        data: Bytes,
     },
     TransferLeader(TransferLeaderRequest<ShardTypes>),
     /// A follower's written position: the last entry `from` has written,
@@ -113,8 +124,8 @@ pub enum Refused {
     /// The member is there and has stopped.
     #[error("{0} has stopped: {1}")]
     Stopped(Box<Addressee>, String),
-    /// A shard group's snapshot holds no records, so a member that took one
-    /// would purge records it was never sent. No member takes one.
+    /// A stream group's snapshot holds no records, so a member that took
+    /// one would purge records it was never sent. No member takes one.
     #[error("{0} takes no snapshot: a shard's records are only in its log")]
     NoSnapshots(Box<Addressee>),
 }
@@ -283,7 +294,7 @@ fn wrong_reply() -> Unreachable<ShardTypes> {
 }
 
 impl GroupRouter<ShardTypes, GroupId> for Router {
-    type SnapshotData = Vec<u8>;
+    type SnapshotData = SnapshotData;
 
     async fn append_entries(
         &self,
@@ -333,28 +344,48 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
         }
     }
 
-    /// Every member refuses this (`Refused::NoSnapshots`). A leader keeps
-    /// its whole log, so it has no reason to send one.
+    /// Sends the snapshot a piece at a time, each sized like an append, and
+    /// stops at the first answer under a newer vote. A member of a stream
+    /// group refuses it (`Refused::NoSnapshots`): its leader keeps its
+    /// whole log, so it has no reason to send one.
     async fn full_snapshot(
         &self,
         target: MemberId,
         group_id: GroupId,
         vote: VoteOf<ShardTypes>,
-        snapshot: SnapshotOf<ShardTypes, Vec<u8>>,
+        snapshot: SnapshotOf<ShardTypes, SnapshotData>,
         cancel: impl Future<Output = ReplicationClosed> + Send + 'static,
         option: RPCOption,
     ) -> Result<SnapshotResponse<ShardTypes>, StreamingError<ShardTypes>> {
-        let body = Request::Snapshot {
-            vote,
-            meta: snapshot.meta,
+        let data = snapshot.snapshot.bytes;
+        let piece = super::wire::append_budget(option.hard_ttl());
+        let sent = async {
+            let mut offset = 0;
+            loop {
+                let end = data.len().min(offset + piece);
+                let body = Request::Snapshot {
+                    vote: vote.clone(),
+                    meta: snapshot.meta.clone(),
+                    data_len: data.len() as u64,
+                    offset: offset as u64,
+                    data: data.slice(offset..end),
+                };
+                let reply = self
+                    .call(target.clone(), group_id.clone(), body, &option)
+                    .await?;
+                let Reply::Snapshot(response) = reply else {
+                    return Err(wrong_reply());
+                };
+                // A member that has seen a newer vote takes no more of it.
+                if end == data.len() || response.vote != vote {
+                    return Ok(response);
+                }
+                offset = end;
+            }
         };
-        let reply = tokio::select! {
-            closed = cancel => return Err(closed.into()),
-            reply = self.call(target, group_id, body, &option) => reply?,
-        };
-        match reply {
-            Reply::Snapshot(response) => Ok(response),
-            _ => Err(wrong_reply().into()),
+        tokio::select! {
+            closed = cancel => Err(closed.into()),
+            sent = sent => Ok(sent?),
         }
     }
 

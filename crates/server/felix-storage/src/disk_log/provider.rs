@@ -26,6 +26,8 @@ pub struct DiskLogProvider {
     root: PathBuf,
     config: LogConfig,
     open_logs: ShardSlots<(ShardKey, u64), DiskLog>,
+    /// Open sealed segments of every log under this root, bounded together.
+    sealed_files: std::sync::Arc<super::sealed::SealedFiles>,
     incarnations: Incarnations,
     dirs: std::sync::Arc<incarnation::DirIndex>,
     /// Retention set for one stream, keyed by tenant, namespace and stream.
@@ -64,6 +66,7 @@ impl DiskLogProvider {
         // Whatever a delete left before a crash or restart.
         incarnation::purge_in_background(root.clone());
         Ok(Self {
+            sealed_files: super::sealed::SealedFiles::for_config(&config),
             markers: incarnation::marker::MarkerFiles::new(root.clone()),
             root,
             config,
@@ -530,10 +533,14 @@ impl DiskLogProvider {
                 let config = self.config_for(shard);
                 self.dirs
                     .created(&layout::incarnation_dir_name(shard, incarnation));
-                match base_offset {
-                    Some(base) => DiskLog::open_at(dir, label, config, base),
-                    None => DiskLog::open(dir, label, config),
-                }
+                DiskLog::open_shared(
+                    dir,
+                    label,
+                    config,
+                    base_offset,
+                    self.sealed_files.clone(),
+                    super::OtherCommit::Drop,
+                )
             },
             || StorageError::Closed(layout::shard_label(shard)),
         )

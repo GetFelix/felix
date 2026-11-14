@@ -22,6 +22,7 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod cache;
 mod change;
 mod commit;
 mod deliver;
@@ -30,9 +31,12 @@ mod identity;
 mod lease;
 mod membership;
 mod propose;
+mod read;
 mod switch;
 mod written;
 
+/// Shards numbered from here are cache shards.
+const CACHE: u32 = 1000;
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 const PATIENCE: Duration = Duration::from_secs(120);
 
@@ -48,7 +52,10 @@ fn shard(n: u32) -> ShardKey {
         namespace: "ns".into(),
         stream: "orders".into(),
         shard: n,
-        kind: ShardKind::Stream,
+        kind: match n >= CACHE {
+            true => ShardKind::Cache,
+            false => ShardKind::Stream,
+        },
     }
 }
 
@@ -105,6 +112,8 @@ struct Net {
     lose_transfers: std::sync::atomic::AtomicBool,
     /// How long an append's answer takes to come back.
     answer_after: parking_lot::Mutex<Option<Duration>>,
+    /// Appends carrying entries that were handed to a broker.
+    appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
     lose_answers: std::sync::atomic::AtomicBool,
 }
@@ -161,6 +170,11 @@ impl RaftTransport for Net {
             true => None,
             false => self.brokers.lock().get(broker).cloned(),
         };
+        if runtime.is_some()
+            && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty())
+        {
+            self.appends.fetch_add(1, Relaxed);
+        }
         let slow = match request.body {
             Request::Append(_) => *self.answer_after.lock(),
             _ => None,
@@ -1361,6 +1375,9 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
             meta,
+            data_len: 0,
+            offset: 0,
+            data: Bytes::new(),
         },
     };
     let answer = cluster.runtime(behind).handle(request).await;
@@ -1588,22 +1605,25 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
 
 #[test]
 fn the_timers_must_make_sense() {
-    assert!(RuntimeConfig::default().raft().is_ok());
+    assert!(RuntimeConfig::default().raft(ShardKind::Stream).is_ok());
+    assert!(RuntimeConfig::default().raft(ShardKind::Cache).is_ok());
     let zero_tick = RuntimeConfig {
         tick: Duration::ZERO,
         ..RuntimeConfig::default()
     };
-    assert!(zero_tick.raft().is_err());
+    assert!(zero_tick.raft(ShardKind::Stream).is_err());
     let heartbeat_past_election = RuntimeConfig {
         heartbeat: Duration::from_secs(3),
         ..RuntimeConfig::default()
     };
-    assert!(heartbeat_past_election.raft().is_err());
+    assert!(heartbeat_past_election.raft(ShardKind::Stream).is_err());
 }
 
 #[test]
 fn the_default_timers_are_the_designs() {
-    let raft = RuntimeConfig::default().raft().expect("timers");
+    let raft = RuntimeConfig::default()
+        .raft(ShardKind::Stream)
+        .expect("timers");
     assert_eq!(RuntimeConfig::default().tick, Duration::from_millis(50));
     assert_eq!(raft.heartbeat_interval, 200);
     assert_eq!(

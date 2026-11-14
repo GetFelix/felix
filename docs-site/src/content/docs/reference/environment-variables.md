@@ -2448,6 +2448,7 @@ absent. They are listed in that script rather than here.
 | --- | --- | --- |
 | `FELIX_DURABLE_ROLLOVER_THRESHOLD_PERCENT` | `100` | Percentage of the segment size at which the next segment is prepared in the background. `100` turns background rollover off: it measured worse than rolling inline where fsync reaches the device. |
 | `FELIX_DURABLE_MAX_OVERSHOOT_PERCENT` | `100` | With background rollover on, how far past its size a segment may grow while its replacement is prepared. Past it, appends roll inline. It bounds the newest segment, which recovery scans in full. |
+| `FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` | `1024` | Most sealed segments the broker keeps open at once, across every durable log it holds (streams, caches, counters, groups). A segment is opened by the first read that reaches it and closed when this many others have been used since. Each slot is one open file and up to about 1 MiB of loaded sparse index at the default segment size, and a read that misses pays an open and an index load, so raise it when many catch-up readers walk different shards. The broker holds it to a quarter of the open-file limit, and its open-file check counts the result; see [Open files](/deployment/production/#open-files). |
 | `FELIX_DURABLE_REPAIR_CHECKSUM_TAIL` | `false` | Truncate a complete last record whose checksum fails, instead of refusing to start. A torn write and bit rot on an acknowledged record look the same, so the default refuses. Records cut short by end of file are repaired either way. |
 
 ### Client and transport

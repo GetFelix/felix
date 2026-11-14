@@ -165,7 +165,12 @@ async fn two_current_brokers_learn_each_others_capabilities() {
         .union(PeerCapabilities::HEAD_TRIM)
         .union(PeerCapabilities::RECORD_HEADERS)
         .union(PeerCapabilities::SEQUENCED_FORWARDS)
-        .union(PeerCapabilities::WRITER_GENERATIONS);
+        .union(PeerCapabilities::WRITER_GENERATIONS)
+        .union(if cfg!(feature = "raft") {
+            PeerCapabilities::SWITCH_SEAL
+        } else {
+            PeerCapabilities::NONE
+        });
     assert_eq!(theirs, offered);
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
@@ -441,6 +446,52 @@ async fn an_older_broker_is_never_sent_the_fence() {
         old.refused.load(Ordering::SeqCst),
         refused_after_handshake,
         "the fence reached a broker that never said it answers it",
+    );
+
+    pool.shutdown().await;
+    old.stop();
+}
+
+/// **A broker without the seal's bit is never sent a seal message.** It
+/// would refuse the kind as unknown; the seal leader must see a copy that
+/// takes no part, before anything is sent.
+#[tokio::test]
+async fn a_broker_without_the_seal_is_never_sent_a_seal_message() {
+    use felix_wire::internal::{SealAck, SealFence};
+    let old = OldBroker::start(PEER).await;
+    let pool = pool(config());
+    assert_eq!(
+        pool.capabilities(PEER, old.addr).await.expect("handshake"),
+        PeerCapabilities::NONE
+    );
+    let refused_after_handshake = old.refused.load(Ordering::SeqCst);
+
+    let InternalMessage::Fence(fence) = fence() else {
+        unreachable!()
+    };
+    let seal_fence = InternalMessage::SealFence(SealFence {
+        fence,
+        sealer: [1; 16],
+    });
+    let seal_ack = InternalMessage::SealAck(SealAck {
+        correlation_id: 0,
+        shard: shard(),
+        sealer: [1; 16],
+        offset: 3,
+        timestamp_micros: 0,
+        payload: Bytes::new(),
+    });
+    for message in [seal_fence, seal_ack] {
+        let err = pool
+            .request(PEER, old.addr, message)
+            .await
+            .expect_err("a seal message must not be sent");
+        assert!(matches!(err, PeerError::Unsupported { .. }), "{err:?}");
+    }
+    assert_eq!(
+        old.refused.load(Ordering::SeqCst),
+        refused_after_handshake,
+        "a seal message reached a broker that never offered the seal",
     );
 
     pool.shutdown().await;
@@ -990,6 +1041,25 @@ fn election_is_offered_only_when_switched_on_with_the_fence() {
             .capabilities()
             .contains(PeerCapabilities::ELECTION)
     );
+}
+
+/// **Only a Raft build offers the seal, and only with the fence it rides
+/// on.** A peer without the bit is sent no seal message, so a hybrid-only
+/// build is never asked to promise one.
+#[test]
+fn the_seal_is_offered_by_a_raft_build_with_the_fence() {
+    for fence in [true, false] {
+        let offered = PeerTransportConfig {
+            fence,
+            ..PeerTransportConfig::default()
+        }
+        .capabilities();
+        assert_eq!(
+            offered.contains(PeerCapabilities::SWITCH_SEAL),
+            fence && cfg!(feature = "raft"),
+            "fence {fence}"
+        );
+    }
 }
 
 /// A broker offers `RECORD_HEADERS` with what a headered batch rides on, with

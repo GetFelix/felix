@@ -486,16 +486,17 @@ cannot be read, a delete failed) is not retried until the next open. Deleting
 a stream deletes the kept copies of that stream's incarnation too, even when
 the live directory is gone.
 
-Two cases are never reclaimed automatically yet, and are tracked in #2442:
+A Raft log saves its committed index behind the commit, at most once a
+second, because a save is a file create, two fsyncs and a rename that the
+log's own fsyncs would queue behind. The last commit before a group goes idle
+is saved within that second, so a kept directory waits at most that long on
+the save.
 
-- A group that has purged its log. After a snapshot the copy's first index is
-  above the base of the kept directory's lowest segment unless the purge fell
-  exactly on a segment boundary, so the kept directory stays. That is safe,
-  only wasteful.
-- A log not under `FsyncMode::OnCommit` (`None` or `Periodic`). It saves its
-  committed index at most once a second, and only when the commit moves, so
-  an idle group may not save the last one, and the kept directories it would
-  cover stay until a later commit or a restart.
+One case is never reclaimed automatically yet, and is tracked in #2442: a
+group that has purged its log. After a snapshot the copy's first index is
+above the base of the kept directory's lowest segment unless the purge fell
+exactly on a segment boundary, so the kept directory stays. That is safe,
+only wasteful.
 
 A re-form that starts a copy at a base without the base's records must not
 count that as holding them (issue #2441): the rule above reads the copy's
@@ -1407,12 +1408,12 @@ A leader's messages carry the gap described in "Idle groups", which is
 how idle groups slow down.
 
 What the runtime sets in openraft: the timers from Questions, 4;
-`enable_tick` off; no snapshot policy, since a shard's records leave by
-retention and never because a snapshot was taken; and `allow_log_reversion`
-off (Questions, 2). Every log is opened with `purge_within`, so a purge
+`enable_tick` off; no snapshot policy for a stream shard, since its records
+leave by retention and never because a snapshot was taken; and
+`allow_log_reversion` off (Questions, 2). Every log is opened with `purge_within`, so a purge
 past the stored snapshot is refused.
 
-A snapshot must not cost a record either, and a shard group's snapshot
+A snapshot must not cost a record either, and a stream shard's snapshot
 holds none. Two settings keep that true until retention is designed:
 
 - `max_in_snapshot_log_to_keep` is the largest value there is. openraft's
@@ -1426,10 +1427,36 @@ holds none. Two settings keep that true until retention is designed:
 So the snapshot message between brokers carries only its metadata. A
 stream shard that needs more than entries, a learner started below the
 switch's base, is caught up by copying segments from a starting offset, as a
-rebuild does. A cache group's snapshot does carry data (#2238). That body
-will use the staged receive, framing, size cap and install slot that
-`felix-storage` shares with the control plane's group (#2364), sent as its
-own streamed message rather than inside one frame.
+rebuild does.
+
+A cache shard is the other way round. Its state is its snapshot plus the
+entries above it, so its log is cut to the snapshot:
+
+- Each member snapshots by itself once `cache_snapshot_every` entries
+  (16,384) have committed since its last snapshot. openraft checks that
+  after each batch of messages, so it needs no tick.
+- Building a snapshot does not hold apply. Between two entries the state
+  machine takes a copy of the state, which costs nothing because the state
+  is kept in persistent maps that share their nodes with the copy. The copy
+  is encoded and written on a blocking thread while apply goes on. A node
+  that apply changes during the build is copied first, so a build costs
+  memory in proportion to what apply changes while it runs. The snapshot
+  is exactly the state as of its last entry, never a mix of that and later
+  writes.
+- Encoding a snapshot and parsing one are CPU work. Across all groups on a
+  broker, at most half the cores (at least one) do it at once. The rest
+  wait, so many groups snapshotting or restarting together do not take
+  the blocking threads that disk flushes need.
+- The member then purges the entries the snapshot covers, except the newest
+  `cache_log_keep` (1,024). A member a little behind still catches up from
+  the log.
+- A member behind its leader's purge is sent the leader's snapshot and
+  installs it. The snapshot goes in pieces, each sized like an append, and
+  the member installs it when the last piece arrives. How it is bounded is
+  in [the replication engine](replication-engine.md), "Sending a snapshot".
+
+A shard's log therefore holds at most about `cache_snapshot_every` plus
+`cache_log_keep` entries, whatever the shard has written.
 
 Each group has a small state machine that keeps the last applied entry and
 the membership in memory. A shard's state is its log. A membership record's
@@ -1773,8 +1800,9 @@ The vote is read from the log, not from openraft, which at a start
 demotes a member's own committed vote in memory.
 
 The stored vote stops counting once anything can have replaced it: an
-append under another vote, a `TransferLeader` request (the member may
-stand), and the grant itself, after which the vote on disk is the
+append under another vote, a cache shard's snapshot installed under another
+vote, a `TransferLeader` request (the member may stand), and the grant
+itself, after which the vote on disk is the
 candidate's new one and is not committed. A second request from the same
 leader is dropped like any other. Only a vote request is let through,
 never a pre-vote: openraft refuses a pre-vote inside the window whoever
@@ -1867,13 +1895,31 @@ enough. A broker that was deposed and elected again after the read is open
 in a later term, and the value it read can miss a record the leader in
 between committed. A member that does not lead is refused as leadership lost. A majority that does not
 answer within the longest election timeout is a timeout, not a lost
-leadership. If openraft reports a lapsed lease, the engine asks for a
-heartbeat, waits for a majority to answer and asks again within the same
-bound.
+leadership. A read-index round does not use the leader's lease: the pinned
+openraft always asks the core for a fresh quorum confirmation for
+`ReadPolicy::ReadIndex` (`Raft::get_local_read_linearizer` in
+`openraft/src/raft/mod.rs`), so a lapsed lease costs a read that round and
+nothing more. A round that has not answered within the longest election
+timeout is dropped and the next one is asked. openraft reports a lapsed lease to writes only. If a later openraft
+reports one to a read, the engine asks for a heartbeat, waits for a majority
+to answer and asks again within the same bound.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
+
+Reads of one shard share rounds. A group asks one round at a time, and a
+round confirms every read that arrived before it was asked. A read that
+arrives while a round is out waits for the next one, which is asked when
+the current one ends: the round out may have been asked before the reader
+took its value, and its answer would not cover that value. So a burst of
+reads costs two rounds at most, not one each, and a read waits at most the
+rest of one round and one more. The bound above is on that whole wait.
+
+> `crates/server/felix-replication/src/raft/read_rounds/tests.rs`,
+> `a_read_that_arrives_during_a_round_waits_for_the_next_one`, and
+> `crates/server/felix-replication/src/raft/tests/read.rs`,
+> `reads_that_arrive_together_share_read_index_rounds`.
 
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
@@ -2784,9 +2830,13 @@ that fsyncs on commit, and the leader's count and report:
 - *The promise.* A copy that takes the seal's fence accepts `G` for the
   seal leader in its ballot, then writes a `switch-seal` file naming `G`
   and the sealing copy id, and only then answers. While it holds, the copy
-  is to take the shard's records only from that copy id and refuse hybrid
-  ballots and rebuild writes (enforced once the seal is wired to the
-  fence). Nothing reopens the shard on a timeout: the promise
+  takes the shard's records only from that copy id, refuses rebuilds and
+  bootstraps at `G` and a candidate's ballots, grants no pre-vote, and
+  never stands for election itself. A batch the leader sent before its own
+  promise names no copy id; the copy asks for it again instead of treating
+  the leader as replaced. Retention
+  deletes nothing from its log, so it keeps the start it answered with.
+  Nothing reopens the shard on a timeout: the promise
   lapses only when the copy accepts a later generation, which only the
   control plane's promotion gives it.
 - *The claim.* Once a majority answered and the shard's fence is quiet (no
@@ -2802,7 +2852,13 @@ that fsyncs on commit, and the leader's count and report:
 - *The acknowledgement.* A follower appends the record at `N` only if its
   log ends at `N - 1`, starts at or below `S`, matches the digest from
   `S`, and each side log holds the leader's range and nothing past it. It
-  answers once the record is on disk.
+  answers once the record is on disk. The digest reads the whole range, so
+  the check runs apart from the request that asked for it: a request that
+  cannot wait is told to ask again, and the next one finds the check
+  running or done. The promise is checked again as the record is written,
+  under the lock a later generation is accepted under, so a copy that
+  accepted a later generation while it digested writes no record for the
+  older seal.
 - *The report.* The leader counts acknowledgements by copy id and reports
   `(G, N)`, the base and the copy ids once a majority holds `N`. A leader
   that restarted before it reported has lost its count and reports
@@ -2810,8 +2866,13 @@ that fsyncs on commit, and the leader's count and report:
 
 `DiskLog::promise_seal`, `claim_seal` and `ack_seal` in
 `felix_storage::disk_log::switch::seal` do the disk steps, and
-`felix_replication::seal::SealRound` the count. They are not wired to the
-fence or the wire protocol yet, so nothing seals a shard.
+`felix_replication::seal::SealRound` the count. `SealRound::step` runs one
+pass of the leader's round over the wire: the seal's fence to each copy, the
+claim, `SealAck` to each copy, and the report. The messages are in
+`docs/internal-protocol.md`, "Sealing a shard for the switch to Raft", and
+only a build with the Raft engine offers them. Nothing calls `step` yet: the
+control plane's seal flag, the leader's quiesce and the compare-and-swap that
+records the report come next, so nothing seals a shard.
 
 **Only the sealing copy leads.** A follower takes catch-up records for the
 seal only from the copy that sealed. Catch-up batches carry the leader's
@@ -3123,15 +3184,17 @@ listener. Until idle groups sleep, both report what ticking every group
 costs; nothing waits on them. A third step, the write burst, is described
 with the memory figures below.
 
-Idle memory fits, with openraft at `30c947ef38` (openraft#2313 and openraft#2314).
+Idle memory fits, with openraft at `5c3ad1bc2d` (openraft#2313, openraft#2314 and openraft#2324).
 The design assumed 180 KB per leader member and 145 KB per follower. The
 runtime's memory test (Linux, release build, 120 idle members, a third
-leading) measures 142 KB of live heap per member, plus 535 KB per member
-that openraft reserves in a large buffer and does not touch while idle
-(#2415). The same three-runtime run, 1,500 members per broker, holds
-222 MB resident per broker, 17 MB of it the logs alone, and does not grow:
-217 MB ten minutes earlier. That is about 137 KB per member,
-and 5,000 members at 142 KB are about 0.7 GB.
+leading) measures 150 KB of live heap per member and no large per-member
+reserve. The process reserves about 26 MiB once, for openraft's latency
+histogram tables, however many members it hosts. The same
+three-runtime run, 1,500 members per broker, holds 232 MB resident per
+broker, 17 MB of it the logs alone. Subtracting the logs and the 26 MiB of
+tables leaves about 189 MB, or 126 KB per member; counting the tables as
+part of each member, (232 - 17) / 1500 is 143 KB. Either way it is under
+150 KB, and 5,000 members at 150 KB are about 0.72 GB.
 
 What a member keeps after it was busy is measured by the workflow's write
 burst step (`RAFT_IDLE_BURST_SECS`, #2415): 300 groups on three runtimes over
@@ -3184,6 +3247,39 @@ If that run is over, the fix is the upstream ask for fewer tasks per member
 one-broker-killed run stays under the limit, which may be below 5,000. It
 is not set to the gate size because the gate names it. Placement answers
 `at_capacity` past it.
+
+### Open files
+
+A Raft member opens no file of its own. The count is the log's: six
+files per held shard (the active segment three times, its index, the
+durable mark, and the shard's directory, held open for the lock that
+refuses a second open of a Raft log). A log without Raft takes no lock and
+holds five. Sealed segments that were
+read stay open in one cache shared by every log the broker opens (stream,
+cache, counter and group logs, and Raft copies given the same
+`LogConfig::sealed_cache`), at most 1,024 of them by default
+(`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS`, held to a quarter of the
+open-file limit), so they add a fixed amount per broker and nothing per
+shard. A broker that opens a cache or counter shard
+pays for it like any other. Votes and replica state are written to a temporary file, renamed
+and closed. `crates/server/felix-replication/tests/raft_open_files.rs`
+measures it on 120 idle members, and on logs that rolled several segments
+and were read back, and fails if the count passes
+`felix_storage::log::FDS_PER_SHARD_LOG` per shard plus the sealed cache and
+a few files of slack. The idle members are checked with only the few files.
+
+So 1,500 members are 9,000 open files and 5,000 are 30,000, against the
+soft limit of 1,024 a process usually starts with (issue #2351). The
+hybrid holds one file fewer per shard. The broker now raises
+its soft limit to the hard limit at start, which is 524,288 under systemd
+and that or more in most container runtimes, and warns when the result
+holds fewer than 2,000 shards once the sealed cache and about 1,000 files
+for sockets come off. `felix_broker_open_file_limit` reports it. The
+operator's side is on the site, under Production, "Open files".
+
+Closing the files of idle shards was priced and not built: it would put
+an open on the first write after idle, and the default hard limits
+already hold over 80,000 shards.
 
 ## Pull request split
 

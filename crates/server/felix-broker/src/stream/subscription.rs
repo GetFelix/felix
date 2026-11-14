@@ -2,6 +2,7 @@
 //! unregisters the subscriber from its stream on drop.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 
 use bytes::Bytes;
@@ -205,6 +206,7 @@ impl SubscriptionReceiver {
     /// above that offset is yielded.
     pub fn end_on_lag(&mut self) {
         self.end_on_lag = true;
+        self.lag.ends_subscription.store(true, Ordering::Relaxed);
     }
 
     /// Where to resume, when [`Self::end_on_lag`] ended the subscription.
@@ -388,6 +390,53 @@ pub struct SubscriptionGuard {
     pub(crate) subscriber_id: u64,
 }
 
+impl SubscriptionGuard {
+    /// A handle for counting records dropped after the subscriber's queue,
+    /// for a writer that sheds frames the queue already accepted. `None`
+    /// once the subscriber is gone.
+    pub fn drop_account(&self) -> Option<SubscriberDrops> {
+        let stream_state = self.stream_state.upgrade()?;
+        let state = stream_state.subscribers.lock();
+        let entry = state.senders.get(&self.subscriber_id)?;
+        Some(SubscriberDrops {
+            lag: Arc::clone(&entry.lag),
+            stats: Arc::clone(&entry.stats),
+        })
+    }
+}
+
+/// Where a subscriber's drops are recorded, as its queue does for its own.
+#[derive(Debug, Clone)]
+pub struct SubscriberDrops {
+    lag: Arc<Lag>,
+    stats: Arc<SubscriberStats>,
+}
+
+impl SubscriberDrops {
+    /// Count `records` dropped from a frame whose first record is
+    /// `base_offset`, on a stream whose records have offsets. The lag note
+    /// is what turns it into an offset gap the subscriber can see.
+    pub fn dropped(&self, base_offset: Option<u64>, records: u64) {
+        if let Some(base) = base_offset {
+            self.lag.dropped_live(base);
+        }
+        self.stats.dropped(records);
+        metrics::counter!("felix_subscribe_dropped_total").increment(records);
+    }
+
+    /// Where the subscriber can resume after its drops so far, queue and
+    /// writer alike.
+    pub fn resume_from(&self) -> Option<u64> {
+        self.lag.first_dropped()
+    }
+
+    /// Whether a drop ends the subscription, so that nothing after it should
+    /// be delivered either.
+    pub fn ends_subscription(&self) -> bool {
+        self.lag.ends_subscription.load(Ordering::Relaxed)
+    }
+}
+
 impl Drop for SubscriptionGuard {
     fn drop(&mut self) {
         if let Some(stream_state) = self.stream_state.upgrade() {
@@ -404,24 +453,27 @@ mod tests;
 pub(crate) struct Lag {
     drops: std::sync::Mutex<Drops>,
     notify: tokio::sync::Notify,
+    /// Set by [`SubscriptionReceiver::end_on_lag`].
+    ends_subscription: AtomicBool,
 }
 
 #[derive(Debug, Default)]
 struct Drops {
     /// Drops below this were filled in some other way.
     floor: u64,
-    first: Option<u64>,
-    latest: Option<u64>,
+    lowest: Option<u64>,
+    highest: Option<u64>,
 }
 
 impl Drops {
-    /// Offsets reach the queue in order, so the first drop at or above the
-    /// floor is `first` when that is above it. When it is not, but a later
-    /// drop is, the floor itself is a safe place to resume.
+    /// Drops can arrive out of offset order (the connection writer sheds
+    /// frames the queue accepted before it dropped a later one), so resume
+    /// from the lowest drop. When that is below the floor but another drop
+    /// is not, the floor itself is a safe place to resume.
     fn resume_from(&self) -> Option<u64> {
-        match (self.first, self.latest) {
-            (Some(first), _) if first >= self.floor => Some(first),
-            (_, Some(latest)) if latest >= self.floor => Some(self.floor),
+        match (self.lowest, self.highest) {
+            (Some(lowest), _) if lowest >= self.floor => Some(lowest),
+            (_, Some(highest)) if highest >= self.floor => Some(self.floor),
             _ => None,
         }
     }
@@ -430,10 +482,23 @@ impl Drops {
 impl Lag {
     /// Record a dropped batch starting at `offset`.
     pub(crate) fn dropped(&self, offset: u64) {
+        self.record_drop(|_| offset);
+    }
+
+    /// Record a dropped live frame starting at `offset`, after the catch-up
+    /// set the floor. A frame straddling the floor lost the records from
+    /// the floor up, so a drop below it counts from the floor. Ignoring it
+    /// would leave a writer that sheds after it with no lag to report.
+    pub(crate) fn dropped_live(&self, offset: u64) {
+        self.record_drop(|floor| offset.max(floor));
+    }
+
+    fn record_drop(&self, offset: impl FnOnce(u64) -> u64) {
         let mut drops = self.drops.lock().unwrap_or_else(|e| e.into_inner());
+        let offset = offset(drops.floor);
         let before = drops.resume_from();
-        drops.first.get_or_insert(offset);
-        drops.latest = Some(offset);
+        drops.lowest = Some(drops.lowest.map_or(offset, |low| low.min(offset)));
+        drops.highest = Some(drops.highest.map_or(offset, |high| high.max(offset)));
         if before.is_none() && drops.resume_from().is_some() {
             self.notify.notify_waiters();
         }
