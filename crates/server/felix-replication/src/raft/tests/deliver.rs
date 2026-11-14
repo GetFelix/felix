@@ -931,7 +931,7 @@ async fn a_reader_resumes_on_another_member_by_offset() {
 /// write its client was already told about.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused() {
-    let led = led().await;
+    let mut led = led().await;
     let (broker, handle) = broker_on(&led.engine).await;
     leased(&led).await;
     let runtime = led.cluster.runtime(&led.leader.broker);

@@ -892,7 +892,9 @@ impl Group {
             };
             let forward = match round {
                 Ok((read, _)) if **read.committed_leader_id() == term => {
-                    return self.applied_through(read.index, deadline, unanswered).await;
+                    return self
+                        .applied_through(read.index(), deadline, unanswered)
+                        .await;
                 }
                 Ok(_) => {
                     return Err(lost(
