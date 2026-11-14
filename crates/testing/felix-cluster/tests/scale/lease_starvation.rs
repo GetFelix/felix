@@ -36,6 +36,8 @@ const RENEW_EVERY: Duration = Duration::from_secs(2);
 const IDLE: Duration = Duration::from_secs(12);
 const APPEND_EVERY: Duration = Duration::from_millis(50);
 const CREATES_IN_FLIGHT: usize = 16;
+/// How long the appended streams get to start serving before the hold.
+const OPEN_BUDGET: Duration = Duration::from_secs(120);
 /// What felixd's cluster finalizes, so the canary's writes and reads take the
 /// same path they take there: follower acks, and reads confirmed by a round of
 /// fences.
@@ -210,7 +212,20 @@ async fn run(load: Load) {
     })
     .await;
     let created_in = started.elapsed();
-    tokio::time::sleep(load.hold).await;
+    // The hold starts once half the appended streams serve. Opening and fencing
+    // hundreds of new shards can take longer than the hold on a slow runner,
+    // and a hold spent before the load arrives measures nothing. The slow
+    // shard open itself is tracked in #2555; this test only prints it.
+    let serving = tokio::time::timeout(
+        felix_cluster::wait::budget(OPEN_BUDGET),
+        wait_for_load(&appends, load.appended),
+    )
+    .await
+    .is_ok();
+    let opened_in = started.elapsed();
+    if serving {
+        tokio::time::sleep(load.hold).await;
+    }
 
     stop.store(true, Ordering::Release);
     // A renewer that panicked stopped measuring its key; that fails the run.
@@ -223,7 +238,9 @@ async fn run(load: Load) {
 
     let report = canary.report(load.renewal_bound);
     let summary = format!(
-        "{load:?}: created in {created_in:.1?}; appends {} ok, {} failed; {report}",
+        "{load:?}: created in {created_in:.1?}, half {} after {opened_in:.1?}; \
+         appends {} ok, {} failed; {report}",
+        if serving { "serving" } else { "not serving" },
         appends.ok.load(Ordering::Relaxed),
         appends.failed.load(Ordering::Relaxed),
     );
@@ -240,11 +257,50 @@ async fn run(load: Load) {
     }
     if !problems.is_empty() {
         panic!(
-            "the lease canary failed: {}\n{summary}\n{}",
+            "the lease canary failed: {}\n{summary}\n{}\n{}",
             problems.join("; "),
             quorum_timeouts(&cluster),
+            open_file_limits(&cluster),
         );
     }
+}
+
+/// Wait until at least half of the `appended` streams took an append.
+async fn wait_for_load(appends: &Appends, appended: usize) {
+    while (appends.streams.load(Ordering::Relaxed) as usize) * 2 < appended {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Each broker's open fds and limit, so a run that hit EMFILE is told apart from
+/// a slow one.
+fn open_file_limits(cluster: &Cluster) -> String {
+    let mut out = String::from("open-file limit, per broker:");
+    for node in &cluster.nodes {
+        let limit = node
+            .pid()
+            .and_then(|pid| std::fs::read_to_string(format!("/proc/{pid}/limits")).ok())
+            .and_then(|limits| {
+                limits
+                    .lines()
+                    .find(|line| line.starts_with("Max open files"))
+                    .map(|line| {
+                        line.split_whitespace()
+                            .skip(3)
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(" soft, ")
+                            + " hard"
+                    })
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+        let open = node
+            .pid()
+            .and_then(|pid| std::fs::read_dir(format!("/proc/{pid}/fd")).ok())
+            .map_or_else(|| "unknown".to_string(), |dir| dir.count().to_string());
+        out.push_str(&format!("\n[{}] {open} open, limit {limit}", node.node_id));
+    }
+    out
 }
 
 /// Create `load.streams` streams through the control plane's API, as an
