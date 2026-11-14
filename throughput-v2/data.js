@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794643416882,
+  "lastUpdate": 1794644021905,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55952,6 +55952,58 @@ window.BENCHMARK_DATA = {
             "range": "9005.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 796035.24\nmean: 798786.23\nstdev: 9005.42\ncv: 1.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "213d82267189f60ac89512795465c2493d000a31",
+          "message": "feat(broker): route stream shards to the Raft engine behind FELIX_SHARD_ENGINE (#2233) (#2448)\n\nRoutes durable stream shards to the per-shard Raft engine when FELIX_SHARD_ENGINE=raft. The hybrid engine stays the default. Includes the fix for unacked publishes on Raft shards (they skipped the hybrid fence) and the rule that Raft shards always answer at commit, ignoring FELIX_ACK_ON_COMMIT=0.",
+          "timestamp": "2026-11-14T00:03:22-08:00",
+          "tree_id": "bff48ac27c9bc4861d99e9094bbd52ad2cc60f91",
+          "url": "https://github.com/GetFelix/felix/commit/213d82267189f60ac89512795465c2493d000a31"
+        },
+        "date": 1794644021085,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 398850.61,
+            "range": "28014.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 398850.61\nmean: 386684.22\nstdev: 28014.97\ncv: 7.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 398850.61,
+            "range": "28014.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 398850.61\nmean: 386684.22\nstdev: 28014.97\ncv: 7.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 90860.97,
+            "range": "2181.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 90860.97\nmean: 90330.38\nstdev: 2181.00\ncv: 2.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 908609.7,
+            "range": "21809.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 908609.70\nmean: 903303.84\nstdev: 21809.99\ncv: 2.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
