@@ -893,7 +893,23 @@ impl DiskLog {
             return Err(StorageError::Closed(self.inner.label.clone()));
         }
         if matches!(self.inner.config.fsync_mode, FsyncMode::OnCommit) {
-            write_commit_behind(&self.inner);
+            // Prototype: a Raft log's saved commit may trail (openraft reads
+            // it back as "at least this much is committed"), so it is
+            // written behind at most once per interval instead of back to
+            // back beside the log's own fsync.
+            static PACED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+            let paced = self.inner.config.raft_log
+                && *PACED.get_or_init(|| std::env::var_os("FELIX_PROTO_COMMIT_PACE").is_some());
+            let due = !paced
+                || self
+                    .inner
+                    .replica_persisted
+                    .lock()
+                    .1
+                    .is_none_or(|at| at.elapsed() >= COMMIT_PERSIST_INTERVAL);
+            if due {
+                write_commit_behind(&self.inner);
+            }
             return Ok(());
         }
         let due = {
