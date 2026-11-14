@@ -40,7 +40,7 @@ fn keys() -> u64 {
 fn command(index: u64, keys: u64) -> CacheCommand {
     let mut value = vec![0u8; 256];
     value[..8].copy_from_slice(&index.to_le_bytes());
-    let expires_at = if index % 2 == 0 {
+    let expires_at = if index.is_multiple_of(2) {
         1_000_000_000_000 + index
     } else {
         0
