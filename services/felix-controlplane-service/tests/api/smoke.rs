@@ -1210,6 +1210,7 @@ impl ControlPlaneStore for FailingStore {
         &self,
         _key: &ShardKey,
         _report: felix_controlplane_service::model::SealReport,
+        _sealer: &str,
     ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
@@ -1218,6 +1219,7 @@ impl ControlPlaneStore for FailingStore {
         &self,
         _key: &ShardKey,
         _generation: u64,
+        _sealer: &str,
     ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }

@@ -26,6 +26,55 @@ pub(super) async fn run_switch_contract(store: &dyn ControlPlaneStore) {
     a_report_must_name_the_copy_the_seal_was_ordered_from(store).await;
     nothing_is_written_to_a_switched_shard(store).await;
     a_seal_given_up_can_be_ordered_again(store).await;
+    only_the_sealer_wins_or_gives_up_its_seal(store).await;
+    the_set_before_the_seal_stays_listed_after_the_report(store).await;
+}
+
+/// The report is recorded at the seal's generation. It must not take the
+/// place of the assignment before the seal in the snapshot's pairing, or a
+/// broker that restarts loses the set its fence at that generation left.
+async fn the_set_before_the_seal_stays_listed_after_the_report(store: &dyn ControlPlaneStore) {
+    let before = active(store, 0).await;
+    let order = written(
+        store
+            .seal_shard(&before.key, before.generation)
+            .await
+            .expect("seal"),
+    );
+    store
+        .accept_seal_report(&order.key, both(order.generation), "broker-x")
+        .await
+        .expect("report");
+    let previous = store
+        .previous_shard_assignments()
+        .await
+        .expect("previous assignments");
+    assert_eq!(
+        previous
+            .iter()
+            .find(|listed| listed.key == before.key)
+            .map(|listed| listed.generation),
+        Some(before.generation)
+    );
+    clear(store).await;
+}
+
+/// Checked in the compare itself, so a caller that read an older record
+/// cannot speak for a seal ordered from another node.
+async fn only_the_sealer_wins_or_gives_up_its_seal(store: &dyn ControlPlaneStore) {
+    let order = sealed(store, 0).await;
+    let err = store
+        .accept_seal_report(&order.key, both(order.generation), "broker-y")
+        .await
+        .expect_err("not the sealer");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    let err = store
+        .give_up_seal(&order.key, order.generation, "broker-y")
+        .await
+        .expect_err("not the sealer");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert_eq!(read(store, &order.key).await, order);
+    clear(store).await;
 }
 
 /// An active shard led by broker-x with broker-y as its replica.
@@ -172,7 +221,7 @@ async fn one_report_wins_a_generation(store: &dyn ControlPlaneStore) {
     let first = both(order.generation);
     let switched = written(
         store
-            .accept_seal_report(&order.key, first.clone())
+            .accept_seal_report(&order.key, first.clone(), "broker-x")
             .await
             .expect("report"),
     );
@@ -189,7 +238,7 @@ async fn one_report_wins_a_generation(store: &dyn ControlPlaneStore) {
     second.offset += 1;
     assert_eq!(
         store
-            .accept_seal_report(&order.key, second)
+            .accept_seal_report(&order.key, second, "broker-x")
             .await
             .expect("report"),
         AssignmentWrite::Stale {
@@ -201,7 +250,7 @@ async fn one_report_wins_a_generation(store: &dyn ControlPlaneStore) {
     // The recorded one sent again is answered as recorded, and writes nothing.
     let again = written(
         store
-            .accept_seal_report(&order.key, first)
+            .accept_seal_report(&order.key, first, "broker-x")
             .await
             .expect("report"),
     );
@@ -215,7 +264,7 @@ async fn a_report_of_another_generation_loses(store: &dyn ControlPlaneStore) {
     for generation in [order.generation - 1, order.generation + 1] {
         assert_eq!(
             store
-                .accept_seal_report(&order.key, both(generation))
+                .accept_seal_report(&order.key, both(generation), "broker-x")
                 .await
                 .expect("report"),
             AssignmentWrite::Stale {
@@ -230,13 +279,13 @@ async fn a_give_up_never_lands_beside_a_report(store: &dyn ControlPlaneStore) {
     let order = sealed(store, 0).await;
     let switched = written(
         store
-            .accept_seal_report(&order.key, both(order.generation))
+            .accept_seal_report(&order.key, both(order.generation), "broker-x")
             .await
             .expect("report"),
     );
     assert_eq!(
         store
-            .give_up_seal(&order.key, order.generation)
+            .give_up_seal(&order.key, order.generation, "broker-x")
             .await
             .expect("give up"),
         AssignmentWrite::Stale {
@@ -250,7 +299,7 @@ async fn a_report_never_lands_after_a_give_up(store: &dyn ControlPlaneStore) {
     let order = sealed(store, 0).await;
     let reopened = written(
         store
-            .give_up_seal(&order.key, order.generation)
+            .give_up_seal(&order.key, order.generation, "broker-x")
             .await
             .expect("give up"),
     );
@@ -260,7 +309,7 @@ async fn a_report_never_lands_after_a_give_up(store: &dyn ControlPlaneStore) {
     assert_eq!(reopened.replicas, order.replicas);
     assert_eq!(
         store
-            .accept_seal_report(&order.key, both(order.generation))
+            .accept_seal_report(&order.key, both(order.generation), "broker-x")
             .await
             .expect("report"),
         AssignmentWrite::Stale {
@@ -270,7 +319,7 @@ async fn a_report_never_lands_after_a_give_up(store: &dyn ControlPlaneStore) {
     // Nor one that claims the generation the shard reopened at.
     assert_eq!(
         store
-            .accept_seal_report(&order.key, both(reopened.generation))
+            .accept_seal_report(&order.key, both(reopened.generation), "broker-x")
             .await
             .expect("report"),
         AssignmentWrite::Stale {
@@ -281,7 +330,7 @@ async fn a_report_never_lands_after_a_give_up(store: &dyn ControlPlaneStore) {
     // A give-up is for one seal: a second finds none standing.
     assert_eq!(
         store
-            .give_up_seal(&order.key, reopened.generation)
+            .give_up_seal(&order.key, reopened.generation, "broker-x")
             .await
             .expect("give up"),
         AssignmentWrite::Stale {
@@ -304,7 +353,7 @@ async fn a_later_generation_gives_the_seal_up(store: &dyn ControlPlaneStore) {
     assert!(promoted.switch.is_none());
     assert_eq!(
         store
-            .accept_seal_report(&order.key, both(order.generation))
+            .accept_seal_report(&order.key, both(order.generation), "broker-x")
             .await
             .expect("report"),
         AssignmentWrite::Stale {
@@ -318,7 +367,7 @@ async fn no_shard_switches_without_a_seal(store: &dyn ControlPlaneStore) {
     let current = active(store, 0).await;
     assert_eq!(
         store
-            .accept_seal_report(&current.key, both(current.generation))
+            .accept_seal_report(&current.key, both(current.generation), "broker-x")
             .await
             .expect("report"),
         AssignmentWrite::Stale {
@@ -377,7 +426,7 @@ async fn a_report_must_name_a_majority_with_the_sealer(store: &dyn ControlPlaneS
     ];
     for report in refused {
         let err = store
-            .accept_seal_report(&order.key, report.clone())
+            .accept_seal_report(&order.key, report.clone(), "broker-x")
             .await
             .expect_err("refused");
         assert!(
@@ -388,7 +437,7 @@ async fn a_report_must_name_a_majority_with_the_sealer(store: &dyn ControlPlaneS
     let mut undigested = both(order.generation);
     undigested.digest = "ab".to_string();
     let err = store
-        .accept_seal_report(&order.key, undigested)
+        .accept_seal_report(&order.key, undigested, "broker-x")
         .await
         .expect_err("no digest");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
@@ -397,7 +446,7 @@ async fn a_report_must_name_a_majority_with_the_sealer(store: &dyn ControlPlaneS
     assert!(
         written(
             store
-                .accept_seal_report(&order.key, both(order.generation))
+                .accept_seal_report(&order.key, both(order.generation), "broker-x")
                 .await
                 .expect("report")
         )
@@ -416,6 +465,7 @@ async fn a_report_must_name_the_copy_the_seal_was_ordered_from(store: &dyn Contr
                 order.generation,
                 &[("broker-x", COPY_Y), ("broker-y", COPY_Y)],
             ),
+            "broker-x",
         )
         .await
         .expect_err("another copy");
@@ -427,7 +477,7 @@ async fn nothing_is_written_to_a_switched_shard(store: &dyn ControlPlaneStore) {
     let order = sealed(store, 0).await;
     let switched = written(
         store
-            .accept_seal_report(&order.key, both(order.generation))
+            .accept_seal_report(&order.key, both(order.generation), "broker-x")
             .await
             .expect("report"),
     );
@@ -478,7 +528,7 @@ async fn a_seal_given_up_can_be_ordered_again(store: &dyn ControlPlaneStore) {
     let first = sealed(store, 0).await;
     let reopened = written(
         store
-            .give_up_seal(&first.key, first.generation)
+            .give_up_seal(&first.key, first.generation, "broker-x")
             .await
             .expect("give up"),
     );
@@ -492,7 +542,7 @@ async fn a_seal_given_up_can_be_ordered_again(store: &dyn ControlPlaneStore) {
     // The first seal's report is still on its way; only the second's wins.
     assert_eq!(
         store
-            .accept_seal_report(&first.key, both(first.generation))
+            .accept_seal_report(&first.key, both(first.generation), "broker-x")
             .await
             .expect("report"),
         AssignmentWrite::Stale {
@@ -501,7 +551,7 @@ async fn a_seal_given_up_can_be_ordered_again(store: &dyn ControlPlaneStore) {
     );
     let switched = written(
         store
-            .accept_seal_report(&second.key, both(second.generation))
+            .accept_seal_report(&second.key, both(second.generation), "broker-x")
             .await
             .expect("report"),
     );

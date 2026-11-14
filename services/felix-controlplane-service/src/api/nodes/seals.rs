@@ -138,7 +138,7 @@ pub(crate) async fn report_seal(
     }
     match state
         .store
-        .accept_seal_report(&request.key, request.report)
+        .accept_seal_report(&request.key, request.report, &node_id)
         .await
     {
         Ok(AssignmentWrite::Written(switched)) => {
@@ -193,7 +193,7 @@ pub(crate) async fn give_up_seal(
     }
     match state
         .store
-        .give_up_seal(&request.key, request.generation)
+        .give_up_seal(&request.key, request.generation, &node_id)
         .await
     {
         Ok(AssignmentWrite::Written(reopened)) => {

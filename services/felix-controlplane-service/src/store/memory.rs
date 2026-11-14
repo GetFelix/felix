@@ -741,16 +741,18 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         key: &ShardKey,
         report: crate::model::SealReport,
+        sealer: &str,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        self.apply_accept_seal_report(key, report).await
+        self.apply_accept_seal_report(key, report, sealer).await
     }
 
     async fn give_up_seal(
         &self,
         key: &ShardKey,
         generation: u64,
+        sealer: &str,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        self.apply_give_up_seal(key, generation).await
+        self.apply_give_up_seal(key, generation, sealer).await
     }
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {

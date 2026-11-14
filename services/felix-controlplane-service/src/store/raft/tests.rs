@@ -4484,12 +4484,16 @@ async fn a_switch_waits_for_every_member_at_its_level() {
             "000102030405060708090a0b0c0d0e0f".to_string(),
         )]),
     };
-    let refused = store.accept_seal_report(&key, report.clone()).await;
+    let refused = store
+        .accept_seal_report(&key, report.clone(), "broker-x")
+        .await;
     assert!(
         matches!(refused, Err(StoreError::Conflict(_))),
         "{refused:?}"
     );
-    let refused = store.give_up_seal(&key, active.generation).await;
+    let refused = store
+        .give_up_seal(&key, active.generation, "broker-x")
+        .await;
     assert!(
         matches!(refused, Err(StoreError::Conflict(_))),
         "{refused:?}"
@@ -4503,10 +4507,12 @@ async fn a_switch_waits_for_every_member_at_its_level() {
         MetaCommand::AcceptSealReport {
             key: key.clone(),
             report,
+            sealer: "broker-x".to_string(),
         },
         MetaCommand::GiveUpSeal {
             key: key.clone(),
             generation: active.generation,
+            sealer: "broker-x".to_string(),
         },
     ] {
         let raw = crate::store::raft::command::encode_command(&command);

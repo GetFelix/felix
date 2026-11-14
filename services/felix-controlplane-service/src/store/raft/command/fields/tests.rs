@@ -561,10 +561,12 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::AcceptSealReport {
             key: shard_key(),
             report: seal_report(),
+            sealer: s("b"),
         },
         MetaCommand::GiveUpSeal {
             key: shard_key(),
             generation: 1,
+            sealer: s("b"),
         },
         MetaCommand::UpsertIdpIssuer {
             tenant_id: s("t"),

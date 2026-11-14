@@ -393,6 +393,10 @@ pub trait ControlPlaneStore: Send + Sync {
     /// generation and a seal that was given up never switches the shard.
     /// The write keeps the generation, the seal's.
     ///
+    /// `sealer` is the node reporting, and is part of the compare: a report
+    /// from any node but the one the order names is a
+    /// [`StoreError::Conflict`], whatever the caller read before.
+    ///
     /// [`AssignmentWrite::Stale`] when the seal no longer stands. The report
     /// already recorded, sent again, is answered as written.
     /// [`StoreError::Conflict`] for a report whose voters cannot be the
@@ -402,14 +406,21 @@ pub trait ControlPlaneStore: Send + Sync {
         &self,
         key: &ShardKey,
         report: crate::model::SealReport,
+        sealer: &str,
     ) -> StoreResult<AssignmentWrite>;
     /// Give up the seal standing at `generation`: the shard's leader and
     /// set are named again at the next generation without a seal order,
     /// which opens the hybrid again. The same compare as
     /// [`Self::accept_seal_report`], so a give-up never lands beside a
     /// recorded report. [`AssignmentWrite::Stale`] when no seal stands at
-    /// `generation`. Level 33.
-    async fn give_up_seal(&self, key: &ShardKey, generation: u64) -> StoreResult<AssignmentWrite>;
+    /// `generation`, [`StoreError::Conflict`] when `sealer` is not the node
+    /// the order names. Level 33.
+    async fn give_up_seal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite>;
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
     /// The assignment for `key`, read no earlier than every write
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a

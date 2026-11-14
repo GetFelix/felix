@@ -2128,10 +2128,14 @@ member at metadata level 33.
   side-log ranges and the copy ids that acknowledged. It is recorded only
   while the order of `G` stands with no report, so one report wins a
   generation. The voters must be a majority of the shard's set and include
-  the sealer under the storage identity the order named. The write keeps
+  the sealer under the storage identity the order named. The other voters'
+  copy ids are recorded as reported: the digest each one checked before it
+  acknowledged is what proves its copy. The reporting node is part of the
+  compare, so only the broker the order names can win or give up its seal. The write keeps
   generation `G`, the base's, and from then on the shard's engine is Raft:
   every later assignment write, adoption of a hybrid election and second
-  seal is refused with a conflict as it applies. The recorded report sent
+  seal is refused with a conflict as it applies. Deleting the stream still
+  removes its shards' assignments. The recorded report sent
   again is answered as accepted, so a lost answer is safe to retry.
 - *The give-up.* A leader whose seal cannot finish (a follower's digest
   differs, it restarted after its claim, it lost its promise) sends
@@ -2142,6 +2146,22 @@ member at metadata level 33.
   Because the report and the give-up compare on the same order, a give-up
   never lands beside a recorded report, and a report of a seal that was
   given up finds nothing to win.
+
+Placement does not know about seals yet. A move, a replacement or a
+rebalance it starts on a sealing shard is a write to a later generation, so
+it gives the seal up; the control plane logs a warning when that happens,
+and the seal can be ordered again. Pause placement
+(`POST /v1/placement/pause`) around a seal to avoid it.
+
+The report is the one assignment change that keeps its generation. A broker
+that follows the change feed must take a change at the generation it holds
+when `switch` differs, and the snapshot pairs the recorded report with the
+set before the seal, as it did the seal order.
+
+An import restores `switch` as the export holds it, like every other
+field of an assignment. Restoring an export taken before a shard switched
+brings back a hybrid record for a shard whose brokers run Raft, so an
+export older than a switch must not be imported over it.
 
 A report for a shard with no standing order is answered `accepted: false`
 and changes nothing, so the control plane never names Raft for a shard

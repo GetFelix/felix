@@ -506,12 +506,16 @@ pub enum MetaCommand {
     AcceptSealReport {
         key: ShardKey,
         report: crate::model::SealReport,
+        /// The node reporting, checked against the order as it applies.
+        sealer: String,
     },
     /// Give up the seal standing at `generation`
     /// ([`crate::store::ControlPlaneStore::give_up_seal`]). Level 33.
     GiveUpSeal {
         key: ShardKey,
         generation: u64,
+        /// The node giving up, checked against the order as it applies.
+        sealer: String,
     },
     /// `TakeRefreshToken` and, when it spends, `InsertRefreshToken` of
     /// `next`, in one entry. Level 9.
@@ -659,6 +663,9 @@ pub struct HeartbeatSeen {
 }
 
 /// What a command returns, mirroring the store method it stands for.
+// One per applied command, so the size of the assignment variants costs
+// nothing worth a box at every match.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MetaResponse {

@@ -1451,3 +1451,5 @@
 33 give_up_seal.key.shard
 33 give_up_seal.key.stream
 33 give_up_seal.key.tenant_id
+33 accept_seal_report.sealer
+33 give_up_seal.sealer

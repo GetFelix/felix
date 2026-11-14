@@ -136,14 +136,15 @@ pub(super) async fn adopt_elected_leader(
 /// What a write does with the shard's switch record
 /// ([`crate::model::ShardSwitch`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SwitchWrite {
+pub(super) enum SwitchWrite<'a> {
     /// An ordinary write. A seal order does not outlive its generation, so
     /// the write drops it: that is how a seal is given up.
     Drop,
     /// Order a seal at the generation this write takes.
     Order,
-    /// Give up the seal standing at the expected generation, and only that.
-    GiveUp,
+    /// Give up the seal standing at the expected generation, and only
+    /// that, for the node it was ordered from.
+    GiveUp(&'a str),
 }
 
 /// `expected`: `None` writes unconditionally, `Some(generation)` only over
@@ -167,7 +168,7 @@ pub(super) async fn write_shard_assignment(
     at_least: u64,
     record_previous: bool,
     start_placed: bool,
-    switch: SwitchWrite,
+    switch: SwitchWrite<'_>,
 ) -> StoreResult<AssignmentWrite> {
     assignment.validate().map_err(invalid_shard)?;
 
@@ -234,16 +235,28 @@ pub(super) async fn write_shard_assignment(
         Some(existing) => {
             match switch {
                 // Its report won the generation, so the give-up lost.
-                SwitchWrite::GiveUp if existing.sealing().is_none() => {
-                    return Ok(AssignmentWrite::Stale { current });
-                }
-                SwitchWrite::GiveUp => {}
+                SwitchWrite::GiveUp(sealer) => match existing.sealing() {
+                    None => return Ok(AssignmentWrite::Stale { current }),
+                    Some(order) if order.sealer != sealer => {
+                        return Err(super::switch::not_sealer(sealer));
+                    }
+                    Some(_) => {}
+                },
                 SwitchWrite::Drop if existing.switched() => {
                     return Err(StoreError::Conflict(
                         crate::model::SealOrderError::Switched.to_string(),
                     ));
                 }
-                SwitchWrite::Drop => {}
+                SwitchWrite::Drop => {
+                    if let Some(order) = existing.sealing() {
+                        tracing::warn!(
+                            name = %existing.key.stream,
+                            shard = existing.key.shard,
+                            sealed_at = order.generation,
+                            "a write to a later generation gave up the shard's seal",
+                        );
+                    }
+                }
                 SwitchWrite::Order => existing
                     .can_seal()
                     .map_err(|err| StoreError::Conflict(err.to_string()))?,
@@ -419,7 +432,18 @@ pub(super) async fn previous_shard_assignments(
         std::collections::HashMap::new();
     for change in &state.changes.items {
         let held = last_two.entry(&change.key).or_default();
-        *held = [held[1], change.assignment.as_ref()];
+        // A seal report is recorded in place, at the seal's generation: it
+        // replaces the last change, so the set before the seal stays paired.
+        let in_place = matches!(
+            (held[1], change.assignment.as_ref()),
+            (Some(last), Some(next))
+                if last.generation == next.generation && last.incarnation == next.incarnation
+        );
+        *held = if in_place {
+            [held[0], change.assignment.as_ref()]
+        } else {
+            [held[1], change.assignment.as_ref()]
+        };
     }
     Ok(last_two
         .into_iter()

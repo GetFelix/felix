@@ -1069,10 +1069,12 @@ impl ControlPlaneStore for RaftStore {
         &self,
         key: &ShardKey,
         report: crate::model::SealReport,
+        sealer: &str,
     ) -> StoreResult<AssignmentWrite> {
         self.propose_switch(MetaCommand::AcceptSealReport {
             key: key.clone(),
             report,
+            sealer: sealer.to_string(),
         })
         .await
     }
@@ -1081,6 +1083,7 @@ impl ControlPlaneStore for RaftStore {
         self.propose_switch(MetaCommand::GiveUpSeal {
             key: key.clone(),
             generation,
+            sealer: sealer.to_string(),
         })
         .await
     }

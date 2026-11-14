@@ -440,13 +440,21 @@ impl MetadataStateMachine {
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
-            MetaCommand::AcceptSealReport { key, report } => store
-                .apply_accept_seal_report(&key, report)
+            MetaCommand::AcceptSealReport {
+                key,
+                report,
+                sealer,
+            } => store
+                .apply_accept_seal_report(&key, report, &sealer)
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
-            MetaCommand::GiveUpSeal { key, generation } => store
-                .apply_give_up_seal(&key, generation)
+            MetaCommand::GiveUpSeal {
+                key,
+                generation,
+                sealer,
+            } => store
+                .apply_give_up_seal(&key, generation, &sealer)
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),

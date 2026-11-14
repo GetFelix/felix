@@ -24,8 +24,9 @@ pub(super) async fn give_up_seal(
     store: &InMemoryStore,
     key: &ShardKey,
     generation: u64,
+    sealer: &str,
 ) -> StoreResult<AssignmentWrite> {
-    rewrite(store, key, generation, SwitchWrite::GiveUp).await
+    rewrite(store, key, generation, SwitchWrite::GiveUp(sealer)).await
 }
 
 /// Name the shard's leader and set again at the next generation, over
@@ -35,7 +36,7 @@ async fn rewrite(
     store: &InMemoryStore,
     key: &ShardKey,
     expected_generation: u64,
-    switch: SwitchWrite,
+    switch: SwitchWrite<'_>,
 ) -> StoreResult<AssignmentWrite> {
     let current = match get_shard_assignment(store, key).await {
         Ok(current) => current,
@@ -63,6 +64,7 @@ pub(super) async fn accept_seal_report(
     store: &InMemoryStore,
     key: &ShardKey,
     report: SealReport,
+    sealer: &str,
 ) -> StoreResult<AssignmentWrite> {
     let mut state = store.shards.write().await;
     let Some(existing) = state.records.get(key) else {
@@ -87,6 +89,9 @@ pub(super) async fn accept_seal_report(
     if report.generation != switch.generation {
         return Ok(stale);
     }
+    if switch.sealer != sealer {
+        return Err(not_sealer(sealer));
+    }
     report
         .names_voters_of(existing, switch)
         .map_err(|err| StoreError::Conflict(err.to_string()))?;
@@ -102,6 +107,11 @@ pub(super) async fn accept_seal_report(
     Ok(AssignmentWrite::Written(stored))
 }
 
+/// Only the node a seal was ordered from reports it or gives it up.
+pub(super) fn not_sealer(node: &str) -> StoreError {
+    StoreError::Conflict(format!("the seal was not ordered from {node}"))
+}
+
 impl InMemoryStore {
     pub(crate) async fn apply_seal_shard(
         &self,
@@ -115,15 +125,17 @@ impl InMemoryStore {
         &self,
         key: &ShardKey,
         report: SealReport,
+        sealer: &str,
     ) -> StoreResult<AssignmentWrite> {
-        accept_seal_report(self, key, report).await
+        accept_seal_report(self, key, report, sealer).await
     }
 
     pub(crate) async fn apply_give_up_seal(
         &self,
         key: &ShardKey,
         generation: u64,
+        sealer: &str,
     ) -> StoreResult<AssignmentWrite> {
-        give_up_seal(self, key, generation).await
+        give_up_seal(self, key, generation, sealer).await
     }
 }

@@ -284,7 +284,11 @@ fn a_shard_switch_needs_level_33() {
         key: key.clone(),
         expected_generation: 1,
     };
-    let give_up = MetaCommand::GiveUpSeal { key, generation: 1 };
+    let give_up = MetaCommand::GiveUpSeal {
+        key,
+        generation: 1,
+        sealer: "b".to_string(),
+    };
     let finalize = MetaCommand::FinalizeFleetFeature {
         feature: felix_common::fleet::SHARD_RAFT.name().to_string(),
     };
