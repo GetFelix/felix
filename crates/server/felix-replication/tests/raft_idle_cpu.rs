@@ -191,6 +191,7 @@ async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Durati
                                     payload: Bytes::from_static(&[7; 100]),
                                 }],
                                 ack: AckAt::Written,
+                                term: None,
                             },
                         ),
                     )

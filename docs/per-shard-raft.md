@@ -182,6 +182,7 @@ cases:
   because a Raft log is opened only with fsync on commit (decided, issue
   #2248).
 - The directory fails the restore check below.
+- The copy's log was poisoned in its last run ("A poisoned log" below).
 
 **Votes are always fsynced.** The vote, the copy id and the membership are
 synced before they are answered. Votes are rare, so this costs nothing on
@@ -295,6 +296,91 @@ a member opens its directory:
   up to that interval. The id in the mark is an fsynced one, because an
 unsynced id after a power cut would read as a restore and rotate the copy.
 
+**A poisoned log.** A failed fsync poisons the log: it refuses every later
+write and leaves a `poisoned` marker in its directory. So does a rollover,
+a truncation or a reset that fails partway. The next open of a poisoned log
+cuts it back to its last sync (`docs/durable-storage.md`, "A failed fsync
+poisons the log"). That is right for a log whose every acknowledgement
+waited for the fsync. It is wrong for a copy whose written position a
+leader counts toward a `Quorum` acknowledgement (`await_quorum_ack`, see
+"Acknowledging a write"):
+
+1. Leader L and follower F1 write record R. R is acknowledged on the
+   written count.
+2. F1's fsync fails. F1 restarts, cut back to its last sync, without R.
+3. L is unreachable. F1 and F2 elect a leader, and neither holds R.
+
+R would be lost with no machine losing power. So a poisoned log counts as
+losing the copy. A directory that holds the marker is rotated when it is
+opened, and the check runs before the log is opened, so the cut never
+happens under the old copy id. The kept directory still holds the marker
+and every byte the failed run wrote.
+
+One failed fsync rotates every copy on the broker. The first poisoned log
+in a process also makes the run record stop vouching for the boot, so on a
+restart the broker takes a new storage id, and every copy on its data root
+rotates as one minted under another storage id, not only the one whose
+flush failed. The marker's own rotation is what catches a copy reopened in
+the same process, or a restart where the run record write failed.
+
+```mermaid
+flowchart TD
+    fail["fsync fails"] --> poisoned["log poisoned: marker written, run record stops vouching for the boot"]
+    poisoned --> how{"how is the copy opened again?"}
+    how -- "broker restarts" --> sid["new storage id: every copy on the root rotates"]
+    how -- "same process, or the record write failed" --> marker["marker found: this copy rotates"]
+    sid --> learner["new copy id, empty log, old directory kept; rejoins as a learner, never votes under the old id"]
+    marker --> learner
+```
+
+How the rule holds:
+
+- **The cut and the rotation read the same file.** The cut to the last
+  sync happens only when an open finds the marker, and a copy's directory
+  with the marker is rotated instead.
+- **No open goes round it.** `DiskLog::open` refuses a directory that
+  holds both a copy file and the marker, and leaves the marker in place.
+  A tool or a test that opens the directory directly cannot cut the log
+  and remove the evidence before the copy root sees it.
+- **It does not ask who counted what.** The copy cannot know whether a
+  leader counted its written position, so every poisoned log rotates it,
+  whatever the stream's settings. A disk that failed an fsync is suspect
+  anyway, and the group replaces the copy the way it replaces a wiped one.
+
+A marker that cannot be read rotates the copy too. If the directory cannot
+be checked for a marker, that is an error and the member does not open.
+
+**If the marker was not written.** The marker goes to the disk that just
+failed, so its write can fail too. No marker means no cut to the last
+sync, but an open still repairs a torn tail, and after a failed fsync the
+kernel may have dropped pages, which then read as one. Two cases:
+
+- **The broker restarts.** The run record rotates every copy in the root,
+  as above. Opening a copy root registers its root for this
+  (`run_state::watch_poison`), so it does not depend on the caller. That
+  record is written to
+  the same disk without a sync. If both writes are lost, nothing on disk
+  says a flush failed and the copy keeps its id. For that copy it is the
+  same as a power cut (issue #2423).
+- **The copy is closed and opened again in the same process.** Nothing
+  catches this. The process does not re-read the run record, so the copy
+  keeps its id. The broker does not open Raft groups yet (issue #2441).
+  Whatever reopens a group in a running broker has to rotate a poisoned
+  copy first.
+
+**A kept directory that was poisoned** still holds its copy file and its
+marker, so `DiskLog::open` refuses it for good. That is intended: a
+re-form must not read a cut log as that copy's records. The re-form is not
+built, and when it is, it has to read such a directory without repairing
+it and treat it as a copy that may hold less than it reported.
+
+> Tests: `raft_copy::tests::judge::a_copy_whose_flush_failed_rotates`
+> (storage) and
+> `raft::tests::identity::a_copy_whose_flush_failed_does_not_vote_with_the_cut_log`
+> (three members: a record acknowledged on the written count by the
+> leader and a follower whose flush then fails, with the third member cut
+> off; the record survives and the follower does not vote).
+
 **What this does not catch.** A single shard directory that goes back to a
 state younger than one mark interval, with no vote saved since, passes
 both checks. A steady leader's term does not change, so the copy's vote
@@ -328,7 +414,9 @@ one fsync. `CopyRoot::open_copy` judges a directory and rotates it: the old
 directory is renamed into `.kept/` beside it as `<name>.<copy id>` (a number
 follows if that name is taken), which is the record a re-form reads, and a new
 directory gets a new copy id. A directory holding
-only a copy file has no records, so it is reused rather than kept. A `CopyRoot` opens
+only a copy file has no records, so it is reused rather than kept. A
+directory whose log was poisoned in its last run is rotated before its log is opened
+(`RotateReason::Poisoned`). A `CopyRoot` opens
 only from a `GatePassed`, which the gate (`raft_copy::check`) returns for a
 root that passed, or `Behind::rotate` returns after giving the root a new
 storage id. An unchecked root yields none, so no member opens on it. `GroupRuntime::open_copy` opens a
@@ -823,13 +911,11 @@ What the acknowledgement promises, and what it does not
   with two writes (`FelixRaftWrittenTerms.cfg`) and the membership change
   across a change of leader (`FelixRaftWrittenJointFailover.cfg`) found no
   violation but have not finished.
-- A failed flush counts as a power cut for that copy. A Raft log is fsync
-  on commit, and a log whose flush failed is cut back to its last sync when
-  it restarts, on the grounds that nothing past it was acknowledged. A
-  written-majority acknowledgement makes that untrue, so the copy comes
-  back without the record exactly as if it had lost power. Before routing
-  calls `await_quorum_ack`, such a copy must not vote with the cut log
-  (issue #2469).
+- A failed flush counts as a power cut for that copy in the model. A log
+  whose flush failed is cut back to its last sync when it opens, and a
+  written-majority acknowledgement may have counted a record past it. The
+  code is stricter than the model: the copy restarts under a new copy id
+  and never votes with the cut log (see "A poisoned log").
 - It can be lost only if a copy that held it loses power, or fails a
   flush, before its fsync and a majority then elects without a copy that
   still holds it. At RF 3 one power cut is enough. The leader and one follower hold the record. One
@@ -1912,6 +1998,25 @@ way a held `Quorum` batch is released on the hybrid.
 opens a durable stream shard over a log that belongs to its Raft member.
 The broker never appends to that log, and four rules follow from it.
 
+- send every publish and trim of a Raft stream through the engine. The
+  ordinary claim path takes offsets from the broker's own log, and a trim
+  waits at the bound only on a `Quorum` stream;
+- keep the commit hold of a Raft stream on deposition. Everything in it
+  already passed `await_commit`, and the hybrid's "discard what is held"
+  would drop committed records from live delivery;
+- answer `ReadBounds` from `RaftReads` for Raft shards only and from the
+  hybrid for the rest. The broker has one `ReadBounds`, and `RaftReads`
+  refuses any shard it holds no group for;
+- bound the batches waiting for commit. A leader cut off from its majority
+  is not deposed, so each publish leaves a task waiting until the partition
+  heals (#2428);
+- move the ring's start past a gap batch, so a reader resuming while the
+  ring is empty reads that batch from the log instead of missing it (#2428);
+- answer a `Quorum` publisher on a stream that does not fsync on commit
+  from `await_quorum_ack`. `propose_publish` answers at the commit today,
+  and live delivery stays at the commit either way. The answer has to wait
+  for the batch's turn in `ProposalOrder`, because written-count wakeups
+  arrive in no particular order.
 - The stream starts at what the engine committed, never at the log's tail.
   Entries past the commit index may be cut by a later leader, so a reader
   asking for the latest must not join above them. While the engine cannot

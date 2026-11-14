@@ -2757,8 +2757,8 @@ and is not counted, so the shard waits (issue #2423).
 A failed flush counts as a power cut for that copy. A Raft log whose flush
 failed is cut back to its last sync when it restarts, so it comes back without
 the record just as if it had lost power, and the model's power cut covers it.
-Such a copy must not vote with the cut log once the acknowledgement is wired
-(issue #2469).
+The code is stricter: such a copy restarts under a new copy id and does not
+vote with the cut log (`docs/per-shard-raft.md`, "A poisoned log").
 
 Each knob drops one rule, and each twin fails with no power cut at all:
 
