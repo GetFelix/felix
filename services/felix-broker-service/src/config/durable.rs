@@ -18,8 +18,9 @@ use felix_storage::log::{FsyncMode, LogConfig, OffloadTarget, SealedFileCache};
 /// Sealed segments kept open at once across every log the broker opens
 /// (`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS`). A read that misses costs an
 /// open and a sparse index load, so catch-up readers walking many shards
-/// want room; the cost is one descriptor per slot.
-pub(crate) const DEFAULT_MAX_OPEN_SEALED_SEGMENTS: usize = 4096;
+/// want room. A slot costs one descriptor and, at the default segment size,
+/// up to about 1 MiB of loaded sparse index.
+pub(crate) const DEFAULT_MAX_OPEN_SEALED_SEGMENTS: usize = 1024;
 
 /// Durable storage settings resolved from the environment.
 #[derive(Debug, Clone)]

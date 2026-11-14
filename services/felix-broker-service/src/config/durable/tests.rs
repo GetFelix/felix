@@ -356,7 +356,10 @@ fn the_open_sealed_segment_bound_is_a_setting_with_a_broker_wide_default() {
         let config = DurableStorageConfig::from_env()
             .expect("config")
             .expect("enabled");
-        assert_eq!(config.log.max_open_sealed_segments, 4096);
+        assert_eq!(
+            config.log.max_open_sealed_segments,
+            DEFAULT_MAX_OPEN_SEALED_SEGMENTS
+        );
         assert!(config.log.sealed_cache.is_some());
     });
     with_env(

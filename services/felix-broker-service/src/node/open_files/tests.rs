@@ -25,6 +25,14 @@ fn a_common_hard_limit_holds_the_gates_shards() {
 }
 
 #[test]
+fn the_cache_is_held_to_a_quarter_of_the_limit() {
+    assert_eq!(sealed_slots_within(1_024, DEFAULT_SEALED), 256);
+    assert_eq!(sealed_slots_within(524_288, DEFAULT_SEALED), DEFAULT_SEALED);
+    assert_eq!(sealed_slots_within(8, DEFAULT_SEALED), 16);
+    assert_eq!(sealed_slots_within(1_024, 100), 100);
+}
+
+#[test]
 fn the_target_is_the_hard_limit_and_never_below_the_soft_one() {
     assert_eq!(target(1024, 4096, u64::MAX), 4096);
     assert_eq!(target(4096, 4096, u64::MAX), 4096);

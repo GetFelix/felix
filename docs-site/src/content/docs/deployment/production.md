@@ -130,11 +130,13 @@ labelled illustrative there and are starting points, not ceilings.
 A broker keeps five files open for every shard it holds, as leader or
 follower: the active segment (open three times), its index and the durable
 mark. Sealed segments that were read stay open too, but in one cache for the
-whole broker that holds at most 4,096 of them, however many shards it has.
+whole broker that holds at most 1,024 of them, however many shards it has.
 `FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` sets that number: a larger cache
-saves the open and index load a catch-up reader pays on each miss, at one
-descriptor per slot. So 2,000 shards on a broker are 10,000 open files, plus
-up to 4,096 sealed segments and about 1,000 for sockets. Cache and counter
+saves the open and index load a catch-up reader pays on each miss. A slot
+costs one descriptor and up to about 1 MiB of index memory at the default
+segment size. The broker holds the cache to a quarter of the open-file limit
+and logs when it does. So 2,000 shards on a broker are 10,000 open files, plus
+up to 1,024 sealed segments and about 1,000 for sockets. Cache and counter
 shards open a log each and count as shards.
 
 Most Linux systems start a process with a soft limit of 1,024 open files and a
@@ -150,7 +152,7 @@ when it starts, so the hard limit is the one to set:
 
 `felix_broker_open_file_limit` reports the limit the broker ended up with.
 (limit - 1,024 - the sealed-segment cache) / 5 is about how many shards fit
-under it, so 65,536 holds about 12,000. A broker whose
+under it, so 65,536 holds about 12,000 ((65,536 - 1,024 - 1,024) / 5). A broker whose
 limit holds fewer than 2,000 shards logs a warning at start with that
 number. Past it, opening a shard fails with "Too many open files".
 

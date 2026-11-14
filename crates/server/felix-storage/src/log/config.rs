@@ -174,6 +174,13 @@ impl SealedFileCache {
     pub fn new(capacity: usize) -> Self {
         Self(crate::disk_log::SealedFiles::new(capacity))
     }
+
+    /// Change how many sealed segments the cache keeps open. Meant for
+    /// startup, before logs read; a smaller bound is applied as segments
+    /// are next opened.
+    pub fn set_capacity(&self, capacity: usize) {
+        self.0.set_capacity(capacity);
+    }
 }
 
 impl std::fmt::Debug for SealedFileCache {

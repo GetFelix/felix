@@ -105,6 +105,9 @@ where
         durable_config
             .as_ref()
             .map_or(0, |durable| durable.log.max_open_sealed_segments),
+        durable_config
+            .as_ref()
+            .and_then(|durable| durable.log.sealed_cache.as_ref()),
     );
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates

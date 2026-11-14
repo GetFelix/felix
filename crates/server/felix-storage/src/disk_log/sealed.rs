@@ -18,7 +18,7 @@ use felix_common::random::HashMap;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 
@@ -235,7 +235,7 @@ pub(crate) struct SealedHandle {
 /// closed when the last of them lets go.
 #[derive(Debug)]
 pub(crate) struct SealedFiles {
-    capacity: usize,
+    capacity: AtomicUsize,
     lru: Mutex<Lru>,
 }
 
@@ -258,9 +258,14 @@ impl SealedFiles {
 
     pub(crate) fn new(capacity: usize) -> Arc<Self> {
         Arc::new(Self {
-            capacity: capacity.max(1),
+            capacity: AtomicUsize::new(capacity.max(1)),
             lru: Mutex::new(Lru::default()),
         })
+    }
+
+    /// Change the bound. A smaller one takes effect as entries are added.
+    pub(crate) fn set_capacity(&self, capacity: usize) {
+        self.capacity.store(capacity.max(1), Ordering::Relaxed);
     }
 
     /// How many sealed segments are open right now.
@@ -314,7 +319,7 @@ impl SealedFiles {
         lru.entries.insert(key, (Arc::clone(&handle), used));
         lru.order.insert(used, key);
         metrics::gauge!(metrics_names::OPEN_SEALED_SEGMENTS).increment(1.0);
-        while lru.entries.len() > self.capacity {
+        while lru.entries.len() > self.capacity.load(Ordering::Relaxed) {
             let Some((_, oldest)) = lru.order.pop_first() else {
                 break;
             };
