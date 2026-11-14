@@ -91,9 +91,9 @@ async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<
     payloads
 }
 
-/// **A record published through any broker reaches a subscriber.** The
-/// subscriber connects to a follower, which names the leader, and the client
-/// follows it there.
+/// **A record published through any broker reaches a subscriber, whether
+/// or not its publisher asked for an answer.** The subscriber connects to a
+/// follower, which names the leader, and the client follows it there.
 #[tokio::test]
 #[serial]
 async fn a_publish_through_any_broker_reaches_a_subscriber() {
@@ -138,6 +138,32 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
         acked.windows(2).all(|pair| pair[0] < pair[1]),
         "acknowledged offsets are not in publish order: {acked:?}"
     );
+
+    // A batch nobody waits on is committed and delivered all the same.
+    let writer = felix_cluster::client::connect(
+        cluster.node(&leader).expect("node").client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("writer");
+    let unacked: Vec<Vec<u8>> = (0..16)
+        .map(|i| format!("unacked-{i}").into_bytes())
+        .collect();
+    writer
+        .publisher()
+        .await
+        .expect("publisher")
+        .publish_batch(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            unacked.clone(),
+            felix_wire::AckMode::None,
+        )
+        .await
+        .expect("an unacknowledged batch");
+    owed.extend(unacked);
 
     let mut seen = Vec::new();
     let mut offsets = Vec::new();

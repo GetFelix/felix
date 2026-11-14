@@ -538,13 +538,20 @@ pub(crate) fn reset_local_depth_only(
 }
 
 /// Enter the write fence for a local write at the generation it was admitted
-/// at. `Ok(None)` for a forward, which the owner fences, and on a single-node
-/// broker.
+/// at. `Ok(None)` for a forward, which the owner fences, on a single-node
+/// broker, and for a shard a Raft group runs: the hybrid's fence never opens
+/// for it, and the term is checked when the write is proposed.
 fn fence_now(
     publish_ctx: &PublishContext,
     target: &PublishTarget,
 ) -> Result<Option<crate::shards::lifecycle::fence::FenceGuard>> {
     match target {
+        PublishTarget::Resolved {
+            shard: Some(shard), ..
+        }
+        | PublishTarget::Idempotent {
+            shard: Some(shard), ..
+        } if publish_ctx.engine.on_raft(shard) => Ok(None),
         PublishTarget::Resolved {
             shard, generation, ..
         }

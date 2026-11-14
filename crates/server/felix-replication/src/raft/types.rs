@@ -184,6 +184,7 @@ openraft::declare_raft_types!(
         NodeId = MemberId,
         Node = openraft::impls::EmptyNode,
         LeaderId = openraft::impls::leader_id_std::LeaderId<u64, MemberId>,
+        AsyncRuntime = super::draws::ShardRuntime,
 );
 
 pub(crate) type Membership = openraft::impls::Membership<MemberId, openraft::impls::EmptyNode>;

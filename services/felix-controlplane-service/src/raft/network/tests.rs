@@ -115,7 +115,6 @@ async fn every_rpc_names_the_member_it_is_for() {
 /// The streamed snapshot is built apart from `send`, so it gets its own
 /// check. A request without the header is still served (older senders), so
 /// nothing else would notice it going missing.
-#[cfg(felix_segment_store)]
 #[tokio::test]
 async fn a_streamed_snapshot_names_the_member_it_is_for() {
     use crate::raft::types::{Snapshot, SnapshotData, SnapshotMeta, StoredMembership};
@@ -140,7 +139,7 @@ async fn a_streamed_snapshot_names_the_member_it_is_for() {
 
     let snapshot = Snapshot {
         meta: SnapshotMeta {
-            last_log_id: Some(crate::raft::types::test_log_id(1, 1, 7)),
+            last_log_id: Some(crate::raft::types::test_log_id(1, 7)),
             last_membership: StoredMembership::default(),
         },
         snapshot: SnapshotData::Memory(bytes::Bytes::from_static(b"state at seven")),
