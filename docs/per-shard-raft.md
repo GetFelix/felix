@@ -1529,6 +1529,10 @@ write. Its commit renews the lease, and later writes are local again. The
 shard stays open. The lease rests on openraft's `last_quorum_acked` and on
 nothing else: store liveness is not part of it.
 
+A publisher that gets too far ahead of the commits is left waiting for its
+commit too, with the lease intact. "Delivering committed records" has the
+two limits.
+
 **As built.** `RuntimeConfig` has the lease (1.5 s) and the clock drift
 bound `p` (10%, as `clock_drift_ppm`), and refuses to start unless
 `lease * (1 + p) / (1 - p) <= election_max`. `admit_local_ack(shard, term)`
@@ -1957,15 +1961,32 @@ The broker never appends to that log, and four rules follow from it.
 
 **Batches waiting for a commit are bounded.** A leader cut off from its
 majority is not deposed, and each batch handed to it waits with its payload
-in memory, whether or not its publisher was answered on the lease. `propose_publish` refuses a new batch with `ProposalsStalled`
-while the oldest unsettled one has waited longer than the publish timeout,
-so what is held is at most one timeout's worth of publishes.
+in memory, whether or not its publisher was answered on the lease.
+`propose_publish` refuses a new batch with `ProposalsStalled` while the
+oldest unsettled one has waited longer than the publish timeout, so what is
+held is at most one timeout's worth of publishes.
 
-A `Leader` publisher answered on the lease is no longer slowed by its own
-commits. If the followers answer heartbeats but take records slower than
-the leader writes them, the lease holds and the waiting batches grow until
-this bound refuses the next publish with `ProposalsStalled`. A `Quorum`
-publisher in the same spot is only slowed down.
+**A `Leader` publisher that outruns the commits is slowed down, not
+refused.** Answered on the lease, a publisher comes back for more before
+its last batch committed. If the followers answer heartbeats but take
+records slower than the leader writes them, the lease holds and the waiting
+batches would grow until that refusal. So a batch is answered on the lease
+only if, when it was handed over, the stream had
+
+- fewer than 256 batches waiting for their commit (`ANSWERED_AHEAD`), and
+- none that had waited longer than a quarter of the publish timeout.
+
+Otherwise its publisher waits for the batch's own commit, as a `Quorum`
+publisher does, within the same publish timeout. The first limit holds back
+a fast publisher, the second one followers too slow to commit even a few
+batches in time. Both are read under the lock that orders the hand-overs
+and nothing waits while holding it. On a healthy group neither is reached.
+
+> Tests: `a_publisher_answered_early_waits_once_enough_batches_are_uncommitted`,
+> `a_publisher_answered_early_waits_once_the_oldest_batch_is_late`
+> (`felix-broker`, `broker/publish/proposed/tests.rs`) and
+> `a_leader_publisher_ahead_of_slow_followers_waits_for_its_commit`
+> (`felix-replication`, `raft/tests/deliver.rs`).
 
 **A reader resuming after a batch that was given up on starts above it.**
 The gap that stands in the batch's place carries the end of what the engine

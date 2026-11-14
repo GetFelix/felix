@@ -352,6 +352,25 @@ struct HandOvers {
     pending: VecDeque<Instant>,
 }
 
+/// How many unsettled batches a stream may have ahead of a batch whose
+/// publisher is still answered before its commit.
+pub const ANSWERED_AHEAD: usize = 256;
+
+/// A publisher is answered before its commit only while the oldest
+/// unsettled batch has waited no more than this share of the time after
+/// which hand-overs are refused.
+const ANSWERED_LAG_SHARE: u32 = 4;
+
+/// A batch's place in a [`ProposalOrder`].
+pub(crate) struct HandedOver<T> {
+    /// What the hand-over returned.
+    pub(crate) queued: T,
+    pub(crate) turn: CommitTurn<'static>,
+    /// The stream's unsettled batches are few and recent enough for this
+    /// one's publisher to be answered before its commit.
+    pub(crate) answer_early: bool,
+}
+
 impl Default for ProposalOrder {
     fn default() -> Self {
         Self {
@@ -373,19 +392,29 @@ impl ProposalOrder {
         &self,
         stalled_after: Duration,
         hand_over: impl FnOnce() -> T,
-    ) -> Result<(T, CommitTurn<'static>), Duration> {
+    ) -> Result<HandedOver<T>, Duration> {
         let mut order = self.order.lock();
-        if let Some(oldest) = order.pending.front() {
-            let waited = oldest.elapsed();
-            if waited > stalled_after {
-                return Err(waited);
-            }
+        let waited = order.pending.front().map(Instant::elapsed);
+        if let Some(waited) = waited
+            && waited > stalled_after
+        {
+            return Err(waited);
         }
+        // A publisher answered before its commit comes back for more while
+        // its batch still waits. Past either limit the answer is left at
+        // the commit, so the publisher is slowed to the engine's pace
+        // before the refusal above is reached.
+        let answer_early = order.pending.len() < ANSWERED_AHEAD
+            && waited.is_none_or(|waited| waited <= stalled_after / ANSWERED_LAG_SHARE);
         let place = order.next;
         order.next += 1;
         order.pending.push_back(Instant::now());
         let turn = self.turns.reserve_owned(place, place + 1);
-        Ok((hand_over(), turn))
+        Ok(HandedOver {
+            queued: hand_over(),
+            turn,
+            answer_early,
+        })
     }
 
     /// The oldest unsettled batch joined the hold, or was given up on.

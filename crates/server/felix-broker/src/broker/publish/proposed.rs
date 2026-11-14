@@ -71,12 +71,13 @@ impl Broker {
             return Ok(ProposedPublish {
                 finishing: None,
                 count: 0,
+                answer_early: false,
                 answer_at: None,
                 answer_within: None,
             });
         }
         let timestamp_micros = crate::append_time_now();
-        let (committed, turn) = state
+        let handed = state
             .proposals
             .hand_over(stalled_after, || {
                 Box::pin(propose(timestamp_micros)) as Committing<E>
@@ -84,13 +85,14 @@ impl Broker {
             .map_err(|waited| BrokerError::ProposalsStalled { waited })?;
         Ok(ProposedPublish {
             count: payloads.len() as u64,
+            answer_early: handed.answer_early,
             answer_at: None,
             finishing: Some(Box::pin(finish(
                 handle.clone(),
                 payloads,
                 timestamp_micros,
-                committed,
-                turn,
+                handed.queued,
+                handed.turn,
             ))),
             answer_within: None,
         })
@@ -145,6 +147,9 @@ pub struct ProposedPublish<E: Send + 'static> {
     finishing: Option<Finishing<E>>,
     /// How many records the batch holds.
     count: u64,
+    /// The stream had little enough waiting for a commit when this batch
+    /// was handed over for [`Self::answer_at`] to apply.
+    answer_early: bool,
     answer_at: Option<oneshot::Receiver<u64>>,
     answer_within: Option<AnswerWithin<E>>,
 }
@@ -159,8 +164,16 @@ impl<E: Send + 'static> ProposedPublish<E> {
     /// and not at all if the engine gives up on it, though its publisher
     /// was answered. A sender dropped unsent leaves the answer at the
     /// commit.
+    ///
+    /// The answer also stays at the commit when the stream already had
+    /// [`crate::ANSWERED_AHEAD`] batches waiting for theirs at the hand-over, or
+    /// its oldest had waited a quarter of `stalled_after`. A publisher that
+    /// outruns the engine's commits is then slowed to their pace, instead
+    /// of piling batches up until `propose_publish` refuses the next.
     pub fn answer_at(mut self, written: oneshot::Receiver<u64>) -> Self {
-        self.answer_at = Some(written);
+        if self.answer_early {
+            self.answer_at = Some(written);
+        }
         self
     }
 

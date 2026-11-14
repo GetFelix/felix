@@ -712,3 +712,46 @@ async fn a_publish_answered_on_the_lease_and_then_replaced_reaches_no_subscriber
     nothing(&mut receiver).await;
     led.cluster.stop().await;
 }
+
+/// **A `Leader` publisher that outruns slow followers waits for its commit
+/// and is then answered, not refused.** The followers answer inside the
+/// lease, only late, so every batch could be answered on the leader's log.
+/// Past `ANSWERED_AHEAD` uncommitted batches the answer is left at the
+/// commit. Answered on the lease every time, the publisher keeps coming
+/// back for more and the batches waiting for a commit grow until
+/// `ProposalsStalled` refuses the next one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_publisher_ahead_of_slow_followers_waits_for_its_commit() {
+    const OVER: usize = 40;
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    leased(&led).await;
+    // Under the heartbeat interval, so the lease holds throughout.
+    *led.cluster.net.answer_after.lock() = Some(timers().heartbeat / 2);
+
+    // Handed over in one go: nothing commits in between.
+    let published: Vec<_> = (0..felix_broker::ANSWERED_AHEAD + OVER)
+        .map(|_| {
+            let engine = led.engine.clone();
+            let answered = publish_on_lease(&led, &broker, &handle, Bytes::from_static(b"p"));
+            // Whether the batch was committed when its publisher heard.
+            tokio::spawn(async move {
+                let outcome = answered.await.expect("joined").expect("not refused");
+                let (_, last) = outcome.offsets.expect("offsets");
+                engine.read_bound(&shard(0)).expect("served") > last
+            })
+        })
+        .collect();
+    let mut early = 0;
+    for (place, committed) in published.into_iter().enumerate() {
+        let committed = tokio::time::timeout(PATIENCE, committed).await;
+        let committed = committed.expect("answered in time").expect("joined");
+        early += usize::from(!committed);
+        assert!(
+            committed || place < felix_broker::ANSWERED_AHEAD,
+            "batch {place} was answered before its commit"
+        );
+    }
+    assert!(early > 0, "no batch was answered on the lease");
+    led.cluster.stop().await;
+}

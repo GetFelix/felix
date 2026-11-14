@@ -33,7 +33,9 @@ impl RaftEngine {
     /// [`ProposedPublish::complete`] returns at that point, with the
     /// engine's error, or with [`CommitError::TimedOut`] after `timeout`.
     /// With [`AnswerAt::Lease`] it returns earlier, once the batch is on
-    /// this leader's log, if the leader lease holds then. Delivery does not
+    /// this leader's log, if the leader lease holds then and the stream had
+    /// fewer than [`felix_broker::ANSWERED_AHEAD`] batches waiting for a
+    /// commit, none of them for a quarter of `timeout`. Delivery does not
     /// move: such a batch is acknowledged before its commit is known, and
     /// is lost if this broker stops leading before it commits.
     /// A timeout leaves the batch in its place: it is still delivered if it

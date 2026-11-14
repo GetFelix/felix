@@ -531,3 +531,82 @@ async fn a_batch_answered_where_it_was_written_is_delivered_only_at_its_commit()
     assert_eq!(third.offsets, Some((4, 5)));
     nothing(&mut receiver).await;
 }
+
+/// A publisher answered as soon as its batch is written, on an engine that
+/// commits when the test says so.
+fn publish_written(
+    broker: &Broker,
+    handle: &StreamHandle,
+    engine: &Arc<Engine>,
+    stalled_after: Duration,
+) -> tokio::task::JoinHandle<Result<crate::PublishOutcome, &'static str>> {
+    let engine = Arc::clone(engine);
+    let (written, answer) = oneshot::channel();
+    let end = *engine.next.lock() + 1;
+    let proposed = broker
+        .propose_publish(
+            handle,
+            vec![Bytes::from_static(b"p")],
+            stalled_after,
+            move |_| engine.propose(1),
+        )
+        .expect("handed over");
+    written.send(end).expect("held");
+    tokio::spawn(proposed.answer_at(answer).complete())
+}
+
+/// **A publisher answered before its commit is held to the engine's pace
+/// once the stream has `ANSWERED_AHEAD` batches waiting for theirs.** It
+/// waits for its own commit and is then answered. Answered at once every
+/// time, it comes back faster than slow followers commit, and the waiting
+/// batches grow until the next publish is refused.
+#[tokio::test]
+async fn a_publisher_answered_early_waits_once_enough_batches_are_uncommitted() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let engine = Arc::new(Engine::default());
+    let publish = || publish_written(&broker, &handle, &engine, Duration::MAX);
+    for at in 0..crate::ANSWERED_AHEAD as u64 {
+        let answered = tokio::time::timeout(Duration::from_secs(5), publish()).await;
+        let outcome = answered.expect("answered where it was written");
+        let outcome = outcome.expect("joined").expect("answered");
+        assert_eq!(outcome.offsets, Some((at, at)));
+    }
+    let over = publish();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!over.is_finished(), "answered past the bound");
+    assert_eq!(engine.pending.lock().len(), crate::ANSWERED_AHEAD + 1);
+
+    for which in 0..=crate::ANSWERED_AHEAD {
+        engine.commit(which, Ok(()));
+    }
+    let outcome = over.await.expect("joined").expect("committed, not refused");
+    let at = crate::ANSWERED_AHEAD as u64;
+    assert_eq!(outcome.offsets, Some((at, at)));
+    // Settled, so the next is answered early again.
+    let next = tokio::time::timeout(Duration::from_secs(5), publish()).await;
+    let next = next.expect("answered where it was written");
+    next.expect("joined").expect("answered");
+}
+
+/// **A publisher answered before its commit waits for it once the oldest
+/// uncommitted batch has waited a quarter of the time after which
+/// hand-overs are refused.** Followers too slow for even a few batches are
+/// then met with a slower publisher, not with a refusal.
+#[tokio::test]
+async fn a_publisher_answered_early_waits_once_the_oldest_batch_is_late() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let engine = Arc::new(Engine::default());
+    let stalled_after = Duration::from_secs(2);
+    let publish = || publish_written(&broker, &handle, &engine, stalled_after);
+    let first = publish().await.expect("joined").expect("answered");
+    assert_eq!(first.offsets, Some((0, 0)));
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let late = publish();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!late.is_finished(), "answered behind a late batch");
+
+    engine.commit(0, Ok(()));
+    engine.commit(1, Ok(()));
+    let late = late.await.expect("joined").expect("committed, not refused");
+    assert_eq!(late.offsets, Some((1, 1)));
+}
