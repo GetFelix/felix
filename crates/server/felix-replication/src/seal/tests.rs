@@ -101,3 +101,33 @@ fn an_abandoned_seal_reports_nothing() {
     assert_eq!(round.report(), None);
     assert!(!round.may_claim(true));
 }
+
+#[test]
+fn a_seal_record_starts_its_generation() {
+    let record = |payload: Vec<u8>| felix_storage::log::LogRecord {
+        offset: 10,
+        timestamp_micros: 1,
+        checksum: 0,
+        payload: bytes::Bytes::from(payload),
+        mark: felix_storage::log::RecordMark::GenerationStart,
+        publisher: None,
+        headers: None,
+        generation: Some(SEAL),
+    };
+    let appended = base(starts(0)).record(1);
+    assert!(crate::quorum::starts_generation(
+        &record(appended.payload.to_vec()),
+        10,
+        SEAL
+    ));
+    assert!(crate::quorum::starts_generation(
+        &record(SEAL.to_be_bytes().to_vec()),
+        10,
+        SEAL
+    ));
+    assert!(!crate::quorum::starts_generation(
+        &record((SEAL + 1).to_be_bytes().to_vec()),
+        10,
+        SEAL
+    ));
+}

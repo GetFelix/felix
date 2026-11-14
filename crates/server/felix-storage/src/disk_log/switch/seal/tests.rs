@@ -559,3 +559,80 @@ fn a_seal_record_names_the_base() {
     };
     assert_eq!(SwitchBase::from_record(&restamped), None);
 }
+
+#[tokio::test]
+async fn a_retried_fence_keeps_the_claim() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a"]).await;
+    leader.promise(SEAL, sealer()).await;
+    leader.claim(0).await.expect("claimed");
+    assert_eq!(
+        leader.promise(SEAL, sealer()).await,
+        GenerationCheck::Current
+    );
+    assert_eq!(
+        leader.claim(0).await,
+        Err(SealRefused::Claimed { generation: SEAL })
+    );
+}
+
+#[tokio::test]
+async fn a_leader_that_starts_above_the_seals_start_claims_nothing() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(&root.path().join("leader"), on_commit(), 2, &["c"]).await;
+    leader.promise(SEAL, sealer()).await;
+    assert_eq!(
+        leader.claim(0).await,
+        Err(SealRefused::StartsAbove { first: 2, start: 0 })
+    );
+    // Refused before the mark, so the generation is not used up.
+    assert_eq!(leader.claim(2).await.map(|base| base.offset), Ok(3));
+}
+
+#[tokio::test]
+async fn a_follower_whose_side_log_starts_above_the_range_does_not_acknowledge() {
+    let root = tempdir().expect("tempdir");
+    let leader = Copy::with(&root.path().join("leader"), on_commit(), 0, &["a"]).await;
+    write(&leader.dead_letters, &["more"]).await;
+    let follower = Copy::open(&root.path().join("follower"), on_commit());
+    write(&follower.log, &["a"]).await;
+    write(&follower.cursors, &["cursor"]).await;
+    // Its dead-letter log ends where the leader's does but holds none of it.
+    follower.dead_letters.reset_to(2).await.expect("reset");
+    leader.promise(SEAL, sealer()).await;
+    follower.promise(SEAL, sealer()).await;
+    let base = leader.claim(0).await.expect("claimed");
+    assert_eq!((base.dead_letters.start, base.dead_letters.end), (0, 2));
+    let seal = leader.record_at(base.offset).await;
+    assert!(matches!(
+        follower.ack(&seal, sealer()).await,
+        Err(SealRefused::SideDiffers { .. })
+    ));
+}
+
+#[tokio::test]
+async fn a_crash_after_the_record_leaves_it_and_the_claim() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("leader");
+    let leader = Copy::with(&dir, on_commit(), 0, &["a", "b"]).await;
+    leader.promise(SEAL, sealer()).await;
+    CRASH_AFTER.with(|at| at.set(2));
+    let crashed = leader
+        .log
+        .claim_seal(sealer(), 0, (&leader.dead_letters, 0), (&leader.cursors, 0))
+        .await;
+    CRASH_AFTER.with(|at| at.set(0));
+    assert!(crashed.is_err());
+    leader.shutdown().await;
+
+    let leader = Copy::open(&dir, on_commit());
+    let held = leader.record_at(2).await;
+    assert_eq!(
+        SwitchBase::from_record(&held).map(|base| (base.generation, base.offset)),
+        Some((SEAL, 2))
+    );
+    assert_eq!(
+        leader.claim(0).await,
+        Err(SealRefused::Claimed { generation: SEAL })
+    );
+}

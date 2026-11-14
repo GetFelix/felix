@@ -176,6 +176,11 @@ impl DiskLog {
     /// The seal this copy promised, unless a later generation was accepted
     /// since: an unsealed promotion above it reopens the shard as a hybrid
     /// shard, and nothing else does. There is no timeout.
+    ///
+    /// Retention still runs while a promise holds. A copy that trims its
+    /// base before its member starts is refused as a voter and starts as a
+    /// learner: safe, but a seal whose voters trimmed cannot switch, so the
+    /// caller holds retention for a shard it seals.
     pub fn seal_promise(&self) -> Option<SealPromise> {
         let promise = (*self.inner.switch_seal.lock())?;
         (self.accepted_generation() <= promise.generation).then_some(promise)
@@ -225,6 +230,18 @@ impl DiskLog {
                 start,
             }));
         }
+        // Checked before the mark, so a side log that cannot be digested
+        // from its start is a refusal, not a generation used up.
+        for (log, side_start) in [dead_letters, cursors] {
+            if log.base_offset() > side_start && log.tail_offset().await? > side_start {
+                return Ok(Err(SealRefused::SideDiffers {
+                    label: log.label().to_string(),
+                }));
+            }
+        }
+        // The side logs' tails count only once they are on disk, as N does.
+        dead_letters.0.sync().await?;
+        cursors.0.sync().await?;
         self.mark_claimed(promise).await?;
         crash_point(1)?;
         self.sync().await?;
@@ -281,7 +298,18 @@ impl DiskLog {
             return Ok(Err(refused));
         }
         let tail = self.tail_offset().await?;
+        // The side logs are checked as they are on disk.
+        dead_letters.sync().await?;
+        cursors.sync().await?;
         if tail == base.offset + 1 && self.holds_seal_record(record).await? {
+            // Answered before; the side logs must still be the leader's.
+            for (log, range) in [(dead_letters, &base.dead_letters), (cursors, &base.cursors)] {
+                if !side_holds(log, range).await? {
+                    return Ok(Err(SealRefused::SideDiffers {
+                        label: log.label().to_string(),
+                    }));
+                }
+            }
             self.sync().await?;
             return Ok(Ok(()));
         }

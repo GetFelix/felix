@@ -2112,13 +2112,14 @@ cluster on the default must restart every broker on `on_commit` before any
 shard switches. That is one of the `shard_raft` prerequisites.
 
 **The seal on the hybrid side.** Three steps on disk, each on a log
-that fsyncs on commit, and a count around them:
+that fsyncs on commit, and the leader's count and report:
 
 - *The promise.* A copy that takes the seal's fence accepts `G` for the
   seal leader in its ballot, then writes a `switch-seal` file naming `G`
   and the sealing copy id, and only then answers. While it holds, the copy
-  takes the shard's records only from that copy id and refuses ballots
-  and rebuild writes. Nothing reopens the shard on a timeout: the promise
+  is to take the shard's records only from that copy id and refuse hybrid
+  ballots and rebuild writes (enforced once the seal is wired to the
+  fence). Nothing reopens the shard on a timeout: the promise
   lapses only when the copy accepts a later generation, which only the
   control plane's promotion gives it.
 - *The claim.* Once a majority answered and the shard's fence is quiet (no
@@ -2129,7 +2130,8 @@ that fsyncs on commit, and a count around them:
   and its digest. `S` and each side log's start are the highest among the
   copies that answered. The claim mark comes first, so a leader that
   crashes or loses its tail never appends a second record at `G`; the
-  control plane seals again at a later generation instead.
+  control plane seals again at a later generation instead. The side logs
+  are synced before the claim, so the ranges it names are on disk.
 - *The acknowledgement.* A follower appends the record at `N` only if its
   log ends at `N - 1`, starts at or below `S`, matches the digest from
   `S`, and each side log holds the leader's range and nothing past it. It

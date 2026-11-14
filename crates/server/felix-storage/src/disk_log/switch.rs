@@ -95,7 +95,7 @@ pub enum SideLog {
 }
 
 /// A side log's directory, for [`start_voter`] to check it against the
-/// base. The check only reads it.
+/// base. The check reads its records and writes none.
 #[derive(Debug, Clone)]
 pub struct SideDir<'a> {
     pub dir: &'a Path,
