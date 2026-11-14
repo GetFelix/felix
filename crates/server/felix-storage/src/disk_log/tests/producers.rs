@@ -601,6 +601,136 @@ async fn a_purge_past_a_cut_batch_refuses_its_resend() {
     log.shutdown().await.expect("shutdown");
 }
 
+const REFUSED: Option<UnfinishedBatch> = Some(UnfinishedBatch {
+    first: None,
+    held: 0,
+    len: 0,
+    digest: None,
+});
+
+/// A Raft log holding two of the three records of producer 9's batch 0,
+/// purged past both.
+async fn purged_past_a_cut_batch(dir: &TempDir) -> DiskLog {
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+        .await
+        .expect("append");
+    let mut tail = 0;
+    for _ in 0..12 {
+        tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset;
+    }
+    assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+    assert!(log.base_offset() > 1, "base {}", log.base_offset());
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log
+}
+
+/// A truncation discards the snapshot and reads the records again. None of
+/// them has the purged batch, and its re-send is still refused, also when
+/// the producer's next batch was among the records cut.
+#[tokio::test]
+async fn a_truncation_after_a_purge_still_refuses_the_cut_batch() {
+    let dir = tempdir().expect("dir");
+    let log = purged_past_a_cut_batch(&dir).await;
+    let next = log
+        .append(&[piece(1, 0, 2, "c")])
+        .await
+        .expect("append")
+        .last_offset;
+    log.truncate(next).await.expect("truncate");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.truncate(next - 1).await.expect("truncate");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// A reset drops every record, the cut batch's with them. Its re-send is
+/// refused after it, and after a reopen.
+#[tokio::test]
+async fn a_reset_still_refuses_a_cut_batch() {
+    let dir = tempdir().expect("dir");
+    {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        lead(&log).await;
+        log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+            .await
+            .expect("append");
+        let tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset
+            + 1;
+        assert!(
+            log.producer_unfinished(9, 0)
+                .is_some_and(|cut| cut.held == 2)
+        );
+        log.reset_to(tail + 10).await.expect("reset");
+        assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+        assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+        log.shutdown().await.expect("shutdown");
+    }
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// The snapshot cannot be saved, so a reopen reads the records. The purged
+/// batch is in none of them and is refused all the same.
+#[tokio::test]
+async fn a_purge_refuses_the_cut_batch_without_a_snapshot() {
+    let dir = tempdir().expect("dir");
+    // In the way of the snapshot's temporary file.
+    std::fs::create_dir(snapshot_path(&dir).with_extension("tmp")).expect("blocker");
+    let log = purged_past_a_cut_batch(&dir).await;
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+    assert!(!snapshot_path(&dir).exists());
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// A purge that cannot save the batches it forgets removes nothing.
+#[tokio::test]
+async fn a_purge_that_cannot_save_what_it_forgets_fails() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+        .await
+        .expect("append");
+    let mut tail = 0;
+    for _ in 0..12 {
+        tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset;
+    }
+    let temporary = crate::disk_log::producers::forgotten_temporary_name();
+    std::fs::create_dir(dir.path().join(temporary)).expect("blocker");
+    let segments = std::fs::read_dir(dir.path()).expect("dir").count();
+    log.trim_before(tail).await.expect_err("the purge fails");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).expect("dir").count(),
+        segments
+    );
+}
+
 /// Only a Raft log writes batch pieces: the hybrid's replication cannot
 /// carry one.
 #[tokio::test]

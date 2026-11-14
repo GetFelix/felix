@@ -668,6 +668,13 @@ impl DiskLog {
             segments.check_open()?;
             operation.forget_all_offloaded(&mut manifest)?;
             let rewound = (|| {
+                // Saved before the records go. A batch the log held part of
+                // below the new base stays refused.
+                {
+                    let mut producers = operation.producers.lock();
+                    producers.forget_before(base_offset);
+                    operation.store_forgotten(&producers)?;
+                }
                 segments.reset_to(base_offset)?;
                 segments.active_mut().sync()?;
                 operation.note_rewound(&segments)?;
@@ -2308,7 +2315,8 @@ impl LogInner {
     }
 
     /// Save a snapshot taken by [`Self::snapshot`]. Failing costs a longer
-    /// open later, so it is logged rather than returned.
+    /// open later, so it is logged rather than returned: everything in it
+    /// can be read back from the records, or is in the forgotten file.
     fn store_snapshot(&self, snapshot: Snapshot) {
         // Held so a close cannot land between the check and the write.
         let segments = self.segments.read();

@@ -184,7 +184,7 @@ impl LogInner {
             let mut segments = self.segments.write();
             let removed = segments.remove_head(&chosen)?;
             if !removed.is_empty() {
-                self.note_head_removed(segments.base_offset());
+                self.note_head_removed(segments.base_offset())?;
             }
             outcome.base_offset = segments.base_offset();
             removed
@@ -358,7 +358,7 @@ impl LogInner {
                 .collect();
             let removed = segments.remove_head(&chosen)?;
             if !removed.is_empty() {
-                self.note_head_removed(segments.base_offset());
+                self.note_head_removed(segments.base_offset())?;
             }
             removed
         };
@@ -379,10 +379,27 @@ impl LogInner {
     /// Forget the producer batches and trim records below `base`, once the
     /// segments holding them are out of the list. Called holding the
     /// `segments` write lock.
-    fn note_head_removed(&self, base: crate::log::Offset) {
-        self.producers.lock().prune(base);
+    fn note_head_removed(&self, base: crate::log::Offset) -> Result<()> {
+        {
+            let mut producers = self.producers.lock();
+            producers.prune(base);
+            // Before the files go: a batch forgotten here is in no record.
+            self.store_forgotten(&producers)?;
+        }
         let mut head = self.head.lock();
         head.prune_below(base);
         self.publish_head(&head);
+        Ok(())
+    }
+
+    /// Save the forgotten batches if the file does not have them.
+    pub(super) fn store_forgotten(
+        &self,
+        producers: &super::producers::ProducerState,
+    ) -> Result<()> {
+        if super::producers::load_forgotten(&self.dir)? != *producers.forgotten() {
+            super::producers::store_forgotten(&self.dir, producers.forgotten())?;
+        }
+        Ok(())
     }
 }

@@ -421,9 +421,74 @@ fn a_purge_past_a_cut_first_batch_refuses_its_resend() {
     saved.keeps_cuts = true;
     assert_eq!(saved, state);
 
-    batch(&mut state, 3, 0, 5, 1);
-    assert_eq!(state.unfinished(3, 0), None);
-    assert_eq!(state.classify(3, 0), held(3, 0, 5, 5));
+    // A later batch does not lift the refusal while a truncation could
+    // still remove it. A purge past it does: purged records are committed.
+    batch(&mut state, 3, 1, 5, 1);
+    assert_refused(&state, 3, 0);
+    assert_eq!(state.classify(3, 1), held(3, 1, 5, 5));
+    state.prune(6);
+    assert!(state.forgotten().is_empty());
+}
+
+/// A piece of a forgotten batch, written by a leader that still held the
+/// rest, leaves the refusal in place.
+#[test]
+fn a_piece_of_a_forgotten_batch_does_not_lift_the_refusal() {
+    let mut state = ProducerState::keeping_cuts();
+    pieces(&mut state, 3, 0, 3, &[(0, 0), (1, 1)]);
+    state.observe(2, RecordMark::None, 0);
+    state.prune(3);
+    pieces(&mut state, 3, 0, 3, &[(2, 3)]);
+    assert_eq!(state.classify(3, 0), ProducerSequence::Expired);
+}
+
+/// A version 3 snapshot has cut batches and no forgotten ones.
+#[test]
+fn a_version_3_snapshot_reads_with_nothing_forgotten() {
+    let mut state = ProducerState::keeping_cuts();
+    pieces(&mut state, 3, 0, 3, &[(0, 0), (1, 1)]);
+    state.observe(2, RecordMark::None, 0);
+    let current = encode(&state, 3);
+    // With no producers the forgotten count is the last four bytes.
+    let body = &current[SNAPSHOT_HEADER_LEN..current.len() - 4];
+    let mut bytes = current[..4].to_vec();
+    bytes.extend_from_slice(&3u16.to_be_bytes());
+    bytes.extend_from_slice(&current[6..20]);
+    bytes.extend_from_slice(&crate::segment::format::crc32(&[body]).to_be_bytes());
+    bytes.extend_from_slice(body);
+
+    let (mut read, as_of) = decode(&bytes).expect("a version 3 snapshot decodes");
+    read.keeps_cuts = true;
+    assert_eq!(as_of, 3);
+    assert_eq!(read, state);
+    assert!(read.forgotten().is_empty());
+    assert!(
+        read.unfinished(3, 0)
+            .is_some_and(|cut| cut.first == Some(0))
+    );
+}
+
+/// Forgotten batches round trip through the snapshot and through their own
+/// file, and a damaged file is refused.
+#[test]
+fn forgotten_batches_round_trip() {
+    let mut state = ProducerState::keeping_cuts();
+    pieces(&mut state, 3, 4, 3, &[(0, 0), (1, 1)]);
+    state.observe(2, RecordMark::None, 0);
+    batch(&mut state, 5, 0, 3, 2);
+    state.prune(3);
+    assert_eq!(state.forgotten().get(&3), Some(&4));
+
+    let bytes = encode(&state, 5);
+    assert_eq!(&bytes[4..6], &4u16.to_be_bytes());
+    let (mut read, as_of) = decode(&bytes).expect("decodes");
+    read.keeps_cuts = true;
+    assert_eq!((read, as_of), (state.clone(), 5));
+
+    let mut file = encode_forgotten(state.forgotten());
+    assert_eq!(decode_forgotten(&file).as_ref(), Some(state.forgotten()));
+    *file.last_mut().expect("byte") ^= 1;
+    assert_eq!(decode_forgotten(&file), None);
 }
 
 /// An open batch whose records a purge removed is refused the same way.

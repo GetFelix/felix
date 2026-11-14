@@ -111,7 +111,7 @@ pub(crate) struct ProducerState {
     /// Per producer, the sequence of a cut batch the table no longer holds:
     /// a purge passed its last record, or it went past [`MAX_CUTS`]. Some of
     /// it was written, so its re-send, or anything older, is refused until
-    /// the producer opens a batch again.
+    /// a purge passes a later batch of the producer.
     forgotten: HashMap<u64, u64>,
     /// Whether cut batches are kept: on a Raft log, where pieces can finish
     /// one. Anywhere else a cut batch is abandoned and written again whole.
@@ -313,7 +313,6 @@ impl ProducerState {
                 // The producer has started over: nothing finishes its cut
                 // batch now.
                 self.cuts.remove(&batch.producer_id);
-                self.forgotten.remove(&batch.producer_id);
                 let open = OpenBatch {
                     batch,
                     first: Some(offset),
@@ -347,7 +346,6 @@ impl ProducerState {
             Some(open) => Some(open),
             None => {
                 self.cut_open();
-                self.forgotten.remove(&piece.producer_id);
                 self.cuts.remove(&piece.producer_id)
             }
         };
@@ -442,6 +440,7 @@ impl ProducerState {
             }
         }
         let mut headless = Vec::new();
+        let forgotten = &mut self.forgotten;
         self.producers.retain(|id, producer| {
             let mut sequence = producer
                 .last_sequence
@@ -451,6 +450,11 @@ impl ProducerState {
                 && batch.first < base
             {
                 producer.recent.pop_front();
+                // A purged record is committed, so no truncation brings the
+                // producer back below this batch. An open alone could.
+                if forgotten.get(id).is_some_and(|cut| *cut <= sequence) {
+                    forgotten.remove(id);
+                }
                 // The producer's newest batch, written as pieces, with
                 // some still here: a log read from `base` sees them.
                 if producer.recent.is_empty() && batch.pieces != 0 && batch.last >= base {
@@ -482,11 +486,46 @@ impl ProducerState {
         }
     }
 
+    /// Forget every unfinished batch with a record below `base`, ahead of a
+    /// reset that drops the log and starts it again at `base`.
+    pub(crate) fn forget_before(&mut self, base: Offset) {
+        if !self.keeps_cuts {
+            return;
+        }
+        let unfinished: Vec<_> = self
+            .open
+            .take()
+            .into_iter()
+            .chain(std::mem::take(&mut self.cuts).into_values())
+            .collect();
+        for batch in unfinished {
+            if batch.first.is_none_or(|first| first < base) {
+                self.forget(batch);
+            }
+        }
+    }
+
+    /// The cut batches the table no longer holds, by producer.
+    pub(crate) fn forgotten(&self) -> &HashMap<u64, u64> {
+        &self.forgotten
+    }
+
+    /// Take in forgotten batches saved earlier. The higher sequence wins.
+    fn remember(&mut self, saved: HashMap<u64, u64>) {
+        for (id, sequence) in saved {
+            let kept = self.forgotten.entry(id).or_insert(sequence);
+            *kept = (*kept).max(sequence);
+        }
+    }
+
     /// Keep only enough of a cut batch to refuse its re-send. Written again
     /// it would repeat the records the log held of it.
     fn forget(&mut self, cut: OpenBatch) {
-        self.forgotten
-            .insert(cut.batch.producer_id, cut.batch.sequence);
+        let kept = self
+            .forgotten
+            .entry(cut.batch.producer_id)
+            .or_insert(cut.batch.sequence);
+        *kept = (*kept).max(cut.batch.sequence);
     }
 
     /// `last` is the offset of the batch's last record.
@@ -498,6 +537,11 @@ impl ProducerState {
             digest,
             ..
         } = open;
+        // A batch without its first record is cut, never completed.
+        debug_assert!(
+            first.is_some(),
+            "completed a batch whose first record is gone"
+        );
         let Some(first) = first else { return };
         let producer = self
             .producers
@@ -806,7 +850,11 @@ pub(super) fn rebuild(
         ),
     };
     state.keeps_cuts = keeps_cuts;
-    if !keeps_cuts {
+    if keeps_cuts {
+        // Not in the records and maybe not in the snapshot: see
+        // `store_forgotten`.
+        state.remember(load_forgotten(dir)?);
+    } else {
         state.cuts.clear();
         state.forgotten.clear();
     }
@@ -900,6 +948,89 @@ pub(super) fn discard(dir: &Path) -> std::io::Result<()> {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
     }
+}
+
+const FORGOTTEN_MAGIC: u32 = 0x464C_5046;
+
+pub(super) fn forgotten_file_name() -> &'static str {
+    "producers.forgotten"
+}
+
+pub(super) fn forgotten_temporary_name() -> &'static str {
+    "producers.forgotten.tmp"
+}
+
+// Layout: magic u32, crc32 of the rest u32, count u32, then per batch
+// producer_id u64, sequence u64.
+fn encode_forgotten(forgotten: &HashMap<u64, u64>) -> Vec<u8> {
+    let mut body = Vec::with_capacity(4 + forgotten.len() * 16);
+    body.extend_from_slice(&(forgotten.len() as u32).to_be_bytes());
+    for (id, sequence) in forgotten {
+        body.extend_from_slice(&id.to_be_bytes());
+        body.extend_from_slice(&sequence.to_be_bytes());
+    }
+    let mut out = Vec::with_capacity(8 + body.len());
+    out.extend_from_slice(&FORGOTTEN_MAGIC.to_be_bytes());
+    out.extend_from_slice(&crate::segment::format::crc32(&[&body]).to_be_bytes());
+    out.extend_from_slice(&body);
+    out
+}
+
+fn decode_forgotten(bytes: &[u8]) -> Option<HashMap<u64, u64>> {
+    let mut reader = Reader(bytes);
+    if reader.u32()? != FORGOTTEN_MAGIC {
+        return None;
+    }
+    let crc = reader.u32()?;
+    if crate::segment::format::crc32(&[reader.0]) != crc {
+        return None;
+    }
+    let mut forgotten = HashMap::default();
+    for _ in 0..reader.u32()? {
+        forgotten.insert(reader.u64()?, reader.u64()?);
+    }
+    Some(forgotten)
+}
+
+/// The forgotten batches saved by [`store_forgotten`]; none when the file is
+/// absent. Unreadable is an error: the log does not have the answer, and
+/// opening without it could take a re-send as new.
+pub(super) fn load_forgotten(dir: &Path) -> crate::Result<HashMap<u64, u64>> {
+    let bytes = match crate::fs::read(dir.join(forgotten_file_name())) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::default()),
+        Err(err) => return Err(crate::StorageError::Io(err)),
+    };
+    decode_forgotten(&bytes).ok_or_else(|| {
+        crate::StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} is unreadable",
+                dir.join(forgotten_file_name()).display()
+            ),
+        ))
+    })
+}
+
+/// Save the forgotten batches, flushed. A batch forgotten because its
+/// records were purged cannot be read back from the log, and the snapshot is
+/// not flushed and is discarded by a truncation, so this file is written
+/// before the records go.
+pub(super) fn store_forgotten(dir: &Path, forgotten: &HashMap<u64, u64>) -> crate::Result<()> {
+    use std::io::Write;
+
+    let path = dir.join(forgotten_file_name());
+    // Not `with_extension`, which would name the snapshot's temporary.
+    let temporary = dir.join(forgotten_temporary_name());
+    {
+        let mut file = crate::fs::File::create(&temporary).map_err(crate::StorageError::Io)?;
+        file.write_all(&encode_forgotten(forgotten))
+            .map_err(crate::StorageError::Io)?;
+        crate::io::sync_all(&file)?;
+    }
+    crate::fs::rename(&temporary, &path).map_err(crate::StorageError::Io)?;
+    crate::io::sync_dir(dir)?;
+    Ok(())
 }
 
 #[cfg(test)]
