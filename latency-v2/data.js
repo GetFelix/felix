@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794620088775,
+  "lastUpdate": 1794622465762,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -70356,6 +70356,72 @@ window.BENCHMARK_DATA = {
             "range": "244.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 524.00\nmean: 509.20\nstdev: 244.21\ncv: 47.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ce411f1a50149a9aeb3eb23bf9ab69d980796899",
+          "message": "feat(replication): the Raft leader lease (#2249) (#2445)\n\n* wip(replication): the Raft leader lease (#2249)\n\nVote hold, admit_local_ack on last_quorum_acked, the void, the transfer\nentry point, the suspend check and the config inequality. One lease test\nstill fails on the box; lint not run. See plans/lanes/lease-impl-2249.md.\n\n* feat(replication): the Raft leader lease (#2249)\n\nThe vote hold for restarted members, admit_local_ack on\nlast_quorum_acked with await_ack falling back to the commit wait, the\nmonotone void, the transfer entry point, the suspend check and the\nconfig inequality. A restarted leader no longer stands as it starts\n(enable_leader_restore off): the model holds a restarted member from\ncampaigning for one election timeout. Behind the raft feature.\n\nRefs #2249\n\n* fix(replication): a restarted leader or sole voter is not held (#2249)\n\nA member whose stored vote is its own committed one promised nobody, so\nopenraft's leader restore is back on and the vote hold skips it. A sole\nvoter is not held either. The lease check reads its clocks after\nopenraft's answer, so a suspend between the two is seen.\n\n* fix(raft): a held member grants the leader its stored vote names (#2249)\n\nA member inside its vote hold lets one vote request through: the first\nfrom the candidate its committed stored vote names. A group restarted\nwhole has its leader back within one vote round. A sole voter is exempt\nonly when its newest set names it alone and the committed set names no\nother voter. The docs state that a paused VM is not seen by the suspend\ncheck.\n\n* fix(sim): the simulator's Raft timers carry the lease (#2249)\n\nMain's simulator groups build a RuntimeConfig field by field, so the\nmerge left it without the lease and the drift bound.\n\n* docs(formal): the vote hold the lease configs pass on is built (#2249)\n\n* docs(raft): the simulator runs Raft groups, and none asks the lease check (#2249)\n\n* docs(raft): review fixes: status rows, the lease check in the engine design, tests pin the leader they assume (#2249)\n\n* test(raft): the sole voter test waits for the metrics to name the later leader (#2249)\n\n* fix(replication): a restarted leader or sole voter still holds its grants\n\nThe model lifts only the campaign side of the vote hold for a member that\nled or is the only voter (HoldSkipped in Elect); MayGrant still has it grant\nno candidate but its stored vote's leader until the hold ends. Group::open\nnow keeps the grant hold for every member with a stored vote and exempts\nonly the campaign/tick skip.\n\nAlso: FelixRaftLease.tla header no longer calls the vote hold unbuilt, the\nhanded-leadership test reads held-ness from the group instead of wall\nclock, and per-shard-raft.md status rows match what is built.\n\n* test(replication): check the campaign side of the restart hold\n\nA held member must not be ticked inside its hold, and a sole voter whose\nstored vote names another leader must be. Fix the doc line that said a\nheld member is never ticked.",
+          "timestamp": "2026-11-13T17:15:55-08:00",
+          "tree_id": "41b8c4f04c5dfb4afb3051bf51cb062f73ec4416",
+          "url": "https://github.com/GetFelix/felix/commit/ce411f1a50149a9aeb3eb23bf9ab69d980796899"
+        },
+        "date": 1794622456968,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.40\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "2.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 129.80\nstdev: 2.59\ncv: 1.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 197,
+            "range": "126.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 268.00\nstdev: 126.24\ncv: 47.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.00\nstdev: 0.71\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 259,
+            "range": "6.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 259.80\nstdev: 6.72\ncv: 2.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 395,
+            "range": "661.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 395.00\nmean: 678.20\nstdev: 661.92\ncv: 97.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
