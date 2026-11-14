@@ -14,7 +14,8 @@ publish = false
 [features]
 # The Raft group simulation (`src/raft.rs`). It compiles the per-shard Raft
 # engine, which no release enables, so it stays behind a feature.
-raft = ["felix-replication/raft"]
+# It opens members with no copy checks, which only `testing` exposes.
+raft = ["felix-replication/testing"]
 
 [dependencies]
 anyhow = { workspace = true }
