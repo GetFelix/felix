@@ -13,7 +13,9 @@ pub use completion::LogDelivery;
 pub(crate) use completion::{deliver_from_log, spawn_release};
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
-pub use proposed::{ProposalCommitted, ProposalFailed, ProposedPublish};
+pub use proposed::{
+    IdempotentProposal, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish,
+};
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;

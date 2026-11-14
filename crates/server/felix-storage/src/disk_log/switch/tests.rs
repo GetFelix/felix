@@ -112,12 +112,17 @@ async fn copy(dir: &Path, below: Below, payloads: &[&str], tail: &[&str]) -> Off
     .await
     .expect("set");
     lead(&log, SEAL).await;
+    let n = log.tail_offset().await.expect("tail");
+    let base = SwitchBase {
+        generation: SEAL,
+        offset: n,
+        start: 0,
+        digest: digest(&log, 0, n).await.expect("digest"),
+        dead_letters: empty_side(),
+        cursors: empty_side(),
+    };
     let seal = log
-        .append(&[AppendRecord {
-            payload: Bytes::copy_from_slice(&SEAL.to_be_bytes()),
-            mark: RecordMark::GenerationStart,
-            ..record("")
-        }])
+        .append(&[base.record(7)])
         .await
         .expect("seal")
         .first_offset;
@@ -132,14 +137,37 @@ async fn copy(dir: &Path, below: Below, payloads: &[&str], tail: &[&str]) -> Off
 
 async fn base_of(dir: &Path, offset: Offset) -> SwitchBase {
     let log = DiskLog::open(dir, LABEL, open_config()).expect("open");
-    let digest = digest(&log, 0, offset).await.expect("digest");
+    let at = log
+        .read_range_with_trims(ReadRange {
+            start: offset,
+            max_bytes: 1,
+        })
+        .await
+        .expect("read");
     log.shutdown().await.expect("shutdown");
-    SwitchBase {
-        generation: SEAL,
-        offset,
+    SwitchBase::from_record(&at[0]).expect("a seal record")
+}
+
+/// A side log with nothing in it.
+pub(super) fn empty_side() -> SideRange {
+    SideRange {
         start: 0,
-        digest,
+        end: 0,
+        digest: RangeDigest(Sha256::new().finalize().into()),
     }
+}
+
+/// Empty side logs beside `dir`.
+pub(super) fn side_dirs(dir: &Path) -> [(std::path::PathBuf, LogConfig); 2] {
+    ["dead-letters", "cursors"].map(|kind| (dir.with_extension(kind), open_config()))
+}
+
+pub(super) fn sides(dirs: &[(std::path::PathBuf, LogConfig); 2]) -> [SideDir<'_>; 2] {
+    [0, 1].map(|i| SideDir {
+        dir: &dirs[i].0,
+        label: LABEL,
+        config: dirs[i].1.clone(),
+    })
 }
 
 fn snapshot(base: &SwitchBase) -> StoredSnapshot {
@@ -154,9 +182,18 @@ fn snapshot(base: &SwitchBase) -> StoredSnapshot {
 }
 
 async fn start(dir: &Path, base: &SwitchBase) -> std::result::Result<(), NotAVoter> {
-    start_voter(dir, LABEL, open_config(), base, VOTE_FOR, snapshot(base))
-        .await
-        .expect("start")
+    let side = side_dirs(dir);
+    start_voter(
+        dir,
+        LABEL,
+        open_config(),
+        base,
+        sides(&side),
+        VOTE_FOR,
+        snapshot(base),
+    )
+    .await
+    .expect("start")
 }
 
 /// The client records from `from` on, without the generation-start ones.
@@ -313,8 +350,16 @@ async fn a_crash_before_the_marker_starts_the_voter_again_with_the_same_result()
         let dir = root.path().join(format!("crash-{crash_after}"));
         copy(&dir, Below::Stamped, &["a", "b", "c"], &["unacked"]).await;
         CRASH_AFTER.with(|at| at.set(crash_after));
-        let crashed =
-            start_voter(&dir, LABEL, open_config(), &base, VOTE_FOR, snapshot(&base)).await;
+        let crashed = start_voter(
+            &dir,
+            LABEL,
+            open_config(),
+            &base,
+            sides(&side_dirs(&dir)),
+            VOTE_FOR,
+            snapshot(&base),
+        )
+        .await;
         CRASH_AFTER.with(|at| at.set(0));
         assert!(crashed.is_err(), "step {crash_after}");
         assert_eq!(
@@ -437,6 +482,65 @@ async fn a_member_never_starts_from_a_second_base() {
 }
 
 #[tokio::test]
+async fn a_record_at_the_base_from_another_claim_is_not_the_seal() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    let log = DiskLog::open(&dir, LABEL, open_config()).expect("open");
+    lead(&log, 1).await;
+    log.append(&[record("a"), record("b")])
+        .await
+        .expect("append");
+    lead(&log, SEAL).await;
+    let base = SwitchBase {
+        generation: SEAL,
+        offset: 2,
+        start: 0,
+        digest: digest(&log, 0, 2).await.expect("digest"),
+        dead_letters: empty_side(),
+        cursors: empty_side(),
+    };
+    // Same generation, offset and records, but the record names other
+    // cursors than the ones recorded.
+    let other = SwitchBase {
+        cursors: SideRange {
+            end: 1,
+            ..empty_side()
+        },
+        ..base
+    };
+    log.append(&[other.record(7)]).await.expect("seal");
+    log.shutdown().await.expect("shutdown");
+    assert_eq!(
+        start(&dir, &base).await,
+        Err(NotAVoter::NotTheSeal {
+            offset: 2,
+            generation: SEAL
+        })
+    );
+}
+
+#[tokio::test]
+async fn a_copy_whose_side_log_differs_from_the_seals_is_not_a_voter() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    let n = copy(&dir, Below::Stamped, &["a", "b"], &[]).await;
+    let base = base_of(&dir, n).await;
+    // A cursor the seal leader's log did not hold.
+    let cursors = DiskLog::open(&side_dirs(&dir)[1].0, LABEL, open_config()).expect("open");
+    lead(&cursors, 1).await;
+    cursors.append(&[record("cursor")]).await.expect("append");
+    cursors.shutdown().await.expect("shutdown");
+    let before = files(&dir);
+    assert_eq!(
+        start(&dir, &base).await,
+        Err(NotAVoter::SideDiffers {
+            log: SideLog::Cursors
+        })
+    );
+    assert_eq!(files(&dir), before);
+}
+
+#[tokio::test]
 async fn a_copy_that_accepted_a_later_generation_is_refused_before_anything_is_cut() {
     let root = tempdir().expect("tempdir");
     let dir = root.path().join("shard");
@@ -480,7 +584,17 @@ async fn retention_deletes_nothing_between_the_check_and_the_cut() {
     };
 
     RETAIN_BETWEEN.with(|at| at.set(true));
-    let started = start_voter(&dir, LABEL, retained, &base, VOTE_FOR, snapshot(&base)).await;
+    let side = side_dirs(&dir);
+    let started = start_voter(
+        &dir,
+        LABEL,
+        retained,
+        &base,
+        sides(&side),
+        VOTE_FOR,
+        snapshot(&base),
+    )
+    .await;
     RETAIN_BETWEEN.with(|at| at.set(false));
     assert_eq!(started.expect("start"), Ok(()));
 

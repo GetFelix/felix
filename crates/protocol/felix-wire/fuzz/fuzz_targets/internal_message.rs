@@ -96,6 +96,17 @@ fn capability_rules(kind: Kind) -> (PeerCapabilities, PeerCapabilities) {
         // Writer runs; a set generation adds ELECTION.
         Kind::ReplicateStampedRecords => (C::WRITER_GENERATIONS, C::ELECTION),
         Kind::ReplicateStampedFetch => (C::WRITER_GENERATIONS, none),
+        Kind::SealFence | Kind::SealAck => (C::SWITCH_SEAL, none),
+        // Plus whatever the request inside needs.
+        Kind::FromCopy => (
+            C::SWITCH_SEAL,
+            C::ELECTION
+                .union(C::KEPT_SETS)
+                .union(C::RAFT)
+                .union(C::RECORD_HEADERS)
+                .union(C::SEQUENCED_FORWARDS)
+                .union(C::WRITER_GENERATIONS),
+        ),
         _ => (none, none),
     }
 }

@@ -1992,7 +1992,8 @@ pub(crate) fn starts_generation(
 ) -> bool {
     record.offset == start
         && record.mark.is_generation_start()
-        && record.payload.as_ref() == generation.to_be_bytes()
+        // A switch seal's record carries the base after the generation.
+        && record.payload.get(..8) == Some(&generation.to_be_bytes()[..])
 }
 
 #[cfg(test)]

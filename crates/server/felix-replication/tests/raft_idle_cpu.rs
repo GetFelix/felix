@@ -192,6 +192,7 @@ async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Durati
                                 }],
                                 ack: AckAt::Written,
                                 term: None,
+                                producer: None,
                             },
                         ),
                     )

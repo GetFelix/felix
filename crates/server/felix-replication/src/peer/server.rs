@@ -674,7 +674,9 @@ async fn serve_connection(
                     // Refused as a build without the fence would refuse it, so
                     // a broker with the fence turned off is exactly an older one
                     // to whoever sends it.
-                    request @ (InternalMessage::Fence(_) | InternalMessage::ReplicateFetch(_))
+                    request @ (InternalMessage::Fence(_)
+                    | InternalMessage::SealFence(_)
+                    | InternalMessage::ReplicateFetch(_))
                         if !offered.capabilities.contains(PeerCapabilities::FENCE) =>
                     {
                         metrics::record_served(metrics::OUTCOME_UNSUPPORTED);
@@ -725,6 +727,8 @@ async fn serve_connection(
                     // refused rather than read later, so a ping is never
                     // left unread behind them.
                     request @ (InternalMessage::Fence(_)
+                    | InternalMessage::SealFence(_)
+                    | InternalMessage::SealAck(_)
                     | InternalMessage::PreVote(_)
                     | InternalMessage::ReplicateFetch(_)) => {
                         let Ok(queued) = Arc::clone(&controls).try_acquire_owned() else {
@@ -854,12 +858,7 @@ async fn serve_connection(
                     // streams, and a leader has one batch in flight per
                     // follower and log. Bootstraps and rebuilds stay in turn
                     // below, as before.
-                    request @ (InternalMessage::ReplicateRecords(_)
-                    | InternalMessage::ReplicateMarkedRecords(_)
-                    | InternalMessage::ReplicateGroupRecords(_)
-                    | InternalMessage::ReplicateDeadLetterRecords(_)
-                    | InternalMessage::ReplicateCounterRecords(_)
-                    | InternalMessage::ReplicateCacheRecords(_)) => {
+                    request if request.is_records() => {
                         // The stream's permit first, so no stream takes more
                         // of the broker-wide limit than its own.
                         let permit = tokio::select! {

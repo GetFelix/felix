@@ -232,7 +232,7 @@ impl LogInner {
     /// trims below the apply bound, so a trim a crash or a truncation could
     /// still take away deletes nothing.
     pub(super) fn delete_below_floor(&self) -> Result<Vec<crate::log::SegmentDescriptor>> {
-        if self.head_floor() == 0 {
+        if self.head_floor() == 0 || self.holds_seal() {
             return Ok(Vec::new());
         }
         // Before the floor is read: a truncation, which can lower it, takes
@@ -260,9 +260,29 @@ impl LogInner {
     /// The commit offset only rises, so a floor read before the plan is a
     /// safe bound for the whole pass.
     pub(super) fn retention_floor(&self) -> Option<crate::log::Offset> {
+        // A copy that promised a seal keeps its log: the seal's digest runs
+        // from the start the copy answered with, and a voter that trimmed
+        // past it could not start from the base.
+        if self.holds_seal() {
+            return Some(0);
+        }
         self.hold_at_commit
             .load(Ordering::Acquire)
             .then(|| self.commit_offset.load(Ordering::Acquire))
+    }
+
+    /// Whether a seal promise holds: no later generation accepted since.
+    fn holds_seal(&self) -> bool {
+        #[cfg(feature = "raft")]
+        {
+            self.switch_seal.lock().is_some_and(|promise| {
+                self.accepted_generation.load(Ordering::Acquire) <= promise.generation
+            })
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            false
+        }
     }
 
     /// Cut `chosen` back to the segments, from the head, whose copy the

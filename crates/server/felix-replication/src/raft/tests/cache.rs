@@ -43,6 +43,7 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
     let command = Command {
         timestamp_micros: stamp,
         payload: command.encode(),
+        producer: None,
         written: None,
     };
     let written = member.raft().client_write(command).await.expect("write");
@@ -200,6 +201,7 @@ async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
     let command = |sequence| Command {
         timestamp_micros: 10,
         payload: put("k", b"one", sequence).encode(),
+        producer: None,
         written: None,
     };
     assert!(!group.write_in_term(command(1), term - 1).await);
@@ -376,6 +378,7 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
     let second = Command {
         timestamp_micros: 20,
         payload: put("k", b"two", 2).encode(),
+        producer: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -412,6 +415,7 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
         let command = Command {
             timestamp_micros: index * 10,
             payload: command.encode(),
+            producer: None,
             written: None,
         };
         let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -458,6 +462,7 @@ fn entries(
             let command = Command {
                 timestamp_micros: index * 10,
                 payload: command(index).encode(),
+                producer: None,
                 written: None,
             };
             let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -920,6 +925,7 @@ async fn a_cache_shard_takes_no_stream_batch_and_a_stream_shard_no_cache_write()
         }],
         ack: AckAt::Written,
         term: None,
+        producer: None,
     };
     // Refused at the call: nothing is queued.
     let refused = futures::FutureExt::now_or_never(engine.propose(&shard(N), batch()));
@@ -1026,6 +1032,7 @@ async fn what_a_write_call_per_entry_costs() {
                 let commands = (0..entries).map(|entry| Command {
                     timestamp_micros: 10,
                     payload: put("k", b"value", (mode * ROUNDS + round) * 1_000 + entry).encode(),
+                    producer: None,
                     written: None,
                 });
                 let commands = commands.collect();

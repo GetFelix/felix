@@ -2056,7 +2056,9 @@ The broker never appends to that log, and four rules follow from it.
   `NotOnEngineStream`: an ordinary publish, a conditional or idempotent
   one, an atomic commit and a head trim. A record the broker appended by
   itself would be an entry the group never agreed on. Publishes go through
-  `propose_publish` only (#2446 lists what is refused).
+  `propose_publish`, and an idempotent producer's through
+  `propose_idempotent` ("Idempotent publishes", below). #2446 lists what
+  is still refused.
 - The commit hold survives deposition. A batch joins the hold only after
   `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
   what a deposed leader held, drops nothing here.
@@ -2227,6 +2229,132 @@ string `raft_stream`.
 > `a_produce_to_a_raft_shard_is_refused_for_good`;
 > `services/felix-broker-service/src/serving/mqtt/writes/tests.rs`,
 > `a_message_for_a_raft_shard_is_refused_by_name`.
+
+**Idempotent publishes.** A producer that names itself and numbers its
+batches (`publish_idempotent`, `docs/protocol.md`) gets the same contract on
+a Raft shard as on the hybrid: the next sequence is written, a batch sent
+again is answered with the offsets its first arrival got and nothing is
+written, and a gap, an unknown producer, an expired sequence and a reused
+one are refused with the same errors.
+
+What makes it hold across a leader change is where the sequences live.
+A producer's batch is one record, and its entry carries the producer's
+mark: the producer id and the sequence. The mark is stored in the record and
+sent with the entry, so every member's log holds it, and each member
+derives every producer's place from its own log, the same way a hybrid
+replica does (`docs/storage-format.md`, "Producer marks"). A log that a
+later leader cuts back forgets the batches that were cut. Nothing about a
+producer is kept in a leader's memory alone.
+
+```mermaid
+sequenceDiagram
+    participant P as Producer
+    participant A as Leader A
+    participant B as Leader B, elected later
+    P->>A: producer 7, sequence 4
+    A->>B: entries marked producer 7, sequence 4
+    Note over A: stops before its answer reaches the producer
+    P->>B: producer 7, sequence 4, again
+    B->>B: its log holds sequence 4 at offset 20
+    B-->>P: publish_ok at offset 20, nothing written
+    P->>B: producer 7, sequence 5
+    B-->>P: publish_ok, written
+```
+
+The leader checks a batch against its own log before it proposes it. That
+is safe because of two rules.
+
+- A term is served only once its stream is at the committed tail, so by
+  then the log holds everything earlier leaders committed, and the check
+  sees it.
+- The log learns a batch when openraft writes it, not when the batch is
+  handed over. So one producer's batches take turns: the next is checked
+  only once the one before is written to this leader's log or was given
+  up on. A batch refused before it is written stays unwritten, because an
+  idempotent batch is written only while the broker leads the term it was
+  routed at. The producer's next batch is then refused as a gap instead
+  of landing ahead of it.
+
+Only the producer's own batches, and what its connection sends behind
+them, wait for its turn. A batch takes its place in its producer's line as
+it arrives, in the shard's publish order. If the turn is taken, the batch
+waits off the shard's publish lane, so other connections' publishes to the
+shard go ahead meanwhile.
+
+The broker commits a shard's publishes in the order it read them from a
+connection (`docs/protocol.md`, "Answers on completion"), and a batch that
+waits must not lose its place to a publish sent after it. So while a
+connection has a batch waiting on a shard, its later publishes to that
+shard, plain or idempotent, queue behind the batch and are proposed in
+order once its turn comes. A queued publish still holds its share of the
+connection's in-flight byte budget, which bounds the queue.
+
+```mermaid
+sequenceDiagram
+    participant C1 as Connection 1
+    participant C2 as Connection 2
+    participant L as Shard's publish lane
+    participant W as Connection 1's line
+    participant R as openraft
+    C1->>L: producer 7, sequence 5 (sequence 4 not yet on the log)
+    L->>W: waits for producer 7's turn
+    C1->>L: plain publish
+    L->>W: queued behind sequence 5
+    C2->>L: plain publish
+    L->>R: proposed at once
+    Note over R: sequence 4 is written
+    W->>R: sequence 5, then connection 1's plain publish
+```
+
+A batch the log already holds is answered once it is committed. Below the
+read bound it already is. Above it, the leader wrote it in this term and
+the answer waits for that entry's commit, so a re-send is never
+acknowledged ahead of the batch it repeats.
+
+**A batch of more than one record is refused.** An entry's index is its
+record's offset, so a batch of several records would be several entries,
+and nothing writes those all or none:
+
+- A leader can stop with only the start of the batch replicated. The
+  re-send would write the whole batch after that start, and the start's
+  records would be in the stream twice (#2516).
+- The leader can lose its majority's lease partway. openraft checks the
+  lease for each entry, so any of the batch's records could be the ones
+  written, not only its first (#2472), and the re-send could not be matched
+  to them.
+
+So the leader refuses the batch before it takes the producer's turn or
+writes anything: `invalid_request`, not retryable, "a stream on Raft does
+not take idempotent batches of more than one record". The sequence is not
+used up, and the producer can send the records as batches of one. No entry
+continues another's batch: a member refuses such an entry from a peer, and
+a record of a longer batch in a log is not read as an entry. Taking these batches needs
+one of: a mark that names each record's place in its batch so a re-send
+finishes a cut one, a term-bound write of several entries in openraft, or
+offsets that are not entry indexes. #2524 tracks it, and it has to land
+before a stream that holds data can move from the hybrid to Raft, because
+the hybrid takes these batches.
+
+The publisher id (the principal that published a record, which is not the
+producer id) is still not stored, and a batch with record headers is still
+refused.
+
+> `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
+> `a_batch_sent_again_is_answered_and_not_written_again`,
+> `a_resend_of_an_uncommitted_batch_waits_for_its_commit`,
+> `a_producers_next_batch_is_checked_once_the_one_before_is_written`,
+> `a_batch_refused_at_its_term_stays_unwritten_and_the_next_is_a_gap`,
+> `a_batch_of_several_records_is_refused_with_nothing_written`,
+> `a_record_of_a_longer_batch_is_not_a_raft_entry` and
+> `a_batch_resent_to_the_next_leader_is_not_written_again`;
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
+> `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
+> `queued_idempotent_publishes_to_a_raft_shard_are_written_once`,
+> `a_batch_waiting_for_its_producers_turn_holds_up_only_its_own_connection` and
+> `an_idempotent_batch_of_several_records_is_refused_on_raft`;
+> `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
+> `a_forward_to_a_raft_leader_commits_through_its_group`.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
@@ -2555,9 +2683,11 @@ sequenceDiagram
    without it the member would campaign at term 1, below the base, and its
    entries would compare older than the base's. A crash before the marker
    leaves a directory that is started again from the first step with the
-   same result. The first Raft entry is the blank entry at `N + 1`. This
-   check covers the shard's own log. The dead-letter and group-cursor logs
-   fenced with it get their digest from the seal, which is not built yet.
+   same result. The first Raft entry is the blank entry at `N + 1`. The
+   check also covers the dead-letter and group-cursor logs fenced with the
+   shard, against the ranges the seal recorded (see "The seal on the
+   hybrid side" below), and the payload of the record at `N`, which names
+   `S` and every digest.
    `felix_storage::disk_log::switch::start_voter` and
    `felix_replication::raft::switch::start_voter` do this.
 4. **Start the rest as learners.** Every other copy starts empty as a
@@ -2624,6 +2754,56 @@ nor `felix-replication` holds it. So each copy reports its fsync mode as a
 new field, the mode cannot change during a switch without a restart, and a
 cluster on the default must restart every broker on `on_commit` before any
 shard switches. That is one of the `shard_raft` prerequisites.
+
+**The seal on the hybrid side.** Three steps on disk, each on a log
+that fsyncs on commit, and the leader's count and report:
+
+- *The promise.* A copy that takes the seal's fence accepts `G` for the
+  seal leader in its ballot, then writes a `switch-seal` file naming `G`
+  and the sealing copy id, and only then answers. While it holds, the copy
+  takes the shard's records only from that copy id, refuses rebuilds and
+  bootstraps at `G` and a candidate's ballots, grants no pre-vote, and
+  never stands for election itself. A batch the leader sent before its own
+  promise names no copy id; the copy asks for it again instead of treating
+  the leader as replaced. Retention
+  deletes nothing from its log, so it keeps the start it answered with.
+  Nothing reopens the shard on a timeout: the promise
+  lapses only when the copy accepts a later generation, which only the
+  control plane's promotion gives it.
+- *The claim.* Once a majority answered and the shard's fence is quiet (no
+  write admitted before the seal is still on its way to an offset), the
+  leader marks the claim in its `switch-seal` file, then appends the
+  generation-start record at `N`. Its payload is the generation, then `S`,
+  the digest of `S..N`, and for each side log the range the leader holds
+  and its digest. `S` and each side log's start are the highest among the
+  copies that answered. The claim mark comes first, so a leader that
+  crashes or loses its tail never appends a second record at `G`; the
+  control plane seals again at a later generation instead. The side logs
+  are synced before the claim, so the ranges it names are on disk.
+- *The acknowledgement.* A follower appends the record at `N` only if its
+  log ends at `N - 1`, starts at or below `S`, matches the digest from
+  `S`, and each side log holds the leader's range and nothing past it. It
+  answers once the record is on disk. The digest reads the whole range, so
+  the check runs apart from the request that asked for it: a request that
+  cannot wait is told to ask again, and the next one finds the check
+  running or done. The promise is checked again as the record is written,
+  under the lock a later generation is accepted under, so a copy that
+  accepted a later generation while it digested writes no record for the
+  older seal.
+- *The report.* The leader counts acknowledgements by copy id and reports
+  `(G, N)`, the base and the copy ids once a majority holds `N`. A leader
+  that restarted before it reported has lost its count and reports
+  nothing for that seal.
+
+`DiskLog::promise_seal`, `claim_seal` and `ack_seal` in
+`felix_storage::disk_log::switch::seal` do the disk steps, and
+`felix_replication::seal::SealRound` the count. `SealRound::step` runs one
+pass of the leader's round over the wire: the seal's fence to each copy, the
+claim, `SealAck` to each copy, and the report. The messages are in
+`docs/internal-protocol.md`, "Sealing a shard for the switch to Raft", and
+only a build with the Raft engine offers them. Nothing calls `step` yet: the
+control plane's seal flag, the leader's quiesce and the compare-and-swap that
+records the report come next, so nothing seals a shard.
 
 **Only the sealing copy leads.** A follower takes catch-up records for the
 seal only from the copy that sealed. Catch-up batches carry the leader's

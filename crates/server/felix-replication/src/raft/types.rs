@@ -2,9 +2,11 @@
 //! shard group shares.
 
 use std::fmt;
+use std::io;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use felix_storage::log::{ProducerBatch, RecordMark};
 use felix_storage::raft_log::WrittenToken;
 use serde::{Deserialize, Serialize};
 
@@ -81,11 +83,63 @@ impl fmt::Display for MemberId {
     }
 }
 
+/// The idempotent producer's batch a record is. Stored as the record's
+/// mark, so every member's log knows the producer's place the way the
+/// leader's does.
+///
+/// A batch is one record. One of several would be several entries, which a
+/// leader change or a lapsed lease can cut anywhere, so the broker refuses
+/// it before it gets here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProducerMark {
+    pub(crate) producer_id: u64,
+    pub(crate) sequence: u64,
+}
+
+impl ProducerMark {
+    pub(crate) fn record_mark(mark: Option<Self>) -> RecordMark {
+        match mark {
+            None => RecordMark::None,
+            Some(Self {
+                producer_id,
+                sequence,
+            }) => RecordMark::Opens(ProducerBatch {
+                producer_id,
+                sequence,
+                len: 1,
+            }),
+        }
+    }
+
+    /// The producer mark a stored record carries, if it carries one. A
+    /// record of a longer batch is refused: no Raft log is written one, and
+    /// read as a batch of its own it would move the producer's place.
+    pub(crate) fn of_record(mark: RecordMark) -> io::Result<Option<Self>> {
+        match mark {
+            RecordMark::Opens(ProducerBatch {
+                producer_id,
+                sequence,
+                len: 1,
+            }) => Ok(Some(Self {
+                producer_id,
+                sequence,
+            })),
+            RecordMark::Opens(_) | RecordMark::Continues => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a Raft log holds a record of an idempotent batch of several records",
+            )),
+            _ => Ok(None),
+        }
+    }
+}
+
 /// One record of a shard, as an entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Command {
     pub(crate) timestamp_micros: u64,
     pub(crate) payload: Bytes,
+    /// Set on the records of an idempotent producer's batch.
+    pub(crate) producer: Option<ProducerMark>,
     /// Set by a proposer that waits to hear where the record was written.
     /// It rides on the entry from `client_write` to the leader's own append
     /// and nowhere else: it is not in the record and not in a message, so a
@@ -101,9 +155,12 @@ impl PartialEq for Command {
         let Self {
             timestamp_micros,
             payload,
+            producer,
             written: _,
         } = self;
-        *timestamp_micros == other.timestamp_micros && *payload == other.payload
+        *timestamp_micros == other.timestamp_micros
+            && *payload == other.payload
+            && *producer == other.producer
     }
 }
 
