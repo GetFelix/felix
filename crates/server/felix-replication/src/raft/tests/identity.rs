@@ -48,8 +48,7 @@ impl Roots {
     }
 }
 
-/// How long a publish answered on a written majority may take. Short of
-/// `PATIENCE`, so one left waiting for its commit fails on this.
+/// How long a publish answered on a written majority may take.
 const ANSWERED: Duration = Duration::from_secs(10);
 
 /// Set in the process that poisons a log for [`flush_failed_copy`].
@@ -636,11 +635,10 @@ async fn power_cut_keeps(acked: Acked) {
                     PATIENCE,
                 )
                 .expect("proposed");
-            // The answer, not the commit: F1 never syncs R and F2 is cut.
             let answered = tokio::time::timeout(ANSWERED, tokio::spawn(proposed.complete()));
             let outcome = answered
                 .await
-                .expect("R answered before its commit")
+                .expect("R answered")
                 .expect("joined")
                 .expect("R answered on the written majority");
             outcome.offsets.expect("offsets").0
