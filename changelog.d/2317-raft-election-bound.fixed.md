@@ -1,0 +1,1 @@
+- A broker bounds how many of its per-shard Raft groups are in an election at once, so groups that all lose their leader together no longer set off round after round of vote fsyncs on a slow disk (#2317). The rest wait their turn, and the bound follows how the elections go. Behind the `raft` feature, which no release enables.

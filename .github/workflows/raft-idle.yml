@@ -6,6 +6,11 @@ name: Raft idle groups
 # broker, and three runtimes in one process joined by the real peer transport
 # on loopback. A report, not a gate: nothing waits on it, and until idle groups
 # sleep it shows the cost of ticking every group.
+#
+# A second job measures 2,000 groups that lose their leader at once
+# (tests/raft_election_storm.rs): how long until all are led and how many
+# election rounds that takes, on the runner's disk and on a modelled slow one,
+# with the broker's bound on elections and without it.
 
 on:
   schedule:
@@ -74,4 +79,61 @@ jobs:
             echo "### Raft idle groups"
             echo
             grep -hE 'idle groups|test result' raft-idle-stub.log raft-idle-transport.log || echo "no result"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  storm:
+    name: Raft election storm
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      RAFT_STORM_GROUPS: "2000"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.99.1"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: raft-idle
+      - name: Build
+        run: cargo test --locked --release -p felix-replication --features raft --test raft_election_storm --no-run
+      - name: The runner's disk
+        run: |
+          set -o pipefail
+          ulimit -n "$(ulimit -Hn)"
+          cargo test --locked --release -p felix-replication --features raft --test raft_election_storm \
+            -- --ignored --nocapture 2>&1 | tee storm-disk.log
+      - name: A slow disk
+        if: always()
+        env:
+          RAFT_STORM_FSYNC_MS: "5"
+          RAFT_STORM_DISK_WIDTH: "16"
+        run: |
+          set -o pipefail
+          ulimit -n "$(ulimit -Hn)"
+          cargo test --locked --release -p felix-replication --features raft --test raft_election_storm \
+            -- --ignored --nocapture 2>&1 | tee storm-slow.log
+      # Expected not to settle: this is what the bound is for.
+      - name: A slow disk, no bound
+        if: always()
+        continue-on-error: true
+        env:
+          RAFT_STORM_FSYNC_MS: "5"
+          RAFT_STORM_DISK_WIDTH: "16"
+          RAFT_STORM_ELECTIONS: "0"
+          RAFT_STORM_SETTLE_SECS: "120"
+        run: |
+          set -o pipefail
+          ulimit -n "$(ulimit -Hn)"
+          cargo test --locked --release -p felix-replication --features raft --test raft_election_storm \
+            -- --ignored --nocapture 2>&1 | tee storm-unbounded.log
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Raft election storm"
+            echo
+            grep -hE 'groups, ' storm-disk.log storm-slow.log storm-unbounded.log || echo "no result"
           } >> "$GITHUB_STEP_SUMMARY"

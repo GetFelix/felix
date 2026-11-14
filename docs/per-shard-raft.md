@@ -1032,8 +1032,11 @@ Rules for the ticker:
   when its election timeout could have run out, counted from the last
   message openraft accepted from the current leader, not from any
   heartbeat, so a stale leader's heartbeats cannot keep a follower
-  unticked. A follower that keeps hearing its leader is not ticked at all. A group with no leader is due
-  every interval. The ticker does not read every group's due time every
+  unticked. After an append that is the leader lease plus the shortest
+  election timeout, less one heartbeat: 2.8 s. A follower that keeps
+  hearing its leader is not ticked at all. A group with no leader is due
+  every interval, and is ticked when the broker's bound on elections
+  lets it ("Many groups electing at once"). The ticker does not read every group's due time every
   interval either: anything but a tick moves a due time at least one
   heartbeat ahead, so a group found not due is left alone for that long.
 - **Slower idle timers.** Decided (issue #2167), and built. A leader that
@@ -1144,19 +1147,105 @@ idle groups and is a separate decision.
 
 A vote is a small file per shard, written whole and renamed into place,
 and a vote at a new term also writes the shard's replica state. That is
-two to four fsyncs per vote, and each group does its own.
+two to four fsyncs per vote, and each group does its own. The vote is on
+disk before it is answered.
 
-On Linux that is fast enough. The runtime's test forms 40 groups at once on
-three brokers and has each take a write: every group is led within 2 s, at
-the first term that can elect. Sharing one flush of the device between the
-groups that vote in the same moment was tried and dropped. It was slower
-(2 to 6 s) and took more election rounds.
+When a broker dies, every group it led loses its leader in the same
+moment, and their followers on the other brokers reach their election
+timeouts within the same second. If the disk cannot take that many votes
+inside one election timeout, the timeouts run out again before the first
+round is answered, and every one adds more votes to the queue. Left alone
+this feeds itself: on a disk held to 3,200 fsyncs a second, 2,000 groups
+that lost their leader together had 44 groups led after four minutes.
 
-On macOS the same test does not settle in 30 s, so it is skipped there
-(issue #2317). The time goes to creating and renaming the vote files, which
-wait behind the `F_FULLFSYNC` calls in flight, and sharing flushes did not
-help. Brokers run on Linux, so this affects development on a Mac only: form
-groups a few at a time there.
+So a broker bounds how many of its groups are in an election at once. A
+member stands only when the ticker sends it a timer check, and the ticker
+decides who gets one:
+
+- A member whose check could have it stand is sent checks only while
+  fewer than the limit are in an election on this broker. The others wait,
+  unchecked, in the order they came due. With nothing else in flight a
+  member is checked in the interval it comes due, so a group that loses
+  its leader alone elects as fast as it did without the bound.
+- A member counts as in an election from its first check until it leads,
+  takes an append from a leader, or votes for another candidate.
+- No member counts for longer than two election timeouts (4 s). After
+  that it goes to the back of the queue. A member that cannot win, because
+  its peers are out of reach, therefore does not keep the others out.
+- Members that come due in the same interval are ordered by a hash of the
+  group and the member. Two brokers that lost the same leader then go
+  through their groups in different orders, and seldom stand for the same
+  group in the same moment. That is most of what a vote split is.
+- A leader's heartbeat check is never held back, nor is a learner's. A
+  follower that hears its leader is sent no check at all.
+
+The limit follows the disk. It starts at 8 and rises by one for every
+election that ends, up to `RuntimeConfig::elections` (64). It is halved
+when a round took more than half the shortest election timeout, and when
+a member is seen to stand a second time, because its first round
+outlasted the timeout. It is halved at most once in 4 s and never below 1.
+On a fast disk the limit is at 64 within a few intervals. On a slow one it
+settles where a round of votes fits inside the timeout. Setting
+`elections` to 0 takes the bound off.
+
+Holding a check back is as safe as dropping one ("Drop, never queue"):
+openraft still decides whether a member may stand, and reads the clock
+when the check runs. The bound changes only when a group gets its turn.
+The group placed last waits for the ones ahead of it. With every peer in
+reach an election ends within an interval or two, so 2,000 groups at a
+limit of 64 take about 3 s to pass. On a slow disk the wait is the time
+the disk needs for the votes. The longest wait is when members cannot win:
+each holds its place for 4 s, so the last of `n` waiting members is
+checked within `n / limit * 4` seconds.
+
+`GroupRuntime::election_load()` reports how many groups are in an election,
+how many wait, and the limit. The first two are also the gauges
+`felix_broker_raft_elections_in_flight` and
+`felix_broker_raft_elections_waiting`.
+
+Measured with three runtimes in one process, each group on all three, the
+broker that leads every group shut down
+(`crates/server/felix-replication/tests/raft_election_storm.rs`). The slow
+disks are modelled: every fsync takes 5 ms longer and only so many run at
+once. These are development measurements from one build machine (32 vCPU,
+local NVMe, optimised build). The nightly `Raft idle groups` workflow runs
+the same test.
+
+| Groups, disk | Without the bound | With it |
+| --- | --- | --- |
+| 2,000, local NVMe | all led in 7.1 s, 2,446 election rounds | 10.0 s, 2,171 rounds |
+| 2,000, 20 ms per fsync, any number at once | 9.6 s, 2,858 rounds | 17.1 s, 2,232 rounds |
+| 2,000, 5 ms per fsync, 16 at once (3,200 a second) | 44 led after 240 s | all led in 18.9 s |
+| 2,000, 5 ms per fsync, 4 at once (800 a second) | 8 led after 240 s | all led in 50.4 s |
+| 200, 10 ms per fsync, one at a time (100 a second) | none led after 240 s | all led in 39.8 s |
+| 1, local NVMe | 3.3 s | 3.3 s |
+
+An election round is a term some member started. One round per group is
+the least there can be, and the rest are vote splits and timeouts that
+ran out. On the disks that can only take so many fsyncs a second, the
+time with the bound is close to what the disk needs for the votes and
+first entries of every group on two brokers. On a disk that takes any
+number of fsyncs at once there is no loop to stop, and the bound costs a
+few seconds at 2,000 groups: the groups take turns where they would have
+stood together. One group, or a few, is not slowed.
+
+The first election of a newly formed group is not bounded. A member told
+its group's first members stands at once, without a check, so forming
+many groups in one moment starts one round as large as the caller asked
+for. Every round after it goes through the ticker. 2,000 groups formed at
+once on three brokers were all led in 4.8 s on local NVMe. A member that
+starts with its own committed vote on disk also stands at once, and is
+not bounded either.
+
+Sharing one flush of the device between the groups that vote in the same
+moment was tried earlier and dropped. At 40 groups it was slower (2 to
+6 s) and took more election rounds.
+
+On macOS forming 40 groups at once does not settle in 30 s, so that test
+is skipped there (issue #2317). The time goes to creating and renaming the
+vote files, which wait behind the `F_FULLFSYNC` calls in flight. Brokers
+run on Linux, so this affects development on a Mac only: form groups a few
+at a time there.
 
 ## Group runtime
 
@@ -2672,8 +2761,8 @@ Three rules prevent that and keep a real failure from becoming a storm:
   and member id), one election timeout per rank. The first usually wins
   before the second starts. This only shapes timing: if the ranks are
   wrong, the usual randomized timeouts decide.
-- **A cap per tick.** The ticker starts at most a fixed number of elections
-  per interval and queues the rest.
+- **A bound on elections.** Built: the ticker bounds the elections in
+  flight on a broker and queues the rest ("Many groups electing at once").
 
 The cost is that a sleeping group fails over one election timeout later
 than an awake one.

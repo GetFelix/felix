@@ -49,8 +49,8 @@ pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTranspor
 pub use peer::{PeerAddresses, PeerTransport};
 pub use propose::{AckAt, Batch, Record};
 pub use runtime::{
-    GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError, OpenedMember, Role,
-    RuntimeConfig,
+    ElectionLoad, GroupRuntime, GroupStatus, InitializeError, InvalidTimers, OpenError,
+    OpenedMember, Role, RuntimeConfig,
 };
 pub use types::{GroupId, MemberId};
 

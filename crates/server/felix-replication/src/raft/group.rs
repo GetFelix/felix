@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::hash::{Hash, Hasher};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -60,6 +60,9 @@ pub(crate) struct Group {
     dropped_ticks: AtomicU64,
     /// Set once a timer check finds the group's core gone.
     stopped: AtomicBool,
+    /// Where this member is in the broker's bound on elections. Only the
+    /// ticker writes it.
+    turn: AtomicU8,
     /// The shard's publish queue, in commit order. Its task starts with the
     /// first publish, so a group that takes none has none.
     proposals: OnceLock<mpsc::UnboundedSender<Proposal>>,
@@ -87,6 +90,8 @@ pub(crate) struct Timers {
     pub(crate) election_min: u64,
     pub(crate) election_max: u64,
     pub(crate) lease: u64,
+    /// The most groups that may be in an election at once. 0 is no bound.
+    pub(crate) elections: usize,
 }
 
 impl Timers {
@@ -125,6 +130,10 @@ pub(crate) struct Pace {
     /// When this member last took an append from its leader or granted a
     /// vote. Either restarts its election timer.
     heard: AtomicU64,
+    /// Whether that was an append. openraft then holds this member from
+    /// standing for the leader lease as well as its election timeout. A
+    /// vote granted to a candidate has no lease.
+    leased: AtomicBool,
     /// As a follower: the longest its leader said it may stay silent.
     promised: AtomicU64,
     /// As a leader: when it last sent an entry to anyone.
@@ -133,6 +142,8 @@ pub(crate) struct Pace {
     /// Spreads the members of a group over the idle wait, so they do not
     /// all stand in the same tick.
     jitter: u64,
+    /// The whole hash `jitter` is cut from.
+    rank: u64,
 }
 
 struct Peer {
@@ -158,10 +169,12 @@ impl Pace {
             timers,
             due: AtomicU64::new(0),
             heard: AtomicU64::new(0),
+            leased: AtomicBool::new(false),
             promised: AtomicU64::new(timers.heartbeat),
             wrote: AtomicU64::new(now),
             peers: parking_lot::Mutex::new(Vec::new()),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
+            rank: hasher.finish(),
         }
     }
 
@@ -248,17 +261,25 @@ impl Pace {
         }
     }
 
-    /// How long a follower goes unchecked after it hears its leader. At the
-    /// short gap that is the shortest election timeout. At the idle gap it
-    /// is three of them, so two heartbeats can be lost.
+    /// How long a follower goes unchecked after it hears its leader: until
+    /// openraft could let it stand. That is the shortest election timeout,
+    /// after the leader lease (openraft's is `election_max`) when what it
+    /// heard was an append. One heartbeat is taken off, since openraft
+    /// counts from when it took the message and this from when it was
+    /// answered. At the idle gap the wait is three idle heartbeats, so two
+    /// can be lost.
     pub(super) fn follower_wait(&self) -> u64 {
         let timers = &self.timers;
+        let lease = match self.leased.load(Ordering::Relaxed) {
+            true => timers.election_max.saturating_sub(timers.heartbeat),
+            false => 0,
+        };
+        let stands = timers.election_min + lease;
         let promised = self.promised.load(Ordering::Relaxed);
         if promised <= timers.heartbeat {
-            return timers.election_min;
+            return stands;
         }
-        timers
-            .election_min
+        stands
             .max(promised.saturating_mul(3))
             .saturating_add(self.jitter)
     }
@@ -277,6 +298,7 @@ impl Pace {
             };
             self.promised.store(gap, Ordering::Relaxed);
         }
+        self.leased.store(gap.is_some(), Ordering::Relaxed);
         self.heard.store(now, Ordering::Relaxed);
         self.due
             .store(now.saturating_add(self.follower_wait()), Ordering::Relaxed);
@@ -350,6 +372,19 @@ impl Drop for Dropped<'_> {
             metrics::counter!(DROPPED_TICKS_TOTAL).increment(1);
         }
     }
+}
+
+/// Where a member is in the broker's bound on elections
+/// (`ticker::Elections`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(crate) enum Turn {
+    /// Not after an election, or not yet seen to be.
+    None = 0,
+    /// Its timer check could start an election and it is not sent one yet.
+    Waiting = 1,
+    /// It is sent timer checks and counts as an election in flight.
+    Admitted = 2,
 }
 
 impl Group {
@@ -461,6 +496,7 @@ impl Group {
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
+            turn: AtomicU8::new(Turn::None as u8),
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
             stop,
@@ -527,6 +563,54 @@ impl Group {
     /// When a timer check could next find something to do.
     pub(crate) fn due_at(&self) -> u64 {
         self.pace.due.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn turn(&self) -> Turn {
+        match self.turn.load(Ordering::Relaxed) {
+            1 => Turn::Waiting,
+            2 => Turn::Admitted,
+            _ => Turn::None,
+        }
+    }
+
+    pub(crate) fn set_turn(&self, turn: Turn) {
+        self.turn.store(turn as u8, Ordering::Relaxed);
+    }
+
+    /// The term this member is at, if a timer check could have it stand
+    /// for election: it is a voter that does not lead. A leader's check
+    /// sends a heartbeat and a learner's does nothing.
+    pub(crate) fn standing_term(&self) -> Option<u64> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        if self.stop.is_cancelled() || self.stopped.load(Ordering::Relaxed) {
+            return None;
+        }
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        matches!(
+            metrics.state,
+            ServerState::Follower | ServerState::Candidate
+        )
+        .then_some(metrics.current_term)
+    }
+
+    /// The earliest this member could stand: after its wait for the leader
+    /// it last heard or the candidate it last voted for, and after its
+    /// vote hold if it takes no vote yet.
+    pub(crate) fn may_stand_at(&self) -> u64 {
+        let pace = &self.pace;
+        let heard = pace.heard.load(Ordering::Relaxed);
+        let waited = heard.saturating_add(pace.follower_wait());
+        match self.hold.campaigns {
+            true => waited,
+            false => waited.max(self.hold.until),
+        }
+    }
+
+    /// Orders the members that come due in one interval. It differs per
+    /// member, so two brokers do not go through their groups in step.
+    pub(crate) fn rank(&self) -> u64 {
+        self.pace.rank
     }
 
     /// When the next timer check can matter, after one was just sent.

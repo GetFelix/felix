@@ -24,6 +24,7 @@ use crate::{ShardKey, ShardKind};
 
 mod commit;
 mod deliver;
+mod elections;
 mod identity;
 mod lease;
 mod propose;
@@ -549,6 +550,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         election_min: millis(config.election_min),
         election_max: millis(config.election_max),
         lease: millis(config.lease),
+        elections: config.elections,
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
@@ -656,8 +658,10 @@ async fn a_follower_waits_by_the_gap_its_leader_named() {
     assert!(patient >= 3 * timers.idle_heartbeat, "{patient}");
     assert!(patient < 3 * timers.idle_heartbeat + timers.election_max);
     // An append from a build that names no gap is taken as the short one.
+    // After an append openraft waits out the leader lease too.
     pace.followed(Some(0));
-    assert_eq!(pace.follower_wait(), timers.election_min);
+    let leased = timers.election_max - timers.heartbeat + timers.election_min;
+    assert_eq!(pace.follower_wait(), leased);
     pace.followed(Some(timers.idle_heartbeat));
     pace.voted();
     assert_eq!(pace.follower_wait(), timers.election_min);
