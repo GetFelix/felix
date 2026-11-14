@@ -29,7 +29,7 @@ use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
 use super::machine::{self, Cache, Machine, SnapshotData};
 use super::network::{
-    Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
+    Addressee, Network, RaftRequest, RaftTransport, Reach, Refused, Reply, Request, Router, term_of,
 };
 use super::propose::{
     self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
@@ -416,6 +416,7 @@ impl Group {
         timers: Timers,
         host: Host,
         tail_budget: Arc<TailBudget>,
+        reach: Arc<Reach>,
     ) -> Result<Self, OpenError> {
         let Host {
             engine: host,
@@ -466,6 +467,7 @@ impl Group {
                 Arc::clone(&pace),
                 Arc::clone(&lease),
                 Arc::clone(&reports),
+                reach,
             ),
             group: id.clone(),
         };
@@ -584,6 +586,23 @@ impl Group {
     /// grants no vote at first".
     pub(super) fn holds_votes(&self) -> bool {
         self.pace.timers.now() < self.hold.until
+    }
+
+    /// If this member leads, retry its members on `broker` now rather than
+    /// after openraft's next backoff delay. That broker just answered.
+    pub(crate) async fn retry_now(&self, broker: &str) {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let to: Vec<MemberId> = match &self.raft.metrics().borrow_watched().replication {
+            Some(followers) => followers
+                .keys()
+                .filter(|member| &*member.broker == broker)
+                .cloned()
+                .collect(),
+            None => return,
+        };
+        if !to.is_empty() {
+            let _ = self.raft.trigger().reset_backoff(to).await;
+        }
     }
 
     fn leads(&self) -> bool {

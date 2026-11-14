@@ -7,6 +7,7 @@
 //! never asked, and a leader is asked once per heartbeat. See
 //! `docs/per-shard-raft.md`, "One timer for every group".
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -63,6 +64,7 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
     let mut interval = tokio::time::interval(every);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut looks = Looks::default();
+    let mut back = Back::default();
     loop {
         tokio::select! {
             biased;
@@ -74,12 +76,59 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
             panic!("tripped by a test");
         }
         registry.tail_budget.report();
+        back.retry(&registry, &timers);
         let due = looks.due(registry.ticked(), &timers);
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
             () = tick_all(&due, Instant::now() + every) => {}
         }
+    }
+}
+
+/// Peer brokers that answered again after a failed call, waiting for
+/// their leaders here to retry them.
+///
+/// openraft ends a stream's backoff only on a call that succeeds, and its
+/// delays grow to a second, so a member back from a cut would wait for its
+/// stream's next delay to run out. Every leader here retries a broker that
+/// answered again at once. A broker that keeps failing and answering is
+/// retried at most once a heartbeat, which bounds the extra calls to a
+/// struggling peer.
+#[derive(Default)]
+struct Back {
+    pending: Vec<Arc<str>>,
+    retried: HashMap<Arc<str>, Instant>,
+}
+
+impl Back {
+    fn retry(&mut self, registry: &Registry, timers: &Timers) {
+        for broker in registry.reach.take_back() {
+            if !self.pending.contains(&broker) {
+                self.pending.push(broker);
+            }
+        }
+        if self.pending.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let gap = Duration::from_millis(timers.heartbeat);
+        let retried = &mut self.retried;
+        retried.retain(|_, at| now.duration_since(*at) < gap);
+        self.pending.retain(|broker| {
+            if retried.contains_key(broker) {
+                return true;
+            }
+            retried.insert(Arc::clone(broker), now);
+            let groups = registry.ticked();
+            let broker = Arc::clone(broker);
+            tokio::spawn(async move {
+                for group in groups.iter() {
+                    group.retry_now(&broker).await;
+                }
+            });
+            false
+        });
     }
 }
 

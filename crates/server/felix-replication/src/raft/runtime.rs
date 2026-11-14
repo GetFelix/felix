@@ -21,7 +21,9 @@ use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{self, Group, Timers};
-use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
+use super::network::{
+    Addressee, RaftReply, RaftRequest, RaftTransport, Reach, Refused, Reply, Request,
+};
 use super::propose::Clock;
 use super::ticker;
 use super::types::{GroupId, MemberId, ShardTypes};
@@ -118,13 +120,6 @@ impl Default for RuntimeConfig {
 /// last piece's answer waits for the install as well.
 pub(super) const SNAPSHOT_PIECE_MILLIS: u64 = 10_000;
 
-/// openraft's retry delays for a stream: a quarter of a heartbeat,
-/// doubling up to one heartbeat.
-pub(super) fn backoff(heartbeat_millis: u64) -> String {
-    let cap = heartbeat_millis.max(1);
-    format!("{}ms ..{cap}ms", (cap / 4).max(1))
-}
-
 fn wall_clock_micros() -> u64 {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH);
     now.map_or(0, |now| now.as_micros() as u64)
@@ -186,13 +181,6 @@ impl RuntimeConfig {
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
             log_stage_capacity: Some(1),
-            // After a refused call openraft sleeps before each retry of a
-            // stream, and only a success clears it. Its default climbs to
-            // 1 s, so a member back from a cut waits up to a second for
-            // entries it could take at once. Capped at a heartbeat, a dead
-            // peer is called at most twice as often as heartbeats alone call
-            // it.
-            backoff: Some(backoff(millis(self.heartbeat))),
             ..Config::default()
         }
         .validate()
@@ -369,6 +357,8 @@ pub(crate) struct Registry {
     pub(crate) ticker_restarts: AtomicU64,
     /// Shared by every group's log, and read by the ticker for its gauge.
     pub(crate) tail_budget: Arc<TailBudget>,
+    /// The peer brokers this runtime's calls could not reach.
+    pub(crate) reach: Arc<Reach>,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -475,6 +465,7 @@ impl GroupRuntime {
                     ticked: ArcSwap::default(),
                     ticker_restarts: AtomicU64::new(0),
                     tail_budget: TailBudget::new(config.tail_cache_bytes),
+                    reach: Arc::default(),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -718,6 +709,7 @@ impl GroupRuntime {
             inner.timers,
             host,
             Arc::clone(&registry.tail_budget),
+            Arc::clone(&registry.reach),
         )
         .await?;
         let group = Arc::new(group);

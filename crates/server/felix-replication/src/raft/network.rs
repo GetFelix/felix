@@ -2,14 +2,17 @@
 //! [`RaftTransport`] to send, and the router that turns openraft's calls
 //! into them.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use openraft::error::{RPCError, ReplicationClosed, StreamingError, Timeout, Unreachable};
+use openraft::EntryPayload;
+use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::{RPCOption, RaftNetworkFactory};
 use openraft::raft::{
@@ -17,7 +20,6 @@ use openraft::raft::{
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
 use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
-use openraft::{EntryPayload, RPCTypes};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use felix_storage::raft_log::LogPoint;
@@ -194,11 +196,62 @@ pub(crate) struct Router {
     pace: Arc<Pace>,
     lease: Arc<Lease>,
     reports: Arc<Reports>,
+    reach: Arc<Reach>,
 }
 
 #[derive(Debug, thiserror::Error)]
 #[error("the answer was to another kind of message")]
 struct WrongReply;
+
+/// Which peer brokers this runtime's calls failed to reach, and which of
+/// those have answered since.
+///
+/// openraft waits longer and longer, up to a second, before it retries a
+/// stream to a member it could not reach, and only a call that succeeds
+/// ends the wait. A broker that answers any call again is reported here, so
+/// the ticker can end every leader's wait for its members at once rather
+/// than leave each to its next retry (#2543).
+#[derive(Default)]
+pub(crate) struct Reach {
+    /// Whether `down` holds anyone: an answer takes no lock when no call
+    /// has failed.
+    any_down: AtomicBool,
+    state: parking_lot::Mutex<ReachState>,
+}
+
+#[derive(Default)]
+struct ReachState {
+    down: HashSet<Arc<str>>,
+    back: Vec<Arc<str>>,
+}
+
+impl Reach {
+    /// A call to `broker` was refused by the transport or went unanswered.
+    pub(crate) fn lost(&self, broker: &Arc<str>) {
+        let mut state = self.state.lock();
+        if state.down.insert(Arc::clone(broker)) {
+            self.any_down.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// `broker` answered a call, whatever the answer said.
+    pub(crate) fn answered(&self, broker: &Arc<str>) {
+        if !self.any_down.load(Ordering::Relaxed) {
+            return;
+        }
+        let mut state = self.state.lock();
+        if state.down.remove(broker) {
+            state.back.push(Arc::clone(broker));
+            self.any_down
+                .store(!state.down.is_empty(), Ordering::Relaxed);
+        }
+    }
+
+    /// The brokers that answered again since the last call.
+    pub(crate) fn take_back(&self) -> Vec<Arc<str>> {
+        std::mem::take(&mut self.state.lock().back)
+    }
+}
 
 impl Router {
     pub(crate) fn new(
@@ -206,12 +259,14 @@ impl Router {
         pace: Arc<Pace>,
         lease: Arc<Lease>,
         reports: Arc<Reports>,
+        reach: Arc<Reach>,
     ) -> Self {
         Self {
             transport,
             pace,
             lease,
             reports,
+            reach,
         }
     }
 
@@ -221,7 +276,7 @@ impl Router {
         group: GroupId,
         mut body: Request,
         option: &RPCOption,
-    ) -> Result<Reply, RPCError<ShardTypes>> {
+    ) -> Result<Reply, Unreachable<ShardTypes>> {
         // A transport inside one process hands the message over as it is.
         // A token that went with it would be resolved by the follower's
         // append and tell the publisher the leader had written.
@@ -242,7 +297,6 @@ impl Router {
             self.lease.void_through(term_of(transfer.from_leader()));
         }
         let pre_vote = matches!(body, Request::PreVote(_));
-        let late = late_is_timeout(&body);
         let request = RaftRequest {
             group,
             to: to.clone(),
@@ -266,38 +320,16 @@ impl Router {
         {
             self.lease.named(term);
         }
+        match &answer {
+            Ok(Err(Refused::Unreachable(_))) | Err(_) => self.reach.lost(&to.broker),
+            Ok(_) => self.reach.answered(&to.broker),
+        }
         match answer {
             Ok(Ok(reply)) => Ok(reply.0),
-            Ok(Err(refused)) => Err(Unreachable::new(&refused).into()),
-            Err(elapsed) => match late {
-                Some((action, id)) => Err(RPCError::Timeout(Timeout {
-                    action,
-                    id,
-                    target: to,
-                    timeout: option.hard_ttl(),
-                })),
-                None => Err(Unreachable::new(&elapsed).into()),
-            },
+            Ok(Err(refused)) => Err(Unreachable::new(&refused)),
+            Err(elapsed) => Err(Unreachable::new(&elapsed)),
         }
     }
-}
-
-/// The kind and sender of a call whose late answer is reported as a
-/// [`Timeout`], or `None` if it stays [`Unreachable`].
-///
-/// openraft backs off a stream to an unreachable member until a call
-/// succeeds, but a timed-out append is resent at once and a timed-out
-/// snapshot piece restarts the snapshot from its first byte. The follower
-/// is still working on what it was sent, so those stay unreachable. Only
-/// calls that carry no data, heartbeats and votes, are timeouts.
-fn late_is_timeout(body: &Request) -> Option<(RPCTypes, MemberId)> {
-    use openraft::vote::RaftLeaderId;
-    let (action, vote) = match body {
-        Request::Append(rpc) if rpc.entries.is_empty() => (RPCTypes::AppendEntries, &rpc.vote),
-        Request::Vote(rpc) | Request::PreVote(rpc) => (RPCTypes::Vote, &rpc.vote),
-        _ => return None,
-    };
-    Some((action, vote.leader_id().node_id().clone()))
 }
 
 pub(crate) fn term_of(vote: &VoteOf<ShardTypes>) -> u64 {
@@ -401,7 +433,7 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
                     .call(target.clone(), group_id.clone(), body, &option)
                     .await?;
                 let Reply::Snapshot(response) = reply else {
-                    return Err(RPCError::from(wrong_reply()));
+                    return Err(wrong_reply());
                 };
                 // A member that has seen a newer vote takes no more of it.
                 if end == data.len() || response.vote != vote {

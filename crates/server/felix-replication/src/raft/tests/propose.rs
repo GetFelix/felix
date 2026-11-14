@@ -545,7 +545,13 @@ async fn a_token_does_not_leave_with_an_append() {
     let transport: Arc<dyn RaftTransport> = wire.clone();
     let lease = super::super::lease::Lease::new(timers().lease);
     let reports = Arc::new(super::super::written::Reports::new());
-    let router = Router::new(transport, Arc::new(pace().0), Arc::new(lease), reports);
+    let router = Router::new(
+        transport,
+        Arc::new(pace().0),
+        Arc::new(lease),
+        reports,
+        Arc::default(),
+    );
     let (token, written) = WrittenToken::channel();
     let command = Command {
         timestamp_micros: 7,
