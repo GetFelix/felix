@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794612828758,
+  "lastUpdate": 1794616736669,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55276,6 +55276,58 @@ window.BENCHMARK_DATA = {
             "range": "8278.53",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 797687.59\nmean: 798409.93\nstdev: 8278.53\ncv: 1.04%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "45e8f99481d35c0317373cd4d86a71cf67fb1552",
+          "message": "ci(sim): the determinism job gives up on a silent runner after 35 minutes (#2368) (#2494)\n\n* ci(sim): the determinism job gives up on a silent runner after 30 minutes (#2368)\n\nThe 45-minute timeout in #2368 was a runner that stopped answering, not a\nseed that hung: the log stops mid-line in all four test threads at once,\nthe step and its post steps never report, and the job closes at 55 minutes,\nthe timeout plus the server's grace. A seed that holds its thread already\nends the process within ten minutes with its seed. The job takes 8 to 15\nminutes, so 30 bounds a lost runner without cutting a slow build.\n\n* Review fixes",
+          "timestamp": "2026-11-13T16:21:23-08:00",
+          "tree_id": "5dc59f366093f1e8bab92f3cd31d02ceb204613d",
+          "url": "https://github.com/GetFelix/felix/commit/45e8f99481d35c0317373cd4d86a71cf67fb1552"
+        },
+        "date": 1794616735978,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 520234.29,
+            "range": "53716.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520234.29\nmean: 502329.07\nstdev: 53716.45\ncv: 10.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 520234.29,
+            "range": "53716.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520234.29\nmean: 502329.07\nstdev: 53716.45\ncv: 10.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124808.23,
+            "range": "1597.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124808.23\nmean: 124947.64\nstdev: 1597.07\ncv: 1.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1248082.28,
+            "range": "15970.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1248082.28\nmean: 1249476.38\nstdev: 15970.66\ncv: 1.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
