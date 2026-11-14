@@ -285,9 +285,6 @@ async fn cache_back_to_back() {
         last += 10_000;
     }
 
-    for (_, h) in super::super::machine::lockstat::all() {
-        h.reset()
-    }
     let stop = Arc::new(AtomicBool::new(false));
     let worst_read_ns = Arc::new(AtomicU64::new(0));
     let reads = Arc::new(AtomicU64::new(0));
@@ -303,12 +300,7 @@ async fn cache_back_to_back() {
                     .wrapping_add(1_442_695_040_888_963_407);
                 let key = &names[((x >> 33) % keys) as usize];
                 let started = Instant::now();
-                let guard = cache.read();
-                let got = Instant::now();
-                READ_WAIT.addn((got - started).as_nanos() as u64);
-                black_box(guard.read(key, 0));
-                drop(guard);
-                READ_HOLD.add(got);
+                black_box(cache.read().read(key, 0));
                 worst.fetch_max(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
                 reads.fetch_add(1, Ordering::Relaxed);
             }
@@ -319,7 +311,6 @@ async fn cache_back_to_back() {
     let (mut worst_apply, mut worst_ask) = (Duration::ZERO, Duration::ZERO);
     let mut build: Option<tokio::task::JoinHandle<()>> = None;
     let (started, applied_from) = (Instant::now(), last);
-    *super::super::machine::lockstat::T0.lock() = Some(started);
     while started.elapsed() < Duration::from_secs(15) {
         if build.as_ref().is_some_and(|build| build.is_finished()) {
             build.take().expect("build").await.expect("task");
@@ -333,11 +324,7 @@ async fn cache_back_to_back() {
             match builder {
                 Some(mut builder) => {
                     build = Some(tokio::spawn(async move {
-                        super::super::machine::lockstat::event("build");
-                        let snap = builder.build_snapshot().await.expect("build");
-                        super::super::machine::lockstat::event("built");
-                        drop(snap);
-                        super::super::machine::lockstat::event("dropped");
+                        builder.build_snapshot().await.expect("build");
                     }));
                 }
                 None => deferred += 1,
@@ -367,21 +354,4 @@ async fn cache_back_to_back() {
         worst_read_ns.load(Ordering::Relaxed) as f64 / 1e6,
         reads.load(Ordering::Relaxed),
     );
-    let mut line = format!(
-        "cache_lockstat label={label} keys={keys} {} {}",
-        READ_WAIT.show("read_wait"),
-        READ_HOLD.show("read_hold")
-    );
-    for (name, h) in super::super::machine::lockstat::all() {
-        line.push(' ');
-        line.push_str(&h.show(name));
-    }
-    println!("{line}");
-    *super::super::machine::lockstat::T0.lock() = None;
-    let ev = std::mem::take(&mut *super::super::machine::lockstat::EVENTS.lock());
-    println!("cache_events label={label} keys={keys} {}", ev.join(" "));
 }
-static READ_WAIT: super::super::machine::lockstat::Hist =
-    super::super::machine::lockstat::Hist::new();
-static READ_HOLD: super::super::machine::lockstat::Hist =
-    super::super::machine::lockstat::Hist::new();

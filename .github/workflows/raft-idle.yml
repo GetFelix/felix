@@ -31,15 +31,34 @@ jobs:
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
         with:
           toolchain: "1.99.1"
+      - name: Base tree
+        run: |
+          set -euo pipefail
+          git worktree add "$RUNNER_TEMP/base" f8422f87f
+          f=crates/server/felix-replication/src/raft/cache
+          cp bench/measure-base.rs "$RUNNER_TEMP/base/$f/measure.rs"
+          printf '#[cfg(test)]\nmod measure;\n' >> "$RUNNER_TEMP/base/$f.rs"
       - name: Build
-        run: cargo test --locked --release -p felix-replication --features raft,felix-common/sim --lib --no-run
+        run: |
+          set -euo pipefail
+          for d in "$GITHUB_WORKSPACE" "$RUNNER_TEMP/base"; do
+            (cd "$d" && cargo test --locked --release -p felix-replication --features raft,felix-common/sim --lib --no-run)
+          done
       - name: Measure
         run: |
           set -euo pipefail
           nproc; free -m
-          for round in 1 2; do
-            for keys in 1000000; do
-              MEASURE_KEYS=$keys MEASURE_LABEL=diag_onapply cargo test --locked --release -q -p felix-replication \
-                --features raft,felix-common/sim --lib raft::cache::measure::cache_back_to_back -- --ignored --nocapture --test-threads 1 2>&1 | grep -o 'cache_[a-z_]* label=.*'
+          run() {
+            (cd "$1" && MEASURE_KEYS=$3 MEASURE_LABEL=$2 cargo test --locked --release -q -p felix-replication \
+              --features raft,felix-common/sim --lib raft::cache::measure -- --ignored --nocapture --test-threads 1 2>&1 | grep -o 'cache_[a-z_]* label=.*')
+          }
+          for round in 1 2 3 4; do
+            for keys in 1000 1000000; do
+              # before_aa is the same base build run again: the A/A noise.
+              if [ $((round % 2)) = 1 ]; then
+                run "$RUNNER_TEMP/base" before $keys; run "$GITHUB_WORKSPACE" after $keys; run "$RUNNER_TEMP/base" before_aa $keys
+              else
+                run "$RUNNER_TEMP/base" before_aa $keys; run "$GITHUB_WORKSPACE" after $keys; run "$RUNNER_TEMP/base" before $keys
+              fi
             done
           done | tee measure.log
