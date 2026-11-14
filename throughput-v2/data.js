@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794687241025,
+  "lastUpdate": 1794687834177,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56992,6 +56992,58 @@ window.BENCHMARK_DATA = {
             "range": "10772.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1152405.69\nmean: 1147877.10\nstdev: 10772.45\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "27a47929ee1e7150ddf860c6069d1fe8198c1f77",
+          "message": "test: judge two loaded-runner flakes by events, not the clock (#2554)\n\n* test: judge two loaded-runner flakes by events, not the clock\n\nThe forwarded quorum cache op test bounded each op at 6x its quorum\ntimeout and the released op at 1x. A loaded box stalls the storage\nwrite around the wait (four loops failed together at one iteration,\n2.0s for a 300ms wait), so the test now checks that the error names\nthe quorum timeout, and that an op after the mark answers Ok, which a\nwait that ran out could not (#2545).\n\nThe lease canary started its 30s hold right after creating 600\nstreams. Under load the brokers are still opening and fencing those\nshards when the hold ends, so fewer than half the appended streams take\na write. The hold now starts once half of them serve, within a budget,\nand the failure prints each broker's open-file limit (#2530).\n\nSpec-Unaffected: test-only changes; no product code or protocol change\n\n* test: bound the quorum wait loosely and print fd counts in the lease canary",
+          "timestamp": "2026-11-14T20:18:22Z",
+          "tree_id": "16a4749f7b1faedb8bc7298ac38fd607f8235610",
+          "url": "https://github.com/GetFelix/felix/commit/27a47929ee1e7150ddf860c6069d1fe8198c1f77"
+        },
+        "date": 1794687833531,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 601312.24,
+            "range": "82364.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 601312.24\nmean: 591414.97\nstdev: 82364.33\ncv: 13.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 601312.24,
+            "range": "82364.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 601312.24\nmean: 591414.97\nstdev: 82364.33\ncv: 13.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 140688.18,
+            "range": "4159.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 140688.18\nmean: 139679.91\nstdev: 4159.96\ncv: 2.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1406881.75,
+            "range": "41599.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1406881.75\nmean: 1396799.05\nstdev: 41599.57\ncv: 2.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
