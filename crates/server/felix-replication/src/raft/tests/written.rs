@@ -156,6 +156,8 @@ impl Led {
         let batch = Batch {
             records: vec![record],
             ack: AckAt::Written,
+            term: None,
+            producer: None,
         };
         let written = self.engine.propose(&shard(0), batch).await;
         written.expect("written")

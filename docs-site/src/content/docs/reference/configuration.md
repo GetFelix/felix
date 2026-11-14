@@ -213,6 +213,9 @@ is queued.
 `false`, `no`, `off` = opt out; case-insensitive. Any other value is logged and
 the default is kept)
 
+A shard on Raft (`FELIX_SHARD_ENGINE=raft`) ignores this setting: its publishes
+are always answered after they commit.
+
 **Example**:
 ```yaml
 # Opt out: ack on accept, before the write. Faster, but an acknowledged record

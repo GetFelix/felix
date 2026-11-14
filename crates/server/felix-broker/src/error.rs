@@ -199,6 +199,20 @@ pub enum BrokerError {
     /// changed; retry.
     #[error("the shard's held batches are still being released; retry")]
     ReleaseInFlight,
+    /// The stream's log belongs to its shard's engine (a shard on Raft),
+    /// which does not take this kind of write. Nothing was written.
+    #[error("a stream on Raft does not take {what}")]
+    NotOnEngineStream { what: &'static str },
+    /// Durable streams on this broker are opened by their shard's engine,
+    /// and it has not opened this one here. Retry, here or on the shard's
+    /// leader.
+    #[error("stream {stream} shard {shard} is not open on this broker yet; retry")]
+    ShardNotOpen { stream: String, shard: u32 },
+    /// The engine has not settled the oldest batch handed to it within the
+    /// time given, so it is taking no more: most likely a leader cut off
+    /// from its majority. Nothing was written; retry.
+    #[error("the shard's engine has not settled a batch for {waited:?}; retry")]
+    ProposalsStalled { waited: std::time::Duration },
 }
 
 /// Why [`BrokerError::NotReadable`].

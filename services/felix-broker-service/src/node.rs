@@ -27,6 +27,7 @@ mod handoff;
 mod identity;
 mod listeners;
 mod membership;
+mod open_files;
 pub(crate) mod peer_dispatch;
 mod shutdown;
 #[cfg(feature = "sim")]
@@ -99,6 +100,15 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // Before storage opens: every held shard keeps files open.
+    open_files::raise_limit(
+        durable_config
+            .as_ref()
+            .map_or(0, |durable| durable.log.max_open_sealed_segments),
+        durable_config
+            .as_ref()
+            .and_then(|durable| durable.log.sealed_cache.as_ref()),
+    );
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.
@@ -107,6 +117,21 @@ where
         && let Some(peer) = config.peer_transport.as_mut()
     {
         peer.unified_fence = false;
+    }
+    // Before anything opens: a broker asked for Raft shards that came up as
+    // a hybrid one would write a shard its peers run under Raft.
+    let shard_engine = crate::config::shard_engine()?;
+    if shard_engine == crate::config::ShardEngine::Raft {
+        let missing = crate::config::RaftPrerequisites {
+            compiled: cfg!(feature = "raft"),
+            membership: config.membership.is_some(),
+            peer_transport: config.peer_transport.is_some(),
+            durable_storage: durable_config.is_some(),
+        }
+        .missing();
+        if let Some(missing) = missing {
+            anyhow::bail!("FELIX_SHARD_ENGINE=raft is refused: {missing}");
+        }
     }
     let durable_root = durable_config.as_ref().map(|durable| durable.root.clone());
     let durable_storage_configured = durable_root.is_some();
@@ -332,6 +357,29 @@ where
         storage_id,
         unclean,
     } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks, &engine).await?;
+    // Before the catalog, the view or a peer registers a stream: one
+    // registered earlier would have its shard 0 opened by the broker itself,
+    // beside the log its Raft member opens.
+    if shard_engine == crate::config::ShardEngine::Raft {
+        broker.leave_durable_streams_to_engines();
+    }
+    #[cfg(feature = "raft")]
+    let raft_shards = if shard_engine == crate::config::ShardEngine::Raft {
+        cluster::start_raft_shards(&config, &cluster, &peers, &broker, &engine)?
+    } else {
+        cluster::RaftShards::default()
+    };
+    #[cfg(not(feature = "raft"))]
+    let raft_shards = cluster::RaftShards::default();
+    let raft_shards = cluster::match_engines(
+        &config,
+        &cluster,
+        &peers,
+        &broker,
+        &engine,
+        shard_engine == crate::config::ShardEngine::Raft,
+        raft_shards,
+    );
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config
@@ -587,6 +635,7 @@ where
         // for the shards it leads instead of waiting on it. After a start from
         // the view that lasts until it has registered.
         gate_readiness_on_sync.then_some(&clients),
+        raft_shards.handler,
         &peer_listener_shutdown,
     )?;
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
@@ -611,6 +660,7 @@ where
         nodes: view.as_ref().map(from_view::nodes).unwrap_or_default(),
         reports_held: view.as_ref().map(|_| restore_checked.clone()),
         leads_after: view.as_ref().map(|_| clients.clone()),
+        engine_shards: raft_shards.engine_shards.clone(),
         sync_shutdown: &sync_shutdown,
     });
 
@@ -667,6 +717,7 @@ where
         controlplane_task,
         controlplane_view,
         storage: shutdown::Storage {
+            engine_shards: raft_shards.engine_shards,
             broker: Arc::clone(&broker),
             run: durable_storage
                 .as_ref()

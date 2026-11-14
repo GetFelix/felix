@@ -18,6 +18,7 @@ use super::{
     ReplicaSetView, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
     ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
 };
+use super::{FROM_COPY_BYTES, FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk, SealStarts};
 use crate::error::{Error, Result};
 
 /// Every payload is a 4-byte length prefix plus its bytes, so a body can never
@@ -43,6 +44,9 @@ fn put_envelope(mut buf: &mut [u8], correlation_id: u64, value: u64, kind: Kind)
 impl InternalMessage {
     /// Encode a complete frame: header then body.
     pub fn encode(&self) -> Result<Bytes> {
+        if let Self::FromCopy(m) = self {
+            return encode_from_copy(m);
+        }
         // Room for the header and both envelopes goes in front, so wrapping a
         // batch writes a few bytes instead of copying its body. The unused
         // front is advanced past at the end.
@@ -218,6 +222,50 @@ impl InternalMessage {
             Self::Ping(Ping { correlation_id }) | Self::Pong(Pong { correlation_id }) => {
                 body.put_u64(*correlation_id);
             }
+            Self::SealFence(m) => {
+                // The seal's fence is a promotion's, never an election's.
+                if m.fence.election.is_some() {
+                    return Err(Error::Incomplete);
+                }
+                body.put_u64(m.fence.correlation_id);
+                put_str(&mut body, &m.fence.shard.tenant_id)?;
+                put_str(&mut body, &m.fence.shard.namespace)?;
+                put_str(&mut body, &m.fence.shard.stream)?;
+                body.put_u32(m.fence.shard.shard);
+                body.put_u64(m.fence.shard.generation);
+                body.put_u8(m.fence.log as u8);
+                body.put_slice(&m.sealer);
+            }
+            Self::SealFenceOk(m) => {
+                if m.ok.attestation.is_some() {
+                    return Err(Error::Incomplete);
+                }
+                body.put_u64(m.ok.correlation_id);
+                body.put_u64(m.ok.log_end);
+                body.put_u64(m.ok.commit_offset);
+                body.put_u64(m.ok.last_generation);
+                body.put_u8(u8::from(m.ok.kept_ballot));
+                body.put_u64(m.starts.log);
+                body.put_u64(m.starts.dead_letters);
+                body.put_u64(m.starts.cursors);
+            }
+            Self::SealAck(m) => {
+                body.put_u64(m.correlation_id);
+                put_str(&mut body, &m.shard.tenant_id)?;
+                put_str(&mut body, &m.shard.namespace)?;
+                put_str(&mut body, &m.shard.stream)?;
+                body.put_u32(m.shard.shard);
+                body.put_u64(m.shard.generation);
+                body.put_slice(&m.sealer);
+                body.put_u64(m.offset);
+                body.put_u64(m.timestamp_micros);
+                body.extend_from_slice(&m.payload);
+            }
+            Self::SealAckOk(m) => {
+                body.put_u64(m.correlation_id);
+                body.put_slice(&m.copy);
+            }
+            Self::FromCopy(_) => unreachable!("encoded before the body"),
             Self::Raft(RaftCall {
                 correlation_id,
                 body: raft,
@@ -844,6 +892,95 @@ impl InternalMessage {
                 expect_empty(&body)?;
                 Ok(Self::ReplicateFetch(message))
             }
+            Kind::SealFence => {
+                let fence = Fence {
+                    correlation_id: take_u64(&mut body)?,
+                    shard: ShardRef {
+                        tenant_id: take_str(&mut body)?,
+                        namespace: take_str(&mut body)?,
+                        stream: take_str(&mut body)?,
+                        shard: take_u32(&mut body)?,
+                        generation: take_u64(&mut body)?,
+                        incarnation: None,
+                    },
+                    log: ReplicaLog::from_u8(take_u8(&mut body)?)?,
+                    election: None,
+                };
+                let sealer = take_identity(&mut body)?;
+                expect_empty(&body)?;
+                Ok(Self::SealFence(SealFence { fence, sealer }))
+            }
+            Kind::SealFenceOk => {
+                let mut ok = FenceOk {
+                    correlation_id: take_u64(&mut body)?,
+                    log_end: take_u64(&mut body)?,
+                    commit_offset: take_u64(&mut body)?,
+                    last_generation: take_u64(&mut body)?,
+                    kept_ballot: false,
+                    attestation: None,
+                };
+                ok.kept_ballot = match take_u8(&mut body)? {
+                    0 => false,
+                    1 => true,
+                    // An unknown bit may change what the answer means.
+                    _ => return Err(Error::Incomplete),
+                };
+                let starts = SealStarts {
+                    log: take_u64(&mut body)?,
+                    dead_letters: take_u64(&mut body)?,
+                    cursors: take_u64(&mut body)?,
+                };
+                expect_empty(&body)?;
+                Ok(Self::SealFenceOk(SealFenceOk { ok, starts }))
+            }
+            Kind::SealAck => {
+                let correlation_id = take_u64(&mut body)?;
+                let shard = ShardRef {
+                    tenant_id: take_str(&mut body)?,
+                    namespace: take_str(&mut body)?,
+                    stream: take_str(&mut body)?,
+                    shard: take_u32(&mut body)?,
+                    generation: take_u64(&mut body)?,
+                    incarnation: None,
+                };
+                let sealer = take_identity(&mut body)?;
+                let offset = take_u64(&mut body)?;
+                let timestamp_micros = take_u64(&mut body)?;
+                Ok(Self::SealAck(SealAck {
+                    correlation_id,
+                    shard,
+                    sealer,
+                    offset,
+                    timestamp_micros,
+                    payload: body,
+                }))
+            }
+            Kind::SealAckOk => {
+                let correlation_id = take_u64(&mut body)?;
+                let copy = take_identity(&mut body)?;
+                expect_empty(&body)?;
+                Ok(Self::SealAckOk(SealAckOk {
+                    correlation_id,
+                    copy,
+                }))
+            }
+            Kind::FromCopy => {
+                let correlation_id = take_u64(&mut body)?;
+                let copy = take_identity(&mut body)?;
+                let kind = Kind::from_u16(take_u16(&mut body)?)?;
+                // Outermost and once.
+                if kind == Kind::FromCopy {
+                    return Err(Error::Incomplete);
+                }
+                let message = Self::decode_body(kind, body)?;
+                if message.correlation_id() != correlation_id {
+                    return Err(Error::Incomplete);
+                }
+                Ok(Self::FromCopy(FromCopy {
+                    copy,
+                    message: Box::new(message),
+                }))
+            }
             // The rest of the frame is the replication crate's to read, and
             // stays a slice of it.
             Kind::Raft | Kind::RaftAnswer => {
@@ -1452,6 +1589,35 @@ fn take_u64(buf: &mut Bytes) -> Result<u64> {
         return Err(Error::Incomplete);
     }
     Ok(buf.get_u64())
+}
+
+/// A request from a named copy: the inner frame's body behind the copy id.
+/// Copies the inner body once, which only a seal leader's batches pay.
+fn encode_from_copy(m: &FromCopy) -> Result<Bytes> {
+    if matches!(*m.message, InternalMessage::FromCopy(_)) {
+        return Err(Error::Incomplete);
+    }
+    let inner = m.message.encode()?;
+    let header = InternalHeader::decode(&inner)?;
+    let inner_body = &inner[InternalHeader::LEN..];
+    // The envelope's bytes count toward the frame limit, so a batch that
+    // fits alone can be too large once it names its copy.
+    if inner_body.len() > (MAX_BODY_BYTES - FROM_COPY_BYTES) as usize {
+        return Err(Error::FrameTooLarge);
+    }
+    let mut body = BytesMut::with_capacity(FROM_COPY_BYTES as usize + inner_body.len());
+    body.put_u64(m.message.correlation_id());
+    body.put_slice(&m.copy);
+    body.put_u16(header.kind as u16);
+    body.extend_from_slice(inner_body);
+    let mut frame = BytesMut::with_capacity(InternalHeader::LEN + body.len());
+    InternalHeader {
+        kind: Kind::FromCopy,
+        length: body.len() as u32,
+    }
+    .encode(&mut frame);
+    frame.extend_from_slice(&body);
+    Ok(frame.freeze())
 }
 
 fn take_identity(buf: &mut Bytes) -> Result<[u8; 16]> {

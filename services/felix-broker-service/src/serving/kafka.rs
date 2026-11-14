@@ -208,6 +208,11 @@ impl Cluster for BrokerCluster {
         // so a move waits for this write. The fence checks the lease against
         // the clock, except on a shard whose followers decide its acks.
         let key = Self::key(shard);
+        // A Raft log takes plain publishes only, and a Kafka batch is
+        // written with its producer's sequence.
+        if self.replication.on_raft(&key) {
+            return Err(WriteError::Unsupported);
+        }
         let ingress = self.replication.serving().map(|ingress| &**ingress);
         match dispatch_write(ingress, &key).await {
             (Dispatch::Local { generation }, held) => {

@@ -289,6 +289,16 @@ impl ClientError {
                 .with_reason(felix_wire::trim_reason::TIMED_OUT),
             // Nothing was read; the shard is served again here once a mark or
             // a lease comes back, or by its new owner.
+            // The same request is refused until the stream leaves Raft.
+            E::NotOnEngineStream { .. } => Self::invalid(message).with_retry(RetryClass::Fatal),
+            // Its group has not opened the shard here; the leader may be
+            // another broker.
+            E::ShardNotOpen { .. } => Self::new(ErrorCode::ShardUnavailable, message)
+                .with_reason(felix_wire::shard_unavailable_reason::NOT_READY),
+            // The leader cannot commit, most likely cut off from its
+            // majority. A retry lands once it can, or on the next leader.
+            E::ProposalsStalled { .. } => Self::new(ErrorCode::ShardUnavailable, message)
+                .with_reason(felix_wire::shard_unavailable_reason::NOT_READY),
             E::NotReadable { reason, .. } | E::StateNotReadable(reason) => {
                 use felix_wire::shard_unavailable_reason as wire;
                 let why = match reason {

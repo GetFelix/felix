@@ -1,0 +1,19 @@
+- `FELIX_SHARD_ENGINE` (`hybrid` by default) names the engine that replicates
+  a broker's durable stream shards (#2233). With `raft`, each durable stream
+  shard is one Raft group: publishes commit through the group, subscribers are
+  served on its leader (a follower answers with a redirect to it), and a
+  stopped leader is replaced by election. It is for fresh clusters only, and
+  every broker must say the same: a broker that shares a durable stream shard
+  with a broker on the other engine closes the shard, refuses requests for it
+  with "the shard's brokers run different shard engines" and counts it in
+  `felix_broker_shard_engine_refused_total`. It needs a build with the `raft` cargo
+  feature, a cluster identity, the broker-internal listener and durable
+  storage; a broker missing one refuses to start and says which. A stream on
+  Raft takes plain publishes only: idempotent and conditional publishes,
+  atomic commits, head trims, record headers, consumer groups, Kafka produce
+  and MQTT publish are refused by name (#2446). A shard's group forms once
+  placement names as many brokers as the stream's replication factor and keeps
+  those members: moves, drains and broker replacement are not supported on
+  Raft shards yet (#2235), and `felix_broker_raft_shards_off_placement` counts
+  shards whose placement no longer matches their group. An unknown value is
+  refused instead of read as the default.

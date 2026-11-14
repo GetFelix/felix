@@ -2,10 +2,10 @@
 //! client request before it registers, and refuses it as retryable.
 use std::time::Duration;
 
+use crate::shards::routing::StreamEngine;
 use felix_authz::TenantKeyCache;
 use felix_broker::Broker;
 use felix_replication::ReplicaHandler;
-use felix_replication::engine::Hybrid;
 use felix_router::{RegionRouter, ShardRouter};
 use felix_storage::EphemeralCache;
 use felix_wire::internal::{
@@ -17,7 +17,7 @@ use super::*;
 use crate::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use crate::shards::routing::IngressRouter;
 
-fn handler() -> BrokerPeerHandler<Hybrid<IngressRouter>> {
+fn handler() -> BrokerPeerHandler<StreamEngine> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let router = Arc::new(ShardRouter::new(
         "broker-a",
@@ -28,7 +28,7 @@ fn handler() -> BrokerPeerHandler<Hybrid<IngressRouter>> {
         "http://localhost".to_string(),
         Arc::new(TenantKeyCache::default()),
     ));
-    let engine = Arc::new(Hybrid::new(
+    let engine = Arc::new(StreamEngine::new(
         None,
         Some(Arc::new(IngressRouter::new(
             Arc::clone(&router),

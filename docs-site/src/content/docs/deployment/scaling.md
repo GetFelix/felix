@@ -6,6 +6,16 @@ How shards move between brokers, what to do to make them move, and what to
 watch while they do. Applies to any deployment; the Kubernetes page has the
 chart-specific commands.
 
+:::caution[Not for shards on Raft]
+A durable stream shard on a broker started with `FELIX_SHARD_ENGINE=raft` does
+not move. Its Raft group keeps the brokers it formed with, whatever placement
+says afterwards, so do not drain, remove or replace a broker that holds one.
+Membership changes are tracked in
+[#2235](https://github.com/GetFelix/felix/issues/2235). The gauge
+`felix_broker_raft_shards_off_placement` is above zero on a broker whose
+placement no longer matches a group it is in.
+:::
+
 ## What moves a shard
 
 Three things, and an operator (see

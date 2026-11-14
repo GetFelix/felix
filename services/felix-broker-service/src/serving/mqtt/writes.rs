@@ -128,6 +128,18 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
             return Err(WriteError::Refused(Refusal::HeadersDisabled));
         }
         let target = &batch.target;
+        let key = ShardKey {
+            tenant_id: batch.tenant_id.to_string(),
+            namespace: target.namespace.to_string(),
+            stream: target.stream.to_string(),
+            shard: target.shard,
+            kind: ShardKind::Stream,
+        };
+        // A Raft log takes plain publishes only, and every MQTT message
+        // carries headers and its producer's sequence.
+        if self.engine.on_raft(&key) {
+            return Err(WriteError::Refused(Refusal::Unsupported));
+        }
         let handle = self
             .broker
             .resolve_stream_handle(
@@ -142,13 +154,6 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
             return Err(WriteError::Refused(Refusal::StreamUnavailable));
         }
 
-        let key = ShardKey {
-            tenant_id: batch.tenant_id.to_string(),
-            namespace: target.namespace.to_string(),
-            stream: target.stream.to_string(),
-            shard: target.shard,
-            kind: ShardKind::Stream,
-        };
         let payloads: Vec<Bytes> = batch.records.iter().map(|r| r.payload.clone()).collect();
         let headers: Vec<Option<Bytes>> = batch
             .records

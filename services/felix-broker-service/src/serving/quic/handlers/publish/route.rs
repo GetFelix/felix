@@ -55,6 +55,9 @@ pub(crate) async fn resolve_route(
     // so a fence that closes after this point still counts the write.
     let mut generation = 0;
     let mut fenced = None;
+    // A shard another engine runs is held by that engine's term, not by
+    // this broker's lease.
+    let mut other_engine = false;
     if let Some(ingress) = ingress {
         let key = ShardKey {
             tenant_id: tenant_id.to_string(),
@@ -69,6 +72,7 @@ pub(crate) async fn resolve_route(
         // Held here, before anything is queued or acknowledged, while the
         // shard is between its fence and its cut-over.
         let (dispatched, guard) = ingress.dispatch_write(&key).await;
+        other_engine = ingress.engine_dispatch(&key).is_some();
         match dispatched {
             Dispatch::Local { generation: at } => {
                 generation = at;
@@ -109,6 +113,7 @@ pub(crate) async fn resolve_route(
     if let Some(lease) = lease
         && !lease.looks_valid()
         && !fenced.as_ref().is_some_and(FenceGuard::lease_free)
+        && !other_engine
     {
         crate::cluster::lease::metrics::record_refusal(
             crate::cluster::lease::metrics::BOUNDARY_ADMISSION,
@@ -513,6 +518,20 @@ pub(crate) fn targets_durable(target: &Option<PublishTarget>) -> bool {
         target,
         Some(PublishTarget::Resolved { handle, .. } | PublishTarget::Idempotent { handle, .. })
             if handle.is_durable()
+    )
+}
+
+/// True when a Raft group runs the shard this publish is written to here.
+///
+/// Such a publish is answered at its commit whatever the ack settings say:
+/// an answer on enqueue would promise a write the term may not live to make.
+pub(crate) fn targets_raft(publish_ctx: &PublishContext, target: &Option<PublishTarget>) -> bool {
+    matches!(
+        target,
+        Some(
+            PublishTarget::Resolved { shard: Some(shard), .. }
+                | PublishTarget::Idempotent { shard: Some(shard), .. }
+        ) if publish_ctx.engine.on_raft(shard)
     )
 }
 

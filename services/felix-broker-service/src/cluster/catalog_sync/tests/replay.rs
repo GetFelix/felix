@@ -25,6 +25,7 @@ fn stream(consistency: Option<&str>) -> Stream {
         // incarnations: the delete cannot say which stream it removed.
         incarnation: 0,
         mount: None,
+        replication_factor: None,
     }
 }
 

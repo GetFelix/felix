@@ -202,3 +202,54 @@ async fn a_single_node_broker_is_unaffected() {
     .await;
     assert!(matches!(route, PublishRoute::Local { .. }));
 }
+
+/// **A publish to a Raft shard this broker leads resolves here at the
+/// group's term, with no broker lease held.** The term is what a Raft
+/// leader holds the shard by, and the write has no place in the hybrid's
+/// fence.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_shard_led_here_resolves_without_the_broker_lease() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("term");
+    let ingress = fixture::ingress(&shards);
+    // Never renewed, so it does not look valid.
+    let lease = crate::cluster::lease::LeaseState::new(Duration::from_secs(10));
+    let mut cache = HashMap::default();
+    let mut key = String::new();
+
+    let route = resolve_route(
+        &broker,
+        Authority {
+            ingress: Some(&ingress),
+            lease: Some(&lease),
+        },
+        &mut cache,
+        &mut key,
+        "t1",
+        "ns",
+        "orders",
+        0,
+    )
+    .await;
+
+    match route {
+        PublishRoute::Local {
+            generation, fenced, ..
+        } => {
+            assert_eq!(generation, term);
+            assert!(fenced.is_none(), "a Raft write entered the hybrid's fence");
+        }
+        other => panic!("a Raft leader must take the publish: {other:?}"),
+    }
+    EngineShards::shutdown(&*shards).await;
+}

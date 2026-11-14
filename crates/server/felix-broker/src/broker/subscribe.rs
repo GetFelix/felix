@@ -43,6 +43,7 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
+        handle.catch_up_unwatched().await;
         let stream_state = handle.state;
         let (subscriber_id, receiver) = stream_state.register_subscriber_sized(queue_capacity);
         Ok(Subscription {

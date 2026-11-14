@@ -17,6 +17,8 @@ mod idempotent_acks;
 mod ingress;
 mod lanes;
 mod lease_headroom;
+#[cfg(feature = "raft")]
+mod on_raft;
 mod ownership_gate;
 mod routing;
 mod stream_cache;

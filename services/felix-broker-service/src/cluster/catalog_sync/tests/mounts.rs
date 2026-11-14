@@ -20,6 +20,7 @@ fn stream(mount: Option<&str>) -> Stream {
         retention: None,
         incarnation: 0,
         mount: mount.map(str::to_string),
+        replication_factor: None,
     }
 }
 

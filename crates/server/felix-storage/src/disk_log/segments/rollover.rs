@@ -248,7 +248,7 @@ impl SegmentSet {
         let entry = SealedEntry::new(descriptor, retired.holds_marks(), retired.holds_trims())
             .with_last_generation(retired.last_generation());
         self.files.seed(
-            entry.key(),
+            &entry,
             SealedHandle {
                 reader: SegmentReader::open(retired.path(), retired.id(), retired.base_offset())?,
                 index: retired.index().clone(),

@@ -1,0 +1,1 @@
+- A publish to a Raft shard is written only while the broker leads the term the publish was admitted at (#2453). A broker deposed and elected again between admitting a publish and proposing it used to write the batch at the new term: it committed, the publisher got an error, and a retry could write the records twice. Behind the `raft` feature.

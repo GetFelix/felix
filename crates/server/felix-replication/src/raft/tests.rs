@@ -24,9 +24,11 @@ use crate::{ShardKey, ShardKind};
 
 mod commit;
 mod deliver;
+mod idempotent;
 mod identity;
 mod lease;
 mod propose;
+mod switch;
 mod written;
 
 const BROKERS: [&str; 3] = ["a", "b", "c"];
@@ -315,6 +317,7 @@ impl Cluster {
             let command = Command {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
+                producer: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -343,6 +346,7 @@ impl Cluster {
                 member.raft().client_write(Command {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
+                    producer: None,
                     written: None,
                 })
             });
@@ -494,6 +498,62 @@ async fn without_the_ticker_no_timeout_is_noticed() {
     let second = cluster.elected(0).await;
     assert_ne!(second, first);
     cluster.stop().await;
+}
+
+/// The member that forms a group asks the others first. Only answers of
+/// "no vote, no entry" from every one of them let it form; silence does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn peers_blank_needs_a_blank_answer_from_every_other_member() {
+    let mut cluster = Cluster::new(false);
+    cluster.open(0).await;
+    let (a, key) = (cluster.runtime("a"), shard(0));
+    let within = Duration::from_secs(5);
+    a.peers_blank(&key, &members(), within)
+        .await
+        .expect("every member is blank");
+    // The question is a pre-vote: it leaves the members asked as they were.
+    for status in cluster.statuses(0) {
+        assert_eq!(status.term, 0, "{status:?}");
+    }
+
+    cluster.net.cut.lock().insert("c".into());
+    match a.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Unanswered(member, _)) => assert_eq!(member, MemberId::new("c", 1)),
+        other => panic!("a silent member counted as blank: {other:?}"),
+    }
+    cluster.net.cut.lock().clear();
+
+    a.initialize(&key, members()).await.expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"record").await;
+    let b = cluster.runtime("b");
+    match b.peers_blank(&key, &members(), within).await {
+        Err(NotBlank::Formed(_)) => {}
+        other => panic!("a formed group looked blank: {other:?}"),
+    }
+    cluster.stop().await;
+}
+
+/// A vote alone and an entry alone each mean a group reached the member.
+/// A member can hold a vote and no entry after granting one in an election
+/// that never got as far as an append.
+#[test]
+fn a_vote_or_an_entry_alone_is_not_blank() {
+    use openraft::raft::VoteResponse;
+    use openraft::type_config::alias::LogIdOf;
+    let vote = |term: u64| {
+        let leader = LeaderIdOf::<ShardTypes>::new(term, MemberId::new("a", 1));
+        <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, false)
+    };
+    let answer = |term: u64, entry: bool| {
+        let last = entry.then(|| LogIdOf::<ShardTypes>::new(1_u64.into(), 1));
+        VoteResponse::<ShardTypes>::new(vote(term), last, false)
+    };
+
+    assert!(runtime::blank(&answer(0, false)));
+    assert!(!runtime::blank(&answer(1, false)), "a vote alone");
+    assert!(!runtime::blank(&answer(0, true)), "an entry alone");
+    assert!(!runtime::blank(&answer(1, true)));
 }
 
 /// The ticker asks a group for a timer check only when its timer can have
@@ -898,6 +958,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
     let command = Command {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
+        producer: None,
         written: Some(token),
     };
     let raft = member.raft().clone();
@@ -941,12 +1002,13 @@ fn a_commands_token_is_not_serialized() {
     let command = Command {
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
+        producer: None,
         written: Some(token),
     };
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
-        ["payload", "timestamp_micros"]
+        ["payload", "producer", "timestamp_micros"]
     );
     let received: Command = serde_json::from_value(sent).expect("json");
     assert!(received.written.is_none());
@@ -1338,6 +1400,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
         let command = Command {
             timestamp_micros: 1_700_000_000,
             payload: record.clone(),
+            producer: None,
             written: None,
         };
         last = member

@@ -8,7 +8,7 @@ use crate::StorageId;
 use crate::raft_log::state_file;
 
 /// The file's name in the shard directory.
-pub(crate) const FILE_NAME: &str = "raft-copy";
+pub(crate) const FILE_NAME: &str = crate::disk_log::RAFT_COPY_FILE;
 /// `"FLCP"`.
 const MAGIC: u32 = 0x464C_4350;
 const VERSION: u16 = 1;

@@ -364,6 +364,25 @@ async fn a_broker_without_record_headers_refuses_with_a_reason() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_stream_that_takes_no_mqtt_message_refuses_with_a_reason() {
+    let writes = FakeWrites::new();
+    writes.fail_with(Err(WriteError::Refused(Refusal::Unsupported)));
+    let mut h = connected_with(Version::V5, Settings::default(), writes).await;
+    h.client
+        .send(
+            Packet::Publish(publish(QoS::AtLeastOnce, Some(2))),
+            Version::V5,
+        )
+        .await;
+    let ack = puback(h.client.recv().await);
+    assert_eq!(ack.reason, ReasonCode::ImplementationSpecificError);
+    assert_eq!(
+        ack.properties.reason_string.as_ref().map(|s| s.as_str()),
+        Some("raft_stream")
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_stream_that_is_gone_is_told_with_a_reason_a_puback_may_carry() {
     let writes = FakeWrites::new();
     writes.fail_with(Err(WriteError::Refused(Refusal::StreamUnavailable)));
