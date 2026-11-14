@@ -81,8 +81,8 @@
 (* left the target. It decides on the brokers' membership reports, not on  *)
 (* what it believes is committed. A report names every copy in the         *)
 (* broker's committed membership and in every membership entry appended    *)
-(* after it, and counts only once the broker has acknowledged the current  *)
-(* incarnation. The doom waits until some broker reports a committed       *)
+(* after it, and counts only once every broker has acknowledged the       *)
+(* current incarnation. The doom waits until some broker reports a committed       *)
 (* membership, not joint, made from a target newer than the last one       *)
 (* naming the copy, and every member of it reports no entry naming the     *)
 (* copy. A learner or joint entry still in a log keeps the copy. An id     *)
@@ -713,10 +713,11 @@ LastCommittedCfg ==
 \* when that membership is not joint. A broker reports only once every
 \* broker has acknowledged the current incarnation, and a target write or a
 \* restore throws away the reports the control plane has.
-\* In openraft the two are `MembershipState::committed` and `effective`:
-\* a log holds at most one membership entry past the committed one. The
-\* `membership_config` metric is the effective one alone, and dooming on it
-\* repeats the loss below without a restore.
+\* The committed membership is the last one at or below the broker's own
+\* commit index. The implementation must report that one, not openraft's
+\* `MembershipState::committed`, which may run ahead of the commit index,
+\* nor the `membership_config` metric, the effective one alone. No
+\* configuration yet pins either alternative (issue 2506).
 ComIdx(t) ==
     LET ks == {k \in MemberIdxs(t) : k <= commitIdx[t]}
     IN IF ks = {} THEN 0 ELSE MaxOf(ks)

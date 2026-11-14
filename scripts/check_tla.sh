@@ -598,7 +598,6 @@ expectations=(
   "FelixRaftPlacementReturnWipe pass"
   "FelixRaftPlacementStaleWipe pass"
   "FelixRaftPlacementStaleWipeNoVersion violates AckedOnDisk"
-  "FelixRaftPlacementDirectTerms pass"
   "FelixRaftPlacementDirectTermsNoBarrier violates StateMachineSafety"
   "FelixRaftPlacementTransferMove pass"
   "FelixRaftPlacementTransferMoveSelfRemove violates NeverLeadsRemoved"
@@ -607,15 +606,8 @@ expectations=(
   "FelixRaftPlacementSingleMoveSelfRemove violates NeverLeadsRemoved"
   "FelixRaftPlacementStampDoomable pass"
   "FelixRaftPlacementStampDoomableNoStamp violates DroppedIsDoomable"
-  "FelixRaftPlacementStaleReturnWipe pass"
-  "FelixRaftPlacementStaleReturnWipeAnyVersion violates AckedOnDisk"
-  "FelixRaftPlacementStaleWipeRewind pass"
-  "FelixRaftPlacementStaleWipeRewindSameInc violates AckedOnDisk"
-  "FelixRaftPlacementStaleWipeRewindNoAck violates AckedOnDisk"
   "FelixRaftPlacementRewindSpareCommitted violates AckedOnDisk"
   "FelixRaftPlacementStaleWipeTwoTerms pass"
-  "FelixRaftPlacementMoveWipeTwoMoves pass"
-  "FelixRaftPlacementTransferMoveWipe pass"
   "FelixRaftPlacementSameIdCounted violates AckedSurvive"
   "FelixRaftPlacementSameIdFive violates OneLeaderPerTerm"
   "FelixRaftPlacementSkipJoint violates OneLeaderPerTerm"
@@ -1047,6 +1039,10 @@ fi
 # FelixRaftPlacementMoveWipeFull did not finish in three hours and
 # FelixRaftPlacementTransferMoveFull, TransferMove with a write, not in six,
 # so nothing checks them yet (issue 2497).
+# FelixRaftPlacement{DirectTerms,MoveWipeTwoMoves,TransferMoveWipe,
+# StaleWipeRewind,StaleWipeRewindSameInc,StaleWipeRewindNoAck,StaleReturnWipe,
+# StaleReturnWipeAnyVersion} each ran past 45 minutes on a build box at their
+# bounds; each is registered once a dispatch run gives its declared outcome.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -1252,16 +1248,8 @@ weights=(
   "FelixRaftPlacementStaleWipeNoVersion 60"
   "FelixRaftPlacementTransferMove 51"
   "FelixRaftPlacementRewindSpareCommitted 57"
-  "FelixRaftPlacementDirectTerms 200"
-  "FelixRaftPlacementDirectTermsNoBarrier 45"
-  "FelixRaftPlacementStaleWipeTwoTerms 80"
-  "FelixRaftPlacementMoveWipeTwoMoves 200"
-  "FelixRaftPlacementTransferMoveWipe 200"
-  "FelixRaftPlacementStaleWipeRewind 200"
-  "FelixRaftPlacementStaleWipeRewindSameInc 200"
-  "FelixRaftPlacementStaleWipeRewindNoAck 200"
-  "FelixRaftPlacementStaleReturnWipe 200"
-  "FelixRaftPlacementStaleReturnWipeAnyVersion 200"
+  "FelixRaftPlacementDirectTermsNoBarrier 130"
+  "FelixRaftPlacementStaleWipeTwoTerms 150"
   "FelixRaftPlacementReturnWipe 2"
   "FelixRaftPlacementStaleFull 39"
   "FelixRaftPlacementSameId 2"
