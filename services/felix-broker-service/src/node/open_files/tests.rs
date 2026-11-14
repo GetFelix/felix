@@ -11,9 +11,9 @@ fn the_default_soft_limit_holds_no_shards_beside_the_default_cache() {
 
 #[test]
 fn the_configured_cache_comes_off_the_shard_estimate() {
-    assert_eq!(shards_within(11_024, 0), 2_000);
-    assert_eq!(shards_within(11_024, 1_000), 1_800);
-    assert_eq!(shards_within(11_024, 100_000), 0);
+    assert_eq!(shards_within(13_024, 0), 2_000);
+    assert_eq!(shards_within(13_024, 1_200), 1_800);
+    assert_eq!(shards_within(13_024, 100_000), 0);
 }
 
 #[test]

@@ -127,15 +127,16 @@ labelled illustrative there and are starting points, not ceilings.
 
 ### Open files
 
-A broker keeps five files open for every shard it holds, as leader or
-follower: the active segment (open three times), its index and the durable
-mark. Sealed segments that were read stay open too, but in one cache for the
+A broker keeps up to six files open for every shard it holds, as leader or
+follower: the active segment (open three times), its index, the durable
+mark, and the shard's directory when the log locks it against a second
+open. Sealed segments that were read stay open too, but in one cache for the
 whole broker that holds at most 1,024 of them, however many shards it has.
 `FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` sets that number: a larger cache
 saves the open and index load a catch-up reader pays on each miss. A slot
 costs one descriptor and up to about 1 MiB of index memory at the default
 segment size. The broker holds the cache to a quarter of the open-file limit
-and logs when it does. So 2,000 shards on a broker are 10,000 open files, plus
+and logs when it does. So 2,000 shards on a broker are 12,000 open files, plus
 up to 1,024 sealed segments and about 1,000 for sockets. Cache and counter
 shards open a log each and count as shards.
 
@@ -297,7 +298,7 @@ load balancer.
       recommendation for yours. Disk volumes sized with the Disk section.
 - [ ] Retention set on every durable stream (`FELIX_DURABLE_RETENTION_BYTES`
       or `_SECONDS`, or the stream's own `retention`). Unset means unbounded.
-- [ ] The hard open-file limit allows five files per shard you expect a
+- [ ] The hard open-file limit allows six files per shard you expect a
       broker to hold, plus about 5,000 for sockets and the sealed-segment cache. See [Open files](#open-files).
 
 **Availability and operations**

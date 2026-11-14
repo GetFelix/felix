@@ -518,7 +518,7 @@ services:
 ```
 
 The broker raises its soft open-file limit to the hard one at start, and
-each shard it holds keeps five files open. 65,536 is room for about 12,000
+each shard it holds keeps up to six files open. 65,536 is room for about 10,000
 shards. See [Open files](/deployment/production/#open-files).
 
 ## Health checks

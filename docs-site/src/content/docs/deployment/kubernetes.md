@@ -462,9 +462,9 @@ restore-point` on restore. See [Backup and restore](/deployment/backup-and-resto
 
 ## Open files
 
-A broker keeps five files open for every shard it holds and raises its soft
+A broker keeps up to six files open for every shard it holds and raises its soft
 open-file limit to the hard one at start. The hard limit comes from the
-container runtime, usually 524,288 or more, which is room for about 100,000
+container runtime, usually 524,288 or more, which is room for over 80,000
 shards, so the chart sets nothing. If a pod logs a warning about the
 open-file limit, the node's runtime sets a lower one. See [Open files](/deployment/production/#open-files).
 
