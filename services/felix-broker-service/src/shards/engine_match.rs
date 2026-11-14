@@ -85,16 +85,21 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
     /// Ask `peer` which engine it runs, off the pass: a peer that is down
     /// must not slow the feed. Every pass asks again, so a peer not reached
     /// yet is learnt once it is up, and one that restarted on the other
-    /// engine is noticed. Until a peer answers, its shards are served.
+    /// engine is noticed once a connection to it is open again. Until a peer
+    /// answers, its shards are served.
     ///
-    /// A peer that has handshaken with this broker, in either direction, is
-    /// not dialled: its latest handshake is the answer, and a restarted peer
-    /// dials this broker when it asks in turn. A dial to a peer that just
-    /// restarted goes to the address the catalog had before, fails, and
-    /// starts a reconnect backoff that would hold up a move onto that peer.
+    /// The ask dials a connection of its own and closes it, and a peer whose
+    /// engine is known is not dialled again: a live pooled connection to it
+    /// answers, and without one the last answer stands. A pooled dial would
+    /// leave a connection that looks live for an idle timeout after the peer
+    /// restarts, and a failed one a reconnect backoff, and either would hold
+    /// up a move onto the restarted peer.
     fn ask(&self, peer: &str) {
-        if let Some(offered) = self.peers.recorded_capabilities(peer) {
+        if let Some(offered) = self.peers.connected_capabilities(peer) {
             learn(&self.engines, &self.wake, peer.to_string(), offered);
+            return;
+        }
+        if self.engines.lock().contains_key(peer) {
             return;
         }
         let Some(addr) = (self.addresses)(peer) else {
@@ -107,7 +112,8 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineMatch<R> {
         let (asking, wake) = (Arc::clone(&self.asking), Arc::clone(&self.wake));
         let name = peer.to_string();
         tokio::spawn(async move {
-            let answer = tokio::time::timeout(ASK_WITHIN, peers.capabilities(&name, addr)).await;
+            let answer =
+                tokio::time::timeout(ASK_WITHIN, peers.probe_capabilities(&name, addr)).await;
             asking.lock().remove(&name);
             if let Ok(Ok(offered)) = answer {
                 learn(&engines, &wake, name, offered);
