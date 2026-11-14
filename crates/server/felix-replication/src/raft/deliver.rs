@@ -113,6 +113,7 @@ pub(super) async fn settled(
     // A batch written in part or in whole may commit. Readers resuming
     // below its end go to the log, or they would join live above records
     // that are in it.
+    let probe_start = std::time::Instant::now();
     let written = written.await.map_err(|unacked| match unacked.written_end {
         Some(end) => ProposalFailed::written(unacked.error, end),
         None => ProposalFailed::unwritten(unacked.error),
@@ -126,6 +127,7 @@ pub(super) async fn settled(
     // The publisher's own wait is bounded by `answer_within`. Delivery is
     // not: a batch skipped here and committed later would reach no live
     // subscriber, while the one behind it did.
+    let probe_written = std::time::Instant::now();
     loop {
         match engine.await_commit(&shard, written, timeout).await {
             Err(CommitError::TimedOut { .. }) => continue,
@@ -135,6 +137,8 @@ pub(super) async fn settled(
             }
         }
     }
+    felix_storage::stage_probe::WRITTEN_TO_APPLIED.since(probe_written);
+    felix_storage::stage_probe::PROPOSE_TO_ANSWER.since(probe_start);
     // Everything below the batch is applied, so its run of entries holding
     // no record is known.
     let first = written.end.saturating_sub(count);

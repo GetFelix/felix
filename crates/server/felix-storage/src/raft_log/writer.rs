@@ -128,6 +128,7 @@ where
         I: IntoIterator<Item = C::Entry> + OptionalSend,
         I::IntoIter: OptionalSend,
     {
+        let probe_start = std::time::Instant::now();
         let shared = &self.shared;
         // A batched log mark that can no longer move would let the log run
         // ahead of it without bound. Exact marks fail each flush instead.
@@ -252,6 +253,8 @@ where
         }
         // Written, not yet on disk: the signal an acknowledgement that does
         // not wait for the fsync goes by.
+        crate::stage_probe::LOG_APPEND_WRITE.since(probe_start);
+        crate::stage_probe::LOG_APPEND_ENTRIES_N.value(tokens.len() as u64);
         shared.positions.send_modify(|at| at.written = last);
         // After the position, so a proposer woken here finds it moved. A
         // write that failed returned above and dropped its tokens unresolved.
@@ -281,6 +284,7 @@ where
         let done = {
             let shared = Arc::clone(shared);
             move |flushed: io::Result<()>| {
+                crate::stage_probe::APPEND_TO_FLUSHED.since(probe_start);
                 if flushed.is_ok() {
                     // An append behind this one may have flushed first.
                     shared.positions.send_modify(|at| {

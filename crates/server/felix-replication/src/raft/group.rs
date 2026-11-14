@@ -700,9 +700,12 @@ impl Group {
         match body {
             Request::Append(rpc) => {
                 self.lease.named(term_of(&rpc.vote));
-                self.raft
-                    .append_entries(rpc)
-                    .await
+                let probe = (!rpc.entries.is_empty()).then(std::time::Instant::now);
+                let answer = self.raft.append_entries(rpc).await;
+                if let Some(probe) = probe {
+                    felix_storage::stage_probe::FOLLOWER_APPEND_HANDLE.since(probe);
+                }
+                answer
                     .map(Reply::Append)
                     .map_err(|err| stopped(err.to_string()))
             }
@@ -771,7 +774,12 @@ impl Group {
         let positions = self.positions.clone();
         let leading = self.leadership.watch(&self.raft);
         let stop = self.stop.clone();
-        async move { propose::acknowledged(waiting?, positions, leading, stop).await }
+        let probe_start = std::time::Instant::now();
+        async move {
+            let written = propose::acknowledged(waiting?, positions, leading, stop).await;
+            felix_storage::stage_probe::PROPOSE_TO_WRITTEN.since(probe_start);
+            written
+        }
     }
 
     /// The member's copy, for deciding whether a kept copy of an earlier

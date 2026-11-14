@@ -117,7 +117,10 @@ impl Task {
         while self.receiver.recv_many(&mut self.batch, usize::MAX).await > 0 {
             // Newest first, so the oldest is popped first.
             self.batch.reverse();
+            let probe_start = std::time::Instant::now();
+            crate::stage_probe::FLUSH_ROUND_APPENDS_N.value(self.batch.len() as u64);
             let mut covered = Some(self.log.commit(&self.batch[0].pending).await);
+            crate::stage_probe::FSYNC.since(probe_start);
             // The highest entry marked this round. The newest's mark covers
             // every append before it.
             let mut marked: Option<LogPoint> = None;

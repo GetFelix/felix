@@ -240,7 +240,17 @@ impl Router {
             deadline: option.hard_ttl(),
             body,
         };
+        let probe = match &request.body {
+            Request::Append(rpc) if !rpc.entries.is_empty() => {
+                felix_storage::stage_probe::RPC_ENTRIES_N.value(rpc.entries.len() as u64);
+                Some(std::time::Instant::now())
+            }
+            _ => None,
+        };
         let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
+        if let Some(probe) = probe {
+            felix_storage::stage_probe::RPC_ROUND_TRIP.since(probe);
+        }
         if let Some(sent) = &sent {
             match &answer {
                 Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, sent),

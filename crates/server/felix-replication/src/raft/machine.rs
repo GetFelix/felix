@@ -167,7 +167,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
         Strm: Stream<Item = io::Result<EntryResponder<ShardTypes>>> + Unpin + OptionalSend,
     {
         let mut applied = Ok(());
+        let mut probe_n = 0u64;
         while let Some(next) = entries.next().await {
+            probe_n += 1;
             let (entry, responder) = match next {
                 Ok(next) => next,
                 Err(err) => {
@@ -191,6 +193,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
         }
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
+        felix_storage::stage_probe::APPLY_ENTRIES_N.value(probe_n);
         self.publish();
         applied
     }

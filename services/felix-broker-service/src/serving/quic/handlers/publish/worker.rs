@@ -432,6 +432,7 @@ impl LaneWork {
     /// group's order is the lane's, and answered at its commit off the lane.
     /// It never enters the hybrid's fence or touches its log.
     fn publish_on_raft(&self, mut job: PublishJob, lane: LaneGuard) {
+        let probe_start = std::time::Instant::now();
         let (handle, shard, term, refused) = match &job.target {
             PublishTarget::Resolved {
                 handle,
@@ -475,6 +476,7 @@ impl LaneWork {
             Ok(proposed) => {
                 self.work.spawn(async move {
                     let result = proposed.complete().await.map_err(Into::into);
+                    felix_storage::stage_probe::PUBLISH_TOTAL.since(probe_start);
                     settle(job.response, job.acked_on_enqueue, Some(&shard), result);
                 });
             }

@@ -157,6 +157,7 @@ pub(crate) struct Proposal {
     /// [`Batch::term`].
     term: Option<u64>,
     bytes: usize,
+    at: std::time::Instant,
     /// Where openraft applied the batch, or why it did not.
     answer: oneshot::Sender<Result<Span, Unacknowledged>>,
 }
@@ -208,6 +209,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             commands,
             term,
             bytes,
+            at: std::time::Instant::now(),
             answer,
         },
         Waiting {
@@ -241,6 +243,7 @@ pub(super) fn drain(
     let term = first.term;
     let mut bytes = first.bytes;
     let mut commands = first.commands;
+    felix_storage::stage_probe::PROPOSE_TO_DRAIN.since(first.at);
     let mut answers = vec![(commands.len(), first.answer)];
     while let Ok(next) = queue.try_recv() {
         if next.term != term
@@ -251,9 +254,11 @@ pub(super) fn drain(
             break;
         }
         bytes += next.bytes;
+        felix_storage::stage_probe::PROPOSE_TO_DRAIN.since(next.at);
         answers.push((next.commands.len(), next.answer));
         commands.extend(next.commands);
     }
+    felix_storage::stage_probe::DRAIN_BATCHES_N.value(answers.len() as u64);
     Drain {
         commands,
         term,
@@ -307,7 +312,9 @@ pub(crate) async fn run(
             return;
         }
         calls.fetch_add(1, Ordering::Relaxed);
+        let probe_start = std::time::Instant::now();
         let sent = alongside(write(&raft, commands, term), &mut answering, &stop).await;
+        felix_storage::stage_probe::DRAIN_TO_HANDED.since(probe_start);
         let Some(sent) = sent else {
             return;
         };
