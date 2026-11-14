@@ -267,7 +267,39 @@ fn recording_the_cluster_identity_needs_level_32() {
         shard_engine: "hybrid".to_string(),
     };
     assert_eq!(record.version(), 32);
-    assert_eq!(METADATA_VERSION, 32);
+}
+
+/// A member that cannot apply a switch command would keep a hybrid shard
+/// where the others hold a sealed or switched one.
+#[test]
+fn a_shard_switch_needs_level_33() {
+    let key = crate::model::ShardKey {
+        tenant_id: "t".to_string(),
+        namespace: "n".to_string(),
+        stream: "s".to_string(),
+        shard: 0,
+        kind: crate::model::ShardKind::Stream,
+    };
+    let seal = MetaCommand::SealShard {
+        key: key.clone(),
+        expected_generation: 1,
+    };
+    let give_up = MetaCommand::GiveUpSeal { key, generation: 1 };
+    let finalize = MetaCommand::FinalizeFleetFeature {
+        feature: felix_common::fleet::SHARD_RAFT.name().to_string(),
+    };
+    for command in [seal, give_up, finalize] {
+        assert_eq!(command.version(), 33, "{command:?}");
+        // The leader refuses it below the level, however it was proposed.
+        let raw = encode_command(&command);
+        let switch = !matches!(command, MetaCommand::FinalizeFleetFeature { .. });
+        assert_eq!(depends_on_level(&raw), switch, "{command:?}");
+        if switch {
+            assert!(settle_for_level(&raw, 32).is_err(), "{command:?}");
+            assert_eq!(settle_for_level(&raw, 33), Ok(None), "{command:?}");
+        }
+    }
+    assert_eq!(METADATA_VERSION, 33);
 }
 
 /// **`joint_fence` is finalized only where a refusal report is kept.** A

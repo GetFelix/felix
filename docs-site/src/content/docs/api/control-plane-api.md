@@ -392,7 +392,7 @@ take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded durable shard's log and place the shard afresh. **This loses data**: records only the old leader held are gone, acknowledged ones included. 409 `not_stranded` if the leader is serving or a replica can take over |
-| `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to the Raft engine. The shard is closed until its leader reports the seal or gives it up. 409 `raft_unavailable` until the fleet has finalized `shard_raft` (no release reports it yet), `not_sealable` for a cache shard or a shard that is moving or already switched |
+| `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to the Raft engine. The shard is closed until its leader reports the seal or gives it up. 409 `raft_unavailable` until the fleet has finalized `shard_raft` (no release reports it yet), `not_sealable` for a shard that is not active, is moving or already switched. Stream shards only |
 
 ```http
 POST /v1/shard-moves

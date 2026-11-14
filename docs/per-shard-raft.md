@@ -2119,8 +2119,9 @@ member at metadata level 33.
 - *The seal order.* `POST /v1/placement/seal/{tenant}/{namespace}/{stream}/{shard}`
   names the shard's leader and set again at the next generation `G`, with
   `switch` holding `G`, the leader as the sealer, and the sealer's storage
-  identity. It is refused until the fleet has finalized `shard_raft`, for a
-  cache shard, and while a move or a set change is in progress. The order
+  identity. It is refused until the fleet has finalized `shard_raft`, and
+  while the shard is not active or a move or a set change is in progress.
+  The route names stream shards only. The order
   stands only at `G`.
 - *The report.* The seal leader sends its report to
   `POST /v1/nodes/{node_id}/seal-report`: `G`, `N`, `S`, the digests, the

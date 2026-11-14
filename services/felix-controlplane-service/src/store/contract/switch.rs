@@ -17,6 +17,7 @@ pub(super) async fn run_switch_contract(store: &dyn ControlPlaneStore) {
     a_seal_is_ordered_only_over_the_generation_read(store).await;
     only_a_settled_stream_shard_is_sealed(store).await;
     one_report_wins_a_generation(store).await;
+    a_report_of_another_generation_loses(store).await;
     a_give_up_never_lands_beside_a_report(store).await;
     a_report_never_lands_after_a_give_up(store).await;
     a_later_generation_gives_the_seal_up(store).await;
@@ -207,6 +208,24 @@ async fn one_report_wins_a_generation(store: &dyn ControlPlaneStore) {
     assert_eq!(again, switched);
 }
 
+/// The report names the seal it is for. One for another generation is not
+/// this order's, though an order stands.
+async fn a_report_of_another_generation_loses(store: &dyn ControlPlaneStore) {
+    let order = sealed(store, 0).await;
+    for generation in [order.generation - 1, order.generation + 1] {
+        assert_eq!(
+            store
+                .accept_seal_report(&order.key, both(generation))
+                .await
+                .expect("report"),
+            AssignmentWrite::Stale {
+                current: Some(order.generation)
+            }
+        );
+    }
+    assert_eq!(read(store, &order.key).await, order);
+}
+
 async fn a_give_up_never_lands_beside_a_report(store: &dyn ControlPlaneStore) {
     let order = sealed(store, 0).await;
     let switched = written(
@@ -320,20 +339,38 @@ async fn no_shard_switches_without_a_seal(store: &dyn ControlPlaneStore) {
 }
 
 async fn a_report_must_name_a_majority_with_the_sealer(store: &dyn ControlPlaneStore) {
-    let order = sealed(store, 0).await;
+    // Three copies and no recorded copy id, so each refusal below has one
+    // reason.
+    let _ = store
+        .register_node(super::nodes::node("broker-z", 7502))
+        .await;
+    clear(store).await;
+    let mut wanted = assignment(0, "broker-x");
+    wanted.replicas = vec!["broker-y".to_string(), "broker-z".to_string()];
+    store
+        .put_shard_assignment(wanted.clone())
+        .await
+        .expect("assign");
+    wanted.state = ShardState::Active;
+    let current = store.put_shard_assignment(wanted).await.expect("activate");
+    let order = written(
+        store
+            .seal_shard(&current.key, current.generation)
+            .await
+            .expect("seal"),
+    );
     let refused = [
-        // One of two copies.
+        // One of three copies.
         report(order.generation, &[("broker-x", COPY_X)]),
-        // The sealer did not acknowledge.
-        report(order.generation, &[("broker-y", COPY_Y)]),
+        // A majority, but the sealer did not acknowledge.
+        report(
+            order.generation,
+            &[("broker-y", COPY_Y), ("broker-z", COPY_X)],
+        ),
         // A node outside the set.
         report(
             order.generation,
-            &[
-                ("broker-x", COPY_X),
-                ("broker-y", COPY_Y),
-                ("broker-z", COPY_Y),
-            ],
+            &[("broker-x", COPY_X), ("broker-w", COPY_Y)],
         ),
         // Not a copy id.
         report(order.generation, &[("broker-x", COPY_X), ("broker-y", "y")]),
@@ -355,7 +392,7 @@ async fn a_report_must_name_a_majority_with_the_sealer(store: &dyn ControlPlaneS
         .await
         .expect_err("no digest");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
-    // A refused report does not use the seal up.
+    // A refused report does not use the seal up: two of three then win it.
     assert_eq!(read(store, &order.key).await, order);
     assert!(
         written(

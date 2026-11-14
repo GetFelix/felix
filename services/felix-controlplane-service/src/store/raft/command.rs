@@ -926,8 +926,27 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// whose state needs a higher level, such as an export carrying an identity
 /// (level 32), is refused below that level too: an older member would refuse
 /// it at apply while newer ones took it.
+///
+/// A switch command (`seal_shard`, `accept_seal_report`, `give_up_seal`) is
+/// refused below its level and otherwise left as it is: a member that
+/// could not apply it would keep a hybrid shard where the others hold a
+/// sealed or switched one.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
-    if !depends_on_level(command) {
+    let op = op_of(command);
+    if op.as_deref().is_some_and(|op| SWITCH_OPS.contains(&op)) {
+        // One this build cannot decode is left for the apply to answer.
+        return match decode_command_with_level(command) {
+            Ok((_, needs)) if needs > level => {
+                Err(encode_result(&Err(MetaError::Conflict(format!(
+                    "a shard's switch to Raft needs every control-plane member at metadata \
+                     version {needs}, but the group is at {level}; {}",
+                    crate::store::UPGRADE_HINT
+                )))))
+            }
+            _ => Ok(None),
+        };
+    }
+    if op.as_deref() != Some(IMPORT_STATE_OP) {
         return Ok(None);
     }
     let refuse = |needs: u16| {
@@ -953,15 +972,22 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     Ok(settled)
 }
 
-/// Whether `command` is an import, read without decoding the state it
-/// carries. The op is decoded owned, so an escaped spelling still counts.
+/// Whether `command` is an import or a switch command, read without
+/// decoding what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
+    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || SWITCH_OPS.contains(&op.as_str()))
+}
+
+/// The commands of a shard's switch to Raft, by op.
+const SWITCH_OPS: [&str; 3] = ["seal_shard", "accept_seal_report", "give_up_seal"];
+
+/// A command's op. Decoded owned, so an escaped spelling still counts.
+fn op_of(command: &[u8]) -> Option<String> {
     #[derive(Deserialize)]
     struct OpPeek {
         op: Option<String>,
     }
-    serde_json::from_slice::<OpPeek>(command)
-        .is_ok_and(|peek| peek.op.as_deref() == Some(IMPORT_STATE_OP))
+    serde_json::from_slice::<OpPeek>(command).ok()?.op
 }
 
 /// Replace the proposer's clock reading in `command` with `now_millis`.

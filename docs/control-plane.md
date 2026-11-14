@@ -2177,7 +2177,7 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move or replacement; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
-| `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a cache shard or a shard that is moving or already switched. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
+| `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a shard that is not active, is moving or already switched. Stream shards only. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
 
 A listed move has a `step` (`staged`, `fenced`, `replacing` or `restoring`),
 the `reason` it started (`drain`, `balance`, `operator`, `replace` or

@@ -148,7 +148,6 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     a_node_leading_a_shard_cannot_be_deleted(store).await;
     a_node_replicating_a_shard_cannot_be_deleted(store).await;
     a_snapshot_and_the_changes_after_it_lose_nothing(store).await;
-    super::switch::run_switch_contract(store).await;
     a_cache_shard_and_a_stream_shard_of_the_same_name_coexist(store).await;
     a_cache_shard_is_bounded_by_the_cache_not_the_stream(store).await;
     an_unknown_cache_is_rejected(store).await;
@@ -188,6 +187,8 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::readmitted_copies_are_recorded_from_a_set_naming_them(store).await;
     every_broker_placed_in_the_epoch_stays_on_the_record(store).await;
     super::adoption::run(store).await;
+    // Last: its writes would push other cases' changes out of the feed.
+    super::switch::run_switch_contract(store).await;
 }
 
 fn cache_key(shard: u32) -> ShardKey {

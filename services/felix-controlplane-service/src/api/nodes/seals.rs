@@ -3,19 +3,18 @@
 //!
 //! `docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft".
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::HeaderMap;
 
 use super::require_node_manage;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
-use crate::api::shard_moves::KindQuery;
 use crate::api::types::{
     SealGiveUpRequest, SealGiveUpResponse, SealReportRequest, SealReportResponse,
 };
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
-use crate::model::{ShardAssignment, ShardKey};
+use crate::model::{ShardAssignment, ShardKey, ShardKind};
 use crate::store::{AssignmentWrite, StoreError};
 
 #[utoipa::path(
@@ -26,8 +25,7 @@ use crate::store::{AssignmentWrite, StoreError};
         ("tenant_id" = String, Path, description = "Tenant identifier"),
         ("namespace" = String, Path, description = "Namespace"),
         ("name" = String, Path, description = "Stream name"),
-        ("shard" = u32, Path, description = "Shard number"),
-        KindQuery
+        ("shard" = u32, Path, description = "Shard number")
     ),
     responses(
         (status = 200, description = "Seal ordered at the returned generation", body = ShardAssignment),
@@ -43,14 +41,13 @@ use crate::store::{AssignmentWrite, StoreError};
 /// # Errors
 /// - 404 when the shard has no assignment.
 /// - 409 `raft_unavailable` until the fleet has finalized `shard_raft`,
-///   `not_sealable` for a cache shard, a shard that is moving or already
+///   `not_sealable` for a shard that is not active, is moving or already
 ///   switched, and `conflict` when the shard changed under the request or a
 ///   control-plane member is below metadata version 33.
 pub(crate) async fn seal_shard(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path((tenant_id, namespace, name, shard)): Path<(String, String, String, u32)>,
-    Query(query): Query<KindQuery>,
 ) -> Result<Json<ShardAssignment>, ApiError> {
     require_cluster_action(&state, &headers, ACTION_NODE_MANAGE).await?;
     let key = ShardKey {
@@ -58,7 +55,8 @@ pub(crate) async fn seal_shard(
         namespace,
         stream: name,
         shard,
-        kind: query.kind,
+        // Only a stream shard switches; a cache shard has no route here.
+        kind: ShardKind::Stream,
     };
     let enabled = state
         .store
