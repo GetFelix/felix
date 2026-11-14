@@ -1,6 +1,6 @@
 //! The projection: what a cache group's applied entries add up to.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, btree_map};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -86,6 +86,9 @@ pub(crate) struct CacheState {
     pub(super) time: u64,
     /// The maps, unless `layered` holds them.
     tables: Tables,
+    /// When the first value in `tables` expires, so a leader's expiry tick
+    /// does not descend the set twice. Unused while layered.
+    next_expiry: Option<u64>,
     /// Set while a snapshot cut holds the maps. Each op checks it once and
     /// takes an out-of-line path, so steady state runs the plain map code.
     layered: Option<Box<Layered>>,
@@ -285,6 +288,17 @@ impl CacheState {
             if expires_at != 0 {
                 expiring.insert((expires_at, key.to_owned()));
             }
+            self.expiry_moved(old, expires_at);
+        }
+    }
+
+    /// Keep `next_expiry` after a value's expiry went from `old` to `new`
+    /// in `tables` (zero for none).
+    fn expiry_moved(&mut self, old: u64, new: u64) {
+        if old != 0 && self.next_expiry == Some(old) {
+            self.next_expiry = self.tables.expiring.first().map(|(at, _)| *at);
+        } else if new != 0 && self.next_expiry.is_none_or(|first| new < first) {
+            self.next_expiry = Some(new);
         }
     }
 
@@ -298,6 +312,7 @@ impl CacheState {
             self.tables
                 .expiring
                 .remove(&(entry.expires_at, key.to_string()));
+            self.expiry_moved(entry.expires_at, 0);
         }
     }
 
@@ -328,6 +343,7 @@ impl CacheState {
     pub(super) fn from_tables(time: u64, tables: Tables) -> Self {
         Self {
             time,
+            next_expiry: tables.expiring.first().map(|(at, _)| *at),
             tables,
             layered: None,
         }
@@ -351,6 +367,7 @@ impl CacheState {
         match &self.layered {
             None => {
                 let base = Arc::new(std::mem::take(&mut self.tables));
+                self.next_expiry = None;
                 let cut = Cut {
                     time,
                     base: Arc::clone(&base),
@@ -386,6 +403,7 @@ impl CacheState {
         if let Some(layered) = self.layered.take() {
             // Unique: checked above, and a cut is only taken under `&mut self`.
             self.tables = Arc::try_unwrap(layered.base).unwrap_or_else(|base| Tables::clone(&base));
+            self.next_expiry = self.tables.expiring.first().map(|(at, _)| *at);
         }
         false
     }
@@ -429,11 +447,16 @@ impl CacheState {
 
     /// When the first value expires, if any does.
     pub(crate) fn next_expiry(&self) -> Option<u64> {
-        let first = match &self.layered {
-            None => self.tables.expiring.first(),
-            Some(layered) => layered.view().expiring().next(),
-        };
-        first.map(|(expires_at, _)| *expires_at)
+        match &self.layered {
+            None => {
+                debug_assert_eq!(
+                    self.next_expiry,
+                    self.tables.expiring.first().map(|(at, _)| *at)
+                );
+                self.next_expiry
+            }
+            Some(layered) => layered.view().expiring().next().map(|(at, _)| *at),
+        }
     }
 
     /// Up to `max` keys whose value has expired on a leader whose clock
@@ -443,6 +466,9 @@ impl CacheState {
         let now = clock.max(self.time);
         if let Some(layered) = &self.layered {
             return layered.due(now, max);
+        }
+        if self.next_expiry.is_none_or(|first| first > now) {
+            return Vec::new();
         }
         self.tables
             .expiring
@@ -478,21 +504,30 @@ impl Layered {
         let Self { base, delta } = self;
         let expires_at = entry.expires_at;
         // A slot already in the delta holds what the key has now; `None`
-        // there means the base's value is already gone.
-        let old = match delta.entries.get_mut(key) {
-            Some(slot) => slot.replace(entry).map(|old| old.expires_at),
-            None => {
-                delta.entries.insert(key.to_owned(), Some(entry));
-                base.entries.get(key).map(|old| old.expires_at)
+        // there means the base's value is already gone. Without one the key
+        // still has the base's value.
+        let (old, below) = match delta.entries.entry(key.to_owned()) {
+            btree_map::Entry::Occupied(mut slot) => (
+                slot.get_mut()
+                    .replace(entry)
+                    .map_or(0, |old| old.expires_at),
+                None,
+            ),
+            btree_map::Entry::Vacant(slot) => {
+                slot.insert(Some(entry));
+                let below = base.entries.get(key).map_or(0, |below| below.expires_at);
+                (below, Some(below))
             }
         };
-        let old = old.unwrap_or(0);
         if old != expires_at {
+            // A member is the base's exactly when the base's value expires then.
+            let below =
+                below.unwrap_or_else(|| base.entries.get(key).map_or(0, |below| below.expires_at));
             if old != 0 {
-                delta.hide_expiring(base, (old, key.to_owned()));
+                delta.hide_expiring(base, (old, key.to_owned()), old == below);
             }
             if expires_at != 0 {
-                delta.show_expiring(base, (expires_at, key.to_owned()));
+                delta.show_expiring(base, (expires_at, key.to_owned()), expires_at == below);
             }
         }
     }
@@ -514,7 +549,8 @@ impl Layered {
         if let Some(entry) = removed
             && entry.expires_at != 0
         {
-            delta.hide_expiring(base, (entry.expires_at, key.to_string()));
+            let in_base = below.is_some_and(|below| below.expires_at == entry.expires_at);
+            delta.hide_expiring(base, (entry.expires_at, key.to_string()), in_base);
         }
     }
 

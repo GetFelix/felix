@@ -218,6 +218,47 @@ fn a_refreshed_key_survives_its_expiry_delete() {
     assert_eq!(state.due(u64::MAX, 8), vec![]);
 }
 
+/// The kept first expiry follows puts, deletes and expiry of the first
+/// member, so a nothing-due tick needs no walk of the set.
+#[test]
+fn the_first_expiry_follows_the_set() {
+    let mut state = CacheState::default();
+    let steps: [(CacheCommand, Option<u64>); 7] = [
+        (
+            put_with("a", "v", 30, Condition::None, request(1, 1)),
+            Some(30),
+        ),
+        (
+            put_with("b", "v", 20, Condition::None, request(1, 2)),
+            Some(20),
+        ),
+        (
+            put_with("c", "v", 0, Condition::None, request(1, 3)),
+            Some(20),
+        ),
+        // Moving the first member later uncovers the next one.
+        (
+            put_with("b", "v", 40, Condition::None, request(1, 4)),
+            Some(30),
+        ),
+        (delete("a", None, request(1, 5)), Some(40)),
+        (expire("b", 4), None),
+        (
+            put_with("c", "v", 50, Condition::None, request(1, 6)),
+            Some(50),
+        ),
+    ];
+    for (index, (command, first)) in (1..).zip(steps) {
+        state.apply(index, 0, &command);
+        assert_eq!(state.next_expiry(), first, "after {command:?}");
+        let due: Vec<_> = state.due(first.unwrap_or(u64::MAX), 8);
+        assert_eq!(due.is_empty(), first.is_none(), "after {command:?}");
+        if let Some(first) = first {
+            assert_eq!(state.due(first - 1, 8), vec![], "after {command:?}");
+        }
+    }
+}
+
 /// ReadsNotStale.
 #[test]
 fn a_get_on_an_idle_group_never_returns_an_expired_key() {

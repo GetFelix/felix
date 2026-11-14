@@ -47,9 +47,11 @@ pub(super) struct Delta {
 }
 
 impl Delta {
-    /// Add `member` to the expiring set.
-    pub(super) fn show_expiring(&mut self, base: &Tables, member: (u64, String)) {
-        if base.expiring.contains(&member) {
+    /// Add `member` to the expiring set. `in_base` says whether the base
+    /// has it, which the caller knows from the base's value for the key.
+    pub(super) fn show_expiring(&mut self, base: &Tables, member: (u64, String), in_base: bool) {
+        debug_assert_eq!(in_base, base.expiring.contains(&member));
+        if in_base {
             self.expired.remove(&member);
             self.unhide(base, &member);
         } else {
@@ -57,9 +59,11 @@ impl Delta {
         }
     }
 
-    /// Remove `member` from the expiring set.
-    pub(super) fn hide_expiring(&mut self, base: &Tables, member: (u64, String)) {
-        if !base.expiring.contains(&member) {
+    /// Remove `member` from the expiring set. `in_base` is as for
+    /// [`Delta::show_expiring`].
+    pub(super) fn hide_expiring(&mut self, base: &Tables, member: (u64, String), in_base: bool) {
+        debug_assert_eq!(in_base, base.expiring.contains(&member));
+        if !in_base {
             self.expiring.remove(&member);
             return;
         }
@@ -98,6 +102,32 @@ impl Delta {
         }
     }
 
+    /// Move one key's value into `base` with its expiring members, so the
+    /// base's expiring set matches its values between chunks. Callers rely
+    /// on that to tell a base member from a delta one by the base's value.
+    fn fold_key(&mut self, base: &mut Tables, key: String, entry: Option<Entry>) {
+        let new = entry.as_ref().map_or(0, |entry| entry.expires_at);
+        let old = match entry {
+            Some(entry) => base.entries.insert(key.clone(), entry),
+            None => base.entries.remove(&key),
+        };
+        let old = old.map_or(0, |old| old.expires_at);
+        if old == new {
+            return;
+        }
+        if old != 0 {
+            let member = (old, key.clone());
+            self.expired.remove(&member);
+            base.expiring.remove(&member);
+        }
+        if new != 0 {
+            let member = (new, key);
+            self.expiring.remove(&member);
+            self.unhide(base, &member);
+            base.expiring.insert(member);
+        }
+    }
+
     pub(super) fn is_empty(&self) -> bool {
         self.entries.is_empty()
             && self.expiring.is_empty()
@@ -112,10 +142,7 @@ impl Delta {
         let mut left = budget;
         while left > 0 {
             let cost = if let Some((key, entry)) = self.entries.pop_first() {
-                match entry {
-                    Some(entry) => base.entries.insert(key, entry),
-                    None => base.entries.remove(&key),
-                };
+                self.fold_key(base, key, entry);
                 1
             } else if let Some(member) = self.expired.pop_first() {
                 base.expiring.remove(&member);
