@@ -119,7 +119,7 @@ pub(crate) enum Wait {
     Barrier,
     /// The latest membership is not committed yet.
     Uncommitted,
-    /// The control plane has sent no target.
+    /// The control plane has sent no target, or one that names no voter.
     NoTarget,
     /// The target is older than the membership, or from before a restore
     /// this broker has seen.
@@ -154,7 +154,8 @@ pub(crate) fn next_step(view: &View, target: Option<&Target>) -> Step {
         }
         return successor(view, &config.new);
     }
-    let Some(target) = target else {
+    // A target with no voters would shrink the group to this leader alone.
+    let Some(target) = target.filter(|target| !target.voters.is_empty()) else {
         return Step::Wait(Wait::NoTarget);
     };
     // An incarnation only the log has seen is covered by the first test:

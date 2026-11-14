@@ -229,6 +229,17 @@ async fn no_step_writes_a_membership_without_its_leader() {
         Err(StepError::WithoutLeader)
     );
 
+    // Nothing else is written on a joint: the edit would flatten it to the
+    // new voters, and here drop the leader.
+    let learner = leader.add_learner(&joint, m("d")).await;
+    assert_eq!(learner, Err(StepError::Joint));
+    let stamp = leader.stamp(&joint, BTreeSet::new(), v(3)).await;
+    assert_eq!(stamp, Err(StepError::Joint));
+    let change = leader
+        .change_voters(&joint, set(&["a", "b", "c"]), v(3))
+        .await;
+    assert_eq!(change, Err(StepError::Joint));
+
     let after = basis(&leader).await;
     assert_eq!((after.at, &after.membership), (held.at, &held.membership));
     cluster.stop().await;

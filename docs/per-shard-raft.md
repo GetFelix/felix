@@ -2203,16 +2203,20 @@ Two rules hold for every step, whoever asks for it:
   is no longer in (#2498).
 - **No step writes a membership without the leader that writes it.** That
   covers leaving a joint membership whose new set leaves the leader out. The
-  leader hands leadership to a voter of the new set first.
+  leader hands leadership to a voter of the new set first. On a joint
+  membership the only step written is leaving it, because any other edit
+  would also flatten the joint.
 
 The decision of which step comes next (`raft/membership.rs`) follows
-`docs/formal/FelixRaftPlacement.tla` guard by guard. Nothing runs it yet:
+the leader actions of the placement model (`docs/formal/FelixRaftPlacement.tla`
+as #2413 extends it) guard by guard. Nothing runs it yet:
 the driver that reads the target and takes the steps is not built, so no
 broker changes a group's membership today.
 
 Only the leader acts, one change at a time, and the steps can be repeated
 safely. A leader that acts on a target the control plane has since replaced
-is safe too: every change goes through a joint configuration. Writes go on during every step, because membership entries and
+is safe too: a change goes through a joint configuration whenever a
+majority of the old voters could miss a majority of the new ones. Writes go on during every step, because membership entries and
 publishes both get their index from openraft. A copy with a new copy id is
 handled by the same loop: the set names the broker, the member id differs,
 so the old member is swapped for a learner with the new id.

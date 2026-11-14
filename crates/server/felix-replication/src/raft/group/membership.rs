@@ -56,6 +56,9 @@ pub(crate) enum StepError {
     NotLeader,
     /// The step would write a membership without this leader as a voter.
     WithoutLeader,
+    /// The membership is joint. Only leaving it is written on a joint: any
+    /// other edit would flatten it, and could drop this leader on the way.
+    Joint,
     /// openraft refused the membership.
     Refused(String),
     /// The group's core has stopped.
@@ -76,7 +79,8 @@ impl Group {
                     term: vote.leader_id().term(),
                     at,
                     membership: latest.membership().clone(),
-                    committed: at.as_ref() <= state.cluster_committed(),
+                    // What openraft itself asks before it takes a change.
+                    committed: state.membership_state.committed().log_id() == &at,
                 }
             })
         });
@@ -89,6 +93,7 @@ impl Group {
         basis: &Basis,
         member: MemberId,
     ) -> Result<(), StepError> {
+        settled(basis)?;
         self.change(basis, MembershipEdit::learner(member)).await
     }
 
@@ -102,6 +107,7 @@ impl Group {
         voters: BTreeSet<MemberId>,
         version: TargetVersion,
     ) -> Result<(), StepError> {
+        settled(basis)?;
         self.leads_in(&voters)?;
         self.change(basis, MembershipEdit::voters(voters, version))
             .await
@@ -125,6 +131,7 @@ impl Group {
         learners: BTreeSet<MemberId>,
         version: TargetVersion,
     ) -> Result<(), StepError> {
+        settled(basis)?;
         let voters = basis.membership.get_joint_config().clone();
         let stamped = Membership::new(voters, learners, version);
         let written = self
@@ -151,6 +158,13 @@ impl Group {
             Err(StepError::WithoutLeader)
         }
     }
+}
+
+fn settled(basis: &Basis) -> Result<(), StepError> {
+    if basis.membership.get_joint_config().len() > 1 {
+        return Err(StepError::Joint);
+    }
+    Ok(())
 }
 
 fn outcome(

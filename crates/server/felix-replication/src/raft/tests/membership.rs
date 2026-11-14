@@ -257,6 +257,15 @@ fn no_target_no_step() {
     assert_eq!(next_step(&view, None), Step::Wait(Wait::NoTarget));
 }
 
+/// A target that names no voter is not followed: growing to it would
+/// leave the leader as the only voter.
+#[test]
+fn a_target_with_no_voters_is_no_target() {
+    let view = leader(&["a", "b", "c"], &[]);
+    let empty = target(&[], 2);
+    assert_eq!(next_step(&view, Some(&empty)), Step::Wait(Wait::NoTarget));
+}
+
 /// No step from any view here writes a membership without the leader.
 #[test]
 fn no_change_ever_leaves_the_leader_out() {
