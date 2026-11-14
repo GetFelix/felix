@@ -1329,7 +1329,6 @@ async fn a_leader_stream_outside_the_lease_waits_for_its_commit() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_leader_acknowledgement_does_not_outlive_its_leader() {
     let (net, mut members, _) = trio_at(ConsistencyLevel::Leader).await;
-    let orders = key("orders", 0);
     let (leader, term, lost) = answered_alone(&net, &members, b"lost").await;
 
     let old = members.remove(leader);
