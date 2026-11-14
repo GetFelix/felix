@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794618616022,
+  "lastUpdate": 1794620092099,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -55380,6 +55380,58 @@ window.BENCHMARK_DATA = {
             "range": "50530.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805690.35\nmean: 783042.18\nstdev: 50530.03\ncv: 6.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "134301918d9b3e4ef9707a29e6eb945f9e1c01c1",
+          "message": "fix(broker): start from the view under a control plane with no group (#2438) (#2504)\n\nThe group check added in #2463 made a start from the control-plane view\nrequire a controlplane_group record. A control plane with no metadata\ngroup (the in-memory backend) answers without one, so admit stored\nnothing and every later start from the view was refused with NoGroup:\nFELIX_START_WITHOUT_CONTROLPLANE never worked against such a control\nplane. The cluster tests a_broker_restarted_while_the_control_plane_is_\ndown_votes and ..._waits_for_it_under_the_unified_fence time out on it.\n\nA start that finds no group now writes controlplane_group_none, and\nqualify accepts it in place of a record. The mark is not data, so a\ngroup formed later on an empty catalog still adopts the directory.\n\nSpec-Unaffected: broker startup check against the control plane; no TLA\nmodel covers it.",
+          "timestamp": "2026-11-13T17:08:48-08:00",
+          "tree_id": "8093f151e38687e3cd0a7606e35b9f85ea52bf78",
+          "url": "https://github.com/GetFelix/felix/commit/134301918d9b3e4ef9707a29e6eb945f9e1c01c1"
+        },
+        "date": 1794620091409,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 538221.69,
+            "range": "12573.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538221.69\nmean: 536548.98\nstdev: 12573.56\ncv: 2.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 538221.69,
+            "range": "12573.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 538221.69\nmean: 536548.98\nstdev: 12573.56\ncv: 2.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 127048.94,
+            "range": "908.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 127048.94\nmean: 126847.59\nstdev: 908.48\ncv: 0.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1270489.37,
+            "range": "9084.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1270489.37\nmean: 1268475.88\nstdev: 9084.81\ncv: 0.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
