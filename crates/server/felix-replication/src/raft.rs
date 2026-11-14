@@ -45,13 +45,13 @@ mod types;
 mod wire;
 mod written;
 
-pub use deliver::RaftReads;
+pub use deliver::{IdempotentPublish, RaftReads};
 #[cfg(any(test, feature = "testing"))]
 pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};
-pub use propose::{AckAt, Batch, Record};
+pub use propose::{AckAt, Batch, Record, Sequenced};
 pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
     Role, RuntimeConfig,

@@ -446,6 +446,104 @@ async fn a_consumer_group_on_a_raft_shard_is_refused() {
     }
 }
 
+/// **An idempotent producer keeps its sequence when its Raft leader dies.**
+/// The producer's id and sequences are in the entries, so the member
+/// elected next answers a re-send of the last batch from its own log
+/// without writing it, and takes the producer's next batch as the next in
+/// sequence. Kept in the dead leader's memory, the re-send would be written
+/// again and the producer told it is unknown.
+#[tokio::test]
+#[serial]
+async fn a_producer_keeps_its_sequence_when_its_raft_leader_dies() {
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let addrs: Vec<std::net::SocketAddr> = survivors
+        .iter()
+        .map(|node| cluster.node(node).expect("node").client_addr)
+        .collect();
+    let client =
+        felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &cluster.client_token())
+            .await
+            .expect("connect");
+    let producer = std::sync::Arc::new(client)
+        .idempotent_producer()
+        .await
+        .expect("a producer id");
+    let record = |i: u32| format!("record-{i}").into_bytes();
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let publish = |i: u32| {
+        let (producer, payload) = (&producer, record(i));
+        let (tenant, namespace) = (&tenant, &namespace);
+        async move { producer.publish(tenant, namespace, STREAM, payload).await }
+    };
+    // Acknowledged at the commit, so a majority holds each batch.
+    for i in 0..5 {
+        publish(i).await.expect("published before the failover");
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let elected = leader_among(&cluster, &survivors).await;
+
+    // What a producer does when the answer to its last batch never came:
+    // the same batch under the same sequence, to whoever leads now.
+    let node = cluster.node(&elected).expect("node");
+    let direct = felix_cluster::client::connect(
+        node.client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("connect to the new leader");
+    let publisher = direct.publisher().await.expect("publisher");
+    felix_cluster::wait::until(
+        ELECTED_WITHIN,
+        "the new leader to take the re-send",
+        || async {
+            publisher
+                .publish_idempotent_batch(
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    vec![record(4)],
+                    producer.producer_id(),
+                    4,
+                )
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the re-send is answered");
+    for i in 5..8 {
+        publish(i).await.expect("published after the failover");
+    }
+
+    // A batch of several records is refused, and none of it is written.
+    let several = publisher.publish_idempotent_batch(
+        &cluster.tenant_id,
+        &cluster.namespace,
+        STREAM,
+        vec![record(8), record(9)],
+        producer.producer_id(),
+        8,
+    );
+    let refused = several.await.expect_err("a batch of several was taken");
+    let refused = format!("{refused:#}");
+    assert!(refused.contains("more than one record"), "{refused}");
+
+    let owed: Vec<Vec<u8>> = (0..8).map(record).collect();
+    let mut held = replay_holding(&cluster, &elected, &owed).await;
+    // The harness's own readiness probe may be on the stream too.
+    held.retain(|payload| payload != b"harness-probe");
+    assert_eq!(held, owed, "a batch landed twice, or out of order");
+    cluster.shutdown().await;
+}
+
 /// The sum of `node`'s samples of the metric whose line starts with
 /// `series`, read from its own metrics.
 async fn metric(cluster: &Cluster, node: &str, series: &str) -> f64 {

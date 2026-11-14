@@ -223,6 +223,7 @@ async fn a_copy_whose_flush_failed_does_not_vote_with_the_cut_log() {
         }],
         ack: AckAt::Written,
         term: None,
+        producer: None,
     };
     // A wait on the written count makes the leader ask for reports.
     let primed = engine

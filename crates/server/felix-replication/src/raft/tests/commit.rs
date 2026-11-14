@@ -133,6 +133,7 @@ impl Led {
             records: vec![record; records],
             ack: AckAt::Flushed,
             term: None,
+            producer: None,
         };
         let written = self.engine.propose(&shard(0), batch).await;
         written.expect("written")
@@ -459,6 +460,7 @@ async fn a_group_that_stops_on_a_storage_error_closes_the_shard() {
         }],
         ack: AckAt::Written,
         term: None,
+        producer: None,
     };
     let refused = led.engine.propose(&shard(0), batch).await;
     assert!(refused.is_err(), "written to a closed log: {refused:?}");
@@ -491,6 +493,7 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
         }],
         ack: AckAt::Written,
         term: Some(led.term),
+        producer: None,
     };
     let refused = led.engine.propose(&shard(0), batch).await;
     assert_eq!(
