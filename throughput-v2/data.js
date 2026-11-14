@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794644021905,
+  "lastUpdate": 1794646661405,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -56004,6 +56004,58 @@ window.BENCHMARK_DATA = {
             "range": "21809.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 908609.70\nmean: 903303.84\nstdev: 21809.99\ncv: 2.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b44e726e492a83020ab377470905c0d4118e23cb",
+          "message": "test(replication): resident memory after a write burst in the Raft idle run (#2415) (#2521)\n\n* test(replication): resident memory after a write burst in the Raft idle run (#2415)\n\nRAFT_IDLE_BURST_SECS makes every leader take pipelined writes after the\nidle window, then prints resident memory at the end of the burst and once\nthe groups are idle again. The Raft idle groups workflow runs it at 300\ngroups.\n\n* test(replication): the write burst rides out refused writes (#2415)\n\nOn a small machine a loaded leader refuses a write when no majority has\nanswered it lately. The burst waits a moment and goes on, and checks that\nevery group is led once it is over.\n\n* test(replication): bound the write burst and say its memory figure is RSS (#2415)\n\nA burst write gets a 10 s timeout and the workflow step 15 minutes, so a\nwrite that never answers cannot hold the run open. The leader check after\nthe burst waits up to 60 s for elections to finish. The report line, the\nmodule docs and docs/per-shard-raft.md say the figure after the settle\ndelay is resident set size, not live heap.",
+          "timestamp": "2026-11-14T08:49:11Z",
+          "tree_id": "b066a2c8c1aeee240a36f38bb43e76fc1efcb2c3",
+          "url": "https://github.com/GetFelix/felix/commit/b44e726e492a83020ab377470905c0d4118e23cb"
+        },
+        "date": 1794646660842,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 663905.63,
+            "range": "81874.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 663905.63\nmean: 642054.62\nstdev: 81874.69\ncv: 12.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 663905.63,
+            "range": "81874.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 663905.63\nmean: 642054.62\nstdev: 81874.69\ncv: 12.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 166256.52,
+            "range": "4166.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 166256.52\nmean: 163890.36\nstdev: 4166.30\ncv: 2.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1662565.21,
+            "range": "41663.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1662565.21\nmean: 1638903.65\nstdev: 41663.03\ncv: 2.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
