@@ -1,0 +1,1 @@
+- A Raft cache group's expiry tick with nothing due no longer searches the expiring set, which removes a slowdown the snapshot overlay added at large key counts (#2565).

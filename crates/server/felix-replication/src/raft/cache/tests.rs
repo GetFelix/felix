@@ -223,7 +223,7 @@ fn a_refreshed_key_survives_its_expiry_delete() {
 #[test]
 fn the_first_expiry_follows_the_set() {
     let mut state = CacheState::default();
-    let steps: [(CacheCommand, Option<u64>); 7] = [
+    let steps: [(CacheCommand, Option<u64>); 9] = [
         (
             put_with("a", "v", 30, Condition::None, request(1, 1)),
             Some(30),
@@ -247,6 +247,12 @@ fn the_first_expiry_follows_the_set() {
             put_with("c", "v", 50, Condition::None, request(1, 6)),
             Some(50),
         ),
+        // Removing one of two members that share the first time keeps it.
+        (
+            put_with("d", "v", 50, Condition::None, request(1, 7)),
+            Some(50),
+        ),
+        (delete("c", None, request(1, 8)), Some(50)),
     ];
     for (index, (command, first)) in (1..).zip(steps) {
         state.apply(index, 0, &command);
