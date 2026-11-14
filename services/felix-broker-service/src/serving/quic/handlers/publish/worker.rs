@@ -546,6 +546,9 @@ impl LaneWork {
             }
             // A job that names no connection has nothing to queue the
             // publishes behind it under, so the lane keeps them in order.
+            // Only tests get here: control/batch.rs, control/message.rs,
+            // control/binary.rs and uni.rs build their jobs with no permit,
+            // and ingress `enqueue` attaches one to every job it queues.
             None => {
                 self.work.spawn(async move {
                     let turn = turn.await;
