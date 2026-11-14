@@ -200,6 +200,9 @@ pub enum NotAVoter {
     DigestDiffers { start: Offset, offset: Offset },
     /// A side log does not hold what the seal leader's held.
     SideDiffers { log: SideLog },
+    /// The copy accepted a generation above the seal's, so it is not a copy
+    /// that acknowledged the seal: a sealed copy accepts no later one.
+    AcceptedAbove { accepted: u64, generation: u64 },
     /// The directory's member already started, from another base (`None`:
     /// as an empty Raft log).
     AnotherBase {
@@ -234,6 +237,13 @@ impl std::fmt::Display for NotAVoter {
             Self::SideDiffers { log } => {
                 write!(f, "the {log:?} log differs from the one the seal recorded")
             }
+            Self::AcceptedAbove {
+                accepted,
+                generation,
+            } => write!(
+                f,
+                "the copy accepted generation {accepted}, above the seal's {generation}"
+            ),
             Self::AnotherBase { found, base } => write!(
                 f,
                 "the directory's member started from base {found:?}, not {base:?}"
@@ -338,8 +348,9 @@ fn hash_bytes(hash: &mut Sha256, bytes: Option<&[u8]>) {
 ///
 /// In this order, each step on disk before the next:
 ///
-/// 1. Check that each side log in `side` (dead letters, then cursors)
-///    holds the seal's range and nothing past it, that the log holds
+/// 1. Check that the copy accepted no generation above the seal's, that
+///    each side log in `side` (dead letters, then cursors) holds the
+///    seal's range and nothing past it, that the log holds
 ///    `base.start..=base.offset`, that the record at `base.offset` is the
 ///    seal's, payload included, and that the digest matches.
 /// 2. Cut every record above `base.offset`. None was acknowledged.
@@ -451,9 +462,12 @@ async fn check_and_cut(
     base: &SwitchBase,
 ) -> Result<std::result::Result<(), NotAVoter>> {
     let log = DiskLog::open(dir, label, without_retention(hybrid))?;
-    let checked = check(&log, base).await;
+    let checked = check(dir, &log, base).await;
     let cut = match checked {
-        Ok(Ok(())) => log.truncate(base.offset + 1).await,
+        Ok(Ok(())) => match retain_between_check_and_cut(&log).await {
+            Ok(()) => log.truncate(base.offset + 1).await,
+            Err(err) => Err(err),
+        },
         _ => Ok(()),
     };
     let shut = log.shutdown().await;
@@ -463,7 +477,21 @@ async fn check_and_cut(
     Ok(checked)
 }
 
-async fn check(log: &DiskLog, base: &SwitchBase) -> Result<std::result::Result<(), NotAVoter>> {
+async fn check(
+    dir: &Path,
+    log: &DiskLog,
+    base: &SwitchBase,
+) -> Result<std::result::Result<(), NotAVoter>> {
+    // Before anything is cut: the records above the base may be a later
+    // generation's, and this copy is then a learner, not a voter.
+    if let Some(held) = ballot::load(dir)?
+        && held.generation > base.generation
+    {
+        return Ok(Err(NotAVoter::AcceptedAbove {
+            accepted: held.generation,
+            generation: base.generation,
+        }));
+    }
     let first = log.base_offset();
     if first > base.start {
         return Ok(Err(NotAVoter::StartsAbove {
@@ -541,16 +569,6 @@ async fn write_member_state(
     // base's. A vote for itself at the base's term grants nobody else
     // anything, since no candidate stands at that term.
     let generation = crate::raft_log::generation_of(term).map_err(StorageError::Io)?;
-    // A sealed copy accepts no later hybrid generation, so one here means
-    // the copy is not the one that acknowledged the seal.
-    if let Some(held) = ballot::load(dir)?
-        && held.generation > generation
-    {
-        return Err(invalid(format!(
-            "{label}: accepted generation {} above the seal's {generation}",
-            held.generation
-        )));
-    }
     ballot::store(
         dir,
         &Ballot {
@@ -593,6 +611,26 @@ fn crash_point(step: u8) -> Result<()> {
 
 #[cfg(not(test))]
 fn crash_point(_: u8) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Whether [`start_voter`] runs a retention pass between the check and
+    /// the cut, as the timer could.
+    static RETAIN_BETWEEN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+async fn retain_between_check_and_cut(log: &DiskLog) -> Result<()> {
+    if RETAIN_BETWEEN.with(|at| at.get()) {
+        log.enforce_retention_now().await?;
+    }
+    Ok(())
+}
+
+#[cfg(not(test))]
+async fn retain_between_check_and_cut(_: &DiskLog) -> Result<()> {
     Ok(())
 }
 
