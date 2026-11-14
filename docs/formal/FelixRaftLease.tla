@@ -1079,4 +1079,64 @@ NeverHeldGrant == ~heldGrant
 NeverLeaseAfterVoid ==
     \A b \in Servers : voidTerm[b] > 0 => ~LeaseValid(b)
 
+\* A transfer's target leads a third term with a voter in that term inside
+\* its hold, a held voter having granted a vote, while the leader that started
+\* the transfer still leads the first. It does not say which vote was held.
+NeverThirdTermOnHeldGrant ==
+    ~\E a, b, c \in Servers :
+        /\ a # b /\ heldGrant
+        /\ role[a] = "leader" /\ term[a] = 1 /\ xfer[a] = 1
+        /\ elected[2] = {b} /\ elected[3] = {b}
+        /\ role[b] = "leader" /\ term[b] = 3
+        /\ JustStarted(c) /\ term[c] = 3
+
+\* For that witness, as an action constraint: the second term is won by a
+\* transfer's target, which took `TransferLeader` from the leader it followed.
+SecondTermByTransfer ==
+    elected[2] = {} /\ elected'[2] # {} =>
+        \E b \in Servers : elected'[2] = {b} /\ auth[b] # NoAuth
+
+\* The same, and that third-term leader acknowledged a write under its lease.
+NeverThirdTermLocalAck ==
+    ~\E b \in Servers, i \in 1..MaxWrites :
+        /\ ~NeverThirdTermOnHeldGrant
+        /\ role[b] = "leader" /\ acked[i] = "local"
+        /\ \E p \in 1..Len(log[b]) : log[b][p] = <<3, i>>
+
+(***************************************************************************)
+(* A view for the largest restart configs. States that differ only in what *)
+(* no step and no check can tell apart are explored once. It hides:        *)
+(*                                                                         *)
+(*   - An answer that changes nothing when taken: it is no newer than the  *)
+(*     one its leader already has from that follower and reports no longer *)
+(*     a log. Taking it is the same step as losing it, and it stays so:    *)
+(*     both ages grow on the leader's clock, and the leader's record is    *)
+(*     only reset by a step that also discards the answer.                 *)
+(*   - A `TransferLeader` to a broker already past its term, which is      *)
+(*     ignored when taken. Terms do not go back.                           *)
+(*   - Felix's view of the role when the check refuses on it (no term, a   *)
+(*     voided term, or an age past the lease). Only the check reads the    *)
+(*     view, a void only grows, and the next `Notice` overwrites it.       *)
+(*   - `votedFor`, which only RestoreAnyVote and Part 2 read.              *)
+(*                                                                         *)
+(* Not for configs with LeaseFromAck, VoidEquality, RoleSync,              *)
+(* RestoreAnyVote or StoreLeases, where one of these is told apart.        *)
+(***************************************************************************)
+InertAck(m) ==
+    /\ m.kind = "ack"
+    /\ m.age >= ackAge[m.to][m.from]
+    /\ m.n <= match[m.to][m.from]
+
+DeadSeen(b) ==
+    \/ seenTerm[b] = 0 \/ seenAge[b] >= Lease \/ Voided(b, seenTerm[b])
+
+RestartView ==
+    <<term, followed, led, role, log, commit, heardAge, startAge, ackAge, match,
+      {m \in msgs : ~InertAck(m)}, restarts, histVars, storeVars,
+      leaderOf, downAge, stepDowns,
+      [b \in Servers |-> IF DeadSeen(b) THEN <<0, Old>>
+                         ELSE <<seenTerm[b], seenAge[b]>>],
+      xfer, voidTerm, auth, {m \in xmsgs : term[m.to] <= m.term},
+      transfers, suspended, sinceWake, suspends, woke, sleepVars>>
+
 =============================================================================
