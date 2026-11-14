@@ -39,6 +39,9 @@ const ASK_WITHIN: Duration = Duration::from_secs(5);
 /// names for the shard.
 pub(crate) const OFF_PLACEMENT: &str = "felix_broker_raft_shards_off_placement";
 
+/// Raft shards whose term this broker leads and serves.
+pub(crate) const LED: &str = "felix_broker_raft_shards_led";
+
 /// This broker's Raft members of stream shards.
 pub(crate) struct RaftShards {
     me: Weak<Self>,
@@ -528,6 +531,11 @@ impl EngineShards for RaftShards {
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
+            let led = open
+                .keys()
+                .filter(|key| self.leading(key).is_some())
+                .count();
+            metrics::gauge!(LED).set(led as f64);
             taken
         })
     }
