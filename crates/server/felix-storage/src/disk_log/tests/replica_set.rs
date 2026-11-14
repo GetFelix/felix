@@ -602,3 +602,44 @@ async fn a_set_from_a_sender_promised_past_is_refused() {
         Ok(SetCheck::Raised)
     );
 }
+
+#[test]
+fn a_restore_and_a_set_raise_on_one_log_do_not_deadlock() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let dir = tempdir().expect("tempdir");
+    let finished = runtime.block_on(async {
+        let log = std::sync::Arc::new(open(&dir, FsyncMode::OnCommit));
+        log.append(&records(&["a", "b", "c", "d"]))
+            .await
+            .expect("append");
+        log.advance_commit_offset(4).await.expect("commit");
+        // A kept set, so the raise reads the segments to see whether it may
+        // drop it.
+        log.accept_set_keeping_earlier(set_at(1))
+            .await
+            .expect("accept");
+        // Each holds its first lock long enough for the other to take its own.
+        log.inner
+            .hold_between_locks_millis
+            .store(300, std::sync::atomic::Ordering::Release);
+        let restore = tokio::spawn({
+            let log = std::sync::Arc::clone(&log);
+            async move { log.restore_to(2).await }
+        });
+        let raise = tokio::spawn({
+            let log = std::sync::Arc::clone(&log);
+            async move { log.accept_set_keeping_earlier(set_at(2)).await }
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            restore.await.expect("restore task").expect("restore");
+            raise.await.expect("raise task").expect("raise");
+        })
+        .await
+    });
+    // Deadlocked threads would keep a plain drop waiting forever.
+    runtime.shutdown_background();
+    assert!(finished.is_ok(), "the restore and the set raise deadlocked");
+}
