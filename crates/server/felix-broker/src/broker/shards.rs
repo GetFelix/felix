@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering;
 use super::Broker;
 use super::keys::{StreamKeyRef, TopicKey, TopicKeyRef};
 use super::metadata::{ConsistencyLevel, StreamMetadata};
+use super::publish::LogDelivery;
 use crate::durable::StreamLog;
 use crate::error::{BrokerError, Result};
 use crate::stream::{ReadBound, StreamState};
@@ -151,6 +152,23 @@ impl Broker {
         stream: &str,
         shard: u32,
     ) -> Result<bool> {
+        self.lead_from_tail_if(tenant_id, namespace, stream, shard, || true)
+            .await
+    }
+
+    /// [`Self::lead_from_tail`] for a caller whose hold on the shard can end
+    /// while this runs. `still_led` is asked once the stream is at the
+    /// tail, with delivery from an engine's log locked out; only if it says
+    /// yes is the stream marked as led, and true returned. A stream marked
+    /// after its term ended would deliver nothing to its subscribers.
+    pub async fn lead_from_tail_if(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        still_led: impl FnOnce() -> bool,
+    ) -> Result<bool> {
         let state = self
             .topics
             .read()
@@ -173,16 +191,80 @@ impl Broker {
         {
             return Err(BrokerError::ReleaseInFlight);
         }
+        // On an engine's log, what the log delivered while this broker
+        // followed is finished first, so its subscribers stay. The pass is
+        // locked out until the stream is marked as led. A pass stuck on a
+        // full `Block` subscriber is told to end it; the wait is bounded
+        // anyway, since a long catch-up read holds the lock too.
+        let _wanted = state.engine_log.then(|| LeadWanted::new(&state));
+        let _pass = match state.engine_log {
+            true => match tokio::time::timeout(RELEASE_SETTLE_WAIT, state.log_pass.lock()).await {
+                Ok(pass) => Some(pass),
+                Err(_) => return Err(BrokerError::ReleaseInFlight),
+            },
+            false => None,
+        };
+        if state.engine_log {
+            let handle = StreamHandle {
+                state: Arc::clone(&state),
+            };
+            if super::publish::deliver_from_log(&handle).await? == LogDelivery::Waiting {
+                return Ok(false);
+            }
+        }
         let Some(tail) = visible_end(&state, log).await? else {
             return Ok(false);
         };
-        if tail <= state.tail_seq() {
-            return Ok(true);
+        if tail > state.tail_seq() {
+            let run = tail - log.event_end(0, tail).await?;
+            state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
         }
-        let run = tail - log.event_end(0, tail).await?;
-        state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
         // `lead_from` leaves a stream with held batches where it is.
-        Ok(state.tail_seq() >= tail)
+        if state.tail_seq() < tail {
+            return Ok(false);
+        }
+        // Marked before asking, with the pass locked out: a deposal that
+        // lands after the answer clears the mark, and is not overwritten.
+        // An earlier term's deposal cannot clear it in between, since
+        // `follow_engine_log` takes the pass lock too. A stale term's retry
+        // clears only a mark it set itself, never one a later term holds.
+        let marked = state.engine_log && !state.leads_engine_log.swap(true, Ordering::AcqRel);
+        let led = still_led();
+        if !led && marked {
+            state.leads_engine_log.store(false, Ordering::Release);
+        }
+        Ok(led)
+    }
+
+    /// This broker stopped leading a shard on its engine's log: its
+    /// subscribers are served from the log again, once the batches the
+    /// deposed term was handed have settled. A no-op for any other shard.
+    ///
+    /// Waits for a term that is opening in [`Self::lead_from_tail_if`] to be
+    /// answered first, so the mark is never cleared between that term
+    /// setting it and being told it leads.
+    pub async fn follow_engine_log(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) {
+        let state = self
+            .topics
+            .read()
+            .await
+            .get(&TopicKeyRef::new(tenant_id, namespace, stream, shard))
+            .cloned();
+        let Some(state) = state.filter(|state| state.engine_log) else {
+            return;
+        };
+        // A pass stuck on a full `Block` subscriber holds the lock. The
+        // caller ends the deposed term's subscribers next, so the pass is
+        // told to end that one now.
+        let _wanted = LeadWanted::new(&state);
+        let _pass = state.log_pass.lock().await;
+        state.leads_engine_log.store(false, Ordering::Release);
     }
 
     pub(super) async fn get_stream_state(
@@ -602,6 +684,24 @@ impl Broker {
     }
 }
 
+/// Counts a caller waiting to lead a stream on its engine's log, or to stop
+/// leading it, for as long as it lives. See `StreamState::leads_wanted`.
+struct LeadWanted<'a>(&'a StreamState);
+
+impl<'a> LeadWanted<'a> {
+    fn new(state: &'a StreamState) -> Self {
+        state.leads_wanted.fetch_add(1, Ordering::SeqCst);
+        state.lead_wanted.notify_waiters();
+        Self(state)
+    }
+}
+
+impl Drop for LeadWanted<'_> {
+    fn drop(&mut self) {
+        self.0.leads_wanted.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A resolved stream shard, held by the publish path so it does not look the
 /// stream up again.
 #[derive(Clone, Debug)]
@@ -665,6 +765,45 @@ impl StreamHandle {
     /// reads then stop at the service's [`crate::ReadBounds`] answer.
     pub fn bound_every_level(&self) {
         self.state.held.bound_every_level();
+    }
+
+    /// Deliver the records this shard's engine committed since the last
+    /// call, from its log, to the subscribers registered here. For a stream
+    /// on its engine's log whose broker does not lead the shard; a no-op
+    /// while it leads, and for any other stream. One pass runs at a time.
+    pub async fn deliver_from_log(&self) -> Result<super::publish::LogDelivery> {
+        let _pass = self.state.log_pass.lock().await;
+        super::publish::deliver_from_log(self).await
+    }
+
+    /// End every subscriber registered here. Each drains what is queued and
+    /// then sees its feed close, which tells its client to resubscribe.
+    pub fn end_subscribers(&self) -> usize {
+        self.state.end_subscribers(None)
+    }
+
+    /// Bring a stream that follows its engine's log up to what is committed,
+    /// when nobody reads it yet, so a tail-only reader joins at the end and
+    /// not at old records. Far behind, that is a jump, not a read. On a task
+    /// of its own: a pass cancelled half way would leave a batch in the ring
+    /// that was never fanned out.
+    pub(crate) async fn catch_up_unwatched(&self) {
+        let state = &self.state;
+        if !state.engine_log
+            || state.leads_engine_log.load(Ordering::Acquire)
+            || state.has_subscribers()
+        {
+            return;
+        }
+        let handle = self.clone();
+        let pass = tokio::spawn(async move {
+            // A pass already running is bringing it up anyway.
+            let Ok(_pass) = handle.state.log_pass.try_lock() else {
+                return;
+            };
+            let _ = super::publish::deliver_from_log(&handle).await;
+        });
+        let _ = pass.await;
     }
 
     /// Look at the committed mark again and release the held batches it now

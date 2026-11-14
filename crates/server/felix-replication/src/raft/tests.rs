@@ -28,6 +28,7 @@ mod deliver;
 mod identity;
 mod lease;
 mod propose;
+mod switch;
 mod written;
 
 /// Shards numbered from here are cache shards.

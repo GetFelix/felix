@@ -450,7 +450,9 @@ shard is the same under either engine, and it follows from that one error:
   leader of the poisoned shard steps down, the broker stays ready for its
   healthy shards, and the poisoned log shows in metrics and status. The log
   stays poisoned until the broker restarts; `docs/durable-storage.md` says
-  when a restart is safe.
+  when a restart is safe. A per-shard Raft copy does not come back with
+  that log: it restarts as a new copy with an empty log
+  (`docs/per-shard-raft.md`, "Group and member identity").
 
 On the hybrid, a poisoned process attests no trusted copy to a fence, and a
 promotion does not let it continue as leader, so another copy takes over
