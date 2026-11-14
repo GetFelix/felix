@@ -41,6 +41,9 @@ pub(crate) struct Group {
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
     commits: tokio::sync::watch::Receiver<Commits>,
+    /// The member's log, and its first index read live: a purge held only in
+    /// memory counts.
+    copy: felix_storage::raft_copy::CurrentCopy,
     /// Whether this member leads and the shard is open.
     leadership: Arc<Leadership>,
     /// Timer checks the group was sent.
@@ -315,10 +318,16 @@ impl Group {
         // A shard's state is its log, so nothing can rebuild what a purge
         // past the snapshot would drop.
         log.purge_within(&snapshots)?;
+        let copy_id = marks.as_ref().map(|(marks, _)| marks.copy());
         if let Some((marks, mode)) = marks {
             log.mark_with(marks, mode)?;
         }
         let positions = log.positions();
+        let copy = felix_storage::raft_copy::CurrentCopy::new(
+            log.disk_log().clone(),
+            copy_id,
+            log.first_index_reader(),
+        );
         let (machine, commits) = Machine::open(snapshots).await?;
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let reports = Arc::new(Reports::new());
@@ -351,6 +360,7 @@ impl Group {
             reports,
             positions,
             commits,
+            copy,
             leadership,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
@@ -615,6 +625,17 @@ impl Group {
         let leading = self.leadership.watch(&self.raft);
         let stop = self.stop.clone();
         async move { propose::acknowledged(waiting?, positions, leading, stop).await }
+    }
+
+    /// The member's copy, for deciding whether a kept copy of an earlier
+    /// rotation is still needed.
+    pub(crate) fn current_copy(&self) -> &felix_storage::raft_copy::CurrentCopy {
+        &self.copy
+    }
+
+    /// Cancelled when the member is shut down.
+    pub(crate) fn stopped(&self) -> CancellationToken {
+        self.stop.clone()
     }
 
     /// The commit table as the state machine publishes it.

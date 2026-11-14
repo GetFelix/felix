@@ -323,8 +323,9 @@ second time on an empty log.
 each shard directory and the marks at the data root, in one append-only
 file whose writes are group-committed, so many groups voting at once share
 one fsync. `CopyRoot::open_copy` judges a directory and rotates it: the old
-directory is renamed aside as `<dir>.kept-<copy id>`, which is the record a
-re-form reads, and a new directory gets a new copy id. A directory holding
+directory is renamed into `.kept/` beside it as `<name>.<copy id>` (a number
+follows if that name is taken), which is the record a re-form reads, and a new
+directory gets a new copy id. A directory holding
 only a copy file has no records, so it is reused rather than kept. A `CopyRoot` opens
 only from a `GatePassed`, which the gate (`raft_copy::check`) returns for a
 root that passed, or `Behind::rotate` returns after giving the root a new
@@ -336,6 +337,89 @@ Not built yet (issue #2441): the control plane's copy of the root
 sequence, and the broker opening its Raft groups through all this. Until
 the first lands, a root with marks passes only on a witness record, so a
 rebooted host holds.
+
+### Reclaiming kept copies
+
+A kept directory that holds records is deleted once the copy now in the
+shard directory shows all four of these in its own log:
+
+- its saved committed index, the commit offset in the log's replica state
+  on disk, is at or above the kept log's last index. A snapshot install does
+  not move it, and the state machine's applied index, which an install
+  publishes early, is not used. Neither is the commit offset in memory, which
+  is saved behind the call that raises it: after a power cut the copy comes
+  back with the saved one, and the group vouches for its log only up to that;
+- its entry at the kept log's last record has the same term as the kept
+  log's entry there, read from both logs. A missing or purged entry holds;
+- its flushed tail, the last index on disk, is at or above the kept log's
+  last index;
+- its first index is at or below where the kept log's lowest segment that
+  holds a record starts, read after the term.
+
+Every entry the kept directory holds is at or below an index the group has
+committed, so a committed one is in the group's log, and an uncommitted one
+was never acknowledged. Two logs with the same index and term at one entry
+hold the same entries below it, so the matching term makes the current
+copy's prefix the kept one's, and a deposed leader's other branch does not
+pass. The flushed tail and first index make the copy hold those entries
+itself, on disk: a commit index can be saved before its entry is flushed, and
+a snapshot carries no records. The lowest record is where the kept
+directory's lowest segment starts, not the purged id plus one: a purge drops
+whole segments, so the segment holding the purged id keeps the records below
+it. A kept directory with no records is covered by the saved committed index
+alone.
+Only that evidence counts: no age and no timer.
+
+The first index comes from the running member, so a purge held only in memory
+counts. The flushed tail is read from the log's durable offset, so a copy
+that restarted and has not appended since is not stuck. A kept directory is
+read without opening it for writing, so a held directory is left byte for
+byte as it was, and its segments are scanned up to the durable mark an open
+would use, so an unsynced tail does not make it unreadable. A directory that
+cannot be read, a damaged segment for one, is held and logged.
+
+`GroupRuntime::open_copy` runs the pass after the member starts, which covers
+a restart after the copy caught up. The pass's file work (listing `.kept`,
+reading each kept log, the delete) runs on the blocking pool. If a kept
+directory is ahead of the copy, one task per group wakes when the group's
+applied index or flushed tail moves, checks the log's saved commit and flushed
+tail against the kept directory, and runs the pass again once both reach it.
+While only the save is missing it looks again every second, since nothing
+signals a save. The task ends when the group closes or the runtime stops, and
+a pass checks for that right before each delete, so a stopped group deletes
+nothing. A pass also never judges a kept directory holding its own copy id:
+that copy was itself rotated aside, so it no longer speaks for the shard. A
+directory held for another reason (the copy does not hold its records, it
+cannot be read, a delete failed) is not retried until the next open. Deleting
+a stream deletes the kept copies of that stream's incarnation too, even when
+the live directory is gone.
+
+Two cases are never reclaimed automatically yet, and are tracked in #2442:
+
+- A group that has purged its log. After a snapshot the copy's first index is
+  above the base of the kept directory's lowest segment unless the purge fell
+  exactly on a segment boundary, so the kept directory stays. That is safe,
+  only wasteful.
+- A log not under `FsyncMode::OnCommit` (`None` or `Periodic`). It saves its
+  committed index at most once a second, and only when the commit moves, so
+  an idle group may not save the last one, and the kept directories it would
+  cover stay until a later commit or a restart.
+
+A re-form that starts a copy at a base without the base's records must not
+count that as holding them (issue #2441): the rule above reads the copy's
+committed index, so such a copy has to carry the base's records, or hold the
+kept directories until it does.
+
+`felix_storage_raft_kept_copies` and `felix_storage_raft_kept_copy_bytes` give
+the directories still on disk and what they hold, summed over data roots.
+They are measured on a thread of their own after a rotation, a reclaim or a
+stream delete, so a rotation of every shard costs a few walks of `.kept`, not
+one per shard. There is no `felixctl`
+command for this yet. By hand: stop the broker, or confirm that the group has
+a leader and that this copy's committed index is past the kept directory's
+records in the broker status, then delete `<root>/.kept/<name>.<copy id>`.
+Deleting one while a re-form may still need the copy can lose acknowledged
+records.
 
 ### Re-forming a group
 
