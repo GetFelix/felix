@@ -341,8 +341,8 @@ fn only_a_directory_that_never_lost_a_ballot_attests_kept_ballots() {
     assert!(kept, "a crash of the directory the control plane names");
     let (_, kept) = crash(root.path(), Some(&registered_as(Some(id))));
     assert!(
-        !kept,
-        "a crash with a record of an id this start did not rotate"
+        kept,
+        "a second crash before the new id registered: the record names an id a crash here rotated"
     );
 
     let root = tempfile::tempdir().expect("tempdir");
@@ -419,6 +419,11 @@ fn a_start_that_rotated_before_registering_keeps_its_ballots_next_time() {
     assert!(kept.ballots, "the registered id is this directory's own");
     let lost = felix_storage::run_state::lost_copy(root.path()).expect("read");
     assert_eq!(lost, Some(false));
+    // Nor when the next start rotates again, still before any registers.
+    forget_boot(root.path()).expect("forget the boot");
+    let (_, rotated, _, kept) =
+        start_run(root.path(), &log, Some(&registered), None).expect("rotated twice");
+    assert!(rotated && kept.ballots && kept.promises);
 }
 
 /// **A start from the view attests no kept ballot and no readmission**,
