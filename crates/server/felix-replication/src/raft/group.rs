@@ -41,6 +41,8 @@ use super::written::Reports;
 use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
 
+pub(crate) mod membership;
+
 pub(crate) struct Group {
     pub(crate) id: GroupId,
     pub(crate) member: MemberId,
