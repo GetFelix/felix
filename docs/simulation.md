@@ -132,7 +132,8 @@ maps hash with `ahash` instead of std's SipHash (see Map order below).
 - **Hash keys and ids.** The broker's maps, its producer ids and the
   replication confirmed-read slots use `felix_common::random::hash_state`,
   storage ids, node ids and lease ids use `felix_common::random::uuid_v4`, and
-  Raft copy ids use `felix_common::random::id_state`. All of them draw from the seeded generator, so map layouts and ids repeat.
+  Raft copy ids use `felix_common::random::id_state`. All of them draw from the seeded generator, so map
+  layouts and ids repeat.
 - **Map order.** A std `HashMap` takes its hash keys from the OS, so the
   order it is walked in, and the order it drops its entries in, differs from
   run to run. Both decide what runs next: a `retain` that drops a quorum mark

@@ -64,6 +64,11 @@ pub mod sim {
         STATE.with(|state| state.get().is_some())
     }
 
+    /// The seed this thread was last seeded with, if any.
+    pub fn seed_of() -> Option<u64> {
+        SEED.with(Cell::get)
+    }
+
     /// The next draw of this thread's generator, if it has been seeded.
     pub(super) fn next() -> Option<u64> {
         STATE.with(|state| {

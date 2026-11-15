@@ -1023,8 +1023,9 @@ impl Sim {
 async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
     // Unseeded, the engine's maps walk in a new order each run, and two runs
     // of a seed part ways without any check failing.
-    assert!(
-        felix_common::jitter::sim::is_seeded(),
+    assert_eq!(
+        felix_common::jitter::sim::seed_of(),
+        Some(seed),
         "a Raft simulation runs on a thread seeded with felix_common::jitter::sim::seed"
     );
     // With the clock installed, storage's blocking work runs as tasks here
