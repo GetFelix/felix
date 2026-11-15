@@ -1159,7 +1159,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 5 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no conditional entry). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
@@ -1178,7 +1178,10 @@ After the report byte comes the message:
   membership, 3 for the one record of an idempotent batch (producer id
   `u64` and sequence `u64`, then the record), 4 for a record of an
   idempotent batch of several (producer id `u64`, sequence `u64`, position
-  `u32`, batch length `u32`, then the record).
+  `u32`, batch length `u32`, then the record), 5 for a conditional
+  publish's record (the offset it must be written at, `u64`, then the
+  record). A member writes entry 5 as the record only when the entry's
+  index is that offset, and as a blank entry otherwise.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.

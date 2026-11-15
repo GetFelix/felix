@@ -169,18 +169,17 @@ A few things to know:
   writes when it takes over. After a failover the expected offset is stale
   even with no rival, and the refusal says where the shard is now.
 - A refused publish consumes no offset, so the next write is not held up and
-  leaves no gap.
+  leaves no gap. On the Raft engine (`FELIX_SHARD_ENGINE=raft`) a refusal is
+  decided by every replica where the entry lands, so it does consume one
+  offset: a gap that readers skip, and the tail in the refusal is past it.
 - A batch of several records is not all or nothing on a `Quorum` stream. After
   an error with an unknown outcome (a dropped connection, a quorum timeout, a
   lost leader) any prefix of it may exist. `felix_client::outcome_unknown` tells
-  that from a refusal that wrote nothing. On the Raft engine
-  (`FELIX_SHARD_ENGINE=raft`) a batch cut by a lapsed write lease can be any
-  subset of its records, not a prefix. Use a [commit](/features/atomic-commits/)
-  when the batch must be all or nothing.
+  that from a refusal that wrote nothing. On the Raft engine a conditional
+  publish carries exactly one record, and a batch of several is refused. Use a
+  [commit](/features/atomic-commits/) when the batch must be all or nothing.
 - If the answer is lost, do not resend: the retry would be refused by your own
-  write. Read the shard at the expected offset to see whether it landed. On the
-  Raft engine a cut batch can leave a later record of it at that offset, so
-  compare the payload you read with the one you sent, not just the offset. To
+  write. Read the shard at the expected offset to see whether it landed. To
   retry a batch that landed whole without checking, publish through an
   [idempotent producer](/clients/python/#idempotent-producers) instead. It
   recognises a batch only once all of it is held, so a re-send after a cut can

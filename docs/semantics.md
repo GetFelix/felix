@@ -254,6 +254,15 @@ offset it would have had and waits on nothing. The refusal is
 > `an_append_at_a_stale_offset_writes_and_claims_nothing`,
 > `a_commit_at_a_stale_offset_changes_no_state`.
 
+On a stream shard that runs on Raft, a refused `publish_if` does consume one
+offset. Each replica decides the condition from the index the entry lands
+at and stores a blank entry there when it misses, so the refusal comes at
+the commit and its tail is past the blank. Readers skip the blank. Exactly
+one of two writers at one offset still wins, and a conditional publish there
+carries one record. See `docs/per-shard-raft.md`, "Conditional publishes".
+
+> `a_publish_if_to_a_raft_shard_is_written_only_at_its_offset`.
+
 **The tail counts every record.** Plain publishes, commits, and the
 generation-start record a new leader writes all move it. After a failover a
 writer's expected offset is stale even when nobody else wrote, and the refusal

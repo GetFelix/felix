@@ -2366,8 +2366,9 @@ The broker never appends to that log, and four rules follow from it.
   one, an atomic commit and a head trim. A record the broker appended by
   itself would be an entry the group never agreed on. Publishes go through
   `propose_publish`, and an idempotent producer's through
-  `propose_idempotent` ("Idempotent publishes", below). #2446 lists what
-  is still refused.
+  `propose_idempotent` ("Idempotent publishes", below), and a conditional
+  one through `propose_publish_at` ("Conditional publishes", below). #2446
+  lists what is still refused.
 - The commit hold survives deposition. A batch joins the hold only after
   `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
   what a deposed leader held, drops nothing here.
@@ -2553,12 +2554,11 @@ never ends a subscriber of the new term.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_term_led_again_keeps_its_subscribers`.
 
-Conditional publishes, atomic commits, head trims and consumer-group
-operations on a Raft shard are refused by name before they reach the
-hybrid's fence (#2446).
+Atomic commits, head trims and consumer-group operations on a Raft shard
+are refused by name before they reach the hybrid's fence (#2446).
 
 > `services/felix-broker-service/src/serving/commit_ops/tests.rs`,
-> `conditional_writes_to_a_raft_shard_are_refused_by_name`;
+> `a_trim_to_a_raft_shard_is_refused_by_name`;
 > `services/felix-broker-service/src/serving/group_ops/tests.rs`,
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
@@ -2788,6 +2788,77 @@ refused.
 > `a_forward_to_a_raft_leader_commits_through_its_group`,
 > `a_forwarded_resend_of_a_cut_batch_is_finished_on_the_owner` and
 > `a_forwarded_resend_of_a_forgotten_batch_is_refused_as_expired`.
+
+**Conditional publishes.** A `publish_if` (`docs/protocol.md`) names the
+offset its record must land at. On a Raft shard the record lands there or
+not at all, as on the hybrid, and the answer is `publish_ok` with that
+offset or `publish_refused` with `offset_mismatch` and the shard's tail.
+
+The difference is what a refusal costs. The hybrid checks the tail under
+its append lock and writes nothing when it misses. A Raft leader cannot
+check that way: the entry's index is fixed only when openraft appends it,
+and openraft can put a membership entry ahead of it after the leader
+looked. So the condition is decided where the entry is written, on every
+member, from the entry's own index:
+
+- At the expected offset, the member stores the record.
+- Anywhere else, it stores a blank entry in its place. Readers skip it like
+  any other blank (`skipped_before`), and subscribers are never sent it.
+
+Each member decides from the same index and the same entry, so all of them
+store the same thing, and an entry a later leader cuts takes its decision
+with it. The leader answers once the entry commits, whatever the stream's
+consistency level: `publish_ok` when the record was kept, `offset_mismatch`
+otherwise, with the offset after the blank as the tail.
+
+So on a Raft shard **a refused `publish_if` consumes one offset**. A client
+that retries at the tail it was given asks for the offset right after the
+blank. On the hybrid a refusal consumes none.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant L as Leader
+    participant F as Follower
+    C->>L: publish_if at 12
+    Note over L: openraft appends a membership entry at 12
+    L->>F: membership at 12, conditional entry at 13
+    Note over L,F: each member: 13 is not 12, store a blank
+    L-->>C: offset_mismatch, tail 14
+    C->>L: publish_if at 14
+    L->>F: conditional entry at 14
+    Note over L,F: each member: store the record
+    L-->>C: publish_ok at 14
+```
+
+A conditional publish carries one record. A batch of several is refused by
+name, because each record is its own entry and only the first would be at
+the expected offset (#2524). A batch with no record is refused as on the
+hybrid.
+
+There is no fleet setting to turn this on. The conditional entry travels as
+its own tag in Raft wire layout 6 (`docs/internal-protocol.md`), and a
+member built before it reads only layout 5. It refuses the leader's
+appends by layout, so it can never store a conditional record as a plain
+one at whatever offset it lands. On disk a member writes only a plain
+record or a blank, so a downgraded broker reads the log.
+
+`FelixRaftCond.tla` checks the rule: a kept record is always at its
+expected offset, at most one publish naming an offset is kept, members
+agree, and each answer matches what every member committed. Its twin
+`FelixRaftCondLeaderDecides`, where the leader decides from its guess of
+the index and followers copy it, keeps a record off its offset once a
+membership entry lands between the guess and the append.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_conditional_publish_off_its_offset_is_a_blank_on_every_member` and
+> `a_conditional_publish_of_other_than_one_record_is_refused`;
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `a_layout_5_body_is_refused_by_layout`;
+> `crates/server/felix-storage/src/raft_log/tests.rs`,
+> `a_command_the_codec_blanks_is_stored_as_a_blank_entry`;
+> `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
+> `a_publish_if_to_a_raft_shard_is_written_only_at_its_offset`.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on

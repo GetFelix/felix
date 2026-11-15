@@ -175,6 +175,14 @@ writes: after a failover a writer's expected offset is stale even with no
 rival, and the refusal tells it where to resume. An empty batch and a stream
 with no log are refused with `error` (`invalid_request`).
 
+On a stream shard that runs on Raft (`docs/per-shard-raft.md`, "Conditional
+publishes") two things differ. The batch must hold exactly one record; a
+batch of several is refused with `error` (`invalid_request`). And a refused
+`publish_if` consumes one offset: each replica stores a blank entry in its
+place, which readers skip and subscribers are never sent, and the tail in
+`offset_mismatch` is the offset after it. Either answer comes once the entry
+is committed, whatever the stream's consistency level.
+
 Not forwarded: a broker that does not lead the shard answers `not_leader` to a
 client that offered `FEATURE_REDIRECT`, as it does for `commit`. Sent on its
 own bidirectional stream, outside the publish pipeline, and only to a broker
