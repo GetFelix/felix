@@ -1970,6 +1970,8 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(b"while b and c are down"),
             producer: None,
+            expected: None,
+            trim: None,
             written: None,
         })
         .await
