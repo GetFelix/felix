@@ -434,6 +434,23 @@ impl DiskLogProvider {
         Ok(())
     }
 
+    /// The bounds one stream's logs are held to: the stream's own, with this
+    /// provider's for any it leaves unset.
+    pub fn stream_retention(&self, tenant: &str, namespace: &str, stream: &str) -> Retention {
+        let scope = (
+            tenant.to_string(),
+            namespace.to_string(),
+            stream.to_string(),
+        );
+        let own = self
+            .stream_retention
+            .read()
+            .get(&scope)
+            .copied()
+            .unwrap_or_default();
+        own.or(self.config.retention())
+    }
+
     /// Hold one stream's logs at the commit offset, or lift the hold: for a
     /// stream whose consistency became `Quorum`, or stopped being it. Applies
     /// to the stream's shards already open, written through before this
