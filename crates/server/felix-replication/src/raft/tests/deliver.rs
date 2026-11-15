@@ -1263,3 +1263,42 @@ async fn a_majority_answered_publish_survives_its_leader() {
     assert_eq!(records_past(&mut from_without, primed, 1).await, kept);
     led.cluster.stop().await;
 }
+
+/// **A trim entry holds no record.** A subscriber reading past one is told
+/// its offset was skipped, not dropped, as for a blank.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trim_entry_is_counted_as_skipped() {
+    let mut led = led().await;
+    let leader = led.leader.broker.to_string();
+    let (broker, handle) = broker_on_log_of(&led, &leader).await;
+    broker.allow_raft_head_trims_when(|| true);
+    let (mut receiver, _guard) = subscriber(&broker).await;
+
+    let at = led.committed + 1;
+    let first = publish(&led, &broker, &handle, Bytes::from_static(b"first"));
+    let outcome = first.await.expect("joined").expect("committed");
+    assert_eq!(outcome.offsets, Some((at, at)));
+    let shard = shard(0);
+    let proposed = led.engine.trim_at(
+        &broker,
+        &handle,
+        &shard,
+        None,
+        at,
+        at + 1,
+        Bytes::from_static(b"holder"),
+        AckAt::Flushed,
+        PATIENCE,
+    );
+    let trimmed = proposed.await.expect("proposed").complete().await;
+    assert_eq!(trimmed.expect("trimmed").offset, Some(at + 1));
+
+    let after = publish(&led, &broker, &handle, Bytes::from_static(b"after"));
+    let outcome = after.await.expect("joined").expect("committed");
+    assert_eq!(outcome.offsets, Some((at + 2, at + 2)));
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(at));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(at + 2));
+    assert_eq!(envelope.skipped_before(), 1, "the trim's offset was a drop");
+    led.cluster.stop().await;
+}

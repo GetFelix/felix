@@ -75,7 +75,7 @@ async fn too_old(broker: &Broker, offset: u64) -> bool {
 }
 
 /// **A trim is written as an entry and hides the shard below its floor on
-/// every member.** A stale one is refused with the tail and nothing
+/// every member**, each of which marks its data root as holding a trim. A stale one is refused with the tail and nothing
 /// written, and one at or below the floor writes nothing and answers with
 /// the floor, as on the hybrid.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -123,6 +123,13 @@ async fn a_trim_hides_the_shard_below_its_floor_on_every_member() {
         assert!(
             resumed.backlog.iter().all(|record| record.offset >= floor),
             "{} served the ring below the floor",
+            member.name
+        );
+        // Every member stores the entry, so every one must refuse a fleet
+        // that has not finalized `head_trim`.
+        assert!(
+            felix_storage::run_state::head_trimmed(member.root.path()).expect("marker"),
+            "{} holds a trim without the head-trim marker",
             member.name
         );
     }

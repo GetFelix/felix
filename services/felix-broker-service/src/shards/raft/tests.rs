@@ -1275,7 +1275,7 @@ pub(crate) struct Member {
     pub(crate) broker: Arc<Broker>,
     pub(crate) shards: Arc<RaftShards>,
     pub(crate) engine: Arc<crate::shards::routing::StreamEngine>,
-    _root: tempfile::TempDir,
+    pub(crate) root: tempfile::TempDir,
 }
 
 impl Member {
@@ -1323,7 +1323,7 @@ impl Member {
             broker,
             shards,
             engine,
-            _root: root,
+            root,
         }
     }
 

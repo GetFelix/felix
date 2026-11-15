@@ -25,7 +25,7 @@ use crate::DiskLog;
 use crate::StorageError;
 use crate::disk_log::WriterAt;
 use crate::log::{
-    AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, UNKNOWN_WRITER, WrittenBy,
+    AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, RecordMark, UNKNOWN_WRITER, WrittenBy,
 };
 use crate::raft_copy::VoteMark;
 use crate::segment::{GENERATION_VERSION, SEGMENT_HEADER_LEN, record_header_len};
@@ -229,6 +229,14 @@ where
                 tail
             }
         };
+        if earlier
+            .iter()
+            .chain([&batch])
+            .flat_map(|batch| &batch.records)
+            .any(|record| matches!(record.mark, RecordMark::Trim { .. }))
+        {
+            shared.mark_head_trimmed().await?;
+        }
         // Read before the write: see `TailCache`.
         let cuts = log.cuts();
         let mut pending = None;
