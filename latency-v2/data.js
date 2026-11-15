@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794731528262,
+  "lastUpdate": 1794731822894,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74052,6 +74052,72 @@ window.BENCHMARK_DATA = {
             "range": "680.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 369.00\nmean: 670.00\nstdev: 680.33\ncv: 101.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "365f1cbd2f910143d3518f184a68d3bfb1b1b642",
+          "message": "feat(raft): head trims on a Raft shard (#2446) (#2601)\n\n* feat(raft): conditional publishes on a Raft stream shard, engine side (#2446)\n\nA conditional entry carries the offset it must be written at. Every\nmember that writes it decides from the entry's own index: at the\nexpected offset it stores the record, anywhere else a blank entry. The\nleader answers once committed, with OffsetMismatch and the offset after\nthe blank when it missed. Wire layout 6 adds the conditional entry tag,\nso an older member refuses it by name instead of storing it as a plain\nrecord. On disk only existing record kinds are written.\n\n* fix(broker-service): cover QuorumError::OffsetMismatch (#2446)\n\n* feat(broker-service): serve publish_if on a Raft shard (#2446)\n\nA conditional publish to a shard a Raft group runs here goes to the\ngroup at the term routing answered, and is answered at the commit: ok\nat the expected offset, or offset_mismatch with the tail after the blank\nwritten in its place. A refusal takes an offset on Raft. Trims stay\nrefused by name.\n\nFelixRaftCond.tla models the rule: every member decides from the\nentry's index, and a leader that decides alone keeps a record off its\noffset once a membership entry lands between its look and the append.\n\n* docs(raft): conditional publishes on a Raft shard (#2446)\n\nA refused publish_if takes one offset on Raft, a blank readers skip, and\nis answered at the commit with the tail past it. Wire layout 6 and entry\ntag 5, the status row, protocol, semantics and pubsub pages.\n\n* fix(raft): a refused publish_if keeps the replay ring; the leader's log decides (#2446)\n\nA conditional publish stored as a blank is held as a blank, not a gap:\nits outcome is known, so the ring stays and the next record reports the\noffset as skipped.\n\nopenraft replicates and applies entries read back from the log, so the\nleader's append decides the condition at the entry's final index and\nfollowers copy what it stored. Docs and comments say so; the conditional\nwire tag stays as defence-in-depth. Doc fixes: no membership entry in the\nexample, Raft notes on reading back, the lease and the publisher id.\n\n* fix(replication): keep Raft wire layout 5; the conditional entry is a tag only\n\nA layout bump made members of a mixed-version group refuse each other's\nheartbeats and votes. A build without tag 5 already refuses a conditional\nentry by name. Also fix the lost-answer advice for publish_if on Raft.\n\n* docs(raft): publish_if changelog names the entry tag; lost-answer check reads offset and payload (#2446)\n\n* formal(raft): FelixRaftCond results and a two-term config (#2446)\n\nFelixRaftCond passes (169,456,277 distinct states, depth 34) and\nFelixRaftCondTwoTerms passes (18,646,633). FelixRaftCondLeaderDecides\nviolates CondKeptAtExpected: a leader that decides before its append is\nwrong once a membership entry lands between. FelixRaftCondLeaderDecidesNoMembers\npasses, so the membership entry is what breaks it. FelixRaftCondReachAnswers\nviolates NeverOkAndMismatch as pinned, so the passes are not vacuous.\n\n* formal(raft): FelixRaftCond configs stay out of FelixRaft's affected set; TwoTerms cites its tests (#2446)\n\n* feat(storage): a Raft log applies a trim at its commit and deletes nothing below it (#2446)\n\n* feat(raft): head trims on a Raft shard (#2446)\n\nA trim is one entry (wire tag 6, layout unchanged), conditional on its\nfinal index like a conditional publish. The broker's propose_trim_at runs\nthe hybrid's checks first (past tail, stale tail, commit stream, no-op at\nor below the floor) and answers once the floor is in the replay ring.\ncommit_ops routes Raft shards there instead of refusing them.\n\n* feat(raft): a trim on a Raft shard waits for the fleet to finalize raft_head_trim (#2446)\n\n* fix(raft): every member marks its data root before storing a trim entry (#2446)\n\nA follower stored trim entries without the head-trim marker, so its data\ndirectory could join a fleet that has not finalized head_trim. The Raft\nlog writes the marker before the first trim record goes down, on the\nleader and followers alike.\n\nSpec-Unaffected: the marker is a startup admission check outside every model; a Raft trim is FelixRaftCond's conditional entry whose floor applies at commit as FelixHeadTrim models, and a Raft log deletes nothing below a floor, a subset of FelixHeadTrim's deletion rule.\n\n* docs(raft): head trims on a Raft shard and the raft_head_trim feature (#2446)\n\n* docs(raft): a Raft trim frees no disk, and a follower hides the floor at its commit (#2446)\n\n* fix(raft): a member holding a trim reads at its commit; a stalled trim answers trim_timed_out (#2446)\n\nA Raft member whose log holds a trim its commit has not passed holds\nresumes, cursor subscribes and history pages until it has (5 s, then\nretryable), so a follower or a member restarted behind the trim is not\nread below a floor already answered. A follower without the entry is\n#2603. A Raft trim waits the hybrid's 30 s and a timeout is the hybrid's\nunacknowledged trim_timed_out. Trims on Raft free no disk: #2602.\n\nSpec-Unaffected: the read hold and the error mapping are broker-side\nserving rules; no model covers reader admission or error codes.\n\n* fix(raft): a released trim behind a gap keeps the sequence; the trim read hold covers only reads below its floor (#2446)\n\nA trim released from a deposed term's hold, behind a gap, on a broker\nthat no longer leads, now drops the ring below its floor but leaves the\nsequence to the pass over the log, as a released blank or batch does.\nMoving it past the gap lost the gap's committed records on this broker.\n\nA member holding an uncommitted trim holds only reads that start below\nthe trim's floor (or at earliest); tail subscribes and reads at or above\nthe floor are served at once. The trim's commit and its floor reaching\nthe ring share one trim_wait budget from the proposal.\n\nSpec-Unaffected: broker-side ring sequencing on a deposed broker and\nreader admission; no model covers the replay ring or reader admission.\n\n* test(raft): the dead-peer write test builds a Command with expected and trim\n\n#2590 and #2589 landed on main separately; the test #2590 added predates both fields.\n\n* fix(controlplane): a new cluster finalizes raft_head_trim (#2446)\n\nEvery broker reports raft_head_trim, so a new cluster finalizes it after\nhead_trim like the other implemented features. A build without the Raft\nengine holds no Raft shard and never receives a trim entry, so its report\nis safe.\n\n* test(controlplane): a new cluster's expected features include raft_head_trim (#2446)\n\n* test(raft): drop the duplicate Command.expected left by the main merge",
+          "timestamp": "2026-11-15T08:31:47Z",
+          "tree_id": "edd4a0ecec8b5c9e76fd5dd2c4cb15669ceda2bc",
+          "url": "https://github.com/GetFelix/felix/commit/365f1cbd2f910143d3518f184a68d3bfb1b1b642"
+        },
+        "date": 1794731813034,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 97.40\nstdev: 2.07\ncv: 2.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 131,
+            "range": "10.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 135.80\nstdev: 10.33\ncv: 7.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 182,
+            "range": "289.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 307.40\nstdev: 289.44\ncv: 94.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 132.80\nstdev: 1.10\ncv: 0.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 258,
+            "range": "8.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 261.20\nstdev: 8.29\ncv: 3.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 379,
+            "range": "299.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 379.00\nmean: 522.40\nstdev: 299.84\ncv: 57.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
