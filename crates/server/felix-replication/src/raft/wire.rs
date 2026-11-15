@@ -495,6 +495,11 @@ const ENTRY_TRIM: u8 = 6;
 /// either keeps its frame, and a build without it refuses the entry by its
 /// tag rather than store the record without them.
 const ENTRY_ATTRIBUTED: u8 = 7;
+/// An atomic commit: laid out as [`ENTRY_RECORD`], the record being the
+/// encoded commit. Sent as read back from the log, so never conditional and
+/// never a producer's. A new tag so a build without it refuses the entry
+/// rather than store the commit as a plain record no state view reads.
+const ENTRY_COMMIT: u8 = 8;
 /// [`ENTRY_ATTRIBUTED`] flags.
 const HAS_PUBLISHER: u8 = 1;
 const HAS_HEADERS: u8 = 2;
@@ -527,6 +532,13 @@ fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> 
             }
             // A record of no producer's batch keeps the layout it always had.
             match (command.producer, command.expected) {
+                _ if command.commit && (command.trim.is_some() || command.producer.is_some()) => {
+                    return Err(invalid("a commit names a trim or a producer".to_string()));
+                }
+                (None, Some(_)) if command.commit => {
+                    return Err(invalid("a conditional commit is not sent".to_string()));
+                }
+                (None, None) if command.commit => buf.put_u8(ENTRY_COMMIT),
                 _ if command.trim.is_some() && command.expected.is_some() => {
                     return Err(invalid("a conditional trim is not sent".to_string()));
                 }
@@ -608,7 +620,7 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
             let tag = take_u8(buf)?;
             if !matches!(
                 tag,
-                ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL
+                ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_COMMIT
             ) {
                 return Err(invalid(format!("{tag} is not a record a publisher names")));
             }
@@ -617,9 +629,8 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
             command.headers = headers;
             EntryOf::<ShardTypes>::new_normal(log_id, command)
         }
-        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_TRIM) => {
-            EntryOf::<ShardTypes>::new_normal(log_id, take_command(buf, tag)?)
-        }
+        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_TRIM
+        | ENTRY_COMMIT) => EntryOf::<ShardTypes>::new_normal(log_id, take_command(buf, tag)?),
         2 => {
             // A config with no voters would let a joint quorum pass with no
             // votes. Only a snapshot's default membership is empty.
@@ -672,6 +683,7 @@ fn take_command(buf: &mut Bytes, tag: u8) -> io::Result<Command> {
         producer,
         expected,
         trim,
+        commit: tag == ENTRY_COMMIT,
         publisher: None,
         headers: None,
         written: None,

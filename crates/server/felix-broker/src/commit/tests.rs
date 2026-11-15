@@ -12,12 +12,17 @@ use super::{CommitRecord, StateOp, client_record};
 use crate::stream::{ReadBound, ReadBounds};
 use crate::{Broker, BrokerError, ConsistencyLevel, DurableStorage, StreamMetadata, Subscription};
 
+/// The bound, and how many offsets just below it hold no record.
 #[derive(Debug)]
-struct Bound(Mutex<ReadBound>);
+struct Bound(Mutex<ReadBound>, Mutex<u64>);
 
 impl ReadBounds for Bound {
     fn stream_bound(&self, _: &str, _: &str, _: &str, _: u32) -> ReadBound {
         *self.0.lock()
+    }
+
+    fn records_end(&self, _: &str, _: &str, _: &str, _: u32, end: u64) -> u64 {
+        end - *self.1.lock()
     }
 }
 
@@ -29,7 +34,7 @@ async fn broker(dir: &std::path::Path, consistency: ConsistencyLevel) -> (Broker
     };
     let broker = Broker::new(EphemeralCache::new().into())
         .with_durable_storage(DurableStorage::open(dir, config).expect("storage"));
-    let bound = Arc::new(Bound(Mutex::new(ReadBound::Unbounded)));
+    let bound = Arc::new(Bound(Mutex::new(ReadBound::Unbounded), Mutex::new(0)));
     broker.set_read_bounds(Arc::clone(&bound) as Arc<dyn ReadBounds>);
     broker.register_tenant("t1").await.expect("tenant");
     broker
@@ -244,6 +249,82 @@ async fn a_held_commit_releases_its_state_with_its_event() {
     let read = get(&broker, "order/1").await;
     assert_eq!(read.value.as_deref(), Some(&b"placed"[..]));
     assert_eq!(read.version, Some(0));
+}
+
+/// **A state read on an idle shard does not wait for entries that hold no
+/// record.** A Raft membership change or a new term's blank entry moves the
+/// bound past the last record, and the ring reaches it only with the next
+/// publish. Waiting for the ring to reach the bound, every read timed out.
+#[tokio::test]
+async fn a_state_view_is_ready_below_a_trailing_run_without_records() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    *bound.0.lock() = ReadBound::Committed(0);
+    commit(&broker, b"placed", vec![put("order/1", b"placed")]).await;
+    *bound.0.lock() = ReadBound::Committed(1);
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    handle.release_committed();
+    broker
+        .await_state_view(&handle, Duration::from_secs(5))
+        .await
+        .expect("view");
+
+    // A membership change, then a term blank, past the record.
+    *bound.0.lock() = ReadBound::Committed(3);
+    *bound.1.lock() = 2;
+    let waited = tokio::time::Instant::now();
+    broker
+        .await_state_view(&handle, Duration::from_secs(5))
+        .await
+        .expect("ready without a publish");
+    assert!(waited.elapsed() < Duration::from_secs(1));
+    let read = get(&broker, "order/1").await;
+    assert_eq!(read.value.as_deref(), Some(&b"placed"[..]));
+}
+
+/// **A state read waits for a held record and ends with its release.**
+#[tokio::test]
+async fn a_state_view_wait_ends_with_the_release() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (broker, bound) = broker(dir.path(), ConsistencyLevel::Quorum).await;
+    *bound.0.lock() = ReadBound::Committed(0);
+    commit(&broker, b"placed", vec![put("order/1", b"placed")]).await;
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    // The bound covers the record; its release is held before the ring.
+    handle.stall_releases(true);
+    *bound.0.lock() = ReadBound::Committed(1);
+    handle.release_committed();
+    for _ in 0..500 {
+        if handle.release_stalled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(handle.release_stalled(), "no release to hold");
+    let broker = Arc::new(broker);
+    let waiting = {
+        let broker = Arc::clone(&broker);
+        let handle = handle.clone();
+        tokio::spawn(async move {
+            broker
+                .await_state_view(&handle, Duration::from_secs(5))
+                .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!waiting.is_finished(), "ready before the release");
+    handle.stall_releases(false);
+    tokio::time::timeout(Duration::from_secs(1), waiting)
+        .await
+        .expect("ended in time")
+        .expect("task")
+        .expect("view");
 }
 
 /// **The state is rebuilt from the log.** Nothing about it is stored beside

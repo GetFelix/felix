@@ -132,8 +132,8 @@ impl Broker {
             )
             .await?
             .expect("a trim claims or is refused");
-        let (trim_applied, applied) = tokio::sync::oneshot::channel();
-        let outcome = self.complete_claimed(claimed, Some(trim_applied)).await?;
+        let (ring_applied, applied) = tokio::sync::oneshot::channel();
+        let outcome = self.complete_claimed(claimed, Some(ring_applied)).await?;
         Ok(TrimStep(Step::Written {
             before,
             expected,
@@ -254,6 +254,15 @@ async fn await_committed(handle: &StreamHandle, end: u64, wait: std::time::Durat
 async fn refuse_commit_stream(handle: &StreamHandle, log: &StreamLog, expected: u64) -> Result<()> {
     let commits = &handle.state.commits;
     let scan = commits.start();
+    // An engine's log above its commit can still be cut and written again
+    // by another leader, so only what was committed before the scan read it
+    // is kept. Read after the scan, the bound could cover a commit written
+    // where the scan read a plain record.
+    let clear = match handle.state.read_bound() {
+        _ if !handle.state.engine_log => expected,
+        ReadBound::Committed(bound) => expected.min(bound),
+        _ => scan.below,
+    };
     let mut next = scan.below.max(log.readable_base());
     while next < expected && !commits.seen.load(Ordering::Acquire) {
         let page = match log.read_log_from(next, COMMIT_SCAN_PAGE_BYTES).await {
@@ -282,10 +291,12 @@ async fn refuse_commit_stream(handle: &StreamHandle, log: &StreamLog, expected: 
         }
         next = page.next;
     }
+    #[cfg(test)]
+    handle.state.stall_trim_scan.wait().await;
     if commits.seen.load(Ordering::Acquire) {
         return Err(BrokerError::TrimOnCommitStream);
     }
-    commits.clear_below(scan, expected);
+    commits.clear_below(scan, clear);
     Ok(())
 }
 

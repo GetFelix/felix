@@ -82,6 +82,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RECORD_HEADERS,
     RAFT_RECORD_HEADERS,
     RECORD_GENERATIONS,
+    RAFT_ATOMIC_COMMIT,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -180,6 +181,12 @@ pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
 /// entry. So it waits for the whole fleet, and for [`RECORD_HEADERS`]. See
 /// `docs/per-shard-raft.md` ("Publishers and record headers").
 pub const RAFT_RECORD_HEADERS: FleetFeature = FleetFeature::new("raft_record_headers");
+
+/// A stream shard on the Raft engine accepts atomic commits: a commit record
+/// is a Raft entry of its own kind, which a build that predates this refuses,
+/// holding replication to it at that entry. So it waits for the whole fleet,
+/// and for [`ATOMIC_COMMIT`]. See `docs/per-shard-raft.md` ("Atomic commits").
+pub const RAFT_ATOMIC_COMMIT: FleetFeature = FleetFeature::new("raft_atomic_commit");
 
 /// A stream log starts its next segment in storage format v9, whose record
 /// headers carry a generation, and stamps each record with the generation it
@@ -335,6 +342,8 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         &[HEAD_TRIM]
     } else if feature == RAFT_RECORD_HEADERS.name() {
         &[RECORD_HEADERS]
+    } else if feature == RAFT_ATOMIC_COMMIT.name() {
+        &[ATOMIC_COMMIT]
     } else if feature == SHARD_RAFT.name() {
         // The switch reads each record's term from its header.
         &[GENERATION_START, RECORD_GENERATIONS]

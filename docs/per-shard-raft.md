@@ -2355,7 +2355,7 @@ was answered:
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read` |
+| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read`. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
@@ -2533,8 +2533,9 @@ The broker never appends to that log, and four rules follow from it.
   itself would be an entry the group never agreed on. Publishes go through
   `propose_publish`, and an idempotent producer's through
   `propose_idempotent` ("Idempotent publishes", below), and a conditional
-  one through `propose_publish_at` ("Conditional publishes", below), and a
-  head trim through `propose_trim_at` ("Head trims", below). #2446
+  one through `propose_publish_at` ("Conditional publishes", below), a
+  head trim through `propose_trim_at` ("Head trims", below), and an atomic
+  commit through `propose_commit` ("Atomic commits", below). #2446
   lists what is still refused.
 - The commit hold survives deposition. A batch joins the hold only after
   `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
@@ -2720,9 +2721,9 @@ never ends a subscriber of the new term.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_term_led_again_keeps_its_subscribers`.
 
-Atomic commits and consumer-group operations on a Raft shard are refused by
-name before they reach the hybrid's fence (#2446). A head trim goes to the
-shard's engine ("Head trims", above).
+Consumer-group operations on a Raft shard are refused by name before they
+reach the hybrid's fence (#2446). A head trim and an atomic commit go to
+the shard's engine ("Head trims" and "Atomic commits", above).
 
 > `services/felix-broker-service/src/serving/group_ops/tests.rs`,
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
@@ -3172,6 +3173,66 @@ condition is `FelixRaftCond.tla`'s, decided at the entry's final index.
 > `a_trim_entry_applies_once_it_is_committed`;
 > `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
 > `a_trim_entry_deletes_no_segment`.
+
+**Atomic commits.** A `commit` ([atomic commits](atomic-commit.md)) on a
+Raft shard keeps the hybrid's guarantee: the event and its state updates
+apply at one offset, on every member, or not at all. The commit is one
+entry whose record is the commit record the hybrid writes (the event and
+the updates, with the commit mark), so every member's log holds it whole
+or not at all.
+
+The state view is fed from what the group committed, never from the
+claim:
+
+- On the leader the commit joins the commit hold like a publish. When it
+  reaches the replay ring, its updates go to the state view under the
+  ring's lock, so no reader sees the event without its state. The commit
+  is answered only after that, so a writer's next `state_get` reads it.
+- A follower delivers from its own log. It reads the commit record whole,
+  hands its event to subscribers and applies its updates to the view at
+  the same offset.
+- A view that does not exist yet (after a restart, a catch-up, or a reset
+  of the ring) is rebuilt from the member's own log, which holds the
+  commit mark, exactly as on the hybrid. As there, state lives in the
+  retained log and no snapshot carries it.
+
+A `commit_if` is decided as a conditional publish is, at the entry's final
+index: off `expected_offset`, the leader's log stores a blank in its place,
+which takes one offset, and the answer is `offset_mismatch` with the offset
+after it. Nothing of the commit is written.
+
+A `Quorum` commit is answered at its Raft commit under every fsync policy,
+never once a majority has only written it, as a plain publish can be under
+`Periodic`. That is stronger than the stream asks for, and simpler: the
+answer waits for the view anyway.
+
+A `state_get` on a Raft shard confirms the term with a read-index round
+before it takes its value, instead of the hybrid's lease. It then waits
+until the view holds everything committed at that point, so it never misses
+a commit whose event a history read already returns: history reads stop at
+the commit, but the view moves only when the leader releases the commit
+from the hold, and a full `Block` subscriber can hold that release up.
+"Everything committed" means every record: a leader's blank entry or a
+membership change after the last record moves the commit but holds no
+record, and the view does not wait for it. A read that waits past the
+request's quorum timeout is answered `shard_unavailable` with reason
+`not_ready`.
+
+A commit entry has its own tag, 8, in the Raft wire's entry payloads. A
+member built before it refuses the whole append by that tag, so a commit
+on Raft waits for the fleet feature `raft_atomic_commit`, which needs
+`atomic_commit`. A new cluster starts with it finalized. Until the control
+plane finalizes it a clustered broker refuses a commit on a Raft shard with
+`invalid_request` and nothing proposed. A lone broker allows it from the
+start. The layout stays 5. A head trim on a stream holding commits is
+refused (`stream_has_commits`), as on the hybrid.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `an_atomic_commit_applies_whole_on_every_member`;
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
+> `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
+> `a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid`.
 
 **Publishers and record headers.** A record on a Raft shard keeps what it
 keeps on the hybrid: the publisher id (the principal that published it,

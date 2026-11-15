@@ -516,6 +516,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
         let batch = Batch {
             expected: None,
             trim: None,
+            commit: false,
             records: vec![record],
             ack: AckAt::Flushed,
             term,
@@ -1447,5 +1448,100 @@ async fn headers_are_refused_until_the_fleet_stores_them_on_raft() {
     let log = &led.cluster.logs[&(leader, 0)];
     let page = felix_storage::log::AppendOnlyLog::read_range(log, read).await;
     assert_eq!(page.expect("read").records[0].publisher, None);
+    led.cluster.stop().await;
+}
+
+/// `key`'s value and version in `broker`'s state of its `orders` shard.
+async fn state_of(
+    (broker, handle): (&Broker, &StreamHandle),
+    key: &str,
+) -> (Option<Bytes>, Option<u64>) {
+    let read = broker.state_get(handle, key).await;
+    let read = read.expect("readable");
+    (read.value, read.version)
+}
+
+/// **An atomic commit on a Raft shard is one entry every member applies
+/// whole: its event to readers, its state updates to the state view, at one
+/// offset.** Each member stores it with the commit mark, which a view
+/// rebuilt from that member's log reads, and a view built before the commit
+/// is moved by the event's delivery on the leader and on a follower alike. A commit
+/// off its expected offset is a blank on every member and moves no state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_atomic_commit_applies_whole_on_every_member() {
+    use felix_broker::StateOp;
+    use felix_storage::log::{AppendOnlyLog, ReadRange};
+
+    let mut led = led().await;
+    let leader = led.leader.broker.to_string();
+    let follower = led.followers().next().expect("a follower");
+    let (broker, handle) = broker_on_log_of(&led, &leader).await;
+    let (on_follower, follower_handle) = broker_on_log_of(&led, &follower).await;
+    let (mut from_leader, _guard) = subscriber(&broker).await;
+    let (mut from_follower, _follower_guard) = subscriber(&on_follower).await;
+    let members = [(&broker, &handle), (&on_follower, &follower_handle)];
+    // Built now, so only the commit's delivery can move them.
+    for member in members {
+        assert_eq!(state_of(member, "order-42").await, (None, None));
+    }
+
+    let at = led.committed + 1;
+    let commit = |event: &'static [u8], value: &'static [u8], expected| {
+        let proposed = led.engine.commit_at(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            Bytes::from_static(event),
+            vec![StateOp::Put {
+                key: "order-42".into(),
+                value: Bytes::from_static(value),
+            }],
+            None,
+            expected,
+            AckAt::Flushed,
+            PATIENCE,
+        );
+        tokio::spawn(proposed.expect("proposed").complete())
+    };
+    let landed = commit(b"placed", b"placed", None).await.expect("joined");
+    assert_eq!(landed.expect("committed").offsets, Some((at, at)));
+    // Answered once the leader's view has it, so its writer reads it back.
+    let placed = (Some(Bytes::from_static(b"placed")), Some(at));
+    assert_eq!(state_of(members[0], "order-42").await, placed);
+    let refused = commit(b"stale", b"stale", Some(at)).await.expect("joined");
+    assert_eq!(refused, Err(CommitError::OffsetMismatch { tail: at + 2 }));
+
+    for receiver in [&mut from_leader, &mut from_follower] {
+        assert_eq!(
+            records(receiver, 1).await,
+            [(at, Bytes::from_static(b"placed"))]
+        );
+    }
+    for (member, log) in &led.cluster.logs {
+        eventually(|| (log.durable_offset() > at + 1).then_some(())).await;
+        let read = ReadRange {
+            start: at,
+            max_bytes: 1 << 20,
+        };
+        let page = log.read_range(read).await.expect("read");
+        assert!(page.records[0].mark.is_commit(), "{member:?}");
+        assert_eq!(page.records[0].offset, at, "{member:?}");
+    }
+    // The follower's view moves once its member applies the commit.
+    for (index, member) in members.into_iter().enumerate() {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        loop {
+            let read = state_of(member, "order-42").await;
+            if read == placed {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "state on member {index} is {read:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
     led.cluster.stop().await;
 }
