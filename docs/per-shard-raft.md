@@ -867,8 +867,25 @@ its last log id is the base's, and terms below come from its records. A
 record in the gap, or a base whose records are gone, keeps the purged id,
 and the plan refuses with a record in the gap.
 
-A learner holding records past the base empties its log and catches up
-from the leader by snapshot. A learner within the base keeps its prefix.
+A voter whose base is in a kept directory, the records a rotation moved
+aside, rebuilds its log from there: each segment and the durable mark are
+copied in under a temporary name and synced, then renamed into place. The
+kept directory is only read. A voter holding records past the base cuts
+them. When its saved commit covers any of them (the kept directory's
+commit, for a copy rebuilt from one), those records were acknowledged, and
+only a re-form that accepts the loss may cut them. Either way the log must
+then end at the base's last index in the base's term, or the start fails.
+
+A voter's saved commit is set to `first_index`. One saved above it claims
+entries past the base that the copy does not hold, so it is lowered only by
+a re-form that accepts the loss, and the start refuses otherwise.
+
+A learner keeps its log only when all of it is a prefix of the base: no
+record past the base's last index, no purged id, and every record in the
+base's term at its index. Anything else empties it, rather than cutting it
+to the part that agrees, and it catches up from the leader by snapshot. An
+empty learner's saved commit is set to zero, so it never counts entries it
+does not hold.
 
 Two promises the vouch rule depends on are checked before a start
 finishes, and a start that cannot keep them fails (#2640):
@@ -884,8 +901,13 @@ highest index any leader of the incarnation reported committed.
 A start runs under a `reform-building` file in the copy's directory, and
 `raft-epoch` is written before the purged id, because a purged id at the
 gap's end only reads as the base under the epoch that made the gap. A
-directory holding the marker does not open, and running the start again
-over a crashed one redoes every step.
+directory holding the marker does not open and is not read by a plan, and
+running the start again over a crashed one redoes every step: a rebuilt
+voter empties its log and copies again.
+
+Each leader's offset floor report names the group epoch from the copy's
+`raft-epoch`, so a floor from before a re-form is never taken for one of
+the new epoch.
 
 **Why the floor is a log id, not an offset (#2402).** An offset alone
 covers offsets above the end of the base, not offsets inside it. Take

@@ -11,7 +11,7 @@ use crate::DiskLog;
 use crate::disk_log::crash_point;
 use crate::raft_log::tests::writes::append_flushed;
 use crate::raft_log::tests::{Codec, Types, log_id, normal};
-use crate::raft_log::{LogPoint, RaftLog, reserved};
+use crate::raft_log::{LogPoint, RaftLog, held, reserved};
 
 const SPACING: u64 = 4096;
 
@@ -49,6 +49,7 @@ fn start(role: Role) -> Start {
         role,
         base_terms: vec![(0, 1)],
         accept_loss: false,
+        kept: None,
         meta: Bytes::from_static(b"meta"),
         data: Bytes::from_static(b"data"),
     }
@@ -60,7 +61,9 @@ fn start(role: Role) -> Start {
 async fn a_started_voter_keeps_its_base_and_appends_at_the_first_index() {
     let dir = tempfile::tempdir().expect("dir");
     log_of(dir.path(), 5).await;
-    start_copy(dir.path(), &start(Role::Voter), SPACING).expect("start");
+    start_copy(dir.path(), &start(Role::Voter), &config())
+        .await
+        .expect("start");
 
     assert!(!building(dir.path()).expect("marker"));
     assert!(reserved::load(dir.path()).expect("reserved") >= Some(7));
@@ -78,14 +81,136 @@ async fn a_started_voter_keeps_its_base_and_appends_at_the_first_index() {
     raft.disk_log().close().await.expect("close");
 }
 
-/// A voter holding records past the base is refused: the build cuts them
-/// first.
+/// A voter holding uncommitted records past the base cuts them and starts.
 #[tokio::test]
-async fn a_voter_past_its_base_is_refused() {
+async fn a_voter_past_its_base_is_cut_back_to_it() {
     let dir = tempfile::tempdir().expect("dir");
-    log_of(dir.path(), 6).await;
-    start_copy(dir.path(), &start(Role::Voter), SPACING).expect_err("refused");
+    log_of(dir.path(), 7).await;
+    start_copy(dir.path(), &start(Role::Voter), &config())
+        .await
+        .expect("start");
+    let read = read_copy(dir.path(), SPACING, &BTreeSet::from([4])).expect("read");
+    assert_eq!(read.last, Some(LogPoint { term: 1, index: 4 }));
+    assert_eq!(
+        held::read(dir.path(), "t", SPACING)
+            .expect("held")
+            .last_record
+            .map(|(index, _)| index),
+        Some(4)
+    );
+}
+
+/// A voter whose saved commit covers records past the base cuts them only
+/// in a re-form that accepts the loss.
+#[tokio::test]
+async fn a_voter_cuts_committed_records_past_its_base_only_on_accepted_loss() {
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 7).await;
+    crate::disk_log::store_saved_commit(dir.path(), 7, 2).expect("commit");
+    start_copy(dir.path(), &start(Role::Voter), &config())
+        .await
+        .expect_err("would cut acked records");
+    assert_eq!(
+        held::read(dir.path(), "t", SPACING)
+            .expect("held")
+            .last_record
+            .map(|(index, _)| index),
+        Some(6)
+    );
+
+    let mut lossy = start(Role::Voter);
+    lossy.accept_loss = true;
+    start_copy(dir.path(), &lossy, &config())
+        .await
+        .expect("start");
+    let read = read_copy(dir.path(), SPACING, &BTreeSet::from([4])).expect("read");
+    assert_eq!(read.last, Some(LogPoint { term: 1, index: 4 }));
+}
+
+/// A voter starting from a kept directory gets its records in place of its
+/// own, cut to the base, and the kept directory is left as it was.
+#[tokio::test]
+async fn a_voter_starts_from_a_kept_copy() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 7).await;
+    let before = read_copy(kept.path(), SPACING, &BTreeSet::from([6])).expect("read");
+    let dir = tempfile::tempdir().expect("dir");
+    log_in_terms(dir.path(), &[3, 3]).await;
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect("start");
+
+    let read = read_copy(dir.path(), SPACING, &BTreeSet::from([0, 4])).expect("read");
+    assert_eq!(read.last, Some(LogPoint { term: 1, index: 4 }));
+    assert_eq!(read.terms[&0], Some(1));
+    assert_eq!(
+        read_copy(kept.path(), SPACING, &BTreeSet::from([6])).expect("read"),
+        before
+    );
+    assert!(std::fs::read_dir(dir.path()).expect("ls").all(|entry| {
+        !entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".copying")
+    }));
+}
+
+/// Whether `dir` holds no file copied in and left unrenamed.
+fn no_temporaries(dir: &Path) -> bool {
+    std::fs::read_dir(dir).expect("ls").all(|entry| {
+        !entry
+            .expect("entry")
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".copying")
+    })
+}
+
+/// A kept directory that does not end in the base's term at the base's
+/// last index is not the base, and the start refuses.
+#[tokio::test]
+async fn a_voter_whose_log_ends_in_another_term_is_refused() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_in_terms(kept.path(), &[1, 1, 1, 1, 2]).await;
+    let dir = tempfile::tempdir().expect("dir");
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect_err("not the base");
     assert!(building(dir.path()).expect("marker"));
+}
+
+/// The kept directory's saved commit is the claim checked: one covering
+/// records past the base refuses without an accepted loss.
+#[tokio::test]
+async fn a_kept_copy_committed_past_the_base_is_refused_without_accepted_loss() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 7).await;
+    crate::disk_log::store_saved_commit(kept.path(), 7, 2).expect("commit");
+    let dir = tempfile::tempdir().expect("dir");
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect_err("would cut acked records");
+    from_kept.accept_loss = true;
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect("start");
+}
+
+/// A plan does not read a copy whose start did not finish.
+#[tokio::test]
+async fn a_half_built_copy_is_not_read_by_a_plan() {
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 7).await;
+    crate::raft_log::state_file::store(dir.path(), crate::raft_copy::start::BUILDING, &[])
+        .expect("marker");
+    read_copy(dir.path(), SPACING, &BTreeSet::new()).expect_err("half built");
 }
 
 /// A learner with records past the base empties its log; it catches up by
@@ -94,10 +219,21 @@ async fn a_voter_past_its_base_is_refused() {
 async fn a_learner_past_the_base_empties_its_log() {
     let dir = tempfile::tempdir().expect("dir");
     log_of(dir.path(), 7).await;
-    start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
+    let mark = dir
+        .path()
+        .join(crate::disk_log::durable_mark::mark_file_name());
+    assert!(mark.exists());
+    // Left by a copy from a kept directory that a cut stopped.
+    std::fs::write(dir.path().join("9.copying"), b"partial").expect("stray");
+    start_copy(dir.path(), &start(Role::Learner), &config())
+        .await
+        .expect("start");
 
     let read = read_copy(dir.path(), SPACING, &BTreeSet::new()).expect("read");
     assert_eq!((read.last, read.purged), (None, None));
+    // It named a segment that is gone.
+    assert!(!mark.exists());
+    assert!(no_temporaries(dir.path()));
     assert_eq!(read.epoch, Some(start(Role::Learner).epoch));
     assert!(reserved::load(dir.path()).expect("reserved") >= Some(7));
     DiskLog::open(dir.path(), "t/ns/raft/0", config())
@@ -112,7 +248,9 @@ async fn a_learner_past_the_base_empties_its_log() {
 async fn a_learner_within_the_base_keeps_its_prefix() {
     let dir = tempfile::tempdir().expect("dir");
     log_of(dir.path(), 3).await;
-    start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
+    start_copy(dir.path(), &start(Role::Learner), &config())
+        .await
+        .expect("start");
     let read = read_copy(dir.path(), SPACING, &BTreeSet::new()).expect("read");
     assert_eq!(read.last, Some(LogPoint { term: 1, index: 2 }));
 }
@@ -131,24 +269,65 @@ async fn the_start_check_refuses_a_missing_reservation_or_a_low_commit() {
     crate::raft_copy::start::check_started(dir.path(), &voter).expect("both kept");
 }
 
+/// The copies the power-cut test starts: a voter at its base, a learner
+/// past it, a voter cut back to it, and a voter rebuilt from a kept copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Case {
+    Voter,
+    Learner,
+    VoterPast,
+    VoterFromKept,
+}
+
+/// Lay out `case` in `dir`, and return its start.
+async fn set_up(case: Case, dir: &Path, kept: &Path) -> Start {
+    match case {
+        Case::Voter => log_of(dir, 5).await,
+        Case::Learner | Case::VoterPast => log_of(dir, 7).await,
+        Case::VoterFromKept => {
+            log_in_terms(dir, &[3, 3]).await;
+            if std::fs::read_dir(kept).expect("ls").next().is_none() {
+                log_of(kept, 7).await;
+            }
+        }
+    }
+    let mut start = start(if case == Case::Learner {
+        Role::Learner
+    } else {
+        Role::Voter
+    });
+    if case == Case::VoterFromKept {
+        start.kept = Some(kept.to_path_buf());
+    }
+    start
+}
+
 /// A power cut at any step leaves the marker, so the copy does not open, and
 /// running the start again finishes it as an uncut run would.
 #[tokio::test]
 async fn a_start_cut_at_any_step_does_not_open_and_finishes_when_run_again() {
-    for role in [Role::Voter, Role::Learner] {
+    for case in [
+        Case::Voter,
+        Case::Learner,
+        Case::VoterPast,
+        Case::VoterFromKept,
+    ] {
+        let kept = tempfile::tempdir().expect("kept");
         let whole = tempfile::tempdir().expect("dir");
-        log_of(whole.path(), if role == Role::Voter { 5 } else { 7 }).await;
-        start_copy(whole.path(), &start(role), SPACING).expect("start");
-        let want = read_copy(whole.path(), SPACING, &BTreeSet::from([4])).expect("read");
+        let started = set_up(case, whole.path(), kept.path()).await;
+        start_copy(whole.path(), &started, &config())
+            .await
+            .expect("start");
+        let want = read_copy(whole.path(), SPACING, &BTreeSet::from([0, 4])).expect("read");
 
         let mut cut_at = 0;
         loop {
             let root = Root::new();
             let dir = root.shard_dir();
             std::fs::create_dir_all(&dir).expect("dir");
-            log_of(&dir, if role == Role::Voter { 5 } else { 7 }).await;
+            let started = set_up(case, &dir, kept.path()).await;
             crash_point::watch(&dir, Some(cut_at));
-            let cut = start_copy(&dir, &start(role), SPACING);
+            let cut = start_copy(&dir, &started, &config()).await;
             crash_point::unwatch(&dir);
             if cut.is_ok() {
                 break;
@@ -159,7 +338,9 @@ async fn a_start_cut_at_any_step_does_not_open_and_finishes_when_run_again() {
                     crate::raft_copy::epoch_file::load(&dir).expect("epoch"),
                     None
                 );
-                start_copy(&dir, &start(role), SPACING).expect("run again");
+                start_copy(&dir, &started, &config())
+                    .await
+                    .expect("run again");
                 cut_at += 1;
                 continue;
             }
@@ -167,15 +348,19 @@ async fn a_start_cut_at_any_step_does_not_open_and_finishes_when_run_again() {
                 .open()
                 .open_copy("orders/0", &dir, "t/ns/orders/0", config())
                 .await;
-            assert!(refused.is_err(), "{role:?} cut at {cut_at} opened");
+            assert!(refused.is_err(), "{case:?} cut at {cut_at} opened");
+            read_copy(&dir, SPACING, &BTreeSet::new()).expect_err("a plan reads a half-built copy");
 
-            start_copy(&dir, &start(role), SPACING).expect("run again");
-            let mut got = read_copy(&dir, SPACING, &BTreeSet::from([4])).expect("read");
+            start_copy(&dir, &started, &config())
+                .await
+                .expect("run again");
+            let mut got = read_copy(&dir, SPACING, &BTreeSet::from([0, 4])).expect("read");
             got.path = want.path.clone();
-            assert_eq!(got, want, "{role:?} cut at {cut_at}");
+            assert_eq!(got, want, "{case:?} cut at {cut_at}");
+            assert!(no_temporaries(&dir), "{case:?} cut at {cut_at}");
             cut_at += 1;
         }
-        assert!(cut_at > 3, "{role:?}: only {cut_at} steps");
+        assert!(cut_at > 3, "{case:?}: only {cut_at} steps");
     }
 }
 
@@ -184,7 +369,9 @@ async fn a_start_cut_at_any_step_does_not_open_and_finishes_when_run_again() {
 #[tokio::test]
 async fn a_start_reserves_through_the_gap() {
     let dir = tempfile::tempdir().expect("dir");
-    start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
+    start_copy(dir.path(), &start(Role::Learner), &config())
+        .await
+        .expect("start");
     assert_eq!(reserved::load(dir.path()).expect("reserved"), Some(7));
 }
 
@@ -207,14 +394,18 @@ fn two_term_learner() -> Start {
 async fn a_learner_whose_terms_differ_from_the_base_is_emptied() {
     let same = tempfile::tempdir().expect("dir");
     log_in_terms(same.path(), &[1, 1, 2, 2]).await;
-    start_copy(same.path(), &two_term_learner(), SPACING).expect("start");
+    start_copy(same.path(), &two_term_learner(), &config())
+        .await
+        .expect("start");
     let read = read_copy(same.path(), SPACING, &BTreeSet::new()).expect("read");
     assert_eq!(read.last, Some(LogPoint { term: 2, index: 3 }));
 
     for terms in [&[1, 1, 1, 1][..], &[1, 1, 1, 2], &[1, 2], &[2]] {
         let dir = tempfile::tempdir().expect("dir");
         log_in_terms(dir.path(), terms).await;
-        start_copy(dir.path(), &two_term_learner(), SPACING).expect("start");
+        start_copy(dir.path(), &two_term_learner(), &config())
+            .await
+            .expect("start");
         let read = read_copy(dir.path(), SPACING, &BTreeSet::new()).expect("read");
         assert_eq!((read.last, read.purged), (None, None), "{terms:?}");
     }
@@ -227,7 +418,9 @@ async fn an_emptied_learner_claims_no_commit() {
     let dir = tempfile::tempdir().expect("dir");
     log_of(dir.path(), 7).await;
     crate::disk_log::store_saved_commit(dir.path(), 6, 2).expect("commit");
-    start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
+    start_copy(dir.path(), &start(Role::Learner), &config())
+        .await
+        .expect("start");
     assert_eq!(
         crate::disk_log::saved_commit(dir.path()).expect("commit").0,
         0
@@ -235,7 +428,9 @@ async fn an_emptied_learner_claims_no_commit() {
 
     let dir = tempfile::tempdir().expect("dir");
     crate::disk_log::store_saved_commit(dir.path(), 6, 2).expect("commit");
-    start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
+    start_copy(dir.path(), &start(Role::Learner), &config())
+        .await
+        .expect("start");
     assert_eq!(
         crate::disk_log::saved_commit(dir.path()).expect("commit").0,
         0
@@ -250,7 +445,9 @@ async fn a_voter_commit_past_the_first_index_is_lowered_only_on_accepted_loss() 
     let dir = tempfile::tempdir().expect("dir");
     log_of(dir.path(), 5).await;
     crate::disk_log::store_saved_commit(dir.path(), 9, 2).expect("commit");
-    start_copy(dir.path(), &start(Role::Voter), SPACING).expect_err("would lower the commit");
+    start_copy(dir.path(), &start(Role::Voter), &config())
+        .await
+        .expect_err("would lower the commit");
     assert_eq!(
         crate::disk_log::saved_commit(dir.path()).expect("commit").0,
         9
@@ -259,7 +456,9 @@ async fn a_voter_commit_past_the_first_index_is_lowered_only_on_accepted_loss() 
 
     let mut lossy = start(Role::Voter);
     lossy.accept_loss = true;
-    start_copy(dir.path(), &lossy, SPACING).expect("start");
+    start_copy(dir.path(), &lossy, &config())
+        .await
+        .expect("start");
     assert_eq!(
         crate::disk_log::saved_commit(dir.path()).expect("commit").0,
         8

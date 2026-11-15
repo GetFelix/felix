@@ -178,6 +178,13 @@ pub(crate) fn read_copy(
             terms: probes.iter().map(|index| (*index, None)).collect(),
         });
     }
+    // A half-built log is not evidence of anything: the start is run again
+    // before the copy reports.
+    if super::start::building(path)? {
+        return Err(io::Error::other(format!(
+            "{label}: a re-form start did not finish; run it again first"
+        )));
+    }
     let kept = read_kept(path, index_spacing_bytes)?;
     let held = held::read(path, &label, index_spacing_bytes)?;
     let epoch = epoch_file::load(path)?;

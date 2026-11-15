@@ -6,23 +6,34 @@
 //! base empties its log and catches up by snapshot. Both get `raft-epoch`
 //! and a reservation through `first_index - 1`.
 //!
+//! A voter whose base is in a kept directory copies that directory's
+//! segments in under temporary names and renames them into place. A voter
+//! holding records past the base cuts them first, which needs a re-form
+//! that accepts the loss when any of them is committed.
+//!
 //! The steps run under a `reform-building` marker. [`super::CopyRoot::open_copy`]
 //! refuses a directory that holds one, and a start run again over a crashed
 //! one redoes every step, so a half-built copy is never served. See
 //! `docs/per-shard-raft.md`, "Starting the new epoch".
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bytes::Bytes;
 
 use super::epoch_file::{self, EpochFile};
-use crate::disk_log::crash_point;
+use crate::disk_log::{crash_point, durable_mark};
+use crate::log::{AppendOnlyLog, LogConfig};
 use crate::raft_log::snapshot::{SnapshotId, StoredSnapshot};
 use crate::raft_log::{held, reserved, state_file};
+use crate::segment::parse_segment_file_name;
 
 /// Present while a start is under way.
 pub(crate) const BUILDING: &str = "reform-building";
+
+/// The suffix of a file copied in from a kept directory and not renamed
+/// into place yet.
+const COPYING: &str = ".copying";
 
 /// What the copy is in the new epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +55,9 @@ pub(crate) struct Start {
     /// The re-form accepts losing committed entries past the base, so a
     /// voter's saved commit above the first index may be lowered to it.
     pub(crate) accept_loss: bool,
+    /// A kept directory holding the base, which a voter's log is rebuilt
+    /// from in place of its own. It is only read.
+    pub(crate) kept: Option<PathBuf>,
     /// The meta and data of a voter's snapshot at the end of the gap.
     pub(crate) meta: Bytes,
     pub(crate) data: Bytes,
@@ -54,9 +68,11 @@ pub(crate) fn building(dir: &Path) -> io::Result<bool> {
     Ok(state_file::load(dir, BUILDING)?.is_some())
 }
 
-/// Start the copy in `dir`, which no log has open. A voter's records must
-/// end exactly at the base's last log id; anything past it is refused.
-pub(crate) fn start_copy(dir: &Path, start: &Start, index_spacing_bytes: u64) -> io::Result<()> {
+/// Start the copy in `dir`, which no log has open. A voter's log, its own
+/// or the one copied from [`Start::kept`], is cut back to the base's last
+/// log id, and must then end there in the base's term.
+pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) -> io::Result<()> {
+    let index_spacing_bytes = config.index_spacing_bytes;
     let base = *start
         .epoch
         .bases
@@ -102,17 +118,61 @@ pub(crate) fn start_copy(dir: &Path, start: &Start, index_spacing_bytes: u64) ->
             }
         }
         Role::Voter => {
-            if record_last != base_last {
-                return Err(invalid(format!(
-                    "{label}: the log ends at {record_last:?}, the base at {base_last:?}"
-                )));
-            }
-            let (commit, _) = crate::disk_log::saved_commit(dir).map_err(io::Error::other)?;
+            // The commit the voter's log claims: the kept directory's when
+            // the log comes from there. Read before anything here moves it.
+            let claims = start.kept.as_deref().unwrap_or(dir);
+            let (commit, _) = crate::disk_log::saved_commit(claims).map_err(io::Error::other)?;
             if commit > base.first_index && !start.accept_loss {
                 return Err(invalid(format!(
                     "{label}: its saved commit {commit} is past the first index {}; only a \
                      re-form that accepts the loss may lower it",
                     base.first_index
+                )));
+            }
+            let mut record_last = record_last;
+            if let Some(kept) = &start.kept {
+                copy_kept(kept, dir, &step)?;
+                record_last = held::read(dir, &label, index_spacing_bytes)?
+                    .last_record
+                    .map(|(index, _)| index);
+            }
+            if record_last > base_last {
+                // A committed record past the base is acknowledged; cutting
+                // it is the loss only an accepting re-form may take.
+                if commit > base.base_end() && !start.accept_loss {
+                    return Err(invalid(format!(
+                        "{label}: records committed through {} are past the base's end {}",
+                        commit - 1,
+                        base.base_end()
+                    )));
+                }
+                // An open refuses to cut below its commit; this one is the
+                // loss just accepted. A kept copy's was zeroed already.
+                if crate::disk_log::saved_commit(dir)
+                    .map_err(io::Error::other)?
+                    .0
+                    > base.base_end()
+                {
+                    let term = base.base_last.map_or(0, |last| last.term);
+                    let generation = crate::raft_log::generation_of(term)?;
+                    crate::disk_log::store_saved_commit(dir, base.base_end(), generation)
+                        .map_err(io::Error::other)?;
+                    step()?;
+                }
+                cut_to(dir, &label, config, base.base_end()).await?;
+                step()?;
+            }
+            let held = held::read(dir, &label, index_spacing_bytes)?;
+            let last = held.last_record.map(|(index, generation)| {
+                (
+                    index,
+                    generation.and_then(crate::raft_log::term_of_generation),
+                )
+            });
+            let want = base.base_last.map(|last| (last.index, Some(last.term)));
+            if last != want {
+                return Err(invalid(format!(
+                    "{label}: the log ends at {last:?}, the base at {want:?}"
                 )));
             }
         }
@@ -221,8 +281,12 @@ fn empty_log(dir: &Path) -> io::Result<()> {
         let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
         };
-        let log_file = crate::segment::parse_segment_file_name(name).is_some()
+        let log_file = parse_segment_file_name(name).is_some()
             || name.ends_with(".index")
+            || name.ends_with(COPYING)
+            // A mark naming a segment that is gone would misread the next
+            // log's segments as synced or as never synced.
+            || name == durable_mark::mark_file_name()
             || name.starts_with(crate::raft_log::purged::FILE_NAME)
             || name.starts_with(crate::raft_log::snapshot::FILE_NAME);
         if log_file {
@@ -230,6 +294,57 @@ fn empty_log(dir: &Path) -> io::Result<()> {
         }
     }
     crate::io::sync_dir(dir)
+}
+
+/// Rebuild `dir`'s log from `kept`'s segments and durable mark. Each file is
+/// copied under a temporary name and synced, and only then are they renamed
+/// into place, so the directory never holds part of a file under a log
+/// file's name. A cut part way leaves the marker, and the start run again
+/// empties the directory and copies again. The saved commit goes to zero
+/// first: it belongs to the log being replaced, and the kept log's claim is
+/// checked by the caller.
+fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::Result<()> {
+    if kept == dir {
+        return Err(invalid(format!(
+            "{}: a copy cannot start from itself as a kept directory",
+            dir.display()
+        )));
+    }
+    crate::disk_log::store_saved_commit(dir, 0, 0).map_err(io::Error::other)?;
+    empty_log(dir)?;
+    step()?;
+    let mut names = Vec::new();
+    for entry in crate::fs::read_dir(kept)? {
+        let name = entry?.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if parse_segment_file_name(name).is_some() || name == durable_mark::mark_file_name() {
+            names.push(name.to_owned());
+        }
+    }
+    names.sort();
+    for name in &names {
+        let temporary = dir.join(format!("{name}{COPYING}"));
+        let bytes = crate::fs::read(kept.join(name))?;
+        let mut file = crate::fs::File::create(&temporary)?;
+        io::Write::write_all(&mut file, &bytes)?;
+        crate::io::sync_all(&file)?;
+        step()?;
+    }
+    for name in &names {
+        crate::fs::rename(dir.join(format!("{name}{COPYING}")), dir.join(name))?;
+    }
+    crate::io::sync_dir(dir)?;
+    step()
+}
+
+/// Cut every record at or after `end` from `dir`'s log.
+async fn cut_to(dir: &Path, label: &str, config: &LogConfig, end: u64) -> io::Result<()> {
+    let log = crate::DiskLog::open(dir, label, config.clone()).map_err(io::Error::other)?;
+    let cut = log.truncate(end).await.map_err(io::Error::other);
+    let closed = log.close().await.map_err(io::Error::other);
+    cut.and(closed)
 }
 
 fn invalid(message: String) -> io::Error {
