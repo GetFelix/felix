@@ -1185,7 +1185,10 @@ drops may be ones the leader never had. A crash between writing the file and
 that reset leaves them, so the next open finishes the reset before the log
 serves when an install at `index + 1` is still pending in
 `producers.forgotten` and the log ends at or below it. A snapshot then never
-reads those records as the log's own.
+reads those records as the log's own. The reset removes the producer
+snapshot, the head file and any key index snapshot before it drops a record,
+since a crash after the drop is not redone and one of them saved at the old
+tail could pass for the new log's.
 
 Nothing can rebuild this file, so one that is present and does not decode
 fails the open of the Raft log. Absent means nothing was purged.

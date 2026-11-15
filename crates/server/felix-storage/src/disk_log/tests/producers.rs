@@ -1046,6 +1046,9 @@ enum Interrupted {
     InReset,
     /// The purged id was stored and the reset never began.
     BeforeReset,
+    /// The log had rolled at its tail, the base, so a producer snapshot as
+    /// of the base was saved, and the reset dropped the records and stopped.
+    AfterDrop,
 }
 
 /// A Raft log that installed a snapshot at `base` over records of its own
@@ -1063,10 +1066,20 @@ async fn a_reset_cut_short_is_finished_at_open(rounds: usize, interrupted: Inter
     let sender_dir = tempdir().expect("dir");
     let sender = installed_over_a_stray_batch(&sender_dir, base, &cuts, rounds).await;
     let held = sender.tail_offset().await.expect("tail");
+    if let Interrupted::AfterDrop = interrupted {
+        assert_eq!(held, base);
+        assert_eq!(sender.roll_now().await.expect("roll"), base);
+        assert_eq!(saved(&sender_dir).1, base);
+    }
     crate::raft_log::store_purged(sender_dir.path(), tail, sender.accepted_generation())
         .expect("store purged");
-    if let Interrupted::InReset = interrupted {
-        crash_point::watch(sender_dir.path(), Some(0));
+    let stop = match interrupted {
+        Interrupted::BeforeReset => None,
+        Interrupted::InReset => Some(0),
+        Interrupted::AfterDrop => Some(1),
+    };
+    if let Some(stop) = stop {
+        crash_point::watch(sender_dir.path(), Some(stop));
         let crashed = sender.reset_to(base).await;
         crash_point::unwatch(sender_dir.path());
         assert!(crashed.is_err(), "{crashed:?}");
@@ -1093,6 +1106,14 @@ async fn a_reset_cut_short_at_the_snapshot_base_is_finished_at_open() {
     // Two stray records and 12 appends of two end the log at the base.
     a_reset_cut_short_is_finished_at_open(12, Interrupted::BeforeReset).await;
     a_reset_cut_short_is_finished_at_open(12, Interrupted::InReset).await;
+}
+
+/// The reset is not redone once the base moved, so nothing it leaves may
+/// pass for the new log's: here the snapshot a roll saved at the old tail.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_reset_cut_short_after_the_drop_leaves_no_snapshot_of_the_old_log() {
+    a_reset_cut_short_is_finished_at_open(12, Interrupted::AfterDrop).await;
 }
 
 #[cfg(feature = "raft")]

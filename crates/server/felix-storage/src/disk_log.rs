@@ -1411,31 +1411,6 @@ impl DiskLog {
             flusher: LogThread::new("felix-flush"),
         });
 
-        if let FsyncMode::Periodic { interval } = config.fsync_mode {
-            let weak = Arc::downgrade(&inner);
-            let syncer = PeriodicSyncer::spawn(interval, move || {
-                let weak = weak.clone();
-                async move {
-                    match weak.upgrade() {
-                        // The log is gone; report the highest offset so the
-                        // task simply stops doing work.
-                        None => Ok(Offset::MAX),
-                        // Every open log ticks, and most are idle; an fsync
-                        // of a clean file is still a syscall and a flush-thread
-                        // round trip.
-                        Some(inner) if inner.fully_durable() => Ok(inner.durability.durable_upto()),
-                        // Already logged once when it was poisoned; appends
-                        // and commits are what report it from here on.
-                        Some(inner) if inner.check_healthy().is_err() => {
-                            Ok(inner.durability.durable_upto())
-                        }
-                        Some(inner) => inner.durability.force_flush(|| inner.clone().flush()).await,
-                    }
-                }
-            })?;
-            *inner.syncer.lock() = Some(syncer);
-        }
-
         // An install's purge past the tail stores the purged id and then
         // resets. After a crash in between, the records below the id stay,
         // and nothing later is sure to redo it: an append at the id's next
@@ -1464,6 +1439,31 @@ impl DiskLog {
                 );
                 inner.reset_holding(first)?;
             }
+        }
+
+        if let FsyncMode::Periodic { interval } = config.fsync_mode {
+            let weak = Arc::downgrade(&inner);
+            let syncer = PeriodicSyncer::spawn(interval, move || {
+                let weak = weak.clone();
+                async move {
+                    match weak.upgrade() {
+                        // The log is gone; report the highest offset so the
+                        // task simply stops doing work.
+                        None => Ok(Offset::MAX),
+                        // Every open log ticks, and most are idle; an fsync
+                        // of a clean file is still a syscall and a flush-thread
+                        // round trip.
+                        Some(inner) if inner.fully_durable() => Ok(inner.durability.durable_upto()),
+                        // Already logged once when it was poisoned; appends
+                        // and commits are what report it from here on.
+                        Some(inner) if inner.check_healthy().is_err() => {
+                            Ok(inner.durability.durable_upto())
+                        }
+                        Some(inner) => inner.durability.force_flush(|| inner.clone().flush()).await,
+                    }
+                }
+            })?;
+            *inner.syncer.lock() = Some(syncer);
         }
 
         // The floor applies at once to what recovery kept, below the bound.
@@ -2369,6 +2369,7 @@ impl LogInner {
             epochs.truncate_from(offset);
         }
         epochs::store(&self.dir, &epochs)?;
+        self.discard_snapshots()?;
         self.reset_producers(segments)
     }
 
@@ -2431,12 +2432,21 @@ impl LogInner {
         }
     }
 
+    /// Remove the producer snapshot, the head file, and a cache's key index
+    /// snapshot when this log backs a cache, durably. Called before a reset
+    /// or truncation rebuilds from the log: one that came back after a crash
+    /// would be read as describing the records that replaced them. All three
+    /// are rebuilt from the records, so removing them early is safe.
+    fn discard_snapshots(&self) -> Result<()> {
+        head::discard(&self.dir).map_err(StorageError::Io)?;
+        producers::discard(&self.dir).map_err(StorageError::Io)?;
+        crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
+        crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+        Ok(())
+    }
+
     /// Rebuild producer state and the head entries after the log was cut
-    /// back to its tail. The producer snapshot, the head file, and a cache's
-    /// key index snapshot when this log backs a cache, may describe records
-    /// that are gone, so all three are removed first, durably: one that came
-    /// back after a crash would be read as describing the records that
-    /// replaced them.
+    /// back to its tail, once [`Self::discard_snapshots`] has run.
     fn reset_producers(&self, segments: &SegmentSet) -> Result<()> {
         {
             let mut head = self.head.lock();
@@ -2444,10 +2454,6 @@ impl LogInner {
             head.prune_below(segments.base_offset());
             self.publish_head(&head);
         }
-        head::discard(&self.dir).map_err(StorageError::Io)?;
-        producers::discard(&self.dir).map_err(StorageError::Io)?;
-        crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
-        crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
         let (state, saved) = producers::rebuild(&self.dir, segments, None, self.config.raft_log)?;
         self.batch_open
             .store(state.is_open(), std::sync::atomic::Ordering::Release);
@@ -2483,9 +2489,14 @@ impl LogInner {
                 producers.forget_before(base_offset);
                 self.store_forgotten(&producers)?;
             }
+            // Before the drop: a snapshot as of the new base, left by a roll
+            // at the old tail, would pass for the new log's after a crash,
+            // and the open would not redo a reset that already moved the base.
+            self.discard_snapshots()?;
             crash_point::reached(&self.dir).map_err(StorageError::Io)?;
             segments.reset_to(base_offset)?;
             segments.active_mut().sync()?;
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
             // Only now: until the records are gone, a reset redone after
             // a crash has to know it follows an install.
             {
