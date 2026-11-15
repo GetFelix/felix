@@ -38,6 +38,20 @@ impl DiskLog {
         order: Option<&Arc<CommitSequencer>>,
         writers: WrittenBy,
     ) -> Result<std::result::Result<Written, Offset>> {
+        Self::write_batch_keeping(inner, records, condition, order, writers)
+            .await
+            .map(|(written, _records)| written)
+    }
+
+    /// [`Self::write_batch`], handing the records back once they are
+    /// written, or when `condition` does not hold.
+    pub(super) async fn write_batch_keeping(
+        inner: Arc<LogInner>,
+        records: Vec<AppendRecord>,
+        condition: WriteIf,
+        order: Option<&Arc<CommitSequencer>>,
+        writers: WrittenBy,
+    ) -> Result<(std::result::Result<Written, Offset>, Vec<AppendRecord>)> {
         if records.is_empty() {
             return Err(StorageError::InvalidRange);
         }
@@ -106,14 +120,15 @@ impl DiskLog {
             )
             .await
             .map_err(StorageError::Io)?;
-        // Dropped here rather than on the append thread, so neither the batch's
-        // memory nor the log's reference count changes hands per append.
+        // Back here rather than dropped on the append thread, so neither the
+        // batch's memory nor the log's reference count changes hands per
+        // append.
         let (appended, records, appender) = appended;
-        drop((records, appender));
+        drop(appender);
         let appended = appended?;
         let (written, prepare_roll, extension) = match appended {
             Ok(appended) => appended,
-            Err(tail) => return Ok(Err(tail)),
+            Err(tail) => return Ok((Err(tail), records)),
         };
         if let Some(extension) = extension {
             Arc::clone(&inner).extend_reservation(extension);
@@ -172,7 +187,7 @@ impl DiskLog {
             *inner.roll_task.lock() = Some(handle);
         }
 
-        Ok(Ok(written))
+        Ok((Ok(written), records))
     }
 }
 

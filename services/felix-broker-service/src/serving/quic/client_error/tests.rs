@@ -217,7 +217,9 @@ fn every_trim_refusal_has_its_own_code() {
     };
     let reason = |name: &str| Some(name.to_string());
     assert_eq!(
-        classify(E::HeadTrimNotEnabled),
+        classify(E::HeadTrimNotEnabled {
+            feature: "head_trim"
+        }),
         (
             ErrorCode::FeatureNotEnabled,
             RetryClass::Fatal,

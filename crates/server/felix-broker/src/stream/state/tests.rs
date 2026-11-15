@@ -359,3 +359,23 @@ fn recovered_blocks_count_toward_the_budget() {
     assert_eq!(stream.oldest_seq(), 2);
     assert_eq!(stream.tail_seq(), 3);
 }
+
+/// A trim released behind a gap on a broker that no longer leads applies its
+/// floor but leaves the sequence below the gap, so the committed records in
+/// it still reach readers from the pass over the log.
+#[test]
+fn a_released_trim_behind_a_gap_on_a_deposed_broker_keeps_the_sequence() {
+    let stream = stream().on_engine_log();
+    stream.append_batch(&[Bytes::from_static(b"a"), Bytes::from_static(b"b")], 16);
+    assert!(stream.apply_trim(5, 1, None));
+    {
+        let state = stream.log_state.lock();
+        assert_eq!(state.next_seq, 2);
+        let seqs = state.log.iter().map(|entry| entry.seq).collect::<Vec<_>>();
+        assert_eq!(seqs, vec![1]);
+    }
+
+    stream.leads_engine_log.store(true, Ordering::Release);
+    assert!(stream.apply_trim(5, 1, None));
+    assert_eq!(stream.log_state.lock().next_seq, 6);
+}

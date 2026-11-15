@@ -78,6 +78,7 @@ fn every_request() -> Vec<RaftRequest> {
                 payload: Bytes::from_static(b"a record"),
                 producer: None,
                 expected: None,
+                trim: None,
                 written: None,
             },
         ),
@@ -94,6 +95,7 @@ fn every_request() -> Vec<RaftRequest> {
                     len: 1,
                 }),
                 expected: None,
+                trim: None,
                 written: None,
             },
         ),
@@ -109,6 +111,7 @@ fn every_request() -> Vec<RaftRequest> {
                     len: 5,
                 }),
                 expected: None,
+                trim: None,
                 written: None,
             },
         ),
@@ -119,6 +122,18 @@ fn every_request() -> Vec<RaftRequest> {
                 payload: Bytes::from_static(b"a conditional publish"),
                 producer: None,
                 expected: Some(10),
+                trim: None,
+                written: None,
+            },
+        ),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 11),
+            Command {
+                timestamp_micros: 103,
+                payload: Bytes::from_static(b"a trim's headers"),
+                producer: None,
+                expected: None,
+                trim: Some(7),
                 written: None,
             },
         ),
@@ -254,7 +269,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 6);
+    assert_eq!(read.entries.len(), 7);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -463,6 +478,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
                 payload: payload.clone(),
                 producer: None,
                 expected: Some(10),
+                trim: None,
                 written: None,
             },
         )],
@@ -477,12 +493,61 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
     const { assert!(ENTRY_CONDITIONAL > ENTRY_PIECE) };
     // An older build takes 5 the way this one takes any tag it lacks.
     let mut unknown = BytesMut::from(&bytes[..]);
-    unknown[at] = ENTRY_CONDITIONAL + 1;
+    unknown[at] = ENTRY_TRIM + 1;
     let refused = decode_request(unknown.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
         "{refused}"
     );
+}
+
+/// A trim is a new tag too. A build without it refuses the entry by name
+/// rather than store the trim's headers as a client record.
+#[test]
+fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
+    let payload = Bytes::from_static(b"a trim's headers");
+    let trim = |expected, producer| Command {
+        timestamp_micros: 103,
+        payload: payload.clone(),
+        producer,
+        expected,
+        trim: Some(7),
+        written: None,
+    };
+    let append = |command| {
+        request(Request::Append(AppendEntriesRequest {
+            vote: vote(2, true),
+            prev_log_id: None,
+            entries: vec![EntryOf::<ShardTypes>::new_normal(log_id(2, 11), command)],
+            leader_commit: None,
+        }))
+    };
+    let bytes = encode_request(&append(trim(None, None))).expect("encode");
+    assert_eq!(bytes[0], 5, "the layout is unchanged");
+    // The tag, then the floor, the append time, the length and the headers.
+    let at = bytes.len() - payload.len() - 4 - 8 - 8 - 1;
+    assert_eq!(bytes[at], ENTRY_TRIM);
+    assert_eq!(bytes[at + 1..at + 9], 7u64.to_be_bytes());
+    // Tags 0 to 5 are what the build before this one reads.
+    const { assert!(ENTRY_TRIM == ENTRY_CONDITIONAL + 1) };
+    let mut older = BytesMut::from(&bytes[..]);
+    older[at] = ENTRY_TRIM + 1;
+    let refused = decode_request(older.freeze()).expect_err("refused");
+    assert!(
+        refused.to_string().contains("is not an entry payload"),
+        "{refused}"
+    );
+    // Entries read back from the log hold the outcome alone, so a trim with
+    // its condition, or one naming a producer, is never sent.
+    let producer = ProducerMark {
+        producer_id: 1,
+        sequence: 1,
+        position: 0,
+        len: 1,
+    };
+    for command in [trim(Some(11), None), trim(None, Some(producer))] {
+        encode_request(&append(command)).expect_err("not sent");
+    }
 }
 
 /// A peer cannot make this broker reserve room for entries the body does
@@ -539,6 +604,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                     payload: record.clone(),
                     producer: None,
                     expected: None,
+                    trim: None,
                     written: None,
                 },
             )
@@ -586,6 +652,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                     payload: record.clone(),
                     producer: None,
                     expected: None,
+                    trim: None,
                     written: None,
                 },
             )
@@ -683,6 +750,7 @@ fn an_entry_that_continues_a_batch_is_refused() {
         payload: Bytes::from_static(b"a record"),
         producer: None,
         expected: None,
+        trim: None,
         written: None,
     };
     let written = request(Request::Append(AppendEntriesRequest {

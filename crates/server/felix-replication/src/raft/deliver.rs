@@ -12,8 +12,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use felix_broker::{
     Broker, BrokerError, IdempotentOutcome, IdempotentProposal, LogDelivery, ProducerTurn,
-    ProposalCommitted, ProposalFailed, ProposedPublish, PublishOutcome, ReadBound, SequenceReuse,
-    StreamHandle,
+    ProposalCommitted, ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome, ReadBound,
+    SequenceReuse, StreamHandle,
 };
 use futures::future::BoxFuture;
 use tokio::sync::oneshot;
@@ -100,6 +100,7 @@ impl RaftEngine {
                 term,
                 records,
                 None,
+                None,
                 ack,
                 on_lease,
                 on_majority,
@@ -159,6 +160,7 @@ impl RaftEngine {
                 term,
                 records,
                 Some(expected),
+                None,
                 ack,
                 None,
                 None,
@@ -173,6 +175,59 @@ impl RaftEngine {
         )
     }
 
+    /// Hide the shard's records below `before`, only if its next offset is
+    /// `expected`: a head trim, with the hybrid's checks and answers
+    /// ([`Broker::propose_trim_at`]).
+    ///
+    /// The trim is one entry, its record the headers, conditional on its
+    /// final index as [`Self::publish_at`] is: off `expected` the leader's
+    /// log stores a blank there, and the answer is
+    /// [`CommitError::OffsetMismatch`] with the offset after it. Committed,
+    /// the entry sets the floor on every member's log, which deletes
+    /// nothing below it until openraft purges the log. Answered once the
+    /// floor is in this broker's replay ring.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn trim_at(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: Option<u64>,
+        before: u64,
+        expected: u64,
+        headers: Bytes,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> Result<ProposedTrim<CommitError>, BrokerError> {
+        let proposed = broker
+            .propose_trim_at(
+                stream,
+                before,
+                expected,
+                headers.clone(),
+                timeout,
+                |tail| CommitError::OffsetMismatch { tail },
+                self.proposer(
+                    shard,
+                    term,
+                    vec![headers],
+                    Some(expected),
+                    Some(before),
+                    ack,
+                    None,
+                    None,
+                    timeout,
+                ),
+            )
+            .await?;
+        Ok(
+            proposed.answer_within(timeout, move || CommitError::TimedOut {
+                what: "trim",
+                timeout,
+            }),
+        )
+    }
+
     /// What [`Broker::propose_publish`] is handed to queue a stream batch.
     #[allow(clippy::too_many_arguments)]
     fn proposer(
@@ -181,6 +236,7 @@ impl RaftEngine {
         term: Option<u64>,
         records: Vec<Bytes>,
         expected: Option<u64>,
+        trim: Option<u64>,
         ack: AckAt,
         on_lease: Option<oneshot::Sender<u64>>,
         on_majority: Option<(AckAt, oneshot::Sender<u64>)>,
@@ -203,6 +259,7 @@ impl RaftEngine {
                 term,
                 producer: None,
                 expected,
+                trim,
             };
             let written = engine.propose_reaching(&shard, batch);
             let batch = Proposed {
@@ -289,6 +346,7 @@ impl RaftEngine {
                     term: Some(term),
                     producer: Some(producer),
                     expected: None,
+                    trim: None,
                 };
                 let written = self.propose_reaching(shard, batch);
                 // On a task of its own, so the turn is given up when

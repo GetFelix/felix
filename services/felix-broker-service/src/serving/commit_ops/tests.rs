@@ -240,47 +240,20 @@ async fn a_state_read_confirms_leadership_through_the_engine() {
         .expect_err("the lease lapsed");
 }
 
-/// **A trim to a Raft shard is refused by name, with nothing written.** Its
-/// group has no trim entry yet, and the trim may not reach the hybrid's
-/// fence, which never opens for the shard.
-#[cfg(feature = "raft")]
-#[tokio::test]
-async fn a_trim_to_a_raft_shard_is_refused_by_name() {
-    use crate::shards::raft::tests as fixture;
-    use crate::shards::routing::EngineShards;
-
-    let root = tempfile::tempdir().expect("tempdir");
-    let broker = fixture::broker(root.path()).await;
-    let shards = fixture::shards(&broker);
-    let orders = fixture::key("orders", 0);
-    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
-    shards.take(&mut fixture::assignments([assigned])).await;
-    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
-    let publish_ctx = build_publish_context(
-        Arc::clone(&broker),
-        &BrokerConfig::default(),
-        ClusterContext {
-            engine: Arc::new(fixture::engine(&shards)),
-            ..ClusterContext::default()
-        },
-    );
-
-    let trimmed = trim_at(
-        &broker,
-        &publish_ctx,
-        "t1",
-        "ns",
-        "orders",
-        0,
-        0,
-        0,
-        Bytes::new(),
-    )
-    .await;
-
-    let Err(NotWritten::Refused(err)) = trimmed else {
-        panic!("a trim on a Raft shard was not refused");
+/// **A stalled Raft trim is answered as the hybrid answers one**: the
+/// hybrid's `unacknowledged` trim timeout at the offset it was proposed at,
+/// not the quorum timeout its engine reports.
+#[test]
+fn a_raft_trim_that_does_not_commit_in_time_is_the_hybrids_trim_timeout() {
+    let stalled = TrimFailed::Engine(CommitError::TimedOut {
+        what: "publish",
+        timeout: Duration::from_secs(30),
+    });
+    let NotWritten::Refused(raft) = raft_trim_failed(stalled, 7) else {
+        panic!("a timeout is a refusal");
     };
-    assert_eq!(err.message(), "a stream on Raft does not take trims");
-    EngineShards::shutdown(&*shards).await;
+    let timed_out = BrokerError::TrimTimedOut { offset: 7 };
+    let hybrid = ClientError::from_broker(&timed_out, timed_out.to_string());
+    assert_eq!(raft.code(), &felix_wire::ErrorCode::Unacknowledged);
+    assert_eq!(raft, hybrid, "the hybrid's answer");
 }

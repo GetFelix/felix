@@ -1368,6 +1368,9 @@ async fn an_open_member_holds_its_log_directory() {
 pub(crate) struct Loopback {
     runtimes: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
     cut: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Brokers cut off right after the next append with entries reaches
+    /// them, so they hold the entries but never hear them committed.
+    cut_after_entries: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Loopback {
@@ -1384,6 +1387,10 @@ impl RaftTransport for Loopback {
         if self.cut.lock().contains(&to) {
             return Err(Refused::Unreachable(format!("broker {to} is cut off")));
         }
+        let cut_after = request.carries_entries() && self.cut_after_entries.lock().remove(&to);
+        if cut_after {
+            self.cut.lock().insert(to.clone());
+        }
         let runtime = self.runtimes.lock().get(&to).cloned();
         match runtime {
             Some(runtime) => runtime.handle(request).await,
@@ -1399,7 +1406,7 @@ pub(crate) struct Member {
     pub(crate) broker: Arc<Broker>,
     pub(crate) shards: Arc<RaftShards>,
     pub(crate) engine: Arc<crate::shards::routing::StreamEngine>,
-    _root: tempfile::TempDir,
+    pub(crate) root: tempfile::TempDir,
 }
 
 impl Member {
@@ -1467,7 +1474,7 @@ impl Member {
             broker,
             shards,
             engine,
-            _root: root,
+            root,
         }
     }
 
@@ -2197,3 +2204,5 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
         FsyncMode::OnCommit
     );
 }
+
+mod trim;

@@ -65,7 +65,7 @@ impl Broker {
             + 'static,
         E: Send + 'static,
     {
-        self.propose(handle, payloads, None, stalled_after, propose)
+        self.propose(handle, payloads, None, None, stalled_after, propose)
     }
 
     /// [`Self::propose_publish`] for a conditional publish: one record that
@@ -110,14 +110,22 @@ impl Broker {
             offset: expected,
             mismatch: Box::new(mismatch),
         };
-        self.propose(handle, payload, Some(expected), stalled_after, propose)
+        self.propose(
+            handle,
+            payload,
+            Some(expected),
+            None,
+            stalled_after,
+            propose,
+        )
     }
 
-    fn propose<F, E>(
+    pub(in crate::broker) fn propose<F, E>(
         &self,
         handle: &StreamHandle,
         payloads: Vec<Bytes>,
         expected: Option<Expected<E>>,
+        trim: Option<HeldTrim>,
         stalled_after: Duration,
         propose: impl FnOnce(u64) -> F,
     ) -> Result<ProposedPublish<E>>
@@ -160,6 +168,7 @@ impl Broker {
                 payloads,
                 timestamp_micros,
                 expected,
+                trim,
                 handed.queued,
                 handed.turn,
             ))),
@@ -344,9 +353,9 @@ const SEVERAL_CONDITIONAL: &str = "conditional publishes of more than one record
 
 /// The offset a conditional publish must land at, and its answer when it
 /// does not.
-struct Expected<E> {
-    offset: u64,
-    mismatch: Box<dyn FnOnce(u64) -> E + Send>,
+pub(in crate::broker) struct Expected<E> {
+    pub(in crate::broker) offset: u64,
+    pub(in crate::broker) mismatch: Box<dyn FnOnce(u64) -> E + Send>,
 }
 
 /// A producer's turn on a stream. While it is held, no other batch of the
@@ -549,11 +558,18 @@ impl<E: Send + 'static> Drop for ProposedPublish<E> {
 /// A batch the engine gave up on still takes its turn, as a gap: its
 /// records may have committed, so the replay ring restarts above it and a
 /// reader resuming below it reads the log, never a ring that skips it.
+/// A trim's floor, and who is told once it reaches the ring.
+pub(in crate::broker) struct HeldTrim {
+    pub(in crate::broker) before: u64,
+    pub(in crate::broker) applied: oneshot::Sender<()>,
+}
+
 async fn finish<E>(
     handle: StreamHandle,
     payloads: Vec<Bytes>,
     timestamp_micros: u64,
     expected: Option<Expected<E>>,
+    trim: Option<HeldTrim>,
     committed: Committing<E>,
     turn: CommitTurn<'static>,
 ) -> std::result::Result<PublishOutcome, E> {
@@ -582,6 +598,15 @@ async fn finish<E>(
     let state = &handle.state;
     let batch = match (&committed, first_offset) {
         (Ok(_), Some(first_offset)) if missed.is_some() => HeldBatch::blank(first_offset),
+        (Ok(at), Some(first_offset)) if let Some(trim) = trim => HeldBatch {
+            payloads,
+            first_offset,
+            trim: Some(trim.before),
+            trim_applied: Some(trim.applied),
+            skipped_before: at.skipped_before,
+            gap: false,
+            ..HeldBatch::gap(None)
+        },
         (Ok(at), Some(first_offset)) => HeldBatch {
             payloads,
             publisher: None,

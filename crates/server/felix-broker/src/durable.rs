@@ -563,7 +563,7 @@ impl StreamLog {
             }
         }
         self.log
-            .append_pending_at(first_offset, &records, writers)
+            .append_pending_at(first_offset, records, writers)
             .await
             .map_err(BrokerError::from)
     }
@@ -1131,6 +1131,16 @@ impl StreamLog {
     /// The trim record that set the head floor, if one applies.
     pub fn head_trim(&self) -> Option<felix_storage::disk_log::HeadTrim> {
         self.log.head_trim()
+    }
+
+    /// The highest floor of trims a Raft log holds that its member has not
+    /// seen committed. Their leader may already have answered them, so the
+    /// floor is not yet the one readers below it must get.
+    pub(crate) fn raft_pending_trim_floor(&self) -> Option<Offset> {
+        if !self.log.config().raft_log {
+            return None;
+        }
+        self.log.pending_trim_floor()
     }
 
     /// [`BrokerError::CursorTooOld`] for a read from `requested`, below

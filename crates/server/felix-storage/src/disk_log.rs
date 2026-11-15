@@ -326,6 +326,18 @@ impl DiskLog {
         self.inner.head_trim()
     }
 
+    /// The highest floor among trim records the apply bound has not passed
+    /// yet, below which [`Self::readable_base`] may still rise without a new
+    /// write. `None` when no trim waits.
+    pub fn pending_trim_floor(&self) -> Option<Offset> {
+        if !self.inner.head_pending.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut head = self.inner.head.lock();
+        self.inner.apply_head(&mut head);
+        head.pending_floor()
+    }
+
     /// Exclusive bound on durable offsets: everything below it survives a crash.
     pub fn durable_offset(&self) -> Offset {
         self.inner.durability.durable_upto()
@@ -584,19 +596,34 @@ impl DiskLog {
     pub async fn append_pending_at(
         &self,
         first_offset: Offset,
-        records: &[AppendRecord],
+        records: Vec<AppendRecord>,
         writers: WrittenBy,
     ) -> Result<Option<PendingAppend>> {
+        Ok(self
+            .append_pending_at_keeping(first_offset, records, writers)
+            .await?
+            .map(|(pending, _records)| pending))
+    }
+
+    /// [`DiskLog::append_pending_at`], handing the records back once they
+    /// are written, so a caller that keeps them, as the Raft log's tail
+    /// cache does, needs no copy of its own.
+    pub(crate) async fn append_pending_at_keeping(
+        &self,
+        first_offset: Offset,
+        records: Vec<AppendRecord>,
+        writers: WrittenBy,
+    ) -> Result<Option<(PendingAppend, Vec<AppendRecord>)>> {
         let inner = Arc::clone(&self.inner);
-        let written = Self::write_batch(
+        let (written, records) = Self::write_batch_keeping(
             inner,
-            records.to_vec(),
+            records,
             append::WriteIf::At(first_offset),
             None,
             writers,
         )
         .await?;
-        Ok(written.ok().map(|written| written.pending))
+        Ok(written.ok().map(|written| (written.pending, records)))
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
@@ -2325,7 +2352,9 @@ impl LogInner {
     /// asked to hide.
     fn head_apply_bound(&self) -> Offset {
         let durable = self.durability.durable_upto();
-        if self.hold_at_commit.load(Ordering::Acquire) {
+        // A Raft log's entries above the commit may still be cut by a later
+        // leader, so its trims apply at the commit whatever the hold says.
+        if self.config.raft_log || self.hold_at_commit.load(Ordering::Acquire) {
             durable.min(self.commit_offset.load(Ordering::Acquire))
         } else {
             durable

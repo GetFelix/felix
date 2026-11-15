@@ -185,6 +185,11 @@ pub(crate) struct Command {
     /// on a command read back
     /// from the log, which holds only the outcome.
     pub(crate) expected: Option<u64>,
+    /// Set on a head trim: the floor reads stop below once the entry is
+    /// committed. The payload is the trim's headers. A trim is always
+    /// conditional, so it is proposed with `expected` set, and read back
+    /// from the log it holds `trim` alone.
+    pub(crate) trim: Option<u64>,
     /// Set by a proposer that waits to hear where the record was written.
     /// It rides on the entry from `client_write` to the leader's own append
     /// and nowhere else: it is not in the record and not in a message, so a
@@ -202,12 +207,14 @@ impl PartialEq for Command {
             payload,
             producer,
             expected,
+            trim,
             written: _,
         } = self;
         *timestamp_micros == other.timestamp_micros
             && *payload == other.payload
             && *producer == other.producer
             && *expected == other.expected
+            && *trim == other.trim
     }
 }
 
@@ -222,11 +229,20 @@ impl Command {
     pub(crate) fn blank_at(&self, index: u64) -> bool {
         self.expected.is_some_and(|expected| expected != index)
     }
+
+    /// Whether the command, written at `index`, holds a client record. A
+    /// trim holds only its floor and headers.
+    pub(crate) fn holds_record_at(&self, index: u64) -> bool {
+        self.trim.is_none() && !self.blank_at(index)
+    }
 }
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "record of {} bytes", self.payload.len())
+        match self.trim {
+            Some(before) => write!(f, "trim below {before}"),
+            None => write!(f, "record of {} bytes", self.payload.len()),
+        }
     }
 }
 

@@ -16,6 +16,10 @@ use crate::stream::{ReadBound, Subscription, SubscriptionGuard};
 /// that changed another way, such as a lapsed lease.
 pub(super) const COMMIT_RECHECK: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How long a read on a Raft member waits for a trim it holds to commit
+/// before it is refused as retryable.
+const PENDING_TRIM_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Broker {
     /// Subscribe to records published to one shard from now on.
     pub async fn subscribe(
@@ -107,6 +111,9 @@ impl Broker {
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
         let stream_state = handle.state;
+        if let Some(log) = &stream_state.durable {
+            await_pending_trim(log, Some(cursor.next_seq), stream, shard).await?;
+        }
 
         // Backlog and registration are captured together. Taking the snapshot
         // first and registering after left a window in which a publish landed
@@ -358,6 +365,7 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
+        await_pending_trim(log, Some(from_offset), stream, shard).await?;
         let mut from_offset = from_offset;
         loop {
             let appended = Arc::clone(&handle.state.appended);
@@ -474,6 +482,15 @@ async fn resolve_position(
     start: StartPosition,
 ) -> Result<Position> {
     let durable = stream_state.durable.clone();
+    if let Some(log) = &durable {
+        // `Latest` starts at the tail, above any floor.
+        let from = match start {
+            StartPosition::Latest => Some(u64::MAX),
+            StartPosition::Earliest => None,
+            StartPosition::Offset(offset) => Some(offset),
+        };
+        await_pending_trim(log, from, stream, shard).await?;
+    }
     let tail = match &durable {
         Some(log) => log.tail_offset().await?,
         None => stream_state.tail_seq(),
@@ -541,6 +558,38 @@ pub(super) fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u
         ReadBound::Settling => Err(not_readable(stream, shard, NotReadable::Settling)),
         ReadBound::Refused => Err(not_readable(stream, shard, NotReadable::Refused)),
     }
+}
+
+/// Wait until a Raft member has seen committed every trim its log holds
+/// whose floor is above `from`, the read's start (`None` for the earliest
+/// readable offset). A read at or above every pending floor goes ahead.
+///
+/// The leader answers a trim once it commits, and a member's floor applies
+/// only once its own commit passes the trim, which on a follower or a member
+/// restarted behind it comes later. Reading before then could serve records
+/// below a floor a client was already told about. A member that never got
+/// the trim entry is not covered: see `docs/per-shard-raft.md`, "Head trims".
+async fn await_pending_trim(
+    log: &crate::StreamLog,
+    from: Option<u64>,
+    stream: &str,
+    shard: u32,
+) -> Result<()> {
+    let held = || {
+        log.raft_pending_trim_floor()
+            .is_some_and(|floor| from.is_none_or(|from| from < floor))
+    };
+    if !held() {
+        return Ok(());
+    }
+    let deadline = tokio::time::Instant::now() + PENDING_TRIM_WAIT;
+    while held() {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(not_readable(stream, shard, NotReadable::Settling));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+    Ok(())
 }
 
 /// Refuse a durable read from `requested` below the readable base, checked
