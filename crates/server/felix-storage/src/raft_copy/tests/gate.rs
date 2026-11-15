@@ -2,6 +2,11 @@
 //! storage id before any member opens.
 
 use super::*;
+use crate::raft_log::RaftLog;
+use crate::raft_log::tests::writes::append;
+use crate::raft_log::tests::{Codec, Types, normal};
+
+type Log = RaftLog<Types, Codec>;
 
 /// Three mark writes, so the root's sequence is 3.
 async fn three_writes(root: &Root) {
@@ -65,6 +70,55 @@ async fn a_root_behind_the_witness_fails_the_gate_and_rotates() {
         check(root.path(), NO_EVIDENCE).expect("gate"),
         Gate::Passed(_)
     ));
+}
+
+/// Under the batched log mark, a root put back to before a batch with no
+/// vote since is caught too: the batch is a synced mark write, so the
+/// witness holds its sequence. Only a root put back inside one interval
+/// passes (`docs/per-shard-raft.md`, "What this does not catch").
+#[tokio::test]
+async fn a_root_behind_a_batched_log_mark_fails_the_gate() {
+    let root = Root::new();
+    let copies = root.open();
+    let opened = copies
+        .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", config())
+        .await
+        .expect("open copy");
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    log.mark_with(
+        opened.marks.clone(),
+        LogMarkMode::Batched(std::time::Duration::from_secs(3600)),
+    )
+    .expect("marks");
+    append(&mut log, &[normal(1, 0, "a")])
+        .await
+        .expect("append")
+        .await
+        .expect("flush");
+    copies.mark_log().mark_batched().await.expect("batch");
+    let backup = std::fs::read(marks_file(&root)).expect("backup");
+    let at_backup = copies.mark_log().sequence();
+    append(&mut log, &[normal(1, 1, "b")])
+        .await
+        .expect("append")
+        .await
+        .expect("flush");
+    copies.mark_log().mark_batched().await.expect("batch");
+    assert_eq!(copies.mark_log().sequence(), at_backup + 1);
+    drop(log);
+    opened.log.close().await.expect("close");
+    drop(copies);
+    std::fs::write(marks_file(&root), backup).expect("restore");
+
+    match root.gate(None) {
+        Gate::Behind(behind) => {
+            assert_eq!(
+                (behind.root, behind.witness),
+                (at_backup, Some(at_backup + 1))
+            );
+        }
+        other => panic!("a root behind its batched mark was not behind: {other:?}"),
+    }
 }
 
 /// The rotations outside the gate (a restore, a crash under relaxed fsync,

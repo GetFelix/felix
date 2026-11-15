@@ -230,6 +230,175 @@ async fn a_target_without_the_leaders_broker_leaves_its_member_out() {
         log.close().await.expect("close");
     }
 }
+/// The broker's members batch their log marks: a run of writes costs each
+/// root a few synced mark writes (the votes and one batch a second), not one
+/// per flush round, and the mark still catches up with the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_shipped_log_mark_is_one_write_a_second() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.push(opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let first = cluster.write(0, b"first").await;
+    cluster.committed_everywhere(0, first).await;
+    let term = |broker: &str| {
+        cluster
+            .runtime(broker)
+            .status(&shard(0))
+            .expect("status")
+            .term
+    };
+    let before: HashMap<_, _> = BROKERS
+        .iter()
+        .map(|broker| {
+            let sequence = roots.roots[broker].mark_log().sequence();
+            (*broker, (sequence, term(broker)))
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let mut last = first;
+    for _ in 0..100 {
+        last = cluster.write(0, b"record").await;
+    }
+    cluster.committed_everywhere(0, last).await;
+    let seconds = started.elapsed().as_secs_f64().ceil() as u64;
+    for broker in BROKERS {
+        let (sequence, at) = before[broker];
+        let writes = roots.roots[broker].mark_log().sequence() - sequence;
+        // A batch a second, one more for the tick either side, and an
+        // election on a loaded runner costs a root a vote and its commit
+        // (one spare). An exact mark would take about 100.
+        let terms = term(broker) - at;
+        assert!(
+            writes <= seconds + 2 + 3 * terms,
+            "{broker}: {writes} mark writes for 100 writes in {seconds} s over {terms} terms"
+        );
+    }
+    let name = runtime::mark_name(&shard(0));
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    for broker in BROKERS {
+        while roots.roots[broker]
+            .mark_log()
+            .marks(&name)
+            .and_then(|marks| marks.log)
+            .is_none_or(|at| at.index < last)
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{broker}: the batched mark never caught up"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.expect("close");
+    }
+}
+
+/// One broker's copy under a batch that never ticks again after the open,
+/// with five records written.
+async fn written_under_an_idle_batch(cluster: &mut Cluster, roots: &Roots) -> (OpenedMember, u64) {
+    let opened = cluster
+        .runtime("a")
+        .open_copy(
+            group(0),
+            &roots.shard_dir("a"),
+            log_config(),
+            &roots.roots["a"],
+        )
+        .await
+        .expect("open copy");
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), BTreeSet::from([opened.member.clone()]))
+        .await
+        .expect("initialize");
+    let mut last = 0;
+    for _ in 0..5 {
+        last = cluster.write(0, b"record").await;
+    }
+    assert!(log_mark(roots) < Some(last), "the batch ran");
+    (opened, last)
+}
+
+fn idle_batch() -> Cluster {
+    Cluster::with(
+        RuntimeConfig {
+            log_mark: felix_storage::raft_copy::LogMarkMode::Batched(Duration::from_secs(3600)),
+            ..timers()
+        },
+        true,
+    )
+}
+
+fn log_mark(roots: &Roots) -> Option<u64> {
+    roots.roots["a"]
+        .mark_log()
+        .marks(&runtime::mark_name(&shard(0)))
+        .and_then(|marks| marks.log)
+        .map(|at| at.index)
+}
+
+/// A copy closed before its batch ran comes back with its log mark at what
+/// it recovered, before any append: otherwise the mark trails the log until
+/// the next write, however long that is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reopened_copy_marks_what_it_recovered() {
+    let mut cluster = idle_batch();
+    let roots = Roots::new();
+    let (first, last) = written_under_an_idle_batch(&mut cluster, &roots).await;
+    assert!(cluster.runtime("a").close(&shard(0)).await);
+    first.log.close().await.expect("close");
+    assert!(log_mark(&roots) < Some(last), "the close marked the log");
+
+    let second = cluster
+        .runtime("a")
+        .open_copy(
+            group(0),
+            &roots.shard_dir("a"),
+            log_config(),
+            &roots.roots["a"],
+        )
+        .await
+        .expect("reopen");
+    assert_eq!(log_mark(&roots), Some(last));
+    cluster.stop().await;
+    second.log.close().await.ok();
+}
+
+/// A planned stop writes the batched log marks once more, so they end at
+/// the flushed log instead of up to a batch interval behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_stop_writes_the_last_batch() {
+    let mut cluster = idle_batch();
+    let roots = Roots::new();
+    let (opened, last) = written_under_an_idle_batch(&mut cluster, &roots).await;
+    cluster.stop().await;
+    assert_eq!(log_mark(&roots), Some(last));
+    opened.log.close().await.expect("close");
+}
+
 /// A copy whose directory was wiped comes back under a new id. A request
 /// for the old id is refused, the group still counts the old id as its
 /// voter, and the new copy never votes: the old promise is not made again

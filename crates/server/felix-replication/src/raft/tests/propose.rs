@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
 use felix_storage::log::ReadRange;
 use felix_storage::raft_log::LogPositions;
+use felix_storage::waiters::Queue;
 use futures::FutureExt;
 use openraft::entry::RaftEntry;
 use openraft::network::RPCOption;
@@ -555,6 +556,7 @@ async fn a_token_does_not_leave_with_an_append() {
             Duration::from_millis(200),
         )),
         Arc::new(super::super::reach::Refusals::new(group(0))),
+        Arc::new(timers().raft(ShardKind::Stream).expect("timers")),
     );
     let (token, written) = WrittenToken::channel();
     let command = Command {
@@ -902,6 +904,7 @@ struct Signals {
     last: Option<oneshot::Sender<LogPoint>>,
     answer: Option<oneshot::Sender<Result<Span, Unacknowledged>>>,
     positions: watch::Sender<LogPositions>,
+    flushes: Queue<(u64, u64)>,
     leading: watch::Sender<(bool, u64)>,
     stop: CancellationToken,
     wait: Pin<Box<dyn Future<Output = Result<Written, Unacknowledged>> + Send>>,
@@ -923,6 +926,8 @@ fn waiting(ack: AckAt) -> Signals {
     let ((first, first_at), (last, last_at)) = (token(), token());
     let (answer, answered) = oneshot::channel();
     let (positions, flushed) = watch::channel(LogPositions::default());
+    let flushes = Queue::new();
+    let flush_waiters = flushes.waiters();
     let (leading, leads) = watch::channel((true, TERM));
     let stop = CancellationToken::new();
     let waiting = Waiting {
@@ -937,9 +942,16 @@ fn waiting(ack: AckAt) -> Signals {
         last: Some(last),
         answer: Some(answer),
         positions,
+        flushes,
         leading,
         stop: stop.clone(),
-        wait: Box::pin(acknowledged(waiting, flushed, Told(leads), stop)),
+        wait: Box::pin(acknowledged(
+            waiting,
+            flushed,
+            flush_waiters,
+            Told(leads),
+            stop,
+        )),
     }
 }
 
@@ -951,6 +963,7 @@ impl Signals {
 
     fn flushed(&self, flushed: LogPoint) {
         self.positions.send_modify(|at| at.flushed = Some(flushed));
+        self.flushes.advance(Some((flushed.term, flushed.index)));
     }
 
     /// What the wait has answered, if it has.

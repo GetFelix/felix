@@ -315,7 +315,7 @@ What the gate cannot see:
   with no vote saved since. Example: a mark batch is written, the root is
   copied, C acknowledges R, C is killed before the next batch, and the
   copy is put back. This is the residual of "What this does not catch"
-  below at the scale of a root, and Questions, 11 decides both. The
+  below at the scale of a root, and Questions, 11 accepts both. The
   witness cannot count appends itself, because an ordinary crash would
   then leave it ahead of the root and read as a restore.
 - **Without a witness,** a root restored from a backup newer than the last
@@ -457,15 +457,42 @@ it and treat it as a copy that may hold less than it reported.
 > leader and a follower whose flush then fails, with the third member cut
 > off; the record survives and the follower does not vote).
 
-**What this does not catch.** A single shard directory that goes back to a
-state younger than one mark interval, with no vote saved since, passes
-both checks. A steady leader's term does not change, so the copy's vote
-equals its mark, and its log is above the trailing floor. Example: A and C
-acknowledge R inside the last interval, C's shard directory goes back to
-before R, A dies, and C votes for B, which lacks R. No leader is left to
-notice. Whole-root restores are caught by the gate, down to the window
-named under "The root sequence". Whether to accept this
-residual or pay for an exact mark is Questions, 11.
+**What this does not catch.** Two restores to a state no older than the
+last mark write, with no vote saved since, pass every check. The batch runs
+once a second, so that is about the last second, longer while the mark
+writer is backed up behind its own fsync or queued votes, and about six
+seconds at most (see below):
+
+- **One shard directory** put back to such a state. A steady leader's term does not change, so the copy's vote equals
+  its mark, and its log is not below the trailing mark. Example: A and C
+  acknowledge R inside the last interval, C's shard directory goes back to
+  before R, A dies, and C votes for B, which lacks R. No leader is left to
+  notice.
+- **The whole root** put back, in the same run, to a copy taken after the
+  last mark write. The witness holds the sequence the copy holds, so the
+  gate passes it ("The root sequence").
+
+Anything older is caught: the next batch raises the mark above the copy's
+log and the root's sequence above the copy's, so a restored directory
+rotates and a restored root fails the gate. A member that opens marks what
+it recovered at once (`RaftLog::mark_recovered`), so an idle copy after a
+restart does not keep an old mark. A batch write that fails stops the
+root's mark log: from then on every shard on the root fails its appends and
+votes until the broker restarts, rather than let the log run ahead of a
+mark that no longer moves. A write that hangs is not a failure. Once the
+marks are five intervals old, appends on the root's batched shards wait
+until a batch is written, then go on; nothing fails and nothing restarts.
+The age is checked once an interval, so no acknowledged entry is more than
+about six seconds ahead of its mark. While the write hangs, a vote waits on
+the same mark writer, so votes wait too rather than fail. The hybrid engine
+and an exact mark also stall on a hung disk and resume when it returns.
+`felix_storage_raft_log_mark_age_seconds` shows how far behind the marks
+are, and a warning is logged each second they are more than one interval
+behind. A planned stop writes one last batch per data root after the
+members close, waiting at most five seconds in all, so the marks end at the
+flushed logs. A failed exact mark write fails the same way as a batch. Wipes, lost roots and crashes
+do not depend on the log mark at all. The design accepts this residual
+(Questions, 11); restoring one shard directory is unsupported.
 
 `Config::allow_log_reversion` stays off for shard groups. It lets a voter
 come back with a shorter log under the same id. Off, a leader that sees a
@@ -496,9 +523,14 @@ directory whose log was poisoned in its last run is rotated before its log is op
 only from a `GatePassed`, which the gate (`raft_copy::check`) returns for a
 root that passed, or `Behind::rotate` returns after giving the root a new
 storage id. An unchecked root yields none, so no member opens on it. `GroupRuntime::open_copy` opens a
-member that way. The log mark is exact by default (`LogMarkMode::Exact`,
-synced before the flush is reported to Raft) and can be batched
-(`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
+member that way. The broker batches the log mark
+(`LogMarkMode::Batched`, from `RuntimeConfig::default`): once a second, one
+synced write carries the flushed position of every shard on the root whose
+position moved. The batch reads the position a flush has already covered,
+never the written one, so a mark is never above what is on disk. A vote
+mark is not batched: `save_vote` returns only after it is synced and the
+witness has heard it. `LogMarkMode::Exact` is still there for tests: it
+syncs the mark before the flush is reported to Raft (Questions, 11).
 `felix_replication::raft::open_root` runs the gate for a broker: it asks
 the control plane for its copy, rotates a root that is behind and returns
 it unopened (`RootOpened::Rotated`, on which the broker stops), and checks
@@ -1413,10 +1445,14 @@ Nothing is negotiated. Each side acts only on what it has seen:
   the timers it was configured with.
 - A leader goes on heartbeating at the short interval, naming the idle gap,
   until every follower has answered a message that named it. Only then
-  does it slow down. Sending an entry voids those answers and makes the
+  does it slow down. Sending a new entry voids those answers and makes the
   next heartbeat due within 200 ms. A publish does the same when it hands
   its batch to the group, before anything is sent. So a group with one
   member, or with no follower in reach, is fast again on its first write.
+- An entry is new the first time any append carries it. Sending it again,
+  to a follower that did not take it or to one catching up, does not
+  count. So a follower that is down does not keep its leader at the short
+  interval by being retried.
 - A follower that restarts has forgotten the gap and may stand as soon as
   openraft lets it. So a message a follower does not take, because it was
   lost, refused or rejected, voids that follower's answer too. The leader
@@ -1553,7 +1589,8 @@ leave by retention and never because a snapshot was taken; and
 `allow_log_reversion` off (Questions, 2). Every log is opened with `purge_within`, so a purge
 past the stored snapshot is refused.
 
-The retry delays are openraft's defaults. After a call to a follower is
+The retry delays start as openraft's defaults; a stream shard's grow
+longer while a broker is down (below). After a call to a follower is
 refused, openraft waits before it sends that follower's stream again:
 200, 400 and 800 ms, then 1 s each, and only a call that succeeds ends the
 wait. Left alone, a follower back from a cut of a second or two would wait
@@ -1580,6 +1617,23 @@ member refuses with "no such member". Such a group is left out of the
 walk, since the broker being up says nothing about it, and is retried on
 its own member's first answer instead: a heartbeat once it opens. For an
 idle group that heartbeat can take up to `idle_heartbeat`.
+
+While a broker is down, the waits of its stream shard members keep
+doubling past that second, up to 10 s. A dead broker then costs each such
+group about one call every 2 s, its idle heartbeat, plus a retry every
+10 s, instead of a heartbeat every 200 ms and a retry every second. In
+the idle-CPU test with 300 groups and one broker of three dead, that took
+the calls to it from 5.1 a second per group to 0.6. The longer wait does
+not slow recovery: the heartbeats are not held by it, and the first
+answer from the broker ends every wait, as above. Two rules keep that
+answer within about a heartbeat (200 ms) of the broker coming back,
+although most groups heartbeat it only every 2 s. A leader with an entry
+not yet committed stays at the short heartbeat. And while a broker is
+down, the ticker has one group that leads here heartbeat it every short
+gap: the last leader whose append to it failed. That is 5 calls a second per
+dead broker, whatever the number of groups. A cache shard keeps
+openraft's delays, since they also pace its snapshot pieces, and the walk
+cannot cut those short.
 
 None of this calls a peer more often than openraft would. A broker is
 walked at most once a second, openraft's longest delay, and never twice
@@ -1856,10 +1910,22 @@ leading the term it wrote in, and with a timeout when the caller's budget
 runs out. Each is an unknown outcome. A commit that is already visible
 wins over all of them.
 
+The wait is not woken by every apply. It sits in a queue under its offset
+(`felix_storage::waiters`), beside the commit table, and only the apply that
+reaches the offset wakes it to read the table. With hundreds of writes in
+flight, each wait is woken about once instead of once per applied run. An
+`AckAt::Flushed` publish waits for the log's flushed position the same way,
+and so does a follower's report of what it has written.
+
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_write_waits_for_its_commit`,
-> `a_write_whose_index_commits_under_another_term_is_refused` and
-> `the_commit_table_knows_the_term_at_every_applied_index`.
+> `a_write_whose_index_commits_under_another_term_is_refused`,
+> `the_commit_table_knows_the_term_at_every_applied_index`,
+> `a_commit_wait_is_answered_by_the_apply_that_reaches_it` and
+> `a_commit_wait_ends_on_a_lost_term_with_nothing_applied`;
+> `crates/server/felix-storage/src/waiters/tests.rs`,
+> `an_advance_between_the_look_and_the_sleep_is_not_lost` and
+> `an_advance_wakes_the_waiters_it_satisfies_not_the_whole_queue`.
 
 A `Leader` write is acknowledged on local durability if `admit_local_ack`
 passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
@@ -2815,6 +2881,13 @@ The publisher id (the principal that published a record, which is not the
 producer id) is still not stored, and a batch with record headers is still
 refused.
 
+An idempotent batch can also reach the leader as a forward from another
+broker. One whose records carry no key-and-headers block travels as
+`PlainSequencedForwardPublish`, so the leader takes it. One with a block
+travels as `SequencedForwardPublish` and is refused `UnsupportedKind`, the
+same as a direct publish with headers (`docs/internal-protocol.md`, "A
+forward that names its producer").
+
 > `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
 > `a_batch_sent_again_is_answered_and_not_written_again`,
 > `a_resend_of_an_uncommitted_batch_waits_for_its_commit`,
@@ -2847,7 +2920,9 @@ refused.
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
 > `a_forward_to_a_raft_leader_commits_through_its_group`,
 > `a_forwarded_resend_of_a_cut_batch_is_finished_on_the_owner` and
-> `a_forwarded_resend_of_a_forgotten_batch_is_refused_as_expired`.
+> `a_forwarded_resend_of_a_forgotten_batch_is_refused_as_expired`;
+> `crates/protocol/felix-wire/src/internal/tests/forward.rs`,
+> `a_sequenced_forward_without_a_block_round_trips_without_headers`.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
@@ -3694,7 +3769,9 @@ second twin restores a copy to an older log and vote under its old id and
 lets it vote, and must fail the same way. A third restores one shard
 directory to a state younger than the log mark with no vote since, which
 shows the residual of Questions, 11 and is pinned as an expected violation
-if that residual is accepted. This is the model's side of #1331.
+(`FelixRaftIdentityMarkBatched.cfg`, and `FelixRaftIdentityRootRestoreYoung.cfg`
+for a whole root), since that residual is accepted. This is the model's side
+of #1331.
 
 **Re-forming.** Add the group epoch, brokers declared dead, and the
 re-form step as an operator action. It is enabled only when every placed
@@ -4503,6 +4580,20 @@ ones settled by the decisions of issue #2167 say so.
     wipes and crashes are all caught by other checks. (b) charges every
     write for it. If the A/B cell shows the exact mark is free because it
     shares the flush that already happens, take (b).
+    Decided: (a), with a one-second interval. The exact mark was not free:
+    every flush round on every member appended to the root's mark file,
+    synced it and rewrote the run witness before Raft heard of the flush,
+    one shared writer for every shard of the root. On three build boxes
+    (RF 3, six shards, 1 KiB records in batches of 16) the batched mark
+    raised Quorum throughput by 23% with fsync on commit and 27% with
+    periodic fsync, cut the batch ack p50 and p99 by about a fifth, left
+    Leader unchanged, and cut fdatasync calls per 1000 messages from about
+    104 to 69 and renames from about 41 to 0.15. The broker now ships
+    `LogMarkMode::Batched(1 s)`, and the model pins the residual
+    (`FelixRaftIdentityMarkBatched.cfg` and
+    `FelixRaftIdentityRootRestoreYoung.cfg` must fail `AckedHeldByLeader`;
+    `FelixRaftIdentityBatched.cfg`, `FelixRaftIdentityDirRestore.cfg` and
+    `FelixRaftIdentityRootRestoreBatched.cfg` pass).
 
 12. **Does the control plane keep each broker's root sequence?** The run
     witness alone catches a same-run restore only while the machine stays

@@ -102,8 +102,8 @@ pub enum ForwardError {
 /// `producer` names the producer id and batch sequence the owner applies the
 /// batch under, so that the caller may send it again after an `Indeterminate`
 /// answer: an owner holding it answers with its offsets and writes nothing.
-/// It travels only to an owner that offers `SEQUENCED_FORWARDS`, and needs
-/// `headers`.
+/// It travels only to an owner that offers `SEQUENCED_FORWARDS`, and, when
+/// no record has a header block, `PLAIN_SEQUENCED_FORWARDS`.
 ///
 /// `budget` bounds the whole loop, retries included. Without it the attempt
 /// budget is the only bound, and it is far larger than the client's patience:
@@ -274,11 +274,14 @@ pub async fn forward_publish(
                 };
             }
             Ok(InternalMessage::ForwardPublishError(err))
-                if err.code == ErrorCode::UnsupportedKind && !legacy && headers.is_none() =>
+                if err.code == ErrorCode::UnsupportedKind
+                    && !legacy
+                    && headers.is_none()
+                    && producer.is_none() =>
             {
                 // An owner from before credentialed forwards. Nothing was
-                // applied; send what it can read. Never with headers: the
-                // legacy kind has no room for them.
+                // applied; send what it can read. Never with headers or a
+                // sequence: the legacy kind has no room for them.
                 last = format!("{:?}: {}", err.code, err.detail);
                 last_code = Some(err.code);
                 legacy = true;
