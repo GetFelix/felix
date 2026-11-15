@@ -137,6 +137,15 @@ impl InMemoryStore {
                 .iter()
                 .map(|(node, held)| (node.clone(), held.clone()))
                 .collect(),
+            placement_incarnation: self.placement.read().await.current,
+            placement_acks: self
+                .placement
+                .read()
+                .await
+                .acks
+                .iter()
+                .map(|(node, ack)| (node.clone(), *ack))
+                .collect(),
         }
     }
 
@@ -217,6 +226,10 @@ impl InMemoryStore {
         *self.moves_paused.write().await = state.moves_paused;
         *self.identity.write().await = state.cluster_identity;
         *self.root_sequences.write().await = state.root_sequences.into_iter().collect();
+        *self.placement.write().await = super::PlacementIncarnation {
+            current: state.placement_incarnation,
+            acks: state.placement_acks.into_iter().collect(),
+        };
         *self.replica_reports.write().await = state
             .replica_reports
             .into_iter()

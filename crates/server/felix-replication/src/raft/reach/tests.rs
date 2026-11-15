@@ -106,3 +106,49 @@ async fn an_idle_broker_is_forgotten() {
     reach.forget_idle();
     assert!(reach.peers().is_empty());
 }
+
+/// A member's retry delays are openraft's own until its broker is down, then
+/// keep doubling to `WHILE_DOWN`, and are openraft's again once it answers
+/// (#2567).
+#[tokio::test(start_paused = true)]
+async fn retries_to_a_broker_that_is_down_wait_longer() {
+    use super::{WHILE_DOWN, Waits};
+    let reach = Arc::new(Reach::new(Instant::now(), Duration::from_millis(200)));
+    let b: Arc<str> = "b".into();
+    let usual = openraft::network::Backoff::new(std::iter::repeat(Duration::from_secs(1)));
+    let mut waits = Waits::new(usual, Arc::clone(&reach), Arc::clone(&b));
+    assert_eq!(waits.next(), Some(Duration::from_secs(1)), "never failed");
+
+    reach.lost(&b, reach.now());
+    tokio::time::advance(Duration::from_millis(200)).await;
+    reach.lost(&b, reach.now());
+    assert!(reach.down(&b));
+    let down: Vec<_> = waits.by_ref().take(5).collect();
+    assert_eq!(
+        down,
+        [2, 4, 8, 10, 10].map(Duration::from_secs),
+        "doubling to {WHILE_DOWN:?}"
+    );
+
+    reach.answered(&b);
+    assert_eq!(waits.next(), Some(Duration::from_secs(1)), "back");
+}
+
+/// The ticker starts a walk or a scout per broker in the order it walks
+/// this map, so under a simulator that order has to repeat run to run.
+#[test]
+fn a_seeded_run_walks_the_brokers_in_the_same_order() {
+    fn order() -> Vec<Arc<str>> {
+        std::thread::spawn(|| {
+            felix_common::jitter::sim::seed(2);
+            let reach = Reach::new(Instant::now(), Duration::from_millis(200));
+            for n in 0..16 {
+                reach.lost(&Arc::from(format!("b{n}")), 0);
+            }
+            reach.peers().keys().cloned().collect()
+        })
+        .join()
+        .unwrap()
+    }
+    assert_eq!(order(), order());
+}

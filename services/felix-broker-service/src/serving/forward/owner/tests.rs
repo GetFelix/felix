@@ -391,6 +391,17 @@ fn sequenced(payload: &'static [u8]) -> ForwardPublish {
     }
 }
 
+/// `publish` as the owner reads it after the wire.
+fn over_the_wire(publish: ForwardPublish) -> ForwardPublish {
+    let bytes = InternalMessage::ForwardPublish(publish)
+        .encode()
+        .expect("encode");
+    match InternalMessage::decode(bytes).expect("decode") {
+        InternalMessage::ForwardPublish(publish) => publish,
+        other => panic!("expected a forward, got {other:?}"),
+    }
+}
+
 fn shard_key() -> crate::shards::ShardKey {
     crate::shards::ShardKey {
         tenant_id: TENANT.to_string(),
@@ -428,6 +439,33 @@ async fn a_sequenced_forward_sent_twice_is_written_once() {
     };
     assert_eq!(first.offsets(), Some((0, 0)));
     assert_eq!(again.offsets(), first.offsets());
+    assert_eq!(
+        next_offset(&broker).await,
+        1,
+        "the re-send was written again"
+    );
+}
+
+/// A sequenced forward with no header block reaches a hybrid owner with no
+/// headers, and is still written once however often it arrives.
+#[tokio::test]
+async fn a_sequenced_forward_without_a_block_is_written_once() {
+    let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
+    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let plain = || {
+        over_the_wire(ForwardPublish {
+            headers: Some(vec![None]),
+            ..sequenced(b"reading")
+        })
+    };
+    assert_eq!(plain().headers, None);
+
+    for _ in 0..2 {
+        match handler.apply(plain()).await {
+            InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some((0, 0))),
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
+    }
     assert_eq!(
         next_offset(&broker).await,
         1,
@@ -1605,10 +1643,14 @@ mod on_raft {
             other => panic!("expected an acknowledgement, got {other:?}"),
         }
 
-        // A sequenced forward is written once however often it arrives.
-        let plain = |payload| ForwardPublish {
-            headers: None,
-            ..sequenced(payload)
+        // A sequenced forward is written once however often it arrives. With
+        // no header block it crosses the wire without the section, so a Raft
+        // owner takes it.
+        let plain = |payload| {
+            over_the_wire(ForwardPublish {
+                headers: Some(vec![None]),
+                ..sequenced(payload)
+            })
         };
         let third = match handler.apply(plain(b"sequenced")).await {
             InternalMessage::ForwardPublishOk(ok) => ok.offsets().expect("offsets"),
@@ -1635,7 +1677,7 @@ mod on_raft {
         }
 
         // What a Raft stream cannot carry is refused by name.
-        match handler.apply(sequenced(b"headered")).await {
+        match handler.apply(over_the_wire(sequenced(b"headered"))).await {
             InternalMessage::ForwardPublishError(err) => {
                 assert_eq!(err.code, ErrorCode::UnsupportedKind);
                 assert!(err.detail.contains("record headers"), "{}", err.detail);
@@ -1705,8 +1747,7 @@ mod on_raft {
         }
 
         /// Producer 77's batch `sequence` of `payloads`, forwarded with no
-        /// header block. The wire cannot carry that shape yet (#2570), so
-        /// the owner is handed it directly.
+        /// header block.
         async fn send(&self, sequence: u64, payloads: &[&'static [u8]]) -> InternalMessage {
             let publish = ForwardPublish {
                 payloads: payloads.iter().map(|p| Bytes::from_static(p)).collect(),
@@ -1717,7 +1758,7 @@ mod on_raft {
                 }),
                 ..forwarded()
             };
-            self.handler.apply(publish).await
+            self.handler.apply(over_the_wire(publish)).await
         }
 
         async fn plain(&self) -> u64 {

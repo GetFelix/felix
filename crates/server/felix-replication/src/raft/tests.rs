@@ -134,6 +134,12 @@ struct Net {
     appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
     lose_answers: std::sync::atomic::AtomicBool,
+    /// Calls to a cut broker.
+    cut_calls: std::sync::atomic::AtomicU64,
+    /// A cut broker that comes back just after the next heartbeat to it is
+    /// refused, and when it did.
+    heal_after_beat: parking_lot::Mutex<Option<String>>,
+    healed_after_beat: parking_lot::Mutex<Option<std::time::Instant>>,
 }
 
 impl Net {
@@ -202,8 +208,22 @@ impl RaftTransport for Net {
             return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
         let cut = self.cut.lock().contains(broker);
+        if cut {
+            self.cut_calls.fetch_add(1, Relaxed);
+        }
         if cut && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty()) {
             self.refused_entries(broker);
+        }
+        if cut
+            && matches!(&request.body, Request::Append(rpc) if rpc.entries.is_empty())
+            && self
+                .heal_after_beat
+                .lock()
+                .take_if(|to| to == broker)
+                .is_some()
+        {
+            self.cut.lock().remove(broker);
+            *self.healed_after_beat.lock() = Some(std::time::Instant::now());
         }
         let key = (broker.to_string(), request.group.shard.shard);
         let closed = self.closed.lock().get(&key).copied();
@@ -269,6 +289,8 @@ struct Cluster {
     root: TempDir,
     net: Arc<Net>,
     timers: RuntimeConfig,
+    /// Brokers that run timers of their own instead of `timers`.
+    own_timers: HashMap<&'static str, RuntimeConfig>,
     logs: HashMap<(String, u32), DiskLog>,
 }
 
@@ -279,10 +301,19 @@ impl Cluster {
     }
 
     fn with(timers: RuntimeConfig, ticking: bool) -> Self {
+        Self::with_own(timers, HashMap::new(), ticking)
+    }
+
+    fn with_own(
+        timers: RuntimeConfig,
+        own_timers: HashMap<&'static str, RuntimeConfig>,
+        ticking: bool,
+    ) -> Self {
         let cluster = Self {
             root: tempdir().expect("dir"),
             net: Arc::default(),
             timers,
+            own_timers,
             logs: HashMap::new(),
         };
         cluster.start(ticking);
@@ -292,8 +323,9 @@ impl Cluster {
     fn start(&self, ticking: bool) {
         for broker in BROKERS {
             let transport: Arc<dyn RaftTransport> = self.net.clone();
-            let runtime = GroupRuntime::without_ticker(broker, self.timers.clone(), transport)
-                .expect("timers");
+            let timers = self.own_timers.get(broker).unwrap_or(&self.timers);
+            let runtime =
+                GroupRuntime::without_ticker(broker, timers.clone(), transport).expect("timers");
             if ticking {
                 runtime.start_ticker();
             }
@@ -411,6 +443,7 @@ impl Cluster {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(payload),
                 producer: None,
+                expected: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -440,6 +473,7 @@ impl Cluster {
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"record"),
                     producer: None,
+                    expected: None,
                     written: None,
                 })
             });
@@ -798,6 +832,43 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
     assert_eq!(pace.leader_gap(timers.now()), idle);
 }
 
+/// Sending an entry again, to a member that did not take it or one catching
+/// up, does not make an idle group busy. Only an entry no append has
+/// carried before does (#2567).
+#[tokio::test(start_paused = true)]
+async fn only_an_entry_sent_for_the_first_time_makes_a_group_busy() {
+    use openraft::type_config::alias::LogIdOf;
+    let (pace, timers) = pace();
+    let [b, c] = ["b", "c"].map(|broker| MemberId::new(broker, 1));
+    let entry = |term: u64, index: u64| LogIdOf::<ShardTypes>::new(term.into(), index);
+    assert!(pace.new_entries(&entry(1, 1)));
+    let sent = pace.sending(&b, true);
+    pace.answered(&b, &sent);
+    assert!(!pace.new_entries(&entry(1, 1)), "the same entry to c");
+    let _lost = pace.sending(&c, false);
+    pace.unanswered(&c);
+
+    // Past the idle wait and c's silence, b answers an idle heartbeat.
+    tokio::time::advance(Duration::from_millis(
+        timers.election_min + 2 * timers.election_max,
+    ))
+    .await;
+    pace.answered(&b, &pace.sending(&b, false));
+    assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
+
+    // The retry to c carries the same entry: still idle.
+    assert!(!pace.new_entries(&entry(1, 1)));
+    let retry = pace.sending(&c, false);
+    assert_eq!(retry.gap, timers.idle_heartbeat);
+    pace.unanswered(&c);
+    assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
+
+    // A later entry, or one at a lower index under a later term, is new.
+    assert!(pace.new_entries(&entry(1, 2)));
+    assert!(pace.new_entries(&entry(2, 2)));
+    assert!(!pace.new_entries(&entry(1, 3)));
+}
+
 /// The follower's side: it waits by the gap its leader last named, three
 /// idle heartbeats at least, and a vote or a short gap ends the long wait.
 #[tokio::test(start_paused = true)]
@@ -1049,6 +1120,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
     }
     let (token, written) = WrittenToken::channel();
     let command = Command {
+        expected: None,
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
         producer: None,
@@ -1093,6 +1165,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
 fn a_commands_token_is_not_serialized() {
     let (token, _written) = WrittenToken::channel();
     let command = Command {
+        expected: None,
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
         producer: None,
@@ -1101,7 +1174,7 @@ fn a_commands_token_is_not_serialized() {
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
-        ["payload", "producer", "timestamp_micros"]
+        ["expected", "payload", "producer", "timestamp_micros"]
     );
     let received: Command = serde_json::from_value(sent).expect("json");
     assert!(received.written.is_none());
@@ -1497,6 +1570,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
             timestamp_micros: 1_700_000_000,
             payload: record.clone(),
             producer: None,
+            expected: None,
             written: None,
         };
         last = member
@@ -1710,6 +1784,7 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(b"after the cut"),
             producer: None,
+            expected: None,
             written: None,
         })
         .await
@@ -1731,6 +1806,235 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
     assert!(
         took < Duration::from_millis(900),
         "the first commit after the cut took {took:?}"
+    );
+    cluster.stop().await;
+}
+
+/// The group a dead broker's ticker heartbeats at the short gap is the last
+/// one whose append to it failed. A failed vote from a group that does not
+/// lead must not take that place, or the heartbeat finds nothing to send.
+#[tokio::test]
+async fn a_failed_vote_does_not_replace_the_scout() {
+    use openraft::network::RPCOption;
+    use openraft::raft::AppendEntriesRequest;
+    use openraft_multi::GroupRouter;
+    let reach = Arc::new(super::reach::Reach::new(
+        tokio::time::Instant::now(),
+        Duration::from_secs(1),
+    ));
+    let config = Arc::new(timers().raft(ShardKind::Stream).expect("timers"));
+    let router = |id: GroupId| {
+        let (pace, _) = pace();
+        super::network::Router::new(
+            Arc::new(Net::default()),
+            Arc::new(pace),
+            Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
+            Arc::new(super::written::Reports::new()),
+            Arc::clone(&reach),
+            Arc::new(super::reach::Refusals::new(id)),
+            Arc::clone(&config),
+        )
+    };
+    let option = || RPCOption::new(Duration::from_secs(1));
+    let (leading, standing) = (router(group(0)), router(group(1)));
+    let b = MemberId::new("b", 1);
+
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
+        LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
+        false,
+    );
+    let append = AppendEntriesRequest {
+        vote: vote.clone(),
+        prev_log_id: None,
+        entries: Vec::new(),
+        leader_commit: None,
+    };
+    leading
+        .append_entries(b.clone(), group(0), append, option())
+        .await
+        .expect_err("b is down");
+    let peer = Arc::clone(&reach.peers()["b"]);
+    assert_eq!(peer.scout(), Some(group(0)));
+
+    standing
+        .vote(
+            b.clone(),
+            group(1),
+            VoteRequest::new(vote.clone(), None),
+            option(),
+        )
+        .await
+        .expect_err("b is down");
+    standing
+        .pre_vote(b, group(1), VoteRequest::new(vote, None), option())
+        .await
+        .expect_err("b is down");
+    assert_eq!(peer.scout(), Some(group(0)), "a vote took the scout");
+}
+
+/// A broker that is down costs each group about an idle heartbeat's calls:
+/// retrying an entry it missed neither keeps the group at the short
+/// heartbeat nor goes on once a second. It still catches up as soon as it
+/// is back (#2567).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
+    use std::sync::atomic::Ordering::Relaxed;
+    const GROUPS: u32 = 6;
+    let mut cluster = Cluster::new(true);
+    for n in 0..GROUPS {
+        cluster.form(n).await;
+    }
+    let dead = "c";
+    // Muted too: its members stand while it is cut, and their vote requests
+    // would depose leaders inside the window.
+    cluster.net.muted.lock().insert(dead.into());
+    cluster.net.cut.lock().insert(dead.into());
+    let mut written = Vec::new();
+    for n in 0..GROUPS {
+        written.push(cluster.write(n, b"missed").await);
+    }
+    // Past the silence after which the dead broker no longer holds its
+    // leaders at the short gap, and past openraft's first few delays.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let window = Duration::from_secs(10);
+    let before = cluster.net.cut_calls.load(Relaxed);
+    tokio::time::sleep(window).await;
+    let calls = cluster.net.cut_calls.load(Relaxed) - before;
+    // Less the one group's heartbeat each short gap that finds the broker
+    // back, which costs the same whatever the number of groups.
+    let scout = window.as_secs_f64() / timers().heartbeat.as_secs_f64();
+    let per_group = (calls as f64 - scout) / window.as_secs_f64() / f64::from(GROUPS);
+    eprintln!("{per_group:.2} calls a second per group to the dead broker");
+    // An idle heartbeat is 0.5 a second and a retry every 10 s adds 0.1.
+    // Without either half of the fix it is 1.5 or more, and about five
+    // without both: a heartbeat every 200 ms and a retry every second.
+    assert!(per_group < 0.9, "{per_group:.2} calls a second per group");
+
+    cluster.net.cut.lock().remove(dead);
+    cluster.net.muted.lock().remove(dead);
+    let healed = tokio::time::Instant::now();
+    let returned = cluster.runtime(dead);
+    for (n, index) in (0..GROUPS).zip(written) {
+        eventually(|| {
+            let last = returned.status(&shard(n))?.last_index;
+            (last >= Some(index)).then_some(())
+        })
+        .await;
+    }
+    // The first answer from the broker, within an idle heartbeat (2 s),
+    // ends every group's wait. Its members stood while it was cut, so their
+    // higher term costs an election on top (pre-vote is off), on real
+    // timers: `eventually` bounds it, and the prompt answer has a test of
+    // its own below.
+    eprintln!("caught up {:?} after the heal", healed.elapsed());
+    cluster.stop().await;
+}
+
+/// A group whose entry waits on brokers that are down stays at the short
+/// heartbeat, so the first of them back takes the entry within about one,
+/// not within an idle heartbeat (#2567).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_one_back() {
+    // b and c do not stand while they are cut.
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(20),
+        election_max: Duration::from_secs(40),
+        ..timers()
+    };
+    let own = HashMap::from([("b", patient.clone()), ("c", patient)]);
+    let mut cluster = Cluster::with_own(timers(), own, true);
+    cluster.form(0).await;
+    let before = cluster.write(0, b"committed").await;
+    cluster.committed_everywhere(0, before).await;
+    let leader = cluster.elected(0).await;
+    assert_eq!(&*leader.broker, "a");
+    let member = cluster.runtime("a").group(&shard(0)).expect("group");
+
+    for broker in ["b", "c"] {
+        cluster.net.cut.lock().insert(broker.into());
+    }
+    let raft = member.raft().clone();
+    let write = tokio::spawn(async move {
+        raft.client_write(Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(b"while b and c are down"),
+            producer: None,
+            written: None,
+            expected: None,
+        })
+        .await
+    });
+    // Past the idle wait and the silence after which b and c no longer
+    // hold the leader at the short gap.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert!(!write.is_finished(), "committed with b and c down");
+
+    *cluster.net.heal_after_beat.lock() = Some("c".into());
+    let written = tokio::time::timeout(PATIENCE, write)
+        .await
+        .expect("answered")
+        .expect("task")
+        .expect("committed");
+    let healed = cluster.net.healed_after_beat.lock().expect("c came back");
+    let took = healed.elapsed();
+    eprintln!("c back to the commit: {took:?}");
+    assert_eq!(written.log_id.index, before + 1);
+    assert_eq!(
+        leader,
+        cluster.elected(0).await,
+        "this measured an election"
+    );
+    // A heartbeat is 200 ms. At the idle one it took up to 2 s.
+    assert!(
+        took < Duration::from_millis(1500),
+        "the commit took {took:?} after c was back"
+    );
+    cluster.stop().await;
+}
+
+/// A broker that was down gets what it missed within about a heartbeat of
+/// coming back, even from a group with nothing left to commit, which
+/// heartbeats only every idle gap: one group heartbeats to a broker that is
+/// down at the short gap, and its first answer has every group retry it.
+/// One group, so no other group's heartbeat finds the broker first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_group_catches_a_broker_up_within_about_a_heartbeat_of_it_coming_back() {
+    // Neither b nor c stands while c is cut.
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(20),
+        election_max: Duration::from_secs(40),
+        ..timers()
+    };
+    let own = HashMap::from([("b", patient.clone()), ("c", patient)]);
+    let mut cluster = Cluster::with_own(timers(), own, true);
+    cluster.form(0).await;
+    assert_eq!(&*cluster.elected(0).await.broker, "a");
+    cluster.net.cut.lock().insert("c".into());
+    let missed = cluster.write(0, b"missed").await;
+    // Past the idle wait and c's silence: the group heartbeats every 2 s.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert!(
+        cluster
+            .runtime("a")
+            .group(&shard(0))
+            .expect("group")
+            .leader_gap()
+            > 1000
+    );
+
+    *cluster.net.heal_after_beat.lock() = Some("c".into());
+    let returned = cluster.runtime("c");
+    eventually(|| {
+        let last = returned.status(&shard(0))?.last_index;
+        (last >= Some(missed)).then_some(())
+    })
+    .await;
+    let healed = cluster.net.healed_after_beat.lock().expect("c came back");
+    let took = healed.elapsed();
+    eprintln!("c back to caught up: {took:?}");
+    assert!(
+        took < Duration::from_millis(1500),
+        "c caught up {took:?} after it was back"
     );
     cluster.stop().await;
 }
@@ -1774,6 +2078,7 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
                     timestamp_micros: 1_700_000_000,
                     payload: Bytes::from_static(b"after the restart"),
                     producer: None,
+                    expected: None,
                     written: None,
                 })
                 .await

@@ -741,6 +741,7 @@ async fn a_transfer_for_a_term_not_led_is_not_asked() {
         payload: Bytes::from_static(b"still leading"),
         written: None,
         producer: None,
+        expected: None,
     };
     leader.raft().client_write(record).await.expect("write");
     drop(leader);
@@ -758,6 +759,7 @@ async fn a_move_off_the_leader_grows_transfers_and_shrinks() {
         payload: Bytes::from_static(b"before the move"),
         written: None,
         producer: None,
+        expected: None,
     };
     let written = leader.raft().client_write(record).await.expect("write");
     let before = written.log_id.index;

@@ -240,12 +240,12 @@ async fn a_state_read_confirms_leadership_through_the_engine() {
         .expect_err("the lease lapsed");
 }
 
-/// **A conditional publish and a trim to a Raft shard are refused by name,
-/// with nothing written.** A Raft stream's log takes plain publishes only,
-/// and neither write may reach the hybrid's fence, which never opens for it.
+/// **A trim to a Raft shard is refused by name, with nothing written.** Its
+/// group has no trim entry yet, and the trim may not reach the hybrid's
+/// fence, which never opens for the shard.
 #[cfg(feature = "raft")]
 #[tokio::test]
-async fn conditional_writes_to_a_raft_shard_are_refused_by_name() {
+async fn a_trim_to_a_raft_shard_is_refused_by_name() {
     use crate::shards::raft::tests as fixture;
     use crate::shards::routing::EngineShards;
 
@@ -265,19 +265,6 @@ async fn conditional_writes_to_a_raft_shard_are_refused_by_name() {
         },
     );
 
-    let published = publish_at(
-        &broker,
-        &publish_ctx,
-        "t1",
-        "ns",
-        "orders",
-        None,
-        Some(0),
-        vec![Bytes::from_static(b"a")],
-        0,
-        None,
-    )
-    .await;
     let trimmed = trim_at(
         &broker,
         &publish_ctx,
@@ -291,17 +278,9 @@ async fn conditional_writes_to_a_raft_shard_are_refused_by_name() {
     )
     .await;
 
-    for (refused, what) in [
-        (published.err(), "conditional publishes"),
-        (trimmed.err(), "trims"),
-    ] {
-        let Some(NotWritten::Refused(err)) = refused else {
-            panic!("{what} on a Raft shard were not refused");
-        };
-        assert_eq!(
-            err.message(),
-            format!("a stream on Raft does not take {what}")
-        );
-    }
+    let Err(NotWritten::Refused(err)) = trimmed else {
+        panic!("a trim on a Raft shard was not refused");
+    };
+    assert_eq!(err.message(), "a stream on Raft does not take trims");
     EngineShards::shutdown(&*shards).await;
 }

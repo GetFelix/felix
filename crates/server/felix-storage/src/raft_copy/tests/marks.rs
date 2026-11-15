@@ -330,3 +330,67 @@ async fn an_aborted_taker_fails_its_batch() {
         .await
         .expect_err("a write after the abandoned one");
 }
+
+/// A batch that finds its shard reopened under another copy drops that
+/// position instead of failing, since a failed batch stops the whole log.
+#[tokio::test]
+async fn a_batch_for_a_replaced_copy_is_dropped_not_failed() {
+    let root = Root::new();
+    let log = open(&root);
+    log.fresh(Arc::from(SHARD), 7).await.expect("fresh");
+    log.fresh(Arc::from(SHARD), 8).await.expect("rotated");
+    let ticket = log
+        .enqueue_batched_log(SHARD, 7, point(1, 4))
+        .expect("dropped, not failed");
+    assert_eq!(ticket, None);
+    assert!(log.failure().is_none());
+    assert_eq!(log.marks(SHARD).expect("marks").log, None);
+}
+
+/// A batch whose write hangs never errors and stops nothing, but once the
+/// marks are `STALL_INTERVALS` intervals old the batched shards' appends
+/// wait for them. They go on, and nothing failed, once the write completes.
+#[tokio::test(start_paused = true)]
+async fn a_hung_batch_holds_batched_appends() {
+    use crate::raft_log::LogPositions;
+    use std::time::Duration;
+
+    let root = Root::new();
+    let log = open(&root);
+    log.fresh(Arc::from(SHARD), 1).await.expect("fresh");
+    let marks = log.for_copy(Arc::from(SHARD), 1);
+    let (positions, receiver) = tokio::sync::watch::channel(LogPositions::default());
+    marks.batch_from(receiver, Duration::from_secs(1));
+    positions.send_modify(|at| at.flushed = Some(point(1, 5)));
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    log.caught_up().await.expect("not held");
+    assert_eq!(log.marks(SHARD).expect("marks").log, Some(point(1, 5)));
+
+    let stalled = log.stall_writes().await;
+    positions.send_modify(|at| at.flushed = Some(point(1, 9)));
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    log.caught_up().await.expect("a short stall held appends");
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    let held = log.caught_up();
+    tokio::pin!(held);
+    assert!(
+        futures_util::poll!(&mut held).is_pending(),
+        "an append went on with the mark more than the limit behind"
+    );
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert!(
+        futures_util::poll!(&mut held).is_pending(),
+        "the hold lapsed"
+    );
+    drop(stalled);
+    tokio::time::timeout(Duration::from_secs(3), held)
+        .await
+        .expect("appends resume once the write completes")
+        .expect("nothing failed");
+    assert_eq!(log.marks(SHARD).expect("marks").log, Some(point(1, 9)));
+    assert!(log.failure().is_none());
+    marks
+        .vote(vote(3, "a#7", false))
+        .await
+        .expect("a write after the stall");
+}

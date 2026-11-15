@@ -131,6 +131,14 @@ changes, it still reports that shard's copy as kept and trusted, and a
 promotion can count an empty copy and lose an acknowledged write. A new
 whole data directory gets a new storage id, which the readmission rules handle.
 Version 0.8 removes the hazard ([#2376](https://github.com/GetFelix/felix/issues/2376)).
+Under the Raft engine a shard directory put back to an older state is detected
+and its copy replaced, except one put back to a state from the last second with no
+election since. That window is longer while the mark writer is backed up, up to
+about six seconds: past five, writes on that data directory wait until the marks
+are written again.
+A whole data directory put back in the same run to such a state is not detected
+either. Keep to whole data directories there too, and restore them only while
+the broker is stopped.
 :::
 
 1. **Stop every broker.**
@@ -220,7 +228,9 @@ has the same effect. Per-shard Raft is not released yet; when it is, this is
 the supported way to restore a snapshot taken while the broker ran. The
 check on a Raft data root compares it with the last root sequence the
 control plane heard from the broker, and a snapshot newer than that value,
-as one taken while the control plane was down can be, passes that check.
+as one taken while the control plane was down can be, passes that check. So
+does a snapshot put back in the same run from within the last second, or up to
+about six seconds while the mark writer is backed up, with no election since.
 
 With `FELIX_START_WITHOUT_CONTROLPLANE` on, a broker that starts while the
 control plane is down runs from the control-plane view in its data directory
@@ -240,6 +250,17 @@ follower positions under those generations; one that restarts holds none.
 The restore also rewinds node incarnations and replica reports together, so
 an old report could let placement replace a broker that kept running while
 it still serves on its lease.
+
+Restoring the control plane's metadata raises its placement incarnation
+above both the one it replaces and the backup's, so restoring the same
+backup twice, or an older one, never brings back a placement decision made
+before. Brokers acknowledge the new incarnation through their heartbeats.
+
+If a broker kept running through a restore of a backup taken before that
+broker last started, restart it. The restore put back an older registration
+for it, so the control plane does not count that broker's acknowledgements,
+and no placement change that waits for every broker goes out until it
+registers again.
 
 ## See also
 

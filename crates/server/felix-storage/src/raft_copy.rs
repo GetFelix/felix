@@ -25,6 +25,7 @@ mod copy_file;
 mod gate;
 mod judge;
 mod marks;
+mod placement_ack;
 mod reclaim;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -32,9 +33,15 @@ pub(crate) mod tests;
 pub use copy_file::CopyFile;
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
-    CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, holds_log_without_copy, kept_copies,
+    CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
+    holds_log_without_copy, kept_copies,
 };
 pub use marks::{CopyMarks, MarkLog};
+pub use placement_ack::{
+    MAX_PLACEMENT_ACK_AHEAD, ack_placement_incarnation, acked_placement_incarnation,
+    all_acked_placement_incarnation, copy_delete_is_void, placement_ack_in_bound,
+    restored_placement_incarnation,
+};
 pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
 
 use std::sync::Arc;
@@ -109,20 +116,11 @@ pub enum LogMarkMode {
 }
 
 /// A random copy id, never 0. Copy ids only need to differ from the ids a
-/// shard had before, so a process-seeded hash of the time is enough.
+/// shard had before. Under a simulator the keys come from the seed, so a run
+/// repeats.
 pub fn random_copy_id() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     loop {
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |since| since.as_nanos()),
-        );
-        hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-        let id = hasher.finish();
+        let id = felix_common::random::id_state().hash_one(0u64);
         if id != 0 {
             return id;
         }

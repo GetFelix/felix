@@ -11,7 +11,7 @@ use super::{VoteMark, log_below};
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::disk_log::{crash_point, engine_marker};
 use crate::log::LogConfig;
-use crate::raft_log::state_file;
+use crate::raft_log::{reserved, state_file};
 use crate::{DiskLog, StorageId};
 
 /// Longer shard names do not fit a mark.
@@ -219,6 +219,9 @@ impl CopyRoot {
         let parent = parent_of(dir)?;
         let step = || crash_point::reached(&parent);
         step()?;
+        // Read before anything moves. A crash after the move leaves the
+        // old reservation in `.kept`, which the next rotation reads again.
+        let carried = highest_reserved(dir)?;
         // The engine marker goes into `.kept` with the directory, and the
         // new directory is as much a Raft member's as the old one.
         let marked = engine_marker::claimed_for_raft(dir, shard).map_err(io::Error::other)?;
@@ -242,6 +245,12 @@ impl CopyRoot {
         if marked && kept.is_some() {
             engine_marker::claim_for_raft(dir, shard).map_err(io::Error::other)?;
         }
+        // Synced before the copy file, so a directory with a copy file
+        // always carries the reservations it replaced.
+        if let Some(index) = carried {
+            reserved::store(dir, index)?;
+            step()?;
+        }
         let copy = loop {
             let copy = (self.mint)();
             if copy != 0 && Some(copy) != replaced {
@@ -259,6 +268,18 @@ impl CopyRoot {
         self.marks.fresh(Arc::clone(shard), copy).await?;
         Ok((copy, kept))
     }
+}
+
+/// The highest reservation among the copy in `dir` and every copy
+/// rotations moved aside from it, or `None` when none took one. A re-form
+/// starts its epoch above it. A reservation that does not decode is an
+/// error, never skipped.
+pub fn highest_reserved(dir: &Path) -> io::Result<Option<u64>> {
+    let mut highest = reserved::load(dir)?;
+    for kept in kept_copies(dir)? {
+        highest = highest.max(reserved::load(&kept.path)?);
+    }
+    Ok(highest)
 }
 
 /// The directories rotations moved aside from `dir`, by name.
@@ -319,9 +340,9 @@ fn open_log(dir: &Path, label: &str, config: LogConfig) -> io::Result<DiskLog> {
     DiskLog::open(dir, label.to_string(), config).map_err(io::Error::other)
 }
 
-/// Missing, or holding at most a copy file: what a crash before a new
-/// copy's marks leaves. There is nothing in it to keep, and the new copy
-/// file replaces the old.
+/// Missing, or holding at most a copy file and a reservation: what a crash
+/// before a new copy's marks leaves. There is nothing in it to keep: the new
+/// copy file replaces the old, and the rotation carries the reservation.
 fn holds_no_records(dir: &Path) -> io::Result<bool> {
     let entries = match crate::fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -333,6 +354,7 @@ fn holds_no_records(dir: &Path) -> io::Result<bool> {
         let path = entry?.path();
         if path != dir.join(copy_file::FILE_NAME)
             && path != temporary
+            && !reserved::is_reservation(dir, &path)
             && !engine_marker::is_marker(dir, &path)
         {
             return Ok(false);

@@ -113,6 +113,15 @@ pub struct ExportedState {
     /// `moves_paused`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(super) root_sequences: Vec<(String, crate::model::RootSequence)>,
+    /// `ControlPlaneStore::placement_incarnation`. Absent from older
+    /// snapshots and left out while 0, so a group that never restored
+    /// exports what it did before.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub(crate) placement_incarnation: u64,
+    /// Each node's placement acknowledgement
+    /// (`ControlPlaneStore::placement_acks`). Left out while empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) placement_acks: Vec<(String, crate::model::PlacementAck)>,
 }
 
 fn is_zero(value: &u64) -> bool {
@@ -382,6 +391,8 @@ pub async fn export_state_from(
         // An import marks every stream and cache it restores anyway.
         unplaced: Default::default(),
         root_sequences: store.root_sequences().await?,
+        placement_incarnation: store.placement_incarnation().await?,
+        placement_acks: store.placement_acks().await?,
     })
 }
 

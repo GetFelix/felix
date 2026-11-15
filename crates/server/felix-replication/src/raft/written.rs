@@ -10,10 +10,13 @@
 //! `docs/formal/FelixRaftWritten.tla`.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use felix_storage::raft_log::LogPoint;
+use felix_storage::waiters::Queue;
 use openraft::{Raft, ServerState};
+use parking_lot::Mutex;
 use tokio::sync::watch;
 
 use super::machine::Machine;
@@ -30,6 +33,30 @@ pub(crate) struct Reports {
     /// wait this way costs its followers no message.
     wanted: AtomicBool,
     heard: watch::Sender<Vec<(MemberId, LogPoint)>>,
+    /// `ranks[n - 1]` wakes the waits that need `n` senders at or past
+    /// their entry, keyed by the `n`th furthest position heard. A write
+    /// cannot have a majority before that position reaches it, so a report
+    /// wakes only the writes it could have completed.
+    ranks: Mutex<Vec<Arc<Queue<Key>>>>,
+}
+
+/// A position as reports are ordered: by term, then index.
+type Key = (u64, u64);
+
+fn key(point: &LogPoint) -> Key {
+    (point.term, point.index)
+}
+
+/// What one look at the reports found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Look {
+    /// This member does not lead the entry's term with the entry in its
+    /// log, so the voters are not known.
+    Unknown,
+    Wrote,
+    /// Not yet, and it takes at least this many members other than the
+    /// leader saying they wrote it.
+    Short(usize),
 }
 
 impl Reports {
@@ -37,6 +64,7 @@ impl Reports {
         Self {
             wanted: AtomicBool::new(false),
             heard: watch::Sender::default(),
+            ranks: Mutex::new(Vec::new()),
         }
     }
 
@@ -49,8 +77,7 @@ impl Reports {
     /// position each sender named is kept, by term and then index, so a
     /// report that arrives late does not undo a newer one.
     pub(crate) fn heard(&self, from: MemberId, at: LogPoint) {
-        let key = |point: &LogPoint| (point.term, point.index);
-        self.heard.send_if_modified(|heard| {
+        let moved = self.heard.send_if_modified(|heard| {
             if let Some((_, had)) = heard.iter_mut().find(|(member, _)| *member == from) {
                 let further = key(&at) > key(had);
                 if further {
@@ -71,6 +98,34 @@ impl Reports {
             heard.push((from, at));
             true
         });
+        if moved {
+            self.advance();
+        }
+    }
+
+    /// Moves every rank to the reports now held. Each rank advances on
+    /// every report, even when its position is unchanged: a wait whose
+    /// position was reached but whose voters had not all said so (a
+    /// learner counted, another term) is woken by any report.
+    fn advance(&self) {
+        let mut furthest: Vec<Key> = self.heard.borrow().iter().map(|(_, at)| key(at)).collect();
+        furthest.sort_unstable_by(|a, b| b.cmp(a));
+        let ranks = self.ranks.lock().clone();
+        // Outside the lock: a wake can drop a task that holds a queue. Two
+        // reports racing here may advance a rank out of order; a lower
+        // position only queues later waits by key, and every wait looks at
+        // the watch itself.
+        for (rank, queue) in ranks.iter().enumerate() {
+            queue.advance(furthest.get(rank).copied());
+        }
+    }
+
+    fn rank(&self, needed: usize) -> Arc<Queue<Key>> {
+        let mut ranks = self.ranks.lock();
+        while ranks.len() < needed {
+            ranks.push(Arc::new(Queue::new()));
+        }
+        Arc::clone(&ranks[needed - 1])
     }
 
     /// Returns once a majority of the voters has written the entry at `at`,
@@ -85,32 +140,65 @@ impl Reports {
     ) {
         use openraft::async_runtime::watch::WatchReceiver;
         self.wanted.store(true, Ordering::Relaxed);
-        let mut heard = self.heard.subscribe();
         let mut metrics = raft.metrics();
         loop {
-            // The voters as of a log that holds the entry: a membership
-            // read before the entry was appended could be two changes
-            // behind, and count a set that no longer elects.
-            let membership = {
-                let metrics = metrics.borrow_watched();
-                let leads = metrics.state == ServerState::Leader && metrics.current_term == at.term;
-                let holds = metrics.last_log_index.is_some_and(|last| last >= at.index);
-                (leads && holds).then(|| metrics.membership_config.clone())
-            };
-            let moved = match membership {
-                Some(membership) => {
-                    let voters = membership.membership().get_joint_config();
-                    if majority_wrote(voters, me, &heard.borrow_and_update(), at) {
-                        return;
+            let wrote = self
+                .written(at, |heard| {
+                    // The voters as of a log that holds the entry: a
+                    // membership read before the entry was appended could
+                    // be two changes behind, and count a set that no
+                    // longer elects. Read on every look, so a change is
+                    // seen at the next wake.
+                    let metrics = metrics.borrow_watched();
+                    let leads =
+                        metrics.state == ServerState::Leader && metrics.current_term == at.term;
+                    let holds = metrics.last_log_index.is_some_and(|last| last >= at.index);
+                    if !(leads && holds) {
+                        return Look::Unknown;
                     }
-                    // Reports only: openraft's metrics change with every
-                    // heartbeat answer and would wake every waiter.
-                    heard.changed().await.is_ok()
-                }
-                None => metrics.changed().await.is_ok(),
-            };
-            if !moved {
+                    let voters = metrics.membership_config.membership().get_joint_config();
+                    look(voters, me, heard, at)
+                })
+                .await;
+            if wrote {
+                return;
+            }
+            // Not on reports: openraft's metrics change with every
+            // heartbeat answer and would wake every waiter.
+            if metrics.changed().await.is_err() {
                 return std::future::pending().await;
+            }
+        }
+    }
+
+    /// Waits on the reports until `look` finds the entry at `at` written
+    /// (true) or the voters unknown (false). A wait sleeps on the rank its
+    /// last look named, so it wakes only when that many senders could
+    /// have reached it.
+    pub(crate) async fn written(
+        &self,
+        at: LogPoint,
+        mut look: impl FnMut(&[(MemberId, LogPoint)]) -> Look,
+    ) -> bool {
+        let heard = self.heard.subscribe();
+        let mut found = look(&heard.borrow());
+        loop {
+            let needed = match found {
+                Look::Unknown => return false,
+                Look::Wrote => return true,
+                Look::Short(needed) => needed.clamp(1, KEPT),
+            };
+            let waiters = self.rank(needed).waiters();
+            let waited = waiters.wait_for(&heard, key(&at), |heard| {
+                let now = look(heard);
+                // Still short by as many: nothing to do until the rank moves.
+                let same = matches!(now, Look::Short(n) if n.clamp(1, KEPT) == needed);
+                (!same).then_some(now)
+            });
+            match waited.await {
+                Ok(now) => found = now,
+                // The sender lives as long as `self`.
+                Err(_) => return std::future::pending().await,
             }
         }
     }
@@ -148,4 +236,24 @@ pub(crate) fn majority_wrote(
         && voters
             .iter()
             .all(|set| 2 * set.iter().filter(|member| wrote(member)).count() > set.len())
+}
+
+/// One look at `heard` for the entry at `at` under `voters`.
+pub(crate) fn look(
+    voters: &[BTreeSet<MemberId>],
+    me: &MemberId,
+    heard: &[(MemberId, LogPoint)],
+    at: LogPoint,
+) -> Look {
+    if majority_wrote(voters, me, heard, at) {
+        return Look::Wrote;
+    }
+    // Every set needs its own majority, the leader counting itself in the
+    // sets it belongs to. The largest shortfall is a lower bound on the
+    // senders that must still reach the entry.
+    let needed = voters.iter().map(|set| {
+        let majority = set.len() / 2 + 1;
+        majority.saturating_sub(usize::from(set.contains(me)))
+    });
+    Look::Short(needed.max().unwrap_or(1))
 }

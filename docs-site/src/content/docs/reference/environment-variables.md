@@ -2094,6 +2094,8 @@ On a `Quorum` stream, retention never deletes records a majority has not yet
 acknowledged, so a stream whose followers are down can grow past this bound
 until they return.
 
+**Note**: Raft shards ignore this setting for now; their logs take no retention yet (#2602).
+
 ### `FELIX_DURABLE_RETENTION_SECONDS`
 
 **Description**: Delete sealed segments whose newest record is older than this.
@@ -2113,6 +2115,8 @@ export FELIX_DURABLE_RETENTION_SECONDS="604800"  # 7 days
 **Note**: Age comes from the records' own timestamps rather than file mtime, so
 restoring a backup does not reset it. A segment survives until its *newest*
 record has expired, so nothing younger than the bound is ever deleted.
+
+**Note**: Raft shards ignore this setting for now; their logs take no retention yet (#2602).
 
 ### `FELIX_DURABLE_RETENTION_INTERVAL_SECONDS`
 

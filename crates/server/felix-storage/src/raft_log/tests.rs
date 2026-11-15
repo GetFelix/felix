@@ -8,6 +8,7 @@ mod flush_queue;
 mod install_crash_points;
 mod machine;
 mod marks;
+mod positions;
 mod purge;
 mod receive;
 mod snapshots;
@@ -30,7 +31,7 @@ use super::{EntryCodec, RaftLog};
 use crate::DiskLog;
 use crate::disk_log::WriterAt;
 use crate::log::{
-    AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, LogRecord, ReadRange, RecordMark,
+    AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, LogRecord, Offset, ReadRange, RecordMark,
     UNKNOWN_WRITER,
 };
 
@@ -56,6 +57,13 @@ impl EntryCodec<Types> for Codec {
 
     fn decode_data(&self, record: LogRecord) -> io::Result<String> {
         String::from_utf8(record.payload.to_vec()).map_err(io::Error::other)
+    }
+
+    /// `at:<n>` holds its record only at index `n`.
+    fn blank_at(&self, data: &String, index: Offset) -> bool {
+        data.strip_prefix("at:")
+            .and_then(|at| at.parse::<Offset>().ok())
+            .is_some_and(|at| at != index)
     }
 
     fn encode_membership(&self, membership: &Membership) -> io::Result<Bytes> {
@@ -204,6 +212,31 @@ async fn entries_read_back_with_their_term_and_kind() {
     assert_eq!(
         raft.log_state().await.expect("state").last_log_id,
         Some(log_id(4, 14))
+    );
+}
+
+/// A command the codec stores as a blank at its index is a blank entry on
+/// disk and when read back, so a member that sends it on from its log sends
+/// what every other member stored.
+#[tokio::test]
+async fn a_command_the_codec_blanks_is_stored_as_a_blank_entry() {
+    let dir = tempdir().expect("dir");
+    let raft = open(&dir);
+    let entries = vec![
+        blank(1, 0),
+        normal(1, 1, "at:1"),
+        normal(1, 2, "at:1"),
+        normal(1, 3, "plain"),
+    ];
+    store(&raft, &entries).await.expect("store");
+    assert_eq!(
+        all(&raft).await.expect("read"),
+        vec![
+            blank(1, 0),
+            normal(1, 1, "at:1"),
+            blank(1, 2),
+            normal(1, 3, "plain"),
+        ]
     );
 }
 

@@ -5,22 +5,32 @@
 //! stream to a member it could not reach, and only a call on that stream
 //! that succeeds ends the wait. Heartbeats keep going meanwhile. The router
 //! reports every call's outcome here, and the ticker cuts the wait short
-//! for members that answer again (#2543). See `docs/per-shard-raft.md`,
-//! "Group runtime".
+//! for members that answer again (#2543). While a broker is down its
+//! members' waits grow past that second ([`Waits`]). See
+//! `docs/per-shard-raft.md`, "Group runtime".
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use felix_common::random::HashMap;
+use openraft::network::Backoff;
 use tokio::time::Instant;
 
 use super::types::GroupId;
 
-/// openraft's longest backoff. No member is retried early more often than
-/// this, so a struggling peer is never called faster than without the wake.
+/// openraft's longest backoff to a broker that is not down. No member is
+/// retried early more often than this, so a struggling peer is never called
+/// faster than without the wake.
 pub(crate) const CEILING: Duration = Duration::from_secs(1);
+
+/// The longest a stream shard member's stream waits between retries while
+/// its broker is down. Its first answer ends the wait, and a heartbeat at
+/// the short gap finds it: the group's own while it has an entry not yet
+/// committed, otherwise the one the ticker sends each short gap to a broker
+/// that is down.
+pub(crate) const WHILE_DOWN: Duration = Duration::from_secs(10);
 
 /// A broker no call has failed to for this long is forgotten.
 const FORGET_AFTER: u64 = 30_000;
@@ -59,6 +69,9 @@ pub(crate) struct Peer {
     used: AtomicU64,
     /// Groups whose member there refused and has since answered.
     opened: parking_lot::Mutex<Vec<GroupId>>,
+    /// The group whose leader's append to it failed last: while it is down,
+    /// the ticker has that group heartbeat at the short gap.
+    scout: parking_lot::Mutex<Option<GroupId>>,
 }
 
 impl Reach {
@@ -106,6 +119,14 @@ impl Reach {
         });
     }
 
+    /// A leader's append from `group` to `broker` failed, as reported to
+    /// [`Self::lost`].
+    pub(crate) fn lost_by(&self, broker: &Arc<str>, group: &GroupId) {
+        if let Some(peer) = self.peers.load().get(broker) {
+            *peer.scout.lock() = Some(group.clone());
+        }
+    }
+
     /// `broker` answered a call, whatever the answer said.
     pub(crate) fn answered(&self, broker: &str) {
         let peers = self.peers.load();
@@ -134,6 +155,15 @@ impl Reach {
             peer.used.store(now, Ordering::Relaxed);
             peer.opened.lock().push(group.clone());
         });
+    }
+
+    /// Whether `broker` counts as down: its calls have kept failing for the
+    /// streak, with no answer since.
+    pub(crate) fn down(&self, broker: &str) -> bool {
+        self.peers
+            .load()
+            .get(broker)
+            .is_some_and(|peer| peer.is_down())
     }
 
     pub(crate) fn peers(&self) -> Arc<HashMap<Arc<str>, Arc<Peer>>> {
@@ -180,9 +210,50 @@ impl Peer {
         std::mem::take(&mut self.opened.lock())
     }
 
-    #[cfg(test)]
+    /// A group whose call to it failed, for the ticker's heartbeat while it
+    /// is down.
+    pub(crate) fn scout(&self) -> Option<GroupId> {
+        self.scout.lock().clone()
+    }
+
     pub(crate) fn is_down(&self) -> bool {
         self.state.load(Ordering::Acquire) == DOWN
+    }
+}
+
+/// openraft's retry delays for one member's stream. While the member's
+/// broker is down they keep doubling past openraft's ceiling, up to
+/// [`WHILE_DOWN`], so a dead broker costs each group a retry every few
+/// seconds rather than one a second. A broker that answers is not down, and
+/// the ticker then cuts the wait short (#2567).
+pub(crate) struct Waits {
+    usual: Backoff,
+    reach: Arc<Reach>,
+    broker: Arc<str>,
+    last: Duration,
+}
+
+impl Waits {
+    pub(crate) fn new(usual: Backoff, reach: Arc<Reach>, broker: Arc<str>) -> Self {
+        Self {
+            usual,
+            reach,
+            broker,
+            last: Duration::ZERO,
+        }
+    }
+}
+
+impl Iterator for Waits {
+    type Item = Duration;
+
+    fn next(&mut self) -> Option<Duration> {
+        let usual = self.usual.next()?;
+        self.last = match self.reach.down(&self.broker) {
+            true => self.last.saturating_mul(2).max(usual).min(WHILE_DOWN),
+            false => usual,
+        };
+        Some(self.last)
     }
 }
 

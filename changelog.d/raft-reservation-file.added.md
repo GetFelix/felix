@@ -1,0 +1,1 @@
+- A Raft copy's directory can hold a reservation file, `raft-reserved`, and a rotation carries the highest reservation it replaces into the new copy. A kept copy reserved past the current one is not reclaimed. Nothing takes a reservation yet; it is the first step toward committing on a written majority on `periodic` and `none` brokers.

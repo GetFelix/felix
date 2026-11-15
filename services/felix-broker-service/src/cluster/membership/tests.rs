@@ -32,6 +32,8 @@ struct Calls {
     /// What `GET /v1/nodes/{id}` answers: the incarnation and storage id the
     /// node last registered with. 404 when unset.
     lookup: Option<(u64, String)>,
+    /// The placement incarnation every answer carries, left out when unset.
+    placement_incarnation: Option<u64>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -100,11 +102,15 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                         Some(down) if incarnation <= down => "down",
                         _ => "live",
                     };
-                    Ok(Json(json!({
+                    let mut answer = json!({
                         "lifecycle": lifecycle,
                         "heartbeat_interval_ms": calls.heartbeat_interval_ms.unwrap_or(20),
                         "fleet_features": calls.fleet_features,
-                    })))
+                    });
+                    if let Some(told) = calls.placement_incarnation {
+                        answer["placement_incarnation"] = told.into();
+                    }
+                    Ok(Json(answer))
                 },
             ),
         )
@@ -545,6 +551,117 @@ async fn the_heartbeat_carries_the_root_sequence_once_the_root_opens() {
         bodies[1]["root"],
         json!({ "storage_id": id.to_hex(), "sequence": 6 }),
         "{bodies:?}"
+    );
+
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A broker acknowledges the placement incarnation it is told on disk, and
+/// only a later beat reports it: the control plane must never count an
+/// acknowledgement a crash could take back. Before a Raft root is open
+/// nothing is acknowledged or reported.
+#[tokio::test]
+async fn the_heartbeat_reports_a_placement_incarnation_only_once_it_is_on_disk() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        placement_incarnation: Some(3),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let registration = register(
+        &link(&client, &base_url),
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+    let slot = registration.root.clone();
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        link(&client, &base_url),
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(crate::cluster::lease::LeaseState::new(
+            std::time::Duration::from_secs(30),
+        )),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+    ));
+    let reported = |want: u64| {
+        let calls = Arc::clone(&calls);
+        async move {
+            for _ in 0..400 {
+                if calls
+                    .lock()
+                    .expect("lock")
+                    .heartbeat_bodies
+                    .iter()
+                    .any(|body| body["placement_incarnation"] == want)
+                {
+                    return calls.lock().expect("lock").heartbeat_bodies.clone();
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("never reported {want}");
+        }
+    };
+    for _ in 0..400 {
+        if calls.lock().expect("lock").heartbeat_bodies.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let before = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert!(
+        before
+            .iter()
+            .all(|body| body.get("placement_incarnation").is_none()),
+        "{before:?}"
+    );
+
+    let root = tempfile::tempdir().expect("tempdir");
+    assert!(slot.set_placement_root(root.path().to_path_buf(), 0));
+    let bodies = reported(3).await;
+    let first = bodies
+        .iter()
+        .position(|body| body["placement_incarnation"] == 3)
+        .expect("reported");
+    // The beat that heard 3 reported what was on disk then.
+    assert!(
+        bodies[before.len()..first]
+            .iter()
+            .any(|body| body["placement_incarnation"] == 0),
+        "{bodies:?}"
+    );
+    assert_eq!(
+        felix_storage::raft_copy::acked_placement_incarnation(root.path()).expect("read"),
+        3
+    );
+
+    // A control plane told less, as a lagging follower answers, lowers nothing.
+    calls.lock().expect("lock").placement_incarnation = Some(1);
+    let len = calls.lock().expect("lock").heartbeat_bodies.len();
+    for _ in 0..400 {
+        if calls.lock().expect("lock").heartbeat_bodies.len() >= len + 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let after = calls.lock().expect("lock").heartbeat_bodies.clone();
+    assert!(
+        after[len..]
+            .iter()
+            .all(|body| body["placement_incarnation"] == 3),
+        "{after:?}"
+    );
+    assert_eq!(
+        felix_storage::raft_copy::acked_placement_incarnation(root.path()).expect("read"),
+        3
     );
 
     shutdown.cancel();

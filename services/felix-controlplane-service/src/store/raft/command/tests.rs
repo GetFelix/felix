@@ -342,7 +342,7 @@ fn a_shard_switch_needs_level_34() {
             assert_eq!(settle_for_level(&raw, 34), Ok(None), "{command:?}");
         }
     }
-    assert_eq!(METADATA_VERSION, 34);
+    const { assert!(METADATA_VERSION >= 34) };
 }
 
 /// **`joint_fence` is finalized only where a refusal report is kept.** A
@@ -355,6 +355,39 @@ fn joint_fence_waits_for_the_level_that_keeps_refusals() {
         feature: felix_common::fleet::JOINT_FENCE.name().to_string(),
     };
     assert_eq!(finalize.version(), 25);
+}
+
+/// An import raises the placement incarnation only once every member applies
+/// level 35, and one carrying an incarnation is refused below it.
+#[tokio::test]
+async fn an_import_raises_the_incarnation_from_level_35() {
+    let import = br#"{"v":1,"op":"import_state","overwrite":true}"#;
+    let level = super::super::PLACEMENT_INCARNATION_LEVEL;
+    let settled = |level| -> serde_json::Value {
+        let settled = settle_for_level(import, level)
+            .expect("settles")
+            .expect("rewritten");
+        serde_json::from_slice(&settled).expect("json")
+    };
+    assert!(METADATA_VERSION >= level);
+    assert!(settled(level - 1).get("raise_incarnation").is_none());
+    assert_eq!(settled(level)["raise_incarnation"], true);
+
+    let mut state = crate::store::memory::InMemoryStore::new(crate::store::StoreConfig {
+        changes_limit: 100,
+        change_retention_max_rows: Some(1_000),
+    })
+    .export_state()
+    .await;
+    state.placement_incarnation = 3;
+    let carrying = encode_command(&MetaCommand::ImportState {
+        state: Box::new(state),
+        overwrite: true,
+        mark_unplaced: false,
+        raise_incarnation: false,
+    });
+    assert!(settle_for_level(&carrying, level - 1).is_err());
+    assert!(settle_for_level(&carrying, level).is_ok());
 }
 
 /// An escaped spelling of the import op is still an import, so it cannot

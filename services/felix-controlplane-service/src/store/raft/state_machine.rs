@@ -496,6 +496,11 @@ impl MetadataStateMachine {
                 .await
                 .map(|_| MetaResponse::Unit)
                 .map_err(Into::into),
+            MetaCommand::RecordPlacementAck { node_id, heard } => store
+                .record_placement_ack(&node_id, heard)
+                .await
+                .map(|_| MetaResponse::Unit)
+                .map_err(Into::into),
             MetaCommand::SetMovesPaused { paused } => store
                 .set_moves_paused(paused)
                 .await
@@ -677,6 +682,7 @@ impl MetadataStateMachine {
                 state,
                 overwrite,
                 mark_unplaced,
+                raise_incarnation,
             } => {
                 // A store with any history has consumers whose checkpoints
                 // this would silently invalidate; only an operator saying
@@ -694,6 +700,26 @@ impl MetadataStateMachine {
                 let kept = store.recorded_identity().await;
                 let mut state = *state;
                 state.forget_placed(mark_unplaced);
+                if raise_incarnation {
+                    // From the store before the import, so every member raises
+                    // to the same value. An acknowledgement above it, from
+                    // brokers that saw a control plane this one did not keep,
+                    // raises it again when heard (`record_placement_ack`).
+                    // Refused before anything changes: at the limit there is
+                    // no incarnation left that no target or delete has used.
+                    state.placement_incarnation =
+                        felix_storage::raft_copy::restored_placement_incarnation(
+                            store.placement_incarnation().await?,
+                            state.placement_incarnation,
+                        )
+                        .ok_or_else(|| {
+                            crate::store::raft::command::MetaError::Conflict(
+                                "the placement incarnation is at its limit; this backup cannot \
+                                 be restored over this group"
+                                    .to_string(),
+                            )
+                        })?;
+                }
                 store.import_state(state).await?;
                 if let Some(identity) = kept {
                     let adopts_existing = store.held_data_catalog().await;

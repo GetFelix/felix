@@ -173,9 +173,64 @@ pub struct InMemoryStore {
     /// Each node's highest root sequence; see
     /// `ControlPlaneStore::root_sequence`.
     root_sequences: Arc<RwLock<std::collections::BTreeMap<String, crate::model::RootSequence>>>,
+    /// The placement incarnation and each node's acknowledgement of one;
+    /// see `ControlPlaneStore::placement_incarnation`.
+    placement: Arc<RwLock<PlacementIncarnation>>,
     /// The engine this instance is configured for, reported where no group
     /// records one.
     shard_engine: String,
+}
+
+/// The placement incarnation and what each node has acknowledged of it.
+#[derive(Debug, Default)]
+struct PlacementIncarnation {
+    current: u64,
+    acks: std::collections::BTreeMap<String, crate::model::PlacementAck>,
+}
+
+/// Heartbeats repeat a refused acknowledgement, so the warning is limited to
+/// once per node per minute.
+fn out_of_bound_warning_due(node_id: &str) -> bool {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static LAST: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> = OnceLock::new();
+    let mut last = LAST.get_or_init(Default::default).lock().expect("warn log");
+    let now = Instant::now();
+    match last.get(node_id) {
+        Some(at) if now.duration_since(*at) < Duration::from_secs(60) => false,
+        _ => {
+            last.insert(node_id.to_string(), now);
+            true
+        }
+    }
+}
+
+/// Whether `heard` may be kept at all: from the node's current process
+/// (`current_process`, the incarnation its record holds), and not so far above
+/// `current` that it could walk the incarnation to its limit
+/// ([`felix_storage::raft_copy::MAX_PLACEMENT_ACK_AHEAD`]). Applied, so a
+/// late beat of an earlier process cannot replace a later one's.
+pub(crate) fn placement_ack_heard(
+    node_id: &str,
+    current_process: Option<u64>,
+    current: u64,
+    heard: &crate::model::PlacementAck,
+) -> bool {
+    if current_process != Some(heard.node_incarnation) {
+        return false;
+    }
+    if !felix_storage::raft_copy::placement_ack_in_bound(current, heard.incarnation) {
+        if out_of_bound_warning_due(node_id) {
+            tracing::warn!(
+                node_id,
+                acknowledged = heard.incarnation,
+                current,
+                "refused a placement acknowledgement far above the control plane's incarnation",
+            );
+        }
+        return false;
+    }
+    true
 }
 
 impl InMemoryStore {
@@ -391,6 +446,7 @@ impl InMemoryStore {
             revocations: Arc::new(RwLock::new(Default::default())),
             identity: Default::default(),
             root_sequences: Default::default(),
+            placement: Default::default(),
             shard_engine: "hybrid".to_string(),
         }
     }
@@ -874,6 +930,56 @@ impl ControlPlaneStore for InMemoryStore {
             .await
             .iter()
             .map(|(node, held)| (node.clone(), held.clone()))
+            .collect())
+    }
+
+    async fn placement_incarnation(&self) -> StoreResult<u64> {
+        Ok(self.placement.read().await.current)
+    }
+
+    async fn record_placement_ack(
+        &self,
+        node_id: &str,
+        heard: crate::model::PlacementAck,
+    ) -> StoreResult<bool> {
+        // The node lock is held so a registration cannot start a new process
+        // between the check and the write.
+        let nodes = self.nodes.read().await;
+        let mut placement = self.placement.write().await;
+        let current_process = nodes
+            .records
+            .get(node_id)
+            .map(|node| node.status.incarnation);
+        if !placement_ack_heard(node_id, current_process, placement.current, &heard)
+            || !crate::model::PlacementAck::moved_by(placement.acks.get(node_id), &heard)
+        {
+            return Ok(false);
+        }
+        // A broker that acknowledged more than this store ever issued saw a
+        // control plane this one was not restored from. Moving past it keeps
+        // a delete told there from passing as current here.
+        if heard.incarnation > placement.current {
+            // In bound, so at least MAX - MAX_PLACEMENT_ACK_AHEAD is left.
+            placement.current = felix_storage::raft_copy::restored_placement_incarnation(
+                placement.current,
+                heard.incarnation,
+            )
+            .ok_or_else(|| {
+                super::StoreError::Conflict("the placement incarnation is at its limit".into())
+            })?;
+        }
+        placement.acks.insert(node_id.to_string(), heard);
+        Ok(true)
+    }
+
+    async fn placement_acks(&self) -> StoreResult<Vec<(String, crate::model::PlacementAck)>> {
+        Ok(self
+            .placement
+            .read()
+            .await
+            .acks
+            .iter()
+            .map(|(node, ack)| (node.clone(), *ack))
             .collect())
     }
 
