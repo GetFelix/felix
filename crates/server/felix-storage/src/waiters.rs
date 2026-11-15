@@ -147,6 +147,10 @@ impl<K: Ord + Copy> Waiters<K> {
         key: K,
         mut ready: impl FnMut(&V) -> Option<T>,
     ) -> Result<T, Closed> {
+        // Already satisfied: skip the queue.
+        if let Some(found) = ready(&watched.borrow()) {
+            return Ok(found);
+        }
         loop {
             let wake = self.register(key);
             if let Some(found) = ready(&watched.borrow()) {

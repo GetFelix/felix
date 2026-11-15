@@ -98,11 +98,12 @@ async fn a_reached_key_that_does_not_satisfy_waits_for_the_next_advance() {
         (*v == 12).then_some(*v)
     }));
     assert!((&mut wait).now_or_never().is_none());
-    assert_eq!(looks.get(), 1);
+    // The look before queueing, then the one after.
+    assert_eq!(looks.get(), 2);
     tx.send_replace(11);
     queue.advance(Some(11));
     assert!((&mut wait).now_or_never().is_none());
-    assert_eq!(looks.get(), 2);
+    assert_eq!(looks.get(), 3);
     tx.send_replace(12);
     queue.advance(Some(12));
     assert_eq!((&mut wait).now_or_never(), Some(Ok(12)));
@@ -178,7 +179,8 @@ async fn an_advance_wakes_the_waiters_it_satisfies_not_the_whole_queue() {
     let watched = looks(false).await;
     let queued = looks(true).await;
     println!("{WAITERS} waiters: watch::wait_for looked {watched} times, the queue {queued}");
-    assert_eq!(queued, 2 * WAITERS as usize);
+    // A look before queueing, one after, one once woken.
+    assert_eq!(queued, 3 * WAITERS as usize);
     assert!(
         watched > 100 * WAITERS as usize,
         "watch looked {watched} times"
