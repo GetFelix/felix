@@ -1046,4 +1046,18 @@ NeverKeepsAcrossOldRestore ==
 \* A learner that no membership names holds a record.
 NeverLearnerHolds ==
     \A b \in Brokers \ InitBrokers : \A j \in 1..Len(log[b]) : log[b][j].k # "rec"
+
+--------------------------------------------------------------------------------
+\* The shape of the two re-form configs (ACTION_CONSTRAINT). It cuts only
+\* interleavings their scenarios do not need: epoch 0 sees only the command
+\* and the faults that leave its empty logs alone, each later epoch takes at
+\* most one write, and the plan to close epoch 1 waits until epoch 1
+\* committed a record. Records of an older epoch read at a re-form are
+\* checked by the one re-form configs.
+EpochOneCommitted == \E x \in acked : x.e = 1 /\ x.t > 0
+
+TwoReformsShape ==
+    /\ cpEpoch = 0 => UNCHANGED <<term, log, commit, msgs, cuts>>
+    /\ writes' # writes => writes < cpEpoch
+    /\ (cpEpoch = 1 /\ plans' # plans) => EpochOneCommitted
 ================================================================================
