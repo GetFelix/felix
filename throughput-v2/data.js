@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794779516844,
+  "lastUpdate": 1794784550338,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59176,6 +59176,58 @@ window.BENCHMARK_DATA = {
             "range": "42394.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 797460.79\nmean: 779780.55\nstdev: 42394.14\ncv: 5.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "408245920b8c476b290ba040ebb91325e81447c5",
+          "message": "fix(raft): shard groups run pre-vote, and a member that hears its leader refuses one (#2630) (#2634)\n\n* fix(raft): shard groups run pre-vote, so an unheard member keeps its term (#2630)\n\nShard groups never set openraft's enable_pre_vote, which defaults to off.\nA member nobody can hear raised its term at every election timeout and\ndeposed the leader when it was heard again. A granted pre-vote also no\nlonger resets the follower's pace, since it promises nothing.\n\nSpec-Unaffected: FelixRaft.tla's Campaign is unconstrained; pre-vote only removes term raises, so the modelled behaviours are a superset.\n\n* fix(raft): a member that still hears its leader refuses a pre-vote past openraft's lease (#2630)\n\nopenraft's follower lease is election_max (2 s), which lapses just before\neach idle heartbeat. A follower now refuses a pre-vote for as long as it\nwould wait for its leader, and a leader while a majority answered it\nwithin three idle intervals. The refusal is a not-granted VoteResponse\ncarrying the member's vote and last log id, not a dropped call, so the\ncandidate keeps the broker counted as reachable and still adopts a higher\nterm or backs off for a longer log. A granted pre-vote no longer restarts\nthe election timer.\n\n* fix(raft): a member that takes a leadership transfer stops counting on the old leader (#2630)\n\nIf the target never stands, the old leader pre-elects at the transfer's\nexpiry. The other followers took the transfer, and openraft reset their\nlease, but Pace::led still held the last heartbeat, so they refused that\npre-vote for their whole idle wait. Taking a TransferLeader now clears it.\n\nAlso corrects the comment on named(): openraft adopts a strictly higher\nvote from a refused pre-vote, on a member that holds no lease, and\nshortens the idle refusal test's first wait to 2.3 s.\n\n* test(raft): the idle pre-vote test reads ages instead of sleeping (#2630)\n\nThe refusal is checked once the follower's last take and the leader's\nlast quorum ack are 3 s old, past openraft's 2 s lease, and holds only\nwhile the age read after the answer is inside the wait, about 3 s of\nroom. The grant side polls until the follower grants.\n\n* fix(raft): a follower that stops hearing its leader names none (#2630)\n\nPre-vote keeps a cut-off member at its term, so openraft names the last\nleader it heard for good. GroupStatus.leader gated serving readers and\nforwarding on that, so a cut-off follower kept its subscribers and\nforwarded to a dead leader. A follower now names a leader only while it\nwould refuse a pre-vote for it.\n\nSpec-Unaffected: the reported leader is a local view that gates readers and forwarding; votes, terms and the log are unchanged.\n\n* fix(raft): a leader no majority answers serves no reader; followers forward on openraft's leader (#2630)\n\nopenraft never steps a leader down for a lost majority, so a cut-off\nleader kept serving readers on a stopped commit index. GroupStatus.leader\non a leader now needs a majority's answer within its followers' wait (a\nnew term is timed from when it was first seen; a sole voter needs none),\nand read admission refuses a leader in that state.\n\nForwarding no longer waits for a heard leader: GroupStatus.leader_hint\ncarries openraft's leader, and dispatch forwards on it, so a restarted\nfollower forwards at once as before. Readers still need the heard leader.\n\nSpec-Unaffected: the reported leader and its hint are local views that gate readers and forwarding; votes, terms and the log are unchanged.\n\n* fix(raft): a subscribe needs the heard leader; a cut-off follower answers not_ready (#2630)",
+          "timestamp": "2026-11-15T15:07:00-08:00",
+          "tree_id": "c604429727f56286f2eacfe8be14fe27e2c56b9d",
+          "url": "https://github.com/GetFelix/felix/commit/408245920b8c476b290ba040ebb91325e81447c5"
+        },
+        "date": 1794784549389,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 498347.85,
+            "range": "27965.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 498347.85\nmean: 496955.47\nstdev: 27965.80\ncv: 5.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 498347.85,
+            "range": "27965.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 498347.85\nmean: 496955.47\nstdev: 27965.80\ncv: 5.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120529.94,
+            "range": "1414.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120529.94\nmean: 120409.72\nstdev: 1414.29\ncv: 1.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1205299.44,
+            "range": "14142.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1205299.44\nmean: 1204097.17\nstdev: 14142.84\ncv: 1.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
