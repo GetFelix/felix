@@ -634,11 +634,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
 | `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
 | `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
-| `FelixRaftGroups.cfg` | `FelixRaftGroups.tla`: two members, one group over two records, one change of leader, four entries; every rule on | pass `NoSkip`, `RedrivenOwed`, `IfNewKeepsServed` (12,407,589 distinct states, 27.3M generated, depth 38, 40 seconds with 8 workers on a 32-core machine) |
-| `FelixRaftGroupsTwoChanges.cfg` | the same with two changes of leader, so a member leads, loses the term and leads again | pass the same (30,289,252 distinct states, 84.2M generated, depth 41, 101 seconds with 8 workers on a 32-core machine) |
-| `FelixRaftGroupsNoEpoch.cfg` | apply ignores the seek index | violate `NoSkip`: an advance decided before a seek lands after it and moves the cursor over a record the new incarnation never read |
-| `FelixRaftGroupsNoDeleteWatermark.cfg` | the shard keeps no delete watermark | violate `NoSkip`: an advance decided before a delete lands after it and recreates the group past a record |
-| `FelixRaftGroupsDeleteKeepsTrackers.cfg` | deleting another group leaves this group's tracker serving | violate `RedrivenOwed`: the tracker's finish of a redriven record lands below the delete watermark and is dropped, so the record stays redriven and nothing owes it |
+| `FelixRaftGroups.cfg` | `FelixRaftGroups.tla`: two members, one group over two records, one change of leader, four entries; every rule on | pass `NoSkip`, `RedrivenOwed`, `IfNewKeepsServed` (6,645,375 distinct states, 15.2M generated, depth 38, 24 seconds with 8 workers on a 32-core machine) |
+| `FelixRaftGroupsTwoChanges.cfg` | the same with two changes of leader, so a member leads, loses the term and leads again | pass the same (18,608,068 distinct states, 52.0M generated, depth 41, 67 seconds with 8 workers on a 32-core machine) |
+| `FelixRaftGroupsNoCreationIndex.cfg` | apply ignores the creation index | violate `NoSkip`: an advance decided before a seek lands after it and moves the cursor over a record the new incarnation never read |
+| `FelixRaftGroupsNoDeleteWatermark.cfg` | an entry naming an absent group is never dropped | violate `NoSkip`: an advance decided before a delete lands after it and recreates the group past a record |
+| `FelixRaftGroupsStaleByHydrateIndex.cfg` | the earlier rule: drop any entry whose tracker hydrated before the shard's last delete | violate `RedrivenOwed`: another group's delete silences this group's tracker, so its dead letter of a redriven record is dropped and nothing owes the record |
 | `FelixRaftGroupsNoRedrivenSet.cfg` | a redrive deletes the dead letter and owes the record in memory only | violate `NoSkip`: a record below the cursor is in no set |
 | `FelixRaftGroupsDeadAfterAdvance.cfg` | a dead letter is proposed in any order with the advance over it | violate `NoSkip`: the advance commits first and the record is in no set |
 | `FelixRaftGroupsIfNewTableOnly.cfg` | if_new checks the table only | violate `IfNewKeepsServed`: a new group with a record handed out and nothing committed is moved |
@@ -4142,14 +4142,15 @@ What is modelled:
   order with other proposals. So an advance decided before a seek can land
   after it. A dead letter is appended before the run over it closes, as the
   code writes it before settling.
-- Every tracker-driven entry carries the log index its tracker was hydrated
-  at. The table keeps the index of the group's last seek, and the shard keeps
-  the index of its latest delete. Apply drops an entry from below either.
-  Within that the cursor only moves forward.
-- Placing a delete, of this group or another, retires every tracker in the
-  shard, since apply would drop all of their later entries. The leader still
-  remembers that a retired tracker handed out records, until the term ends,
-  so an if_new seek does not treat the group as new.
+- A live group has a creation index: the index of the seek that created or
+  last reset it, or, for a group its first acknowledgement or dead letter
+  created, the index its tracker hydrated at. Every tracker-driven entry
+  carries the creation index of the group its tracker serves.
+- The shard keeps the index of its latest delete of any group, and nothing
+  per deleted name. Apply drops an entry whose creation index differs from the
+  live group's, or that names an absent group with a creation index below the
+  latest delete. Within that the cursor only moves forward. Deleting one group
+  leaves the other groups' trackers serving.
 - A seek with if_new moves only a group that does not exist, decided by the
   leader from the table and its tracker.
 - The leader decides from its applied table only, never from its own
@@ -4171,12 +4172,13 @@ What is checked:
 - `IfNewKeepsServed`: an if_new seek is never placed while the group has
   handed out records in this term.
 
-Each broken configuration drops one rule and finds the trace: no seek index
-at apply, no delete watermark, a delete that leaves other trackers serving,
-if_new checking the table only, trackers kept across terms, deciding from part
-of the committed log, deciding before the leader's own entries are applied, a
-dead letter proposed in any order with the advance over it, and a redrive that
-keeps the record in memory only.
+Each broken configuration drops one rule and finds the trace: no creation
+index at apply, no delete watermark, the earlier rule that dropped every entry
+from a tracker hydrated before any delete, if_new checking the table only,
+trackers kept across terms, deciding from part of the committed log, deciding
+before the leader's own entries are applied, a dead letter proposed in any
+order with the advance over it, and a redrive that keeps the record in memory
+only.
 
 Not modelled: the group marks' place in the stream's offsets. The rule that
 skipping a mark proposes nothing is what keeps two groups, or an idle group,

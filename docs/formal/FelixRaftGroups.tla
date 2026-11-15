@@ -28,15 +28,16 @@
 (*   delete       -- the group and its dead letters are gone               *)
 (*   fdelete      -- another group of the shard is deleted                 *)
 (*                                                                         *)
-(* Each tracker-driven entry carries `hyd`, the log index its tracker was  *)
-(* hydrated at (a seek's own tracker takes the seek's index). The table    *)
-(* keeps `reset`, the index of the group's last seek, and the shard keeps  *)
-(* `lastDel`, the index of its latest delete. Apply drops an entry with    *)
-(* hyd below either: it came from a tracker the seek or delete retired.    *)
-(* Within that, the cursor only moves forward. Placing any delete retires  *)
-(* every tracker of the shard, since all of their later entries would be   *)
-(* dropped; the leader remembers that a retired tracker had handed out     *)
-(* records until the term ends.                                            *)
+(* A live group has a creation index `cre`: the index of the seek that    *)
+(* created or last reset it, or, for a group created by its first          *)
+(* acknowledgement or dead letter, the index its tracker hydrated at (a    *)
+(* tracker cannot know the index its first entry will land at). Every      *)
+(* tracker-driven entry carries the `cre` of the group its tracker serves. *)
+(* The shard keeps `lastDel`, the index of its latest delete of any group, *)
+(* and keeps nothing per deleted name. Apply drops an entry whose `cre`    *)
+(* differs from the live group's, or that names an absent group with a     *)
+(* `cre` below `lastDel`. Within that, the cursor only moves forward. A    *)
+(* delete of another group therefore leaves a live group's tracker alone. *)
 (*                                                                         *)
 (* The leader decides from its applied table, never from its own entries   *)
 (* in flight. So a hydrate, a redrive and a seek wait until the leader has *)
@@ -61,12 +62,17 @@
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
-(*   EpochCheck = FALSE         -- apply ignores `reset`: a late advance   *)
-(*                                 from before a seek still moves the      *)
-(*                                 cursor.                                 *)
-(*   DeleteWatermark = FALSE    -- the shard keeps no `lastDel`; a delete  *)
-(*                                 forgets the group, so a late advance    *)
-(*                                 recreates it past records nobody read.  *)
+(*   CreationCheck = FALSE      -- apply ignores `cre`: a late advance     *)
+(*                                 from before a seek or a delete still    *)
+(*                                 moves or recreates the group.           *)
+(*   DeleteWatermark = FALSE    -- an entry naming an absent group is      *)
+(*                                 never dropped, so a late advance        *)
+(*                                 recreates a deleted group.              *)
+(*   StaleByHyd = TRUE          -- the earlier rule instead: apply drops   *)
+(*                                 any entry whose tracker hydrated before *)
+(*                                 the group's last seek or the shard's    *)
+(*                                 last delete, so deleting another group  *)
+(*                                 silences a live group's tracker.        *)
 (*   IfNewChecksTracker = FALSE -- if_new looks at the table only.         *)
 (*   TermBoundTrackers = FALSE  -- a member keeps its tracker across terms *)
 (*                                 and serves from it when it leads again. *)
@@ -75,8 +81,6 @@
 (*                                 not all of it.                          *)
 (*   WaitOwnProposals = FALSE   -- hydrate and user operations do not wait *)
 (*                                 for the leader's own entries in flight. *)
-(*   DeleteRetiresAll = FALSE   -- a delete retires only its own group's   *)
-(*                                 tracker.                                *)
 (*   DeadBeforeAdvance = FALSE  -- a dead letter is proposed like an       *)
 (*                                 advance, in any order with it.          *)
 (*   KeepRedriven = FALSE       -- a redrive deletes the dead letter and   *)
@@ -99,23 +103,23 @@ CONSTANTS
     SeekTo,          \* where a seek may move the cursor
     MaxChanges,      \* changes of leader
     MaxLog,          \* entries written, committed or not
-    EpochCheck,
+    CreationCheck,
     DeleteWatermark,
     IfNewChecksTracker,
     TermBoundTrackers,
     HydrateFromApplied,
     WaitOwnProposals,
-    DeleteRetiresAll,
+    StaleByHyd,
     DeadBeforeAdvance,
     KeepRedriven
 
 ASSUME
     /\ N \in Nat /\ N > 0 /\ MaxChanges \in Nat /\ MaxLog \in Nat
     /\ SeekTo \subseteq 1..(N + 1)
-    /\ EpochCheck \in BOOLEAN /\ DeleteWatermark \in BOOLEAN
+    /\ CreationCheck \in BOOLEAN /\ DeleteWatermark \in BOOLEAN
     /\ IfNewChecksTracker \in BOOLEAN /\ TermBoundTrackers \in BOOLEAN
     /\ HydrateFromApplied \in BOOLEAN /\ KeepRedriven \in BOOLEAN
-    /\ WaitOwnProposals \in BOOLEAN /\ DeleteRetiresAll \in BOOLEAN
+    /\ WaitOwnProposals \in BOOLEAN /\ StaleByHyd \in BOOLEAN
     /\ DeadBeforeAdvance \in BOOLEAN
 
 VARIABLES
@@ -123,7 +127,7 @@ VARIABLES
     tail,      \* the leader's uncommitted entries
     pend,      \* entries the leader's trackers decided on, not yet appended
     leader,
-    trk,       \* per member: its tracker, or a retired one
+    trk,       \* per member: its tracker, or None
     acks,      \* history: per record, the hyds of the trackers that took its
                \* acknowledgement; a change of leader forgets those past the
                \* committed log, since their index is reused
@@ -138,9 +142,8 @@ Symm == Permutations(Members)
 
 Records == 1..N
 Max2(a, b) == IF a >= b THEN a ELSE b
-\* `any`: a tracker retired by a delete had handed out records this term.
 None == [none |-> TRUE, any |-> FALSE]
-Retired(t) == [none |-> TRUE, any |-> t.any]
+NoCre == [at |-> 0, by |-> "none"]
 
 Full == log \o tail
 
@@ -149,24 +152,31 @@ Full == log \o tail
 
 \* `from` is where this incarnation started reading; `gfloor` is the index
 \* of its last seek or delete whatever the knobs say, for the checks only.
-T0 == [exists |-> FALSE, cursor |-> 1, from |-> 1, reset |-> 0, lastDel |-> 0,
-       gfloor |-> 0, dead |-> {}, red |-> {}]
+\* `reset` is the index of the last seek, for the StaleByHyd rule only.
+T0 == [exists |-> FALSE, cre |-> NoCre, cursor |-> 1, from |-> 1, reset |-> 0,
+       lastDel |-> 0, gfloor |-> 0, dead |-> {}, red |-> {}]
 
-Stale(T, e) == e.hyd < T.lastDel \/ (EpochCheck /\ e.hyd < T.reset)
+Stale(T, e) ==
+    IF StaleByHyd THEN e.hyd < T.lastDel \/ e.hyd < T.reset
+    ELSE /\ CreationCheck
+         /\ IF T.exists THEN e.cre # T.cre
+            ELSE DeleteWatermark /\ e.cre.at < T.lastDel
+
+\* An entry that names an absent group creates it with the entry's `cre`.
+Live(T, e) == [T EXCEPT !.exists = TRUE, !.cre = IF T.exists THEN @ ELSE e.cre]
 
 Step(T, e, i) ==
     CASE e.kind = "seek" ->
-            [T EXCEPT !.exists = TRUE, !.cursor = e.to, !.from = e.to,
-                      !.reset = i, !.gfloor = i]
+            [T EXCEPT !.exists = TRUE, !.cre = e.cre, !.cursor = e.to,
+                      !.from = e.to, !.reset = i, !.gfloor = i]
       [] e.kind = "delete" ->
-            [T0 EXCEPT !.lastDel = IF DeleteWatermark THEN i ELSE 0, !.gfloor = i]
-      [] e.kind = "fdelete" ->
-            [T EXCEPT !.lastDel = IF DeleteWatermark THEN i ELSE @]
+            [T0 EXCEPT !.lastDel = i, !.gfloor = i]
+      [] e.kind = "fdelete" -> [T EXCEPT !.lastDel = i]
       [] Stale(T, e) -> T
       [] e.kind = "advance" ->
-            [T EXCEPT !.exists = TRUE, !.cursor = Max2(T.cursor, e.to)]
+            [Live(T, e) EXCEPT !.cursor = Max2(T.cursor, e.to)]
       [] e.kind = "dead" ->
-            [T EXCEPT !.exists = TRUE, !.dead = @ \cup {e.o}, !.red = @ \ {e.o}]
+            [Live(T, e) EXCEPT !.dead = @ \cup {e.o}, !.red = @ \ {e.o}]
       [] e.kind = "redrive" ->
             IF e.o \in T.dead
             THEN [T EXCEPT !.dead = @ \ {e.o},
@@ -182,8 +192,8 @@ Fold(L) == FoldFrom(T0, L, 1)
 ----------------------------------------------------------------------------
 \* Trackers.
 
-Tracker(h, pos, owed) ==
-    [none |-> FALSE, hyd |-> h, pos |-> pos, out |-> {},
+Tracker(h, cre, pos, owed) ==
+    [none |-> FALSE, hyd |-> h, cre |-> cre, pos |-> pos, out |-> {},
      done |-> {}, owed |-> owed, any |-> FALSE]
 
 \* The first position at or above `p` that is not in `S`.
@@ -198,7 +208,7 @@ Settle(t, o) ==
              p == RunEnd(t.pos, d)
          IN [t |-> [t EXCEPT !.done = {x \in d : x >= p}, !.pos = p],
              adv |-> IF p > t.pos
-                     THEN {[kind |-> "advance", to |-> p, hyd |-> t.hyd]}
+                     THEN {[kind |-> "advance", to |-> p, hyd |-> t.hyd, cre |-> t.cre]}
                      ELSE {}]
 
 Room == Len(log) + Len(tail) < MaxLog
@@ -231,8 +241,8 @@ Hydrate ==
     /\ \E k \in Views :
         LET T == View(k) IN
         trk' = [trk EXCEPT ![leader] =
-                    [Tracker(k, IF T.exists THEN T.cursor ELSE 1, T.red)
-                        EXCEPT !.any = Lead.any]]
+                    IF T.exists THEN Tracker(k, T.cre, T.cursor, T.red)
+                    ELSE Tracker(k, [at |-> k, by |-> "hydrate"], 1, {})]
     /\ UNCHANGED <<log, tail, pend, leader, acks, served, badIfNew, changes>>
 
 HandOut(o) ==
@@ -255,7 +265,8 @@ Ack(o) ==
     /\ trk' = [trk EXCEPT ![leader] = s.t]
     /\ pend' = pend \cup s.adv
                \cup (IF o \in t.owed
-                     THEN {[kind |-> "finish", o |-> o, hyd |-> t.hyd]} ELSE {})
+                     THEN {[kind |-> "finish", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
+                     ELSE {})
     /\ acks' = [acks EXCEPT ![o] = @ \cup {t.hyd}]
     /\ UNCHANGED <<log, tail, leader, served, badIfNew, changes>>
 
@@ -265,7 +276,7 @@ DeadLetter(o) ==
     LET t == Lead
         t1 == [t EXCEPT !.out = @ \ {o}, !.owed = @ \ {o}]
         s == Settle(t1, o)
-        d == [kind |-> "dead", o |-> o, hyd |-> t.hyd]
+        d == [kind |-> "dead", o |-> o, hyd |-> t.hyd, cre |-> t.cre]
     IN
     /\ ~t.none
     /\ o \in t.out
@@ -290,8 +301,10 @@ Propose(e) ==
 Redrive(o) ==
     /\ Room
     /\ Ready
-    /\ \E k \in Views : o \in View(k).dead
-    /\ tail' = Append(tail, [kind |-> "redrive", o |-> o, hyd |-> Len(Full) + 1])
+    /\ \E k \in Views :
+        /\ o \in View(k).dead
+        /\ tail' = Append(tail, [kind |-> "redrive", o |-> o,
+                                  hyd |-> Len(Full) + 1, cre |-> View(k).cre])
     /\ trk' = IF Lead.none THEN trk
               ELSE [trk EXCEPT ![leader].owed = @ \cup {o}]
     /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes>>
@@ -307,8 +320,10 @@ Seek(to, ifNew) ==
             exists == T.exists \/ (IfNewChecksTracker /\ t.any)
         IN
         /\ ifNew => ~exists
-        /\ trk' = [trk EXCEPT ![leader] = Tracker(i, to, T.red)]
-    /\ tail' = Append(tail, [kind |-> "seek", to |-> to, hyd |-> i])
+        /\ trk' = [trk EXCEPT ![leader] =
+                       Tracker(i, [at |-> i, by |-> "seek"], to, T.red)]
+    /\ tail' = Append(tail, [kind |-> "seek", to |-> to, hyd |-> i,
+                              cre |-> [at |-> i, by |-> "seek"]])
     /\ badIfNew' = (badIfNew \/
                     (ifNew /\ served >= Fold(Full).gfloor))
     /\ UNCHANGED <<log, pend, leader, acks, served, changes>>
@@ -323,10 +338,7 @@ Delete ==
 ForeignDelete ==
     /\ Room
     /\ tail' = Append(tail, [kind |-> "fdelete", hyd |-> Len(Full) + 1])
-    /\ trk' = IF DeleteRetiresAll
-              THEN [trk EXCEPT ![leader] = Retired(@)]
-              ELSE trk
-    /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<log, pend, leader, trk, acks, served, badIfNew, changes>>
 
 Commit ==
     /\ tail # <<>>
