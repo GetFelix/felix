@@ -302,6 +302,9 @@ where
                         at.flushed = last;
                     }
                 }),
+                // A close flushes everything itself, so a flush it beat to
+                // the log lost nothing.
+                Err(err) if closed(&err) => {}
                 // Raft already counted these entries, so there is no
                 // callback to fail. Stop the log rather than leave `flushed`
                 // stuck below what it holds.
@@ -561,6 +564,13 @@ pub(super) fn io_error(err: StorageError) -> io::Error {
         StorageError::Io(err) => err,
         other => io::Error::other(other),
     }
+}
+
+/// The error a flush gets from a log closed under it.
+fn closed(err: &io::Error) -> bool {
+    err.get_ref()
+        .and_then(|err| err.downcast_ref::<StorageError>())
+        .is_some_and(|err| matches!(err, StorageError::Closed(_)))
 }
 
 /// The timestamp of a blank or membership record. Commands carry their own.

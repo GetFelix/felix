@@ -4677,7 +4677,9 @@ not move.
   log first raises the reservation over the entries already on disk (a
   copy written under `on_commit` has none), and the open fails if that
   raise does. A flush or exact log mark that fails after the callback
-  stops the log. `flushed` and the exact log mark still wait for
+  stops the log, except one that fails because the log was closed: a
+  close syncs the log itself. A member's stop waits for its queued
+  flushes before the log closes, so a clean stop never rotates. `flushed` and the exact log mark still wait for
   the log's own fsync; the batched mark reads `flushed`, so it never names
   an unsynced entry. A truncation, a purge and a cache log's admit sync
   first, since under `none` nothing else would.

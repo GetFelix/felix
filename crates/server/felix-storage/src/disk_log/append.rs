@@ -826,8 +826,9 @@ impl LogInner {
                 reason: reason.to_string(),
             });
         }
-        // A `Failed` state with no recorded reason means the rollover task
-        // itself panicked or was cancelled. Still terminal.
+        // A fallback: `record_roll_failure` records the reason before it
+        // sets `Failed`. A roll that panicked leaves `Preparing` or
+        // `Sealing`, not `Failed`.
         if RollState::from_u8(self.roll_state.load(Ordering::Acquire)) == RollState::Failed {
             return Err(StorageError::Poisoned {
                 shard: self.label.clone(),

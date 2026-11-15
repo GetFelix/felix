@@ -224,3 +224,87 @@ async fn a_purge_under_none_finishes_with_flushes_queued() {
     purged.expect("the purge syncs first").expect("purge");
     assert!(raft.positions().borrow().flushed.is_some());
 }
+
+/// A written-commit log under a marked root, with two appends whose flushes
+/// are still queued: under `None` nothing syncs them.
+async fn queued_under_marks(
+    root: &crate::raft_copy::tests::Root,
+    mode: crate::raft_copy::LogMarkMode,
+) -> Raft {
+    use crate::raft_copy::tests::SHARD;
+    begin(root.path(), true);
+    let copies = root.open();
+    let opened = copies
+        .open_copy(
+            SHARD,
+            &root.shard_dir(),
+            "t/ns/orders/0",
+            relaxed_config(FsyncMode::None),
+        )
+        .await
+        .expect("open copy");
+    let mut raft = Raft::new(opened.log.clone(), Codec).expect("a written-commit log");
+    raft.mark_with(opened.marks.clone(), mode).expect("marks");
+    append(&mut raft, vec![blank(1, 0)]).await.expect("append");
+    append(&mut raft, vec![normal(1, 1, "a")])
+        .await
+        .expect("append");
+    assert!(!raft.shared.flushes.is_empty(), "the flushes are queued");
+    raft
+}
+
+fn marks_modes() -> [crate::raft_copy::LogMarkMode; 2] {
+    use crate::raft_copy::LogMarkMode;
+    [
+        LogMarkMode::Exact,
+        LogMarkMode::Batched(Duration::from_secs(60)),
+    ]
+}
+
+/// **A close that beats a queued flush to a written-commit log does not
+/// poison it.** The close syncs everything itself, so the flush that then
+/// finds the log closed lost nothing. Poisoning would make the next start
+/// rotate a storage id that a clean stop keeps.
+#[tokio::test]
+async fn a_close_with_flushes_queued_leaves_the_log_unpoisoned() {
+    for mode in marks_modes() {
+        let root = crate::raft_copy::tests::Root::new();
+        let raft = queued_under_marks(&root, mode).await;
+        let log = raft.disk_log().clone();
+        log.close().await.expect("close");
+        tokio::time::timeout(BOUND, raft.shared.flushes.drained())
+            .await
+            .expect("the queued flushes are answered");
+        assert!(
+            !log.is_poisoned(),
+            "{mode:?}: a clean close poisoned the log"
+        );
+        assert!(
+            !crate::disk_log::durable_mark::left_poisoned(log.dir()).expect("look"),
+            "{mode:?}: the next start would rotate the storage id"
+        );
+    }
+}
+
+/// **Draining before the close answers every queued flush with its real
+/// result**, so `flushed` reaches the last entry and the log stops clean.
+#[tokio::test]
+async fn draining_before_the_close_flushes_every_queued_append() {
+    for mode in marks_modes() {
+        let root = crate::raft_copy::tests::Root::new();
+        let raft = queued_under_marks(&root, mode).await;
+        tokio::time::timeout(BOUND, raft.drain_flushes())
+            .await
+            .expect("the drain finishes")
+            .expect("drain");
+        assert_eq!(
+            raft.positions().borrow().flushed.map(|at| at.index),
+            Some(1),
+            "{mode:?}"
+        );
+        let log = raft.disk_log().clone();
+        log.close().await.expect("close");
+        assert!(!log.is_poisoned(), "{mode:?}");
+        assert!(!crate::disk_log::durable_mark::left_poisoned(log.dir()).expect("look"));
+    }
+}

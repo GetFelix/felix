@@ -53,6 +53,8 @@ pub(crate) struct Group {
     pub(crate) id: GroupId,
     pub(crate) member: MemberId,
     raft: Raft<ShardTypes, Machine>,
+    /// The member's log, to drain its queued flushes at the stop.
+    log: RaftLog<ShardTypes, ShardCodec>,
     pace: Arc<Pace>,
     lease: Arc<Lease>,
     /// Empty for a member that started with no vote on disk.
@@ -501,6 +503,9 @@ pub(crate) struct Host {
 /// Expired values deleted by one pass of the expiry task.
 const EXPIRE_AT_ONCE: usize = 256;
 
+/// How long a stop waits for the member's queued flushes.
+const DRAIN_LIMIT: Duration = Duration::from_secs(5);
+
 impl Group {
     /// Start `member` on `log`. The log decides where the member resumes: an
     /// empty one is a member that has never voted.
@@ -578,7 +583,7 @@ impl Group {
             group: id.clone(),
         };
         let lag_threshold = config.replication_lag_threshold;
-        let raft = Raft::new(member.clone(), config, network, log, machine)
+        let raft = Raft::new(member.clone(), config, network, log.clone(), machine)
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
         // A sole voter's promise binds nobody else, so it stands at once
@@ -617,6 +622,7 @@ impl Group {
             id,
             member,
             raft,
+            log,
             pace,
             lease,
             hold,
@@ -1677,6 +1683,17 @@ impl Group {
         self.stop.cancel();
         if let Err(err) = self.raft.shutdown().await {
             tracing::warn!(group = %self.id, member = %self.member, error = %err, "a Raft group did not stop cleanly");
+        }
+        // Before the caller closes the log, so each queued flush gets its
+        // real result. A hung disk does not hold the stop.
+        match tokio::time::timeout(DRAIN_LIMIT, self.log.drain_flushes()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(group = %self.id, member = %self.member, error = %err, "a stopped member's queued flushes failed");
+            }
+            Err(_) => {
+                tracing::warn!(group = %self.id, member = %self.member, "a stopped member's queued flushes timed out");
+            }
         }
     }
 

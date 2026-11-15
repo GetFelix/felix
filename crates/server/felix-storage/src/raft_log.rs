@@ -300,6 +300,9 @@ where
             let tail = log.tail_now();
             if tail > 0 && reserved.is_none_or(|reserved| reserved < tail - 1) {
                 let next = (tail - 1).saturating_add(reserved::STEP);
+                // A blocking synced write, like the loads above: this
+                // constructor is not async and runs once per open, before
+                // the log takes any traffic.
                 reserved::store(log.dir(), next)?;
                 reserved = Some(next);
             }
@@ -398,6 +401,15 @@ where
     {
         let shared = Arc::clone(&self.shared);
         Arc::new(move || shared.first_index())
+    }
+
+    /// Wait until every append's callback has fired, syncing the log first
+    /// when it commits on a written majority. Call once the member has
+    /// stopped and before closing the log: a flush still queued at the close
+    /// would otherwise end with [`crate::StorageError::Closed`] instead of
+    /// its real result.
+    pub async fn drain_flushes(&self) -> io::Result<()> {
+        self.shared.drain_flushes().await
     }
 
     /// The log underneath.
