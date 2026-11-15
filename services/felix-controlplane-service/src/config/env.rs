@@ -225,6 +225,7 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
         fenced_caches: false,
         joint_fence: false,
         departed: defaults.departed,
+        raft_streams: defaults.raft_streams,
         regions: defaults.regions,
     }
 }

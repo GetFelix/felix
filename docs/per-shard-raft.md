@@ -3506,14 +3506,39 @@ Membership changes are not built yet
   placement adds opens an empty member that no group knows: it serves
   nothing for the shard and answers "not ready".
 
-So **moves, drains and replacing a broker are not supported on Raft
-shards.** Placement may still write them, and the group ignores them. A
-broker counts the shards it holds whose voters are not the brokers
-placement names in `felix_broker_raft_shards_off_placement`, and logs each
-one once at warn level. Requests that reach a broker with no formed member
-go to the leader placement names, which is wrong once placement and the
-group differ, so keep placement where the group formed: do not drain or
-remove a broker that holds Raft shards.
+**What placement does with a Raft shard.** On a cluster whose
+`shard_engine` is `raft`, the control plane leaves a durable stream's group
+alone and only names the member it wants leading. It never adds or removes a
+member of a shard it has placed, except that it drops the copy a move from
+an older control plane added:
+
+- A balance pass, a drain and an operator move each name another member of
+  the set as leader, in one write that changes only `leader`. Nothing is
+  staged or copied. The group's leader then hands its leadership there (see
+  "Leaders follow placement").
+- A drain moves every shard the draining broker leads to a live member, so
+  its shutdown hand-off finishes. Its follower copies stay, since a member
+  leaves a group only through a membership change. A shard with no other
+  live member, such as one at replication factor 1, keeps its leader and
+  shows as waiting with "no live node can take this shard".
+- A leader that goes down is renamed to a live member, in the same kind of
+  write, because a broker with no member forwards to the leader placement
+  names. The group elects a new one without the control plane, so placement
+  counts no unplaceable shard. With no live member left the name stays.
+- A leader-only write keeps the shard's Raft target and its version, so it
+  does not cancel a membership change in flight.
+- An operator move to a broker that is not a member is refused with
+  `not_a_member`.
+- A move an older control plane started on the shard is dropped at the next
+  pass, with any copy it added.
+
+So **replacing a broker is not supported on Raft shards.** A broker counts
+the shards it holds whose voters are not the brokers placement names in
+`felix_broker_raft_shards_off_placement`, and logs each one once at warn
+level. Requests that reach a broker with no formed member go to the leader
+placement names, which is wrong once placement and the group differ, so do
+not remove a broker that holds Raft shards. `docs/control-plane.md`, "Raft
+shards", has the placement side.
 
 Two cases this does not cover. If placement changes a full set while it is
 forming, two brokers can each be the lowest of their own set and form two
@@ -3875,7 +3900,8 @@ Pacing keeps this from churning:
   once and starts at most `starts_per_second` (5). Waiters are served in
   order, so a group that just finished cannot take its permit again ahead
   of the others, and a group waiting its turn still takes a new target. When
-  a broker restarts, the others hand its shards back a few at a time.
+  placement names a restarted broker leader again, the others hand its
+  shards back a few at a time.
 
 The values are fields of `RuntimeConfig::placement`. Placement's leader is
 only a preference: routing follows the group's real leader.
