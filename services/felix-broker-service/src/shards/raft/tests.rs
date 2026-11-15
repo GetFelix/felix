@@ -1038,6 +1038,7 @@ async fn not_formed_after_rotating(wiped: &[&str]) {
             INCARNATION,
             ConsistencyLevel::Quorum,
             FsyncMode::None,
+            false,
         )
         .await;
         member.shards.take(&mut assignments([replicated()])).await;
@@ -1525,7 +1526,16 @@ impl Member {
         written_commit: bool,
     ) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        Self::start_on(net, name, root, incarnation, consistency, fsync).await
+        Self::start_on(
+            net,
+            name,
+            root,
+            incarnation,
+            consistency,
+            fsync,
+            written_commit,
+        )
+        .await
     }
 
     /// [`Self::start_with`] on a data root an earlier member left.
@@ -1536,6 +1546,7 @@ impl Member {
         incarnation: u64,
         consistency: ConsistencyLevel,
         fsync: FsyncMode,
+        written_commit: bool,
     ) -> Self {
         let broker = broker_at(root.path(), 3, incarnation, consistency, fsync).await;
         let fleet = if written_commit {
