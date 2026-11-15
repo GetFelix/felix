@@ -3248,19 +3248,26 @@ target counter (metadata level 36):
   (metadata level 35), so every target written after the restore, including
   the restored record's own, is newer than anything a group took before.
   The incarnation is 0 until #2529 lands.
-- **Nothing moves until every serving broker has acknowledged the
-  incarnation.** The control plane refuses a target write, and the feed
-  leaves out the current target, while any serving broker has not
-  acknowledged the current incarnation (#2529). A restored record's target
-  is never written again, so the gate has to be on delivery as well as on
-  writes. The acks and the incarnation are in the same metadata log, so a
-  follower's answer is consistent with itself.
+- **Nothing moves until all brokers have acknowledged the incarnation.**
+  "All brokers" here means every broker registered with the control plane,
+  serving or not, as `AllAcked` counts them in the model. The control plane
+  refuses a target write, a copy-id report that would rewrite a target, and
+  a doom write, and the feed leaves out the current target, while any of
+  them has not acknowledged the current incarnation (#2529). A restored
+  record's target is never written again, so the gate has to be on
+  delivery as well as on writes. The acks and the incarnation are in the
+  same metadata log, so a follower's answer is consistent with itself.
+
+  A broker that never acknowledges, one that died after the restore, stops
+  all of it, the move that would take its seat included. That costs
+  liveness only. The way out is to deregister it, which takes it out of
+  all brokers, and targets resume.
 
 A wiped copy reopens under a new copy id ("Group and member identity"). Its
 broker reports the id, and the control plane writes the target again with
 that id in place of the old one at the next counter value. The leader keeps
-only a target strictly newer than the one it holds
-(`Group::retarget`), so this write is what makes it act: it adds the new id
+only a target strictly newer than the one it holds, or an equal one told
+in a newer term (`Group::retarget`), so this write is what makes it act: it adds the new id
 as a learner and drops the old one once it has caught up. The control plane
 must own copy ids this way before it dooms any, because the doomed set
 names member ids.
@@ -3300,6 +3307,13 @@ feed reaches. When the broker acknowledges a new incarnation it drops
 every bar and moves each `since` to that moment, so it takes a new head
 and a view of the restored feed.
 
+Moving `since` does not let an old target through. A control-plane
+follower that has not applied the restore can still answer with
+checkpoint 41, past a new head of 12, and with target (0, 9). The driver
+refuses a target whose incarnation is below the one its broker has
+acknowledged or its log holds (`Wait::StaleTarget`), so (0, 9) is never
+acted on, and the restored feed's (1, 0) replaces it.
+
 Why the versions leaders act on never go back: a leader acts on a target
 only after the control plane committed it. It hands leadership over after
 that, and its successor's term begins after the handover. The successor's
@@ -3308,7 +3322,8 @@ view that reaches the head holds that target or a newer one. Whatever the
 old leader did, the new one is told a version at least as new.
 
 The driver's own rule covers the rest. A target older than the membership
-in the leader's log is refused (`Wait::StaleTarget`, `StepError::OlderVersion`),
+in the leader's log, or from an incarnation below one the leader has seen,
+is refused (`Wait::StaleTarget`, `StepError::OlderVersion`),
 so even a target that slipped past the delivery rule cannot undo a change.
 Delivery makes that refusal rare: a new leader is not left parked on a
 target older than its log while a newer one exists. A group can still
@@ -3336,7 +3351,7 @@ step: the group keeps serving with the membership it has, a grown set
 included, and moves on once the control plane answers. That costs liveness
 only. The placement model checks safety with a leader acting on any target
 ever written (`StaleTargets`), and with the current target delivered and
-written only once every broker has acknowledged the incarnation
+written only once all brokers have acknowledged the incarnation
 (`AllAcked`), the same gate as above. Together they cover every target
 this rule lets through.
 
@@ -3346,7 +3361,7 @@ once the control plane knows that level is in force
 level in force is the lowest any control-plane member can apply, and a
 build that applies 36 applies 35, so 36 in force means the restore
 incarnation is too. Each doom write, like each target write, also checks
-that every broker has acknowledged the current incarnation. A doom written
+that all brokers have acknowledged the current incarnation. A doom written
 before the incarnation existed could be undone by a restore that brings
 the id back as a voter.
 
