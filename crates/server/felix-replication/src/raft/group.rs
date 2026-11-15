@@ -1577,7 +1577,7 @@ impl Group {
         self.reads.asked()
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn raft(&self) -> &Raft<ShardTypes, Machine> {
         &self.raft
     }
