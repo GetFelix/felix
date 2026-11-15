@@ -155,7 +155,10 @@ impl Timers {
 /// every follower has answered a message that named the idle gap. A lost
 /// message leaves the leader fast or the follower patient, never a patient
 /// leader with an impatient follower. A follower that restarts forgets the
-/// gap it was told, so an append it does not take voids its answer. See
+/// gap it was told, so an append it does not take voids its answer. One
+/// exception remains: an append that reaches the follower late and still
+/// finishes inside its deadline there, but past the leader's, can store the
+/// short gap after a later heartbeat's idle one (#2600). See
 /// `docs/per-shard-raft.md`, "Idle groups".
 pub(crate) struct Pace {
     timers: Timers,
@@ -190,6 +193,7 @@ struct Peer {
 impl Peer {
     fn settled(&mut self, sent: &Sent, timers: &Timers) {
         if sent.gap <= timers.heartbeat {
+            debug_assert!(self.short_out > 0, "settled an append never sent");
             self.short_out = self.short_out.saturating_sub(1);
         }
     }
@@ -244,9 +248,12 @@ impl Pace {
             // The followers hear the short gap in this message.
             self.wrote();
         }
+        // Read under the lock, so the sends to a peer name their gaps in the
+        // order they count in `short_out`: a later send never names an older
+        // `wrote` than one already counted.
+        let mut peers = self.peers.lock();
         let now = timers.now();
         let wrote = self.wrote.load(Ordering::Relaxed);
-        let mut peers = self.peers.lock();
         if !peers.iter().any(|peer| &peer.id == to) {
             peers.push(Peer {
                 id: to.clone(),
@@ -368,6 +375,17 @@ impl Pace {
         self.heard.store(now, Ordering::Relaxed);
         self.due
             .store(now.saturating_add(self.follower_wait()), Ordering::Relaxed);
+    }
+
+    /// This member took an append that named `gap` and reached it at
+    /// `arrived`. If handling it outlasted `deadline` the leader has stopped
+    /// waiting and counts it unanswered, and may already have had a later
+    /// heartbeat's idle gap answered. Storing this gap could then leave the
+    /// follower at the short gap under a slow leader, so it keeps the one it
+    /// has.
+    pub(super) fn took(&self, gap: u64, arrived: u64, deadline: Duration) {
+        let late = self.timers.now().saturating_sub(arrived) >= deadline.as_millis() as u64;
+        self.followed((!late).then_some(gap));
     }
 
     /// This member granted a vote. Whoever wins starts at the short gap.
@@ -754,18 +772,21 @@ impl Group {
     /// The timer restarts even if the caller stops waiting: openraft
     /// persists the append or vote either way, and a follower that keeps
     /// answering past the sender's deadline would otherwise stand for
-    /// election while it still hears its leader.
+    /// election while it still hears its leader. Past `deadline` it keeps
+    /// its gap ([`Pace::took`]).
     pub(crate) async fn handle(
         self: &Arc<Self>,
         body: Request,
         beat: u64,
         report: bool,
+        deadline: Duration,
     ) -> Result<Reply, Refused> {
         let group = Arc::clone(self);
+        let arrived = self.pace.timers.now();
         let handled = tokio::spawn(async move {
             let reply = group.answer(body, report).await?;
             match &reply {
-                Reply::Append(Ok(_)) => group.pace.followed(Some(beat)),
+                Reply::Append(Ok(_)) => group.pace.took(beat, arrived, deadline),
                 Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
                 _ => {}
             }

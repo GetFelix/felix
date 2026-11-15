@@ -1453,7 +1453,12 @@ Nothing is negotiated. Each side acts only on what it has seen:
   message naming the short gap was still on its way to that follower when
   it left. A follower stores the gap once it has handled the message, and
   an append it took first can finish its fsync after a later heartbeat's
-  answer, which would leave it at the short gap under a slow leader.
+  answer, which would leave it at the short gap under a slow leader. For
+  the same reason a follower keeps the gap it has when handling an append
+  took longer than the append's deadline: the leader has stopped waiting
+  for it by then. The one case left is an append that spends part of its
+  deadline in transit, since the follower counts the deadline from when
+  the append arrives. That needs a send sequence on the wire (#2600).
 - An entry is new the first time any append carries it. Sending it again,
   to a follower that did not take it or to one catching up, does not
   count. So a follower that is down does not keep its leader at the short

@@ -880,6 +880,107 @@ async fn a_leader_stays_fast_while_a_short_gap_append_is_on_its_way() {
     assert_eq!(leader.leader_gap(timers.now()), idle);
 }
 
+/// A resend naming the short gap times out on the leader while the
+/// follower's fsync for it runs, and the leader slows down on the next idle
+/// heartbeat. The resend finishing after that must not leave the follower
+/// at the short gap (#2595).
+#[tokio::test(start_paused = true)]
+async fn an_append_past_its_deadline_leaves_the_follower_patient() {
+    let (leader, timers) = pace();
+    let b = MemberId::new("b", 1);
+    let follower = super::group::Pace::new(timers, &group(0), &b);
+    let (short, idle) = (timers.heartbeat, timers.idle_heartbeat);
+    let deadline = Duration::from_millis(short);
+    let later = |millis: u64| tokio::time::advance(Duration::from_millis(millis));
+
+    let entry = leader.sending(&b, true);
+    follower.took(entry.gap, timers.now(), deadline);
+    leader.answered(&b, &entry);
+
+    later(timers.idle_after - 1).await;
+    let resend = leader.sending(&b, false);
+    assert_eq!(resend.gap, short);
+    let arrived = timers.now();
+    later(short).await;
+    leader.unanswered(&b, &resend);
+
+    let heartbeat = leader.sending(&b, false);
+    assert_eq!(heartbeat.gap, idle);
+    follower.took(heartbeat.gap, timers.now(), deadline);
+    leader.answered(&b, &heartbeat);
+    assert_eq!(leader.leader_gap(timers.now()), idle);
+
+    // The resend's fsync ends after its deadline.
+    later(short / 2).await;
+    follower.took(resend.gap, arrived, deadline);
+    let (gap, wait) = (leader.leader_gap(timers.now()), follower.follower_wait());
+    assert!(
+        gap < wait,
+        "leader silent for {gap} ms, follower waits {wait} ms"
+    );
+}
+
+/// A transport that never answers.
+struct Stalls;
+
+#[async_trait]
+impl RaftTransport for Stalls {
+    async fn send(&self, _: RaftRequest) -> Result<RaftReply, Refused> {
+        std::future::pending().await
+    }
+}
+
+/// openraft drops an append it stops waiting for. That counts as
+/// unanswered, so the leader still slows down on the next idle heartbeat.
+#[tokio::test(start_paused = true)]
+async fn a_dropped_append_does_not_keep_its_leader_fast() {
+    use openraft::network::RPCOption;
+    use openraft::raft::AppendEntriesRequest;
+    use openraft_multi::GroupRouter;
+    let (pace, timers) = pace();
+    let pace = Arc::new(pace);
+    let router = super::network::Router::new(
+        Arc::new(Stalls),
+        Arc::clone(&pace),
+        Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
+        Arc::new(super::written::Reports::new()),
+        Arc::new(super::reach::Reach::new(
+            tokio::time::Instant::now(),
+            Duration::from_secs(1),
+        )),
+        Arc::new(super::reach::Refusals::new(group(0))),
+        Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
+    );
+    let b = MemberId::new("b", 1);
+    pace.answered(&b, &pace.sending(&b, true));
+
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
+        LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
+        true,
+    );
+    let append = AppendEntriesRequest {
+        vote,
+        prev_log_id: None,
+        entries: Vec::new(),
+        leader_commit: None,
+    };
+    let call = router.append_entries(
+        b.clone(),
+        group(0),
+        append,
+        RPCOption::new(Duration::from_secs(1)),
+    );
+    tokio::time::timeout(Duration::from_millis(10), call)
+        .await
+        .expect_err("b never answers");
+
+    tokio::time::advance(Duration::from_millis(timers.idle_after)).await;
+    let heartbeat = pace.sending(&b, false);
+    assert_eq!(heartbeat.gap, timers.idle_heartbeat);
+    pace.answered(&b, &heartbeat);
+    assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
+}
+
 /// Sending an entry again, to a member that did not take it or one catching
 /// up, does not make an idle group busy. Only an entry no append has
 /// carried before does (#2567).

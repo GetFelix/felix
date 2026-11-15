@@ -993,13 +993,14 @@ impl GroupRuntime {
             beat,
             report,
             body,
-            ..
+            deadline,
         } = request;
         match self.inner.registry.get(&group.shard) {
             // Another epoch or another copy of this shard is another member.
-            Some(member) if member.id == group && member.member == to => {
-                member.handle(body, beat, report).await.map(RaftReply)
-            }
+            Some(member) if member.id == group && member.member == to => member
+                .handle(body, beat, report, deadline)
+                .await
+                .map(RaftReply),
             Some(member) if member.id == group && member.member.broker == to.broker => {
                 let copy = member.member.copy;
                 Err(Refused::OtherCopy(Box::new(Addressee { group, to }), copy))
