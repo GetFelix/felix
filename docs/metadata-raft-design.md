@@ -952,6 +952,7 @@ the field itself, on every member alike, or refuses the command:
 | `record_cluster_identity`, import `cluster_identity`, and in the snapshot | 32 | the command is held back until every member is at 32, so a group below it records no identity and `GET /v1/cluster/identity` answers 503 |
 | `record_root_sequence`, import `root_sequences`, and in the snapshot | 33 | the command is held back until every member is at 33, so nothing is kept and a broker's root gate finds no control-plane copy, which holds the root rather than passes it |
 | `seal_shard`, `accept_seal_report`, `give_up_seal`, assignment `switch`, and in the snapshot; finalizing `shard_raft` | 34 | the three commands are refused with 409 before they reach the log, by the member that proposes one and again by the leader that appends it, so no member holds a sealed or switched shard that another holds as a hybrid one. No assignment carries `switch` below 34, since only these commands set it |
+| delete `forget_reports` | 37 | the delete keeps the node's incarnation in every held replica report, on every member alike, so a report from before a delete can still count the node registered again when it has no storage identity (#2619) |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

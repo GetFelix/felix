@@ -520,7 +520,9 @@ async fn record_one(
             .into_iter()
             // Only nodes the assignment names: none of them can be deleted
             // before this report lands at its generation, so no stamp read
-            // before a delete outlives the delete's clearing (#2619).
+            // before a delete outlives the delete's clearing (#2619). The
+            // delete refuses on the same `named_nodes`, which covers the
+            // successor, joining nodes and learners.
             .filter(|(id, _)| assignment.named_nodes().any(|named| named == id))
             .collect(),
         given_up: shard.given_up,

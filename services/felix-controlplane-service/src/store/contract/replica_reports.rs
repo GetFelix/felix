@@ -611,7 +611,7 @@ async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
         .expect("a report")
 }
 
-pub(super) fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
+pub(crate) fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
     ReplicaReport {
         given_up: false,
         counter_offsets: Default::default(),

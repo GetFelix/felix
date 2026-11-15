@@ -4788,3 +4788,72 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
     })
     .await;
 }
+
+/// Below level 37 a node delete keeps the node's report stamps on every
+/// member alike; from it the delete clears them (#2619).
+#[tokio::test]
+async fn a_delete_clears_report_stamps_only_from_level_37() {
+    use crate::store::contract::shards::{assignment, key, seed};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), FORGET_REPORTS_LEVEL - 1).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await != FORGET_REPORTS_LEVEL - 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    seed(store.as_ref()).await;
+    let follower = || crate::store::contract::nodes::node("broker-y", 7501);
+    // Reported on with broker-y in the set, which then leaves it and is
+    // deleted. Returns whether its stamp outlived the delete.
+    let stamp_survives_a_delete = || async {
+        store.register_node(follower()).await.expect("register");
+        let joined = store
+            .put_shard_assignment(ShardAssignment {
+                replicas: vec!["broker-y".to_string()],
+                ..assignment(0, "broker-x")
+            })
+            .await
+            .expect("assign");
+        let report = ReplicaReport {
+            leader: Some("broker-x".to_string()),
+            node_incarnations: [("broker-x".to_string(), 0), ("broker-y".to_string(), 0)].into(),
+            ..crate::store::contract::replica_reports::report(
+                0,
+                joined.generation,
+                &["broker-y"],
+                5_000,
+            )
+        };
+        store
+            .record_replica_report(report, "broker-x")
+            .await
+            .expect("record");
+        store
+            .put_shard_assignment(assignment(0, "broker-x"))
+            .await
+            .expect("leave");
+        store.delete_node("broker-y").await.expect("delete");
+        store
+            .get_replica_report(&key(0))
+            .await
+            .expect("read")
+            .expect("held")
+            .node_incarnations
+            .contains_key("broker-y")
+    };
+    assert!(stamp_survives_a_delete().await);
+
+    version.store(FORGET_REPORTS_LEVEL, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await != FORGET_REPORTS_LEVEL {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted at level 37"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!stamp_survives_a_delete().await);
+}
