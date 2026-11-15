@@ -188,6 +188,23 @@ struct PlacementIncarnation {
     acks: std::collections::BTreeMap<String, crate::model::PlacementAck>,
 }
 
+/// Heartbeats repeat a refused acknowledgement, so the warning is limited to
+/// once per node per minute.
+fn out_of_bound_warning_due(node_id: &str) -> bool {
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+    static LAST: OnceLock<Mutex<std::collections::HashMap<String, Instant>>> = OnceLock::new();
+    let mut last = LAST.get_or_init(Default::default).lock().expect("warn log");
+    let now = Instant::now();
+    match last.get(node_id) {
+        Some(at) if now.duration_since(*at) < Duration::from_secs(60) => false,
+        _ => {
+            last.insert(node_id.to_string(), now);
+            true
+        }
+    }
+}
+
 /// Whether `heard` may be kept at all: from the node's current process
 /// (`current_process`, the incarnation its record holds), and not so far above
 /// `current` that it could walk the incarnation to its limit
@@ -203,12 +220,14 @@ pub(crate) fn placement_ack_heard(
         return false;
     }
     if !felix_storage::raft_copy::placement_ack_in_bound(current, heard.incarnation) {
-        tracing::warn!(
-            node_id,
-            acknowledged = heard.incarnation,
-            current,
-            "refused a placement acknowledgement far above the control plane's incarnation",
-        );
+        if out_of_bound_warning_due(node_id) {
+            tracing::warn!(
+                node_id,
+                acknowledged = heard.incarnation,
+                current,
+                "refused a placement acknowledgement far above the control plane's incarnation",
+            );
+        }
         return false;
     }
     true

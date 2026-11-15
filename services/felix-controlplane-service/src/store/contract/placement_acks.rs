@@ -77,6 +77,19 @@ pub(crate) async fn run_placement_ack_contract(store: Arc<dyn ControlPlaneStore>
     assert!(record(&store, a, heard(5, a1)).await);
     assert!(store.placement_acked_by(&brokers).await.expect("gate"));
 
+    // Deleted and registered again: the new process starts at 0 again and
+    // must not match the deleted one's acknowledgement.
+    let c = "broker-c";
+    let only_c = [c.to_string()];
+    let c0 = register(&store, c, 7803).await;
+    assert!(record(&store, c, heard(5, c0)).await);
+    assert!(store.placement_acked_by(&only_c).await.expect("gate"));
+    store.delete_node(c).await.expect("delete");
+    assert_eq!(register(&store, c, 7803).await, c0);
+    assert!(!store.placement_acked_by(&only_c).await.expect("gate"));
+    assert!(record(&store, c, heard(5, c0)).await);
+    assert!(store.placement_acked_by(&only_c).await.expect("gate"));
+
     // Far enough above to walk the incarnation to its limit: refused.
     let bound = felix_storage::raft_copy::MAX_PLACEMENT_ACK_AHEAD;
     assert!(!record(&store, b, heard(u64::MAX, b0)).await);
