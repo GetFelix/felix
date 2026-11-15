@@ -2355,7 +2355,7 @@ was answered:
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read` |
+| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read`. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
