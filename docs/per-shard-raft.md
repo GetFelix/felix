@@ -665,6 +665,28 @@ brokers, or restore both from backups, and every group they share has one
 voter left. An RF 1 shard has that problem after any rotation. Raft cannot
 elect in such a group, and some acknowledged records may be gone.
 
+**A group is never formed again on rotated copies.** When every copy of a
+shard rotated, as after `rotate-storage-id` on each of its brokers, a
+fleet-wide restore, or a power cut across relaxed brokers, each copy comes
+back with a new copy id, no vote and an empty log. That is what a copy no
+group has reached looks like, and a group formed from them would start at
+index 0 and give out offsets it already acknowledged (issue #2620). So a
+copy whose directory has a kept copy in `.kept/` holding a log entry, or a
+reservation (`raft-reserved`), never says it is blank: it refuses the
+question the forming broker asks, and a broker whose own copy is like that
+does not form the group. A kept copy that cannot be read counts as one
+that holds entries, and so does a group that never acknowledged a record
+but wrote its first entry. The shard answers "not ready" until it is
+re-formed. Until the re-form command below is built, opening it means
+giving up its records: delete the stream and create it again. That makes a
+new incarnation, which starts clean. Do not stop the brokers and remove the
+shard's directory and its kept copies by hand: the shard then re-forms as
+the same incarnation at index 0 and gives out offsets it already
+acknowledged (issue #2620), which is the case this rule exists to stop.
+A shard whose
+every broker lost its whole data root leaves no kept copy, so nothing
+holds it; only the offset floor below covers that case.
+
 Decided (issue #2167): Felix does not repair this by itself. Re-forming
 is an operator command. It is explicit, it is documented, and it can lose
 records. Nothing starts it automatically: no timer, no report from a
@@ -4551,7 +4573,7 @@ and the hybrid is what ships.
 | 3 (#2231) | Group runtime: type config, member id, group registry, node ticker with idle heartbeats, the written and flushed positions. Built. Peer messages for Raft on the broker transport, behind the negotiated `RAFT` capability, built in #2314 | track 2 adapter; openraft main at the commit that adds `Trigger::tick`, until 0.10.1 is released (#2215, #2313) | Behind the feature. No shard uses it. A peer without the capability is never sent a Raft message |
 | 4 (#2233) | Stream shards on Raft: `propose` through `client_write` with the adapter appending and its two signals (flushed, written at index), `await_commit`, `read_bound`, read index, `opened` and `deposed`, and the written-majority acknowledgement for `Quorum` on a `Periodic` stream. No adoption and no term gate. The publish path answers `Leader` writes on the lease (row 11). Simulator `off` and `clocks` on fresh Raft clusters with a fixed member set. Built so far: the group simulation (`docs/simulation.md`, "Raft groups"), which runs the engine without a broker service. Whole-broker seeds and the history campaign wait for a broker that routes a shard to Raft | 1, 3, and #2248 (a Raft log refuses any fsync mode but on commit) | Behind the feature, fresh clusters only. The lease is row 11. No membership change, no power loss yet |
 | 5 (#2235) | Membership: the target set recorded before the leader proposes, learner, joint change, transfer, leader reports with the commit offset, routing hints, single-voter RF 1 groups. Simulator `placement` | 4 | Behind the feature. Needs the model's joint consensus config first |
-| 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced: built (`felix_storage::raft_copy`, `GroupRuntime::open_copy`), including the control plane's copy of the root sequence and the broker opening its groups through the restore check (#2441). Not built yet: declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
+| 12 (#2250) | Copy ids per shard directory, the restore check and the root sequence before voting, votes always fsynced: built (`felix_storage::raft_copy`, `GroupRuntime::open_copy`), including the control plane's copy of the root sequence and the broker opening its groups through the restore check (#2441). A shard whose every copy rotated is held instead of formed again (#2620). Not built yet: declaring a broker dead, the bulk re-form command with `plan` and `apply` (list of placed brokers, stop marker, base by compare-and-swap), the restored RF 1 copy that starts by itself, and the offset floor. No other automatic re-form. Simulator `power-loss` | 5 | Behind the feature. Needs the model's identity and re-form configs first |
 | 11 (#2249) | The leader lease: the vote hold for restarted members, then `admit_local_ack` on `last_quorum_acked`, falling back to the commit wait. Built: the vote hold with its exemptions, `admit_local_ack` and `await_ack`, the void, the transfer entry point, the suspend check and the config inequality ("Acknowledging a write"), and the publish path asking the check for a `Leader` stream (#2436) | 4 | Behind the feature. The model's lease configs passed (#2422) |
 | 6 (#2238) | Cache and counters in one group: state machine, compaction by each member's snapshot, conditional expiry delete, request ids on every write | 4 | Behind the feature |
 | 7 (#2239) | Deferred out of 0.8 ("Deferred: sleep and wake"). Sleep and wake, the hold on restarted members from campaigning, and the `sleep` simulator mode | 2, 4 | Not built for 0.8 |

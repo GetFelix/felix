@@ -982,6 +982,90 @@ async fn a_broker_placed_on_a_formed_group_does_not_form_it_again() {
     stop(&members).await;
 }
 
+/// **A shard whose every copy rotated is not formed again.** Each copy
+/// comes back with a new copy id, no vote and an empty log, as after
+/// `rotate-storage-id` on every broker or a fleet-wide restore. Formed from
+/// those, the group would start at index 0 and give out offsets it already
+/// acknowledged. The kept copies say a group was there, so the shard waits
+/// for a re-form.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_shard_whose_every_copy_rotated_is_not_formed_again() {
+    not_formed_after_rotating(&[]).await;
+}
+
+/// **Nor is it formed by a broker whose disk was replaced.** The lowest
+/// broker has no kept copy to go by, so the others refuse its question.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rotated_copy_does_not_answer_that_it_is_blank() {
+    not_formed_after_rotating(&["broker-a"]).await;
+}
+
+/// **Nor by the one rotated copy among replaced disks.** The others have
+/// nothing to go by, so the lowest broker's kept copy is the only evidence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_rotated_copy_forms_no_group_among_replaced_disks() {
+    not_formed_after_rotating(&["broker-b", "broker-c"]).await;
+}
+
+/// Acknowledge a record on a trio, rotate every copy except on `wiped`,
+/// which get an empty data root, and check no group forms.
+async fn not_formed_after_rotating(wiped: &[&str]) {
+    let orders = key("orders", 0);
+    let (net, members, leader) = trio().await;
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let acknowledged = members[leader].publish(term, b"acknowledged").await;
+    stop(&members).await;
+    drop(net);
+
+    let net = Arc::new(Loopback::default());
+    let mut rotated = Vec::new();
+    // The lowest broker last, so every member it asks is up.
+    for member in members.into_iter().rev() {
+        let Member { name, mut root, .. } = member;
+        if wiped.contains(&name) {
+            root = tempfile::tempdir().expect("tempdir");
+        } else {
+            felix_storage::run_state::copy_trust::rotate_storage_id(
+                root.path(),
+                felix_common::random::uuid_v4().into_bytes(),
+            )
+            .expect("rotate");
+        }
+        let member = Member::start_on(
+            &net,
+            name,
+            root,
+            INCARNATION,
+            ConsistencyLevel::Quorum,
+            FsyncMode::None,
+        )
+        .await;
+        member.shards.take(&mut assignments([replicated()])).await;
+        rotated.push(member);
+    }
+    rotated.reverse();
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+    rotated[0]
+        .shards
+        .take(&mut assignments([replicated()]))
+        .await;
+    tokio::time::sleep(NOT_FORMED_FOR).await;
+
+    if rotated.iter().any(formed) {
+        let leader = served(&rotated).await;
+        let term = rotated[leader].shards.leading(&orders).expect("term");
+        let offset = rotated[leader].publish(term, b"after the rotation").await;
+        panic!(
+            "formed again on rotated copies: offset {offset}, after {acknowledged} was acknowledged"
+        );
+    }
+    assert_eq!(
+        route(&rotated[0].shards, &orders),
+        Some(Dispatch::Unavailable(Reason::NotReady))
+    );
+    stop(&rotated).await;
+}
+
 /// **A member of an earlier incarnation does not answer for a later one.**
 /// The stream was recreated with a full set, and one broker's feed still
 /// has the old incarnation, so its member there is blank. Taken as an
@@ -1441,6 +1525,18 @@ impl Member {
         written_commit: bool,
     ) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
+        Self::start_on(net, name, root, incarnation, consistency, fsync).await
+    }
+
+    /// [`Self::start_with`] on a data root an earlier member left.
+    async fn start_on(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        root: tempfile::TempDir,
+        incarnation: u64,
+        consistency: ConsistencyLevel,
+        fsync: FsyncMode,
+    ) -> Self {
         let broker = broker_at(root.path(), 3, incarnation, consistency, fsync).await;
         let fleet = if written_commit {
             let relaxed = felix_storage::run_state::relaxed(&fsync);

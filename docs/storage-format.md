@@ -1252,7 +1252,8 @@ and a file that does not decode fails the open.
 
 Written through a temporary, an fsync, a rename and a directory sync. A
 rotation reads the highest reservation of the old directory and every kept
-directory of the shard, and writes it into the new directory before the
+directory of the shard (a re-form reads the same set, including the
+current directory's own file), and writes it into the new directory before the
 copy file, so a directory with a copy file always carries what it replaced,
 and a crash before that leaves a directory the next open rotates again. A
 kept directory whose reservation is above the current copy's is never

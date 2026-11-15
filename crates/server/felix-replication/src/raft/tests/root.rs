@@ -216,3 +216,16 @@ async fn a_rotation_that_fails_after_the_id_is_written_does_not_open_on_retry() 
         other => panic!("the retry did not stop: {other:?}"),
     }
 }
+
+/// A refusal that a copy held records earlier is told apart from a peer
+/// that is merely slow, so the broker can warn about the first only.
+#[test]
+fn held_records_names_the_permanent_refusals() {
+    use super::super::runtime::NotBlank;
+    let me = MemberId::new("b1", 7);
+    assert!(NotBlank::ReachedBefore(me.clone()).held_records());
+    let peer = NotBlank::Unanswered(me.clone(), super::super::group::REACHED_BEFORE.to_string());
+    assert!(peer.held_records());
+    assert!(!NotBlank::Unanswered(me.clone(), "timed out".into()).held_records());
+    assert!(!NotBlank::Formed(me).held_records());
+}

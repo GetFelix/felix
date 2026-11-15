@@ -34,7 +34,7 @@ pub use copy_file::CopyFile;
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
-    holds_log_without_copy, kept_copies,
+    holds_log_without_copy, kept_copies, reached_before,
 };
 pub use marks::{CopyMarks, MarkLog};
 pub use placement_ack::{

@@ -11,7 +11,7 @@ use super::{VoteMark, log_below};
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::disk_log::{crash_point, engine_marker};
 use crate::log::LogConfig;
-use crate::raft_log::{reserved, state_file};
+use crate::raft_log::{held, reserved, state_file};
 use crate::{DiskLog, StorageId};
 
 /// Longer shard names do not fit a mark.
@@ -270,7 +270,8 @@ impl CopyRoot {
     }
 }
 
-/// The highest reservation among the copy in `dir` and every copy
+/// The highest reservation among the copy in `dir` (its own
+/// `raft-reserved` counts, not only the kept copies') and every copy
 /// rotations moved aside from it, or `None` when none took one. A re-form
 /// starts its epoch above it. A reservation that does not decode is an
 /// error, never skipped.
@@ -280,6 +281,26 @@ pub fn highest_reserved(dir: &Path) -> io::Result<Option<u64>> {
         highest = highest.max(reserved::load(&kept.path)?);
     }
     Ok(highest)
+}
+
+/// Whether a group reached an earlier copy of `dir`: one rotations moved
+/// aside holds a log entry, or a reservation was carried. A group formed
+/// on the rotated copies alone would start at index 0 and give out offsets
+/// the old one acknowledged. A kept copy that cannot be read is an error.
+pub fn reached_before(dir: &Path, index_spacing_bytes: u64) -> io::Result<bool> {
+    if highest_reserved(dir)?.is_some() {
+        return Ok(true);
+    }
+    for kept in kept_copies(dir)? {
+        let label = kept.path.display().to_string();
+        if held::read(&kept.path, &label, index_spacing_bytes)?
+            .last
+            .is_some()
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The directories rotations moved aside from `dir`, by name.

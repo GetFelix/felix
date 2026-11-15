@@ -457,11 +457,19 @@ impl RaftShards {
                         tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
                     }
                 }
-                Err(err) if me.put_off.lock().insert(key.clone()) => {
-                    tracing::info!(shard = ?key, reason = %err, "not forming the shard's Raft group yet");
-                }
                 Err(err) => {
-                    tracing::debug!(shard = ?key, reason = %err, "not forming the shard's Raft group yet");
+                    let first = me.put_off.lock().insert(key.clone());
+                    match (first, err.held_records()) {
+                        (true, true) => {
+                            tracing::warn!(shard = ?key, reason = %err, "not forming the shard's Raft group: it is held until an operator re-forms it (docs/per-shard-raft.md, \"Re-forming a group\")")
+                        }
+                        (true, false) => {
+                            tracing::info!(shard = ?key, reason = %err, "not forming the shard's Raft group yet")
+                        }
+                        (false, _) => {
+                            tracing::debug!(shard = ?key, reason = %err, "not forming the shard's Raft group yet")
+                        }
+                    }
                 }
             }
             me.forming.lock().remove(&key);
