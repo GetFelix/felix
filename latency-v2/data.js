@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794714338660,
+  "lastUpdate": 1794715586598,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73392,6 +73392,72 @@ window.BENCHMARK_DATA = {
             "range": "31.51",
             "unit": "us",
             "extra": "trials: 5\nmedian: 295.00\nmean: 284.80\nstdev: 31.51\ncv: 11.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f8559331175cd9e8d37cf52bfa4385d816672f3e",
+          "message": "perf(raft): batch the broker's Raft log marks, one synced write a second (#2576) (#2584)\n\n* feat(raft): batch the broker's Raft log marks, one synced write a second\n\nWIP: default switch and tests; docs and model config follow.\n\n* docs(raft): the batched log mark ships; its residual stated and modelled\n\nQuestions, 11 resolved as option (a). FelixRaftIdentityBatched.cfg checks\nthe base faults under the shipped mark.\n\n* fix(raft): a reopened copy marks what it recovered; a stale batch is dropped, not fatal\n\nA member opened before its batch ran had no flushed position until its first\nappend, so its mark could trail an idle log without limit. A batch that met a\nshard reopened under a new copy failed and stopped the root's mark log.\n\n* docs(raft): the A/B numbers behind the batched log mark; model state count\n\n* fix(raft): a hung batched mark write stops the root; a planned stop marks exactly\n\nA batch still unwritten five intervals after the last written one started\npoisons the mark log without waiting on the writer, so batched shards stop\nappending and every later mark write fails, as after a failed write. The\nage is exported as felix_storage_raft_log_mark_age_seconds. Runtime\nshutdown writes one last batch, bounded at 5 s. Tests cover the hung batch\n(paused time), the reopen mark (mark_recovered) and the shutdown batch; the\nwrite-count bound now allows for elections.\n\nSpec-Unaffected: the identity models already let a batched mark lag without bound; stopping appends on a hung write only removes behaviours, and no restore window grows.\n\n* fix(raft): a hung batched mark write holds appends instead of stopping the root\n\nPast five intervals, a batched shard's append waits (MarkLog::caught_up)\nuntil a batch is written, so no ack runs more than about six seconds ahead\nof its mark, and it heals when the disk returns. Only a real write error\nstill stops the root. The batcher selects biased with the batch first and\nskips missed checks, so a freeze with a finished batch never holds; a batch\nthat took past the limit keeps the hold and writes again at once.\n\nThe runtime records each data root its members mark at, once, and its\nshutdown writes their last batch together under one 5 s deadline. The\nbroker closes its members before the runtime shuts down, so the batch over\nopen groups never ran there.\n\nTests: a_hung_batch_holds_batched_appends replaces the stop test;\nshutdown_writes_the_last_batched_log_marks goes through RaftShards'\nshutdown. Both fail with their fix reverted.\n\nSpec-Unaffected: the identity models already let a batched mark lag without bound; holding appends on a hung write only removes behaviours, and no restore window grows past the documented bound.\n\n* docs(raft): caught_up states the same bound as the batcher",
+          "timestamp": "2026-11-14T19:59:27-08:00",
+          "tree_id": "7889d2e2a3a841922f6cf0592ecca67b7469b694",
+          "url": "https://github.com/GetFelix/felix/commit/f8559331175cd9e8d37cf52bfa4385d816672f3e"
+        },
+        "date": 1794715577201,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 96.40\nstdev: 0.89\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "3.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 130.60\nstdev: 3.05\ncv: 2.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "1052.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 640.40\nstdev: 1052.98\ncv: 164.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.40\nstdev: 1.14\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 264,
+            "range": "35.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 277.40\nstdev: 35.17\ncv: 12.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 369,
+            "range": "276.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 369.00\nmean: 490.40\nstdev: 276.01\ncv: 56.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
