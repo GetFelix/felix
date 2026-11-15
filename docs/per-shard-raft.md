@@ -2727,15 +2727,41 @@ shard's engine ("Head trims", above).
 > `services/felix-broker-service/src/serving/group_ops/tests.rs`,
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
-A Kafka produce and an MQTT publish to a Raft shard are refused by name
-too, before anything is claimed. Both write with a producer's sequence. A Kafka client gets `INVALID_REQUEST`,
-which it does not retry; an MQTT client gets `PUBACK` 0x83 with the reason
-string `raft_stream`.
+**Kafka produce and MQTT publish.** Both work on a Raft shard and get the
+same answers as on the hybrid.
+
+A Kafka produce goes to the shard's leader, as on the hybrid, and is
+proposed to its group. A plain batch is one proposal. An idempotent
+producer numbers records, not batches, so each record is proposed as a
+one-record idempotent batch at its own sequence. That is how the hybrid
+stores Kafka records too, so a re-send finds the records the log holds,
+writes only the rest, and is answered with the first arrival's offsets. The
+sequence errors (`OUT_OF_ORDER_SEQUENCE_NUMBER`, `UNKNOWN_PRODUCER_ID`,
+`DUPLICATE_SEQUENCE_NUMBER`) are the hybrid's. The answer waits for what the
+stream's level asks for, as any Raft publish does, so `acks=1` on a `Quorum`
+stream is answered at the commit: later than on the hybrid, never weaker.
+Kafka keys and headers are stored once the cluster finalizes
+`raft_record_headers`, and dropped before that, as on a broker that does not
+take record headers.
+
+An MQTT message is written as the connection's idempotent batch, as on the
+hybrid, and answered at its commit. A Raft shard takes an idempotent batch
+of one record only (#2524), so a broker that runs Raft shards sends each
+MQTT message as its own batch. A broker that is not a member forwards it to
+the leader under its producer sequence, and the leader proposes it. Until
+the cluster finalizes `raft_record_headers` an MQTT message, which always
+carries headers, is refused `record_headers_disabled`.
 
 > `services/felix-broker-service/src/serving/kafka/tests.rs`,
-> `a_produce_to_a_raft_shard_is_refused_for_good`;
+> `a_produce_to_a_raft_shard_lands_once`;
 > `services/felix-broker-service/src/serving/mqtt/writes/tests.rs`,
-> `a_message_for_a_raft_shard_is_refused_by_name`.
+> `a_message_for_a_raft_shard_lands_once_with_its_headers`;
+> `crates/server/felix-mqtt/src/service/tests/publish.rs`,
+> `queued_publishes_go_one_per_batch_when_the_broker_says_so`;
+> `crates/testing/felix-cluster/tests/failures/kafka_produce.rs`,
+> `an_idempotent_kafka_producer_on_a_raft_shard_lands_each_record_once_through_failover`;
+> `crates/testing/felix-cluster/tests/failures/mqtt_publish.rs`,
+> `qos1_on_a_raft_shard_survives_its_leader_without_duplicates`.
 
 **Idempotent publishes.** A producer that names itself and numbers its
 batches (`publish_idempotent`, `docs/protocol.md`) gets the same contract on

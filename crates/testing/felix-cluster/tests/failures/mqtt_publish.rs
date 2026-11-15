@@ -139,6 +139,86 @@ async fn qos1_through_a_non_owner_survives_a_failover_without_duplicates() {
     cluster.shutdown().await;
 }
 
+/// **On a Raft shard, every acknowledged QoS 1 message survives the leader,
+/// and one acknowledged on its first try is stored once.** Published through
+/// a follower, which forwards to the leader, and through the leader itself;
+/// the leader is then killed and publishing goes on through a survivor.
+#[serial]
+#[tokio::test]
+async fn qos1_on_a_raft_shard_survives_its_leader_without_duplicates() {
+    if !super::raft::opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3).mounted_at("plant/")],
+        tcp_listeners: vec![(
+            "FELIX_MQTT_LISTEN".to_string(),
+            "127.0.0.1:{port}".to_string(),
+        )],
+        broker_env: vec![
+            ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
+            super::raft::engine(),
+        ],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["record_headers", "raft_record_headers"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("finalize the headers features");
+    let port_of: HashMap<String, u16> = cluster
+        .node_ids()
+        .into_iter()
+        .map(|id| {
+            let port = cluster
+                .node(&id)
+                .and_then(|node| node.tcp_port("FELIX_MQTT_LISTEN"))
+                .expect("an MQTT port");
+            (id, port)
+        })
+        .collect();
+    let nodes = cluster.node_ids();
+    let leader = super::raft::leader_among(&cluster, &nodes).await;
+    let follower = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .expect("a follower")
+        .clone();
+
+    let mut retried = Vec::new();
+    for (i, node) in [(0, &follower), (1, &follower), (2, &leader), (3, &leader)] {
+        if publish_until_acked(&cluster, port_of[node], i).await > 1 {
+            retried.push(i);
+        }
+    }
+    cluster.stop_node(&leader).await.expect("kill the leader");
+    for i in 4..7 {
+        if publish_until_acked(&cluster, port_of[&follower], i).await > 1 {
+            retried.push(i);
+        }
+    }
+
+    let live: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let next = super::raft::leader_among(&cluster, &live).await;
+    let stored = read_back(&cluster, &next).await;
+    for i in 0..7 {
+        let copies = stored.iter().filter(|p| **p == format!("m{i}")).count();
+        assert!(copies >= 1, "acknowledged m{i} was lost: {stored:?}");
+        if !retried.contains(&i) {
+            assert_eq!(
+                copies, 1,
+                "m{i} was acknowledged once and stored {copies} times"
+            );
+        }
+    }
+    cluster.shutdown().await;
+}
+
 async fn publish_until_acked(cluster: &Cluster, port: u16, i: u32) -> u32 {
     publish_with(&cluster.tenant_id, &cluster.client_token(), port, i).await
 }

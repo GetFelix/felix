@@ -111,6 +111,67 @@ async fn an_idempotent_kafka_producer_lands_each_record_once_through_failover_an
     cluster.shutdown().await;
 }
 
+/// **On a Raft shard, an idempotent Kafka producer's re-send lands once,
+/// whoever leads.** As above, with the shard run by a Raft group: the
+/// producer writes to the leader, the leader is killed, and the re-send to
+/// the next leader is answered with the original offset.
+#[serial]
+#[tokio::test]
+async fn an_idempotent_kafka_producer_on_a_raft_shard_lands_each_record_once_through_failover() {
+    if !super::raft::opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        kafka: true,
+        broker_env: vec![super::raft::engine()],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let topic = format!("{}.{STREAM}", cluster.namespace);
+    let nodes = cluster.node_ids();
+
+    let first = super::raft::leader_among(&cluster, &nodes).await;
+    let mut producer = Producer::connect(&cluster, &first, &topic).await;
+    let mut offsets = vec![producer.send_until_served(0).await.1];
+    for sequence in 1..5 {
+        offsets.push(producer.send_ok(sequence).await);
+    }
+    let (error, offset) = producer.send(4).await;
+    assert_eq!(
+        (error, offset),
+        (0, offsets[4]),
+        "the leader wrote a re-send"
+    );
+
+    cluster.stop_node(&first).await.expect("kill the leader");
+    let live: Vec<String> = nodes.into_iter().filter(|node| node != &first).collect();
+    let second = super::raft::leader_among(&cluster, &live).await;
+    let mut producer = Producer::connect(&cluster, &second, &topic)
+        .await
+        .with_id(producer.id);
+    let (error, offset) = producer.send_until_served(4).await;
+    assert_eq!(
+        (error, offset),
+        (0, offsets[4]),
+        "the next leader did not answer the re-send with its original offset"
+    );
+    for sequence in 5..8 {
+        offsets.push(producer.send_ok(sequence).await);
+    }
+
+    let read = read_back(&cluster, &second).await;
+    let expected: Vec<(u64, String)> = offsets
+        .iter()
+        .enumerate()
+        .map(|(i, offset)| (*offset as u64, format!("r{i}")))
+        .collect();
+    assert_eq!(read, expected, "every record once, in order");
+    cluster.shutdown().await;
+}
+
 /// A Kafka connection speaking as one idempotent producer.
 struct Producer {
     stream: TcpStream,
