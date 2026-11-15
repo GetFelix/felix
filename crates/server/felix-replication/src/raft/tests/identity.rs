@@ -48,6 +48,9 @@ impl Roots {
     }
 }
 
+/// How long a publish answered on a written majority may take.
+const ANSWERED: Duration = Duration::from_secs(10);
+
 /// Set in the process that poisons a log for [`flush_failed_copy`].
 const POISONING_PROCESS: &str = "FELIX_TEST_POISONING_PROCESS";
 
@@ -461,6 +464,27 @@ fn start_sim_run(root: &Path, mint_from: u64, control_plane: Option<ControlPlane
 /// after the cut, its log mark included, is lost at the reboot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
+    power_cut_keeps(Acked::Counted).await;
+}
+
+/// The same loss, with R a `Quorum` publish on a stream not fsynced on
+/// commit: its publisher is answered on the written majority, so R is a
+/// record a client was told is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_answered_on_a_written_majority_survives_a_power_cut() {
+    power_cut_keeps(Acked::Published).await;
+}
+
+/// How R is acknowledged in [`power_cut_keeps`].
+#[derive(Clone, Copy)]
+enum Acked {
+    /// A wait on the written count.
+    Counted,
+    /// A publish answered at `AnswerAt::Majority`.
+    Published,
+}
+
+async fn power_cut_keeps(acked: Acked) {
     let dir = tempdir().expect("dir");
     let root_of = |broker: &str| dir.path().join(broker);
     let mut roots = HashMap::new();
@@ -585,14 +609,41 @@ async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
     }
     cluster.net.cut.lock().insert(other.into());
     cluster.net.muted.lock().insert(other.into());
-    let r = engine
-        .propose(&shard(0), batch(b"R"))
-        .await
-        .expect("written");
-    engine
-        .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
-        .await
-        .expect("R acknowledged on the written count");
+    let r_at = match acked {
+        Acked::Counted => {
+            let r = engine
+                .propose(&shard(0), batch(b"R"))
+                .await
+                .expect("written");
+            engine
+                .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
+                .await
+                .expect("R acknowledged on the written count");
+            r.end - 1
+        }
+        Acked::Published => {
+            let (broker, handle) = super::deliver::broker_on(&engine).await;
+            let proposed = engine
+                .publish(
+                    &broker,
+                    &handle,
+                    &shard(0),
+                    None,
+                    vec![Bytes::from_static(b"R")],
+                    AckAt::Written,
+                    AnswerAt::Majority,
+                    PATIENCE,
+                )
+                .expect("proposed");
+            let answered = tokio::time::timeout(ANSWERED, tokio::spawn(proposed.complete()));
+            let outcome = answered
+                .await
+                .expect("R answered")
+                .expect("joined")
+                .expect("R answered on the written majority");
+            outcome.offsets.expect("offsets").0
+        }
+    };
     assert!(
         cut.load(std::sync::atomic::Ordering::Acquire),
         "the power was not cut in R's append"
@@ -643,10 +694,10 @@ async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
         cut.insert(failing.into());
     }
     let after = cluster.write(0, b"after").await;
-    assert!(after > r.end - 1);
+    assert!(after > r_at);
     for broker in [&*leader.broker, other] {
         let range = felix_storage::log::ReadRange {
-            start: r.end - 1,
+            start: r_at,
             max_bytes: 1 << 20,
         };
         let records = logs[broker]
