@@ -2808,35 +2808,46 @@ refused because one before it failed (its sequence is then a gap), the
 answer is that earlier failure, which the producer retries, not
 `OUT_OF_ORDER_SEQUENCE_NUMBER`, which it takes as fatal.
 
-An MQTT message is written as the connection's idempotent batch, as on the
-hybrid, and answered at its commit. A Raft shard takes an idempotent batch
-of one record only (#2524), so a broker that runs Raft shards sends each
-MQTT message as its own batch. A broker that is not a member forwards it to
-the leader under its producer sequence, and the leader proposes it. Until
+An MQTT connection's messages are written as idempotent batches, as on the
+hybrid, and each is answered at its commit. A Raft shard takes an idempotent
+batch of one record only (#2524), so a broker that runs Raft shards gives
+each message of a connection's batch a producer sequence of its own, the way
+a Kafka producer's records are numbered. When this broker leads the shard,
+it proposes the batch's messages one after another, each once the one
+before it is on its own log rather than once it commits, so a batch of
+queued messages costs about one commit round trip, as one batch does on the
+hybrid. A message proposed after one that was never written is refused as a
+gap, so the log never holds a message without the ones the connection sent
+before it. The messages are settled in order: one whose proposal failed is
+sent again on its own and answered from whichever log holds it by then.
+
+A broker that is not a member forwards each message to the leader under
+its sequence, one at a time, and the leader proposes it. Until
 the cluster finalizes `raft_record_headers` an MQTT message, which always
 carries headers, is refused `record_headers_disabled`. While the shard has
 no leader (an election), a broker that is a member of its group waits for
 one within the forward budget, as the hybrid's dispatch waits for a shard
 that is not ready, rather than refusing the message `not_owner`. A refusal
 that waiting cannot change, such as an anonymous connection's message for
-a shard led elsewhere, is answered at once.
-
-One message per batch costs a commit round trip per message on a
-connection, QoS 0 included; real batching on Raft is tracked in #2638.
+a shard led elsewhere, is answered at once. If a later message of a batch
+is refused after earlier ones were written, the connection is closed
+rather than told the batch was not written.
 
 > `services/felix-broker-service/src/serving/kafka/tests.rs`,
 > `a_produce_to_a_raft_shard_lands_once`;
 > `services/felix-broker-service/src/serving/mqtt/writes/tests.rs`,
-> `a_message_for_a_raft_shard_lands_once_with_its_headers` and
+> `a_message_for_a_raft_shard_lands_once_with_its_headers`,
+> `a_batch_for_a_raft_shard_takes_a_sequence_per_record` and
 > `a_message_for_a_raft_shard_between_leaders_waits_for_the_next`;
 > `services/felix-broker-service/src/serving/mqtt/writes/tests/cluster.rs`,
 > `a_lasting_refusal_is_answered_at_once_on_a_broker_that_runs_raft`;
 > `crates/server/felix-mqtt/src/service/tests/publish.rs`,
-> `queued_publishes_go_one_per_batch_when_the_broker_says_so`;
+> `sequences_count_records_when_the_broker_numbers_each`;
 > `crates/testing/felix-cluster/tests/failures/kafka_produce.rs`,
 > `an_idempotent_kafka_producer_on_a_raft_shard_lands_each_record_once_through_failover`;
 > `crates/testing/felix-cluster/tests/failures/mqtt_publish.rs`,
-> `qos1_on_a_raft_shard_survives_its_leader_without_duplicates`.
+> `qos1_on_a_raft_shard_survives_its_leader_without_duplicates` and
+> `pipelined_qos1_on_a_raft_shard_survives_its_leader_in_order`.
 
 **Idempotent publishes.** A producer that names itself and numbers its
 batches (`publish_idempotent`, `docs/protocol.md`) gets the same contract on
