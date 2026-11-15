@@ -1049,6 +1049,23 @@ still acknowledge this way. That is safe: the written majority it counted
 overlaps every majority that can elect a later leader, and a voter refuses
 a candidate whose log is behind its own, unsynced entries included.
 
+A report does not wake every write waiting on the count. A write that needs
+two followers cannot have its majority before two senders have reported
+positions at or past it. It sleeps in a queue (`felix_storage::waiters`)
+under its own entry and wakes when the second furthest position heard
+reaches it. A write that position has passed without a majority, because
+a learner or another term's report is ahead, wakes on every report as
+before. Each wake still reads the reports and the
+voters again and applies the rules above, so the queue changes when a write
+looks, never what it counts. A change of voters is seen at the write's next
+look; until then the commit answers it as before.
+
+> `crates/server/felix-replication/src/raft/tests/written.rs`,
+> `a_report_wakes_only_the_writes_it_can_complete`,
+> `no_report_is_lost_between_a_look_and_a_sleep`,
+> `a_learner_ahead_does_not_hide_a_voters_report` and
+> `a_report_of_a_newer_term_ends_a_wait_on_a_lost_term`.
+
 What the acknowledgement promises, and what it does not
 (`docs/formal/FelixRaftWritten.tla`):
 

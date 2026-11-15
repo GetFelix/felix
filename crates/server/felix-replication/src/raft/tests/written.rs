@@ -1,6 +1,8 @@
 //! The early acknowledgement of a `Quorum` write on a stream that does not
 //! fsync on commit: a majority of the voters has written the record.
 
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
 use felix_storage::raft_log::LogPoint;
 use openraft::async_runtime::watch::WatchReceiver;
 use openraft::impls::EmptyNode;
@@ -8,7 +10,7 @@ use openraft::type_config::alias::{CommittedLeaderIdOf, LogIdOf};
 
 use super::super::group::Group;
 use super::super::network::Reply;
-use super::super::written::{Reports, majority_wrote};
+use super::super::written::{Look, Reports, look, majority_wrote};
 use super::*;
 use crate::engine::{CommitError, Written};
 
@@ -119,6 +121,244 @@ fn the_furthest_report_of_each_sender_is_kept() {
     let kept = (0..200).filter(|n| reports.from(&MemberId::new(format!("x{n}"), 1)).is_some());
     assert_eq!(kept.count(), 63);
     assert!(reports.from(&MemberId::new("x199", 1)).is_some());
+}
+
+/// Spawns a wait on `reports` for each entry `1..=count` at term 1 and
+/// returns the waits and a count of their looks. `deposed` makes every
+/// look find the voters unknown, as on a member that stopped leading.
+fn waiting(
+    reports: &Arc<Reports>,
+    voters: &[BTreeSet<MemberId>],
+    count: u64,
+    deposed: &Arc<AtomicBool>,
+) -> (Vec<tokio::task::JoinHandle<bool>>, Arc<AtomicUsize>) {
+    let looks = Arc::new(AtomicUsize::new(0));
+    let waits = (1..=count).map(|index| {
+        let (reports, voters) = (Arc::clone(reports), voters.to_vec());
+        let (looks, deposed) = (Arc::clone(&looks), Arc::clone(deposed));
+        tokio::spawn(async move {
+            let entry = at(1, index);
+            let wrote = reports.written(entry, |heard| {
+                looks.fetch_add(1, Ordering::Relaxed);
+                if deposed.load(Ordering::Relaxed) {
+                    return Look::Unknown;
+                }
+                look(&voters, &member("a"), heard, entry)
+            });
+            wrote.await
+        })
+    });
+    (waits.collect(), looks)
+}
+
+/// Lets every spawned wait run until it sleeps. One round is enough on a
+/// current-thread runtime; the rest is margin.
+async fn settle() {
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+}
+
+/// Five voters, so a write needs two followers. One follower far ahead and
+/// another stepping through the entries one report at a time wakes each
+/// write about once, not every write on every report.
+#[tokio::test(flavor = "current_thread")]
+async fn a_report_wakes_only_the_writes_it_can_complete() {
+    const WRITES: u64 = 300;
+    let reports = Arc::new(Reports::new());
+    let voters = [set(&["a", "b", "c", "d", "e"])];
+    let deposed = Arc::new(AtomicBool::new(false));
+    let (waits, looks) = waiting(&reports, &voters, WRITES, &deposed);
+    settle().await;
+    let before = looks.load(Ordering::Relaxed);
+
+    reports.heard(member("b"), at(1, WRITES));
+    for index in 1..=WRITES {
+        reports.heard(member("c"), at(1, index));
+        tokio::task::yield_now().await;
+    }
+    for wait in waits {
+        assert!(wait.await.expect("the wait ran"), "a write was not counted");
+    }
+    let woken = looks.load(Ordering::Relaxed) - before;
+    // One look per write once its report lands, with room for a wake that
+    // lands before the write sleeps. A wake per report is WRITES^2 / 2.
+    assert!(
+        woken <= 2 * WRITES as usize,
+        "{woken} looks for {WRITES} writes"
+    );
+}
+
+/// Reports racing many waits from other threads: a report that lands
+/// between a wait's look and its sleep still wakes it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn no_report_is_lost_between_a_look_and_a_sleep() {
+    const WRITES: u64 = 200;
+    let voters = [set(&["a", "b", "c"])];
+    for _ in 0..20 {
+        let reports = Arc::new(Reports::new());
+        let deposed = Arc::new(AtomicBool::new(false));
+        let (waits, _) = waiting(&reports, &voters, WRITES, &deposed);
+        let reporter = {
+            let reports = Arc::clone(&reports);
+            tokio::spawn(async move {
+                for index in 1..=WRITES {
+                    reports.heard(member("b"), at(1, index));
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        reporter.await.expect("the reporter ran");
+        for wait in waits {
+            let wrote = tokio::time::timeout(PATIENCE, wait).await;
+            assert!(wrote.expect("woken").expect("the wait ran"));
+        }
+    }
+}
+
+/// A member that stops leading finds the voters unknown at its next look
+/// and the wait ends without an answer. Here the look comes from a report
+/// of a newer term, which sorts above every key and reaches every older
+/// entry. A deposed leader's same-term reports sort below some keys and do
+/// not wake those waits; the commit arm of the caller ends them.
+#[tokio::test(flavor = "current_thread")]
+async fn a_report_of_a_newer_term_ends_a_wait_on_a_lost_term() {
+    let reports = Arc::new(Reports::new());
+    let voters = [set(&["a", "b", "c"])];
+    let deposed = Arc::new(AtomicBool::new(false));
+    let (waits, _) = waiting(&reports, &voters, 20, &deposed);
+    settle().await;
+    deposed.store(true, Ordering::Relaxed);
+    reports.heard(member("b"), at(2, 1));
+    for wait in waits {
+        let wrote = tokio::time::timeout(PATIENCE, wait).await;
+        assert!(!wrote.expect("woken").expect("the wait ran"));
+    }
+}
+
+/// A report that names a later entry in another term is no majority, so
+/// the write waits on, and a later one in its own term completes it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_report_at_another_term_does_not_end_the_wait() {
+    let reports = Arc::new(Reports::new());
+    let voters = [set(&["a", "b", "c"])];
+    let deposed = Arc::new(AtomicBool::new(false));
+    let (mut waits, _) = waiting(&reports, &voters, 1, &deposed);
+    let wait = waits.pop().expect("one wait");
+    settle().await;
+    reports.heard(member("c"), at(2, 5));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "answered on another term's report");
+    reports.heard(member("b"), at(1, 1));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+/// Voters a test can swap while a wait sleeps.
+type SharedVoters = Arc<parking_lot::Mutex<Vec<BTreeSet<MemberId>>>>;
+
+/// Starts a wait on the entry `at(1, 1)` whose voters can be swapped while
+/// it sleeps, as a membership change does.
+fn waiting_on_changing_voters(
+    reports: &Arc<Reports>,
+    voters: Vec<BTreeSet<MemberId>>,
+) -> (SharedVoters, tokio::task::JoinHandle<bool>) {
+    let voters = Arc::new(parking_lot::Mutex::new(voters));
+    let wait = {
+        let (reports, voters) = (Arc::clone(reports), Arc::clone(&voters));
+        tokio::spawn(async move {
+            let entry = at(1, 1);
+            reports
+                .written(entry, |heard| {
+                    look(&voters.lock(), &member("a"), heard, entry)
+                })
+                .await
+        })
+    };
+    (voters, wait)
+}
+
+/// Voters growing from three to five raise the shortfall from one follower
+/// to two. The report that would have completed the write on three voters
+/// moves it to the longer wait instead of answering.
+#[tokio::test(flavor = "current_thread")]
+async fn more_voters_raise_the_count_a_wait_needs() {
+    let reports = Arc::new(Reports::new());
+    let (voters, wait) = waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c"])]);
+    settle().await;
+    *voters.lock() = vec![set(&["a", "b", "c", "d", "e"])];
+    reports.heard(member("b"), at(1, 1));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "answered on one follower of five");
+    reports.heard(member("c"), at(1, 1));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+/// Voters shrinking from five to three lower the shortfall: the follower
+/// already written is a majority, and the next report wakes the wait.
+#[tokio::test(flavor = "current_thread")]
+async fn fewer_voters_lower_the_count_a_wait_needs() {
+    let reports = Arc::new(Reports::new());
+    let (voters, wait) =
+        waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c", "d", "e"])]);
+    settle().await;
+    reports.heard(member("b"), at(1, 1));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "answered on one follower of five");
+    *voters.lock() = vec![set(&["a", "b", "c"])];
+    reports.heard(member("d"), at(1, 1));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+/// A change to a joint membership needs a majority of both halves: a
+/// follower of the old half alone does not answer, one of the new half does.
+#[tokio::test(flavor = "current_thread")]
+async fn a_joint_change_needs_both_halves_to_answer() {
+    let reports = Arc::new(Reports::new());
+    let (voters, wait) = waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c"])]);
+    settle().await;
+    *voters.lock() = vec![set(&["a", "b", "c"]), set(&["a", "d", "e"])];
+    reports.heard(member("b"), at(1, 1));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "answered without the new half");
+    reports.heard(member("d"), at(1, 1));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+/// A learner far ahead holds the furthest position, so a voter's report
+/// behind it leaves that position unchanged. The wait it completes still
+/// wakes.
+#[tokio::test(flavor = "current_thread")]
+async fn a_learner_ahead_does_not_hide_a_voters_report() {
+    let reports = Arc::new(Reports::new());
+    let voters = [set(&["a", "b", "c"])];
+    let deposed = Arc::new(AtomicBool::new(false));
+    let (mut waits, _) = waiting(&reports, &voters, 5, &deposed);
+    let wait = waits.pop().expect("the wait at 5");
+    settle().await;
+    reports.heard(member("learner"), at(1, 10));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "a learner made a majority");
+    reports.heard(member("b"), at(1, 5));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+#[test]
+fn a_look_names_the_largest_shortfall_of_any_set() {
+    let record = at(3, 9);
+    let a = member("a");
+    let five = [set(&["a", "b", "c", "d", "e"])];
+    assert_eq!(look(&five, &a, &[], record), Look::Short(2));
+    let outside = [set(&["b", "c", "d"])];
+    assert_eq!(look(&outside, &a, &[], record), Look::Short(2));
+    let joint = [set(&["a", "b", "c"]), set(&["a", "d", "e", "f", "g"])];
+    assert_eq!(look(&joint, &a, &[], record), Look::Short(2));
+    let alone = [set(&["a"])];
+    assert_eq!(look(&alone, &a, &[], record), Look::Wrote);
 }
 
 struct Led {
