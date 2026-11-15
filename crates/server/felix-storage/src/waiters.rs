@@ -197,6 +197,9 @@ impl<K: Ord + Copy> Future for Wake<K> {
             return Poll::Ready(());
         };
         let mut state = self.shared.lock();
+        // The waker replaced is dropped after the lock: dropping a task's
+        // last waker can drop a future that holds this queue.
+        let mut replaced = None;
         let slot = match entry {
             Entry::Keyed(key, id) => state.keyed.get_mut(&(key, id)),
             Entry::Any(id) => state.any.get_mut(&id),
@@ -204,8 +207,10 @@ impl<K: Ord + Copy> Future for Wake<K> {
         match slot {
             Some(slot) => {
                 if !slot.as_ref().is_some_and(|w| w.will_wake(cx.waker())) {
-                    *slot = Some(cx.waker().clone());
+                    replaced = slot.replace(cx.waker().clone());
                 }
+                drop(state);
+                drop(replaced);
                 Poll::Pending
             }
             None => Poll::Ready(()),
@@ -218,11 +223,15 @@ impl<K: Ord + Copy> Drop for Wake<K> {
         let Some(entry) = self.entry else {
             return;
         };
-        let mut state = self.shared.lock();
-        match entry {
-            Entry::Keyed(key, id) => state.keyed.remove(&(key, id)),
-            Entry::Any(id) => state.any.remove(&id),
+        let removed = {
+            let mut state = self.shared.lock();
+            match entry {
+                Entry::Keyed(key, id) => state.keyed.remove(&(key, id)),
+                Entry::Any(id) => state.any.remove(&id),
+            }
         };
+        // After the lock, as in `poll`.
+        drop(removed);
     }
 }
 
