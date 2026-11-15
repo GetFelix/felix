@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794767773148,
+  "lastUpdate": 1794768079418,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74712,6 +74712,72 @@ window.BENCHMARK_DATA = {
             "range": "812.33",
             "unit": "us",
             "extra": "trials: 5\nmedian: 607.00\nmean: 943.80\nstdev: 812.33\ncv: 86.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c56aca83c86fe8e2cd9806ec172c619d3232e3e7",
+          "message": "feat(raft): atomic commits on a Raft stream shard (#2446) (#2625)\n\n* feat(raft): atomic commits on a Raft shard (#2446)\n\nA commit is one entry stored with the commit mark on every member. The\nleader's held batch carries its state updates to the state view with the\nevent, a follower's log delivery reads the commit whole and applies them,\nand a rebuilt view reads the mark from the member's own log. A commit at an\nexpected offset is decided at the entry's final index, as publish_if is.\nEntry tag 8, gated by the raft_atomic_commit fleet feature.\n\n* fix(raft): answer a Raft commit once its state is in the view; Raft state reads confirm by read index\n\n* docs(raft): atomic commits on a Raft shard\n\nSpec-Unaffected: a commit is one record, as FelixAtomicCommit.tla models, and its condition is FelixRaftCond.tla's rule at the entry's final index; no new protocol rule.\n\n* test(cluster): an atomic commit on a Raft shard reaches every member\n\n* docs(raft): a Raft state read confirms by read index\n\n* fix(raft): review fixes for Raft commits\n\nA trim's commit scan on an engine log keeps only what the engine committed,\nand a proposed commit sets the stream's commit flag. Sorted the new-cluster\nfeature list; doc fixes.\n\n* test(replication): a command's serialized keys include commit\n\n* test(raft): a trim scan on an engine log keeps only what is committed\n\n* test(raft): the commit cluster test finalizes its features and reports the refusal\n\n* fix(raft): trim scans keep only what was committed first; state_get waits for the view\n\nA trim's commit scan on an engine log now reads the committed bound before\nit reads the log, so a record it read as plain that a new leader then cut\nand rewrote as a commit is not recorded as clear. A commit delivered from\nan engine log sets `seen`.\n\nA state_get on a Raft shard waits, up to the quorum timeout, until the state\nview holds everything committed at the read index, so it never misses a\ncommit whose event a history read already returns.\n\nprotocol.md documents the raft_atomic_commit refusal and the offset a\nrefused commit_if takes on Raft.\n\nSpec-Unaffected: broker-local read ordering and trim bookkeeping; no change to Raft entries, terms or fencing.\n\n* fix(raft): a state read waits only for records, woken by the ring\n\nA leader's blank entry or a membership change moves the read bound but\nnever the ring, so an idle shard answered every state_get not_ready after\nthe full quorum timeout. The wait now stops at the last record under the\nbound, and a ring move wakes it instead of a 2 ms poll.",
+          "timestamp": "2026-11-15T18:30:52Z",
+          "tree_id": "491b973890e1b51b75faece615da5667af4c7f58",
+          "url": "https://github.com/GetFelix/felix/commit/c56aca83c86fe8e2cd9806ec172c619d3232e3e7"
+        },
+        "date": 1794768069404,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.40\nstdev: 2.07\ncv: 2.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "17.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 137.40\nstdev: 17.73\ncv: 12.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 171,
+            "range": "530.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 499.80\nstdev: 530.73\ncv: 106.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.40\nstdev: 1.14\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 256,
+            "range": "4.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 256.00\nmean: 256.00\nstdev: 4.12\ncv: 1.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 343,
+            "range": "18.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 343.00\nmean: 344.40\nstdev: 18.89\ncv: 5.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
