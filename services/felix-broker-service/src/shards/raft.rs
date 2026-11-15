@@ -144,6 +144,9 @@ struct Member {
     incarnation: u64,
     log: DiskLog,
     follow: Option<tokio::task::JoinHandle<()>>,
+    /// The leader's retention timer (`retention`), run on every member so
+    /// a member that wins a term enforces it at once.
+    retention: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RaftShards {
@@ -258,9 +261,13 @@ impl RaftShards {
                 raft_log: true,
                 fsync_mode: raft_fsync_mode(storage.config().fsync_mode, written_commit, &dir),
                 // A Raft log refuses retention bounds, so the broker-wide
-                // ones are left off it (#2602).
+                // ones are left off it: its leader enforces the stream's
+                // with head trims (`retention`).
                 retention_bytes: None,
                 retention_age: None,
+                // Only a purge may drop a Raft log's entries, and tiered
+                // reads assume a stream log's layout.
+                offload: None,
                 ..storage.config().clone()
             };
             Ok((dir, config))
@@ -271,6 +278,7 @@ impl RaftShards {
         // it; the only caller awaits `take` to the end.
         self.claims.fetch_add(1, Ordering::AcqRel);
         let (dir, config) = claim.context("claim task")??;
+        let retention_interval = config.retention_check_interval;
         let opened = self
             .runtime
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
@@ -280,6 +288,7 @@ impl RaftShards {
             incarnation,
             log: opened.log,
             follow: None,
+            retention: None,
         };
         let handle = self
             .broker
@@ -294,6 +303,13 @@ impl RaftShards {
             .context("open the stream on the member's log");
         match handle {
             Ok(handle) => {
+                member.retention = Some(Self::spawn_retention(
+                    self.me.clone(),
+                    key.clone(),
+                    member.log.clone(),
+                    handle.clone(),
+                    retention_interval,
+                ));
                 member.follow = self.engine.follow_commits(key, handle);
                 Ok(member)
             }
@@ -509,6 +525,9 @@ impl RaftShards {
         self.leading.forget(key);
         if let Some(follow) = member.follow {
             follow.abort();
+        }
+        if let Some(retention) = member.retention {
+            retention.abort();
         }
         if let Err(err) = member.log.close().await {
             self.close_failed
@@ -1009,5 +1028,6 @@ impl WriteFence for Leading {
     }
 }
 
+mod retention;
 #[cfg(test)]
 pub(crate) mod tests;

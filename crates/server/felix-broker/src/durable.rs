@@ -87,6 +87,17 @@ impl DurableStorage {
             .map_err(BrokerError::from)
     }
 
+    /// The bounds one stream's logs are held to: its own, with the
+    /// broker-wide ones for any it leaves unset.
+    pub fn stream_retention(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> felix_storage::log::Retention {
+        self.provider.stream_retention(tenant, namespace, stream)
+    }
+
     /// Hold one stream's logs at the commit offset, open and future, or
     /// lift the hold. See `DiskLogProvider::set_stream_retention_hold`.
     pub async fn set_stream_retention_hold(

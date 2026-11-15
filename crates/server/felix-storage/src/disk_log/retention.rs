@@ -169,6 +169,19 @@ impl LogInner {
         offloaded.map(|_| retained)
     }
 
+    /// See [`crate::DiskLog::retention_cut`]. On a blocking thread.
+    pub(super) fn retention_cut(
+        &self,
+        bounds: crate::log::Retention,
+    ) -> Result<Option<crate::log::Offset>> {
+        if !bounds.is_set() {
+            return Ok(None);
+        }
+        let plan = self.segments.read().retention_plan();
+        let chosen = plan.choose(bounds, None, now_micros(), &self.label)?;
+        Ok(plan.end_of(chosen.len()))
+    }
+
     /// Delete what the retention bounds say to, on a blocking thread.
     fn retain(&self, bounds: crate::log::Retention) -> Result<RetentionOutcome> {
         let mut outcome = RetentionOutcome::default();

@@ -429,3 +429,41 @@ async fn a_head_trim_held_at_the_commit_offset_stops_below_it() {
         "the trim below the floor did not happen"
     );
 }
+
+/// **A retention cut names where the bounds would start the log and deletes
+/// nothing.** A Raft log's leader hides up to it with a head trim, so it must
+/// be the base a sweep would leave, and asking must not move the base.
+#[tokio::test]
+async fn a_retention_cut_names_the_sweeps_base_and_deletes_nothing() {
+    let unbounded = tempdir().expect("dir");
+    let bounded = tempdir().expect("dir");
+    let bytes = Some(crate::segment::SEGMENT_HEADER_LEN + 120);
+    let log =
+        DiskLog::open(unbounded.path(), "t/ns/s/0", retention_config(None, None)).expect("open");
+    let swept =
+        DiskLog::open(bounded.path(), "t/ns/s/0", retention_config(bytes, None)).expect("open");
+    for payload in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+        log.append(&records(&[payload])).await.expect("append");
+        swept.append(&records(&[payload])).await.expect("append");
+    }
+    let bound = crate::log::Retention { bytes, age: None };
+
+    assert_eq!(
+        log.retention_cut(crate::log::Retention::default())
+            .await
+            .expect("cut"),
+        None,
+        "no bounds, no cut"
+    );
+    let cut = log.retention_cut(bound).await.expect("cut").expect("a cut");
+    assert_eq!(log.base_offset(), 0, "a cut deletes nothing");
+    swept.enforce_retention_now().await.expect("retention");
+    assert!(cut > 0);
+    assert_eq!(cut, swept.base_offset(), "the base a sweep leaves");
+
+    let generous = crate::log::Retention {
+        bytes: Some(1 << 30),
+        age: None,
+    };
+    assert_eq!(log.retention_cut(generous).await.expect("cut"), None);
+}

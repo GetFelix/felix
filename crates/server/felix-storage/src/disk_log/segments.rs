@@ -545,6 +545,14 @@ impl RetentionPlan {
         }
         Ok(chosen)
     }
+
+    /// One past the last record of the first `count` candidates: where the
+    /// log starts once [`Self::choose`] has deleted that many. `None` for
+    /// none.
+    pub(super) fn end_of(&self, count: usize) -> Option<Offset> {
+        let last = self.candidates.get(count.checked_sub(1)?)?;
+        Some(last.descriptor().last_offset + 1)
+    }
 }
 
 /// What one retention pass reclaimed.
