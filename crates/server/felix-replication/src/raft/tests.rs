@@ -920,6 +920,26 @@ async fn an_append_past_its_deadline_leaves_the_follower_patient() {
     );
 }
 
+/// A late append naming the idle gap is still stored: only a late short
+/// gap can leave the follower impatient under a slow leader.
+#[tokio::test(start_paused = true)]
+async fn a_late_idle_gap_is_still_stored() {
+    let (_, timers) = pace();
+    let b = MemberId::new("b", 1);
+    let follower = super::group::Pace::new(timers, &group(0), &b);
+    let deadline = Duration::from_millis(timers.heartbeat);
+    follower.took(timers.heartbeat, timers.now(), deadline);
+    let short_wait = follower.follower_wait();
+    let arrived = timers.now();
+    tokio::time::advance(deadline).await;
+    follower.took(timers.idle_heartbeat, arrived, deadline);
+    assert!(
+        follower.follower_wait() > short_wait,
+        "a late idle gap was dropped: follower still waits {} ms",
+        follower.follower_wait()
+    );
+}
+
 /// A transport that never answers.
 struct Stalls;
 

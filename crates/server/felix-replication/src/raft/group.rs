@@ -380,12 +380,14 @@ impl Pace {
     /// This member took an append that named `gap` and reached it at
     /// `arrived`. If handling it outlasted `deadline` the leader has stopped
     /// waiting and counts it unanswered, and may already have had a later
-    /// heartbeat's idle gap answered. Storing this gap could then leave the
-    /// follower at the short gap under a slow leader, so it keeps the one it
-    /// has.
+    /// heartbeat's idle gap answered. Storing a short gap could then leave
+    /// the follower at the short gap under a slow leader, so it keeps the one
+    /// it has. A late idle gap is still stored: a fast leader with a patient
+    /// follower is the safe pairing.
     pub(super) fn took(&self, gap: u64, arrived: u64, deadline: Duration) {
         let late = self.timers.now().saturating_sub(arrived) >= deadline.as_millis() as u64;
-        self.followed((!late).then_some(gap));
+        let short = gap <= self.timers.heartbeat;
+        self.followed((!(late && short)).then_some(gap));
     }
 
     /// This member granted a vote. Whoever wins starts at the short gap.
