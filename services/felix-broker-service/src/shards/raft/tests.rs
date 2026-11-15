@@ -132,11 +132,21 @@ fn unbound_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     shards
 }
 
+/// A fleet that has finalized nothing: every member fsyncs on commit.
+pub(crate) fn no_fleet() -> Arc<felix_common::fleet::FleetGate> {
+    Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new()))
+}
+
 /// [`unbound_shards`] whose data root has not passed the restore gate.
 pub(crate) fn held_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     let runtime =
         GroupRuntime::start("broker-a", timers(), Arc::new(AgreeingPeers)).expect("runtime");
-    RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
+    RaftShards::new(
+        Arc::clone(broker),
+        runtime,
+        "broker-a".to_string(),
+        no_fleet(),
+    )
 }
 
 /// Pass `broker`'s data root through the restore gate and let `shards` open
@@ -1216,7 +1226,12 @@ async fn shutdown_writes_the_last_batched_log_marks() {
     };
     let runtime =
         GroupRuntime::start("broker-a", config, Arc::new(AgreeingPeers)).expect("runtime");
-    let shards = RaftShards::new(Arc::clone(&broker), runtime, "broker-a".to_string());
+    let shards = RaftShards::new(
+        Arc::clone(&broker),
+        runtime,
+        "broker-a".to_string(),
+        no_fleet(),
+    );
     broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
         Arc::new(engine(&shards)),
     )));
@@ -1332,26 +1347,46 @@ impl Member {
             incarnation,
             ConsistencyLevel::Quorum,
             FsyncMode::None,
+            false,
         )
         .await
     }
 
+    /// With `written_commit`, the fleet has finalized `raft_written_commit`
+    /// and the root's run began relaxed, as a relaxed broker's start does.
     async fn start_with(
         net: &Arc<Loopback>,
         name: &'static str,
         incarnation: u64,
         consistency: ConsistencyLevel,
         fsync: FsyncMode,
+        written_commit: bool,
     ) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
         let broker = broker_at(root.path(), 3, incarnation, consistency, fsync).await;
+        let fleet = if written_commit {
+            let relaxed = felix_storage::run_state::relaxed(&fsync);
+            felix_storage::run_state::begin(
+                root.path(),
+                relaxed,
+                None,
+                None,
+                || false,
+                || felix_common::random::uuid_v4().into_bytes(),
+            )
+            .expect("begin the run");
+            let feature = [felix_common::fleet::RAFT_WRITTEN_COMMIT.name()];
+            Arc::new(felix_common::fleet::FleetGate::seeded(feature, feature))
+        } else {
+            no_fleet()
+        };
         let runtime =
             GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
                 .expect("runtime");
         net.runtimes
             .lock()
             .insert(name.to_string(), runtime.clone());
-        let shards = RaftShards::new(Arc::clone(&broker), runtime, name.to_string());
+        let shards = RaftShards::new(Arc::clone(&broker), runtime, name.to_string(), fleet);
         open_root(&broker, &shards);
         let engine = Arc::new(engine(&shards));
         broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
@@ -1456,11 +1491,21 @@ async fn trio_fsync(
     consistency: ConsistencyLevel,
     fsync: FsyncMode,
 ) -> (Arc<Loopback>, Vec<Member>, usize) {
+    trio_with(consistency, fsync, false).await
+}
+
+/// [`trio_fsync`], with `written_commit` as [`Member::start_with`] takes it.
+async fn trio_with(
+    consistency: ConsistencyLevel,
+    fsync: FsyncMode,
+    written_commit: bool,
+) -> (Arc<Loopback>, Vec<Member>, usize) {
     let net = Arc::new(Loopback::default());
     let mut members = Vec::new();
     // The broker that forms the group last, so every member it asks is up.
     for name in BROKERS.iter().rev() {
-        let member = Member::start_with(&net, name, INCARNATION, consistency, fsync).await;
+        let member =
+            Member::start_with(&net, name, INCARNATION, consistency, fsync, written_commit).await;
         member.shards.take(&mut assignments([replicated()])).await;
         members.push(member);
     }
@@ -1955,6 +2000,30 @@ async fn a_periodic_quorum_stream_is_answered_on_a_written_majority() {
     stop(&members).await;
 }
 
+/// **A relaxed broker's shard commits before any follower fsyncs once the
+/// fleet finalized `raft_written_commit`.** Its Raft logs open with the
+/// broker's own mode, so a written majority is a commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relaxed_shard_commits_on_a_written_majority_once_the_fleet_allows_it() {
+    let periodic = FsyncMode::Periodic {
+        interval: Duration::from_secs(3600),
+    };
+    let (_net, members, leader) = trio_with(ConsistencyLevel::Quorum, periodic, true).await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"w0").await;
+
+    let logs = follower_logs(&members, leader).await;
+    let held = futures::future::join_all(logs.iter().map(|log| log.hold_flushes())).await;
+    let offset = members[leader].publish(term, b"w1").await;
+    until("the publish commits with every follower fsync held", || {
+        members[leader].bound() > offset
+    })
+    .await;
+    drop(held);
+    stop(&members).await;
+}
+
 /// **A publish to a `Quorum` stream fsynced on commit is answered only at
 /// its commit, though a majority has written it.** Answered on the written
 /// count, a power cut on two brokers could take a write the stream's
@@ -2034,4 +2103,27 @@ async fn a_leader_acknowledgement_does_not_outlive_its_leader() {
         "offset {lost} was acknowledged by the old leader alone"
     );
     stop(&members).await;
+}
+
+/// **A member fsyncs on commit unless the fleet finalized
+/// `raft_written_commit` and the root's run rotates on a crash.** Either
+/// missing, a written entry counted toward a commit could be lost unseen.
+#[test]
+fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
+    use felix_storage::run_state;
+    let none = FsyncMode::None;
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    let fresh = || felix_common::random::uuid_v4().into_bytes();
+    run_state::begin(root.path(), true, None, None, || false, fresh).expect("begin");
+    assert_eq!(super::raft_fsync_mode(none, true, &dir), none);
+    assert_eq!(
+        super::raft_fsync_mode(none, false, &dir),
+        FsyncMode::OnCommit
+    );
+    run_state::begin(root.path(), false, None, None, || false, fresh).expect("begin");
+    assert_eq!(
+        super::raft_fsync_mode(none, true, &dir),
+        FsyncMode::OnCommit
+    );
 }

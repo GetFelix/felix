@@ -14,6 +14,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
@@ -21,6 +22,7 @@ use std::time::Duration;
 
 use anyhow::Context;
 use felix_broker::{Broker, StreamLog};
+use felix_common::fleet::{self, FleetGate};
 use felix_common::random::{HashMap, HashSet};
 use felix_replication::driver::WriteFence;
 use felix_replication::quorum::ShardServing;
@@ -59,6 +61,9 @@ pub(crate) struct RaftShards {
     runtime: GroupRuntime,
     engine: RaftEngine,
     local: String,
+    /// Whether the fleet finalized `raft_written_commit`, read at each
+    /// open: a member opened strict stays strict until it opens again.
+    fleet: Arc<FleetGate>,
     leading: Arc<Leading>,
     /// Every Raft shard in the feed and the broker its placement names as
     /// leader: where a request goes while no member is open here.
@@ -114,6 +119,22 @@ pub(crate) struct CarriedOver {
     dir: String,
 }
 
+/// The fsync mode a member's Raft log opens with. A relaxed broker's own
+/// mode lets Raft count an entry once it is written, which is safe only on a
+/// root whose run rotates after a machine crash, and only once every broker
+/// carries the copy's reservation (`raft_written_commit`). Otherwise
+/// `OnCommit`. See `docs/per-shard-raft.md`, "Commit on a written majority".
+fn raft_fsync_mode(broker: FsyncMode, written_commit: bool, dir: &Path) -> FsyncMode {
+    if written_commit
+        && felix_storage::run_state::relaxed(&broker)
+        && felix_storage::run_state::rotates_on_crash(dir)
+    {
+        broker
+    } else {
+        FsyncMode::OnCommit
+    }
+}
+
 /// One open member: the log is this module's to close, because the storage
 /// provider never opened it.
 struct Member {
@@ -125,7 +146,12 @@ struct Member {
 impl RaftShards {
     /// `runtime` must have no group open yet: it reports each shard's
     /// leadership here from this call on.
-    pub(crate) fn new(broker: Arc<Broker>, runtime: GroupRuntime, local: String) -> Arc<Self> {
+    pub(crate) fn new(
+        broker: Arc<Broker>,
+        runtime: GroupRuntime,
+        local: String,
+        fleet: Arc<FleetGate>,
+    ) -> Arc<Self> {
         let leading = Arc::new(Leading {
             broker: Arc::clone(&broker),
             terms: Arc::default(),
@@ -142,6 +168,7 @@ impl RaftShards {
             broker,
             runtime,
             local,
+            fleet,
             leading,
             placed: parking_lot::Mutex::default(),
             forming: parking_lot::Mutex::default(),
@@ -204,6 +231,7 @@ impl RaftShards {
         self.unclaimed.lock().remove(key);
         let broker = Arc::clone(&self.broker);
         let (shard, incarnation) = (key.clone(), assignment.incarnation);
+        let written_commit = self.fleet.supports(fleet::RAFT_WRITTEN_COMMIT);
         // The marker write fsyncs.
         let claim = tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
             let storage = broker
@@ -224,7 +252,7 @@ impl RaftShards {
             }
             let config = LogConfig {
                 raft_log: true,
-                fsync_mode: FsyncMode::OnCommit,
+                fsync_mode: raft_fsync_mode(storage.config().fsync_mode, written_commit, &dir),
                 ..storage.config().clone()
             };
             Ok((dir, config))

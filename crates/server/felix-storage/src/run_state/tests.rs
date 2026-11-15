@@ -421,7 +421,10 @@ fn a_relaxed_crash_restarted_on_commit_rotates_and_stops_written_commits() {
     let second = begin_in(dir.path(), ON_COMMIT, REBOOTED, &mut fresh);
     assert!(second.rotated);
     assert_ne!(second.id, first.id);
-    assert!(!rotates_on_crash(&shard), "a strict run vouches for no written commit");
+    assert!(
+        !rotates_on_crash(&shard),
+        "a strict run vouches for no written commit"
+    );
 }
 
 /// Starting a run takes the clean record away, so a crash after it is seen.

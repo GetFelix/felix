@@ -373,6 +373,7 @@ where
             &peers,
             &broker,
             &engine,
+            &fleet,
         )?
     } else {
         cluster::RaftShards::default()

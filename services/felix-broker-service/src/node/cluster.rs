@@ -142,6 +142,7 @@ pub(super) fn start_raft_shards(
     peers: &Option<Arc<PeerPool>>,
     broker: &Arc<Broker>,
     engine: &Arc<shard_routing::StreamEngine>,
+    fleet: &Arc<felix_common::fleet::FleetGate>,
 ) -> Result<RaftShards> {
     use replication::raft::{GroupRuntime, PeerTransport, RuntimeConfig};
 
@@ -165,6 +166,7 @@ pub(super) fn start_raft_shards(
         Arc::clone(broker),
         runtime.clone(),
         membership.node_id.clone(),
+        Arc::clone(fleet),
     );
     engine.set_raft(Arc::clone(&shards));
     Ok(RaftShards {
