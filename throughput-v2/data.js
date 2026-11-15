@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794754881094,
+  "lastUpdate": 1794761589514,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58760,6 +58760,58 @@ window.BENCHMARK_DATA = {
             "range": "42337.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807229.21\nmean: 792031.88\nstdev: 42337.66\ncv: 5.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed120c1a5999030362ea97b96648e76b96f4ce9b",
+          "message": "fix(controlplane): a node delete clears its replica report stamps (#2619) (#2624)\n\n* fix(controlplane): a node delete clears its replica report stamps (#2619)\n\nA node deleted and registered again starts at incarnation 0, so a held\nreplica report stamped at the old process's incarnation 0 could count the\nnew registration as caught up when it registered no storage identity.\n\nDeleting a node now removes it from node_incarnations in every held report\n(the rest of the report stays), and the API stamps only the nodes the\nshard's assignment names, so a report in flight across the delete cannot\nre-add a stamp for it. Under Raft the delete clears stamps from metadata\nlevel 37 (DeleteNode.forget_reports, set by settle_for_level and stripped\nbelow it).\n\nSpec-Unaffected: the shard models (FelixShard wipe configs) have no node delete; a restart there always raises the incarnation, which this change makes true for a delete and re-registration too. No modelled rule changes.\n\n* fix(controlplane): review fixes for the delete stamp clearing (#2619)\n\nRaft test that a group below level 37 keeps the stamps on delete, the\nlevel 37 row in the field-level table, and the replication-design wording\nfor groups below it.\n\nSpec-Unaffected: tests, docs and a comment only.\n\n* docs(controlplane): a stamp left by a delete below level 37 stays until the next delete or report\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-11-15T16:48:37Z",
+          "tree_id": "37b27a9b4a55a777ccc5b90235c9997fcab5196c",
+          "url": "https://github.com/GetFelix/felix/commit/ed120c1a5999030362ea97b96648e76b96f4ce9b"
+        },
+        "date": 1794761588748,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 654904.67,
+            "range": "69455.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 654904.67\nmean: 676207.14\nstdev: 69455.12\ncv: 10.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 654904.67,
+            "range": "69455.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 654904.67\nmean: 676207.14\nstdev: 69455.12\ncv: 10.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160530.46,
+            "range": "8294.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160530.46\nmean: 157388.56\nstdev: 8294.73\ncv: 5.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1605304.64,
+            "range": "82947.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1605304.64\nmean: 1573885.58\nstdev: 82947.35\ncv: 5.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
