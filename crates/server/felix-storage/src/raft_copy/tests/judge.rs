@@ -390,7 +390,8 @@ async fn a_damaged_copy_file_is_an_error() {
 
 /// A rotation stopped at each of its steps, as a crash stops it, leaves the
 /// old directory or one the next open rotates again. Nothing passes under
-/// the old copy id.
+/// the old copy id. The steps include those inside the reservation and
+/// copy file writes, which are keyed on the shard directory.
 #[tokio::test]
 async fn a_rotation_stopped_at_any_step_rotates_again() {
     let mut stop = 0;
@@ -401,6 +402,7 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             let copies = root.open();
             let opened = open_copy(&copies, &dir).await;
             save_vote(&opened, 6).await;
+            crate::raft_log::reserved::store(&dir, 1 << 20).expect("reserve");
             let old = close(opened).await;
             // Marks for another copy, so the next open rotates.
             copies
@@ -413,7 +415,7 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
 
         let copies = root.open();
         let parent = dir.parent().expect("parent").to_path_buf();
-        crash_point::watch(&parent, Some(stop));
+        crash_point::watch_under(&parent, Some(stop));
         let stopped = copies
             .open_copy(SHARD, &dir, "t/ns/orders/0", config())
             .await;
@@ -427,12 +429,20 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             Err(_) => false,
         };
 
+        // The walk also counts any step in the open that follows the
+        // rotation. A stop there leaves a finished rotation, which the next
+        // open rightly keeps.
+        let rotated = copy_file::load(&dir)
+            .ok()
+            .flatten()
+            .is_some_and(|found| root.marks_on_disk().map(|marks| marks.copy) == Some(found.copy));
+
         let copies = root.open();
         let reopened = open_copy(&copies, &dir).await;
         assert!(![old, 0xdead].contains(&reopened.copy), "stop {stop}");
         assert_eq!(reopened.log.accepted_generation(), 0, "stop {stop}");
         assert!(
-            finished || reopened.rotation.is_some(),
+            finished || rotated || reopened.rotation.is_some(),
             "stop {stop}: an interrupted rotation passed"
         );
         assert_eq!(
@@ -451,6 +461,11 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             vec![Some(old)],
             "stop {stop}"
         );
+        assert_eq!(
+            crate::raft_log::reserved::load(&dir).expect("reservation"),
+            Some(1 << 20),
+            "stop {stop}: the new copy lost the old one's reservation"
+        );
         close(reopened).await;
         if finished {
             assert!(stop >= steps, "stop {stop} of {steps}");
@@ -458,8 +473,10 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
         }
         stop += 1;
     }
+    // Four steps of the rotation itself, then the reservation and the copy
+    // file, each a state_file::store of four steps and one step after it.
     assert!(
-        stop >= 4,
+        stop >= 14,
         "the rotation has fewer steps than expected: {stop}"
     );
 }

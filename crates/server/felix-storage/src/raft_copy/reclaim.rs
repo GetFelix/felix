@@ -18,7 +18,8 @@
 //! the copy hold those entries itself, on disk: a commit index can be saved
 //! before its entry is flushed, and a snapshot carries no records. A
 //! directory with no records is covered by the committed index alone. One
-//! that cannot be read is held, never reclaimed on a guess. See
+//! that cannot be read is held, never reclaimed on a guess, and so is one
+//! reserved past the current copy (`raft_log::reserved`). See
 //! `docs/per-shard-raft.md`, "Reclaiming kept copies".
 
 use std::io;
@@ -30,7 +31,7 @@ use crate::disk_log::WriterAt;
 use crate::disk_log::layout::KEPT_DIR;
 use crate::incarnation::kept_gauges;
 use crate::log::{LogConfig, UNKNOWN_WRITER};
-use crate::raft_log::held;
+use crate::raft_log::{held, reserved};
 use crate::{DiskLog, StorageError};
 
 /// What one [`reclaim_kept`] pass did.
@@ -69,6 +70,9 @@ pub enum HeldReason {
     /// It is the copy doing the judging: that copy's directory was rotated
     /// aside since, so it no longer speaks for the shard.
     Itself,
+    /// It reserved Raft indexes past the copy's own reservation, so deleting
+    /// it would lose how far a re-form has to pad.
+    Reserved,
     /// Its segments could not be read.
     Unreadable,
     /// It was due, but deleting it failed.
@@ -147,7 +151,7 @@ pub async fn reclaim_kept(
         off_runtime(move || kept_copies(&dir)).await?
     };
     let mut report = KeptReport::default();
-    let judged = judge(listed, &parent, current, config, stopped, &mut report).await;
+    let judged = judge(dir, listed, &parent, current, config, stopped, &mut report).await;
     if report.reclaimed.is_empty() {
         kept_gauges::note(&parent);
         judged?;
@@ -163,6 +167,7 @@ pub async fn reclaim_kept(
 }
 
 async fn judge(
+    dir: &Path,
     listed: Vec<KeptCopy>,
     parent: &Path,
     current: &CurrentCopy,
@@ -177,6 +182,33 @@ async fn judge(
                 copy,
                 last_index: None,
                 reason: HeldReason::Itself,
+            });
+            continue;
+        }
+        // A rotation carries every kept reservation into the new copy, so
+        // this holds only a directory some other path left uncovered.
+        let uncovered = {
+            let (dir, path) = (dir.to_path_buf(), path.clone());
+            off_runtime(move || Ok(reserved::load(&path)? > reserved::load(&dir)?)).await
+        };
+        if let Err(err) = &uncovered {
+            tracing::warn!(
+                path = %path.display(),
+                // Names the file that failed, which can be the current copy's.
+                error = %err,
+                "a reservation cannot be read, so the kept shard copy is held"
+            );
+        }
+        if !matches!(uncovered, Ok(false)) {
+            report.held.push(HeldCopy {
+                path,
+                copy,
+                last_index: None,
+                reason: if uncovered.is_ok() {
+                    HeldReason::Reserved
+                } else {
+                    HeldReason::Unreadable
+                },
             });
             continue;
         }

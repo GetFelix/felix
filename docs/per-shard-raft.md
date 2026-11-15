@@ -599,6 +599,12 @@ it. A kept directory with no records is covered by the saved committed index
 alone.
 Only that evidence counts: no age and no timer.
 
+A kept directory is also held while its reservation (`raft-reserved`, see
+`docs/storage-format.md`) is above the current copy's. A rotation carries the
+highest reservation into the new copy, so this holds only a directory some
+other path left uncovered, and deleting it would lose how far a re-form must
+pad.
+
 The first index comes from the running member, so a purge held only in memory
 counts. The flushed tail is read from the log's durable offset, so a copy
 that restarted and has not appended since is not stuck. A kept directory is
@@ -4265,9 +4271,10 @@ the bound is stored before the count, and stores the bound on the copy:
   below a reservation that is on disk.
 - **The reservation outlives the copy.** A rotation renames the old
   directory into `.kept/`, with the file. The new copy starts its own
-  reservation at the old one's. The new directory is written with the
-  reservation before it is renamed into place, so a crash leaves either
-  the old directory or a new one that carries it. A kept directory is
+  reservation at the old one's. The rotation moves the old directory
+  into `.kept/`, creates the new one, writes the reservation and only then
+  the copy file, so a crash leaves a directory with no copy file, which
+  the next open rotates again, or one that carries it. A kept directory is
   reclaimed only after the new copy's reservation is synced.
 - **The re-form pads up to the highest reservation it reads.** The new
   epoch starts above the stored floor and above the highest

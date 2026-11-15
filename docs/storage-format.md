@@ -80,6 +80,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     replica-set                              ← the replicas this one counts, and the set it is leaving
     engine                                   ← only in a Raft shard's directory: which engine writes it
     raft-purged                              ← a Raft log's last purged id
+    raft-reserved                            ← a Raft copy's reserved index, once it took one
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
     poisoned                                 ← only after a failed fsync: the mark as of the failure
@@ -1222,6 +1223,74 @@ hole after.
 
 A shard group's log refuses a purge past its snapshot instead
 (`RaftLog::purge_within`).
+
+## `raft-reserved`: a Raft copy's reserved index
+
+A Raft copy that has reserved indexes holds a `raft-reserved` file: the
+highest Raft index it may report as flushed before it raises the file again.
+
+```text
+ 0   4  magic        u32  "FLRS"
+ 4   2  version      u16  1
+ 6   2  reserved     u16  zero
+ 8   8  index        u64  the highest reserved Raft index
+16   4  crc          u32  crc32 over bytes 0..16
+```
+
+It is for a broker whose `fsync_mode` is `periodic` or `none`, where a
+copy will be able to count an entry toward a commit once it is written and
+before it is synced. A power cut of a majority can then lose committed
+entries, and a re-form must start above every index that was counted. The
+reservation is synced before any count above it, so it bounds them. The
+design is in `docs/per-shard-raft.md`, "Proposal: commit on a written
+majority on relaxed brokers". No broker takes a reservation yet. Only a
+rotation writes this file, when the copies it replaced had one.
+
+Written through a temporary, an fsync, a rename and a directory sync. A
+rotation reads the highest reservation of the old directory and every kept
+directory of the shard, and writes it into the new directory before the
+copy file, so a directory with a copy file always carries what it replaced,
+and a crash before that leaves a directory the next open rotates again. A
+kept directory whose reservation is above the current copy's is never
+reclaimed.
+
+Nothing can rebuild this file, so one that is present and does not decode
+is an error for the rotation and for the reclaim pass. Absent means the
+copy never reserved anything. A normal open does not read the file, so a
+damaged one does not stop a copy that is already serving. What it stops
+depends on where it is:
+
+- **In a kept directory.** The next rotation of that shard fails, and
+  reclaim holds that kept directory as unreadable. If the current copy's
+  `raft-reserved` decodes, the rotation that made the current copy read
+  the kept file while it was still whole and carried its value. Stop the
+  broker and delete only the damaged `raft-reserved` file in that kept
+  directory, not the directory. An absent file reads as no reservation,
+  and reclaim still checks the kept records and removes the directory only
+  once the current copy covers them. If the current copy has no
+  `raft-reserved`, an older build made it without the carry and the value
+  is lost: delete the damaged file the same way, then start the copy over,
+  as below.
+- **In the current shard directory.** The next rotation fails, and reclaim
+  holds every kept directory of the shard as unreadable, with a warning
+  that names the current directory's file. Start the copy over: stop the
+  broker and remove only the shard's directory. Leave its kept
+  directories (`.kept/<shard directory>.<copy id>`) in place. The next open
+  finds no copy and rotates, which carries the highest reservation of the
+  kept directories into the new one. The copy comes back under a new copy
+  id, as a learner, and catches up from the group. Do it on one broker at a
+  time, only while the rest of the group holds a majority, and wait until
+  that copy has caught up and is a voter again before starting the next.
+
+A build older than this file counts it as a record and does not carry it, so
+going back to such a build after any copy has reserved can lose a
+reservation. Its rotation also leaves a kept directory whose reservation is
+above the new copy's, and reclaim holds that directory as reserved. A
+broker with strict fsync never reserves, so only another rotation would
+cover it: until then the directory stays on disk, and the only sign is its
+line in the held report. Taking reservations will wait on a fleet
+feature that is finalized only once every broker carries this file, and a
+downgrade after that is unsafe (#2611).
 
 ## `raft-snapshot`: a Raft group's snapshot
 

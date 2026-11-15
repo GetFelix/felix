@@ -11,15 +11,33 @@ static WATCHED: parking_lot::Mutex<std::collections::BTreeMap<std::path::PathBuf
 struct Watch {
     seen: usize,
     stop_at: Option<usize>,
+    under: bool,
 }
 
 /// Count the steps of writes under `dir`. With `stop_at`, that step and
 /// every one after it fails, as a dead process would never run them.
 #[cfg(test)]
 pub(crate) fn watch(dir: &Path, stop_at: Option<usize>) {
-    WATCHED
-        .lock()
-        .insert(dir.to_path_buf(), Watch { seen: 0, stop_at });
+    insert(dir, stop_at, false);
+}
+
+/// Like [`watch`], but also counts the steps of writes in any directory
+/// below `dir`, in the order they run.
+#[cfg(test)]
+pub(crate) fn watch_under(dir: &Path, stop_at: Option<usize>) {
+    insert(dir, stop_at, true);
+}
+
+#[cfg(test)]
+fn insert(dir: &Path, stop_at: Option<usize>, under: bool) {
+    WATCHED.lock().insert(
+        dir.to_path_buf(),
+        Watch {
+            seen: 0,
+            stop_at,
+            under,
+        },
+    );
 }
 
 /// Stop watching `dir`; returns how many steps ran or were refused.
@@ -32,7 +50,14 @@ pub(crate) fn unwatch(dir: &Path) -> usize {
 #[cfg(test)]
 pub(crate) fn reached(dir: &Path) -> std::io::Result<()> {
     let mut watched = WATCHED.lock();
-    let Some(watch) = watched.get_mut(dir) else {
+    let Some(at) = dir.ancestors().find(|at| {
+        watched
+            .get(*at)
+            .is_some_and(|watch| *at == dir || watch.under)
+    }) else {
+        return Ok(());
+    };
+    let Some(watch) = watched.get_mut(at) else {
         return Ok(());
     };
     let step = watch.seen;
