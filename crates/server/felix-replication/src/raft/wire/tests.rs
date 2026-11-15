@@ -346,13 +346,19 @@ fn a_read_index_reads_back_under_its_tags() {
     assert_eq!(&answer[..], &[LAYOUT, 6, 1, 0, 0, 0, 0, 0, 0, 0, 7]);
     let none = encode_reply(&Ok(RaftReply(Reply::ReadIndex { index: None })));
     assert_eq!(&none[..], &[LAYOUT, 6, 0]);
-    assert!(decode_reply(Bytes::from_static(&[LAYOUT, 6, 2])).is_err());
+    assert!(
+        decode_reply(Bytes::from_static(&[LAYOUT, 6, 2])).is_err(),
+        "an option tag other than 0 or 1 is refused"
+    );
 
+    // A build that predates the message refuses it by its tag, as this one
+    // refuses the next tag.
     let mut unknown = encode_request(&request(Request::ReadIndex))
         .expect("encode")
         .to_vec();
     unknown[1] = 9;
-    assert!(decode_request(Bytes::from(unknown)).is_err());
+    let refused = decode_request(Bytes::from(unknown)).expect_err("an unknown request tag");
+    assert_eq!(refused.to_string(), "9 is not a Raft request");
 }
 
 /// The layout is pinned: a vote, byte by byte.

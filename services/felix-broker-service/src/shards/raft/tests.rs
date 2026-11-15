@@ -1473,6 +1473,9 @@ pub(crate) struct Loopback {
     /// Brokers sent no append that carries entries. Everything else reaches
     /// them, and they reach everyone.
     pub(crate) starved: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Brokers whose answers to appends that carry entries are lost: they
+    /// write the entries, and the leader never counts them.
+    pub(crate) unheard: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// The fleet has not finalized `raft_follower_read`: followers leave
     /// reads that could start below a floor to the leader.
     pub(crate) follower_reads_off: std::sync::atomic::AtomicBool,
@@ -1499,8 +1502,15 @@ impl RaftTransport for Loopback {
         if cut_after {
             self.cut.lock().insert(to.clone());
         }
+        let unheard = request.carries_entries() && self.unheard.lock().contains(&to);
         let runtime = self.runtimes.lock().get(&to).cloned();
         match runtime {
+            Some(runtime) if unheard => {
+                let _ = runtime.handle(request).await;
+                Err(Refused::Unreachable(format!(
+                    "the answer from {to} was lost"
+                )))
+            }
             Some(runtime) => runtime.handle(request).await,
             None => Err(Refused::Unreachable(format!("broker {to} is down"))),
         }

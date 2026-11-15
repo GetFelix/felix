@@ -324,6 +324,82 @@ async fn a_follower_holding_the_trim_is_not_read_below_it_after_the_answer() {
     stop(&members).await;
 }
 
+/// **A follower that reaches its leader and holds a trim not yet committed
+/// holds a read below its floor, and serves one at or above it.** The read
+/// index is below the trim, so only the hold keeps the follower from
+/// serving records the trim may hide once it is answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reachable_follower_holding_an_uncommitted_trim_holds_reads_below_it() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = Arc::clone(&members[leader].broker);
+    let engine = Arc::clone(&members[leader].engine);
+    let holder = &members[(leader + 1) % 3];
+    let other = &members[(leader + 2) % 3];
+    members[leader].broker.allow_raft_head_trims_when(|| true);
+    let first = members[leader].publish(term, b"r0").await;
+    let floor = members[leader].publish(term, b"r1").await;
+    let tail = members[leader].publish(term, b"r2").await + 1;
+    let log = holder.shards.log_of(&orders).await.expect("log");
+    until("the holder has the publishes", || {
+        log.commit_offset() == tail
+    })
+    .await;
+
+    // The holder writes the trim and the leader never hears it did; the
+    // other member gets no entries. Heartbeats still reach both, so the
+    // leader keeps answering read indexes, and the trim cannot commit.
+    net.unheard.lock().insert(holder.name.to_string());
+    net.starved.lock().insert(other.name.to_string());
+    let trimming = tokio::spawn(async move { trim(&lead, &engine, term, floor, tail).await });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while log.tail_offset().await.expect("tail") <= tail {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the holder never got the trim"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let started = tokio::time::Instant::now();
+    holder
+        .broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(floor))
+        .await
+        .expect("a read at the pending floor is served");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a read at the pending floor waited for the trim"
+    );
+    let resumed = holder
+        .broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+        .await;
+    assert!(
+        matches!(
+            resumed,
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            })
+        ),
+        "the holder served a resume below an uncommitted trim: {:?}",
+        resumed.map(|resumed| resumed.history)
+    );
+    assert!(!trimming.is_finished(), "the trim committed");
+
+    net.unheard.lock().clear();
+    net.starved.lock().clear();
+    trimming.await.expect("joined").expect("trimmed");
+    until("the holder hears the commit", || {
+        log.readable_base() == floor
+    })
+    .await;
+    assert!(too_old(&holder.broker, first).await, "read below the floor");
+    stop(&members).await;
+}
+
 /// **A follower that never got the trim's entry is not read below its floor
 /// after `trim_ok`.** The leader commits the trim with the other member, so
 /// the lagging follower's log has no trim to wait for. It still hears the
@@ -389,7 +465,7 @@ async fn a_follower_without_the_trim_is_not_read_below_it_after_the_answer() {
     net.starved.lock().clear();
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     loop {
-        match lagger
+        let last = match lagger
             .broker
             .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
             .await
@@ -398,18 +474,20 @@ async fn a_follower_without_the_trim_is_not_read_below_it_after_the_answer() {
                 assert_eq!(oldest, floor);
                 break;
             }
-            Err(BrokerError::NotReadable {
-                reason: felix_broker::NotReadable::Settling,
-                ..
-            }) => {}
+            Err(
+                err @ BrokerError::NotReadable {
+                    reason: felix_broker::NotReadable::Settling,
+                    ..
+                },
+            ) => err,
             other => panic!(
                 "the lagger answered a resume below the floor with {:?}",
                 other.map(|resumed| resumed.history)
             ),
-        }
+        };
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the lagger never caught up"
+            "the lagger never caught up; last answer: {last:?}"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -450,7 +528,8 @@ async fn a_follower_leaves_offset_reads_to_the_leader_until_raft_follower_read()
                     ..
                 })
             ),
-            "the follower served {start:?} before the finalize"
+            "the follower served {start:?} before the finalize: {:?}",
+            resumed.map(|resumed| resumed.history)
         );
     }
     let page = follower
@@ -465,7 +544,21 @@ async fn a_follower_leaves_offset_reads_to_the_leader_until_raft_follower_read()
                 ..
             })
         ),
-        "the follower served a page before the finalize"
+        "the follower served a page before the finalize: {page:?}"
+    );
+    let ranged = follower
+        .broker
+        .history_to("t1", "ns", "orders", 0, StartPosition::Offset(first), tail)
+        .await;
+    assert!(
+        matches!(
+            ranged,
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::OnLeader,
+                ..
+            })
+        ),
+        "the follower served a bounded range before the finalize: {ranged:?}"
     );
     follower
         .broker

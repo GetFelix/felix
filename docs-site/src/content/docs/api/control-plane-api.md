@@ -318,8 +318,8 @@ A broker reports seventeen features: `generation_start`, `majority_ack`,
 `publisher_principal`, `fenced_caches`, `stream_incarnations`,
 `group_cursor_dependencies`, `cache_incarnations`, `head_trim`,
 `raft_head_trim`, `record_headers`, `raft_record_headers`,
-`record_generations`, `raft_atomic_commit` and `raft_follower_read`. Two more, `joint_fence` and
-`replica_election`, are never reported: an operator finalizes them once the
+`record_generations`, `raft_atomic_commit` and `raft_follower_read`. Two
+more, `joint_fence` and `replica_election`, are never reported: an operator finalizes them once the
 brokers offer the peer capabilities they need (see
 [Failover without the control plane](/deployment/failover-without-control-plane/#turning-it-on)).
 

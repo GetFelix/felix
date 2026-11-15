@@ -1593,6 +1593,56 @@ mod on_raft {
         fixture::stop(&members).await;
     }
 
+    /// **A read a follower leaves to the leader is a retryable `not_ready`
+    /// when the follower knows no leader to redirect to.**
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_follower_with_no_leader_answers_on_leader_as_not_ready() {
+        let (net, mut members, leader) = fixture::trio().await;
+        let follower = members.remove((leader + 1) % 3);
+        let ingress = fixture::ingress(&follower.shards);
+        for member in &members {
+            net.forget(member.name);
+        }
+        fixture::stop(&members).await;
+        fixture::until("the follower knows no leader", || {
+            redirected(&ingress).is_some()
+        })
+        .await;
+        let on_leader = felix_broker::BrokerError::NotReadable {
+            stream: "orders".to_string(),
+            shard: 0,
+            reason: felix_broker::NotReadable::OnLeader,
+        };
+        let refusal = subscribe_refusal(
+            on_leader,
+            Some(&ingress),
+            None,
+            ("t1", "ns", "orders", 0),
+            felix_wire::FEATURE_REDIRECT,
+        );
+        let Message::Error {
+            code,
+            retry,
+            detail,
+            ..
+        } = &refusal
+        else {
+            panic!("not an error: {refusal:?}");
+        };
+        assert_eq!(
+            *code,
+            Some(felix_wire::ErrorCode::ShardUnavailable),
+            "{refusal:?}"
+        );
+        assert_eq!(*retry, Some(felix_wire::RetryClass::Retry), "{refusal:?}");
+        assert_eq!(
+            detail.as_ref().and_then(|detail| detail.reason.as_deref()),
+            Some(felix_wire::shard_unavailable_reason::NOT_READY),
+            "{refusal:?}"
+        );
+        fixture::stop(std::slice::from_ref(&follower)).await;
+    }
+
     /// **A member that knows no leader serves no reader.** Its commit index
     /// has stopped, so a subscriber there would wait and be told nothing:
     /// a new one is refused and those registered are ended.
