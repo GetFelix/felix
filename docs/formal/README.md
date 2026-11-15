@@ -611,13 +611,13 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
-| `FelixRaftWrittenCommitsPowerCut.cfg` | the proposal to commit on a written majority on relaxed brokers: `WrittenCommits`, `CutRotates` and `Reserve`, one term, two writes, one process crash, one power cut | pass the same as `FelixRaftWrittenPowerCut.cfg` (@PC@ distinct states) |
-| `FelixRaftWrittenCommitsFailoverPowerCut.cfg` | the same at failover bounds: two terms, one write, one process crash, two power cuts | @FPC@; not registered for pull requests |
+| `FelixRaftWrittenCommitsPowerCut.cfg` | the proposal to commit on a written majority on relaxed brokers: `WrittenCommits`, `CutRotates` and `Reserve`, one term, two writes, one process crash, one power cut | pass the same as `FelixRaftWrittenPowerCut.cfg`; not finished, not registered |
+| `FelixRaftWrittenCommitsFailoverPowerCut.cfg` | the same at failover bounds: two terms, one write, one process crash, two power cuts | pass the same; not finished, not registered |
 | `FelixRaftWrittenCommitsPowerCutKeeps.cfg` | the proposal with the cut copy kept | violate `AckedNeverLost` |
 | `FelixRaftWrittenCommitsReform.cfg` | the proposal, two power cuts and the operator's re-form, padded up to the highest reservation | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `CommittedHeld`, `AckedNeverLost`, `OffsetNeverReused` (781k distinct states) |
 | `FelixRaftWrittenCommitsReformTrailing.cfg` | the same without the reservation: the re-form pads up to the trailing floor only | violate `OffsetNeverReused` |
 | `FelixRaftWrittenCommitsReformLoses.cfg` | witness: under the proposal a power cut of a majority loses a committed record | violate `NeverLosesCommitted` |
-| `FelixRaftWrittenReformOnCommit.cfg` | the design as built (commit on fsynced copies), two power cuts and a re-form with the trailing floor alone | pass the same as `FelixRaftWrittenCommitsReform.cfg` and `NeverLosesCommitted` (58k distinct states) |
+| `FelixRaftWrittenReformOnCommit.cfg` | the design as built (commit on fsynced copies), two power cuts and a re-form with the trailing floor alone | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `OffsetNeverReused`, `NeverLosesCommitted` (58k distinct states) |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
@@ -2865,8 +2865,11 @@ Two more knobs model what the proposal needs after a power cut of a majority:
   or a rotated copy kept, and the new epoch starts above it, padded up to the
   floor: the last commit index a leader reported to the control plane
   (`ReportFloor`). `FelixRaftReform.tla` has the command's steps and why the
-  floor carries a term. With one term every log is a prefix of the leader's,
-  so the longest is the base.
+  floor carries a term. Every re-form configuration here has one term, where
+  every log is a prefix of the leader's and the longest is the base. With two
+  terms and the commit on written copies, the longest kept log can hold an
+  uncommitted entry at an offset another term committed, and only the design's
+  cut to the saved commit index stops it. No configuration checks that yet.
 - `Reserve`: a copy counts or reports an entry only below an index it has
   reserved in a synced file, which a rotation keeps, and the re-form pads up
   to the highest reservation too.

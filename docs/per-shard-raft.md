@@ -3966,7 +3966,11 @@ and a relaxed copy rotates if it loses what it answered for.
 - **Lost offsets are a gap, never another record.** After the re-form, a
   reader that asks for a lost offset finds a gap, the way a lost record
   already shows, and no offset a subscriber was given is given out again
-  with a different record. That needs the reservation below.
+  with a different record. That needs the reservation below. It covers
+  committed offsets only. A `Leader` write is still acknowledged at the
+  leader's write, before any reservation counts it, so the offset a
+  publisher was told can be given out again after a majority power cut,
+  as it can be on a relaxed broker today.
 
 ### Keeping the re-form floor
 
@@ -3985,8 +3989,8 @@ reaches the control plane before its mark moves (replication-design.md,
 "The report cannot be allowed to trail the acknowledgement"). Reused
 here, that puts a control-plane round trip on every commit and stops
 delivery whenever the control plane is unreachable. Raft shards were
-built to write on without it, so the proposal keeps the hybrid's ordering
-and moves where the bound is stored:
+built to write on without it, so the proposal keeps the hybrid's rule,
+the bound is stored before the count, and stores the bound on the copy:
 
 - **Each copy reserves offsets ahead of what it counts.** A copy keeps a
   reservation, an index, in a synced file in its shard directory. Before
@@ -3996,9 +4000,10 @@ and moves where the bound is stored:
   below a reservation that is on disk.
 - **The reservation outlives the copy.** A rotation renames the old
   directory into `.kept/`, with the file. The new copy starts its own
-  reservation at the old one's, written with its new copy id by the same
-  rename, so reclaiming a kept directory never drops the highest
-  reservation.
+  reservation at the old one's. The new directory is written with the
+  reservation before it is renamed into place, so a crash leaves either
+  the old directory or a new one that carries it. A kept directory is
+  reclaimed only after the new copy's reservation is synced.
 - **The re-form pads up to the highest reservation it reads.** The new
   epoch starts at or above the stored floor and above the highest
   reservation of every copy the command reads, current or kept. Every
@@ -4023,7 +4028,9 @@ this proposal it can apply an entry its own log has not fsynced. A
 snapshot built then would be synced while the log below it is not. The
 rule: `build_snapshot` covers no entry above the log's durable bound. It
 waits for `flushed` to reach the last applied entry, forcing a flush if
-the periodic one is not due, before it stores the snapshot. So a
+the periodic one is not due, before it stores the snapshot. Under `none`
+there is no periodic flush, so the snapshot's own flush is the one that
+moves `flushed`, and the batched log mark moves only then. So a
 snapshot is always backed by synced records, `purge` (which only follows a
 snapshot) never drops an unsynced entry, and a kept directory's snapshot
 and log agree. A snapshot a follower installs from its leader is unchanged:
@@ -4094,6 +4101,15 @@ Cluster and simulator tests: the `power-loss` nemesis on a relaxed RF 3
 group, with a majority cut, must end in a closed group, and after the
 re-form a history with gaps and no reused offset; the same on `on_commit`
 must lose nothing.
+
+What the model does not check yet: a re-form after two terms under the
+proposal. There the longest kept log can hold an uncommitted entry at an
+offset another term committed on a written majority, and only the
+re-form's cut to the saved commit index ("Re-forming a group") keeps the
+base right. Every re-form configuration of `FelixRaftWritten.tla` has one
+term. Nor does it model a rotated copy coming back, so the inherited
+reservation and the reclaim of a kept directory are argued, not
+checked.
 
 ## Deferred: sleep and wake
 
