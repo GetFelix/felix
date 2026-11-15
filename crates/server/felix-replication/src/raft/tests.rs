@@ -2247,9 +2247,9 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
         cluster.net.cut.lock().insert(broker.into());
         cluster.net.muted.lock().insert(broker.into());
     }
-    // Each last heard the leader 0 to 2 s ago. 3 s on, that is past the
+    // Each last heard the leader 0 to 2 s ago. 2.3 s on, that is past the
     // openraft lease and inside the 6 s idle wait.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    tokio::time::sleep(Duration::from_millis(2300)).await;
 
     let status = leading.status();
     let last = {
@@ -2295,6 +2295,72 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
         "{follower} refused a pre-vote past its wait"
     );
     assert_eq!(following.heard(), heard, "a pre-vote restarted the timer");
+    cluster.stop().await;
+}
+
+/// A transfer to a target that never stands expires, and the old leader
+/// stands. The other follower took the transfer, so it no longer counts on
+/// that leader and grants the pre-vote at once, rather than refusing it
+/// for its whole idle wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_group_elects_soon_after_a_transfer_to_a_dead_target() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    let leading = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    eventually(|| (leading.leader_gap() > 1000).then_some(())).await;
+    let [target, other] = {
+        let mut others = BROKERS
+            .into_iter()
+            .filter(|broker| *broker != &*leader.broker);
+        [others.next().expect("b"), others.next().expect("c")]
+    };
+    cluster.net.cut.lock().insert(target.into());
+    cluster.net.muted.lock().insert(target.into());
+    let term = leading
+        .transfer(MemberId::new(target, 1))
+        .await
+        .expect("it leads");
+
+    // The old leader's pre-vote at expiry is granted by the other follower.
+    let last = {
+        use openraft::async_runtime::watch::WatchReceiver;
+        leading.raft().metrics().borrow_watched().last_applied
+    };
+    let stands = LeaderIdOf::<ShardTypes>::new(term + 1, leader.clone());
+    let pre_vote = || RaftRequest {
+        group: group(0),
+        to: MemberId::new(other, 1),
+        beat: 0,
+        report: false,
+        deadline: Duration::from_secs(1),
+        body: Request::PreVote(VoteRequest::new(
+            <VoteOf<ShardTypes> as RaftVote>::from_leader_id(stands.clone(), false),
+            last,
+        )),
+    };
+    let asked = tokio::time::Instant::now();
+    loop {
+        let answer = cluster.runtime(other).handle(pre_vote()).await;
+        if matches!(
+            answer,
+            Ok(RaftReply(super::network::Reply::Vote(ref vote))) if vote.vote_granted
+        ) {
+            break;
+        }
+        // Without the transfer forgetting the leader, the refusal lasts
+        // the 6 s idle wait from a heartbeat at most 2 s old.
+        assert!(
+            asked.elapsed() < Duration::from_secs(2),
+            "{other} refused the old leader's pre-vote after the transfer"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     cluster.stop().await;
 }
 

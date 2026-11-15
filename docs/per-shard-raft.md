@@ -1568,13 +1568,16 @@ interval), and a leader refuses one while a majority answered it within
 three idle intervals. The refusal is an ordinary not-granted answer, so
 the candidate still counts the broker as reachable, adopts a higher term
 or backs off for a longer log as openraft does, and asks again at its
-next timeout. After a leader dies, the first
-follower to time out may have to wait for the others to time out too,
-which still falls inside the 6 to 7 s above.
+next timeout. A member that takes a leadership transfer stops counting
+on the old leader, so if the target never stands, the old leader's own
+pre-vote at the transfer's expiry is granted at once. After a leader
+dies, the first follower to time out may have to wait for the others to
+time out too, which still falls inside the 6 to 7 s above.
 
 > `crates/server/felix-replication/src/raft/tests.rs`,
-> `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return` and
-> `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease`.
+> `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return`,
+> `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease` and
+> `an_idle_group_elects_soon_after_a_transfer_to_a_dead_target`.
 
 ### Many groups electing at once
 

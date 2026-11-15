@@ -416,6 +416,13 @@ impl Pace {
         self.led.store(self.timers.now(), Ordering::Relaxed);
     }
 
+    /// The leader handed its leadership on: this member counts on it no
+    /// longer. If the target never stands, the old leader stands once the
+    /// transfer expires, and must not be refused for a leader that is gone.
+    pub(super) fn forget_leader(&self) {
+        self.led.store(NEVER, Ordering::Relaxed);
+    }
+
     /// Whether this member, as a follower, still counts on the leader it
     /// last took an append from: it would not stand itself yet.
     pub(super) fn follows_live_leader(&self, now: u64) -> bool {
@@ -1047,6 +1054,7 @@ impl Group {
             }
             Request::TransferLeader(_) => {
                 self.hold.vote_may_change(None);
+                self.pace.forget_leader();
                 false
             }
             Request::Snapshot { .. } | Request::Written { .. } => false,
