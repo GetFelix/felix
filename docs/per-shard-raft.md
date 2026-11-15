@@ -3823,6 +3823,46 @@ A broker is to refuse a delete told at an incarnation below the highest it
 has seen, its acknowledgement or any membership in the copy's log
 (`copy_delete_is_void`). That check lands with the delete itself.
 
+#### Offset floor
+
+The control plane keeps, on each Raft shard's record, the highest committed
+log id its leaders reported: `raft_floor`, with the stream `incarnation`, the
+reform `epoch`, and the `index` and `term` of the commit. The re-form uses it
+("Offsets are not reused") to start a new epoch above every offset that was
+acknowledged, and to tell whether a group ever committed anything.
+
+- **Every leader reports once a second.** Each broker batches the commit log
+  id of every group it leads into one `POST /v1/nodes/{node_id}/raft-floors`,
+  so the control plane makes one metadata write per broker per second. A
+  request carries at most 1024 entries; the rest go on the next tick.
+- **An entry is owed until a 200 answers it.** A group's entry stays pending
+  until a 200 answers a batch that carried it. A 404, 409, 503 or any other
+  error keeps it pending. So the first accepted report after level 38 goes
+  live covers every group the broker leads, idle ones included. A group that
+  stops leading on the broker is dropped, and is owed again if it leads there
+  again.
+- **Cache groups are reported too.** The control plane skips a shard it does
+  not keep a floor for, a cache shard or one not on Raft, without failing the
+  batch.
+- **It only rises.** A report raises the floor when its index is higher and
+  its term is not lower. An equal or lower index changes nothing. A higher
+  index at a lower term contradicts the floor and is skipped.
+- **It is kept per incarnation and epoch.** A report for another stream
+  incarnation, or for a reform epoch other than the shard's
+  (`placed.epoch`), is skipped, so a late report from an old group never
+  sets the new group's floor. A floor from an earlier epoch is replaced by
+  the first report of the current one. A write at the same stream
+  incarnation keeps the floor, a recreated stream starts without one, and
+  an export and import carry it.
+- **Each entry is decided on its own.** A skipped entry is not counted and
+  the rest of the batch still applies. The answer is `raised`, the number of
+  floors that moved.
+
+The floor is metadata level 38. Below it every report is refused with 409,
+by the store and again by the leader that would append it. Nothing reads
+the floor yet: the re-form's refusal to run a first form for an incarnation
+that has a floor is not built.
+
 ### Shards with one replica
 
 An RF 1 shard runs a group with one voter. It elects itself and commits on

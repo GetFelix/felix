@@ -802,6 +802,7 @@ pub(super) fn move_step<'a>(
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         };
         return Decision::Move(
             MoveStep::CutOver {
@@ -1182,6 +1183,7 @@ pub(super) fn start(
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.

@@ -412,6 +412,8 @@ fn routed(
     // Brokers read copy ids from the target's members, so the record's
     // own are not sent: they would go out before the gate opens.
     assignment.raft_copy_ids.clear();
+    // No broker reads the floor yet.
+    assignment.raft_floor = None;
     let target = assignment
         .raft_target
         .take()
