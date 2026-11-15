@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794708627473,
+  "lastUpdate": 1794709037071,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73128,6 +73128,72 @@ window.BENCHMARK_DATA = {
             "range": "295.63",
             "unit": "us",
             "extra": "trials: 5\nmedian: 568.00\nmean: 687.40\nstdev: 295.63\ncv: 43.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3d33554e469420242605472dc2f48dbf61c3eda",
+          "message": "fix(raft): forgotten cut batches travel with a stream snapshot (#2562) (#2572)\n\n* fix(raft): forgotten cut batches travel with a stream snapshot (#2562)\n\nA member that installs a stream shard's snapshot holds no record below it,\nso it could not know a cut idempotent batch its sender refuses by name.\nOnce leading it took that producer's sequence 0 as new and wrote the start\nof the batch a second time.\n\nThe snapshot's data is now the cut batches a log starting right after its\nlast entry has to refuse (DiskLog::forgotten_cuts_from), and an install\nsaves them to the member's producers.forgotten before the snapshot is\nstored (DiskLog::remember_forgotten_cuts). Empty data carries none, so a\nswitch's base snapshot and older snapshots still read.\n\nFelixRaftBatch.tla already had an install hand over the table snapshot.\nThe new InstallKeepsTable knob drops that, and\nFelixRaftBatchInstallWithoutTable.cfg violates BatchExactlyOnce.\n\n* fix(raft): read carried cut batches from the records below the snapshot (#2562)\n\nReview: the live table holds records above the snapshot's last entry, which\nmay be uncommitted and cut back, so the carried list was built from them.\nIt is now rebuilt from the records below the base. Docs, changelog and the\nspec header say what is carried and that stream installs are still refused.\n\n* fix(raft): a stream snapshot carries only what committed records say (#2562)\n\nThe carried set was rebuilt with the sender's saved forgotten file and\nproducer snapshot, which hold refusals only that member has: unfinished\nbatches a reset dropped after an install, and cut batches evicted past\nMAX_CUTS above the snapshot. Two senders could hand on different sets.\n\nThe table now keeps a carried subset (purges, installs, and evictions once\na purge passes their records), saved in producers.forgotten. The snapshot\ndata is that set plus a fresh replay of the log from its base to the\nsnapshot, read a chunk at a time so appends are not held off. A reset to\nthe base of an installed snapshot drops the log's own unfinished batches.\nProducer snapshot version 5 keeps evicted and carried entries.\n\nSpec-Unaffected: FelixRaftBatch's snap is already the table derived from\nthe committed log below the base; the model has no member-local refusals,\nso InstallKeepsTable needs no change.\n\n* fix(raft): a reset redone after a crash still follows the install (#2562)\n\nThe reset after an install cleared the installed base in the same save\nthat recorded what it forgot, before the log was dropped. A crash in\nbetween left the old records, the reopen rebuilt the member's own cut\nbatches from them, and the redone reset carried them as a no-install\nreset would. The base now stays saved until the drop is durable.\n\nUpgraded Raft logs take the safe side: a producers.forgotten file from\nbefore the carried set carries every entry in it, and a producer\nsnapshot older than version 5, which does not say which cuts were\nevicted, is rebuilt from the log.\n\nSpec-Unaffected: steady state only. FelixRaftBatch has no crash between\nsaving reset state and dropping the log; modelling it is #2574.\n\n* fix(raft): the open finishes a reset an install's purge left (#2562)\n\nAn install's purge past the tail stores raft-purged and then resets the\nlog. A crash in between kept the records below the id, and nothing redid\nthe reset when the log ended at the snapshot base: the purge saw the id\non disk and returned, and the next append there skips the reset. The\nsnapshot then read those records, which the leader may never have had,\nand members carried different cut batches.\n\nThe open now finishes that reset before the log serves, when an install\nat the purged id's next index is still pending and the log ends at or\nbelow it. Once done the condition is false, so a second open does\nnothing. Records below a purged id with no install pending are left,\nsince they are committed and a switched log keeps them on purpose.\n\nSpec-Unaffected: the open-time redo is a crash step FelixRaftBatch does\nnot model; modelling the crash between saving reset state and dropping\nthe log is #2574.\n\n* fix(storage): a reset removes the derived snapshots before it drops records\n\nA crash after reset_to moved the base is not redone at open, so a producer\nsnapshot saved by a roll at the old tail (as_of == new base) passed for the\nnew log's and carried the old log's cut batches. The reset now removes the\nproducer snapshot, head file and key index snapshot before the drop; all\nthree are rebuilt from the records. Adds a crash point after the drop and a\ntest for that window.\n\nThe open-time redo now runs before the periodic syncer starts, so nothing\nelse has the log while it runs.\n\nRefs #2562\nSpec-Unaffected: the TLA crash point is tracked in #2574.",
+          "timestamp": "2026-11-15T02:08:14Z",
+          "tree_id": "b41d193fa8594fa69f40f8eefb9cb40c2a135908",
+          "url": "https://github.com/GetFelix/felix/commit/f3d33554e469420242605472dc2f48dbf61c3eda"
+        },
+        "date": 1794709029572,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "5.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 66.20\nstdev: 5.36\ncv: 8.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 118,
+            "range": "5.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 115.80\nstdev: 5.54\ncv: 4.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 150,
+            "range": "119.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 204.20\nstdev: 119.88\ncv: 58.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.40\nstdev: 0.55\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 190,
+            "range": "18.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 189.60\nstdev: 18.89\ncv: 9.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 502,
+            "range": "806.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 502.00\nmean: 915.60\nstdev: 806.92\ncv: 88.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
