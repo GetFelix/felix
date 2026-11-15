@@ -678,6 +678,10 @@ pub struct RaftCopyIdRequest {
     /// The id of the copy the broker holds for the shard, the member id it
     /// votes under.
     pub copy_id: u64,
+    /// The reporting process's own incarnation, from its last registration.
+    /// A report from an earlier process is refused, so a delayed retry of a
+    /// wiped copy's old id cannot replace the id its successor reported.
+    pub incarnation: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

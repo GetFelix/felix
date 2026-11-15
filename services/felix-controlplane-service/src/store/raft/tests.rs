@@ -4726,10 +4726,32 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
     crate::store::contract::shards::on_streams_of_its_own(shared, async {
         let shard = crate::store::contract::raft_targets::switched(shared).await;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let refused = shared.record_raft_copy_id(&shard.key, "broker-x", 2).await;
+        let process = shared
+            .get_node("broker-x")
+            .await
+            .expect("node")
+            .status
+            .incarnation;
+        let refused = shared
+            .record_raft_copy_id(&shard.key, "broker-x", process, 2)
+            .await;
         assert!(
             matches!(&refused, Err(StoreError::Conflict(_))),
             "proposed below level 36: {refused:?}"
+        );
+        // Raw bytes through the peer route skip the store's check; the
+        // leader refuses them too.
+        let raw = crate::store::raft::command::encode_command(&MetaCommand::RecordRaftCopyId {
+            key: shard.key.clone(),
+            node_id: "broker-x".to_string(),
+            node_incarnation: process,
+            copy_id: 2,
+        });
+        let answer = store.handle.write(raw).await.expect("answered");
+        let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
+        assert!(
+            matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 36")),
+            "{result:?}"
         );
         assert_eq!(
             shared
@@ -4743,7 +4765,10 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
 
         version.store(RAFT_TARGET_LEVEL, std::sync::atomic::Ordering::SeqCst);
         loop {
-            match shared.record_raft_copy_id(&shard.key, "broker-x", 2).await {
+            match shared
+                .record_raft_copy_id(&shard.key, "broker-x", process, 2)
+                .await
+            {
                 Ok(true) => break,
                 other => assert!(
                     std::time::Instant::now() < deadline,

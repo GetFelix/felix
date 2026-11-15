@@ -16,6 +16,7 @@ pub(crate) async fn run_raft_target_contract(store: Arc<dyn ControlPlaneStore>) 
         copy_ids_write_the_target_and_only_a_change_moves_it(store).await;
         only_a_broker_in_a_raft_shards_set_reports(store).await;
         reports_of_other_kinds_keep_the_counter(store).await;
+        a_report_from_an_earlier_process_is_refused(store).await;
         the_target_waits_for_every_registered_broker(store).await;
     })
     .await;
@@ -33,10 +34,18 @@ pub(crate) async fn switched(store: &dyn ControlPlaneStore) -> ShardAssignment {
 }
 
 async fn report(store: &dyn ControlPlaneStore, a: &ShardAssignment, node: &str, id: u64) -> bool {
-    store
-        .record_raft_copy_id(&a.key, node, id)
-        .await
-        .expect("copy id")
+    try_report(store, a, node, id).await.expect("copy id")
+}
+
+/// A report from the process `node` is registered as now.
+async fn try_report(
+    store: &dyn ControlPlaneStore,
+    a: &ShardAssignment,
+    node: &str,
+    id: u64,
+) -> Result<bool, StoreError> {
+    let process = store.get_node(node).await.expect("node").status.incarnation;
+    store.record_raft_copy_id(&a.key, node, process, id).await
 }
 
 fn counter(a: &ShardAssignment) -> Option<u64> {
@@ -73,18 +82,51 @@ async fn copy_ids_write_the_target_and_only_a_change_moves_it(store: &dyn Contro
 async fn only_a_broker_in_a_raft_shards_set_reports(store: &dyn ControlPlaneStore) {
     let shard = switched(store).await;
     let err = store
-        .record_raft_copy_id(&shard.key, "broker-z", 1)
+        .record_raft_copy_id(&shard.key, "broker-z", 1, 1)
         .await
         .expect_err("not in the set");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
 
     let hybrid = sealed(store, 1).await;
-    let err = store
-        .record_raft_copy_id(&hybrid.key, "broker-x", 1)
+    let err = try_report(store, &hybrid, "broker-x", 1)
         .await
         .expect_err("not switched");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
     assert!(read(store, &hybrid.key).await.raft_copy_ids.is_empty());
+    clear(store).await;
+}
+
+/// A wiped copy's old id, retried late by the process before the wipe,
+/// must not replace the id its successor reported.
+async fn a_report_from_an_earlier_process_is_refused(store: &dyn ControlPlaneStore) {
+    let shard = switched(store).await;
+    let before = store
+        .get_node("broker-y")
+        .await
+        .expect("node")
+        .status
+        .incarnation;
+    store
+        .register_node(super::nodes::node("broker-y", 7501))
+        .await
+        .expect("register again");
+    let after = store
+        .get_node("broker-y")
+        .await
+        .expect("node")
+        .status
+        .incarnation;
+    assert!(after > before, "{before} -> {after}");
+    assert!(report(store, &shard, "broker-y", 42).await);
+    let err = store
+        .record_raft_copy_id(&shard.key, "broker-y", before, 41)
+        .await
+        .expect_err("an earlier process");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert_eq!(
+        read(store, &shard.key).await.raft_copy_ids.get("broker-y"),
+        Some(&42)
+    );
     clear(store).await;
 }
 
@@ -131,8 +173,7 @@ async fn the_target_waits_for_every_registered_broker(store: &dyn ControlPlaneSt
 
     // An id that completes no target is kept.
     assert!(report(store, &shard, "broker-x", 31).await);
-    let err = store
-        .record_raft_copy_id(&shard.key, "broker-y", 32)
+    let err = try_report(store, &shard, "broker-y", 32)
         .await
         .expect_err("not acknowledged");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
@@ -150,8 +191,7 @@ async fn the_target_waits_for_every_registered_broker(store: &dyn ControlPlaneSt
         .expect("left");
     assert!(ack("broker-x", current).await);
     assert!(ack("broker-y", current).await);
-    let err = store
-        .record_raft_copy_id(&shard.key, "broker-y", 32)
+    let err = try_report(store, &shard, "broker-y", 32)
         .await
         .expect_err("broker-z has not acknowledged");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");

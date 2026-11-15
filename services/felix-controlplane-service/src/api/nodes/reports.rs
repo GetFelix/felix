@@ -274,14 +274,16 @@ pub(crate) async fn report_replica_status(
 /// Record the Raft copy id a broker holds for a shard that switched to Raft.
 ///
 /// Once every broker in the shard's set has reported one, the control plane
-/// writes the shard's target from them, and writes it again whenever an id
-/// or the set changes. A broker reports only its own copy.
+/// writes the shard's target from them, and writes it again when a broker
+/// reports a new id. A change of the set does not rewrite the target yet.
+/// A broker reports only its own copy, from the process it registered.
 ///
 /// # Errors
 /// - 404 when the shard has no assignment.
 /// - 409 when the shard has not switched to Raft, the node is not in its
-///   set, the id would change the target while a registered broker has not
-///   acknowledged the placement incarnation, or a control-plane member is
+///   set, `incarnation` is not the node's registered one, the id would
+///   change the target while a registered broker has not acknowledged the
+///   placement incarnation, or a control-plane member is
 ///   below metadata version 36.
 pub(crate) async fn report_raft_copy_id(
     State(state): State<AppState>,
@@ -292,7 +294,7 @@ pub(crate) async fn report_raft_copy_id(
     require_node_manage(&state, &headers, &node_id).await?;
     match state
         .store
-        .record_raft_copy_id(&request.key, &node_id, request.copy_id)
+        .record_raft_copy_id(&request.key, &node_id, request.incarnation, request.copy_id)
         .await
     {
         Ok(changed) => {

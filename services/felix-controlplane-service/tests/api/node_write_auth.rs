@@ -634,3 +634,57 @@ async fn by_round_is_kept_only_from_the_current_incarnation() {
     assert!(held.by_round, "{held:?}");
     assert_eq!(held.leader_incarnation, Some(current));
 }
+
+fn copy_id_report(stream: &str) -> serde_json::Value {
+    serde_json::json!({
+        "key": {
+            "tenant_id": "t1",
+            "namespace": "ns",
+            "stream": stream,
+            "shard": 0,
+            "kind": "stream",
+        },
+        "copy_id": 7,
+        "incarnation": 0,
+    })
+}
+
+/// A copy id names the Raft member a broker votes as, so only the broker
+/// itself may report one. Past that, a missing shard is 404 and one the
+/// store refuses (here, a shard still on hybrid replication) is 409.
+#[tokio::test]
+async fn a_broker_reports_only_its_own_raft_copy_id() {
+    let (app, store, keys) = setup().await;
+    seed_node(&store, "broker-a", 7001).await;
+    seed_node(&store, "broker-b", 7002).await;
+    seed_shard(&store, "broker-b", 0).await;
+
+    let as_a = token(&keys, vec!["node.manage:node:broker-a"]);
+    let response = app
+        .clone()
+        .oneshot(post(
+            "/v1/nodes/broker-b/raft-copy-id",
+            Some(&as_a),
+            copy_id_report("orders"),
+        ))
+        .await
+        .expect("report");
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    let as_b = token(&keys, vec!["node.manage:node:broker-b"]);
+    for (stream, status) in [
+        ("missing", StatusCode::NOT_FOUND),
+        ("orders", StatusCode::CONFLICT),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(post(
+                "/v1/nodes/broker-b/raft-copy-id",
+                Some(&as_b),
+                copy_id_report(stream),
+            ))
+            .await
+            .expect("report");
+        assert_eq!(response.status(), status, "{stream}");
+    }
+}

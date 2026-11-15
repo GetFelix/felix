@@ -118,6 +118,7 @@ pub(super) async fn record_raft_copy_id(
     store: &InMemoryStore,
     key: &ShardKey,
     node_id: &str,
+    node_incarnation: u64,
     copy_id: u64,
 ) -> StoreResult<bool> {
     // Nodes, then shards, then acknowledgements, the order a node delete
@@ -137,6 +138,18 @@ pub(super) async fn record_raft_copy_id(
     if existing.leader != node_id && !existing.replicas.iter().any(|r| r == node_id) {
         return Err(StoreError::Conflict(format!(
             "{node_id} is not in the shard's set"
+        )));
+    }
+    // Under the nodes lock, so no registration lands between this and the
+    // write: a wiped copy's old id, retried late, never replaces the id its
+    // successor process reported.
+    if nodes
+        .records
+        .get(node_id)
+        .is_none_or(|node| node.status.incarnation != node_incarnation)
+    {
+        return Err(StoreError::Conflict(format!(
+            "the report is not from {node_id}'s registered process"
         )));
     }
     if existing.raft_copy_ids.get(node_id) == Some(&copy_id) {
@@ -179,9 +192,10 @@ impl InMemoryStore {
         &self,
         key: &ShardKey,
         node_id: &str,
+        node_incarnation: u64,
         copy_id: u64,
     ) -> StoreResult<bool> {
-        record_raft_copy_id(self, key, node_id, copy_id).await
+        record_raft_copy_id(self, key, node_id, node_incarnation, copy_id).await
     }
 
     pub(crate) async fn apply_accept_seal_report(

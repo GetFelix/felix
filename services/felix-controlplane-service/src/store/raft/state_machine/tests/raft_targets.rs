@@ -4,10 +4,24 @@ use super::*;
 use crate::store::contract::raft_targets::switched;
 use crate::store::contract::shards::on_streams_of_its_own;
 
-fn copy_id(key: &crate::model::ShardKey, node: &str, copy_id: u64) -> MetaCommand {
+/// A report from the process `node` is registered as on `machine`.
+async fn copy_id(
+    machine: &MetadataStateMachine,
+    key: &crate::model::ShardKey,
+    node: &str,
+    copy_id: u64,
+) -> MetaCommand {
+    let node_incarnation = machine
+        .store()
+        .get_node(node)
+        .await
+        .expect("node")
+        .status
+        .incarnation;
     MetaCommand::RecordRaftCopyId {
         key: key.clone(),
         node_id: node.to_string(),
+        node_incarnation,
         copy_id,
     }
 }
@@ -33,7 +47,7 @@ async fn a_member_built_from_the_log_continues_the_counter() {
         let shard = switched(store).await;
         for (node, id) in [("broker-x", 1), ("broker-y", 2)] {
             original
-                .dispatch(copy_id(&shard.key, node, id))
+                .dispatch(copy_id(&original, &shard.key, node, id).await)
                 .await
                 .expect("copy id");
         }
@@ -42,7 +56,7 @@ async fn a_member_built_from_the_log_continues_the_counter() {
         let taken_over = machine();
         taken_over.restore(&original.snapshot().await).await;
         taken_over
-            .dispatch(copy_id(&shard.key, "broker-y", 3))
+            .dispatch(copy_id(&taken_over, &shard.key, "broker-y", 3).await)
             .await
             .expect("new copy id");
         assert_eq!(counter(&taken_over, &shard.key).await, Some(2));
@@ -62,7 +76,7 @@ async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
         let shard = switched(store).await;
         for (node, id) in [("broker-x", 1), ("broker-y", 2)] {
             machine
-                .dispatch(copy_id(&shard.key, node, id))
+                .dispatch(copy_id(&machine, &shard.key, node, id).await)
                 .await
                 .expect("copy id");
         }
@@ -72,7 +86,7 @@ async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
             .await
             .expect("export");
         machine
-            .dispatch(copy_id(&shard.key, "broker-y", 3))
+            .dispatch(copy_id(&machine, &shard.key, "broker-y", 3).await)
             .await
             .expect("copy id");
         assert_eq!(counter(&machine, &shard.key).await, Some(2));
@@ -92,7 +106,9 @@ async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
         );
         assert_eq!(counter(&machine, &shard.key).await, Some(1));
 
-        let refused = machine.dispatch(copy_id(&shard.key, "broker-y", 4)).await;
+        let refused = machine
+            .dispatch(copy_id(&machine, &shard.key, "broker-y", 4).await)
+            .await;
         assert!(
             matches!(refused, Err(MetaError::Conflict(_))),
             "a target went out before the brokers acknowledged the restore: {refused:?}"

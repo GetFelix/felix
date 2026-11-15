@@ -1520,6 +1520,7 @@
 36 record_raft_copy_id.key.stream
 36 record_raft_copy_id.key.tenant_id
 36 record_raft_copy_id.node_id
+36 record_raft_copy_id.node_incarnation
 36 snapshot.state.shard_changes.items[].assignment.raft_copy_ids
 36 snapshot.state.shard_changes.items[].assignment.raft_copy_ids.*
 36 snapshot.state.shard_changes.items[].assignment.raft_target

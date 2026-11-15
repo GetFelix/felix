@@ -520,6 +520,7 @@ pub enum MetaCommand {
     RecordRaftCopyId {
         key: ShardKey,
         node_id: String,
+        node_incarnation: u64,
         copy_id: u64,
     },
     /// Order the seal that starts a shard's switch to Raft
@@ -972,15 +973,22 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// A switch command (`seal_shard`, `accept_seal_report`, `give_up_seal`) is
 /// refused below its level and otherwise left as it is: a member that
 /// could not apply it would keep a hybrid shard where the others hold a
-/// sealed or switched one.
+/// sealed or switched one. A Raft copy id report (`record_raft_copy_id`,
+/// level 36) is refused the same way: a member that could not apply it would
+/// later, once elected, count targets for a different member set.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     let op = op_of(command);
-    if op.as_deref().is_some_and(|op| SWITCH_OPS.contains(&op)) {
+    if let Some(gated) = op.as_deref().filter(|op| is_gated(op)) {
+        let what = if gated == COPY_ID_OP {
+            "a Raft copy id report"
+        } else {
+            "a shard's switch to Raft"
+        };
         // One this build cannot decode is left for the apply to answer.
         return match decode_command_with_level(command) {
             Ok((_, needs)) if needs > level => {
                 Err(encode_result(&Err(MetaError::Conflict(format!(
-                    "a shard's switch to Raft needs every control-plane member at metadata \
+                    "{what} needs every control-plane member at metadata \
                      version {needs}, but the group is at {level}; {}",
                     crate::store::UPGRADE_HINT
                 )))))
@@ -1017,14 +1025,22 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     Ok(settled)
 }
 
-/// Whether `command` is an import or a switch command, read without
-/// decoding what it carries.
+/// Whether `command` is an import, a switch command or a copy id report,
+/// read without decoding what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
-    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || SWITCH_OPS.contains(&op.as_str()))
+    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || is_gated(&op))
 }
 
 /// The commands of a shard's switch to Raft, by op.
 const SWITCH_OPS: [&str; 3] = ["seal_shard", "accept_seal_report", "give_up_seal"];
+
+/// A broker's Raft copy id report, by op.
+const COPY_ID_OP: &str = "record_raft_copy_id";
+
+/// Whether `op` is refused below its level and otherwise appended as sent.
+fn is_gated(op: &str) -> bool {
+    SWITCH_OPS.contains(&op) || op == COPY_ID_OP
+}
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.
 fn op_of(command: &[u8]) -> Option<String> {

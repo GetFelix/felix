@@ -1129,6 +1129,7 @@ impl ControlPlaneStore for RaftStore {
         &self,
         key: &ShardKey,
         node_id: &str,
+        node_incarnation: u64,
         copy_id: u64,
     ) -> StoreResult<bool> {
         if self
@@ -1145,6 +1146,7 @@ impl ControlPlaneStore for RaftStore {
             .propose(MetaCommand::RecordRaftCopyId {
                 key: key.clone(),
                 node_id: node_id.to_string(),
+                node_incarnation,
                 copy_id,
             })
             .await?
@@ -1559,7 +1561,9 @@ impl ControlPlaneStore for RaftStore {
     }
 
     /// As [`Self::placement_acked_by`]: false until every member is known
-    /// to be at level 35.
+    /// to be at level 35. That level is enough: the acks and incarnation
+    /// read here are level-35 records every such member holds alike, and a
+    /// level-36 write that acts on the answer carries its own level gate.
     async fn placement_acked_by_all(&self) -> StoreResult<bool> {
         if self
             .handle

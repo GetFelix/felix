@@ -317,12 +317,13 @@ fn a_shard_switch_needs_level_34() {
         sealer: "b".to_string(),
     };
     let give_up = MetaCommand::GiveUpSeal {
-        key,
+        key: key.clone(),
         generation: 1,
         sealer: "b".to_string(),
     };
     // SWITCH_OPS is matched by name, so a renamed command would slip past
     // the level check without this.
+    let copy_key = key;
     let ops: Vec<String> = [&seal, &report, &give_up]
         .into_iter()
         .map(|command| op_of(&encode_command(command)).expect("op"))
@@ -343,6 +344,17 @@ fn a_shard_switch_needs_level_34() {
         }
     }
     const { assert!(METADATA_VERSION >= 34) };
+    let copy_id = encode_command(&MetaCommand::RecordRaftCopyId {
+        key: copy_key,
+        node_id: "b".to_string(),
+        node_incarnation: 1,
+        copy_id: 1,
+    });
+    // Matched by name too.
+    assert_eq!(op_of(&copy_id).as_deref(), Some(COPY_ID_OP));
+    assert!(depends_on_level(&copy_id));
+    assert!(settle_for_level(&copy_id, 35).is_err());
+    assert_eq!(settle_for_level(&copy_id, 36), Ok(None));
 }
 
 /// **`joint_fence` is finalized only where a refusal report is kept.** A
