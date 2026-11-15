@@ -155,10 +155,11 @@ carries the control plane's own `placement_incarnation`, left out while it
 is 0; every import raises it (`docs/per-shard-raft.md`, "The restore
 incarnation"). The broker writes the value it hears to disk before a later
 heartbeat reports it. The control plane keeps the highest value per broker
-process, heard only from the node's current incarnation, and another
+process, only from the incarnation the node record holds, and another
 process replaces it even with a lower one. A value above the control
-plane's own raises the incarnation past it. It needs
-every member at metadata level 35; below that nothing is kept.
+plane's own raises the incarnation past it, unless it is more than 2^20
+above, which is refused. It needs every member at metadata level 35; below
+that nothing is kept.
 
 Four rules, each of which exists for a reason:
 

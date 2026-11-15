@@ -3190,19 +3190,31 @@ what stops that.
   to the same value. Importing the same backup twice, or an older one, never
   reuses an incarnation. The raise is metadata level 35: below it an import
   keeps the backup's value, and an export carrying an incarnation is refused.
+  An import that would raise past `u64::MAX` is refused rather than reuse it.
 - **Every broker acknowledges it.** Each heartbeat answer carries the
   incarnation, left out while it is 0. A broker with a Raft data root open
   writes it to `raft-placement-incarnation` in the root and syncs it before
   its next heartbeat reports it. The file never goes back. The control
-  plane keeps the highest acknowledgement each broker process reported,
-  heard only from the node's current process. Another process replaces it
-  whatever it reports, so a broker whose root was wiped is not counted at
-  its predecessor's value.
+  plane keeps the highest acknowledgement each broker process reported. The
+  apply keeps one only from the process the node record holds, so a late
+  beat of an earlier process changes nothing. Another process replaces it
+  whatever it reports, and only the record's process counts, so a broker
+  that registered again (its root perhaps wiped) is not counted at its
+  predecessor's value.
 - **An acknowledgement above the incarnation raises it.** A broker can hold
   more than the control plane issued, when the control plane was rebuilt
   from a backup older than its last restore. Recording that acknowledgement
   raises the incarnation one above it, so every broker has to acknowledge
-  again before anything goes out.
+  again before anything goes out. One more than `MAX_PLACEMENT_ACK_AHEAD`
+  (2^20) above is refused and logged: the gap counts restores the backup
+  missed, and the bound keeps a broker from walking the incarnation to its
+  limit.
+- **A broker a restore rewound has to restart.** A restore puts back each
+  node record's incarnation as the backup held it. A broker that registered
+  after the backup keeps beating under its newer incarnation, which the
+  control plane accepts, but its acknowledgements are not from the record's
+  process and are dropped. Nothing tells it to register again yet, so the
+  gate stays shut until an operator restarts it.
 - **Nothing goes out until every broker has.** `placement_acked_by` holds
   only while every broker named has acknowledged exactly the current
   incarnation (the model's `AllAcked`). A broker that never reported counts
