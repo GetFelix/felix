@@ -4,6 +4,8 @@ use super::*;
 use crate::shards::ShardKind;
 use crate::test_support::fake_link::FakeLink;
 
+mod control_plane;
+
 fn key(stream: &str) -> ShardKey {
     ShardKey {
         tenant_id: "t1".to_string(),
