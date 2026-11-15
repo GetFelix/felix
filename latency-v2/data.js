@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794777222618,
+  "lastUpdate": 1794779512485,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75042,6 +75042,72 @@ window.BENCHMARK_DATA = {
             "range": "759.84",
             "unit": "us",
             "extra": "trials: 5\nmedian: 319.00\nmean: 669.60\nstdev: 759.84\ncv: 113.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "91b6b6508c306662a7cc78be40943de76bcff868",
+          "message": "feat(raft): enforce stream retention on Raft shards with leader head trims (#2602) (#2635)\n\n* feat(raft): enforce stream retention on Raft shards with leader head trims (#2602)\n\nA Raft log takes no retention bounds, since only a purge may drop its\nentries, so neither a stream's control-plane retention nor the\nbroker-wide bounds were enforced on Raft shards. The shard's leader now\nreads the stream's bounds on the retention timer, asks the log where a\nsweep would start it (DiskLog::retention_cut, a whole-segment boundary,\nnothing deleted), and proposes the existing head-trim record to that\noffset when it is past the floor. Followers apply the floor at the\ntrim's entry and never evaluate the bounds themselves.\n\nRecords are hidden on every member; no disk is freed until stream\nshards can purge, which needs a snapshot format change behind a new\nfleet feature (raft_stream_purge). Raft logs also no longer offload.\n\nSpec-Unaffected: the leader proposes the existing head-trim entry, which FelixHeadTrim and the Raft trim path already allow at any time from any client; no new entry kind, term, fence or apply rule.\n\n* fix(raft): retention trims a busy shard, skips hidden segments, needs a timer (#2602)\n\nA retention trim conditional on the tail lost to any publish landing\nfirst, so on a busy shard it was refused, or stored as a blank, on every\npass. Retention now proposes its trim with no expected offset\n(Broker::propose_trim_below, RaftEngine::trim_below). The cut is a\nsealed segment boundary at or below the tail the leader read, and the\nleader appends the entry after every entry it holds, so the floor is\nnever past the trim's own index; atomic commits are still checked below\nthat tail. Raft's proposal shape check takes a trim without an expected\noffset; the entry's wire and log form is unchanged.\n\nA pass that cannot trim counts felix_broker_raft_retention_trims_refused_total\nand warns when its reason changes; one deposed mid-pass says nothing.\nThe retention cut takes segments already below the floor without\nreading them, so an age bound does not reread every hidden segment on\neach tick. A zero retention interval starts no timer instead of\npanicking.\n\nSpec-Unaffected: the entry is the ENTRY_TRIM a conditional trim that landed becomes, with its floor at or below its own index as FelixHeadTrim requires (f <= Len + 1); FelixHeadTrim's Unconditional knob breaks StaleTrimRefused, a lease holder's fencing, and a retention trim is the server's own, carries no holder epoch and fences nothing.\n\n* test(raft): deposed-mid-pass and a deterministic publish race for retention (#2602)\n\n* docs(raft): cite the renamed retention race test (#2602)",
+          "timestamp": "2026-11-15T21:45:56Z",
+          "tree_id": "8fd43601d566b1648b0c1a73df48fed810cf0dad",
+          "url": "https://github.com/GetFelix/felix/commit/91b6b6508c306662a7cc78be40943de76bcff868"
+        },
+        "date": 1794779499132,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 151.80\nstdev: 2.17\ncv: 1.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "11.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 215.20\nstdev: 11.63\ncv: 5.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 271,
+            "range": "911.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 271.00\nmean: 786.80\nstdev: 911.31\ncv: 115.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 199.40\nstdev: 0.89\ncv: 0.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 390,
+            "range": "45.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 390.00\nmean: 406.80\nstdev: 45.33\ncv: 11.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 536,
+            "range": "1236.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 536.00\nmean: 1085.40\nstdev: 1236.18\ncv: 113.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
