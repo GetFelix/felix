@@ -1444,7 +1444,7 @@ impl DurableShardStore {
         })
         .await;
         match opened {
-            Ok(log) => log.map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            Ok(log) => log.map_err(|err| anyhow::Error::new(err).context("open shard log")),
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
             Err(err) => Err(anyhow::anyhow!("open shard log: {err}")),
         }
@@ -1463,13 +1463,13 @@ impl DurableShardStore {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
                 };
-                Ok(open_broker_log(
+                open_broker_log(
                     &starts.broker,
                     felix_broker::LogKind::Cache,
                     key,
                     incarnation,
                 )
-                .await)
+                .await
             }
         }
     }
@@ -1505,7 +1505,7 @@ impl DurableShardStore {
             return Ok(());
         }
         for kind in GROUP_LOGS {
-            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await else {
+            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await? else {
                 anyhow::bail!("open the shard's {kind:?} log");
             };
             if begins_here {
@@ -1536,7 +1536,7 @@ impl DurableShardStore {
             felix_broker::LogKind::Counters,
         ] {
             // No counter store configured means no counter log to mark.
-            let Some(log) = open_broker_log(broker, kind, key, incarnation).await else {
+            let Some(log) = open_broker_log(broker, kind, key, incarnation).await? else {
                 if kind == felix_broker::LogKind::Cache {
                     anyhow::bail!("open cache shard log");
                 }
@@ -1981,6 +1981,27 @@ async fn apply_open(
                 incarnation,
             });
         }
+        // Out of file descriptors: nothing is wrong with the shard, and
+        // failing it would keep it closed until its next move. It stays
+        // opening, so it does not serve, and goes again on a later pass.
+        Err(err) if out_of_files(&err) => {
+            mm::record_open_failure();
+            mm::record_open_file_limit();
+            tracing::warn!(
+                stream = %key.stream,
+                shard = key.shard,
+                generation,
+                error = %format!("{err:#}"),
+                "shard could not open: the open-file limit is exhausted; opening on a later pass",
+            );
+            lifecycle.lock().await.await_registration(Action::Open {
+                key,
+                generation,
+                new_term,
+                fence,
+                incarnation,
+            });
+        }
         Err(err) => {
             mm::record_open_failure();
             let mut lifecycle = lifecycle.lock().await;
@@ -2014,6 +2035,18 @@ async fn apply_open(
             );
         }
     }
+}
+
+/// Whether an open failed for want of file descriptors, however the error
+/// was wrapped.
+fn out_of_files(err: &anyhow::Error) -> bool {
+    err.chain().any(|err| {
+        felix_storage::open_files::exhausted_in(err)
+            || matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::OpenFileLimit(_))
+            )
+    })
 }
 
 async fn open(
@@ -2090,15 +2123,16 @@ pub async fn record_term_start(
 
 /// One of the broker's logs for `key`, opened on the blocking pool for the
 /// same reason as [`DurableShardStore::open_stream_log`]. `None` when the
-/// broker has no such store or refuses the incarnation.
+/// broker has no such store, refuses the incarnation, or the open failed;
+/// an error only for an exhausted open-file limit.
 async fn open_broker_log(
     broker: &std::sync::Arc<felix_broker::Broker>,
     kind: felix_broker::LogKind,
     key: &ShardKey,
     incarnation: u64,
-) -> Option<felix_broker::StreamLog> {
+) -> anyhow::Result<Option<felix_broker::StreamLog>> {
     broker
-        .shard_log_off_runtime(
+        .try_shard_log_off_runtime(
             kind,
             &key.tenant_id,
             &key.namespace,
@@ -2108,6 +2142,13 @@ async fn open_broker_log(
             (incarnation != 0).then_some(incarnation),
         )
         .await
+        .or_else(|err| match err {
+            // Retried by the lifecycle, so it has to reach it typed.
+            felix_broker::BrokerError::OpenFileLimit(_) => {
+                Err(anyhow::Error::new(err).context(format!("open the shard's {kind:?} log")))
+            }
+            _ => Ok(None),
+        })
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the

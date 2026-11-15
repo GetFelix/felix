@@ -61,6 +61,14 @@ pub fn record_move_arrived(total: std::time::Duration, switchover: Option<std::t
     }
 }
 
+/// Shard opens put off because the broker was out of file descriptors.
+/// Each is retried on a later pass; see `docs/durable-storage.md`.
+pub const OPEN_FILE_LIMIT_TOTAL: &str = "felix_broker_shard_open_file_limit_total";
+
+pub fn record_open_file_limit() {
+    metrics::counter!(OPEN_FILE_LIMIT_TOTAL).increment(1);
+}
+
 pub fn record_open_failure() {
     metrics::counter!(OPEN_FAILURES_TOTAL).increment(1);
 }

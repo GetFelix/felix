@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use super::{AppendedShards, Broker};
 use crate::durable::StreamLog;
-use crate::error::Result;
+use crate::error::{BrokerError, Result};
 
 /// Which of a shard's logs a request is about.
 ///
@@ -149,42 +149,61 @@ impl Broker {
         name: &str,
         shard: u32,
     ) -> Option<StreamLog> {
+        opened(
+            self.try_shard_log(kind, tenant_id, namespace, name, shard)
+                .await,
+        )
+    }
+
+    async fn try_shard_log(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+    ) -> std::result::Result<StreamLog, Unopened> {
         if !self.may_open(kind, tenant_id, namespace, name) {
-            return None;
+            return Err(Unopened::Absent);
         }
         match kind {
             LogKind::Cache => self
                 .cache
                 .shard_log(tenant_id, namespace, name, shard)
                 .await
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .ok_or(Unopened::Absent),
             LogKind::GroupCursors => self
                 .consumer_groups
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .shard_log(tenant_id, namespace, name, shard)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::GroupDeadLetters => self
                 .group_reader
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .dead_letters()
                 .shard_log(tenant_id, namespace, name, shard)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::Counters => self
                 .counters
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .shard_log(tenant_id, namespace, name, shard)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::Stream => self
                 .durable_storage
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .open_stream(tenant_id, namespace, name, shard)
-                .ok(),
+                .map_err(Unopened::failed),
         }
     }
 
@@ -199,42 +218,62 @@ impl Broker {
         shard: u32,
         base_offset: u64,
     ) -> Option<StreamLog> {
+        opened(
+            self.try_shard_log_at(kind, tenant_id, namespace, name, shard, base_offset)
+                .await,
+        )
+    }
+
+    async fn try_shard_log_at(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        base_offset: u64,
+    ) -> std::result::Result<StreamLog, Unopened> {
         if !self.may_open(kind, tenant_id, namespace, name) {
-            return None;
+            return Err(Unopened::Absent);
         }
         match kind {
             LogKind::Cache => self
                 .cache
                 .shard_log_at(tenant_id, namespace, name, shard, base_offset)
                 .await
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .ok_or(Unopened::Absent),
             LogKind::GroupCursors => self
                 .consumer_groups
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .shard_log_at(tenant_id, namespace, name, shard, base_offset)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::GroupDeadLetters => self
                 .group_reader
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .dead_letters()
                 .shard_log_at(tenant_id, namespace, name, shard, base_offset)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::Counters => self
                 .counters
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .shard_log_at(tenant_id, namespace, name, shard, base_offset)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::Stream => self
                 .durable_storage
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .open_stream_at(tenant_id, namespace, name, shard, base_offset)
-                .ok(),
+                .map_err(Unopened::failed),
         }
     }
 
@@ -257,14 +296,39 @@ impl Broker {
         base_offset: Option<u64>,
         incarnation: Option<u64>,
     ) -> Option<StreamLog> {
+        opened(
+            self.try_shard_log_for(
+                kind,
+                tenant_id,
+                namespace,
+                name,
+                shard,
+                base_offset,
+                incarnation,
+            )
+            .await,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn try_shard_log_for(
+        &self,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: Option<u64>,
+    ) -> std::result::Result<StreamLog, Unopened> {
         let any = || async {
             match base_offset {
                 Some(base) => {
-                    self.shard_log_at(kind, tenant_id, namespace, name, shard, base)
+                    self.try_shard_log_at(kind, tenant_id, namespace, name, shard, base)
                         .await
                 }
                 None => {
-                    self.shard_log(kind, tenant_id, namespace, name, shard)
+                    self.try_shard_log(kind, tenant_id, namespace, name, shard)
                         .await
                 }
             }
@@ -273,43 +337,48 @@ impl Broker {
             return any().await;
         };
         if !self.may_open(kind, tenant_id, namespace, name) {
-            return None;
+            return Err(Unopened::Absent);
         }
         match kind {
             LogKind::Cache => self
                 .cache
-                .as_log_cache()?
+                .as_log_cache()
+                .ok_or(Unopened::Absent)?
                 .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::Counters => self
                 .counters
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::Stream => self
                 .durable_storage
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .open_stream_for(tenant_id, namespace, name, shard, base_offset, incarnation)
-                .ok(),
+                .map_err(Unopened::failed),
             LogKind::GroupCursors => self
                 .consumer_groups
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
             LogKind::GroupDeadLetters => self
                 .group_reader
-                .as_ref()?
+                .as_ref()
+                .ok_or(Unopened::Absent)?
                 .dead_letters()
                 .shard_log_for(tenant_id, namespace, name, shard, base_offset, incarnation)
                 .await
-                .ok()
-                .map(StreamLog::from_log),
+                .map(StreamLog::from_log)
+                .map_err(Unopened::failed),
         }
     }
 
@@ -329,17 +398,49 @@ impl Broker {
         base_offset: Option<u64>,
         incarnation: Option<u64>,
     ) -> Option<StreamLog> {
+        opened(
+            self.try_shard_log_off_runtime(
+                kind,
+                tenant_id,
+                namespace,
+                name,
+                shard,
+                base_offset,
+                incarnation,
+            )
+            .await
+            .map_err(Unopened::Failed)
+            .and_then(|log| log.ok_or(Unopened::Absent)),
+        )
+    }
+
+    /// [`Broker::shard_log_off_runtime`], saying why a log that exists
+    /// could not be opened. `Ok(None)` is a log this broker does not keep or
+    /// may not open; an error is an open that failed, such as
+    /// [`BrokerError::OpenFileLimit`](crate::error::BrokerError::OpenFileLimit),
+    /// which can be retried once files close.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn try_shard_log_off_runtime(
+        self: &Arc<Self>,
+        kind: LogKind,
+        tenant_id: &str,
+        namespace: &str,
+        name: &str,
+        shard: u32,
+        base_offset: Option<u64>,
+        incarnation: Option<u64>,
+    ) -> Result<Option<StreamLog>> {
         if let Some(log) = self
             .opened_log(kind, tenant_id, namespace, name, shard, incarnation)
             .await
         {
-            return Some(log);
+            return Ok(Some(log));
         }
         if felix_common::blocking::on_runtime() {
             // A simulator keeps the open on its own runtime: `block_on` cannot
             // run there, and a real thread would make the run unrepeatable.
             return self
-                .shard_log_for(
+                .try_shard_log_for(
                     kind,
                     tenant_id,
                     namespace,
@@ -348,7 +449,8 @@ impl Broker {
                     base_offset,
                     incarnation,
                 )
-                .await;
+                .await
+                .map_or_else(Unopened::into_result, |log| Ok(Some(log)));
         }
         let broker = Arc::clone(self);
         let scope = (
@@ -359,7 +461,7 @@ impl Broker {
         let runtime = tokio::runtime::Handle::current();
         let opened = tokio::task::spawn_blocking(move || {
             let (tenant_id, namespace, name) = &scope;
-            runtime.block_on(broker.shard_log_for(
+            runtime.block_on(broker.try_shard_log_for(
                 kind,
                 tenant_id,
                 namespace,
@@ -371,9 +473,9 @@ impl Broker {
         })
         .await;
         match opened {
-            Ok(log) => log,
+            Ok(log) => log.map_or_else(Unopened::into_result, |log| Ok(Some(log))),
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-            Err(_) => None,
+            Err(_) => Ok(None),
         }
     }
 
@@ -632,5 +734,42 @@ pub(super) fn accepted_leader(state: &crate::stream::StreamState) -> crate::Shar
             .map(|leader| leader.to_string()),
         addr: None,
         generation: log.map_or(0, StreamLog::accepted_generation),
+    }
+}
+
+/// Why a shard log did not open.
+enum Unopened {
+    /// Not kept here, or not ours to open.
+    Absent,
+    Failed(BrokerError),
+}
+
+impl Unopened {
+    fn failed(err: impl Into<BrokerError>) -> Self {
+        Self::Failed(err.into())
+    }
+
+    fn into_result(self) -> Result<Option<StreamLog>> {
+        match self {
+            Self::Absent => Ok(None),
+            Self::Failed(err) => Err(err),
+        }
+    }
+}
+
+/// The log, or `None` with a failure noted. An exhausted open-file limit is
+/// worth a warning: it is the one failure here an operator can fix.
+fn opened(result: std::result::Result<StreamLog, Unopened>) -> Option<StreamLog> {
+    match result {
+        Ok(log) => Some(log),
+        Err(Unopened::Absent) => None,
+        Err(Unopened::Failed(err @ BrokerError::OpenFileLimit(_))) => {
+            tracing::warn!(error = %err, "could not open a shard log");
+            None
+        }
+        Err(Unopened::Failed(err)) => {
+            tracing::debug!(error = %err, "could not open a shard log");
+            None
+        }
     }
 }

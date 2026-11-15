@@ -224,8 +224,10 @@ pub enum OpenError {
     /// returns.
     #[error("the shard's last group here is still stopping")]
     Closing,
-    /// The log cannot be a Raft log, or its Raft state does not read back.
-    #[error(transparent)]
+    /// The log cannot be a Raft log, its Raft state does not read back, or
+    /// the files could not be opened. Kept as the source, so a caller can
+    /// tell an exhausted open-file limit, which is worth a retry.
+    #[error("{0}")]
     Log(#[from] io::Error),
     #[error("the group did not start: {0}")]
     Raft(String),
@@ -594,6 +596,15 @@ impl GroupRuntime {
                 .await
                 .map_err(std::io::Error::other)
                 .flatten()
+        };
+        // Out of descriptors says nothing about the kept copies, and holding
+        // the group for it would outlast the shortage.
+        let earlier = match earlier {
+            Err(err) if felix_storage::open_files::exhausted_in(&err) => {
+                let _ = log.close().await;
+                return Err(OpenError::Log(err));
+            }
+            earlier => earlier,
         };
         // A kept copy that cannot be read may hold the group's records.
         let kept_unreadable = earlier.is_err();

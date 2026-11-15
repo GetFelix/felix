@@ -982,6 +982,30 @@ shard's log and its counters, and drops the broker's in-memory `StreamState`.
 The close runs on its own task, so a caller that stops waiting does not leave
 the shard stuck half closed.
 
+#### When the open-file limit runs out
+
+Every open shard keeps files open, so a broker can run out of file
+descriptors. An open that hits the limit (`EMFILE` for the process, `ENFILE`
+for the system) fails with `StorageError::OpenFileLimit`, whose message says
+the open-file limit is exhausted. Nothing was opened, the files the open had
+already opened are closed, and the log is not poisoned.
+
+The shard lifecycle treats that failure as temporary. The shard stays in
+`Opening`, so it does not serve, and it opens again on the next assignment
+pass, so it starts serving once descriptors free up. Every other shard keeps
+serving. Any other open failure marks the shard `Failed` until its next
+assignment. A Raft member that runs out of descriptors while it reads its
+kept copies fails its open the same way, rather than holding the group as if
+those copies were unreadable. `felix_broker_shard_open_file_limit_total`
+counts the opens put off this way. How to set the limit is in
+[Open files](../docs-site/src/content/docs/deployment/production.md#open-files).
+
+`felix_storage::open_files::raise_soft_limit` raises the soft limit to the
+hard one. The broker calls it at start, and the test suites that open many
+logs at once call `raise_soft_limit_once`, so `cargo test` passes under a
+soft limit of 1,024 without a manual `ulimit -n`. The hard limit stays where
+it was, so a test that leaks descriptors still runs out.
+
 What this does not cover: a log opened while the broker has no role in the
 shard stays open until the broker gains and then loses a role in it, or
 restarts. Registration opens shard 0 of every stream, and replication working
@@ -1792,6 +1816,7 @@ fail rather than print the wrong numbers.
 | `tests/crash_recovery.rs` | a real process `SIGKILL`ed mid-append, per fsync mode, including repeated crash cycles |
 | `tests/format_fuzz.rs` | seeded mutation fuzzing: no panics, no unbounded allocation, no silent loss |
 | `fuzz/` | libFuzzer targets exploring the same properties much further, plus the cache and counter records and the per-shard state files; run nightly (see `docs-site/src/content/docs/development/fuzzing.md`) |
+| `felix-broker-service --test open_file_limit` | a shard opened with no descriptors left fails with the open-file limit error, leaks none, does not serve while the held shard keeps serving, and opens once descriptors free up |
 | `felix-broker/tests/durable_streams.rs` | ordering, restart, rejection without storage, durable vs non-durable isolation |
 | `felix-cluster --test backup` | a backup point taken under load is committed and misses nothing acknowledged before it (`a_point_under_load_is_committed_and_misses_nothing_acknowledged_before_it`), and a live copy restored to it keeps every earlier acknowledgement and nothing past it (`a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing_after`) |
 | `felix-cluster --test failures writes::` | a real broker whose segment writes fail with `ENOSPC` or `EIO`, every time or once, injected the same way: a refused write is never acknowledged, on a `Leader` or `Quorum` leader, a follower that refuses one is not counted toward a `Quorum` majority, and once the disk takes writes again the log holds exactly what was acknowledged |
