@@ -144,6 +144,7 @@ impl Led {
         };
         let batch = Batch {
             expected: None,
+            trim: None,
             records: vec![record; records],
             ack: AckAt::Flushed,
             term: None,
@@ -592,6 +593,7 @@ async fn a_group_that_stops_on_a_storage_error_closes_the_shard() {
     log.expect("log").close().await.expect("close");
     let batch = Batch {
         expected: None,
+        trim: None,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(b"unwritten"),
@@ -626,6 +628,7 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
     tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
     let batch = Batch {
         expected: None,
+        trim: None,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(b"unheard"),

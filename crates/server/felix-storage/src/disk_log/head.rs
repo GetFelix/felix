@@ -93,6 +93,14 @@ impl Head {
         self.applied < self.entries.len()
     }
 
+    /// The highest floor among the entries the apply bound has not passed.
+    pub(super) fn pending_floor(&self) -> Option<Offset> {
+        self.entries[self.applied..]
+            .iter()
+            .map(|entry| entry.floor)
+            .max()
+    }
+
     /// Note trim records just written, above every entry held.
     pub(super) fn observe(&mut self, entries: impl IntoIterator<Item = HeadEntry>) {
         for entry in entries {

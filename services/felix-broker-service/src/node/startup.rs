@@ -202,11 +202,19 @@ pub(super) async fn wire_broker(
     // A follower that predates trim records stops replicating at one, so a
     // cluster member trims only once its fleet has finalized `head_trim`. A
     // lone broker has no followers.
+    // The same for a trim entry on a shard on Raft, which an older member
+    // refuses whole.
     if config.membership.is_some() {
-        let fleet = Arc::clone(fleet);
-        broker.allow_head_trims_when(move || fleet.supports(felix_common::fleet::HEAD_TRIM));
+        let trims = Arc::clone(fleet);
+        broker.allow_head_trims_when(move || trims.supports(felix_common::fleet::HEAD_TRIM));
+        let raft_trims = Arc::clone(fleet);
+        broker.allow_raft_head_trims_when(move || {
+            raft_trims.supports(felix_common::fleet::HEAD_TRIM)
+                && raft_trims.supports(felix_common::fleet::RAFT_HEAD_TRIM)
+        });
     } else {
         broker.allow_head_trims_when(|| true);
+        broker.allow_raft_head_trims_when(|| true);
     }
     // A cursor that carries its dependency is a value an older build refuses,
     // so a cluster waits for its fleet. A lone broker writes them from the

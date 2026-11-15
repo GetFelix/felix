@@ -119,7 +119,7 @@ async fn copy_in(
     batch: &[AppendRecord],
     writers: WrittenBy,
 ) -> Result<()> {
-    log.append_pending_at(first, batch, writers)
+    log.append_pending_at(first, batch.to_vec(), writers)
         .await
         .map(|written| assert!(written.is_some(), "the tail moved"))
 }

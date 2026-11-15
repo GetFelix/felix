@@ -446,7 +446,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
             // conditional publish off its offset is already a blank. Checked
             // again in case one ever reaches apply as the command.
             let record = match &entry.payload {
-                EntryPayload::Normal(command) => !command.blank_at(entry.log_id.index),
+                EntryPayload::Normal(command) => command.holds_record_at(entry.log_id.index),
                 _ => false,
             };
             if let EntryPayload::Membership(membership) = entry.payload {

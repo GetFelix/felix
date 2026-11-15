@@ -130,11 +130,12 @@ where
         }
         EntryPayload::Normal(data) => {
             let record = codec.encode_data(data)?;
+            // A trim is a command: its record sets the log's head floor
+            // once the entry is committed.
             if matches!(
                 record.mark,
                 RecordMark::GenerationStart | RecordMark::Membership
-            ) || record.mark.is_trim()
-            {
+            ) {
                 return Err(invalid(format!(
                     "a command was encoded as a {:?} record",
                     record.mark

@@ -578,6 +578,17 @@ has no request that trims.
   floor are then refused as too old, with the trim's headers for a client
   that offered `FEATURE_HEAD_TRIM`.
 
+#### `raft_head_trim`
+
+Once finalized, a stream shard that runs on Raft accepts head trims too. It
+needs `head_trim`. Until then a broker in a cluster refuses a trim on a Raft
+shard with `feature_not_enabled` and `detail.reason` `head_trim`, and
+proposes nothing. A trim on Raft is an entry of its own kind that a broker
+built before it refuses, and replication to that broker would stop at the
+entry. A single broker allows Raft trims from the start.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_headers`
 
 Once finalized, a durable stream in a cluster accepts record keys and headers

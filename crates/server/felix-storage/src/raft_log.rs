@@ -195,6 +195,8 @@ struct Shared<K> {
     segment_reads: std::sync::atomic::AtomicU64,
     /// The root's marks for this copy, once [`RaftLog::mark_with`] set them.
     marking: std::sync::OnceLock<Marking>,
+    /// The root's head-trim marker is known to be on disk.
+    trim_marked: std::sync::atomic::AtomicBool,
 }
 
 /// How this log keeps its marks at the data root.
@@ -202,6 +204,30 @@ struct Marking {
     marks: CopyMarks,
     /// The log mark is written with every flush, not in batches.
     exact: bool,
+}
+
+impl<K> Shared<K> {
+    /// Put the data root's head-trim marker on disk before this log stores
+    /// a trim entry, on every member alike, so that a copy holding one
+    /// refuses a fleet that has not finalized `head_trim`
+    /// ([`crate::run_state::head_trimmed`]). A log without marks has no
+    /// root to mark.
+    async fn mark_head_trimmed(&self) -> io::Result<()> {
+        use std::sync::atomic::Ordering;
+        if self.trim_marked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let Some(marking) = self.marking.get() else {
+            return Ok(());
+        };
+        let root = marking.marks.mark_log().root().to_path_buf();
+        felix_common::blocking::spawn(move || crate::run_state::record_head_trimmed(&root))
+            .await
+            .map_err(io::Error::other)?
+            .map_err(|err| io::Error::other(format!("record the head-trim marker: {err}")))?;
+        self.trim_marked.store(true, Ordering::Release);
+        Ok(())
+    }
 }
 
 impl<C, K> Clone for RaftLog<C, K> {
@@ -266,6 +292,7 @@ where
                 #[cfg(test)]
                 segment_reads: std::sync::atomic::AtomicU64::new(0),
                 marking: std::sync::OnceLock::new(),
+                trim_marked: std::sync::atomic::AtomicBool::new(false),
             }),
             types: std::marker::PhantomData,
         })

@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::io;
 
 use bytes::Bytes;
-use felix_storage::log::{AppendRecord, LogRecord};
+use felix_storage::log::{AppendRecord, LogRecord, RecordMark};
 use felix_storage::raft_log::{EntryCodec, WrittenToken};
 use serde::{Deserialize, Serialize};
 
@@ -75,21 +75,32 @@ impl StoredMembership {
 
 impl EntryCodec<ShardTypes> for ShardCodec {
     fn encode_data(&self, data: &Command) -> io::Result<AppendRecord> {
+        if data.trim.is_some() && data.producer.is_some() {
+            return Err(invalid("a trim names a producer".into()));
+        }
         Ok(AppendRecord {
             payload: data.payload.clone(),
             timestamp_micros: data.timestamp_micros,
-            mark: ProducerMark::record_mark(data.producer),
+            mark: match data.trim {
+                Some(floor) => RecordMark::Trim { floor },
+                None => ProducerMark::record_mark(data.producer),
+            },
             publisher: None,
             headers: None,
         })
     }
 
     fn decode_data(&self, record: LogRecord) -> io::Result<Command> {
+        let trim = match record.mark {
+            RecordMark::Trim { floor } => Some(floor),
+            _ => None,
+        };
         Ok(Command {
             timestamp_micros: record.timestamp_micros,
             payload: record.payload,
             producer: ProducerMark::of_record(record.mark)?,
             expected: None,
+            trim,
             written: None,
         })
     }

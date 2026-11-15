@@ -25,7 +25,7 @@ use crate::DiskLog;
 use crate::StorageError;
 use crate::disk_log::WriterAt;
 use crate::log::{
-    AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, UNKNOWN_WRITER, WrittenBy,
+    AppendOnlyLog, AppendRecord, Epoch, LogRecord, Offset, RecordMark, UNKNOWN_WRITER, WrittenBy,
 };
 use crate::raft_copy::VoteMark;
 use crate::segment::{GENERATION_VERSION, SEGMENT_HEADER_LEN, record_header_len};
@@ -148,7 +148,12 @@ where
         let record_header = record_header_len(GENERATION_VERSION);
         // Only an append larger than a segment fills `earlier`.
         let mut earlier: Vec<Batch> = Vec::new();
-        let mut batch = Batch::default();
+        let entries = entries.into_iter();
+        let expected = entries.size_hint().0;
+        let mut batch = Batch {
+            records: Vec::with_capacity(expected),
+            ..Batch::default()
+        };
         let mut next = None;
         let mut last = None;
         // Proposers waiting to hear where their entry was written.
@@ -229,14 +234,22 @@ where
                 tail
             }
         };
+        if earlier
+            .iter()
+            .chain([&batch])
+            .flat_map(|batch| &batch.records)
+            .any(|record| matches!(record.mark, RecordMark::Trim { .. }))
+        {
+            shared.mark_head_trimmed().await?;
+        }
         // Read before the write: see `TailCache`.
         let cuts = log.cuts();
         let mut pending = None;
-        for batch in earlier.into_iter().chain([batch]) {
-            let appended = log
-                .append_pending_at(
+        for mut batch in earlier.into_iter().chain([batch]) {
+            let (appended, records) = log
+                .append_pending_at_keeping(
                     batch.first,
-                    &batch.records,
+                    std::mem::take(&mut batch.records),
                     WrittenBy::Writers(batch.writers.clone()),
                 )
                 .await
@@ -248,6 +261,7 @@ where
                         batch.first
                     ))
                 })?;
+            batch.records = records;
             shared.tail.extend(cuts, batch.into_log_records());
             pending = Some(appended);
         }

@@ -301,48 +301,25 @@ async fn a_paged_read_restarts_when_entries_are_purged_under_it() {
     assert_eq!(read.await.expect("join").expect("read"), entries[16..25]);
 }
 
-/// A trim record sets a floor the log deletes below on its own timer. Only
-/// a purge may delete a Raft log's entries, so a command stored as one is
-/// refused.
+/// A committed trim hides the entries below its floor but deletes none of
+/// them: only a purge may delete a Raft log's entries, so openraft never
+/// reads a log that starts above what it purged.
 #[tokio::test]
-async fn a_command_stored_as_a_trim_is_refused() {
-    #[derive(Clone, Copy)]
-    struct Trims;
-
-    impl EntryCodec<Types> for Trims {
-        fn encode_data(&self, _data: &String) -> io::Result<AppendRecord> {
-            Ok(record(RecordMark::Trim { floor: 9 }, b""))
-        }
-        fn decode_data(&self, record: LogRecord) -> io::Result<String> {
-            Codec.decode_data(record)
-        }
-        fn encode_membership(&self, membership: &Membership) -> io::Result<Bytes> {
-            Codec.encode_membership(membership)
-        }
-        fn decode_membership(&self, payload: &[u8]) -> io::Result<Membership> {
-            Codec.decode_membership(payload)
-        }
-        fn encode_node_id(&self, node_id: &u64) -> String {
-            Codec.encode_node_id(node_id)
-        }
-        fn decode_node_id(&self, leader: &str) -> io::Result<u64> {
-            Codec.decode_node_id(leader)
-        }
-    }
-
+async fn a_trim_entry_deletes_no_segment() {
     let dir = tempdir().expect("dir");
-    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
-    let mut raft = RaftLog::<Types, Trims>::new(log, Trims).expect("a Raft log");
-    let (tx, _rx) = <Types as openraft::type_config::TypeConfigExt>::oneshot();
-    let err = raft
-        .append(
-            [normal(1, 0, "trim")],
-            openraft::storage::IOFlushed::signal(tx),
-        )
+    let mut raft = open(&dir);
+    let mut entries = thirty();
+    entries.push(normal(2, 30, "trim:25"));
+    let flushed = append(&mut raft, &entries).await.expect("append");
+    flushed.await.expect("flush");
+    raft.save_committed(Some(log_id(2, 30)))
         .await
-        .expect_err("a trim is no command");
-    assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{err}");
-    assert_eq!(raft.disk_log().tail_offset().await.expect("tail"), 0);
+        .expect("commit");
+    let log = raft.disk_log().clone();
+    assert_eq!(log.readable_base(), 25);
+    log.enforce_retention_now().await.expect("retention");
+    assert_eq!(log.base_offset(), 0, "no segment is deleted");
+    assert_eq!(all(&raft).await.expect("read"), entries);
 }
 
 /// One append larger than a segment is written a segment's worth at a

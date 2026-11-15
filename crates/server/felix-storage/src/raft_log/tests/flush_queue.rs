@@ -233,7 +233,7 @@ async fn write(log: &DiskLog, offset: u64) -> PendingAppend {
         generation: 1,
         start_offset: offset,
     }]);
-    log.append_pending_at(offset, &[record(RecordMark::None, b"a")], writers)
+    log.append_pending_at(offset, vec![record(RecordMark::None, b"a")], writers)
         .await
         .expect("append")
         .expect("at the tail")

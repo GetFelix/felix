@@ -23,7 +23,7 @@ use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use felix_storage::raft_log::LogPoint;
 
-use super::group::Pace;
+use super::group::{Pace, Sent};
 use super::lease::Lease;
 use super::machine::SnapshotData;
 use super::reach::{Reach, Refusals, Waits};
@@ -83,6 +83,13 @@ impl RaftRequest {
     /// The member this is for. Its broker is where the message goes.
     pub fn to(&self) -> &MemberId {
         &self.to
+    }
+
+    /// Whether this is a leader's append carrying entries, for a test
+    /// network that delays or drops those.
+    #[cfg(feature = "testing")]
+    pub fn carries_entries(&self) -> bool {
+        matches!(&self.body, Request::Append(append) if !append.entries.is_empty())
     }
 }
 
@@ -265,16 +272,21 @@ impl Router {
                 }
             }
         }
-        let sent = match &body {
-            Request::Append(rpc) => {
-                let new = rpc
-                    .entries
-                    .last()
-                    .is_some_and(|last| self.pace.new_entries(&last.log_id()));
-                Some(self.pace.sending(&to, new))
-            }
-            _ => None,
+        let mut sent = Pending {
+            pace: &self.pace,
+            to: &to,
+            sent: match &body {
+                Request::Append(rpc) => {
+                    let new = rpc
+                        .entries
+                        .last()
+                        .is_some_and(|last| self.pace.new_entries(&last.log_id()));
+                    Some(self.pace.sending(&to, new))
+                }
+                _ => None,
+            },
         };
+        let append = sent.sent.is_some();
         // The members that take this stop refusing votes, and the target
         // stands at once. The lease for the term ends before it leaves.
         if let Request::TransferLeader(transfer) = &body {
@@ -284,7 +296,7 @@ impl Router {
         let request = RaftRequest {
             group,
             to: to.clone(),
-            beat: sent.as_ref().map_or(0, |sent| sent.gap),
+            beat: sent.sent.as_ref().map_or(0, |sent| sent.gap),
             report: matches!(&body, Request::Append(rpc) if !rpc.entries.is_empty())
                 && self.reports.wanted(),
             deadline: option.hard_ttl(),
@@ -292,10 +304,10 @@ impl Router {
         };
         let sent_at = self.reach.now();
         let answer = tokio::time::timeout(option.hard_ttl(), self.transport.send(request)).await;
-        if let Some(sent) = &sent {
+        if let Some(sent) = sent.sent.take() {
             match &answer {
-                Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, sent),
-                _ => self.pace.unanswered(&to),
+                Ok(Ok(RaftReply(Reply::Append(Ok(_))))) => self.pace.answered(&to, &sent),
+                _ => self.pace.unanswered(&to, &sent),
             }
         }
         // Before openraft sees the answer: it adopts the vote and may grant
@@ -310,7 +322,7 @@ impl Router {
                 self.reach.lost(&to.broker, sent_at);
                 // Only a leader's append: a candidate's vote leaves the
                 // ticker nothing to heartbeat.
-                if sent.is_some() {
+                if append {
                     self.reach.lost_by(&to.broker, &self.refusals.group);
                 }
             }
@@ -330,6 +342,23 @@ impl Router {
             Ok(Ok(reply)) => Ok(reply.0),
             Ok(Err(refused)) => Err(Unreachable::new(&refused)),
             Err(elapsed) => Err(Unreachable::new(&elapsed)),
+        }
+    }
+}
+
+/// An append's [`Sent`] until its answer is in. A send dropped before then
+/// counts as unanswered, so it cannot keep its peer's leader at the short
+/// gap for good.
+struct Pending<'a> {
+    pace: &'a Pace,
+    to: &'a MemberId,
+    sent: Option<Sent>,
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        if let Some(sent) = self.sent.take() {
+            self.pace.unanswered(self.to, &sent);
         }
     }
 }

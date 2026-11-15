@@ -99,7 +99,9 @@ impl Broker {
         // the shard's live route, which is empty during startup and moves, so
         // a follower added mid-trim cannot slip past it.
         if !self.head_trims_allowed() {
-            return Err(BrokerError::HeadTrimNotEnabled);
+            return Err(BrokerError::HeadTrimNotEnabled {
+                feature: felix_common::fleet::HEAD_TRIM.name(),
+            });
         }
         if before > expected {
             return Err(BrokerError::TrimPastTail {
@@ -287,5 +289,8 @@ async fn refuse_commit_stream(handle: &StreamHandle, log: &StreamLog, expected: 
     Ok(())
 }
 
+mod proposed;
 #[cfg(test)]
 mod tests;
+
+pub use proposed::{ProposedTrim, TrimFailed};
