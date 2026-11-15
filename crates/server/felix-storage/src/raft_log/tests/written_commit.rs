@@ -160,4 +160,25 @@ async fn a_failed_periodic_flush_poisons_the_log() {
     .await
     .expect("the tick's failure poisons the log, as a commit flush's does");
     assert_eq!(raft.positions().borrow().flushed, None);
+    // The queued flush waits for a sync that will never come; the poison
+    // must wake it, or the queue never drains.
+    tokio::time::timeout(BOUND, raft.shared.flushes.drained())
+        .await
+        .expect("the poison wakes the queued flush");
+}
+
+/// **A purge on a written-commit log under `None` does not wait forever for
+/// the queued flushes.** Nothing syncs such a log on its own, so a purge
+/// that only waited would stall the group's log task.
+#[tokio::test]
+async fn a_purge_under_none_finishes_with_flushes_queued() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(root.path(), FsyncMode::None).expect("open");
+    append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+        .await
+        .expect("append");
+    let purged = tokio::time::timeout(BOUND, raft.purge(log_id(1, 0))).await;
+    purged.expect("the purge syncs first").expect("purge");
+    assert!(raft.positions().borrow().flushed.is_some());
 }

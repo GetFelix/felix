@@ -4346,9 +4346,11 @@ not move.
   it does not cover it, then fires `IOFlushed` at the write. A failed
   raise fails the append. `flushed` and the exact log mark still wait for
   the log's own fsync; the batched mark reads `flushed`, so it never names
-  an unsynced entry. A truncation syncs first.
-- A cache shard's snapshot syncs the log before it is stored.
-- A failed periodic tick poisons the log and leaves `flushed` behind.
+  an unsynced entry. A truncation, a purge and a cache log's admit sync
+  first, since under `none` nothing else would.
+- A snapshot, of either shard kind, syncs the log before it is stored.
+- A failed fsync, the periodic tick's included, wakes every flush waiting
+  on the log, and `flushed` stays behind.
 - A crash under `periodic` restarted on `on_commit` rotates, and the
   strict run's logs fsync on commit again (start 6).
 - A broker opens a shard's Raft log with its own fsync mode only when the

@@ -344,12 +344,8 @@ where
     async fn truncate_after(&mut self, last_log_id: Option<LogIdOf<C>>) -> io::Result<()> {
         let log = &self.shared.log;
         // A flush still waiting on entries this cuts would never reach them
-        // and would report the append failed. Each one finishes first. On a
-        // written-commit log nothing else may sync soon (`None` never does).
-        if self.shared.written_commit {
-            log.sync().await.map_err(io_error)?;
-        }
-        self.shared.flushes.drained().await;
+        // and would report the append failed. Each one finishes first.
+        self.shared.drain_flushes().await?;
         // Before the cut, so no read finds here an entry the log has lost.
         self.shared.tail.clear();
         let first = self.shared.first_index();
@@ -433,7 +429,7 @@ where
         let log = &shared.log;
         // A purge past the end drops entries a flush may still be waiting
         // on, as a truncation does.
-        shared.flushes.drained().await;
+        shared.drain_flushes().await?;
         let index = log_id.index();
         let term = **log_id.committed_leader_id();
         let purged = Purged {

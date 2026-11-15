@@ -470,6 +470,17 @@ pub(crate) async fn last_point(log: &DiskLog) -> io::Result<Option<LogPoint>> {
 }
 
 impl<K> Shared<K> {
+    /// Wait for every queued flush. On a written-commit log a queued flush
+    /// waits for a sync it does not start, and under `None` none comes, so
+    /// this syncs first.
+    async fn drain_flushes(&self) -> io::Result<()> {
+        if self.written_commit {
+            self.log.sync().await.map_err(writer::io_error)?;
+        }
+        self.flushes.drained().await;
+        Ok(())
+    }
+
     /// Raise the reservation, synced, to [`reserved::STEP`] past `index`
     /// unless it already covers `index`. Never lowered.
     async fn reserve_through(&self, index: u64) -> io::Result<()> {
