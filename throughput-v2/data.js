@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794767777577,
+  "lastUpdate": 1794768083121,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58864,6 +58864,58 @@ window.BENCHMARK_DATA = {
             "range": "25687.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 799753.35\nmean: 795757.96\nstdev: 25687.63\ncv: 3.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c56aca83c86fe8e2cd9806ec172c619d3232e3e7",
+          "message": "feat(raft): atomic commits on a Raft stream shard (#2446) (#2625)\n\n* feat(raft): atomic commits on a Raft shard (#2446)\n\nA commit is one entry stored with the commit mark on every member. The\nleader's held batch carries its state updates to the state view with the\nevent, a follower's log delivery reads the commit whole and applies them,\nand a rebuilt view reads the mark from the member's own log. A commit at an\nexpected offset is decided at the entry's final index, as publish_if is.\nEntry tag 8, gated by the raft_atomic_commit fleet feature.\n\n* fix(raft): answer a Raft commit once its state is in the view; Raft state reads confirm by read index\n\n* docs(raft): atomic commits on a Raft shard\n\nSpec-Unaffected: a commit is one record, as FelixAtomicCommit.tla models, and its condition is FelixRaftCond.tla's rule at the entry's final index; no new protocol rule.\n\n* test(cluster): an atomic commit on a Raft shard reaches every member\n\n* docs(raft): a Raft state read confirms by read index\n\n* fix(raft): review fixes for Raft commits\n\nA trim's commit scan on an engine log keeps only what the engine committed,\nand a proposed commit sets the stream's commit flag. Sorted the new-cluster\nfeature list; doc fixes.\n\n* test(replication): a command's serialized keys include commit\n\n* test(raft): a trim scan on an engine log keeps only what is committed\n\n* test(raft): the commit cluster test finalizes its features and reports the refusal\n\n* fix(raft): trim scans keep only what was committed first; state_get waits for the view\n\nA trim's commit scan on an engine log now reads the committed bound before\nit reads the log, so a record it read as plain that a new leader then cut\nand rewrote as a commit is not recorded as clear. A commit delivered from\nan engine log sets `seen`.\n\nA state_get on a Raft shard waits, up to the quorum timeout, until the state\nview holds everything committed at the read index, so it never misses a\ncommit whose event a history read already returns.\n\nprotocol.md documents the raft_atomic_commit refusal and the offset a\nrefused commit_if takes on Raft.\n\nSpec-Unaffected: broker-local read ordering and trim bookkeeping; no change to Raft entries, terms or fencing.\n\n* fix(raft): a state read waits only for records, woken by the ring\n\nA leader's blank entry or a membership change moves the read bound but\nnever the ring, so an idle shard answered every state_get not_ready after\nthe full quorum timeout. The wait now stops at the last record under the\nbound, and a ring move wakes it instead of a 2 ms poll.",
+          "timestamp": "2026-11-15T18:30:52Z",
+          "tree_id": "491b973890e1b51b75faece615da5667af4c7f58",
+          "url": "https://github.com/GetFelix/felix/commit/c56aca83c86fe8e2cd9806ec172c619d3232e3e7"
+        },
+        "date": 1794768082522,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 518726.15,
+            "range": "44919.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 518726.15\nmean: 527047.09\nstdev: 44919.77\ncv: 8.52%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 518726.15,
+            "range": "44919.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 518726.15\nmean: 527047.09\nstdev: 44919.77\ncv: 8.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121417.23,
+            "range": "1135.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121417.23\nmean: 121281.17\nstdev: 1135.44\ncv: 0.94%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1214172.32,
+            "range": "11354.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1214172.32\nmean: 1212811.74\nstdev: 11354.42\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
