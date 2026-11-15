@@ -4238,32 +4238,37 @@ the snapshot must carry, and when a member may install it.
 What is modelled:
 
 - An offset is a Raft index. A head trim is an entry `trim(f)`: once a member
-  applies it, no record below offset `f` is readable there. The leader's
-  retention driver proposes a floor at or below its tail, so the trim entry
-  is always above its own floor.
-- A purge to `P` writes a stream snapshot at `P`: its index, the floor the
-  member has applied, and its tables (producers, consumer groups, cut batches)
-  as of `P`, built from its previous snapshot and the entries it still holds
-  up to `P`. The tables are one counter, the number of records applied. Like
-  the real tables, it comes out wrong when an entry is applied twice or
-  skipped. The member can build the tables as of `P` because it still holds
-  every entry between its previous snapshot and `P`.
+  applies it, no record below offset `f` is readable there, and a read below
+  it gets the trim's headers. The leader proposes a floor no higher than the
+  offset the trim lands at (felix-broker `trim/proposed.rs` allows a floor equal to the
+  tail), so the trim entry is never below its own floor.
+- A purge to `P` takes two steps. The member writes and fsyncs a stream
+  snapshot at `P`, then drops its log up to `P`. A restart can fall between
+  them.
+- The snapshot holds `P`, the tables (producers, consumer groups, cut batches)
+  as of `P`, and the carried floor: the floor and trim headers the member has
+  applied, which are above `P`. The tables are built from the previous
+  snapshot and the entries the member still holds up to `P`. They are a fold
+  of three numbers: records applied, trims that raised the floor, and the
+  floor as of the index. Like the real tables, the fold is wrong when an entry
+  is applied twice or skipped, and it reads the floor.
 - A purge is bounded by the applied entry and by floor - 1. On the leader it
   is also capped at the lowest match of any member, learners included.
 - The leader sends a member whose next entry it purged its snapshot. The
-  member installs it only if every entry it skips is below the floor the
-  snapshot carries (index <= floor - 1). Otherwise it refuses, as today.
+  member installs it only if every entry it skips is below the carried floor
+  (index <= floor - 1). Otherwise it refuses, as today.
 - A restart rolls a member's state back to its snapshot, and it applies its
   log again.
 - A re-form starts a new epoch from the copies the operator's command reads
   (`FelixRaftReform.tla` has the command). Copies not read are declared dead.
-  The base is the highest offset a read copy vouches for, padded to the
-  control plane's offset floor, which trails the commit. A copy vouches for
-  its last entry, its purged id, and its floor: the record at the floor was
-  committed before the trim that named it. Every read copy takes the highest
-  floor read, since the trim that set it may be in no read copy's log, and
-  the re-form writes that floor into each copy's snapshot so a restart keeps
-  it.
+  The leader is a read voter with the longest log. The voter set does not
+  change, so a re-form whose longest read log is a learner's is not taken. The base is the highest
+  offset a read copy vouches for, padded to the control plane's offset floor,
+  which trails the commit. A copy vouches for its last entry, its purged id,
+  and its floor: the trim that named floor `f` sits at offset `f` or above and
+  was committed. Every read copy takes the highest floor read, with its
+  headers, since the trim that set it may be in no read copy's log, and the
+  re-form writes that floor into each copy's snapshot so a restart keeps it.
 - A change of leader goes to a voter holding the committed log.
 
 What is checked:
@@ -4274,11 +4279,17 @@ What is checked:
 - `NoAckedLoss`: every member holds every committed record at or above the
   committed floor, up to the end of its log. No purge or install drops one.
 - `PurgeBelowFloor`: a member that purged anything purged below its floor.
+- `AppliedCoversPurge`: a member's state covers every entry it dropped,
+  across restarts.
 - `TablesAgree`: every member's tables equal the fold of the log up to its
   applied entry, across purges, installs and restarts.
+- `HeadersAgree`: a member with a floor answers reads below it with the
+  headers of a trim that named that floor.
 - `OffsetNeverReused`: a re-form never gives out again a committed offset that
   a copy it read held, or installed a snapshot or a floor for. It is checked
-  against a history variable, not against what the re-form reads.
+  against a history variable, not against what the re-form reads. A re-form
+  that carries a floor into a copy counts as that copy holding it, so a second
+  re-form must read it.
 - `CatchUpPossible`: a member behind the leader's purge can install the
   leader's snapshot. This is not safety. A member that fails it is stuck, not
   wrong, until a later purge gives it a snapshot it accepts.
@@ -4299,6 +4310,18 @@ The broken configurations, and what each shows:
 - A snapshot at the purge point that carries the member's current tables
   makes an installing or restarting member apply the entries above the purge
   point twice (`FelixRaftStreamPurgeTablesAtApplied.cfg`).
+- A snapshot with a single floor, the carried one, mixes two points: its
+  tables are as of `P` but its floor is as of the applied entry. A member that
+  restores it applies the trim above `P` again, finds the floor already there,
+  and its tables miss that the trim raised it
+  (`FelixRaftStreamPurgeFloorAtApplied.cfg`). The tables need their own floor
+  as of `P`, and the carried floor is a separate field.
+- A snapshot that carries the floor without the trim's headers leaves a member
+  that restores it refusing reads below the floor with no headers, where the
+  leader returns them (`FelixRaftStreamPurgeNoHeaders.cfg`).
+- A purge that drops the log before the snapshot is durable, with a restart in
+  between, leaves a member whose snapshot is below entries it no longer holds
+  (`FelixRaftStreamPurgeDropFirst.cfg`).
 - A re-form that reads a copy's last entry only sees nothing on a copy whose
   log is empty above its purge, which is a copy that just installed a
   snapshot, and gives out offsets that copy purged
@@ -4316,46 +4339,58 @@ The broken configurations, and what each shows:
 
 The leader's cap at the slowest match is not a safety rule. With the snapshot
 at the purge point, a member sent it always accepts it
-(`FelixRaftStreamPurgeNoCap.cfg` passes). The cap only saves sending a
+(`FelixRaftStreamPurgeNoCap.cfg` passes, and so do the five-entry
+configurations, which run without the cap). The cap only saves sending a
 snapshot to a member that is merely behind.
 
 Inside one epoch the floor never needs the snapshot to survive. The trim that
 set a member's floor is above floor - 1, so no purge or install drops it, and a
-leader applies it again before it serves. The floor in the snapshot is there
-for the install check and for a re-form, whose base can be below that trim.
+leader applies it again before it serves. The carried floor is there for the
+install check and for a re-form, whose base can be below that trim.
+
+Witnesses show the bounds reach what they are meant to: a member that
+installed serves as leader, a purge drops a record, a purge drops a trim entry
+(at the bounds of `FelixRaftStreamPurgeFive.cfg`), and a write and a purge
+follow a re-form (at the bounds of `FelixRaftStreamPurgeFiveReform.cfg`).
 
 Abstracted: terms and uncommitted divergence (`FelixRaft.tla` has them; here
 there is one global log and every member holds a prefix of it), votes, record
 payloads, and lost disks (a copy a re-form does not read stands in for one).
 The producer table's own rules at a purge and an install are
 `FelixRaftBatch.tla`'s. Here only the index the tables are taken at is
-checked. A member's log and snapshot are durable.
+checked.
 
 What the code has to change, behind `raft_stream_purge`:
 
-1. The stream snapshot (`raft/machine.rs`, `stream_data`) is written at the
-   purge point, with the floor and the producer, group and cut-batch tables as
-   of that index. Today it carries only the forgotten cut batches, at the
-   applied entry.
+1. The stream snapshot (felix-replication `raft/machine.rs`, `stream_data`) is written at the
+   purge point, with the producer, group and cut-batch tables as of that
+   index, including the floor as of that index. Separately it carries the
+   member's current floor and the headers of the trim that set it, which
+   reads below the floor return (felix-broker `durable.rs` `too_old`). Today it carries
+   only the forgotten cut batches, at the applied entry.
 2. A member accepts a stream snapshot whose index is at most its carried floor
-   minus one, and refuses any other (`raft/group.rs`, `Refused::NoSnapshots`
-   refuses every one today).
-3. The purge driver purges to at most floor - 1 and writes the snapshot
-   there. The leader also caps at its slowest match, to spare a snapshot.
-4. A re-form's first offset is above max(floor, purged id, last entry) of
-   every copy it reads, and the new epoch starts at the highest floor read,
-   written into each copy's base snapshot (`machine.rs` `base_snapshot`).
-
-Open questions for the code, outside the model:
-
-- openraft builds a snapshot's meta from the state as of the applied entry
-  (`Builder::meta` in `machine.rs` takes the last log id and the membership
-  together). A snapshot at `P` needs the term at `P` and the membership as of
-  `P`; a membership entry between `P` and the applied entry must not land in
-  it. The model has no membership.
-- Whether openraft accepts a built snapshot whose index is below the applied
-  entry, and whether it then builds again. Stream shards run with
-  `SnapshotPolicy::Never` today.
+   minus one, and refuses any other (felix-replication `raft/group.rs`, `Refused::NoSnapshots`
+   refuses every one today). The model compares the index with the member's
+   log end. With terms, the member compares it with its matching index and
+   drops a divergent tail above it, as Raft does.
+3. Applying an entry folds against the tables' own floor, never the carried
+   floor.
+4. The purge driver purges to at most floor - 1. It fsyncs the snapshot
+   before it drops any log, and on restart a durable snapshot above the log's
+   first index finishes the drop. The leader also caps at its slowest match,
+   to spare a snapshot.
+5. Felix drives every purge, not openraft: openraft builds a snapshot's meta
+   at the applied entry (`Builder::meta` in `machine.rs` takes the last log id
+   and the membership together). The driver takes the term and the membership
+   from the entry at `P` before it purges, asserts that the purge point equals
+   the snapshot's index and is at most floor - 1, and openraft never purges or
+   builds a snapshot at the applied entry. Stream shards run with
+   `SnapshotPolicy::Never` today, which keeps it that way. The model has no
+   membership.
+6. A re-form's first offset is above max(floor, purged id, last entry) of
+   every copy it reads, and the new epoch starts at the highest floor read and
+   its headers, written into each copy's base snapshot (`machine.rs`
+   `base_snapshot`).
 
 The group table travels in the snapshot only once Raft stream snapshots carry
 it (the consumer-group work, `FelixRaftGroups.tla`). Until then a member that
