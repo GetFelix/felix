@@ -11,10 +11,12 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use felix_authz::AuthzError;
-use felix_broker::{Broker, PublishOutcome, StreamHandle};
+use felix_broker::{
+    Attribution, Broker, IdempotentOutcome, PublishOutcome, SequenceReuse, StreamHandle,
+};
 use felix_kafka::{
-    Cluster, Endpoint, KafkaService, Placement, Principal, Settings, ShardRef, WriteError,
-    WritePermit,
+    Cluster, Endpoint, KafkaService, Placement, Principal, Produce, ProduceError, Settings,
+    ShardRef, WriteError, WritePermit,
 };
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -28,9 +30,11 @@ use crate::observability::tenants;
 use crate::serving::auth::BrokerAuth;
 use crate::serving::limits::{PerIpLimiter, TenantRates};
 use crate::shards::lifecycle::fence;
-use crate::shards::routing::{Dispatch, Reason, StreamEngine, dispatch, dispatch_write};
+use crate::shards::routing::{
+    Dispatch, RaftRefusal, Reason, StreamEngine, dispatch, dispatch_write,
+};
 use crate::shards::{ShardKey, ShardKind};
-use felix_replication::engine::Engine;
+use felix_replication::engine::{CommitError, Engine};
 use felix_replication::quorum::QuorumError;
 
 /// A TLS handshake that has not finished by now is abandoned, so a client
@@ -208,13 +212,15 @@ impl Cluster for BrokerCluster {
         // so a move waits for this write. The fence checks the lease against
         // the clock, except on a shard whose followers decide its acks.
         let key = Self::key(shard);
-        // A Raft log takes plain publishes only, and a Kafka batch is
-        // written with its producer's sequence.
-        if self.replication.on_raft(&key) {
-            return Err(WriteError::Unsupported);
+        // A Raft shard is written at the term this broker leads, and never
+        // enters the hybrid's fence; `produce` proposes it.
+        let on_raft = self.replication.on_raft(&key);
+        if on_raft && let Some(term) = self.replication.raft_term(&key) {
+            return Ok(WritePermit::at(term));
         }
         let ingress = self.replication.serving().map(|ingress| &**ingress);
         match dispatch_write(ingress, &key).await {
+            (Dispatch::Local { .. }, _) if on_raft => Err(WriteError::NotLeader),
             (Dispatch::Local { generation }, held) => {
                 let mut held = held;
                 match fence::enter_or_keep(&mut held, ingress, Some(&key), generation) {
@@ -229,6 +235,33 @@ impl Cluster for BrokerCluster {
         }
     }
 
+    fn refuses_record_headers(
+        &self,
+        broker: &Broker,
+        shard: &ShardRef<'_>,
+    ) -> Option<&'static str> {
+        (self.replication.on_raft(&Self::key(shard)) && !broker.raft_record_headers_allowed())
+            .then(|| felix_common::fleet::RAFT_RECORD_HEADERS.name())
+    }
+
+    async fn produce(
+        &self,
+        broker: &Broker,
+        shard: &ShardRef<'_>,
+        handle: &StreamHandle,
+        permit: &WritePermit,
+        produce: Produce<'_>,
+    ) -> Option<Result<IdempotentOutcome, ProduceError>> {
+        let key = Self::key(shard);
+        if !self.replication.on_raft(&key) {
+            return None;
+        }
+        Some(
+            self.produce_on_raft(broker, &key, handle, permit.generation(), produce)
+                .await,
+        )
+    }
+
     async fn await_consistency(
         &self,
         shard: &ShardRef<'_>,
@@ -236,6 +269,10 @@ impl Cluster for BrokerCluster {
         outcome: &PublishOutcome,
         generation: u64,
     ) -> Result<(), WriteError> {
+        // `produce` answered at what the level asks for, or later.
+        if self.replication.on_raft(&Self::key(shard)) {
+            return Ok(());
+        }
         let key = self.replication.serving().map(|_| Self::key(shard));
         self.replication
             .await_commit(
@@ -278,6 +315,147 @@ impl Cluster for BrokerCluster {
         }
         hold
     }
+}
+
+impl BrokerCluster {
+    /// Propose a produce to `key`'s Raft group at `term`.
+    ///
+    /// An idempotent producer's records go in one by one, each its own
+    /// batch at its own sequence, which is how the hybrid stores them
+    /// (`Broker::publish_records_idempotent`) and the one-record batch a
+    /// Raft shard takes. A re-send finds the records the log holds and
+    /// writes the rest.
+    async fn produce_on_raft(
+        &self,
+        broker: &Broker,
+        key: &ShardKey,
+        handle: &StreamHandle,
+        term: u64,
+        produce: Produce<'_>,
+    ) -> Result<IdempotentOutcome, ProduceError> {
+        // `refuses_record_headers` turned away headers the group cannot
+        // store yet, before the quota was charged.
+        let headers = produce.headers;
+        let Some((producer_id, sequence)) = produce.producer else {
+            let attribution = Attribution {
+                publisher: None,
+                headers: headers.map(<[_]>::to_vec),
+            };
+            let proposed = self.replication.publish_on_raft(
+                broker,
+                handle,
+                key,
+                term,
+                produce.payloads.to_vec(),
+                attribution,
+                self.quorum_timeout,
+            );
+            let offsets = raft_proposed(proposed, term)?
+                .complete_offsets()
+                .await
+                .map_err(commit_failure)?;
+            return Ok(IdempotentOutcome {
+                outcome: PublishOutcome {
+                    subscribers: 0,
+                    offsets,
+                },
+                duplicate: false,
+            });
+        };
+        let first = broker.record_sequence(handle, producer_id, sequence);
+        let mut proposed = Vec::with_capacity(produce.payloads.len());
+        for (at, payload) in produce.payloads.iter().enumerate() {
+            let turn = broker.producer_turn(handle, producer_id).await;
+            let attribution = Attribution {
+                publisher: None,
+                headers: headers.map(|headers| vec![headers[at].clone()]),
+            };
+            let record = self.replication.publish_idempotent_on_raft(
+                broker,
+                handle,
+                key,
+                term,
+                turn,
+                first + at as u64,
+                // Kafka answers a re-sent sequence by its numbers alone.
+                SequenceReuse::AnswerDuplicate,
+                vec![payload.clone()],
+                attribution,
+                self.quorum_timeout,
+            );
+            match raft_proposed(record, term) {
+                Ok(record) => proposed.push(record),
+                // The records before it may still commit; a re-send finds
+                // them in the log. A refusal that follows from one of them
+                // failing (a gap, which Kafka producers treat as fatal) is
+                // answered with that failure instead.
+                Err(refused) => {
+                    let earlier = proposed.into_iter().map(|record| async move {
+                        record
+                            .complete_outcome()
+                            .await
+                            .map(drop)
+                            .map_err(commit_failure)
+                    });
+                    return Err(earlier_failure(earlier, refused).await);
+                }
+            }
+        }
+        let mut offsets: Option<(u64, u64)> = None;
+        let mut duplicate = true;
+        for record in proposed {
+            let written = record.complete_outcome().await.map_err(commit_failure)?;
+            duplicate &= written.duplicate;
+            if let Some((start, end)) = written.outcome.offsets {
+                offsets = Some((offsets.map_or(start, |(first, _)| first), end));
+            }
+        }
+        Ok(IdempotentOutcome {
+            outcome: PublishOutcome {
+                subscribers: 0,
+                offsets,
+            },
+            duplicate,
+        })
+    }
+}
+
+/// The first of `earlier` to fail, else `refused`: a later record's refusal
+/// only follows from an earlier record's failure, which is the answer.
+async fn earlier_failure<F>(
+    earlier: impl IntoIterator<Item = F>,
+    refused: ProduceError,
+) -> ProduceError
+where
+    F: std::future::Future<Output = Result<(), ProduceError>>,
+{
+    for record in earlier {
+        if let Err(err) = record.await {
+            return err;
+        }
+    }
+    refused
+}
+
+/// What was proposed, or why nothing was.
+fn raft_proposed<T>(
+    proposed: Option<Result<T, RaftRefusal>>,
+    term: u64,
+) -> Result<T, ProduceError> {
+    match proposed.unwrap_or(Err(RaftRefusal::NotLeading { term })) {
+        Ok(proposed) => Ok(proposed),
+        Err(RaftRefusal::NotLeading { .. }) => Err(ProduceError::Write(WriteError::NotLeader)),
+        Err(RaftRefusal::Broker(err)) => Err(ProduceError::Broker(err)),
+    }
+}
+
+/// A proposed batch that was not committed in time, or whose leader moved
+/// first, as a hybrid write whose quorum wait ended the same way.
+fn commit_failure(err: CommitError) -> ProduceError {
+    ProduceError::Write(match err {
+        CommitError::TimedOut { .. } => WriteError::QuorumTimeout,
+        _ => WriteError::LeadershipLost,
+    })
 }
 
 /// A bound Kafka listener, not yet accepting.

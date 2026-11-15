@@ -1192,6 +1192,16 @@ impl GroupRuntime {
         self.inner.registry.get(shard).map(|group| group.status())
     }
 
+    /// The committed log id of every group this broker leads.
+    pub fn led_commits(&self) -> Vec<(GroupId, LogPoint)> {
+        self.inner
+            .registry
+            .ticked()
+            .iter()
+            .filter_map(|group| Some((group.id.clone(), group.led_commit()?)))
+            .collect()
+    }
+
     /// What `shard`'s log holds, as it changes: written as soon as an
     /// append has handed its entries to the log, flushed once they are
     /// fsynced. A publisher's acknowledgement on a stream that does not

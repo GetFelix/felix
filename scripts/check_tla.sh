@@ -113,6 +113,7 @@ module_of() {
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
     FelixRaftWritten*) echo FelixRaftWritten ;;
     FelixRaftBatch*) echo FelixRaftBatch ;;
+    FelixRaftGroups*) echo FelixRaftGroups ;;
     FelixRaftCond*) echo FelixRaftCond ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
@@ -583,6 +584,18 @@ expectations=(
   "FelixRaftBatchReachInstall violates NeverInstalls"
   "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
   "FelixRaftBatchReachHeld violates NeverAnswersHeld"
+  "FelixRaftGroups pass"
+  "FelixRaftGroupsNoCreationIndex violates NoSkip"
+  "FelixRaftGroupsNoDeleteWatermark violates NoSkip"
+  "FelixRaftGroupsNoRedrivenSet violates NoSkip"
+  "FelixRaftGroupsIfNewTableOnly violates IfNewKeepsServed"
+  "FelixRaftGroupsTrackerAcrossTerms violates RedrivenOwed"
+  "FelixRaftGroupsHydrateBeforeApply violates RedrivenOwed"
+  "FelixRaftGroupsUserOpsBeforeOwnApply violates RedrivenOwed"
+  "FelixRaftGroupsStaleByHydrateIndex violates RedrivenOwed"
+  "FelixRaftGroupsDeadAfterAdvance violates NoSkip"
+  "FelixRaftGroupsNoRefreshOnDrop violates TrackerHeard"
+  "FelixRaftGroupsTwoChanges pass"
   "FelixRaftCond pass"
   "FelixRaftCondTwoTerms pass"
   "FelixRaftCondLeaderDecides violates CondKeptAtExpected"

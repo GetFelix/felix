@@ -57,8 +57,6 @@ pub enum Refusal {
     /// The shard's owner checked the connection's token again on a forwarded
     /// publish and refused it: revoked, expired, or no `stream.publish` there.
     NotAuthorized,
-    /// The shard's log does not take an MQTT message, on any broker.
-    Unsupported,
 }
 
 /// Why a batch has no acknowledgement.
@@ -84,6 +82,13 @@ pub trait Writes: Send + Sync {
     /// quota and say how long to stop reading the connection to stay within
     /// it. MQTT has no throttle field, so the delay is the only answer.
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> Duration;
+
+    /// The most records one batch may carry. A broker whose shards take an
+    /// idempotent batch of one record only (Raft) says 1, and each message
+    /// is then its own batch.
+    fn max_batch_records(&self) -> usize {
+        usize::MAX
+    }
 
     /// Write the batch and return once it has what the stream's consistency
     /// asks for, when `batch.acknowledged`: the leader's durable write under

@@ -200,6 +200,7 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
 | `felix_broker_raft_shards_off_placement` | gauge | - | Raft shards open on this broker whose group's voters are not the brokers placement names for the shard. A group keeps the members it formed with, so anything above zero means placement moved, drained or replaced a broker of a Raft shard, which is not supported yet. |
 | `felix_broker_raft_shards_led` | gauge | - | Raft shards whose current term this broker leads and serves writes for. Refreshed every shard feed pass, so it can trail a leader change by a couple of seconds. |
+| `felix_broker_raft_retention_trims_refused_total` | counter | - | Retention passes on a Raft shard's leader that could not hide what the stream's retention drops: the trim was refused, for example before the fleet finalizes `raft_head_trim` or on a stream holding atomic commits, or it failed. The leader logs a warning when the reason changes. |
 | `felix_broker_raft_root_held` | gauge | - | `1` while the broker holds its data root because neither the run witness nor the control plane has a copy of its root sequence, so no Raft member on the broker opens, and `0` once the broker starts opening its root otherwise. The log says why once. Anything that stays at `1` needs an operator: see [the root sequence](https://github.com/GetFelix/felix/blob/main/docs/per-shard-raft.md). Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_peer_inbound_rejected_total` | counter | `reason` | Inbound peer connections refused: `alpn` or `handshake`. |
 
@@ -298,6 +299,7 @@ Served by the Kafka-compatible listener. See [Kafka compatibility](/features/kaf
 | `felix_kafka_produce_duplicate_records_total` | counter | - | Produced records recognized as duplicates of an earlier retry. |
 | `felix_kafka_produce_dropped_total` | counter | `field` | Produced keys and headers not stored, by `field` (`key` or `headers`): the listener has not opted in with `FELIX_KAFKA_RECORD_HEADERS`, or the broker does not accept record headers yet. |
 | `felix_kafka_produce_errors_total` | counter | `error` | Produce failures by error. |
+| `felix_kafka_produce_refused_total` | counter | `reason` | Refused produce partitions whose Kafka error does not say why, by `reason`: `record_headers_not_finalized` is a key or header for a per-shard Raft partition before the cluster finalizes `raft_record_headers` (answered `INVALID_RECORD`). |
 | `felix_kafka_fetch_records_total` | counter | - | Records returned to fetches. |
 | `felix_kafka_fetch_bytes_total` | counter | - | Bytes returned to fetches. |
 | `felix_kafka_fetch_waits_total` | counter | `outcome` | Fetches that waited for data, by how the wait ended. |

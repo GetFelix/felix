@@ -211,6 +211,13 @@ fn assignment() -> ShardAssignment {
             counter: 1,
             members: any_map(1),
         }),
+        raft_floor: Some(crate::model::RaftFloor {
+            incarnation: 1,
+            offset_floor: 1,
+            epoch: 1,
+            index: 1,
+            term: 1,
+        }),
     }
 }
 
@@ -595,6 +602,16 @@ fn commands() -> Vec<MetaCommand> {
             node_incarnation: 1,
             copy_id: 1,
         },
+        MetaCommand::RecordRaftFloors {
+            node_id: s("b"),
+            floors: vec![crate::model::RaftFloorReport {
+                key: shard_key(),
+                incarnation: 1,
+                epoch: 1,
+                index: 1,
+                term: 1,
+            }],
+        },
         MetaCommand::SealShard {
             key: shard_key(),
             expected_generation: 1,
@@ -792,6 +809,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordRootSequence { .. } => "record_root_sequence",
         MetaCommand::RecordPlacementAck { .. } => "record_placement_ack",
         MetaCommand::RecordRaftCopyId { .. } => "record_raft_copy_id",
+        MetaCommand::RecordRaftFloors { .. } => "record_raft_floors",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",

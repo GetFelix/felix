@@ -455,3 +455,40 @@ fn a_delete_forgets_report_stamps_from_level_37() {
         }
     ));
 }
+
+/// A floor report is refused below level 38 however it reached the leader,
+/// raw peer bytes included: a member that cannot apply it would keep no
+/// floor where the others hold one.
+#[test]
+fn a_floor_report_is_refused_below_level_38() {
+    let floors = encode_command(&MetaCommand::RecordRaftFloors {
+        node_id: "b".to_string(),
+        floors: vec![crate::model::RaftFloorReport {
+            key: crate::model::ShardKey {
+                tenant_id: "t".to_string(),
+                namespace: "n".to_string(),
+                stream: "s".to_string(),
+                shard: 0,
+                kind: crate::model::ShardKind::Stream,
+            },
+            incarnation: 0,
+            epoch: 0,
+            index: 1,
+            term: 1,
+        }],
+    });
+    let level = super::super::RAFT_FLOOR_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    // Matched by name too.
+    assert_eq!(op_of(&floors).as_deref(), Some(FLOORS_OP));
+    assert!(depends_on_level(&floors));
+    let refused = settle_for_level(&floors, level - 1).expect_err("below the level");
+    assert!(
+        matches!(
+            decode_result(&refused),
+            Ok(Err(MetaError::Conflict(message))) if message.contains("offset floor")
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(settle_for_level(&floors, level), Ok(None));
+}

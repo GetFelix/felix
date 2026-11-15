@@ -1881,8 +1881,14 @@ again on every update, which reaches logs already open: `DiskLog::set_retention`
 swaps the bounds the next sweep uses and starts the timer if it was not
 running. The control plane refuses a zero bound, which no log could meet.
 Group cursor and dead-letter logs keep the broker's bounds. A shard that runs on
-Raft takes no retention yet, from the stream or the broker: its log grows until
-the stream is deleted (#2602).
+Raft takes the same bounds, but its leader enforces them with a head trim to
+where a sweep would start the log, so the records are hidden on every member
+and stay on disk until Raft logs can purge
+([#2602](https://github.com/GetFelix/felix/issues/2602)). See
+`docs/per-shard-raft.md`, "Retention". `DiskLog::retention_cut` names that
+offset without deleting anything.
+
+> `a_retention_cut_names_the_sweeps_base_and_deletes_nothing`
 
 > `a_streams_retention_bounds_its_log_and_updates_in_place`
 

@@ -335,6 +335,27 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
     });
 }
 
+/// Report the committed log id of every Raft group this broker leads, once
+/// a second until `stop`. Only a broker that runs Raft shards and is a
+/// cluster member has any to report.
+#[cfg(feature = "raft")]
+pub(super) fn report_raft_floors<L: ControlPlaneLink>(
+    shards: &RaftShards,
+    link: Option<L>,
+    node_id: String,
+    credential: Option<NodeCredential>,
+    stop: CancellationToken,
+) {
+    let (Some(members), Some(link)) = (shards.members.clone(), link) else {
+        return;
+    };
+    let credential = credential
+        .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
+    tokio::spawn(crate::shards::raft::floor::run(
+        members, link, node_id, credential, stop,
+    ));
+}
+
 /// Put the engine check in front of `shards` and route by the result: a
 /// durable stream shard placed with a peer on the other engine is refused
 /// here, whichever engine this broker runs. Call it before the routing feed
