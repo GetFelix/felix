@@ -1194,41 +1194,6 @@ tail could pass for the new log's.
 Nothing can rebuild this file, so one that is present and does not decode
 fails the open of the Raft log. Absent means nothing was purged.
 
-## `raft-reserved`: a Raft copy's reserved index
-
-A Raft copy that has reserved indexes holds a `raft-reserved` file: the
-highest Raft index it may report as flushed before it raises the file again.
-
-```text
- 0   4  magic        u32  "FLRS"
- 4   2  version      u16  1
- 6   2  reserved     u16  zero
- 8   8  index        u64  the highest reserved Raft index
-16   4  crc          u32  crc32 over bytes 0..16
-```
-
-It is for a broker whose `fsync_mode` is `periodic` or `none`, where a
-copy will be able to count an entry toward a commit once it is written and
-before it is synced. A power cut of a majority can then lose committed
-entries, and a re-form must start above every index that was counted. The
-reservation is synced before any count above it, so it bounds them. See
-`docs/per-shard-raft.md`, "Keeping the re-form floor". No broker takes a
-reservation yet. Only a rotation writes this file, when the copies it
-replaces had one.
-
-Written through a temporary, an fsync, a rename and a directory sync. A
-rotation reads the highest reservation of the old directory and every kept
-directory of the shard, and writes it into the new directory before the
-copy file, so a directory with a copy file always carries what it replaced,
-and a crash before that leaves a directory the next open rotates again. A
-kept directory whose reservation is above the current copy's is never
-reclaimed.
-
-Nothing can rebuild this file, so one that is present and does not decode
-is an error for the rotation, for the re-form that reads it, and for the
-reclaim pass, which holds that kept directory. Absent means the copy never
-reserved anything.
-
 ### Purging past the snapshot
 
 A group whose state machine is rebuilt from its snapshot must never restart
@@ -1258,6 +1223,48 @@ hole after.
 
 A shard group's log refuses a purge past its snapshot instead
 (`RaftLog::purge_within`).
+
+## `raft-reserved`: a Raft copy's reserved index
+
+A Raft copy that has reserved indexes holds a `raft-reserved` file: the
+highest Raft index it may report as flushed before it raises the file again.
+
+```text
+ 0   4  magic        u32  "FLRS"
+ 4   2  version      u16  1
+ 6   2  reserved     u16  zero
+ 8   8  index        u64  the highest reserved Raft index
+16   4  crc          u32  crc32 over bytes 0..16
+```
+
+It is for a broker whose `fsync_mode` is `periodic` or `none`, where a
+copy will be able to count an entry toward a commit once it is written and
+before it is synced. A power cut of a majority can then lose committed
+entries, and a re-form must start above every index that was counted. The
+reservation is synced before any count above it, so it bounds them. The
+design is the proposal in #2606. No broker takes a
+reservation yet. Only a rotation writes this file, when the copies it
+replaces had one.
+
+Written through a temporary, an fsync, a rename and a directory sync. A
+rotation reads the highest reservation of the old directory and every kept
+directory of the shard, and writes it into the new directory before the
+copy file, so a directory with a copy file always carries what it replaced,
+and a crash before that leaves a directory the next open rotates again. A
+kept directory whose reservation is above the current copy's is never
+reclaimed.
+
+Nothing can rebuild this file, so one that is present and does not decode
+is an error for the rotation, for the re-form that reads it, and for the
+reclaim pass, which holds that kept directory. Because a rotation reads every
+kept directory's file, one damaged file stops the shard's copy from opening.
+To recover, check that the current copy's `raft-reserved` is at or above
+what the damaged copy could have held, then delete that kept directory.
+Absent means the copy never reserved anything.
+
+A build older than this file counts it as a record and does not carry it, so
+going back to such a build after any copy has reserved can lose a
+reservation.
 
 ## `raft-snapshot`: a Raft group's snapshot
 

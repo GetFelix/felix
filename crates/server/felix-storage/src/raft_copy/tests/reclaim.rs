@@ -463,3 +463,45 @@ async fn a_damaged_reservation_is_an_error_and_holds_its_copy() {
     assert_eq!(report.held[0].reason, HeldReason::Unreadable);
     assert!(kept.is_dir());
 }
+
+/// A crash in the new copy's reservation write leaves only the temporary.
+/// That directory is not kept, and the next rotation still carries the kept
+/// copy's reservation.
+#[tokio::test]
+async fn a_reservation_temporary_left_by_a_crash_is_not_kept() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let copies = root.open();
+    let first = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    fill(&first.log, 1, 0, 2).await;
+    reserved::store(&dir, 5000).expect("reserve");
+    drop(copies);
+    let second = rotate_again(&root, first).await;
+    second.log.close().await.expect("close");
+
+    std::fs::remove_dir_all(&dir).expect("crash");
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(
+        crate::raft_log::state_file::temporary(&dir, reserved::FILE_NAME),
+        b"half written",
+    )
+    .expect("temporary");
+    let copies = root.open();
+    let third = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await
+        .expect("rotate");
+    assert_eq!(
+        third
+            .rotation
+            .as_ref()
+            .map(|rotation| rotation.kept.clone()),
+        Some(None)
+    );
+    assert_eq!(kept_copies(&dir).expect("kept").len(), 1);
+    assert_eq!(reserved::load(&dir).expect("load"), Some(5000));
+    third.log.close().await.expect("close");
+}

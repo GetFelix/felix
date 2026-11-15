@@ -7,8 +7,7 @@
 //! indexes out again, and the reservation is how it knows how far to pad:
 //! every count is at or below a reservation that was synced first. A
 //! rotation carries the reservation to the new copy, so it outlives the
-//! copy that took it. See `docs/per-shard-raft.md`, "Keeping the re-form
-//! floor".
+//! copy that took it. See `docs/storage-format.md`, "`raft-reserved`".
 //!
 //! Nothing can rebuild it, so a file that does not decode is an error.
 
