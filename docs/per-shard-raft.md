@@ -3154,12 +3154,25 @@ keeps the membership's version, so a successor holding a different target
 does not see it as stale. Two members holding targets that each leave the
 other's seat out hand leadership back and forth, paced by the transfer
 count above. Members do not report the target version they hold, so the
-leader cannot check its successor's. Before the control plane sends
-targets, it must deliver the same target version to every member before
-any transfer can follow from it. A successor still holding an older target
-whose version equals the membership's shrinks the grown set back to that
-older target. That is a liveness cost, not a safety one: every set it
-writes contains its leader and goes through the same checks. Tracked in #2591.
+leader cannot check its successor's.
+
+A leader steps as soon as it holds a target, so the control plane's only
+lever is the order it delivers in. When a target removes the leader's
+broker, the control plane must first have the new target acknowledged by
+every voter the target keeps (the possible successors), and only then send
+it to the leader. A voter the target drops, or one that is down, does not
+need it: a down voter cannot be chosen as successor, because a successor
+must have matched the leader's last index. Members do not acknowledge
+targets yet, so this needs a target acknowledgement in the protocol
+(#2591).
+
+Two weaker cases cost liveness only, never safety, because every set the
+driver writes contains its leader and passes the same checks:
+
+- A successor still holding an older target whose version equals the
+  membership's shrinks the grown set back to that older target.
+- A successor holding no target parks on the grown set, with the old
+  leader's seat still a voter, and reports Idle until a target arrives.
 
 **Refusals.** A step can fail in two ways, and the driver treats them
 differently:
