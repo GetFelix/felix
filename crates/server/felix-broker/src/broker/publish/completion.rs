@@ -732,6 +732,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
         }
         while let Some(first) = records.next() {
             let timestamp_micros = first.timestamp_micros;
+            let mut headers = vec![first.headers.map(|headers| *headers)];
             let mut batch = HeldBatch {
                 payloads: vec![first.payload],
                 publisher: first.publisher,
@@ -747,11 +748,19 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
                 blank: false,
             };
             next = first.offset + 1;
-            while let Some(more) = records
-                .next_if(|more| more.offset == next && more.timestamp_micros == timestamp_micros)
-            {
+            // A batch names one publisher, so a record of another starts
+            // the next.
+            while let Some(more) = records.next_if(|more| {
+                more.offset == next
+                    && more.timestamp_micros == timestamp_micros
+                    && more.publisher == batch.publisher
+            }) {
                 batch.payloads.push(more.payload);
+                headers.push(more.headers.map(|headers| *headers));
                 next += 1;
+            }
+            if headers.iter().any(Option::is_some) {
+                batch.record_headers = Some(headers.into());
             }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
             if completion.append().is_ok() {

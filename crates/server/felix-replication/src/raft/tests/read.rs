@@ -42,6 +42,7 @@ async fn leave_one_behind(led: &Led, records: usize) -> (String, u64) {
     let record = Record {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from(vec![7u8; CATCH_UP_RECORD]),
+        headers: None,
     };
     let mut left = records;
     while left > 0 {
@@ -53,6 +54,7 @@ async fn leave_one_behind(led: &Led, records: usize) -> (String, u64) {
             ack: AckAt::Flushed,
             term: None,
             producer: None,
+            publisher: None,
         };
         led.engine.propose(&shard(0), batch).await.expect("written");
         left -= n;

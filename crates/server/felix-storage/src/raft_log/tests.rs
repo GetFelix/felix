@@ -51,13 +51,18 @@ pub(crate) type TestEntry = Entry<CommittedLeaderIdOf<Types>, EntryPayload<Strin
 pub(crate) struct Codec;
 
 impl EntryCodec<Types> for Codec {
-    /// `trim:<n>` is a head trim to `n`.
+    /// `trim:<n>` is a head trim to `n`; `headers:<h>` carries `h` as its
+    /// headers block.
     fn encode_data(&self, data: &String) -> io::Result<AppendRecord> {
         let mark = match data.strip_prefix("trim:").and_then(|at| at.parse().ok()) {
             Some(floor) => RecordMark::Trim { floor },
             None => RecordMark::None,
         };
-        Ok(record(mark, data.as_bytes()))
+        let mut record = record(mark, data.as_bytes());
+        record.headers = data
+            .strip_prefix("headers:")
+            .map(|headers| Box::new(Bytes::copy_from_slice(headers.as_bytes())));
+        Ok(record)
     }
 
     fn decode_data(&self, record: LogRecord) -> io::Result<String> {

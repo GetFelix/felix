@@ -197,6 +197,8 @@ struct Shared<K> {
     marking: std::sync::OnceLock<Marking>,
     /// The root's head-trim marker is known to be on disk.
     trim_marked: std::sync::atomic::AtomicBool,
+    /// The root's record-headers marker is known to be on disk.
+    headers_marked: std::sync::atomic::AtomicBool,
 }
 
 /// How this log keeps its marks at the data root.
@@ -213,19 +215,45 @@ impl<K> Shared<K> {
     /// ([`crate::run_state::head_trimmed`]). A log without marks has no
     /// root to mark.
     async fn mark_head_trimmed(&self) -> io::Result<()> {
+        self.mark_root(
+            &self.trim_marked,
+            "head-trim",
+            crate::run_state::record_head_trimmed,
+        )
+        .await
+    }
+
+    /// The same for a record with a key or headers block, so a copy holding
+    /// one refuses a fleet that has not finalized `record_headers`
+    /// ([`crate::run_state::has_record_headers`]).
+    async fn mark_headers_stored(&self) -> io::Result<()> {
+        self.mark_root(
+            &self.headers_marked,
+            "record-headers",
+            crate::run_state::record_headers_stored,
+        )
+        .await
+    }
+
+    async fn mark_root(
+        &self,
+        marked: &std::sync::atomic::AtomicBool,
+        what: &str,
+        record: fn(&std::path::Path) -> crate::Result<()>,
+    ) -> io::Result<()> {
         use std::sync::atomic::Ordering;
-        if self.trim_marked.load(Ordering::Acquire) {
+        if marked.load(Ordering::Acquire) {
             return Ok(());
         }
         let Some(marking) = self.marking.get() else {
             return Ok(());
         };
         let root = marking.marks.mark_log().root().to_path_buf();
-        felix_common::blocking::spawn(move || crate::run_state::record_head_trimmed(&root))
+        felix_common::blocking::spawn(move || record(&root))
             .await
             .map_err(io::Error::other)?
-            .map_err(|err| io::Error::other(format!("record the head-trim marker: {err}")))?;
-        self.trim_marked.store(true, Ordering::Release);
+            .map_err(|err| io::Error::other(format!("record the {what} marker: {err}")))?;
+        marked.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -293,6 +321,7 @@ where
                 segment_reads: std::sync::atomic::AtomicU64::new(0),
                 marking: std::sync::OnceLock::new(),
                 trim_marked: std::sync::atomic::AtomicBool::new(false),
+                headers_marked: std::sync::atomic::AtomicBool::new(false),
             }),
             types: std::marker::PhantomData,
         })

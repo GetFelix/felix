@@ -1765,8 +1765,8 @@ no version is refused, not read as zero.
 Two things are left for the pull request that puts stream shards on Raft
 (#2233):
 
-- An entry carries a record's payload and timestamp only. The publisher,
-  headers and marks come with adoption.
+- An entry carries a record's payload, timestamp,
+  publisher and headers. Marks come with adoption.
 - The state machine keeps nothing on disk, so a restarted member applies
   its committed entries again, which reads them. That is fine for the
   tests here and too slow for a real shard.
@@ -2705,8 +2705,7 @@ shard's engine ("Head trims", above).
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
 A Kafka produce and an MQTT publish to a Raft shard are refused by name
-too, before anything is claimed. Both write with a producer's sequence, and
-every MQTT message carries headers. A Kafka client gets `INVALID_REQUEST`,
+too, before anything is claimed. Both write with a producer's sequence. A Kafka client gets `INVALID_REQUEST`,
 which it does not retry; an MQTT client gets `PUBACK` 0x83 with the reason
 string `raft_stream`.
 
@@ -2923,16 +2922,14 @@ itself is #2524, and it has to land before a stream
 that holds data can move from the hybrid to Raft, because the hybrid takes
 these batches.
 
-The publisher id (the principal that published a record, which is not the
-producer id) is still not stored, and a batch with record headers is still
-refused.
+An idempotent batch keeps its publisher and its records' headers as any
+other publish does ("Publishers and record headers", below).
 
 An idempotent batch can also reach the leader as a forward from another
 broker. One whose records carry no key-and-headers block travels as
-`PlainSequencedForwardPublish`, so the leader takes it. One with a block
-travels as `SequencedForwardPublish` and is refused `UnsupportedKind`, the
-same as a direct publish with headers (`docs/internal-protocol.md`, "A
-forward that names its producer").
+`PlainSequencedForwardPublish`. One with a block travels as
+`SequencedForwardPublish` (`docs/internal-protocol.md`, "A forward that
+names its producer"). The leader takes both.
 
 > `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
 > `a_batch_sent_again_is_answered_and_not_written_again`,
@@ -3153,6 +3150,59 @@ condition is `FelixRaftCond.tla`'s, decided at the entry's final index.
 > `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
 > `a_trim_entry_deletes_no_segment`.
 
+**Publishers and record headers.** A record on a Raft shard keeps what it
+keeps on the hybrid: the publisher id (the principal that published it,
+which is not the producer id) and its key-and-headers block
+(`docs/protocol.md`, "Record headers"). Both are stored in the record's own
+entry, so every member's log holds them, and a follower's subscriber, a
+restarted member and a history read get them back.
+
+The rules for using them are the hybrid's, plus one fleet feature:
+
+- The publisher id is stored only when `publisher_principal` and
+  `raft_record_headers` are both finalized. Without them the record is
+  stored with no publisher, and the publish is not refused.
+- Headers need `record_headers` and then `raft_record_headers`. A publish
+  with headers before both are finalized is refused with
+  `feature_not_enabled`, naming the missing feature, and nothing is
+  proposed. A lone broker takes them from the start.
+- A conditional publish (`publish_if`) carries no headers, the same as on
+  the hybrid.
+
+`Broker::admit_attribution` applies these rules before the batch is
+proposed, so a refused batch takes no offset.
+
+On the wire a record with either one is wrapped in entry tag 7: a flags
+byte says which follow, each is a length and its bytes, and then comes the
+record laid out under its own tag (1, 3, 4 or 5). A record with neither
+keeps the frame it always had, and the layout stays 5. A member built
+before tag 7 refuses the whole append by that tag rather than store the
+record without them, so `raft_record_headers` waits for every broker to
+report it. A trim never names a publisher or headers.
+
+Every member writes the data directory's `record-headers` marker before its
+log stores a record with headers, so a copy holding one refuses a fleet
+that has not finalized `record_headers`
+(`felix_storage::run_state::has_record_headers`).
+
+A follower builds its batches from its log, and a batch names one
+publisher. So two publishes stamped at the same time by different
+publishers are delivered as two batches, as the leader delivers them.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_records_publisher_and_headers_reach_every_member` and
+> `headers_are_refused_until_the_fleet_stores_them_on_raft`;
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
+> `crates/server/felix-broker/src/broker/shards/tests.rs`,
+> `a_follower_starts_a_batch_where_the_publisher_changes`;
+> `crates/server/felix-storage/src/raft_log/tests/marks.rs`,
+> `a_record_with_headers_marks_the_root`;
+> `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
+> `a_queued_publish_to_a_raft_shard_keeps_its_publisher_and_headers`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `record_headers_on_a_raft_shard_replay_from_every_member`.
+
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
 every broker: a shard that already holds data cannot change engines yet.
@@ -3306,8 +3356,8 @@ with the leader, and the requester sends it there.
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
 > `a_forward_to_a_member_that_does_not_lead_is_followed_to_the_leader`.
 
-The records a Raft stream stores carry no publisher or headers, so its
-subscribers are told neither. The state machine remembers the last 64 runs
+A follower's subscriber gets each record's publisher and headers from its
+log ("Publishers and record headers", above). The state machine remembers the last 64 runs
 of entries that hold no record; a batch committed after more runs than
 that, or on a member that resumed from a snapshot above its run, reports
 none skipped.

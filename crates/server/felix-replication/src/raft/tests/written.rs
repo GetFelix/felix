@@ -392,6 +392,7 @@ impl Led {
         let record = Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(b"proposed"),
+            headers: None,
         };
         let batch = Batch {
             expected: None,
@@ -400,6 +401,7 @@ impl Led {
             ack: AckAt::Written,
             term: None,
             producer: None,
+            publisher: None,
         };
         let written = self.engine.propose(&shard(0), batch).await;
         written.expect("written")

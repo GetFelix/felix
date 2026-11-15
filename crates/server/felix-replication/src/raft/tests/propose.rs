@@ -29,6 +29,7 @@ fn batch(payloads: &[&'static [u8]], ack: AckAt) -> Batch {
     let records = payloads.iter().map(|payload| Record {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(payload),
+        headers: None,
     });
     Batch {
         expected: None,
@@ -37,6 +38,7 @@ fn batch(payloads: &[&'static [u8]], ack: AckAt) -> Batch {
         ack,
         term: None,
         producer: None,
+        publisher: None,
     }
 }
 
@@ -317,11 +319,13 @@ fn a_drain_stops_at_its_bounds() {
             .map(|_| Record {
                 timestamp_micros: 1,
                 payload: Bytes::from(vec![0; bytes]),
+                headers: None,
             })
             .collect(),
         ack: AckAt::Written,
         term: None,
         producer: None,
+        publisher: None,
     };
     // The batches each drain takes.
     let drains = |batches: Vec<Batch>| {
@@ -570,6 +574,8 @@ async fn a_token_does_not_leave_with_an_append() {
         payload: Bytes::from_static(b"p"),
         producer: None,
         written: Some(token),
+        headers: None,
+        publisher: None,
     };
     let leads = LeaderIdOf::<ShardTypes>::new(3, MemberId::new("a", 1));
     let rpc = AppendEntriesRequest::<ShardTypes> {
@@ -691,6 +697,8 @@ pub(super) async fn cut_after_first(
         producer: None,
         expected: None,
         trim: None,
+        publisher: None,
+        headers: None,
         written: None,
     };
     let (first, rest) = payloads.split_first().expect("a record");
@@ -749,6 +757,8 @@ async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
         producer: None,
         expected: None,
         trim: None,
+        publisher: None,
+        headers: None,
         written: None,
     };
 

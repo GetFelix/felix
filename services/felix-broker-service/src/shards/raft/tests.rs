@@ -1148,6 +1148,7 @@ async fn a_led_term_is_served_only_after_the_stream_is_at_the_committed_tail() {
             &orders,
             term,
             vec![bytes::Bytes::from_static(b"early")],
+            Default::default(),
             Duration::from_secs(5),
         )
         .expect("a Raft shard");
@@ -1484,6 +1485,7 @@ impl Member {
             sequence,
             felix_broker::SequenceReuse::Refuse,
             vec![bytes::Bytes::from_static(payload)],
+            Default::default(),
             Duration::from_secs(10),
         );
         let proposed = proposed.expect("a Raft shard").expect("proposed");

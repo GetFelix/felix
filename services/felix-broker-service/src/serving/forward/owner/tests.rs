@@ -1676,7 +1676,7 @@ mod on_raft {
             other => panic!("expected an acknowledgement, got {other:?}"),
         }
 
-        // What a Raft stream cannot carry is refused by name.
+        // Headers wait for the fleet to store them on Raft.
         match handler.apply(over_the_wire(sequenced(b"headered"))).await {
             InternalMessage::ForwardPublishError(err) => {
                 assert_eq!(err.code, ErrorCode::UnsupportedKind);

@@ -52,7 +52,7 @@ pub mod replication;
 pub mod timings;
 
 pub use broker::{
-    Appended, AppendedShards, Broker, CacheMetadata, ClaimedPublish, CommittedOffsets,
+    Appended, AppendedShards, Attribution, Broker, CacheMetadata, ClaimedPublish, CommittedOffsets,
     ConsistencyLevel, EngineLogs, IdempotentClaim, IdempotentOutcome, IdempotentProposal,
     LogDelivery, LogKind, MountedStream, OwedRecords, ProducerTurn, ProposalCommitted,
     ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome, RECORD_SEQUENCE_WRAP,
