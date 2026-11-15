@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794744668737,
+  "lastUpdate": 1794745176507,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58500,6 +58500,58 @@ window.BENCHMARK_DATA = {
             "range": "38091.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1187802.39\nmean: 1177351.08\nstdev: 38091.94\ncv: 3.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2379049e0d46883c2e6d3a4b1305d3e8661e8986",
+          "message": "feat(raft): publisher id and record headers on a Raft shard (#2446) (#2616)\n\n* feat(raft): publisher id and record headers on a Raft stream shard, WIP (#2446)\n\nA Raft entry stores the batch's publisher and each record's headers block,\nread back by every member, after a restart, by catch-up and by history\nreads. On the wire such an entry is wrapped in a new tag (7), so other\nframes stay byte-identical and an older member refuses it by tag. The\nbroker admits them as the hybrid does (publisher only when\nrecords_publishers, headers refused when record_headers is off) and also\nwaits for the new fleet feature raft_record_headers. Every member's Raft\nlog writes the record-headers marker before storing one. Followers\ndeliver headers from the log and start a new batch at a publisher change.\n\nTests, revert checks and docs still to come.\n\n* fix(raft): allow the longer argument lists (#2446)\n\n* test(raft): publisher and headers on the wire, in every member's log, and on follower delivery (#2446)\n\n* test(storage): a Raft record with headers marks the root (#2446)\n\n* test(raft): a queued publish to a Raft shard keeps its publisher and headers (#2446)\n\n* test(cluster): record headers on a Raft shard replay from every member (#2446)\n\n* docs(raft): publishers and record headers on a Raft shard (#2446)\n\n* fix(raft): review: publisher gate test, idempotent rest without blocks, stale docs (#2446)\n\n* test(raft): a cut batch finished with headers keeps each record's own (#2446)\n\n* test(raft): a command's serialized keys include publisher and headers (#2446)\n\n* Name the owner's Raft headers gate in a forwarded refusal; test a restarted member's headers; size the attributed wrapper\n\n* docs(raft): record headers do not change the modelled protocol\n\nSpec-Unaffected: publisher id and record headers ride inside a Raft entry's payload; the lease, quorum mark, reports, promotion and handoff are unchanged.",
+          "timestamp": "2026-11-15T12:13:55Z",
+          "tree_id": "86d544bd892fb725344303fc67ecd64a61a8b0c0",
+          "url": "https://github.com/GetFelix/felix/commit/2379049e0d46883c2e6d3a4b1305d3e8661e8986"
+        },
+        "date": 1794745175567,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 414687.49,
+            "range": "15165.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 414687.49\nmean: 412537.63\nstdev: 15165.51\ncv: 3.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 414687.49,
+            "range": "15165.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 414687.49\nmean: 412537.63\nstdev: 15165.51\ncv: 3.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 94375.88,
+            "range": "2389.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 94375.88\nmean: 93163.99\nstdev: 2389.16\ncv: 2.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 943758.83,
+            "range": "23891.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 943758.83\nmean: 931639.86\nstdev: 23891.57\ncv: 2.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
