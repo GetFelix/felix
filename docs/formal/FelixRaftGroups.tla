@@ -6,7 +6,9 @@
 (* folds the committed ones, in order, into the same group table: the      *)
 (* cursor, the dead letters and the redriven records. The leader serves    *)
 (* the group from an in-memory tracker (claims, acknowledgements above a   *)
-(* gap) hydrated from that table. One group, records 1..N.                 *)
+(* gap) hydrated from that table. One group, records 1..N; the other      *)
+(* groups of the shard appear only through their deletes, since the        *)
+(* delete watermark is shard-wide.                                         *)
 (*                                                                         *)
 (* `log` is every committed entry; `tail` is the leader's uncommitted      *)
 (* entries. A change of leader commits a prefix of the tail and drops the  *)
@@ -24,13 +26,22 @@
 (*   finish(o)    -- a redriven record was acknowledged                    *)
 (*   seek(to)     -- the cursor is set, backwards or forwards              *)
 (*   delete       -- the group and its dead letters are gone               *)
+(*   fdelete      -- another group of the shard is deleted                 *)
 (*                                                                         *)
 (* Each tracker-driven entry carries `hyd`, the log index its tracker was  *)
 (* hydrated at (a seek's own tracker takes the seek's index). The table    *)
 (* keeps `reset`, the index of the group's last seek, and the shard keeps  *)
 (* `lastDel`, the index of its latest delete. Apply drops an entry with    *)
 (* hyd below either: it came from a tracker the seek or delete retired.    *)
-(* Within that, the cursor only moves forward.                             *)
+(* Within that, the cursor only moves forward. Placing any delete retires  *)
+(* every tracker of the shard, since all of their later entries would be   *)
+(* dropped; the leader remembers that a retired tracker had handed out     *)
+(* records until the term ends.                                            *)
+(*                                                                         *)
+(* The leader decides from its applied table, never from its own entries   *)
+(* in flight. So a hydrate, a redrive and a seek wait until the leader has *)
+(* applied its own last proposed entry; after a change of leader that also *)
+(* covers everything committed before the term.                            *)
 (*                                                                         *)
 (* A seek with if_new moves only a group that does not exist. The leader   *)
 (* decides that under the shard lock from the table and its tracker: a     *)
@@ -59,16 +70,22 @@
 (*   IfNewChecksTracker = FALSE -- if_new looks at the table only.         *)
 (*   TermBoundTrackers = FALSE  -- a member keeps its tracker across terms *)
 (*                                 and serves from it when it leads again. *)
-(*   HydrateFromApplied = FALSE -- a tracker hydrates from whatever prefix *)
-(*                                 of the log the member has applied, not  *)
-(*                                 after a read index and an apply wait.   *)
+(*   HydrateFromApplied = FALSE -- the leader's table is whatever prefix   *)
+(*                                 of the committed log it has applied,    *)
+(*                                 not all of it.                          *)
+(*   WaitOwnProposals = FALSE   -- hydrate and user operations do not wait *)
+(*                                 for the leader's own entries in flight. *)
+(*   DeleteRetiresAll = FALSE   -- a delete retires only its own group's   *)
+(*                                 tracker.                                *)
+(*   DeadBeforeAdvance = FALSE  -- a dead letter is proposed like an       *)
+(*                                 advance, in any order with it.          *)
 (*   KeepRedriven = FALSE       -- a redrive deletes the dead letter and   *)
 (*                                 the record is owed only in memory.      *)
 (*                                                                         *)
 (* Abstracted: elections and replication (a change of leader is one step), *)
 (* the group marks' place in the stream's offsets (skipping them proposes  *)
-(* nothing, so they do not appear here; the bound on re-skipping is a      *)
-(* liveness property, tested in code), visibility timeouts (a claim is     *)
+(* nothing, so they do not appear here; that skipping never proposes, and  *)
+(* the bound on re-skipping, are tested in code), visibility timeouts (a claim is     *)
 (* acknowledged or dead-lettered, never lapses; a lapse is a redelivery,   *)
 (* which only adds behaviour already covered by a fresh tracker), attempt  *)
 (* counts, discard, snapshots and purge. Every member holds the committed  *)
@@ -87,6 +104,9 @@ CONSTANTS
     IfNewChecksTracker,
     TermBoundTrackers,
     HydrateFromApplied,
+    WaitOwnProposals,
+    DeleteRetiresAll,
+    DeadBeforeAdvance,
     KeepRedriven
 
 ASSUME
@@ -95,15 +115,18 @@ ASSUME
     /\ EpochCheck \in BOOLEAN /\ DeleteWatermark \in BOOLEAN
     /\ IfNewChecksTracker \in BOOLEAN /\ TermBoundTrackers \in BOOLEAN
     /\ HydrateFromApplied \in BOOLEAN /\ KeepRedriven \in BOOLEAN
+    /\ WaitOwnProposals \in BOOLEAN /\ DeleteRetiresAll \in BOOLEAN
+    /\ DeadBeforeAdvance \in BOOLEAN
 
 VARIABLES
     log,       \* every committed entry, in order
     tail,      \* the leader's uncommitted entries
     pend,      \* entries the leader's trackers decided on, not yet appended
     leader,
-    trk,       \* per member: its tracker, or None
-    acks,      \* history: per record, the highest hyd of a tracker that took its
-               \* acknowledgement, -1 if none (the checks only ask "at or above")
+    trk,       \* per member: its tracker, or a retired one
+    acks,      \* history: per record, the hyds of the trackers that took its
+               \* acknowledgement; a change of leader forgets those past the
+               \* committed log, since their index is reused
     served,    \* history: the highest hyd of a tracker that handed out a record
                \* in this term, -1 if none
     badIfNew,  \* history: an if_new seek was placed over a group that had served
@@ -115,7 +138,9 @@ Symm == Permutations(Members)
 
 Records == 1..N
 Max2(a, b) == IF a >= b THEN a ELSE b
-None == [none |-> TRUE]
+\* `any`: a tracker retired by a delete had handed out records this term.
+None == [none |-> TRUE, any |-> FALSE]
+Retired(t) == [none |-> TRUE, any |-> t.any]
 
 Full == log \o tail
 
@@ -135,6 +160,8 @@ Step(T, e, i) ==
                       !.reset = i, !.gfloor = i]
       [] e.kind = "delete" ->
             [T0 EXCEPT !.lastDel = IF DeleteWatermark THEN i ELSE 0, !.gfloor = i]
+      [] e.kind = "fdelete" ->
+            [T EXCEPT !.lastDel = IF DeleteWatermark THEN i ELSE @]
       [] Stale(T, e) -> T
       [] e.kind = "advance" ->
             [T EXCEPT !.exists = TRUE, !.cursor = Max2(T.cursor, e.to)]
@@ -178,6 +205,12 @@ Room == Len(log) + Len(tail) < MaxLog
 
 Lead == trk[leader]
 
+\* What the leader decides from: its applied table. With the rules on, it
+\* has applied the whole committed log and has nothing of its own in flight.
+Ready == WaitOwnProposals => tail = <<>>
+Views == IF HydrateFromApplied THEN {Len(log)} ELSE 0..Len(log)
+View(k) == Fold(SubSeq(log, 1, k))
+
 ----------------------------------------------------------------------------
 
 Init ==
@@ -186,21 +219,20 @@ Init ==
     /\ pend = {}
     /\ leader \in Members
     /\ trk = [m \in Members |-> None]
-    /\ acks = [o \in Records |-> -1]
+    /\ acks = [o \in Records |-> {}]
     /\ served = -1
     /\ badIfNew = FALSE
     /\ changes = 0
 
-\* A poll on a group with no tracker. Correctly: after a read index and an
-\* apply wait, so from the whole committed log, nothing of the leader's own
-\* in flight.
+\* A poll on a group with no tracker.
 Hydrate ==
     /\ Lead.none
-    /\ \E k \in IF HydrateFromApplied THEN {Len(log)} ELSE 0..Len(log) :
-        /\ HydrateFromApplied => tail = <<>>
-        /\ LET T == Fold(SubSeq(log, 1, k)) IN
-            trk' = [trk EXCEPT ![leader] =
-                        Tracker(k, IF T.exists THEN T.cursor ELSE 1, T.red)]
+    /\ Ready
+    /\ \E k \in Views :
+        LET T == View(k) IN
+        trk' = [trk EXCEPT ![leader] =
+                    [Tracker(k, IF T.exists THEN T.cursor ELSE 1, T.red)
+                        EXCEPT !.any = Lead.any]]
     /\ UNCHANGED <<log, tail, pend, leader, acks, served, badIfNew, changes>>
 
 HandOut(o) ==
@@ -224,7 +256,7 @@ Ack(o) ==
     /\ pend' = pend \cup s.adv
                \cup (IF o \in t.owed
                      THEN {[kind |-> "finish", o |-> o, hyd |-> t.hyd]} ELSE {})
-    /\ acks' = [acks EXCEPT ![o] = Max2(@, t.hyd)]
+    /\ acks' = [acks EXCEPT ![o] = @ \cup {t.hyd}]
     /\ UNCHANGED <<log, tail, leader, served, badIfNew, changes>>
 
 \* The dead letter is appended before the run closes, as the code writes it
@@ -233,13 +265,17 @@ DeadLetter(o) ==
     LET t == Lead
         t1 == [t EXCEPT !.out = @ \ {o}, !.owed = @ \ {o}]
         s == Settle(t1, o)
+        d == [kind |-> "dead", o |-> o, hyd |-> t.hyd]
     IN
     /\ ~t.none
     /\ o \in t.out
-    /\ Room
-    /\ tail' = Append(tail, [kind |-> "dead", o |-> o, hyd |-> t.hyd])
     /\ trk' = [trk EXCEPT ![leader] = s.t]
-    /\ pend' = pend \cup s.adv
+    /\ IF DeadBeforeAdvance
+       THEN /\ Room
+            /\ tail' = Append(tail, d)
+            /\ pend' = pend \cup s.adv
+       ELSE /\ pend' = pend \cup s.adv \cup {d}
+            /\ UNCHANGED tail
     /\ UNCHANGED <<log, leader, acks, served, badIfNew, changes>>
 
 \* A tracker's decision reaches the log, in any order.
@@ -253,30 +289,43 @@ Propose(e) ==
 \* User operations, decided and appended under the shard lock.
 Redrive(o) ==
     /\ Room
-    /\ o \in Fold(Full).dead
+    /\ Ready
+    /\ \E k \in Views : o \in View(k).dead
     /\ tail' = Append(tail, [kind |-> "redrive", o |-> o, hyd |-> Len(Full) + 1])
     /\ trk' = IF Lead.none THEN trk
               ELSE [trk EXCEPT ![leader].owed = @ \cup {o}]
     /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes>>
 
 Seek(to, ifNew) ==
-    LET T == Fold(Full)
-        t == Lead
+    LET t == Lead
         i == Len(Full) + 1
-        exists == T.exists \/ (IfNewChecksTracker /\ ~t.none /\ t.any)
     IN
     /\ Room
-    /\ ifNew => ~exists
+    /\ Ready
+    /\ \E k \in Views :
+        LET T == View(k)
+            exists == T.exists \/ (IfNewChecksTracker /\ t.any)
+        IN
+        /\ ifNew => ~exists
+        /\ trk' = [trk EXCEPT ![leader] = Tracker(i, to, T.red)]
     /\ tail' = Append(tail, [kind |-> "seek", to |-> to, hyd |-> i])
-    /\ trk' = [trk EXCEPT ![leader] = Tracker(i, to, T.red)]
     /\ badIfNew' = (badIfNew \/
-                    (ifNew /\ served >= T.gfloor))
+                    (ifNew /\ served >= Fold(Full).gfloor))
     /\ UNCHANGED <<log, pend, leader, acks, served, changes>>
 
 Delete ==
     /\ Room
     /\ tail' = Append(tail, [kind |-> "delete", hyd |-> Len(Full) + 1])
     /\ trk' = [trk EXCEPT ![leader] = None]
+    /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes>>
+
+\* Another group of the shard is deleted.
+ForeignDelete ==
+    /\ Room
+    /\ tail' = Append(tail, [kind |-> "fdelete", hyd |-> Len(Full) + 1])
+    /\ trk' = IF DeleteRetiresAll
+              THEN [trk EXCEPT ![leader] = Retired(@)]
+              ELSE trk
     /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes>>
 
 Commit ==
@@ -290,12 +339,13 @@ ChangeLeader(m) ==
     /\ \E k \in 0..Len(tail) :
         /\ log' = log \o SubSeq(tail, 1, k)
         /\ tail' = <<>>
+        /\ acks' = [o \in Records |-> {h \in acks[o] : h <= Len(log) + k}]
     /\ pend' = {}
     /\ leader' = m
     /\ trk' = IF TermBoundTrackers THEN [x \in Members |-> None] ELSE trk
     /\ changes' = changes + 1
     /\ served' = -1
-    /\ UNCHANGED <<acks, badIfNew>>
+    /\ UNCHANGED badIfNew
 
 Next ==
     \/ Hydrate
@@ -303,6 +353,7 @@ Next ==
     \/ \E e \in pend : Propose(e)
     \/ \E to \in SeekTo, ifNew \in BOOLEAN : Seek(to, ifNew)
     \/ Delete
+    \/ ForeignDelete
     \/ Commit
     \/ \E m \in Members : ChangeLeader(m)
 
@@ -315,7 +366,7 @@ NoSkip ==
     T.exists =>
         \A o \in T.from..(T.cursor - 1) :
             \/ o \in T.dead \cup T.red
-            \/ acks[o] >= T.gfloor
+            \/ \E h \in acks[o] : h >= T.gfloor
 
 RedrivenOwed ==
     LET t == Lead IN

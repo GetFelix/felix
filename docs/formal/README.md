@@ -634,13 +634,17 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
 | `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
 | `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
-| `FelixRaftGroups.cfg` | `FelixRaftGroups.tla`: two members, one group over two records, one change of leader, four entries; every rule on | pass `NoSkip`, `RedrivenOwed`, `IfNewKeepsServed` (8,856,873 distinct states, 24.6M generated, depth 41, 28 seconds with 8 workers on a 32-core machine) |
+| `FelixRaftGroups.cfg` | `FelixRaftGroups.tla`: two members, one group over two records, one change of leader, four entries; every rule on | pass `NoSkip`, `RedrivenOwed`, `IfNewKeepsServed` (12,407,589 distinct states, 27.3M generated, depth 38, 40 seconds with 8 workers on a 32-core machine) |
+| `FelixRaftGroupsTwoChanges.cfg` | the same with two changes of leader, so a member leads, loses the term and leads again | pass the same (30,289,252 distinct states, 84.2M generated, depth 41, 101 seconds with 8 workers on a 32-core machine) |
 | `FelixRaftGroupsNoEpoch.cfg` | apply ignores the seek index | violate `NoSkip`: an advance decided before a seek lands after it and moves the cursor over a record the new incarnation never read |
 | `FelixRaftGroupsNoDeleteWatermark.cfg` | the shard keeps no delete watermark | violate `NoSkip`: an advance decided before a delete lands after it and recreates the group past a record |
+| `FelixRaftGroupsDeleteKeepsTrackers.cfg` | deleting another group leaves this group's tracker serving | violate `RedrivenOwed`: the tracker's finish of a redriven record lands below the delete watermark and is dropped, so the record stays redriven and nothing owes it |
 | `FelixRaftGroupsNoRedrivenSet.cfg` | a redrive deletes the dead letter and owes the record in memory only | violate `NoSkip`: a record below the cursor is in no set |
+| `FelixRaftGroupsDeadAfterAdvance.cfg` | a dead letter is proposed in any order with the advance over it | violate `NoSkip`: the advance commits first and the record is in no set |
 | `FelixRaftGroupsIfNewTableOnly.cfg` | if_new checks the table only | violate `IfNewKeepsServed`: a new group with a record handed out and nothing committed is moved |
 | `FelixRaftGroupsTrackerAcrossTerms.cfg` | a member keeps its tracker across terms; two changes of leader | violate `RedrivenOwed`: a member leading again serves from a tracker that misses a redrive committed in between |
-| `FelixRaftGroupsHydrateBeforeApply.cfg` | a tracker hydrates from the prefix of the log its member has applied | violate `RedrivenOwed`: the tracker misses a committed redrive |
+| `FelixRaftGroupsHydrateBeforeApply.cfg` | the leader decides from a prefix of the committed log it has applied | violate `RedrivenOwed`: the tracker misses a committed redrive |
+| `FelixRaftGroupsUserOpsBeforeOwnApply.cfg` | hydrate, redrive and seek do not wait for the leader's own entries in flight | violate `RedrivenOwed`: a seek's tracker misses a redrive the leader proposed just before it |
 | `FelixRaftCond.cfg` | `FelixRaftCond.tla`: three members, three terms, logs up to five entries, one plain publish, one membership entry, three conditional publishes (two naming offset 2, one offset 3); each member decides `kept` from the entry and its index | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold` (169,456,277 distinct states, depth 34, 24 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondTwoTerms.cfg` | the same with two terms | pass the same (18,646,633 distinct states, depth 30, 3 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
@@ -4130,8 +4134,10 @@ step with the table.
 What is modelled:
 
 - One group over records 1..N. Entries are `advance(to)`, `dead(o)`,
-  `redrive(o)`, `finish(o)` (a redriven record was acknowledged), `seek(to)`
-  and `delete`.
+  `redrive(o)`, `finish(o)` (a redriven record was acknowledged), `seek(to)`,
+  `delete`, and the delete of another group in the same shard. The other
+  groups appear only through their deletes, because the delete watermark is
+  shard-wide.
 - An acknowledgement updates the tracker first and proposes after, in any
   order with other proposals. So an advance decided before a seek can land
   after it. A dead letter is appended before the run over it closes, as the
@@ -4140,12 +4146,20 @@ What is modelled:
   at. The table keeps the index of the group's last seek, and the shard keeps
   the index of its latest delete. Apply drops an entry from below either.
   Within that the cursor only moves forward.
+- Placing a delete, of this group or another, retires every tracker in the
+  shard, since apply would drop all of their later entries. The leader still
+  remembers that a retired tracker handed out records, until the term ends,
+  so an if_new seek does not treat the group as new.
 - A seek with if_new moves only a group that does not exist, decided by the
   leader from the table and its tracker.
-- A tracker belongs to a term and is dropped at a change of leader. A new one
-  is hydrated only after a read index and an apply wait, so from the whole
-  committed log. A change of leader commits a prefix of the old leader's
-  uncommitted entries, drops the rest, and drops every proposal not yet made.
+- The leader decides from its applied table only, never from its own
+  entries in flight. So a hydrate, a redrive and a seek first wait until the
+  leader has applied its own last proposed entry. After a change of leader
+  that entry is at or past everything committed before the term, so the wait
+  also stands in for the read index.
+- A tracker belongs to a term and is dropped at a change of leader. A change
+  of leader commits a prefix of the old leader's uncommitted entries, drops
+  the rest, and drops every proposal not yet made.
 
 What is checked:
 
@@ -4158,13 +4172,18 @@ What is checked:
   handed out records in this term.
 
 Each broken configuration drops one rule and finds the trace: no seek index
-at apply, no delete watermark, if_new checking the table only, trackers kept
-across terms, hydrating without the apply wait, and a redrive that keeps the
-record in memory only.
+at apply, no delete watermark, a delete that leaves other trackers serving,
+if_new checking the table only, trackers kept across terms, deciding from part
+of the committed log, deciding before the leader's own entries are applied, a
+dead letter proposed in any order with the advance over it, and a redrive that
+keeps the record in memory only.
 
-Not modelled: the group marks' place in the stream's offsets. Skipping a mark
-proposes nothing, so marks add no group entries. How many reads a re-skip
-over many marks costs is a liveness bound and is tested in code. Also left
+Not modelled: the group marks' place in the stream's offsets. The rule that
+skipping a mark proposes nothing is what keeps two groups, or an idle group,
+from feeding each other entries forever. That is a property of how the log
+grows, not of any one state, so a code test holds it instead: an idle group
+beside an active one, and the Raft log stops growing. How many reads a re-skip
+over many marks costs is a liveness bound and is tested in code too. Also left
 out: visibility timeouts (a lapse is a redelivery), attempt counts, discard,
 snapshots and purge (the table travels in the stream snapshot once Raft logs
 are purged), and the hybrid's lease and round, which
