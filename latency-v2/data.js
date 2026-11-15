@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794730488731,
+  "lastUpdate": 1794731528262,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73986,6 +73986,72 @@ window.BENCHMARK_DATA = {
             "range": "735.89",
             "unit": "us",
             "extra": "trials: 5\nmedian: 663.00\nmean: 826.20\nstdev: 735.89\ncv: 89.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dd9829113bb6a63b21dbbb8c70524c87de4dcca1",
+          "message": "perf(raft): no record-list copy per append, presized batch vectors (#2596)\n\n* perf(raft): no record-list copy per append, presized batch vectors\n\nDiskLog::append_pending_at takes the records by value, and the Raft log\nwriter gets them back from the append (append_pending_at_keeping) to fill\nits tail cache, instead of the log copying the list on every append. The\nwriter also presizes its record and token vectors from the entry count.\n\nMeasured with a counting allocator, 64-record appends:\n- RaftLog::append: 0.29 -> 0.23 allocations, 530 -> 337 bytes a record\n- plain-log append_pending_at (hybrid follower): 0.10 -> 0.09, 272 -> 160\n- propose, one write in flight: 1.67 -> 1.59 allocations, 1478 -> 1258 bytes\n- propose, eight in flight: 2.23 -> 1.52, 2056 -> 1485 bytes\n\nSegment bytes are unchanged (compared past the header's per-run bytes).\nraft_log_cost now bounds the per-record cost and fails with the copy back.\n\n* perf(storage): drop the token presize, make the append allocation bound relative (#2581)\n\n* test(replication): the append allocation test sets Batch.expected after the main merge",
+          "timestamp": "2026-11-15T08:27:03Z",
+          "tree_id": "faf3de004130d7bc3cb6b70bec42968a6ed74fbf",
+          "url": "https://github.com/GetFelix/felix/commit/dd9829113bb6a63b21dbbb8c70524c87de4dcca1"
+        },
+        "date": 1794731518284,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.00\nstdev: 0.71\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "4.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.20\nstdev: 4.15\ncv: 3.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 228,
+            "range": "245.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 228.00\nmean: 320.60\nstdev: 245.60\ncv: 76.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "7.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 137.80\nstdev: 7.43\ncv: 5.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 266,
+            "range": "241.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 371.80\nstdev: 241.65\ncv: 64.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 369,
+            "range": "680.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 369.00\nmean: 670.00\nstdev: 680.33\ncv: 101.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
