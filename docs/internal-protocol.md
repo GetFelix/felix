@@ -1234,7 +1234,8 @@ After the report byte comes the message:
   length, then the bytes). A cache shard's member keeps the pieces in order
   and installs the snapshot at the last. A stream shard's snapshot holds no
   records, only the cut batches a member must refuse and its consumer-group
-  table (`docs/per-shard-raft.md`), and its state is its log, so no member takes one: each answers
+  table (`docs/per-shard-raft.md`). Installing one would purge records the
+  member was never sent, so no member takes one: each answers
   `NoSnapshots`, and a member that is behind is sent entries.
 - **Leader transfer**: the leader's vote, the member to take over, and the
   leader's last log id (optional).

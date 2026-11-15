@@ -75,3 +75,16 @@ fn a_damaged_stream_snapshot_is_refused() {
         assert!(StreamSnapshot::decode(&bytes[..len]).is_err(), "at {len}");
     }
 }
+
+/// The envelope never carries an empty table: that state is the older
+/// layout, so the envelope with one is refused.
+#[test]
+fn an_envelope_with_an_empty_table_is_refused() {
+    let table = GroupTable::default().encode();
+    let mut body = 0u32.to_be_bytes().to_vec();
+    body.extend_from_slice(&table);
+    let mut bytes = MAGIC.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&crc32fast::hash(&body).to_be_bytes());
+    bytes.extend_from_slice(&body);
+    assert!(StreamSnapshot::decode(&bytes).is_err());
+}

@@ -85,6 +85,11 @@ impl StreamSnapshot {
             decode_cuts(cuts)?
         };
         let groups = GroupTable::decode(&body[4 + len..]).ok_or_else(damaged)?;
+        // `encode` writes an empty table in the older layout, so one state
+        // has one encoding.
+        if groups == GroupTable::default() {
+            return Err(damaged());
+        }
         Ok(Self { cuts, groups })
     }
 }

@@ -3363,7 +3363,13 @@ kept in memory, and every member gets there the same way:
   again, which folds the group entries there.
 - At a snapshot install, the member replaces its table with the one the
   snapshot carries and forgets its trackers. The entries above the snapshot
-  fold on top.
+  fold on top. A stream member refuses every install today ("Group
+  runtime"), so this is for the purge that will send them (#2602).
+
+A shard switched from the hybrid starts with an empty table: its cursors
+and dead letters stay in the hybrid's side logs until the switch seeds
+them ([#2659](https://github.com/GetFelix/felix/issues/2659)), which has
+to land before groups are served on a switched shard.
 
 So the stream snapshot carries the table as of its last entry, beside the
 cut batches ("Idempotent publishes"): a member that installs it holds no
