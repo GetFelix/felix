@@ -183,12 +183,26 @@ struct Peer {
     /// only while `wrote` is still that, so any later entry voids it.
     idle_under: Option<u64>,
     answered: u64,
+    /// Appends naming the short gap that are on their way to this peer.
+    short_out: u32,
 }
 
-/// An append on its way to a peer, for [`Pace::answered`].
+impl Peer {
+    fn settled(&mut self, sent: &Sent, timers: &Timers) {
+        if sent.gap <= timers.heartbeat {
+            self.short_out = self.short_out.saturating_sub(1);
+        }
+    }
+}
+
+/// An append on its way to a peer, for [`Pace::answered`] or
+/// [`Pace::unanswered`]. Exactly one of them must be called for it.
 pub(crate) struct Sent {
     pub(crate) gap: u64,
     wrote: u64,
+    /// Whether no append naming the short gap was on its way to the peer
+    /// when this one left.
+    clean: bool,
 }
 
 impl Pace {
@@ -238,13 +252,22 @@ impl Pace {
                 id: to.clone(),
                 idle_under: None,
                 answered: now,
+                short_out: 0,
             });
         }
+        let peer = peers
+            .iter_mut()
+            .find(|peer| &peer.id == to)
+            .expect("just added");
         let gap = match now >= wrote + timers.idle_after {
             true => timers.idle_heartbeat,
             false => timers.heartbeat,
         };
-        Sent { gap, wrote }
+        let clean = peer.short_out == 0;
+        if gap <= timers.heartbeat {
+            peer.short_out += 1;
+        }
+        Sent { gap, wrote, clean }
     }
 
     /// The leader has an entry to send. An idle group is busy again: the
@@ -260,11 +283,18 @@ impl Pace {
     }
 
     /// `to` took the append: it now waits by the gap the append named.
+    ///
+    /// An idle answer counts only if no short-gap append was on its way when
+    /// it left. The follower stores each gap once it has handled the append,
+    /// and an entry append it took first can finish its fsync after the
+    /// heartbeat's answer, leaving it at the short gap.
     pub(crate) fn answered(&self, to: &MemberId, sent: &Sent) {
-        let now = self.timers.now();
+        let timers = &self.timers;
+        let now = timers.now();
         if let Some(peer) = self.peers.lock().iter_mut().find(|peer| &peer.id == to) {
+            peer.settled(sent, timers);
             peer.answered = now;
-            if sent.gap > self.timers.heartbeat {
+            if sent.gap > timers.heartbeat && sent.clean {
                 peer.idle_under = Some(sent.wrote);
             }
         }
@@ -273,13 +303,14 @@ impl Pace {
     /// `to` did not take the append: it was lost, refused or rejected. The
     /// peer may have restarted and forgotten the idle gap, so the leader
     /// goes back to the short one until it answers again.
-    pub(crate) fn unanswered(&self, to: &MemberId) {
+    pub(crate) fn unanswered(&self, to: &MemberId, sent: &Sent) {
         let timers = &self.timers;
         let now = timers.now();
         let mut peers = self.peers.lock();
         let Some(peer) = peers.iter_mut().find(|peer| &peer.id == to) else {
             return;
         };
+        peer.settled(sent, timers);
         peer.idle_under = None;
         // A peer long silent is not waited for (`leader_gap`), so a broker
         // that is down does not keep its groups' leaders fast.

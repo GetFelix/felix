@@ -1,0 +1,1 @@
+An idle Raft leader no longer slows its heartbeats while a follower still waits at the short gap. An answer to a heartbeat naming the idle gap now counts only if no append naming the short gap was on its way to that follower, so a follower that stores the short gap last no longer stands for election with a healthy leader (#2595).

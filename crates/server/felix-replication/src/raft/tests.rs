@@ -800,8 +800,8 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
 
     // A heartbeat c does not take: c may have restarted and forgotten the
     // gap, so the leader is fast again until c answers.
-    let _lost = pace.sending(&c, false);
-    pace.unanswered(&c);
+    let lost = pace.sending(&c, false);
+    pace.unanswered(&c, &lost);
     assert_eq!(pace.leader_gap(timers.now()), short, "c may have forgotten");
     pace.answered(&c, &pace.sending(&c, false));
     assert_eq!(pace.leader_gap(timers.now()), idle);
@@ -829,6 +829,57 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
     assert_eq!(pace.leader_gap(timers.now()), idle);
 }
 
+/// A resend naming the short gap, then a heartbeat naming the idle one. The
+/// follower answers the heartbeat first and stores the short gap last, once
+/// the resend's fsync ends. The leader must stay at the short gap until the
+/// follower has been told the idle one after that (#2595).
+#[tokio::test(start_paused = true)]
+async fn a_leader_stays_fast_while_a_short_gap_append_is_on_its_way() {
+    let (leader, timers) = pace();
+    let [b, c] = ["b", "c"].map(|broker| MemberId::new(broker, 1));
+    let follower = super::group::Pace::new(timers, &group(0), &b);
+    let (short, idle) = (timers.heartbeat, timers.idle_heartbeat);
+    let later = |millis: u64| tokio::time::advance(Duration::from_millis(millis));
+    // The follower stands only if the leader stays silent past its wait.
+    let hears = || {
+        let gap = leader.leader_gap(timers.now());
+        let wait = follower.follower_wait();
+        assert!(
+            gap < wait,
+            "leader silent for {gap} ms, follower waits {wait} ms"
+        );
+    };
+
+    let entry = leader.sending(&b, true);
+    follower.followed(Some(entry.gap));
+    leader.answered(&b, &entry);
+    leader.answered(&c, &leader.sending(&c, true));
+
+    later(timers.idle_after - 1).await;
+    let resend = leader.sending(&b, false);
+    assert_eq!(resend.gap, short);
+    later(1).await;
+    let heartbeat = leader.sending(&b, false);
+    assert_eq!(heartbeat.gap, idle);
+    leader.answered(&c, &leader.sending(&c, false));
+
+    follower.followed(Some(heartbeat.gap));
+    leader.answered(&b, &heartbeat);
+    hears();
+    follower.followed(Some(resend.gap));
+    leader.answered(&b, &resend);
+    hears();
+    assert_eq!(leader.leader_gap(timers.now()), short);
+
+    // The next heartbeat is told after the resend: now both are idle.
+    later(short).await;
+    let heartbeat = leader.sending(&b, false);
+    follower.followed(Some(heartbeat.gap));
+    leader.answered(&b, &heartbeat);
+    hears();
+    assert_eq!(leader.leader_gap(timers.now()), idle);
+}
+
 /// Sending an entry again, to a member that did not take it or one catching
 /// up, does not make an idle group busy. Only an entry no append has
 /// carried before does (#2567).
@@ -842,8 +893,8 @@ async fn only_an_entry_sent_for_the_first_time_makes_a_group_busy() {
     let sent = pace.sending(&b, true);
     pace.answered(&b, &sent);
     assert!(!pace.new_entries(&entry(1, 1)), "the same entry to c");
-    let _lost = pace.sending(&c, false);
-    pace.unanswered(&c);
+    let lost = pace.sending(&c, false);
+    pace.unanswered(&c, &lost);
 
     // Past the idle wait and c's silence, b answers an idle heartbeat.
     tokio::time::advance(Duration::from_millis(
@@ -857,7 +908,7 @@ async fn only_an_entry_sent_for_the_first_time_makes_a_group_busy() {
     assert!(!pace.new_entries(&entry(1, 1)));
     let retry = pace.sending(&c, false);
     assert_eq!(retry.gap, timers.idle_heartbeat);
-    pace.unanswered(&c);
+    pace.unanswered(&c, &retry);
     assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
 
     // A later entry, or one at a lower index under a later term, is new.
