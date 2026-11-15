@@ -635,6 +635,16 @@ LossNeedsLostDisk ==
         \A k \in 1..Len(committed) :
             (\E l \in Copies : k <= Len(l) /\ l[k] = committed[k].e) => k <= Len(reform.base)
 
+\* The positive half of LossNeedsLostDisk: with no broker declared dead and
+\* no vote read above every entry read, T is the highest entry's term, the
+\* copy holding that entry is kept whole, and a committed entry a read copy
+\* holds is in the base.
+LTop == MaxOf({LTerm(r.l) : r \in Read})
+LossNeedsLostDiskAtTop ==
+    (reform.on /\ dead = {} /\ TopTerm = LTop /\ LTop > 0) =>
+        \A k \in 1..Len(committed) :
+            (\E l \in Copies : k <= Len(l) /\ l[k] = committed[k].e) => k <= Len(reform.base)
+
 \* A re-form after a leader of term 2 was elected cuts the longest copy it
 \* read: the rule is not vacuous across two terms.
 NeverCutsAcrossTerms ==
