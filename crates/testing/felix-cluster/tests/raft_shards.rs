@@ -200,6 +200,86 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
     );
 }
 
+/// A key and one header naming `trace`.
+fn headers(trace: &str) -> felix_client::RecordHeaders {
+    felix_client::RecordHeaders {
+        key: Some(bytes::Bytes::from(format!("key-{trace}"))),
+        headers: vec![("trace".to_string(), bytes::Bytes::from(trace.to_string()))],
+    }
+}
+
+/// Publish one headered record through `node` until it is acknowledged. A
+/// shard between leaders, or a broker the finalize has not reached yet,
+/// refuses, and a client retries.
+async fn publish_headered(cluster: &Cluster, node: &str, trace: &str) -> u64 {
+    felix_cluster::wait::until_some(ELECTED_WITHIN, "a headered publish", || async {
+        let client = cluster.client_on(node).await.ok()?;
+        let publisher = client.publisher().await.ok()?;
+        publisher
+            .publish_with_headers(
+                &cluster.tenant_id,
+                &cluster.namespace,
+                STREAM,
+                headers(trace),
+                trace.as_bytes().to_vec(),
+                AckMode::PerMessage,
+            )
+            .await
+            .ok()
+            .flatten()
+    })
+    .await
+    .unwrap_or_else(|err| panic!("publish {trace} through {node}: {err:#}"))
+}
+
+/// **A record's key and headers on a Raft shard reach every member.**
+/// Published through the leader and through followers, which forward to it,
+/// each record replays with its headers from every broker's own log.
+#[tokio::test]
+#[serial]
+async fn record_headers_on_a_raft_shard_replay_from_every_member() {
+    if !opted_in() {
+        return;
+    }
+    let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["record_headers", "raft_record_headers"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("finalize the headers features");
+    let nodes = cluster.node_ids();
+    let mut published = Vec::new();
+    for node in &nodes {
+        let trace = format!("through-{node}");
+        let offset = publish_headered(&cluster, node, &trace).await;
+        published.push((offset, trace));
+    }
+    for node in &nodes {
+        let (_client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
+        let mut held = Vec::new();
+        while held.len() < published.len() {
+            let event = tokio::time::timeout(Duration::from_secs(10), subscription.next_event())
+                .await
+                .unwrap_or_else(|_| panic!("{node} stopped at {} records", held.len()))
+                .expect("delivery")
+                .expect("the subscription stays open");
+            let Some(offset) = event.offset else { continue };
+            let Some((_, trace)) = published.iter().find(|(at, _)| *at == offset) else {
+                continue;
+            };
+            assert_eq!(
+                event.payload.as_ref(),
+                trace.as_bytes(),
+                "{node} at {offset}"
+            );
+            assert_eq!(event.headers, Some(headers(trace)), "{node} at {offset}");
+            held.push(offset);
+        }
+    }
+}
+
 /// Whether every acknowledged offset has reached the subscriber. A publish
 /// retried after an unknown outcome can leave a record the test never saw
 /// acknowledged, so the counts are not compared.
