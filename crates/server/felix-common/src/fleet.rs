@@ -246,6 +246,16 @@ pub const NON_VOTING: FleetFeature = FleetFeature::new("non_voting");
 /// (`docs/per-shard-raft.md`, "Moving a shard from the hybrid to Raft").
 pub const SHARD_RAFT: FleetFeature = FleetFeature::new("shard_raft");
 
+/// A Raft shard on a `periodic` or `none` broker commits on a written
+/// majority: its log tells openraft an append is flushed once it is written
+/// and the copy's `raft-reserved` covers it. Safe only once no broker
+/// rotates a copy without carrying `raft-reserved` or reclaims a kept copy
+/// without its hold, and once a re-form pads above the highest reservation.
+/// No build reports it until that re-form exists, and a fleet that finalized
+/// it must not downgrade below the build that carries the reservation
+/// (`docs/per-shard-raft.md`, "Commit on a written majority").
+pub const RAFT_WRITTEN_COMMIT: FleetFeature = FleetFeature::new("raft_written_commit");
+
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.
 pub const MAX_FEATURES: usize = 64;

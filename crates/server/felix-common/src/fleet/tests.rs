@@ -174,6 +174,7 @@ fn election_features_are_declared_and_not_implemented() {
         START_HOLDERS,
         NON_VOTING,
         SHARD_RAFT,
+        RAFT_WRITTEN_COMMIT,
     ] {
         assert!(!IMPLEMENTED.contains(&feature), "{feature}");
         assert!(
