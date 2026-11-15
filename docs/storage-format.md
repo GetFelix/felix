@@ -1264,6 +1264,12 @@ not answer that it is blank (`docs/per-shard-raft.md`, "Re-forming a
 group"). The mark is never removed; once the copy
 holds an entry from a group it no longer matters.
 
+A build of `main` from after `raft-reserved` (#2609) and before this mark
+carried reservations without it, so a copy it rotated and that holds no
+entry yet reads as never reached. No released build has either file. Wipe
+the data root of such a build, or re-form its Raft shards, before
+upgrading.
+
 Written through a temporary, an fsync, a rename and a directory sync. A
 rotation reads the highest reservation of the old directory and every kept
 directory of the shard (a re-form reads the same set, including the
