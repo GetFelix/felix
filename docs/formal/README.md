@@ -2875,9 +2875,19 @@ Two more knobs model what the proposal needs after a power cut of a majority:
   floor carries a term. Every re-form configuration here has one term, where
   every log is a prefix of the leader's and the longest is the base. With two
   terms and the commit on written copies, the longest kept log can hold an
-  uncommitted entry at an offset another term committed, and only the design's
-  cut to the saved commit index stops it. No configuration checks that yet
-  ([#2592](https://github.com/GetFelix/felix/issues/2592)).
+  uncommitted entry at an offset another term committed. `Vouch` checks that
+  case ([#2592](https://github.com/GetFelix/felix/issues/2592)).
+- `Vouch`: the re-form rule of the design for
+  [#2250](https://github.com/GetFelix/felix/issues/2250). Let T be the highest
+  term of any vote the re-form read and of the floor. A rotated copy keeps the
+  term it held when cut (`keptVote`) and its saved commit (`keptCommit`). A
+  copy vouches for its saved commit, for the floor's entry if it holds it, and
+  for its whole log only if its last entry is of term T. The base is the
+  longest vouched prefix. `DeclareDead` (up to `MaxDead`) takes a broker out
+  of the re-form's reads; its vote is unknown, so the group is marked and no
+  copy vouches for its whole log.
+- `FloorHolder`: the shortcut `Vouch` replaces. When some copy holds the
+  floor's entry, the base is the copy with the highest last log id.
 - `Reserve`: a copy counts or reports an entry only below an index it has
   reserved in a synced file, which a rotation keeps, and the re-form pads up
   to the highest reservation too.
@@ -2892,6 +2902,22 @@ offset is given out again (`FelixRaftWrittenCommitsReformTrailing.cfg`). With
 it, `OffsetNeverReused` holds (`FelixRaftWrittenCommitsReform.cfg`). The design
 as built, with the commit on fsynced copies, loses nothing and reuses nothing
 with the trailing floor alone (`FelixRaftWrittenReformOnCommit.cfg`).
+
+Across two terms the longest log is no longer safe. In
+`FelixRaftWrittenCommitsReformTermsFloorHolder.cfg`, a leads term 1 and writes
+an entry past the floor; b and c commit a term-2 entry at that index on a
+written majority, and a power cut takes it from both. The shortcut makes a's
+log the base and serves its term-1 entry where the term-2 one was committed.
+b's and c's kept votes say term 2, so `Vouch` cuts a to the floor, and
+`FelixRaftWrittenCommitsReformTerms.cfg` passes with a broker declared dead.
+`FelixRaftWrittenCommitsReformTermsHappens.cfg` shows the rule does cut the
+longest copy there. The price is a lone vote: a term that wrote nothing still
+raises T and cuts every copy to its saved commit, so a committed entry a read
+copy holds is lost (`FelixRaftWrittenCommitsReformTermsVoteOnly.cfg`). The
+command reports such a group as "cut by a vote" and needs `--accept-loss`.
+
+With `Reserve`, every copy also reserves before its fsynced copy counts toward
+the commit, the leader's own included, as the code does.
 
 Abstracted: votes are durable and followers do not learn the commit index
 (`FelixRaft.tla` has the adapter's rules and what followers apply), snapshots,
