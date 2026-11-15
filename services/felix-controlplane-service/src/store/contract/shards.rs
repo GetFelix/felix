@@ -230,6 +230,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::a_joint_start_is_kept(store).await;
     replica_reports::start_holders_are_kept(store).await;
     replica_reports::a_refusal_is_kept(store).await;
+    replica_reports::a_deleted_node_leaves_no_report_stamp(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_write_at_least_a_generation_lands_there_within_the_window(store).await;
     a_write_past_the_next_generation_names_the_one_it_replaced(store).await;

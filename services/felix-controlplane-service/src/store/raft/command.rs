@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 36;
+pub const METADATA_VERSION: u16 = 37;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -193,6 +193,12 @@ pub enum MetaCommand {
     },
     DeleteNode {
         node_id: String,
+        /// Level 37: drop the node's incarnation from every held replica
+        /// report, so a stamp from before the delete never vouches for the
+        /// node registered again at incarnation 0. Set by
+        /// `settle_for_level`, as `raise_incarnation` is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        forget_reports: bool,
     },
     /// `at_millis` is the leader's clock, whichever instance the broker's
     /// heartbeat happened to land on: the proposer fills in its own reading
@@ -977,6 +983,9 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// sealed or switched one. A Raft copy id report (`record_raft_copy_id`,
 /// level 36) is refused the same way: a member that could not apply it would
 /// later, once elected, count targets for a different member set.
+///
+/// From level 37 a node delete also forgets the node's report stamps, and
+/// below it never does.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     let op = op_of(command);
     if let Some(gated) = op.as_deref().filter(|op| is_gated(op)) {
@@ -996,6 +1005,18 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             }
             _ => Ok(None),
         };
+    }
+    if op.as_deref() == Some(DELETE_NODE_OP) {
+        // Settled either way: one sent with the flag below the level would
+        // be refused by the members that cannot apply it.
+        let forget = level >= super::FORGET_REPORTS_LEVEL;
+        return Ok(edit_command_json(command, |object| {
+            if forget {
+                object.insert("forget_reports".to_string(), true.into()) != Some(true.into())
+            } else {
+                object.remove("forget_reports").is_some()
+            }
+        }));
     }
     if op.as_deref() != Some(IMPORT_STATE_OP) {
         return Ok(None);
@@ -1026,11 +1047,14 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     Ok(settled)
 }
 
-/// Whether `command` is an import, a switch command or a copy id report,
-/// read without decoding what it carries.
+/// Whether `command` is an import, a node delete, a switch command or a
+/// copy id report, read without decoding what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
-    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || is_gated(&op))
+    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || op == DELETE_NODE_OP || is_gated(&op))
 }
+
+/// A node delete, whose report stamps go from level 37.
+const DELETE_NODE_OP: &str = "delete_node";
 
 /// The commands of a shard's switch to Raft, by op.
 const SWITCH_OPS: [&str; 3] = ["seal_shard", "accept_seal_report", "give_up_seal"];

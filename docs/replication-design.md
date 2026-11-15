@@ -3639,6 +3639,15 @@ identity the window stays open. Every one of these needs an older broker or
 control-plane instance, so only while a roll is under way.
 `FelixShardWipeStrippedOnArrival.cfg` is that window.
 
+A node deleted and registered again restarts at incarnation 0, so its
+incarnation alone cannot tell the new process from one a held report
+measured before the delete. The delete removes the node from every held
+report's `node_incarnations`, and a report stamps only the nodes its
+assignment names, so no stamp from before the delete survives it. Under Raft
+that needs every member at metadata level 37; below it the stamp survives
+([control-plane.md](control-plane.md), "A deleted node leaves no stamp
+behind").
+
 The incarnation check costs availability in one case: an unverified follower
 that restarts after its leader's last report, whose leader then dies, is not
 promoted on that report, and the shard waits for the leader. A follower with a

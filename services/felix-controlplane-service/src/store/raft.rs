@@ -150,6 +150,10 @@ const PLACEMENT_INCARNATION_LEVEL: u16 = 35;
 /// (`ShardAssignment::raft_target`).
 const RAFT_TARGET_LEVEL: u16 = 36;
 
+/// The metadata level whose members drop a deleted node's incarnation from
+/// every held replica report (`MetaCommand::DeleteNode`).
+const FORGET_REPORTS_LEVEL: u16 = 37;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -902,8 +906,10 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn delete_node(&self, node_id: &str) -> StoreResult<()> {
+        // `settle_for_level` adds `forget_reports` once the group can apply it.
         self.propose(MetaCommand::DeleteNode {
             node_id: node_id.to_string(),
+            forget_reports: false,
         })
         .await
         .map(|_| ())

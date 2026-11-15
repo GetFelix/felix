@@ -1534,3 +1534,4 @@
 36 snapshot.state.shards[][].raft_target.counter
 36 snapshot.state.shards[][].raft_target.members
 36 snapshot.state.shards[][].raft_target.members.*
+37 delete_node.forget_reports
