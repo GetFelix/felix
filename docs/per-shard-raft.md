@@ -3031,11 +3031,15 @@ one real loss on top of it loses an acknowledged record
 again has the same end (`FelixRaftPlacementPlaceDoomed.cfg`); the broker
 comes back under its next copy id.
 
-**Known gap (#2385).** The check is made once and the deletion happens
-later. A leader acting on a target the control plane has replaced can give
-the id its vote back in between, and the deletion is then a lost disk again
-(`FelixRaftPlacementStaleWipe.cfg`, pinned). The driver needs a rule that
-stops a leader going back to an older target before it is built.
+**A leader never goes back to an older target (#2385).** The check is made
+once and the deletion happens later, so a leader acting on a target the
+control plane has replaced could give the id its vote back in between.
+The driver refuses that: it takes no step from a target older than the
+membership in its log (`Wait::StaleTarget`), and a step whose version is
+older than the leader's membership fails with `StepError::OlderVersion`.
+With that rule the model passes with stale targets and a deleted copy
+(`FelixRaftPlacementStaleWipe.cfg`); without it a stale target loses the
+disk (`FelixRaftPlacementStaleWipeNoVersion.cfg`).
 
 #### What a membership holds, and how a step is written
 
@@ -3223,51 +3227,106 @@ leaders the control plane asks the current leader for a transfer.
 
 #### Where a target comes from
 
-A broker turns placement into a target for each Raft shard its member
-leads. The target's brokers are the ones placement names for the shard,
-its members are what `GroupRuntime::target_members` asks those brokers
-for, and its version is the restore incarnation followed by the
-assignment's generation. The generation rises on every write of the
-shard's assignment, so a newer placement is a newer target. A write that
-keeps the same brokers gives a newer version of the same voters, which
-the leader stamps. The restore incarnation is 0 until the control plane
-records one (#2529); until then a target written after a restore that
-rewound the generation is older than the membership and refused, and the
-group waits for a newer write.
+The control plane writes each Raft shard's target on its shard record: the
+member ids that should vote, and a version. The member ids are the brokers
+placement names, each with the copy id its broker last reported for the
+shard. The version is the restore incarnation followed by the record's
+target counter (metadata level 36):
 
-The broker tells its member a target only for the term that member leads,
-and only from a view of placement whose request started after the broker
-learned of that term (the shard feed's `as_of`). A target told in an
-earlier term is not acted on. A new leader whose broker has no fresh view
-asks the feed for one at once, as a lease renewal does.
+- **The counter rises only when the target set changes.** A move, a drain,
+  a removal, or a placed broker reporting a new copy id writes the next
+  counter value in the same CAS as the new set. A placement write that
+  keeps the set, a leader report and a doomed-set write leave it alone. So
+  within one incarnation a version names exactly one member set.
+- **It survives a control-plane leader change.** The counter is part of the
+  shard record, written through the metadata Raft log by CAS, so a new
+  control-plane leader starts from the last committed value and the next
+  write takes the one after it.
+- **A restore raises the incarnation (#2529).** A backup brings back an
+  older counter, which may name a set different from what the counter later
+  named. Versions compare by incarnation first, and a restore raises it
+  (metadata level 35), so every target written after the restore, including
+  the restored record's own, is newer than anything a group took before.
+  The incarnation is 0 until #2529 lands.
 
-Why that is enough: a leader acts on a target only after the control
-plane has written it. It hands leadership over after that, and its
-successor's term starts after the handover. A view read after the term
-starts holds that target or a newer one. So the versions leaders act on
-never go back from one leader to the next, which is what #2591 asks of
-the control plane, without members acknowledging targets. Nothing new
-crosses the wire: no capability bit, no fleet feature, no metadata field.
+A wiped copy reopens under a new copy id ("Group and member identity"). Its
+broker reports the id, and the control plane writes the target again with
+that id in place of the old one at the next counter value. The leader keeps
+only a target strictly newer than the one it holds
+(`Group::retarget`), so this write is what makes it act: it adds the new id
+as a learner and drops the old one once it has caught up. The control plane
+must own copy ids this way before it dooms any, because the doomed set
+names member ids.
+
+#### A target lasts one term
+
+The broker hands a target to its member only while that member leads, and
+only for the term it leads in. The driver acts on a target only when it was
+told in the current term, and a new term needs it told again.
+
+A view taken after the term began is not enough on its own. The shard feed
+can be answered by a control-plane follower that has not applied the latest
+write, so a request that started late can still return an old target. The
+broker therefore waits for two things before it hands a target to a member
+that started leading at time `since`:
+
+1. **A head from the control-plane leader.** The broker's next heartbeat
+   after `since` asks for `assignment_seq`. The control plane reads it with
+   `confirmed_shard_assignment_head` after it accepted the heartbeat, so
+   every target written before then has a lower sequence. This is the same
+   bar `RoutesWanted` sets for a broker that serves again after a surrender
+   (`cluster/lease.rs`). A linearizable read of the feed head would do as
+   well.
+2. **A view that reaches it.** A feed answer whose request started after
+   `since` and whose checkpoint is at or past that head.
+
+A target write is a shard-record change, so it is on the assignment feed
+with its own sequence.
+
+Why the versions leaders act on never go back: a leader acts on a target
+only after the control plane committed it. It hands leadership over after
+that, and its successor's term begins after the handover. The successor's
+head is read after that, so it is at or past the target's write, and the
+view that reaches the head holds that target or a newer one. Whatever the
+old leader did, the new one is told a version at least as new.
+
+The driver's own rule covers the rest. A target older than the membership
+in the leader's log is refused (`Wait::StaleTarget`, `StepError::OlderVersion`),
+so even a target that slipped past the delivery rule cannot undo a change.
+Delivery makes that refusal rare: a new leader is not left parked on a
+target older than its log while a newer one exists. A group can still
+grow and then shrink, but only because the control plane wrote two sets in
+that order, so the number of direction changes is bounded by the number
+of target writes.
 
 ```mermaid
 sequenceDiagram
-    participant CP as Control plane
+    participant CP as Control plane leader
     participant A as Broker A (leads)
     participant B as Broker B
-    CP->>CP: write placement {B, C}, generation 7
-    A->>CP: read the feed (after A's term began)
-    A->>A: target {B, C} at 0.7: add C, grow to {A, B, C}
+    CP->>CP: write target {B, C} at (0, 7)
+    A->>CP: heartbeat, wants the feed head
+    CP-->>A: head 41
+    A->>A: view at 41 or later: grow to {A, B, C}
     A->>B: transfer leadership
-    B->>CP: read the feed (after B's term began)
-    B->>B: target at 0.7 or newer: shrink to {B, C}
+    B->>CP: heartbeat, wants the feed head
+    CP-->>B: head 41 or later
+    B->>B: view at that head: target (0, 7) or newer, shrink to {B, C}
 ```
 
-While the control plane is down a new leader reads no fresh view, so it
-takes no step: the group keeps serving with the membership it has, the
-grown set included, and moves on once the feed answers. That costs
-liveness only. The placement model checks safety with a leader acting on
-any target ever written (`StaleTargets`), which covers every target this
-rule lets through.
+While the control plane is down a new leader gets no head, so it takes no
+step: the group keeps serving with the membership it has, a grown set
+included, and moves on once the control plane answers. That costs liveness
+only. The placement model checks safety with a leader acting on any target
+ever written (`StaleTargets`), which covers every target this rule lets
+through.
+
+The doomed set and its reports are metadata level 36 and are enabled only
+at that level. The level in force is the lowest any control-plane member
+can apply, and a build that applies 36 applies 35, so 36 in force means the
+restore incarnation is too. Each doom write also checks that every broker
+has acknowledged the current incarnation. A doom written before the incarnation existed could
+be undone by a restore that brings the id back as a voter.
 
 What placement does not do yet for a Raft shard:
 
@@ -3283,12 +3342,6 @@ What placement does not do yet for a Raft shard:
 - **Requests to a broker with no member go by placement.** A broker with
   a member routes by its group's leader hint. One without a member still
   sends to the leader placement names, which can be wrong mid-move.
-
-A wiped copy is replaced by the same path: its broker answers
-`target_members` with its new copy id, the target names that id, and the
-leader adds it as a learner and drops the old id once it has caught up.
-The old id never votes again, because the wiped directory opens under a
-new copy id ("Group and member identity").
 
 ### Shards with one replica
 
