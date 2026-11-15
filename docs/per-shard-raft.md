@@ -3201,6 +3201,11 @@ index: off `expected_offset`, the leader's log stores a blank in its place,
 which takes one offset, and the answer is `offset_mismatch` with the offset
 after it. Nothing of the commit is written.
 
+A `Quorum` commit is answered at its Raft commit under every fsync policy,
+never once a majority has only written it, as a plain publish can be under
+`Periodic`. That is stronger than the stream asks for, and simpler: the
+answer waits for the view anyway.
+
 A `state_get` on a Raft shard confirms the term with a read-index round
 before it takes its value, instead of the hybrid's lease. Every commit
 answered before the read started is in the view by then.

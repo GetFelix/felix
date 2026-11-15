@@ -1214,7 +1214,8 @@ After the report byte comes the message:
   has finalized `raft_record_headers`. A trim with either is refused to
   encode. 8 is an atomic commit, laid out as 1 with the encoded commit
   record as its record, and may sit inside 7 for its publisher. A build
-  without 8 refuses the whole append (`8 is not an entry payload`), so a
+  without 8 refuses the whole append (`8 is not an entry payload`, or
+  inside 7 `8 is not a record a publisher names`), so a
   leader writes one only once the fleet has finalized `raft_atomic_commit`.
   A commit with an expected offset or a producer is refused to encode.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),

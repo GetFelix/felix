@@ -773,9 +773,9 @@ const NEW_CLUSTER: [&str; 14] = [
     "jump_hash_routing",
     "lease_free_reads",
     "majority_ack",
+    "raft_atomic_commit",
     "raft_head_trim",
     "raft_record_headers",
-    "raft_atomic_commit",
     "record_headers",
     "stream_incarnations",
 ];

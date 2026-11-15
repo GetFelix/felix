@@ -105,8 +105,9 @@ pub(crate) struct StreamState {
 /// Whether a stream's log holds an atomic commit, learned without reading
 /// the whole log on every trim.
 ///
-/// `seen` is set before a commit is appended here, and when one arrives by
-/// replication. `clear` is how far a scan found none. A trim scans from there
+/// `seen` is set before a commit is appended or proposed here, and when one
+/// arrives by replication. On an engine's log `clear` stays within what the
+/// engine committed, since entries above it can be cut. `clear` is how far a scan found none. A trim scans from there
 /// to the tail it expects and then reads `seen`; since the trim lands only at
 /// that tail, a commit appended after the scan either set `seen` first or
 /// lands after the trim.

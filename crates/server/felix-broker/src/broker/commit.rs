@@ -127,6 +127,13 @@ impl Broker {
         if handle.log().is_none() {
             return Err(BrokerError::CommitNeedsDurableStream);
         }
+        // Before the proposal, as the hybrid sets it before its append, so a
+        // trim checked after this refuses.
+        handle
+            .state
+            .commits
+            .seen
+            .store(true, std::sync::atomic::Ordering::Release);
         let expected = expected.map(|offset| Expected {
             offset,
             mismatch: Box::new(mismatch) as Box<dyn FnOnce(u64) -> E + Send>,

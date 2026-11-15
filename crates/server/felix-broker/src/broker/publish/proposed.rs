@@ -707,7 +707,7 @@ async fn finish<E>(
     // A commit is answered once its state updates are in the view, so the
     // writer's next state read has them. Dropped unsent if a reset took the
     // view, which a read then rebuilds from the log.
-    let (applied, in_view) = match commit {
+    let (mut applied, in_view) = match commit {
         Some(_) => {
             let (applied, in_view) = oneshot::channel();
             (Some(applied), Some(in_view))
@@ -733,7 +733,7 @@ async fn finish<E>(
             first_offset,
             commit,
             trim: None,
-            ring_applied: applied,
+            ring_applied: applied.take(),
             skipped_before: at.skipped_before,
             gap: false,
             gap_end: None,
@@ -742,6 +742,8 @@ async fn finish<E>(
         (Err(failed), _) => HeldBatch::gap(failed.written_end),
         (Ok(at), None) => HeldBatch::gap(Some(at.end)),
     };
+    // Any other batch never reaches the view: the wait ends at once.
+    drop(applied);
     let start = state.held.push(batch);
     state.proposals.settled();
     drop(turn);

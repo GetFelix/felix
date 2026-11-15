@@ -285,7 +285,14 @@ async fn refuse_commit_stream(handle: &StreamHandle, log: &StreamLog, expected: 
     if commits.seen.load(Ordering::Acquire) {
         return Err(BrokerError::TrimOnCommitStream);
     }
-    commits.clear_below(scan, expected);
+    // An engine's log above its commit can still be cut and written again
+    // by another leader, so only the committed part of the scan is kept.
+    let clear = match handle.state.read_bound() {
+        _ if !handle.state.engine_log => expected,
+        ReadBound::Committed(bound) => expected.min(bound),
+        _ => scan.below,
+    };
+    commits.clear_below(scan, clear);
     Ok(())
 }
 
