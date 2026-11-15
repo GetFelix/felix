@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794713185277,
+  "lastUpdate": 1794714341042,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57772,6 +57772,58 @@ window.BENCHMARK_DATA = {
             "range": "13797.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 963982.58\nmean: 958795.58\nstdev: 13797.94\ncv: 1.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "097807c93f2f63fa86d194d1e57c6f9ac88d2eeb",
+          "message": "perf(raft): wake a waiting write only when its position is reached (#2577) (#2582)\n\n* perf(raft): wake a waiting write only when its position is reached (#2577)\n\nEvery in-flight write on a Raft shard waited on a tokio watch: the commit\ntable for await_commit, and the log's positions for a flushed ack and a\nfollower's written report. watch::wait_for wakes every receiver on every\nsend, so with 512 writes in flight each applied run woke all 512 to look\nand sleep again.\n\nfelix_storage::waiters adds an ordered queue beside a watch. A waiter\nregisters under its key before it looks at the value, and an advance wakes\nonly the keys it reaches, so a send between the look and the sleep is not\nlost. The watch still holds the value and decides the answer; the queue\nonly says when to look. The state machine advances it per published run,\nthe Raft log per positions send, and dropping the owner wakes everyone as\nclosed. Term loss, stop and timeout still end the waits as before.\n\n512 waiters advanced one index at a time: watch::wait_for looked 95,526\ntimes, the queue 1,024.\n\nSpec-Unaffected: a wake-up mechanism change; no spec models how waiters are woken.\n\n* fix(storage): drop a waiter's waker outside the queue lock\n\nSpec-Unaffected: lock hygiene in the wake-up queue; no spec models it.\n\n* test(storage): pin the Raft log's waiter queue advances; skip the queue for a satisfied wait\n\n* test(storage): pin the truncate's queue advance; say the fast path looks first",
+          "timestamp": "2026-11-15T03:38:11Z",
+          "tree_id": "c83c2349c93cc65e7e6c1d7bb6d926382739d031",
+          "url": "https://github.com/GetFelix/felix/commit/097807c93f2f63fa86d194d1e57c6f9ac88d2eeb"
+        },
+        "date": 1794714340519,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 699251.18,
+            "range": "69186.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 699251.18\nmean: 713030.93\nstdev: 69186.04\ncv: 9.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 699251.18,
+            "range": "69186.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 699251.18\nmean: 713030.93\nstdev: 69186.04\ncv: 9.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 165763.71,
+            "range": "4052.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 165763.71\nmean: 166038.47\nstdev: 4052.25\ncv: 2.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1657637.15,
+            "range": "40522.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1657637.15\nmean: 1660384.73\nstdev: 40522.56\ncv: 2.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
