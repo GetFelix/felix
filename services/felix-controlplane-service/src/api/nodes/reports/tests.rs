@@ -33,6 +33,7 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     }
 }
 
@@ -168,6 +169,7 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("fenced move");
@@ -316,6 +318,7 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     for _ in 0..=generation_bumps {
         assignment = store
@@ -776,6 +779,7 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -866,6 +870,7 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -936,6 +941,7 @@ async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() 
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -1002,6 +1008,7 @@ async fn named_y_beside_z() -> (
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -1355,4 +1362,69 @@ async fn a_report_stamps_only_the_assignments_nodes() {
     let held = store.list_replica_reports().await.expect("list");
     assert!(held[0].node_incarnations.contains_key("broker-y"));
     assert!(!held[0].node_incarnations.contains_key("broker-z"));
+}
+
+/// Only the broker itself reports its floors, and a batch whose entries are
+/// all skipped is still a 200 that raised nothing.
+#[tokio::test]
+async fn a_floor_batch_is_answered_with_how_many_it_raised() {
+    let (store, keys) = one_shard_cluster().await;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let post = |perm: &'static str, floors: serde_json::Value| {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/v1/nodes/broker-x/raft-floors")
+            .header("authorization", format!("Bearer {}", token(&keys, &[perm])))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "floors": floors }).to_string(),
+            ))
+            .expect("request");
+        let router = crate::api::build_router(state.clone());
+        async move {
+            let response = router.oneshot(request).await.expect("response");
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("body");
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).ok(),
+            )
+        }
+    };
+    let unassigned = serde_json::json!([{
+        "key": shard_zero(),
+        "incarnation": 0,
+        "index": 5,
+        "term": 1,
+    }]);
+    let (status, _) = post("node.manage:node:broker-y", unassigned.clone()).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    for floors in [serde_json::json!([]), unassigned] {
+        let (status, body) = post("node.manage:node:broker-x", floors).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.expect("json")["raised"], 0);
+    }
+
+    // As many as a broker sends in one tick, and one more.
+    let many = |n: usize| {
+        serde_json::Value::Array(
+            (0..n)
+                .map(|i| {
+                    serde_json::json!({
+                        "key": shard_zero(),
+                        "incarnation": 0,
+                        "index": i,
+                        "term": 1,
+                    })
+                })
+                .collect(),
+        )
+    };
+    let (status, _) = post("node.manage:node:broker-x", many(1024)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post("node.manage:node:broker-x", many(1025)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body.expect("json")["code"], "validation_error");
 }

@@ -315,6 +315,7 @@ pub(super) async fn write_shard_assignment(
     stored.raft_copy_ids.clear();
     stored.raft_target = None;
     let existing = state.records.get(&stored.key);
+    stored.carry_raft_floor(existing);
     let held = existing
         .map(|existing| existing.readmitted.clone())
         .unwrap_or_default();

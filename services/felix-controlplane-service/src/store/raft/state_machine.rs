@@ -499,6 +499,9 @@ impl MetadataStateMachine {
                 .await
                 .map(|_| MetaResponse::Unit)
                 .map_err(Into::into),
+            MetaCommand::RecordRaftFloors { node_id, floors } => Ok(MetaResponse::Count {
+                count: u64::from(store.apply_record_raft_floors(&node_id, &floors).await),
+            }),
             MetaCommand::RecordRaftCopyId {
                 key,
                 node_id,
