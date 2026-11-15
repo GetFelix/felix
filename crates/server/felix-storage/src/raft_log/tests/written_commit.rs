@@ -1,0 +1,310 @@
+//! A Raft log on a relaxed root: the callback fires at the write, once the
+//! reservation covers the entries, and `flushed` still waits for an fsync.
+
+use std::path::Path;
+use std::time::Duration;
+
+use openraft::storage::{IOFlushed, RaftLogStorage};
+use openraft::type_config::TypeConfigExt;
+
+use super::*;
+use crate::raft_log::{reserved, state_file};
+
+type Raft = RaftLog<Types, Codec>;
+
+const BOUND: Duration = Duration::from_secs(10);
+
+fn relaxed_config(fsync_mode: FsyncMode) -> LogConfig {
+    LogConfig {
+        fsync_mode,
+        ..config()
+    }
+}
+
+/// Begin a run on `root` the way a broker does before any store opens.
+fn begin(root: &Path, relaxed: bool) {
+    crate::run_state::begin(root, relaxed, None, None, || false, || [7; 16]).expect("begin");
+}
+
+fn open_under(root: &Path, mode: FsyncMode) -> io::Result<Raft> {
+    let dir = root.join("shard");
+    std::fs::create_dir_all(&dir).expect("shard dir");
+    let log = DiskLog::open(&dir, "t/ns/raft/0", relaxed_config(mode)).expect("open");
+    RaftLog::new(log, Codec)
+}
+
+/// Append and wait for the callback, which must not wait for an fsync.
+async fn append(raft: &mut Raft, entries: Vec<TestEntry>) -> io::Result<()> {
+    let (tx, rx) = Types::oneshot();
+    raft.append(entries, IOFlushed::signal(tx)).await?;
+    tokio::time::timeout(BOUND, rx)
+        .await
+        .expect("the callback fires without an fsync")
+        .expect("callback")
+}
+
+#[tokio::test]
+async fn a_relaxed_log_is_refused_on_a_root_that_does_not_rotate() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), false);
+    let err = open_under(root.path(), FsyncMode::None)
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("must fsync on commit"), "{err}");
+}
+
+#[tokio::test]
+async fn a_written_append_is_counted_before_its_fsync_and_flushed_after() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(root.path(), FsyncMode::None).expect("opens on a relaxed root");
+    append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+        .await
+        .expect("append");
+    // Under `None` nothing has synced, so `flushed` has not moved, even
+    // once the flush task has had its turn.
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(raft.positions().borrow().flushed, None);
+    let dir = raft.disk_log().dir().to_path_buf();
+    assert_eq!(
+        reserved::load(&dir).expect("load"),
+        Some(1 + reserved::STEP),
+        "the reservation covers the entries before the callback"
+    );
+    raft.disk_log().sync().await.expect("sync");
+    let mut positions = raft.positions();
+    tokio::time::timeout(
+        BOUND,
+        positions.wait_for(|at| at.flushed.is_some_and(|at| at.index == 1)),
+    )
+    .await
+    .expect("flushed follows the sync")
+    .expect("open");
+}
+
+#[tokio::test]
+async fn an_append_past_the_reservation_raises_it_and_one_below_does_not() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let raft = open_under(root.path(), FsyncMode::None).expect("open");
+    let dir = raft.disk_log().dir().to_path_buf();
+    reserved::store(&dir, 5).expect("store");
+    drop(raft);
+    let mut raft = open_under(root.path(), FsyncMode::None).expect("reopen");
+    append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+        .await
+        .expect("append below");
+    assert_eq!(
+        reserved::load(&dir).expect("load"),
+        Some(5),
+        "loaded on open"
+    );
+    let past: Vec<_> = (2..=7).map(|index| normal(1, index, "b")).collect();
+    append(&mut raft, past).await.expect("append past");
+    assert_eq!(
+        reserved::load(&dir).expect("load"),
+        Some(7 + reserved::STEP)
+    );
+}
+
+#[tokio::test]
+async fn a_failed_reservation_write_fails_the_append_and_fires_no_callback() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(root.path(), FsyncMode::None).expect("open");
+    let dir = raft.disk_log().dir().to_path_buf();
+    // The write goes through this temporary, which a directory blocks.
+    std::fs::create_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("block");
+    let (tx, mut rx) = Types::oneshot();
+    let appended = raft.append(vec![blank(1, 0)], IOFlushed::signal(tx)).await;
+    assert!(appended.is_err(), "the append fails");
+    assert!(
+        rx.try_recv().is_err(),
+        "no callback for an unreserved entry"
+    );
+    // The raise comes before the write, so nothing a restart would count
+    // as flushed sits above the reservation.
+    assert_eq!(raft.disk_log().tail_now(), 0, "the entry was not written");
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    std::fs::remove_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("unblock");
+    let raft = open_under(root.path(), FsyncMode::None).expect("reopen");
+    let tail = raft.disk_log().tail_now();
+    assert!(
+        tail == 0 || reserved::load(&dir).expect("load") >= Some(tail - 1),
+        "a restart finds every entry it holds reserved"
+    );
+}
+
+/// **A copy written on commit and reopened relaxed raises its reservation
+/// over what it holds before Raft sees it.** Raft counts every entry it
+/// finds at start as flushed, and a copy that never wrote relaxed has no
+/// reservation at all. The open fails when the raise does.
+#[tokio::test]
+async fn a_relaxed_open_reserves_the_entries_already_on_disk() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(root.path(), FsyncMode::OnCommit).expect("open");
+    let entries: Vec<_> = (0..=2).map(|index| normal(1, index, "a")).collect();
+    append(&mut raft, entries).await.expect("append");
+    let dir = raft.disk_log().dir().to_path_buf();
+    assert_eq!(reserved::load(&dir).expect("load"), None);
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+
+    std::fs::create_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("block");
+    let err = open_under(root.path(), FsyncMode::None)
+        .err()
+        .expect("an open whose raise fails is refused");
+    assert_eq!(reserved::load(&dir).expect("load"), None, "{err}");
+    std::fs::remove_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("unblock");
+
+    let _raft = open_under(root.path(), FsyncMode::None).expect("reopen relaxed");
+    assert_eq!(
+        reserved::load(&dir).expect("load"),
+        Some(2 + reserved::STEP)
+    );
+}
+
+#[tokio::test]
+async fn a_damaged_reservation_fails_every_open() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), false);
+    let raft = open_under(root.path(), FsyncMode::OnCommit).expect("open");
+    let dir = raft.disk_log().dir().to_path_buf();
+    drop(raft);
+    std::fs::write(dir.join(reserved::FILE_NAME), b"not a reservation").expect("damage");
+    let err = open_under(root.path(), FsyncMode::OnCommit)
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("does not decode"), "{err}");
+}
+
+#[tokio::test]
+async fn a_failed_periodic_flush_poisons_the_log() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(
+        root.path(),
+        FsyncMode::Periodic {
+            interval: Duration::from_millis(10),
+        },
+    )
+    .expect("open");
+    raft.disk_log().fail_next_flush();
+    append(&mut raft, vec![blank(1, 0)]).await.expect("append");
+    let log = raft.disk_log().clone();
+    tokio::time::timeout(BOUND, async {
+        while !log.is_poisoned() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the tick's failure poisons the log, as a commit flush's does");
+    assert_eq!(raft.positions().borrow().flushed, None);
+    // The queued flush waits for a sync that will never come; the poison
+    // must wake it, or the queue never drains.
+    tokio::time::timeout(BOUND, raft.shared.flushes.drained())
+        .await
+        .expect("the poison wakes the queued flush");
+}
+
+/// **A purge on a written-commit log under `None` does not wait forever for
+/// the queued flushes.** Nothing syncs such a log on its own, so a purge
+/// that only waited would stall the group's log task.
+#[tokio::test]
+async fn a_purge_under_none_finishes_with_flushes_queued() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(root.path(), FsyncMode::None).expect("open");
+    append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+        .await
+        .expect("append");
+    let purged = tokio::time::timeout(BOUND, raft.purge(log_id(1, 0))).await;
+    purged.expect("the purge syncs first").expect("purge");
+    assert!(raft.positions().borrow().flushed.is_some());
+}
+
+/// A written-commit log under a marked root, with two appends whose flushes
+/// are still queued: under `None` nothing syncs them.
+async fn queued_under_marks(
+    root: &crate::raft_copy::tests::Root,
+    mode: crate::raft_copy::LogMarkMode,
+) -> Raft {
+    use crate::raft_copy::tests::SHARD;
+    begin(root.path(), true);
+    let copies = root.open();
+    let opened = copies
+        .open_copy(
+            SHARD,
+            &root.shard_dir(),
+            "t/ns/orders/0",
+            relaxed_config(FsyncMode::None),
+        )
+        .await
+        .expect("open copy");
+    let mut raft = Raft::new(opened.log.clone(), Codec).expect("a written-commit log");
+    raft.mark_with(opened.marks.clone(), mode).expect("marks");
+    append(&mut raft, vec![blank(1, 0)]).await.expect("append");
+    append(&mut raft, vec![normal(1, 1, "a")])
+        .await
+        .expect("append");
+    assert!(!raft.shared.flushes.is_empty(), "the flushes are queued");
+    raft
+}
+
+fn marks_modes() -> [crate::raft_copy::LogMarkMode; 2] {
+    use crate::raft_copy::LogMarkMode;
+    [
+        LogMarkMode::Exact,
+        LogMarkMode::Batched(Duration::from_secs(60)),
+    ]
+}
+
+/// **A close that beats a queued flush to a written-commit log does not
+/// poison it.** The close syncs everything itself, so the flush that then
+/// finds the log closed lost nothing. Poisoning would make the next start
+/// rotate a storage id that a clean stop keeps.
+#[tokio::test]
+async fn a_close_with_flushes_queued_leaves_the_log_unpoisoned() {
+    for mode in marks_modes() {
+        let root = crate::raft_copy::tests::Root::new();
+        let raft = queued_under_marks(&root, mode).await;
+        let log = raft.disk_log().clone();
+        log.close().await.expect("close");
+        tokio::time::timeout(BOUND, raft.shared.flushes.drained())
+            .await
+            .expect("the queued flushes are answered");
+        assert!(
+            !log.is_poisoned(),
+            "{mode:?}: a clean close poisoned the log"
+        );
+        assert!(
+            !crate::disk_log::durable_mark::left_poisoned(log.dir()).expect("look"),
+            "{mode:?}: the next start would rotate the storage id"
+        );
+    }
+}
+
+/// **Draining before the close answers every queued flush with its real
+/// result**, so `flushed` reaches the last entry and the log stops clean.
+#[tokio::test]
+async fn draining_before_the_close_flushes_every_queued_append() {
+    for mode in marks_modes() {
+        let root = crate::raft_copy::tests::Root::new();
+        let raft = queued_under_marks(&root, mode).await;
+        tokio::time::timeout(BOUND, raft.drain_flushes())
+            .await
+            .expect("the drain finishes")
+            .expect("drain");
+        assert_eq!(
+            raft.positions().borrow().flushed.map(|at| at.index),
+            Some(1),
+            "{mode:?}"
+        );
+        let log = raft.disk_log().clone();
+        log.close().await.expect("close");
+        assert!(!log.is_poisoned(), "{mode:?}");
+        assert!(!crate::disk_log::durable_mark::left_poisoned(log.dir()).expect("look"));
+    }
+}

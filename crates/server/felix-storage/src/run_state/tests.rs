@@ -407,6 +407,26 @@ fn a_periodic_crash_rotates_even_when_the_next_run_is_on_commit() {
     assert_ne!(second.id, first.id);
 }
 
+/// **A broker moved from `periodic` to `on_commit` after a crash rotates,
+/// and its Raft logs fsync on commit again.** A copy of the relaxed run
+/// counted entries before their fsync; the new id takes its votes away, and
+/// the strict run no longer lets a log count before the fsync.
+#[test]
+fn a_relaxed_crash_restarted_on_commit_rotates_and_stops_written_commits() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let shard = dir.path().join("t/ns/orders/0");
+    let mut fresh = counter(0);
+    let first = begin_in(dir.path(), PERIODIC, BOOT, &mut fresh);
+    assert!(rotates_on_crash(&shard));
+    let second = begin_in(dir.path(), ON_COMMIT, REBOOTED, &mut fresh);
+    assert!(second.rotated);
+    assert_ne!(second.id, first.id);
+    assert!(
+        !rotates_on_crash(&shard),
+        "a strict run vouches for no written commit"
+    );
+}
+
 /// Starting a run takes the clean record away, so a crash after it is seen.
 #[test]
 fn a_crash_after_a_clean_restart_is_still_seen() {

@@ -681,6 +681,21 @@ impl DiskLog {
         self.inner.check_healthy()
     }
 
+    /// As [`Self::commit`], except that under a mode that acknowledges before
+    /// the sync it waits for that mode's own syncs (the periodic flush, or an
+    /// explicit [`Self::sync`]) to cover `pending`, and starts none.
+    #[cfg(feature = "raft")]
+    pub(crate) async fn synced(&self, pending: &PendingAppend) -> Result<()> {
+        if !self.inner.durability.acknowledges_before_sync() || pending.holds_trim {
+            return self.commit(pending).await;
+        }
+        self.inner
+            .durability
+            .reached(pending.durable_target, || self.inner.is_poisoned())
+            .await;
+        self.inner.check_healthy()
+    }
+
     /// The tail once every append already handed to the append thread has
     /// been written or skipped.
     ///
@@ -1514,6 +1529,12 @@ impl DiskLog {
     #[cfg(feature = "raft")]
     pub(crate) fn cuts(&self) -> u64 {
         self.inner.segments.read().generation()
+    }
+
+    /// Stop the log for good, as a failed flush does.
+    #[cfg(feature = "raft")]
+    pub(crate) fn poison(&self, reason: String) {
+        self.inner.poison(reason);
     }
 
     /// The tail as it is now, without a future to poll.

@@ -80,7 +80,7 @@ where
     /// another term.
     pub async fn start_after_snapshot(&self, snapshots: &SnapshotStore) -> io::Result<()> {
         let shared = &self.shared;
-        shared.flushes.drained().await;
+        shared.drain_flushes().await?;
         let Some(stored) = stored(snapshots)? else {
             return Ok(());
         };
@@ -221,7 +221,7 @@ impl<K> Shared<K> {
         // What follows may empty the log, which a flush in flight must not
         // find gone. openraft sends one write at a time, so no append is
         // queued behind this one.
-        self.flushes.drained().await;
+        self.drain_flushes().await?;
         let tail = log.tail_offset().await.map_err(io_error)?;
         let bounds = *self.bounds.lock();
         let covered = stored(snapshots)?;

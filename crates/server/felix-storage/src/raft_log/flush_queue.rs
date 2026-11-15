@@ -117,7 +117,7 @@ impl Task {
         while self.receiver.recv_many(&mut self.batch, usize::MAX).await > 0 {
             // Newest first, so the oldest is popped first.
             self.batch.reverse();
-            let mut covered = Some(self.log.commit(&self.batch[0].pending).await);
+            let mut covered = Some(self.log.synced(&self.batch[0].pending).await);
             // The highest entry marked this round. The newest's mark covers
             // every append before it.
             let mut marked: Option<LogPoint> = None;
@@ -129,7 +129,7 @@ impl Task {
                 } else {
                     // A flush that failed for the newest may still have
                     // covered this one.
-                    self.log.commit(&waiting.pending).await
+                    self.log.synced(&waiting.pending).await
                 };
                 if flushed.is_ok()
                     && let Some((marks, last)) = &waiting.mark

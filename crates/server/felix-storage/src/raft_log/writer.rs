@@ -234,6 +234,15 @@ where
                 tail
             }
         };
+        // Before the write: a copy that finds an entry on disk at start
+        // counts it as flushed, so a crash between the write and a later
+        // raise would leave a counted entry above the synced reservation.
+        // A failed raise fails the append and the callback never fires.
+        if shared.written_commit
+            && let Some(last) = last
+        {
+            shared.reserve_through(last.index).await?;
+        }
         if earlier
             .iter()
             .chain([&batch])
@@ -286,6 +295,41 @@ where
         // stands for the append.
         let pending = pending.expect("at least one batch");
 
+        if shared.written_commit {
+            // Raft counts the entries from here; the reservation already
+            // covers them.
+            callback.io_completed(Ok(()));
+            // `flushed` still waits for the log's own fsync.
+            let positions = Arc::clone(shared);
+            let raise = move |flushed: io::Result<()>| match flushed {
+                Ok(()) => positions.positions.send_modify(|at| {
+                    if at
+                        .flushed
+                        .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
+                    {
+                        at.flushed = last;
+                    }
+                }),
+                // A close flushes everything itself, so a flush it beat to
+                // the log lost nothing.
+                Err(err) if closed(&err) => {}
+                // Raft already counted these entries, so there is no
+                // callback to fail. Stop the log rather than leave `flushed`
+                // stuck below what it holds.
+                Err(err) => positions.log.poison(format!(
+                    "a written-commit flush or exact log mark failed ({err})"
+                )),
+            };
+            let mark = shared
+                .marking
+                .get()
+                .filter(|marking| marking.exact)
+                .zip(last)
+                .map(|(marking, last)| (marking.marks.clone(), last));
+            shared.flushes.push(log, pending, Box::new(raise), mark);
+            return Ok(());
+        }
+
         // The exact log mark is synced before Raft hears the entries are on
         // disk, so the callback waits for the flush task.
         let mark = shared
@@ -335,7 +379,7 @@ where
         let log = &self.shared.log;
         // A flush still waiting on entries this cuts would never reach them
         // and would report the append failed. Each one finishes first.
-        self.shared.flushes.drained().await;
+        self.shared.drain_flushes().await?;
         // Before the cut, so no read finds here an entry the log has lost.
         self.shared.tail.clear();
         let first = self.shared.first_index();
@@ -419,7 +463,7 @@ where
         let log = &shared.log;
         // A purge past the end drops entries a flush may still be waiting
         // on, as a truncation does.
-        shared.flushes.drained().await;
+        shared.drain_flushes().await?;
         let index = log_id.index();
         let term = **log_id.committed_leader_id();
         let purged = Purged {
@@ -528,6 +572,13 @@ pub(super) fn io_error(err: StorageError) -> io::Error {
         StorageError::Io(err) => err,
         other => io::Error::other(other),
     }
+}
+
+/// The error a flush gets from a log closed under it.
+fn closed(err: &io::Error) -> bool {
+    err.get_ref()
+        .and_then(|err| err.downcast_ref::<StorageError>())
+        .is_some_and(|err| matches!(err, StorageError::Closed(_)))
 }
 
 /// The timestamp of a blank or membership record. Commands carry their own.

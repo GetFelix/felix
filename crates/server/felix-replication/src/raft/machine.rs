@@ -17,6 +17,7 @@ use bytes::Bytes;
 
 use felix_storage::DiskLog;
 use felix_storage::disk_log::ForgottenCuts;
+use felix_storage::log::FsyncMode;
 use felix_storage::raft_log::{LogPoint, SnapshotId, SnapshotStore, StoredSnapshot};
 use felix_storage::waiters::{Queue, Waiters};
 use futures::{Stream, StreamExt};
@@ -56,6 +57,8 @@ pub(crate) struct Machine {
     cache: Option<Cache>,
     /// A stream shard's log, `None` in a cache shard's group.
     log: Option<DiskLog>,
+    /// The Raft log, of either kind of shard.
+    raft_log: Option<DiskLog>,
     /// Held by a test to keep this member from applying.
     #[cfg(test)]
     pub(crate) hold: Arc<tokio::sync::Mutex<()>>,
@@ -98,6 +101,7 @@ impl Machine {
             applied,
             cache: cache.clone(),
             log: log.filter(|_| matches!(kind, ShardKind::Stream)).cloned(),
+            raft_log: log.cloned(),
             #[cfg(test)]
             hold: Arc::default(),
             #[cfg(test)]
@@ -289,6 +293,8 @@ pub(crate) struct Builder {
     cut: Option<Cut>,
     /// A stream shard's log.
     log: Option<DiskLog>,
+    /// The Raft log, synced before a snapshot is stored.
+    raft_log: Option<DiskLog>,
 }
 
 /// Overlay writes folded per hold of the cache lock, so apply and reads
@@ -315,6 +321,14 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
             (None, Some(log)) => stream_data(log, &self.state).await?,
             (None, None) => Bytes::new(),
         };
+        // A log that counts written entries can have applied one it has not
+        // synced. The snapshot is synced, so the log below it is synced
+        // first, and a purge after it never drops an unsynced entry.
+        if let Some(log) = &self.raft_log
+            && log.config().fsync_mode != FsyncMode::OnCommit
+        {
+            log.sync().await.map_err(io::Error::other)?;
+        }
         store(&self.snapshots, &meta, data.clone()).await?;
         Ok(SnapshotOf::<ShardTypes, SnapshotData> {
             meta,
@@ -369,6 +383,7 @@ impl Machine {
             state: self.state.clone(),
             cut,
             log: self.log.clone(),
+            raft_log: self.raft_log.clone(),
         }
     }
 

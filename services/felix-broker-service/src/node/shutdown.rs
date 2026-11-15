@@ -404,9 +404,12 @@ impl Running {
             }
         }
 
+        let mut engine_closed = true;
         if let Some(engine_shards) = &storage.engine_shards {
             budget
-                .drain("engine_shards_stop", engine_shards.shutdown())
+                .drain("engine_shards_stop", async {
+                    engine_closed = engine_shards.shutdown().await;
+                })
                 .await;
         }
         // Step 3b: flush every store while the drain deadline still applies.
@@ -418,7 +421,8 @@ impl Running {
             budget
                 .drain("durable_storage_flush", async {
                     match storage.broker.shutdown_storage().await {
-                        Ok(()) => flushed = true,
+                        // A Raft log that failed to close counts as a failed flush.
+                        Ok(()) => flushed = engine_closed,
                         Err(err) => {
                             tracing::error!(error = %err, "failed to flush durable storage on shutdown")
                         }

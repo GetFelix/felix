@@ -720,6 +720,8 @@ impl LogInner {
         self.poison(format!("a background segment rollover failed ({err})"));
         self.roll_state
             .store(RollState::Failed as u8, Ordering::Release);
+        // `Failed` alone stops the log, so it wakes waiters too.
+        self.durability.wake();
     }
 
     /// Poison after a failed flush. Idempotent like [`Self::poison`].
@@ -750,6 +752,9 @@ impl LogInner {
             *failure = Some(reason);
             super::ANY_POISONED.store(true, Ordering::Release);
         }
+        // A flush will never move the bound now. Outside the failure lock,
+        // which a woken waiter takes to check it.
+        self.durability.wake();
         // A process crash from here on may have lost what this log
         // acknowledged, so the next start must not keep the storage id. On
         // every log's poison, not only the first: this one must not return
@@ -821,8 +826,9 @@ impl LogInner {
                 reason: reason.to_string(),
             });
         }
-        // A `Failed` state with no recorded reason means the rollover task
-        // itself panicked or was cancelled. Still terminal.
+        // A fallback: `record_roll_failure` records the reason before it
+        // sets `Failed`. A roll that panicked leaves `Preparing` or
+        // `Sealing`, not `Failed`.
         if RollState::from_u8(self.roll_state.load(Ordering::Acquire)) == RollState::Failed {
             return Err(StorageError::Poisoned {
                 shard: self.label.clone(),
