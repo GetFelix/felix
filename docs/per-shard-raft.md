@@ -2485,12 +2485,13 @@ checked against the term the owner serves now, not the one the sender saw.
 
 `FELIX_ACK_ON_COMMIT` does not apply to a shard on Raft. With it set to `0`
 a hybrid `Leader` stream is acknowledged when the publish is queued; a Raft
-shard still answers only after the write, at the commit or on the leader
-lease as above, since an answer on enqueue would promise a write the term
-may not live to make.
+shard still answers only after the write, at the commit, on a written
+majority or on the leader lease as above, since an answer on enqueue would
+promise a write the term may not live to make.
 
 > `services/felix-broker-service/src/serving/quic/handlers/publish/tests/on_raft.rs`,
-> `a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off` and
+> `a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off`,
+> `a_periodic_quorum_stream_on_raft_answers_after_its_write_with_ack_on_commit_off` and
 > `a_leader_stream_on_raft_answers_after_its_write_with_ack_on_commit_off`.
 
 A publish sent with no acknowledgement asked for takes the same path. It is
@@ -2501,10 +2502,8 @@ publish whose write was not confirmed is counted in
 whose commit wait timed out, which may still commit and be delivered.
 
 A `Quorum` publisher on a stream that does not fsync on commit is answered
-at the commit too, not earlier from `await_quorum_ack`. That waits until a
-copy whose flush failed can no longer vote with its cut log (#2469), and the
-answer will have to wait for the batch's turn in `ProposalOrder`, because
-written-count wakeups arrive in no particular order.
+from `await_quorum_ack` once a majority has written the batch, or at the
+commit if that is first. See "`Quorum` on a `Periodic` stream".
 
 The term a publish was routed at goes with it into the group. A broker
 deposed and elected again between the route and the proposal leads a newer

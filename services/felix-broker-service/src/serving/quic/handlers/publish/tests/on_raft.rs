@@ -7,6 +7,8 @@ use crate::serving::quic::ClusterContext;
 use crate::shards::raft::tests as fixture;
 use crate::shards::routing::{EngineShards, StreamEngine};
 
+use felix_storage::log::FsyncMode;
+
 use super::*;
 
 struct Leader {
@@ -25,24 +27,19 @@ async fn leader(ack_durable_on_commit: bool) -> Leader {
     leader_of(
         ack_durable_on_commit,
         felix_broker::ConsistencyLevel::Leader,
+        FsyncMode::None,
     )
     .await
 }
 
-/// [`leader`], with `orders` at `consistency`.
+/// [`leader`], with `orders` at `consistency` and the storage at `fsync`.
 async fn leader_of(
     ack_durable_on_commit: bool,
     consistency: felix_broker::ConsistencyLevel,
+    fsync: FsyncMode,
 ) -> Leader {
     let root = tempfile::tempdir().expect("tempdir");
-    let broker = fixture::broker_at(
-        root.path(),
-        1,
-        fixture::INCARNATION,
-        consistency,
-        felix_storage::log::FsyncMode::None,
-    )
-    .await;
+    let broker = fixture::broker_at(root.path(), 1, fixture::INCARNATION, consistency, fsync).await;
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
@@ -232,13 +229,18 @@ async fn an_unacknowledged_publish_to_a_raft_shard_is_delivered() {
     EngineShards::shutdown(&*leader.shards).await;
 }
 
-/// **A `Quorum` stream on Raft answers at the commit even with
-/// `FELIX_ACK_ON_COMMIT=0`.** An answer on enqueue would promise a write the
-/// term may not live to make. A `Leader` stream may be answered on the
+/// **A `Quorum` stream on Raft fsynced on commit answers at the commit even
+/// with `FELIX_ACK_ON_COMMIT=0`.** An answer on enqueue would promise a write
+/// the term may not live to make. A `Leader` stream may be answered on the
 /// lease, which is after the write but before the commit.
 #[tokio::test]
 async fn a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off() {
-    let mut leader = leader_of(false, felix_broker::ConsistencyLevel::Quorum).await;
+    let mut leader = leader_of(
+        false,
+        felix_broker::ConsistencyLevel::Quorum,
+        FsyncMode::OnCommit,
+    )
+    .await;
     let orders = fixture::key("orders", 0);
     let before = leader.committed(&orders);
 
@@ -266,13 +268,56 @@ async fn a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off() 
     EngineShards::shutdown(&*leader.shards).await;
 }
 
+/// **A `Quorum` stream on Raft not fsynced on commit is answered once a
+/// majority has written the batch, even with `FELIX_ACK_ON_COMMIT=0`.** As
+/// the only voter, this leader's own write is that majority, which can come
+/// before the commit, but never the enqueue.
+#[tokio::test]
+async fn a_periodic_quorum_stream_on_raft_answers_after_its_write_with_ack_on_commit_off() {
+    let mut leader = leader_of(
+        false,
+        felix_broker::ConsistencyLevel::Quorum,
+        FsyncMode::None,
+    )
+    .await;
+    let orders = fixture::key("orders", 0);
+    let written = |leader: &Leader| fixture::written(&leader.shards, &orders);
+
+    let before = written(&leader);
+    leader.publish_batch(records("queued", 4), Some(3)).await;
+    assert!(
+        leader.out_rx.try_recv().is_err(),
+        "answered when it was queued"
+    );
+    leader.acknowledged(3).await;
+    let batch = written(&leader);
+    assert!(batch > before, "answered before the batch was written");
+
+    leader.publish(b"one", Some(4)).await;
+    assert!(
+        leader.out_rx.try_recv().is_err(),
+        "answered when it was queued"
+    );
+    leader.acknowledged(4).await;
+    assert!(
+        written(&leader) > batch,
+        "answered before the record was written"
+    );
+    EngineShards::shutdown(&*leader.shards).await;
+}
+
 /// **A `Leader` stream on Raft is answered after the leader's own write,
 /// even with `FELIX_ACK_ON_COMMIT=0`.** The lease lets the answer come
 /// before the commit, never before the batch is on the leader's log: an
 /// answer on enqueue would promise a write the term may not live to make.
 #[tokio::test]
 async fn a_leader_stream_on_raft_answers_after_its_write_with_ack_on_commit_off() {
-    let mut leader = leader_of(false, felix_broker::ConsistencyLevel::Leader).await;
+    let mut leader = leader_of(
+        false,
+        felix_broker::ConsistencyLevel::Leader,
+        FsyncMode::None,
+    )
+    .await;
     let orders = fixture::key("orders", 0);
     let written = |leader: &Leader| fixture::written(&leader.shards, &orders);
 
