@@ -21,7 +21,7 @@ async fn fill(log: &DiskLog, term: u64, from: u64, to: u64) {
 /// A directory holding entries 0 to `last` of term 1, then rotated by marks
 /// that name another copy. Returns the root that opens it, the old copy id
 /// and the new copy, opened.
-async fn rotated(root: &Root, last: u64) -> (CopyRoot, u64, OpenedCopy) {
+pub(super) async fn rotated(root: &Root, last: u64) -> (CopyRoot, u64, OpenedCopy) {
     rotated_purged(root, last, None).await
 }
 
@@ -71,7 +71,7 @@ async fn commit(log: &DiskLog, index: u64, generation: u64) {
     log.commit_offset_persisted().await;
 }
 
-fn kept_dir(root: &Root) -> PathBuf {
+pub(super) fn kept_dir(root: &Root) -> PathBuf {
     root.path().join("shards").join(".kept")
 }
 

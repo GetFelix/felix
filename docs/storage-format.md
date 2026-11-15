@@ -1260,15 +1260,19 @@ kept directory whose reservation is above the current copy's is never
 reclaimed.
 
 Nothing can rebuild this file, so one that is present and does not decode
-is an error for the rotation and for the reclaim pass. Absent means the
-copy never reserved anything. A normal open does not read the file, so a
-damaged one does not stop a copy that is already serving. What it stops
-depends on where it is:
+is an error for the rotation, for the reclaim pass and for the re-form's
+reads. Absent means the copy never reserved anything. What a damaged file
+stops depends on where it is:
 
 - **In a kept directory.** The next rotation of that shard fails, and
   reclaim holds that kept directory as unreadable. If the current copy's
   `raft-reserved` decodes, the rotation that made the current copy read
-  the kept file while it was still whole and carried its value. Stop the
+  the kept file while it was still whole and carried its value, and a
+  reservation is never lowered after that. A copy raising its own value
+  does not prove the carry by itself: an older build could have rotated
+  without it. That is the downgrade the fleet feature rules out (below),
+  so this holds only while no broker of the fleet ran a build without the
+  file after the shard took a reservation. Then stop the
   broker and delete only the damaged `raft-reserved` file in that kept
   directory, not the directory. An absent file reads as no reservation,
   and reclaim still checks the kept records and removes the directory only
@@ -1276,7 +1280,7 @@ depends on where it is:
   `raft-reserved`, an older build made it without the carry and the value
   is lost: delete the damaged file the same way, then start the copy over,
   as below.
-- **In the current shard directory.** The next rotation fails, and reclaim
+- **In the current shard directory.** The copy does not open, and reclaim
   holds every kept directory of the shard as unreadable, with a warning
   that names the current directory's file. Start the copy over: stop the
   broker and remove only the shard's directory. Leave its kept

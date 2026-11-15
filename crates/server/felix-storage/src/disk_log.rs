@@ -1692,6 +1692,14 @@ pub(crate) enum OtherCommit {
     Refuse,
 }
 
+/// The commit offset and its generation as `dir` saved them, read without
+/// opening the log. Zeros for a directory that saved none.
+#[cfg(feature = "raft")]
+pub(crate) fn saved_commit(dir: &std::path::Path) -> Result<(Offset, u64)> {
+    let replica = replica_state::load(dir)?;
+    Ok((replica.commit_offset, replica.committed_generation))
+}
+
 /// The generation of the record below a Raft log's saved commit offset, or
 /// `None` when that record is some other entry than the one that was
 /// committed: its generation is not the one saved with the offset.
