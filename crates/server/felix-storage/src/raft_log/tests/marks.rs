@@ -8,7 +8,7 @@ use openraft::storage::RaftLogStorage;
 use openraft::type_config::alias::VoteOf;
 use openraft::vote::{RaftLeaderId, RaftVote};
 
-use super::writes::append;
+use super::writes::{append, append_flushed};
 use super::{Codec, Types, log_id, normal};
 use crate::DiskLog;
 use crate::log::{FsyncMode, LogConfig};
@@ -365,4 +365,18 @@ async fn a_failed_batched_mark_fails_later_appends() {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     assert!(copies.mark_log().failure().is_some());
+}
+
+/// A record with headers marks the data root as it is written, on every
+/// member, so a copy holding one refuses a fleet that cannot read them.
+#[tokio::test]
+async fn a_record_with_headers_marks_the_root() {
+    let root = Root::new();
+    let copies = root.open();
+    let (_opened, mut log) = opened(&root, &copies, LogMarkMode::Exact).await;
+    let marked = || crate::run_state::has_record_headers(root.path()).expect("read");
+    append_flushed(&mut log, &[normal(1, 0, "a")]).await;
+    assert!(!marked(), "marked for a record without headers");
+    append_flushed(&mut log, &[normal(1, 1, "headers:k")]).await;
+    assert!(marked());
 }
