@@ -3441,7 +3441,6 @@ target counter (metadata level 36):
   named. Versions compare by incarnation first, and a restore raises it
   (metadata level 35), so every target written after the restore, including
   the restored record's own, is newer than anything a group took before.
-  The incarnation is 0 until #2529 lands.
 - **Nothing moves until all brokers have acknowledged the incarnation.**
   "All brokers" here means every broker registered with the control plane,
   serving or not, as `AllAcked` counts them in the model. The control plane
@@ -3561,6 +3560,10 @@ the id back as a voter.
 
 What placement does not do yet for a Raft shard:
 
+- **Brokers do not report copy ids or read targets yet.** The control
+  plane keeps the records and the route (`raft_copy_ids`, `raft_target`,
+  `POST /v1/nodes/{node_id}/raft-copy-id`) and the feed carries the target
+  as `target`, but no broker sends an id or hands a target to its leader.
 - **A dropped copy keeps its directory.** Deleting it needs the control
   plane's doomed set and the leaders' membership reports ("Membership"
   above, `DoomGuard` in the model), which are new metadata.
@@ -3622,8 +3625,9 @@ what stops that.
   plane it also waits until every member is known to apply level 35, and it
   answers from the member's own copy, so a caller asks it on the leader. A
   restore made while the group was below level 35 raised nothing and is not
-  fenced by it. Target writes, their
-  delivery and copy deletes are to wait for it; none of them is built yet
+  fenced by it. Target writes and their delivery wait for it, over every
+  registered broker (metadata level 36). Copy deletes are to wait for it
+  too; they are not built yet
   (`FelixRaftPlacementStaleWipeRewindNoAck.cfg` is what happens without it).
 
 A broker is to refuse a delete told at an incarnation below the highest it

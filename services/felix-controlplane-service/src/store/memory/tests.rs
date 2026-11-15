@@ -24,6 +24,13 @@ async fn satisfies_the_placement_ack_contract() {
     crate::store::contract::placement_acks::run_placement_ack_contract(store).await;
 }
 
+/// On a store of its own: the last case leaves the incarnation raised.
+#[tokio::test]
+async fn satisfies_the_raft_target_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::raft_targets::run_raft_target_contract(store).await;
+}
+
 /// The contract allows a backend to leave a future stamp; this one must not,
 /// or a broker dying after a clock step back stays live for the step.
 #[tokio::test]
@@ -539,6 +546,8 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     readmitted: Default::default(),
                     placed: None,
                     switch: None,
+                    raft_copy_ids: Default::default(),
+                    raft_target: None,
                 })
                 .await
                 .expect("assign")

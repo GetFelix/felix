@@ -204,7 +204,8 @@ impl InMemoryStore {
             changes: state.node_changes.into_log(capacity),
             fleet_enabled: state.fleet_enabled,
         };
-        *self.shards.write().await = ShardState {
+        let mut shards = self.shards.write().await;
+        *shards = ShardState {
             records: state.shards.into_iter().collect(),
             changes: state.shard_changes.into_log(capacity),
             unplaced: state.unplaced,
@@ -214,6 +215,14 @@ impl InMemoryStore {
                 expires_at_millis: 0,
             },
         };
+        // Under the shard lock, so a reader that sees the restored records
+        // also sees the raised incarnation: the feed stamps a target with
+        // the incarnation it reads around them.
+        *self.placement.write().await = super::PlacementIncarnation {
+            current: state.placement_incarnation,
+            acks: state.placement_acks.into_iter().collect(),
+        };
+        drop(shards);
         *self.tenant_changes.write().await = state.tenant_changes.into_log(capacity);
         *self.namespace_changes.write().await = state.namespace_changes.into_log(capacity);
         *self.stream_changes.write().await = state.stream_changes.into_log(capacity);
@@ -226,10 +235,6 @@ impl InMemoryStore {
         *self.moves_paused.write().await = state.moves_paused;
         *self.identity.write().await = state.cluster_identity;
         *self.root_sequences.write().await = state.root_sequences.into_iter().collect();
-        *self.placement.write().await = super::PlacementIncarnation {
-            current: state.placement_incarnation,
-            acks: state.placement_acks.into_iter().collect(),
-        };
         *self.replica_reports.write().await = state
             .replica_reports
             .into_iter()

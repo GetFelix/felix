@@ -145,6 +145,11 @@ const SWITCH_LEVEL: u16 = 34;
 /// (`ControlPlaneStore::placement_incarnation`).
 const PLACEMENT_INCARNATION_LEVEL: u16 = 35;
 
+/// The metadata level whose members keep each broker's Raft copy id on a
+/// switched shard and write the shard's target from them
+/// (`ShardAssignment::raft_target`).
+const RAFT_TARGET_LEVEL: u16 = 36;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -1112,6 +1117,38 @@ impl ControlPlaneStore for RaftStore {
             sealer: sealer.to_string(),
         })
         .await
+    }
+
+    /// Refused unless every member is known to apply level 36: below it a
+    /// member would keep no target where the others hold one. The apply
+    /// decides again against the record it lands on.
+    async fn record_raft_copy_id(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        copy_id: u64,
+    ) -> StoreResult<bool> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < RAFT_TARGET_LEVEL)
+        {
+            return Err(StoreError::Conflict(format!(
+                "a control-plane member is below metadata version {RAFT_TARGET_LEVEL}"
+            )));
+        }
+        match self
+            .propose(MetaCommand::RecordRaftCopyId {
+                key: key.clone(),
+                node_id: node_id.to_string(),
+                copy_id,
+            })
+            .await?
+        {
+            MetaResponse::Count { count } => Ok(count > 0),
+            _ => Err(unexpected_shape("count")),
+        }
     }
 
     async fn give_up_seal(

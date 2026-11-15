@@ -188,6 +188,27 @@ struct PlacementIncarnation {
     acks: std::collections::BTreeMap<String, crate::model::PlacementAck>,
 }
 
+/// `placement_acked_by` over every registered broker, from guards already
+/// held.
+fn all_registered_acked(nodes: &NodeState, placement: &PlacementIncarnation) -> bool {
+    let acked = placement
+        .acks
+        .iter()
+        .filter(|(node, ack)| {
+            nodes
+                .records
+                .get(*node)
+                .is_some_and(|record| record.status.incarnation == ack.node_incarnation)
+        })
+        .map(|(node, ack)| (node.clone(), ack.incarnation))
+        .collect();
+    felix_storage::raft_copy::all_acked_placement_incarnation(
+        placement.current,
+        nodes.records.keys(),
+        &acked,
+    )
+}
+
 /// Heartbeats repeat a refused acknowledgement, so the warning is limited to
 /// once per node per minute.
 fn out_of_bound_warning_due(node_id: &str) -> bool {
@@ -804,6 +825,15 @@ impl ControlPlaneStore for InMemoryStore {
         sealer: &str,
     ) -> StoreResult<crate::store::AssignmentWrite> {
         self.apply_accept_seal_report(key, report, sealer).await
+    }
+
+    async fn record_raft_copy_id(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        copy_id: u64,
+    ) -> StoreResult<bool> {
+        self.apply_record_raft_copy_id(key, node_id, copy_id).await
     }
 
     async fn give_up_seal(

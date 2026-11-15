@@ -1083,6 +1083,20 @@ uses it to tell that it lost its storage: if the set names a different id
 for it, it stops voting until it has caught up (`docs/replication-design.md`,
 "A copy that lost its storage does not vote"). The promotion fence never
 reads it, because a registered id is not the id a report vouched for.
+
+A shard that switched to Raft also carries `raft_copy_ids`, the copy id each
+broker in its set reported through `POST /v1/nodes/{node_id}/raft-copy-id`,
+and `raft_target`: `counter` and `members`, copy id by node id. The store
+writes the target once every broker in the set has an id, and again with
+the next counter whenever an id or the set changes; nothing else moves the
+counter. Both are written in place, at the shard's generation. A target
+change is refused while some registered broker, serving or not, has not
+acknowledged the placement incarnation. The assignment feeds leave the
+record's `raft_target` out and send `target` instead, with
+`version: {incarnation, counter}`, only while every registered broker has
+acknowledged it; the confirmed reads never send one. The Raft store needs
+every member known at metadata level 36 (`docs/per-shard-raft.md`, "Where a
+target comes from").
 The Raft store writes it only at metadata level 22.
 
 Under `joint_fence` an assignment also carries `learners`: the members the
@@ -2222,6 +2236,7 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
 | `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
+| `POST /v1/nodes/{node_id}/raft-copy-id` | a broker reports the Raft copy id it holds for a shard that switched to Raft (`{"key": ..., "copy_id": n}`). Answers `changed`, false when the id was already held; 409 for a hybrid shard, a broker outside the set, a target change while some registered broker has not acknowledged the placement incarnation, or a member below metadata version 36. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 35;
+pub const METADATA_VERSION: u16 = 36;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -514,6 +514,14 @@ pub enum MetaCommand {
         node_id: String,
         heard: crate::model::PlacementAck,
     },
+    /// Keep a broker's Raft copy id for a switched shard, and write the
+    /// shard's next target if that moves it
+    /// ([`crate::store::ControlPlaneStore::record_raft_copy_id`]). Level 36.
+    RecordRaftCopyId {
+        key: ShardKey,
+        node_id: String,
+        copy_id: u64,
+    },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
@@ -627,6 +635,9 @@ impl MetaCommand {
             Self::SealShard { .. } | Self::AcceptSealReport { .. } | Self::GiveUpSeal { .. } => 34,
             // A member before level 35 would refuse the command.
             Self::RecordPlacementAck { .. } => 35,
+            // A member before level 36 would refuse the command and keep no
+            // target where the others hold one.
+            Self::RecordRaftCopyId { .. } => 36,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }

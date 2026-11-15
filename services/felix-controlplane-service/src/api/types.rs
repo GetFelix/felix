@@ -540,6 +540,30 @@ pub struct RoutedShardAssignment {
         skip_serializing_if = "crate::model::StreamRouting::is_modulo"
     )]
     pub routing: crate::model::StreamRouting,
+    /// The voters the shard's Raft group should have, with the version a
+    /// broker compares targets by. Absent for a hybrid shard, for one with
+    /// no target yet, and while some registered broker has not acknowledged
+    /// the placement incarnation. The record's own `raft_target` is never
+    /// sent here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<RaftTargetView>,
+}
+
+/// A Raft target as a broker reads it.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
+pub struct RaftTargetView {
+    pub version: RaftTargetVersion,
+    /// Copy id by node id.
+    pub members: std::collections::BTreeMap<String, u64>,
+}
+
+/// Compared by `incarnation`, then `counter`.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
+pub struct RaftTargetVersion {
+    /// The placement incarnation the target is current under.
+    pub incarnation: u64,
+    /// [`crate::model::RaftTarget::counter`].
+    pub counter: u64,
 }
 
 /// [`crate::model::ShardAssignmentChange`] with [`RoutedShardAssignment`].
@@ -643,6 +667,22 @@ pub struct SealReportResponse {
     /// This report is the one recorded for the seal. False when the seal no
     /// longer stands.
     pub accepted: bool,
+}
+
+/// A broker's Raft copy id for a shard that switched to Raft.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RaftCopyIdRequest {
+    pub key: crate::model::ShardKey,
+    /// The id of the copy the broker holds for the shard, the member id it
+    /// votes under.
+    pub copy_id: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RaftCopyIdResponse {
+    /// The id was new for this broker and is now on the shard's record.
+    /// False when the record already held it.
+    pub changed: bool,
 }
 
 /// A seal leader giving up the seal ordered at `generation`.

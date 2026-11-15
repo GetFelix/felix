@@ -31,6 +31,8 @@ fn assignment(state: ShardState, successor: Option<&str>) -> ShardAssignment {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     }
 }
 
@@ -164,6 +166,8 @@ async fn a_drained_report_cuts_over_without_waiting_for_the_interval() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("fenced move");
@@ -310,6 +314,8 @@ async fn led_by_x(store: &crate::store::memory::InMemoryStore, generation_bumps:
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
     for _ in 0..=generation_bumps {
         assignment = store
@@ -768,6 +774,8 @@ async fn an_elected_leaders_report_is_adopted_once_replica_election_is_finalized
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -856,6 +864,8 @@ async fn an_elected_leader_reporting_a_collided_generation_moves_the_shard_on() 
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -924,6 +934,8 @@ async fn a_collision_is_left_alone_when_the_elected_leader_is_outside_the_set() 
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -988,6 +1000,8 @@ async fn named_y_beside_z() -> (
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
