@@ -12,6 +12,7 @@ pub(crate) mod mounts;
 pub(crate) mod nodes;
 pub(crate) mod pagination;
 pub(crate) mod placement;
+pub(crate) mod placement_acks;
 pub(crate) mod rbac;
 pub(crate) mod refresh_tokens;
 mod replica_reports;

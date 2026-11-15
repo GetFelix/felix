@@ -1467,3 +1467,17 @@
 34 give_up_seal.key.tenant_id
 34 accept_seal_report.sealer
 34 give_up_seal.sealer
+35 import_state.raise_incarnation
+35 import_state.state.placement_incarnation
+35 import_state.state.placement_acks
+35 import_state.state.placement_acks[][].incarnation
+35 import_state.state.placement_acks[][].node_incarnation
+35 snapshot.state.placement_incarnation
+35 snapshot.state.placement_acks
+35 snapshot.state.placement_acks[][].incarnation
+35 snapshot.state.placement_acks[][].node_incarnation
+35 record_placement_ack
+35 record_placement_ack.heard
+35 record_placement_ack.heard.incarnation
+35 record_placement_ack.heard.node_incarnation
+35 record_placement_ack.node_id

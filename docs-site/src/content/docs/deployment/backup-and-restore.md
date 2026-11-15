@@ -251,6 +251,17 @@ The restore also rewinds node incarnations and replica reports together, so
 an old report could let placement replace a broker that kept running while
 it still serves on its lease.
 
+Restoring the control plane's metadata raises its placement incarnation
+above both the one it replaces and the backup's, so restoring the same
+backup twice, or an older one, never brings back a placement decision made
+before. Brokers acknowledge the new incarnation through their heartbeats.
+
+If a broker kept running through a restore of a backup taken before that
+broker last started, restart it. The restore put back an older registration
+for it, so the control plane does not count that broker's acknowledgements,
+and no placement change that waits for every broker goes out until it
+registers again.
+
 ## See also
 
 - [Durable storage](https://github.com/GetFelix/felix/blob/main/docs/durable-storage.md#restoring-to-a-backup-point)

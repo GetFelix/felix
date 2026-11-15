@@ -25,6 +25,7 @@ mod copy_file;
 mod gate;
 mod judge;
 mod marks;
+mod placement_ack;
 mod reclaim;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -36,6 +37,11 @@ pub use judge::{
     holds_log_without_copy, kept_copies,
 };
 pub use marks::{CopyMarks, MarkLog};
+pub use placement_ack::{
+    MAX_PLACEMENT_ACK_AHEAD, ack_placement_incarnation, acked_placement_incarnation,
+    all_acked_placement_incarnation, copy_delete_is_void, placement_ack_in_bound,
+    restored_placement_incarnation,
+};
 pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
 
 use std::sync::Arc;
