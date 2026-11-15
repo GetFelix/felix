@@ -199,6 +199,7 @@ async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Durati
                             &shard(n),
                             Batch {
                                 expected: None,
+                                trim: None,
                                 records: vec![Record {
                                     timestamp_micros: 1_700_000_000,
                                     payload: Bytes::from_static(&[7; 100]),
@@ -263,6 +264,7 @@ async fn with_a_dead_peer(
         let Some(runtime) = leader(n) else { continue };
         let batch = Batch {
             expected: None,
+            trim: None,
             records: vec![Record {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(&[7; 100]),

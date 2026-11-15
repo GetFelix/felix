@@ -411,6 +411,7 @@ impl Cluster {
                 payload: Bytes::from_static(payload),
                 producer: None,
                 expected: None,
+                trim: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -441,6 +442,7 @@ impl Cluster {
                     payload: Bytes::from_static(b"record"),
                     producer: None,
                     expected: None,
+                    trim: None,
                     written: None,
                 })
             });
@@ -1051,6 +1053,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
     let (token, written) = WrittenToken::channel();
     let command = Command {
         expected: None,
+        trim: None,
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
         producer: None,
@@ -1096,6 +1099,7 @@ fn a_commands_token_is_not_serialized() {
     let (token, _written) = WrittenToken::channel();
     let command = Command {
         expected: None,
+        trim: None,
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
         producer: None,
@@ -1104,7 +1108,13 @@ fn a_commands_token_is_not_serialized() {
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
-        ["expected", "payload", "producer", "timestamp_micros"]
+        [
+            "expected",
+            "payload",
+            "producer",
+            "timestamp_micros",
+            "trim"
+        ]
     );
     let received: Command = serde_json::from_value(sent).expect("json");
     assert!(received.written.is_none());
@@ -1501,6 +1511,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
             payload: record.clone(),
             producer: None,
             expected: None,
+            trim: None,
             written: None,
         };
         last = member
@@ -1715,6 +1726,7 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
             payload: Bytes::from_static(b"after the cut"),
             producer: None,
             expected: None,
+            trim: None,
             written: None,
         })
         .await
@@ -1780,6 +1792,7 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
                     payload: Bytes::from_static(b"after the restart"),
                     producer: None,
                     expected: None,
+                    trim: None,
                     written: None,
                 })
                 .await

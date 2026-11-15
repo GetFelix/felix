@@ -470,6 +470,11 @@ const ENTRY_PIECE: u8 = 4;
 /// refuses the entry by its tag rather than store the record
 /// unconditionally, and every other frame stays byte-identical.
 const ENTRY_CONDITIONAL: u8 = 5;
+/// A head trim: the floor comes before the record, which holds the trim's
+/// headers. Sent as read back from the log, so never conditional. A new tag
+/// for the same reason as [`ENTRY_CONDITIONAL`]: a build without it refuses
+/// the entry by its tag rather than store the headers as a client record.
+const ENTRY_TRIM: u8 = 6;
 
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {
     put_log_id(buf, &entry.log_id);
@@ -478,6 +483,16 @@ fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> 
         EntryPayload::Normal(command) => {
             // A record of no producer's batch keeps the layout it always had.
             match (command.producer, command.expected) {
+                _ if command.trim.is_some() && command.expected.is_some() => {
+                    return Err(invalid("a conditional trim is not sent".to_string()));
+                }
+                (Some(_), _) if command.trim.is_some() => {
+                    return Err(invalid("a trim names a producer".to_string()));
+                }
+                (None, None) if let Some(before) = command.trim => {
+                    buf.put_u8(ENTRY_TRIM);
+                    buf.put_u64(before);
+                }
                 (None, None) => buf.put_u8(ENTRY_RECORD),
                 (None, Some(expected)) => {
                     buf.put_u8(ENTRY_CONDITIONAL);
@@ -533,9 +548,13 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
     let log_id = take_log_id(buf)?;
     Ok(match take_u8(buf)? {
         0 => EntryOf::<ShardTypes>::new_blank(log_id),
-        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL) => {
+        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_TRIM) => {
             let expected = match tag {
                 ENTRY_CONDITIONAL => Some(take_u64(buf)?),
+                _ => None,
+            };
+            let trim = match tag {
+                ENTRY_TRIM => Some(take_u64(buf)?),
                 _ => None,
             };
             let producer = match tag {
@@ -567,6 +586,7 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
                     payload,
                     producer,
                     expected,
+                    trim,
                     written: None,
                 },
             )

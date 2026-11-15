@@ -1996,3 +1996,5 @@ async fn a_leader_acknowledgement_does_not_outlive_its_leader() {
     );
     stop(&members).await;
 }
+
+mod trim;

@@ -514,6 +514,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
         };
         let batch = Batch {
             expected: None,
+            trim: None,
             records: vec![record],
             ack: AckAt::Flushed,
             term,

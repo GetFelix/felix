@@ -13,6 +13,7 @@ pub use completion::LogDelivery;
 pub(crate) use completion::{deliver_from_log, spawn_release};
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
+pub(in crate::broker) use proposed::{Expected, HeldTrim};
 pub use proposed::{
     IdempotentProposal, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed,
     ProposedPublish,

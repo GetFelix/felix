@@ -287,5 +287,8 @@ async fn refuse_commit_stream(handle: &StreamHandle, log: &StreamLog, expected: 
     Ok(())
 }
 
+mod proposed;
 #[cfg(test)]
 mod tests;
+
+pub use proposed::{ProposedTrim, TrimFailed};

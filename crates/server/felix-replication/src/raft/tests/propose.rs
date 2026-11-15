@@ -31,6 +31,7 @@ fn batch(payloads: &[&'static [u8]], ack: AckAt) -> Batch {
     });
     Batch {
         expected: None,
+        trim: None,
         records: records.collect(),
         ack,
         term: None,
@@ -310,6 +311,7 @@ async fn an_answer_is_not_held_behind_the_next_calls_lease() {
 fn a_drain_stops_at_its_bounds() {
     let sized = |records: usize, bytes: usize| Batch {
         expected: None,
+        trim: None,
         records: (0..records)
             .map(|_| Record {
                 timestamp_micros: 1,
@@ -561,6 +563,7 @@ async fn a_token_does_not_leave_with_an_append() {
     let (token, written) = WrittenToken::channel();
     let command = Command {
         expected: None,
+        trim: None,
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
         producer: None,
@@ -685,6 +688,7 @@ pub(super) async fn cut_after_first(
         payload: Bytes::from_static(payload),
         producer: None,
         expected: None,
+        trim: None,
         written: None,
     };
     let (first, rest) = payloads.split_first().expect("a record");
@@ -742,6 +746,7 @@ async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
         payload: Bytes::from_static(payload),
         producer: None,
         expected: None,
+        trim: None,
         written: None,
     };
 

@@ -38,7 +38,7 @@ pub use read::ReadPage;
 pub use shard_logs::LogKind;
 pub use shards::{EngineLogs, StreamHandle};
 pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};
-pub use trim::{TrimOutcome, TrimStep};
+pub use trim::{ProposedTrim, TrimFailed, TrimOutcome, TrimStep};
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;

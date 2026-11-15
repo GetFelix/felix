@@ -377,6 +377,7 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
             payload: put.encode(),
             producer: None,
             expected: None,
+            trim: None,
             written: None,
         };
         let written = leader.raft().client_write(command).await.expect("write");

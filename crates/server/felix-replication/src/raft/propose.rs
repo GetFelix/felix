@@ -94,6 +94,9 @@ pub struct Batch {
     /// entry there, followers copy it, and the record is never delivered.
     /// Never set with `producer`.
     pub expected: Option<u64>,
+    /// Set on a head trim: the floor below which reads stop once its one
+    /// record, the trim's headers, is committed. Always with `expected`.
+    pub trim: Option<u64>,
 }
 
 /// An idempotent producer's batch: whose it is and its sequence. The
@@ -324,13 +327,16 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         term,
         producer,
         expected,
+        trim,
     } = batch;
     let count = records.len();
     if count == 0 {
         return Err(lost(EMPTY));
     }
     // One entry, so its index alone says whether it landed where expected.
-    if expected.is_some() && (count != 1 || producer.is_some()) {
+    if (expected.is_some() || trim.is_some())
+        && (count != 1 || producer.is_some() || expected.is_none())
+    {
         return Err(lost(CONDITIONAL_SHAPE));
     }
     let first = match producer {
@@ -371,6 +377,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                     ..first
                 }),
                 expected,
+                trim,
                 written: None,
             }
         })
@@ -388,6 +395,7 @@ pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting),
             payload: Bytes::new(),
             producer: None,
             expected: None,
+            trim: None,
             written: None,
         })
         .collect();
