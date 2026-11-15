@@ -1549,9 +1549,15 @@ leader's last message whether the group is idle or not. At the default
 idle interval of 2 s the follower waits three intervals, 6 s plus its
 spread, so a dead leader of an idle group is noticed in 6 to 7 s.
 
-Pre-vote is off, as it is by default in openraft. A member cut off from
-its leader therefore raises the term when it stands. That is unchanged by
-idle groups and is a separate decision.
+Pre-vote is on (openraft's `enable_pre_vote`; off by default there). A
+member that stands first asks the others whether they would vote for it,
+and raises its term only when a majority says yes. A member nobody can hear,
+such as one whose outbound connections fail, keeps its term. When it is
+heard again it follows the leader instead of deposing it with a higher term
+(#2630). Three cases skip the question and stand at once: a leadership
+transfer's target (so a transfer costs at most one term), a restarted
+leader whose stored vote is its own (`enable_leader_restore`), and a sole
+voter.
 
 ### Many groups electing at once
 

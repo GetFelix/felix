@@ -2173,11 +2173,48 @@ async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
         .await;
     }
     // The first answer from the broker, within an idle heartbeat (2 s),
-    // ends every group's wait. Its members stood while it was cut, so their
-    // higher term costs an election on top (pre-vote is off), on real
-    // timers: `eventually` bounds it, and the prompt answer has a test of
-    // its own below.
+    // ends every group's wait, on real timers: `eventually` bounds it, and
+    // the prompt answer has a test of its own below.
     eprintln!("caught up {:?} after the heal", healed.elapsed());
+    cluster.stop().await;
+}
+
+/// A member that hears nobody, and is heard by nobody, keeps its term: its
+/// pre-votes are lost, so it never stands. Back on the network, it follows
+/// the leader it left instead of deposing it with a higher term (#2630).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    // Every member has heard the leader's term.
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    let term = cluster
+        .runtime(&leader.broker)
+        .status(&shard(0))
+        .expect("status")
+        .term;
+    let alone = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker)
+        .expect("a follower");
+    cluster.net.muted.lock().insert(alone.into());
+    cluster.net.cut.lock().insert(alone.into());
+    // Several election timeouts (1 to 2 s each).
+    tokio::time::sleep(timers().election_max * 4).await;
+    let status = cluster.runtime(alone).status(&shard(0)).expect("status");
+    assert_eq!(status.term, term, "{alone}'s term while cut off");
+
+    cluster.net.cut.lock().clear();
+    cluster.net.muted.lock().clear();
+    tokio::time::sleep(timers().election_max * 2).await;
+    assert_eq!(cluster.elected(0).await, leader);
+    let status = cluster
+        .runtime(&leader.broker)
+        .status(&shard(0))
+        .expect("status");
+    assert_eq!(status.term, term, "the leader was deposed");
     cluster.stop().await;
 }
 

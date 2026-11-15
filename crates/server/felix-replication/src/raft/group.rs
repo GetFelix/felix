@@ -862,11 +862,13 @@ impl Group {
     ) -> Result<Reply, Refused> {
         let group = Arc::clone(self);
         let arrived = self.pace.timers.now();
+        // A granted pre-vote promises nothing, so it leaves the pace alone.
+        let pre_vote = matches!(body, Request::PreVote(_));
         let handled = tokio::spawn(async move {
             let reply = group.answer(body, report).await?;
             match &reply {
                 Reply::Append(Ok(_)) => group.pace.took(beat, arrived, deadline),
-                Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
+                Reply::Vote(vote) if vote.vote_granted && !pre_vote => group.pace.voted(),
                 _ => {}
             }
             Ok(reply)
