@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794716196887,
+  "lastUpdate": 1794719558083,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57928,6 +57928,58 @@ window.BENCHMARK_DATA = {
             "range": "16787.20",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1206675.65\nmean: 1197872.64\nstdev: 16787.20\ncv: 1.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "525aa10918f9cbb97da694bb95ac8ab3a535f074",
+          "message": "feat(raft): conditional publishes on a Raft stream shard (#2446) (#2589)\n\n* feat(raft): conditional publishes on a Raft stream shard, engine side (#2446)\n\nA conditional entry carries the offset it must be written at. Every\nmember that writes it decides from the entry's own index: at the\nexpected offset it stores the record, anywhere else a blank entry. The\nleader answers once committed, with OffsetMismatch and the offset after\nthe blank when it missed. Wire layout 6 adds the conditional entry tag,\nso an older member refuses it by name instead of storing it as a plain\nrecord. On disk only existing record kinds are written.\n\n* fix(broker-service): cover QuorumError::OffsetMismatch (#2446)\n\n* feat(broker-service): serve publish_if on a Raft shard (#2446)\n\nA conditional publish to a shard a Raft group runs here goes to the\ngroup at the term routing answered, and is answered at the commit: ok\nat the expected offset, or offset_mismatch with the tail after the blank\nwritten in its place. A refusal takes an offset on Raft. Trims stay\nrefused by name.\n\nFelixRaftCond.tla models the rule: every member decides from the\nentry's index, and a leader that decides alone keeps a record off its\noffset once a membership entry lands between its look and the append.\n\n* docs(raft): conditional publishes on a Raft shard (#2446)\n\nA refused publish_if takes one offset on Raft, a blank readers skip, and\nis answered at the commit with the tail past it. Wire layout 6 and entry\ntag 5, the status row, protocol, semantics and pubsub pages.\n\n* fix(raft): a refused publish_if keeps the replay ring; the leader's log decides (#2446)\n\nA conditional publish stored as a blank is held as a blank, not a gap:\nits outcome is known, so the ring stays and the next record reports the\noffset as skipped.\n\nopenraft replicates and applies entries read back from the log, so the\nleader's append decides the condition at the entry's final index and\nfollowers copy what it stored. Docs and comments say so; the conditional\nwire tag stays as defence-in-depth. Doc fixes: no membership entry in the\nexample, Raft notes on reading back, the lease and the publisher id.\n\n* fix(replication): keep Raft wire layout 5; the conditional entry is a tag only\n\nA layout bump made members of a mixed-version group refuse each other's\nheartbeats and votes. A build without tag 5 already refuses a conditional\nentry by name. Also fix the lost-answer advice for publish_if on Raft.\n\n* docs(raft): publish_if changelog names the entry tag; lost-answer check reads offset and payload (#2446)\n\n* formal(raft): FelixRaftCond results and a two-term config (#2446)\n\nFelixRaftCond passes (169,456,277 distinct states, depth 34) and\nFelixRaftCondTwoTerms passes (18,646,633). FelixRaftCondLeaderDecides\nviolates CondKeptAtExpected: a leader that decides before its append is\nwrong once a membership entry lands between. FelixRaftCondLeaderDecidesNoMembers\npasses, so the membership entry is what breaks it. FelixRaftCondReachAnswers\nviolates NeverOkAndMismatch as pinned, so the passes are not vacuous.\n\n* formal(raft): FelixRaftCond configs stay out of FelixRaft's affected set; TwoTerms cites its tests (#2446)",
+          "timestamp": "2026-11-15T05:06:41Z",
+          "tree_id": "0babd0096f9d214fb55169cdaf292a2d78572b85",
+          "url": "https://github.com/GetFelix/felix/commit/525aa10918f9cbb97da694bb95ac8ab3a535f074"
+        },
+        "date": 1794719557376,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 649561.03,
+            "range": "45048.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 649561.03\nmean: 663471.32\nstdev: 45048.37\ncv: 6.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 649561.03,
+            "range": "45048.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 649561.03\nmean: 663471.32\nstdev: 45048.37\ncv: 6.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163759.8,
+            "range": "2251.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163759.80\nmean: 162883.40\nstdev: 2251.84\ncv: 1.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1637598.03,
+            "range": "22518.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1637598.03\nmean: 1628834.01\nstdev: 22518.36\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
