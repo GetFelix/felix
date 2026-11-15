@@ -62,6 +62,8 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
+  last-rotation                              ← the id the last rotation gave the directory, the one before, and the registration then
+  registered-at                              ← the node record's registration time, beside the incarnation
   copy-trust                                 ← which copies a leader vouched for since the id last rotated
   copy-trust-kept                            ← a release that keeps copy-trust ran here
   run-token                                  ← this run's token, which the run witness outside the directory names
@@ -220,7 +222,7 @@ segment, so damage here is never a torn write. It is always an error.
 | 12 | 8 | `timestamp_micros` | publish time |
 | 20 | 4 | `header_crc` | CRC-32 over bytes `0..20` |
 | 24 | 4 | `checksum` | CRC-32 over bytes `0..24`, **followed by** the tag and the body |
-| 28 | 20 or 8 | `tag` | 20 bytes when bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 8 bytes on a trim record: `floor u64` |
+| 28 | 20, 24 or 8 | `tag` | 20 bytes when only bit 31 is set: `producer_id u64`, `sequence u64`, `len u32`. 24 bytes on a batch piece (bits 31 and 30, v9 only, after the 36-byte v9 header): the same, then `position u32`. 8 bytes on a trim record: `floor u64` |
 | 28, 36 or 48 | n | body | the payload, opaque bytes; with bit 26, preceded by the key and headers and their `u32` length; with bit 27, followed by the publisher and its `u8` length |
 
 The diagram shows a record without a tag, which is every record not written by
@@ -345,13 +347,47 @@ every copy of the log says whose it is:
 - **Bit 31** of `payload_len`: the record opens a batch. The 20-byte tag names
   the producer, the batch's sequence, and how many records the batch has.
 - **Bit 30**: the record continues the batch the record before it belongs to.
-- Both set is `RecordFlags`, and neither is an ordinary record.
+- **Bits 31 and 30**, from v9: a batch piece, below. Before v9 both set is
+  `RecordFlags`.
+- Neither is an ordinary record.
 
 Marking every record rather than only the first is what lets a log tell a
 batch it holds all of from one whose leader stopped partway: a batch is held
 once its last record is, and one whose next record does not continue it was
 abandoned. The step to the next record is `28 + (20 if bit 31) + payload_len`,
 still from the header alone.
+
+**Batch pieces.** On a Raft log every record is an entry of its own, and a
+leader change can put other entries (the new leader's blank entry, another
+writer's records) between the records of one batch. "Continues the record
+before it" cannot describe that, so a Raft log never writes bit 30 alone.
+A record after a batch's first is a *piece*: bits 31 and 30, and a 24-byte
+tag.
+
+| Tag offset | Size | Field | Notes |
+| --- | --- | --- | --- |
+| 0 | 8 | `producer_id` | |
+| 8 | 8 | `sequence` | the batch's sequence |
+| 16 | 4 | `len` | records in the whole batch |
+| 20 | 4 | `position` | this record's place in the batch, from 0; never 0, since the first record is the one that opens the batch (bit 31 alone) |
+
+A piece belongs to its batch wherever it lies. That gives a log three
+things the unnamed mark cannot:
+
+- A batch cut after `k` records is finished by pieces `k..len`, written
+  later, after whatever cut it. The batch is then held once, from its first
+  record's offset to its last piece's, and those offsets are not one run.
+- A log that has lost a batch's first record (a purge, or a copy that starts
+  inside the batch) still sees from the pieces left that the batch is
+  there, so a re-send of it is refused and never written a second time.
+  Once no record of the batch is left the snapshot still names it, so the
+  re-send stays refused.
+- Pieces that do not follow one another (position 2 with no position 1)
+  mark a batch that cannot be finished.
+
+Only a v9 segment holds a piece, and only a Raft log writes one: anywhere
+else the append is refused (`Unsupported`), because the hybrid's replication
+does not carry it. The step to the next record is `36 + 24 + payload_len`.
 
 Only a v3 or later segment may hold marks. A v2 build reading a mark's bits would see a
 length past the limit, and recovery could take that for a torn tail and cut it
@@ -489,9 +525,10 @@ v9 adds three kinds, each a code of two or three kind bits:
 None of them has a tag, so the step to the next record is still
 `36 + payload_len`. Bit 30 alone means "continues a producer batch", so every
 build before v9 refuses these codes as `RecordFlags`, and so does a v9 reader
-in a segment older than v9. The pairs that include bit 31 (bits 31 and 30,
-31 and 29, 31 and 28) and the triples that include it stay `RecordFlags` in
-every version.
+in a segment older than v9. Bits 31 and 30 together are a batch piece from
+v9 ("Producer marks", above). The other pairs that include bit 31 (31 and
+29, 31 and 28) and the triples that include it stay `RecordFlags` in every
+version.
 
 Only a v9 segment holds them, and nothing writes them yet. An append that
 holds one is refused (`Unsupported`) before it can roll the log onto v9. They
@@ -933,7 +970,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
-| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -1142,8 +1179,16 @@ Written through a temporary, an fsync, a rename and a directory sync, before
 the purge deletes any segment. The log's first index is one past `index`,
 or the oldest segment's base when that is higher. Records at or below
 `index` that remain in a segment are not entries. When `index` is at or
-past the log's last record the log is empty, and the next append restarts
-the segments at `index + 1`.
+past the log's last record the log is empty, and the purge resets the
+segments to start at `index + 1`. After a snapshot install, the records it
+drops may be ones the leader never had. A crash between writing the file and
+that reset leaves them, so the next open finishes the reset before the log
+serves when an install at `index + 1` is still pending in
+`producers.forgotten` and the log ends at or below it. A snapshot then never
+reads those records as the log's own. The reset removes the producer
+snapshot, the head file and any key index snapshot before it drops a record,
+since a crash after the drop is not redone and one of them saved at the old
+tail could pass for the new log's.
 
 Nothing can rebuild this file, so one that is present and does not decode
 fails the open of the Raft log. Absent means nothing was purged.
@@ -1589,7 +1634,8 @@ both before any segment is touched.
 
 Each idempotent producer's place in the log is derived from the marks: for
 every producer, the newest sequence held and where its recent batches landed,
-plus a batch still waiting for records. Each remembered batch also carries a
+plus a batch still waiting for records and, per producer, a batch that was
+cut short. Each remembered batch also carries a
 digest of its payloads, which is how a leader tells a re-send from a different
 batch under the same sequence (see `docs/protocol.md`, "Idempotent producers"). Replaying the whole log on every open
 would make opening a large shard slow, so the state is saved at each rollover,
@@ -1597,19 +1643,59 @@ as of the new segment's base offset, once the retired segment is sealed.
 
 ```text
  0   4  magic        u32  "FLPS"
- 4   2  version      u16  2 (1 is still read; see below)
+ 4   2  version      u16  4 (1 to 3 are still read; see below)
  6   2  reserved     u16
  8   8  as_of        u64  the state covers every record below this offset
 16   4  producers    u32
 20   4  body_crc     u32  crc32 over what follows
-24   1  open              1 when a batch is waiting for records, then:
-                          producer_id u64, sequence u64, len u32, first u64, held u32,
-                          digest
+24   1  open              1 when a batch is waiting for records, then one `partial`
+     4  cuts         u32  then cuts × partial
+     4  forgotten    u32  then forgotten × { producer_id u64, sequence u64 }
+     4  evicted      u32  then evicted × { producer_id u64, sequence u64, next u64 }
+     4  carried      u32  then carried × { producer_id u64, sequence u64 }
      …  producers × { id u64, last_sequence u64, batches u16,
-                      batches × { first u64, len u32, digest } }
+                      batches × { first u64, last u64, pieces u32, digest } }
 
-digest = present u8 (0 or 1), value u64 (0 when absent)
+partial = producer_id u64, sequence u64, len u32,
+          has_first u8 (0 or 1), first u64 (0 when absent),
+          held u32, next u64, pieces u8 (0 or 1), digest
+digest  = present u8 (0 or 1), value u64 (0 when absent)
 ```
+
+A `partial` is a batch the log holds some records of and not all. `held` is
+the position its next record has, `next` is one past the offset of the last
+record held, and `pieces` says whether a batch piece has continued it. The
+one in `open` is at the tail and may still be continued in place. A cut one
+was followed by a record that did not continue it; each producer has at most
+one, its newest batch, and it stays until the producer opens a batch again or
+the last record held of it leaves the log. Only pieces finish a cut batch.
+
+`has_first` is 0 for a batch that cannot be finished: the log no longer
+holds its first record, or its pieces do not follow one another. Such a batch
+has no digest. It is kept so that a re-send is refused instead of being taken
+as a new batch, which would write the records still in the log a second
+time. A batch held whole whose first record has left the log, with pieces of
+it still there, is kept the same way, with `held` equal to `len`.
+
+A `forgotten` entry is a cut batch the log no longer holds a record of (a
+purge passed its last one) or that went past the 4096 cut batches kept
+whole. Only the producer and the batch's sequence are kept: a re-send of that
+sequence or an older one is refused with `sequence_expired`, even while the
+producer is otherwise unknown, so a cut first batch is not taken as a new
+producer's sequence 0. A later record of the producer does not lift it, since
+a truncation could still remove that record. It goes when a purge passes a
+later batch of the producer, which is committed by then.
+
+A `carried` entry is the part of `forgotten` that committed records below
+the log's base account for: what a purge forgot, and what an installed
+snapshot carried. It is what this log's snapshot hands on (see "Idempotent
+publishes" in `docs/per-shard-raft.md`). An `evicted` entry is a cut batch
+that went past the 4096 kept whole, with `next` one past its last record. A
+purge past `next` moves it to `carried`; until then it is only this log's.
+
+A held batch's `last` is the offset of its last record, which is not
+`first + len - 1` when the batch was finished after a cut. `pieces` is the
+batch's length when its later records are pieces and 0 otherwise.
 
 The digest is CRC-64/XZ, chained over the batch's records in order: starting
 from 0, each record takes it to `crc64(digest u64 ‖ r u64)`, where
@@ -1622,8 +1708,16 @@ change.
 Version 1 has no digest fields. It is still read, and its batches have no
 digest, which a leader treats as matching whatever is re-sent under them: the
 answer a re-send got before digests were kept. They age out as the producers
-write, and the next snapshot is written as version 2. Any other version is
-ignored, like a damaged snapshot.
+write. Versions 1 and 2 have no cut batches. Their open batch is
+`producer_id u64, sequence u64, len u32, first u64, held u32, digest`, and
+their held batches are `first u64, len u32, digest`: every batch they
+describe is one run. Versions 1 to 3 have no `forgotten` count, and versions
+1 to 4 no `evicted` or `carried` counts. All are still read, and the next
+snapshot is written as version 5, except that a Raft log ignores one older
+than version 5 and rebuilds from the log: it cannot say which cut batches
+were evicted, so a later purge would not carry them. A build that predates
+version 5 ignores a version 5 snapshot and rebuilds the state from the log. Any other version is ignored, like a damaged
+snapshot.
 
 An open reads it and replays only the marks after `as_of`. Those are normally
 all in the active segment, which recovery scans in full anyway, so a current
@@ -1638,7 +1732,50 @@ rename but not flushed: one lost to a crash costs a longer open.
 What is remembered is a function of the log. A producer is known while one of
 its batches is in the log; retention that removes the last of them forgets it,
 on every replica alike. Each producer keeps its last 64 batches, and past 4096
-producers the one whose newest batch is oldest is forgotten.
+producers the one whose newest batch is oldest is forgotten. Past 4096 cut
+batches the oldest is kept only as a `forgotten` entry, and its producer is
+forgotten.
+
+A `forgotten` entry is the one thing that is not a function of the records
+left, and the snapshot is neither flushed nor kept across a truncation. So
+the entries are also saved in their own file, `producers.forgotten`, beside
+the snapshot:
+
+```text
+magic  u32  0x464C5046
+crc    u32  crc32 of the rest
+count  u32  then count × { producer_id u64, sequence u64 }
+count  u32  then count × { producer_id u64, sequence u64 }   carried
+base   u64  the installed snapshot's base, u64::MAX for none
+```
+
+The second list is the `carried` entries, and `base` is the base of the
+snapshot whose carried batches were taken in last. It is cleared only once
+the reset to it has dropped the log, so a reset redone after a crash still
+follows the install. A file that ends after the first list, as one written
+before these were kept does, carries every entry in it: it cannot say which
+were this log's own, and refusing too much is safe, since every copy that
+holds or purged the records refuses them too.
+
+It is written through a temporary and a rename, and flushed with its
+directory, before a purge unlinks a segment and before a reset drops the
+log. A purge or reset that cannot write it fails and removes nothing. Every
+open and every rebuild after a truncation merges it into the table, keeping
+the higher sequence per producer. A reset forgets every unfinished batch
+with a record below the new base, and carries it, unless a snapshot at that
+base was installed: then the snapshot's carried batches speak for those
+records, and the log's own are dropped. An unreadable file fails the open:
+the log cannot say what it held.
+
+A member installed from a snapshot takes in the batches the snapshot
+carries. A member caught up by copying segments knows only what the records
+it was sent say.
+
+Because pieces name their batch, the same holds for a log read from any
+base: a log pruned to an offset and a copy that starts at that offset
+remember the same batches, as long as neither bound above was reached.
+Cut batches are kept only on a Raft log. On any other log nothing can
+finish one, so it is abandoned as before.
 
 
 ## `head`: the trim records' head entries
@@ -1950,6 +2087,74 @@ leader (`FenceKeptOk`, `docs/internal-protocol.md`) only when this file says
 `kept` and the control plane's record names the id from before the crash,
 or one `rotated-ids` names.
 An older release neither reads nor writes the file.
+
+## `last-rotation`: the directory's last rotation
+
+One text file at the durable root, written each time the storage id rotates,
+before the new id, through `last-rotation.tmp`, synced, renamed and the
+directory synced.
+
+```text
+last_rotation
+<the new storage id, 32 hex digits>
+<the id it replaced, 32 hex digits>
+registered_at=<the node record's registered_at_millis>
+incarnation=<the node incarnation>
+```
+
+The last two lines are the binding: the registration the directory held when
+it rotated, read from `registered-at`. They are both there or both absent. A
+directory with no dated registration (a first start, or one registered last
+by a release or a control plane that does not date registrations) writes the
+record without them, and a record without them is never credited.
+
+A rotation during a run (the Raft restore gate, a deferred restore check)
+records the clean stop under the new id, so the next start does not rotate
+again and nothing else says the id is new. A start credits the record, and
+counts a lost copy here from the first set that readmits it, only when all
+of these hold against the control plane's record of the node:
+
+- it names the id the directory rotated from or to;
+- its `registered_at_millis` equals the bound one, so the node was not
+  deleted and added again;
+- its incarnation is the bound one or the next.
+
+Each registration this directory records moves the binding on: when the
+record is bound to the incarnation just before the new one, under the same
+`registered_at_millis` and the id the directory has now, it is rewritten
+with the new incarnation before the registration is recorded. A registration
+from another directory leaves a gap, and the record is not credited again.
+A release that does not write the binding registers without moving it, so
+the incarnation is one past the bound one. That one registration still
+credits, because that release ran from this directory under the same id;
+the second one leaves the gap, and credit stops.
+
+A start removes a record it does not credit, one naming another id than the
+directory's (a crash between the record and the id), and one that does not
+decode. It keeps the record when it rotated the id itself, and when it
+started from the view and has no control plane record yet; the deferred
+restore check then decides by the same rule. A missing file claims nothing,
+which only costs a readmission. An older release neither reads nor writes
+the file.
+
+## `registered-at`: the registration a rotation is bound to
+
+One text file at the durable root, written at each registration the control
+plane dated, before the `registration` record, through `registered-at.tmp`,
+synced, renamed and the directory synced.
+
+```text
+registered_at
+registered_at=<the node record's registered_at_millis>
+incarnation=<the node incarnation>
+```
+
+The control plane keeps `registered_at_millis` for the life of a node record
+and starts the incarnation over when the node is deleted and added again, so
+only the pair names one registration. The file is read only when a rotation
+writes `last-rotation`, and only while `registration` holds the same
+incarnation: a registration that moved `registration` alone leaves the next
+rotation unbound. An older release neither reads nor writes the file.
 
 ## `rotated-ids`: ids a crash rotated away on this directory
 

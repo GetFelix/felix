@@ -16,10 +16,10 @@ mod state;
 mod stats;
 mod subscription;
 
-pub use committed::{ReadBound, ReadBounds};
+pub use committed::{ANSWERED_AHEAD, ReadBound, ReadBounds};
 pub use delivery::{DeliveryEnvelope, FrameShape, SubQueuePolicy};
 pub use stats::{SubscriberOwner, SubscriberStats};
-pub use subscription::{Subscription, SubscriptionGuard, SubscriptionReceiver};
+pub use subscription::{SubscriberDrops, Subscription, SubscriptionGuard, SubscriptionReceiver};
 
 pub use budget::HeldBytes;
 pub(crate) use budget::{QueueBytes, SubscriberBytes};

@@ -66,7 +66,7 @@ Per-subscriber queues, the writer lanes behind them and the replay ring. A risin
 | `felix_sub_queue_enqueued_total` | counter | - | Deliveries placed on subscriber queues. |
 | `felix_sub_queue_dequeued_total` | counter | - | Deliveries taken off subscriber queues by the writer. |
 | `felix_sub_queue_dropped_total` | counter | - | Records lost to slow subscribers. A subscriber that is not keeping up loses records instead of slowing the publisher; delivered events carry offsets so the gap is visible. |
-| `felix_subscribe_dropped_total` | counter | - | Records dropped from subscriber queues; moves with `felix_sub_queue_dropped_total`. |
+| `felix_subscribe_dropped_total` | counter | - | Records dropped from subscriber queues, including frames the connection writer sheds over a subscriber's bound; moves with `felix_sub_queue_dropped_total`. Also counted in the subscriber's own dropped total. |
 | `felix_sub_queue_byte_dropped_total` | counter | `bound` | Of the dropped records, those the byte bound turned away, by which `bound` was hit. |
 | `felix_sub_queue_drop_old_emulated_total` | counter | - | Drops under a `DropOld` policy, which the broker implements as `DropNew`. |
 | `felix_sub_queue_len` | gauge | - | Deliveries waiting across subscriber queues. |
@@ -154,6 +154,7 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_heartbeat_failures_total` | counter | `kind` | Heartbeats that did not land: `rejected` or `unavailable`. |
 | `felix_broker_heartbeat_age_seconds` | gauge | - | Seconds since the last accepted heartbeat. Alert when it nears the control plane's expiry timeout. |
 | `felix_restored_directory_total` | counter | - | Data directories found older than the node's last registration once the control plane answered, after a start from the control-plane view (`FELIX_START_WITHOUT_CONTROLPLANE`). The broker stopped for each. Any increase is a restore that kept its `storage-id`. |
+| `felix_broker_open_file_limit` | gauge | - | The open-file limit the broker runs with, after it raised its soft limit to the hard limit at start. Each held shard keeps up to six files open, and the sealed-segment cache (`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS`, 1,024 by default) up to that many more. See [Open files](/deployment/production/#open-files). |
 | `felix_broker_lease_held` | gauge | - | `1` while this broker may serve the shards it leads. |
 | `felix_broker_lease_expiries_total` | counter | - | Times the lease lapsed. Each is a window in which this broker's shards were unavailable here and not yet reassigned. |
 | `felix_broker_lease_refusals_total` | counter | `boundary` | Requests refused because the lease was invalid. `boundary` is `admission`, `commit` or `ack` for writes and `read` for reads. A non-zero `commit` count means requests were outliving the lease. |
@@ -199,6 +200,7 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
 | `felix_broker_raft_shards_off_placement` | gauge | - | Raft shards open on this broker whose group's voters are not the brokers placement names for the shard. A group keeps the members it formed with, so anything above zero means placement moved, drained or replaced a broker of a Raft shard, which is not supported yet. |
 | `felix_broker_raft_shards_led` | gauge | - | Raft shards whose current term this broker leads and serves writes for. Refreshed every shard feed pass, so it can trail a leader change by a couple of seconds. |
+| `felix_broker_raft_root_held` | gauge | - | `1` while the broker holds its data root because neither the run witness nor the control plane has a copy of its root sequence, so no Raft member on the broker opens, and `0` once the broker starts opening its root otherwise. The log says why once. Anything that stays at `1` needs an operator: see [the root sequence](https://github.com/GetFelix/felix/blob/main/docs/per-shard-raft.md). Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_peer_inbound_rejected_total` | counter | `reason` | Inbound peer connections refused: `alpn` or `handshake`. |
 
 ## Replication
@@ -257,6 +259,7 @@ The durable log. Every series is process-wide, not per stream. Compare `felix_st
 | `felix_storage_segment_count` | gauge | - | Segments currently on disk for a shard. |
 | `felix_storage_raft_kept_copies` | gauge | - | Shard directories a Raft rotation moved aside that are still on disk, summed over data roots. Measured in the background after a rotation, a reclaim or a stream delete. |
 | `felix_storage_raft_kept_copy_bytes` | gauge | - | Bytes those directories hold. |
+| `felix_storage_raft_log_mark_age_seconds` | gauge | - | Seconds since the batched Raft log marks of a data root were last written up to the flushed logs. About the batch interval (1 s) when healthy. From five intervals the root's Raft shards' appends wait until the marks are written again. |
 | `felix_storage_open_sealed_segments` | gauge | - | Sealed segments whose file and index are open, across every log. |
 | `felix_storage_retention_segments_deleted_total` | counter | - | Sealed segments deleted by retention. |
 | `felix_storage_retention_bytes_reclaimed_total` | counter | - | Bytes reclaimed by retention. |

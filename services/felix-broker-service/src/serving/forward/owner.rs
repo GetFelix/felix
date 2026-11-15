@@ -273,14 +273,6 @@ impl ForwardingHandler {
             return error(correlation_id, ErrorCode::UnsupportedKind, err.to_string());
         }
         let records = publish.payloads.len() as u64;
-        if publish.producer.is_some()
-            && let Err(err) = Broker::engine_takes_idempotent(publish.payloads.len())
-        {
-            // Answered like a refused sequence. `UnsupportedKind` would be
-            // read as an owner too old for the request and sent again.
-            metrics::record_served(metrics::OUTCOME_ERROR);
-            return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
-        }
         let Some(term) = self.engine.raft_term(key) else {
             metrics::record_served(metrics::OUTCOME_REFUSED);
             let detail = "this broker stopped leading the shard's Raft group";
@@ -320,11 +312,16 @@ impl ForwardingHandler {
                         (code, err.to_string())
                     }),
                     // The sequence was refused, as the hybrid refuses it.
+                    // So is a batch the engine does not take: answered
+                    // `Unavailable` it would be sent again, and
+                    // `UnsupportedKind` would be read as an owner too old
+                    // for the request.
                     Some(Err(RaftRefusal::Broker(
                         err @ (felix_broker::BrokerError::SequenceGap { .. }
                         | felix_broker::BrokerError::UnknownProducer { .. }
                         | felix_broker::BrokerError::SequenceExpired { .. }
-                        | felix_broker::BrokerError::SequenceReused { .. }),
+                        | felix_broker::BrokerError::SequenceReused { .. }
+                        | felix_broker::BrokerError::NotOnEngineStream { .. }),
                     ))) => {
                         metrics::record_served(metrics::OUTCOME_ERROR);
                         return error(correlation_id, ErrorCode::StorageFailed, err.to_string());
@@ -346,6 +343,7 @@ impl ForwardingHandler {
                     Some(Ok(proposed)) => proposed
                         .complete()
                         .await
+                        .map(|first| first.map(|first| (first, first + records.saturating_sub(1))))
                         .map_err(|err| (ErrorCode::StorageFailed, err.to_string())),
                     Some(Err(refused)) => return not_taken(refused),
                     None => return not_taken(RaftRefusal::NotLeading { term }),
@@ -353,12 +351,9 @@ impl ForwardingHandler {
             }
         };
         match committed {
-            Ok(first) => {
+            Ok(offsets) => {
                 metrics::record_served(metrics::OUTCOME_OK);
-                InternalMessage::ForwardPublishOk(ForwardPublishOk::new(
-                    correlation_id,
-                    first.map(|first| (first, first + records.saturating_sub(1))),
-                ))
+                InternalMessage::ForwardPublishOk(ForwardPublishOk::new(correlation_id, offsets))
             }
             // The batch may still commit, so this is not a refusal.
             Err((code, detail)) => {

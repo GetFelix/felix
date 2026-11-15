@@ -743,6 +743,49 @@ async fn a_forward_with_headers_is_never_resent_on_the_legacy_kind() {
     );
 }
 
+/// A sequenced forward with no headers travels as its own kind, and an owner
+/// that refuses it is not sent the batch again on the legacy kind: that kind
+/// has no room for the producer and sequence, so a resend would drop the
+/// idempotence the caller relies on.
+#[tokio::test]
+async fn a_sequenced_forward_without_headers_is_never_resent_on_the_legacy_kind() {
+    let owner = ScriptedOwner::new([
+        Ok(refused(ErrorCode::UnsupportedKind)),
+        Ok(accepted(10, 10)),
+    ]);
+    let err = forward_publish(
+        &owner,
+        &target(),
+        &key(),
+        AckMode::OnCommit,
+        "token",
+        vec![Bytes::from_static(b"an order")],
+        None,
+        Some(felix_wire::internal::ForwardProducer {
+            producer_id: 7,
+            sequence: 0,
+        }),
+        Duration::from_secs(30),
+    )
+    .await
+    .expect_err("refused");
+    assert!(
+        matches!(
+            err,
+            ForwardError::Refused {
+                code: Some(ErrorCode::UnsupportedKind),
+                ..
+            }
+        ),
+        "{err:?}"
+    );
+    assert_eq!(
+        owner.kinds(),
+        vec![felix_wire::internal::Kind::PlainSequencedForwardPublish],
+        "the batch was sent again without its sequence"
+    );
+}
+
 /// A redirect to an owner that never offered `RECORD_HEADERS` ends in a typed
 /// refusal the publish path reports as `feature_not_enabled`, not a generic
 /// failure. The batch is not sent to that owner.

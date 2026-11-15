@@ -152,6 +152,7 @@ pub(super) async fn run_lane_feeder(
                     config.subscription_id,
                     frame,
                     payloads.len(),
+                    envelope.base_offset(),
                     first_enqueued_at,
                     held,
                 )
@@ -206,6 +207,7 @@ pub(super) async fn run_lane_feeder(
                             config.subscription_id,
                             frame,
                             batch.len(),
+                            envelope.base_offset().map(|base| base + start as u64),
                             first_enqueued_at,
                             if end == payloads.len() {
                                 held.take().unwrap_or_default()
@@ -382,6 +384,7 @@ pub(super) async fn run_lane_feeder(
             config.subscription_id,
             frame,
             batch.len(),
+            batch_base,
             first_enqueued_at,
             held,
         )
@@ -460,12 +463,14 @@ fn frame_len(envelope: &DeliveryEnvelope, index: usize, headers: bool) -> usize 
     envelope.payloads()[index].len() + block
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn enqueue_lane_frame(
     manager: &WriterLaneManager,
     lane_idx: usize,
     subscriber_id: u64,
     frame: Bytes,
     item_count: usize,
+    base_offset: Option<u64>,
     first_enqueued_at: Instant,
     held: EgressBytes,
 ) {
@@ -473,6 +478,7 @@ pub(super) async fn enqueue_lane_frame(
         subscriber_id,
         frame,
         item_count,
+        base_offset,
         first_enqueued_at,
         enqueue_at: Instant::now(),
         held,
@@ -525,8 +531,14 @@ fn stream_deleted_frame(subscription_id: u64) -> Option<Bytes> {
 }
 
 /// The last frame of a subscription whose queue dropped records.
-fn lagged_frame(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
+pub(super) fn lagged_frame(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
     metrics::counter!("felix_subscription_lagged_total").increment(1);
+    encode_lagged(subscription_id, resume_from)
+}
+
+/// `lagged_frame` without counting, for a caller replacing a lagged frame
+/// that was already counted.
+pub(super) fn encode_lagged(subscription_id: u64, resume_from: u64) -> Option<Bytes> {
     let message = felix_wire::Message::SubscriptionLagged {
         subscription_id,
         resume_from,

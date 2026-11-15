@@ -950,6 +950,8 @@ the field itself, on every member alike, or refuses the command:
 | assignment `readmitted`, and in the snapshot; replica report `readmit` | 30 | the report is proposed without the flag, so no member records a replaced copy as caught up |
 | assignment `placed`, and in the snapshot; shard put `start_placed` | 31 | a first assignment is proposed without the flag, so no member starts the record of brokers placed in the shard's epoch, and that shard has none for the rest of the epoch. Later writes grow a record whatever their level: only a member that applied the start holds one |
 | `record_cluster_identity`, import `cluster_identity`, and in the snapshot | 32 | the command is held back until every member is at 32, so a group below it records no identity and `GET /v1/cluster/identity` answers 503 |
+| `record_root_sequence`, import `root_sequences`, and in the snapshot | 33 | the command is held back until every member is at 33, so nothing is kept and a broker's root gate finds no control-plane copy, which holds the root rather than passes it |
+| `seal_shard`, `accept_seal_report`, `give_up_seal`, assignment `switch`, and in the snapshot; finalizing `shard_raft` | 34 | the three commands are refused with 409 before they reach the log, by the member that proposes one and again by the leader that appends it, so no member holds a sealed or switched shard that another holds as a hybrid one. No assignment carries `switch` below 34, since only these commands set it |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

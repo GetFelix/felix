@@ -16,10 +16,11 @@ use felix_broker::{
     StreamHandle,
 };
 use futures::future::BoxFuture;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::engine::RaftEngine;
-use super::propose::{AckAt, Batch, Record, Sequenced, Unacknowledged};
+use super::propose::{AckAt, AnswerAt, Batch, Record, Sequenced, Unacknowledged};
 use crate::engine::{CommitError, Written};
 use crate::{ShardKey, ShardKind};
 
@@ -43,6 +44,14 @@ impl RaftEngine {
     ///
     /// [`ProposedPublish::complete`] returns at that point, with the
     /// engine's error, or with [`CommitError::TimedOut`] after `timeout`.
+    /// With [`AnswerAt::Lease`] it returns earlier, once the batch is on
+    /// this leader's log, if the leader lease holds then and the stream had
+    /// fewer than [`felix_broker::ANSWERED_AHEAD`] batches waiting for a
+    /// commit, none of them for a quarter of `timeout`. Delivery does not
+    /// move: such a batch is acknowledged before its commit is known, and
+    /// is lost if this broker stops leading before it commits.
+    /// [`AnswerAt::Majority`] returns early the same way, under the same
+    /// limits, once a majority of the voters has written the batch.
     /// A timeout leaves the batch in its place: it is still delivered if it
     /// commits, and the batches behind it wait for it. Only a lost
     /// leadership or a stopped group gives the place up. Such a batch may
@@ -66,9 +75,16 @@ impl RaftEngine {
         term: Option<u64>,
         payloads: Vec<Bytes>,
         ack: AckAt,
+        answer: AnswerAt,
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let records = payloads.clone();
+        let (on_lease, answered) = oneshot::channel();
+        let (on_lease, on_majority) = match answer {
+            AnswerAt::Commit => (None, None),
+            AnswerAt::Lease => (Some(on_lease), None),
+            AnswerAt::Majority => (None, Some((ack, on_lease))),
+        };
         // A leader cut off from its majority is not deposed, and every batch
         // it is handed waits, payload in hand, until the partition heals.
         // Refusing once the oldest has waited out its timeout bounds them.
@@ -88,8 +104,23 @@ impl RaftEngine {
                 producer: None,
             };
             let written = self.propose_reaching(shard, batch);
-            settled(self.clone(), shard.clone(), term, count, timeout, written)
+            let batch = Proposed {
+                shard: shard.clone(),
+                term,
+                count,
+                timeout,
+                on_lease,
+                on_majority,
+            };
+            settled(self.clone(), batch, written)
         })?;
+        // The early answers share `answer_at`'s pacing: a publisher answered
+        // before the commit comes back for more, and is slowed to the
+        // commit's pace once too many batches, or too old a one, wait for it.
+        let proposed = match answer {
+            AnswerAt::Lease | AnswerAt::Majority => proposed.answer_at(answered),
+            AnswerAt::Commit => proposed,
+        };
         Ok(
             proposed.answer_within(timeout, move || CommitError::TimedOut {
                 what: "batch",
@@ -117,8 +148,13 @@ impl RaftEngine {
     /// the broker stopped leading the term would be missed by the check of
     /// its own re-send.
     ///
-    /// A batch is one record. One of several is refused with nothing
-    /// written ([`Broker::engine_takes_idempotent`]).
+    /// A batch is one record. A new one of several is refused with nothing
+    /// written ([`Broker::engine_takes_idempotent`]). One the log already
+    /// holds the start of, which only a leader that stopped partway
+    /// leaves, is finished: the records the log does not hold are written
+    /// as pieces of it, and the answer runs from the start's first offset.
+    /// It is answered at its commit, on a `Leader` stream too: never on
+    /// the lease.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_idempotent(
         &self,
@@ -132,11 +168,7 @@ impl RaftEngine {
         reuse: SequenceReuse,
         timeout: Duration,
     ) -> Result<IdempotentPublish, BrokerError> {
-        let records = payloads.clone();
-        let producer = Sequenced {
-            producer_id: turn.producer_id(),
-            sequence,
-        };
+        let producer_id = turn.producer_id();
         let proposal = broker.propose_idempotent(
             stream,
             turn,
@@ -144,9 +176,16 @@ impl RaftEngine {
             payloads,
             reuse,
             timeout,
-            |timestamp_micros, turn| {
-                let count = records.len() as u64;
-                let records = records
+            |timestamp_micros, turn, owed| {
+                let producer = Sequenced {
+                    producer_id,
+                    sequence,
+                    position: owed.position,
+                    len: owed.len,
+                };
+                let count = owed.payloads.len() as u64;
+                let records = owed
+                    .payloads
                     .into_iter()
                     .map(|payload| Record {
                         timestamp_micros,
@@ -175,14 +214,15 @@ impl RaftEngine {
                     let stopped = |_| Err(super::propose::stopped().into());
                     written.await.unwrap_or_else(stopped)
                 };
-                settled(
-                    self.clone(),
-                    shard.clone(),
-                    Some(term),
+                let batch = Proposed {
+                    shard: shard.clone(),
+                    term: Some(term),
                     count,
                     timeout,
-                    written,
-                )
+                    on_lease: None,
+                    on_majority: None,
+                };
+                settled(self.clone(), batch, written)
             },
         )?;
         let timed_out = move || CommitError::TimedOut {
@@ -312,16 +352,35 @@ impl IdempotentPublish {
     }
 }
 
-/// What the broker is told of a proposed batch of `count` records:
-/// committed and where, or why not and how far it is known written.
+/// A batch handed to the group, as [`settled`] follows it.
+pub(super) struct Proposed {
+    pub(super) shard: ShardKey,
+    pub(super) term: Option<u64>,
+    /// How many records it holds.
+    pub(super) count: u64,
+    pub(super) timeout: Duration,
+    /// Told the batch's end if it may be acknowledged on the lease.
+    pub(super) on_lease: Option<oneshot::Sender<u64>>,
+    /// Told the batch's end once a majority of the voters has written it,
+    /// as far as the [`AckAt`] asks.
+    pub(super) on_majority: Option<(AckAt, oneshot::Sender<u64>)>,
+}
+
+/// What the broker is told of a proposed batch: committed and where, or
+/// why not and how far it is known written.
 pub(super) async fn settled(
     engine: RaftEngine,
-    shard: ShardKey,
-    term: Option<u64>,
-    count: u64,
-    timeout: Duration,
+    batch: Proposed,
     written: impl Future<Output = Result<Written, Unacknowledged>>,
 ) -> Result<ProposalCommitted, ProposalFailed<CommitError>> {
+    let Proposed {
+        shard,
+        term,
+        count,
+        timeout,
+        on_lease,
+        on_majority,
+    } = batch;
     // A batch written in part or in whole may commit. Readers resuming
     // below its end go to the log, or they would join live above records
     // that are in it.
@@ -335,18 +394,47 @@ pub(super) async fn settled(
         let moved = super::propose::lost(OTHER_TERM);
         return Err(ProposalFailed::written(moved, written.end));
     }
+    // The lease is asked only now, with the batch on this log under the
+    // term it names. A refusal leaves the publisher waiting for the commit
+    // below, like a `Quorum` one.
+    if let Some(on_lease) = on_lease
+        && engine.admit_local_ack(&shard, written.generation).is_ok()
+    {
+        let _ = on_lease.send(written.end);
+    }
+    // Beside the commit, never in front of it: delivery still waits for
+    // the commit. A batch of this term on a majority is in every later
+    // leader's log, since a voter refuses a candidate whose log is behind
+    // its own (openraft `handle_vote_req`, engine_impl.rs:448 at the pinned
+    // rev). See `docs/per-shard-raft.md`, "`Quorum` on a `Periodic` stream".
+    let majority = async {
+        if let Some((ack, on_majority)) = on_majority
+            && engine
+                .await_quorum_ack(&shard, written, ack, timeout)
+                .await
+                .is_ok()
+        {
+            let _ = on_majority.send(written.end);
+        }
+        std::future::pending::<()>().await;
+    };
     // The publisher's own wait is bounded by `answer_within`. Delivery is
     // not: a batch skipped here and committed later would reach no live
     // subscriber, while the one behind it did.
-    loop {
-        match engine.await_commit(&shard, written, timeout).await {
-            Err(CommitError::TimedOut { .. }) => continue,
-            outcome => {
-                outcome.map_err(|err| ProposalFailed::written(err, written.end))?;
-                break;
+    let committed = async {
+        loop {
+            match engine.await_commit(&shard, written, timeout).await {
+                Err(CommitError::TimedOut { .. }) => continue,
+                outcome => break outcome,
             }
         }
-    }
+    };
+    let committed = tokio::select! {
+        biased;
+        committed = committed => committed,
+        () = majority => unreachable!("the majority wait never ends"),
+    };
+    committed.map_err(|err| ProposalFailed::written(err, written.end))?;
     // Everything below the batch is applied, so its run of entries holding
     // no record is known.
     let first = written.end.saturating_sub(count);

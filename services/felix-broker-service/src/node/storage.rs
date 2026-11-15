@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_broker::{Broker, DurableStorage};
-use felix_storage::log::FsyncMode;
 use felix_storage::{EphemeralCache, StorageId};
 
 use crate::cluster::membership::Registered;
@@ -240,6 +239,7 @@ fn start_run(
         .is_some_and(|prior| {
             before.as_deref() == Some(prior) || rotated.iter().any(|id| id.to_hex() == prior)
         });
+    let rotation = last_rotation(root, begun.id, begun.rotated, registered)?;
     let kept = Kept {
         promises: begun.rotated && !restored && own_id && !lost,
         // A record from before storage ids cannot tell this directory from a
@@ -251,7 +251,10 @@ fn start_run(
         // A set names a copy by the id the control plane registered, so
         // without one no set can readmit it.
         readmits: registered.is_some_and(|r| r.storage_id.is_some()),
-        minted: begun.rotated || begun.origin != felix_storage::storage_identity::Origin::Loaded,
+        minted: begun.rotated
+            || begun.origin != felix_storage::storage_identity::Origin::Loaded
+            || credits(rotation, registered),
+        rotation,
         deferred: false,
     };
     // Before the new id registers: a set written since names that one, and
@@ -264,6 +267,65 @@ fn start_run(
     }
     let replaced = note_replaced(root, begun.id, registered)?;
     Ok((begun.id, begun.rotated, replaced, kept))
+}
+
+/// The rotation that gave the directory `id`, if one did. A record that
+/// names another id (a crash between it and the id's write) is removed, and
+/// so is one the control plane's record gives no credit ([`credits`]): the
+/// node registered since without this directory recording it, so sets from
+/// before a loss may name `id`. A start that rotated just wrote the record,
+/// bound to what the directory knew before this registration, so it stays
+/// for the registration to move on.
+fn last_rotation(
+    root: &Path,
+    id: StorageId,
+    rotated: bool,
+    registered: Option<&Registered>,
+) -> Result<Option<felix_storage::run_state::Rotation>> {
+    let context = || format!("read the rotation record under {}", root.display());
+    let recorded = felix_storage::run_state::last_rotation(root).with_context(context)?;
+    let kept = recorded.filter(|rotation| {
+        let checked = registered.is_some_and(|r| r.storage_id.is_some());
+        rotation.to == id && (rotated || !checked || credits(Some(*rotation), registered))
+    });
+    // Also clears a record that does not decode. Removing is a no-op when
+    // there is none, and goes through the storage fs a simulation keeps.
+    if kept.is_none() {
+        felix_storage::run_state::forget_rotation(root)
+            .with_context(|| format!("remove the rotation record under {}", root.display()))?;
+    }
+    Ok(kept)
+}
+
+/// Whether `rotation` minted the directory's id with no registration since
+/// that the directory did not record: the control plane names the id it
+/// rotated from or to, under the node record the rotation was bound to, at
+/// the bound incarnation or the next one. A rotation during a run (the Raft
+/// restore gate, a deferred restore check) records a clean stop under the
+/// new id, so the next start does not rotate again, and only this says no
+/// set before it names the id.
+///
+/// Each registration this directory records moves the binding on, so a gap
+/// means the node registered from another directory or an older release in
+/// between, and a new registration time means the node was deleted and added
+/// again. Neither is credited, nor is a rotation with no binding.
+fn credits(
+    rotation: Option<felix_storage::run_state::Rotation>,
+    registered: Option<&Registered>,
+) -> bool {
+    let Some((rotation, registered)) = rotation.zip(registered) else {
+        return false;
+    };
+    let names = registered
+        .storage_id
+        .as_deref()
+        .is_some_and(|prior| prior == rotation.to.to_hex() || prior == rotation.from.to_hex());
+    names
+        && rotation.bound.is_some_and(|bound| {
+            registered.registered_at_millis == Some(bound.registered_at_millis)
+                && (registered.incarnation == bound.incarnation
+                    || Some(registered.incarnation) == bound.incarnation.checked_add(1))
+        })
 }
 
 /// What a start found its directory kept of the ballots it took.
@@ -284,8 +346,13 @@ pub(crate) struct Kept {
     pub(crate) readmits: bool,
     /// This start minted the storage id, by rotating it or writing a new one, so
     /// no set written before it names the id. A lost copy with no recorded
-    /// floor is readmitted only then.
+    /// floor is readmitted only then. A rotation during an earlier run counts
+    /// while the control plane's record shows no registration since that
+    /// this directory did not record ([`credits`]).
     pub(crate) minted: bool,
+    /// The rotation that gave the directory its id, for the deferred restore
+    /// check to decide `minted` by.
+    pub(crate) rotation: Option<felix_storage::run_state::Rotation>,
     /// A start from the view that kept it: what a fence answer attests is
     /// decided by the deferred restore check ([`Self::checked`]), and is
     /// nothing until then.
@@ -318,6 +385,7 @@ impl Kept {
         Self {
             ballots: self.ballots && registered.is_none_or(|r| r.storage_id.is_some()),
             readmits: registered.is_some_and(|r| r.storage_id.is_some()),
+            minted: self.minted || credits(self.rotation, registered),
             deferred: false,
             ..self
         }
@@ -403,7 +471,8 @@ pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
 }
 
 /// Start a run on the data directory at `root` and return the id to announce.
-/// A machine crash under `Periodic` or `None` may have lost records peers
+/// A machine crash under `Periodic` or `None`, or after a Raft copy here
+/// vouched for a record before syncing it, may have lost records peers
 /// counted, and a directory older than the node's last registration may hold
 /// fewer than they counted, so either comes back with a new id. On Linux a
 /// process crash in the same boot keeps it. See `felix_storage::run_state`.
@@ -412,7 +481,7 @@ fn begin_run(
     log: &felix_storage::log::LogConfig,
     registered: Option<u64>,
 ) -> Result<felix_storage::run_state::Begun> {
-    let relaxed = !matches!(log.fsync_mode, FsyncMode::OnCommit);
+    let relaxed = felix_storage::run_state::relaxed(&log.fsync_mode);
     let begun = felix_storage::run_state::begin(
         root,
         relaxed,

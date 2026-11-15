@@ -145,6 +145,7 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     }
 }
 
@@ -173,5 +174,6 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     }
 }

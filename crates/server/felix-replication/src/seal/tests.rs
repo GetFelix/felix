@@ -131,3 +131,21 @@ fn a_seal_record_starts_its_generation() {
         SEAL
     ));
 }
+
+#[test]
+fn a_record_from_another_generation_or_with_other_starts_is_not_the_claim() {
+    let mut round = round();
+    round.answered("b", starts(4));
+    let other_generation = SwitchBase {
+        generation: SEAL + 1,
+        ..base(round.starts())
+    };
+    round.claimed(other_generation);
+    round.claimed(base(starts(0)));
+    round.acked("b", id(2));
+    assert_eq!(round.report(), None);
+
+    round.claimed(base(round.starts()));
+    round.acked("b", id(2));
+    assert!(round.report().is_some());
+}

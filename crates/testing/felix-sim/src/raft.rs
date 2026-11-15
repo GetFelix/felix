@@ -30,7 +30,8 @@ use felix_cluster::history::model::{
 };
 use felix_cluster::history::rng::Rng;
 use felix_replication::raft::{
-    AckAt, GroupId, GroupRuntime, LogPoint, MemberId, RaftEngine, RaftReads, Role, RuntimeConfig,
+    AckAt, AnswerAt, GroupId, GroupRuntime, LogPoint, MemberId, RaftEngine, RaftReads, Role,
+    RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig, ReadRange, RecordMark};
@@ -326,7 +327,10 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
         lease: at(shipped.lease),
         clock_drift_ppm: shipped.clock_drift_ppm,
         log_mark: shipped.log_mark,
+        cache_snapshot_every: shipped.cache_snapshot_every,
+        cache_log_keep: shipped.cache_log_keep,
         tail_cache_bytes: shipped.tail_cache_bytes,
+        append_entries: shipped.append_entries,
     }
 }
 
@@ -478,6 +482,9 @@ impl Sim {
             term,
             vec![payload],
             AckAt::Flushed,
+            // The checker takes every acknowledged append as committed
+            // (#2514).
+            AnswerAt::Commit,
             ANSWER,
         );
         let outcome = match proposed {

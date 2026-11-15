@@ -25,6 +25,7 @@ impl FakeLink {
     }
 
     /// Answer `call` with an empty body and this status.
+    #[cfg_attr(not(feature = "sim"), allow(dead_code))]
     pub(crate) fn status(self, call: &'static str, status: StatusCode) -> Self {
         self.statuses.lock().unwrap().insert(call, status);
         self

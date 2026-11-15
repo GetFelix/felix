@@ -27,6 +27,7 @@ mod handoff;
 mod identity;
 mod listeners;
 mod membership;
+mod open_files;
 pub(crate) mod peer_dispatch;
 mod shutdown;
 #[cfg(feature = "sim")]
@@ -99,6 +100,15 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // Before storage opens: every held shard keeps files open.
+    open_files::raise_limit(
+        durable_config
+            .as_ref()
+            .map_or(0, |durable| durable.log.max_open_sealed_segments),
+        durable_config
+            .as_ref()
+            .and_then(|durable| durable.log.sealed_cache.as_ref()),
+    );
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.
@@ -111,6 +121,7 @@ where
     // Before anything opens: a broker asked for Raft shards that came up as
     // a hybrid one would write a shard its peers run under Raft.
     let shard_engine = crate::config::shard_engine()?;
+    let shard_raft_lease = crate::config::shard_raft_lease()?;
     if shard_engine == crate::config::ShardEngine::Raft {
         let missing = crate::config::RaftPrerequisites {
             compiled: cfg!(feature = "raft"),
@@ -355,12 +366,22 @@ where
     }
     #[cfg(feature = "raft")]
     let raft_shards = if shard_engine == crate::config::ShardEngine::Raft {
-        cluster::start_raft_shards(&config, &cluster, &peers, &broker, &engine)?
+        cluster::start_raft_shards(
+            &config,
+            shard_raft_lease,
+            &cluster,
+            &peers,
+            &broker,
+            &engine,
+        )?
     } else {
         cluster::RaftShards::default()
     };
     #[cfg(not(feature = "raft"))]
-    let raft_shards = cluster::RaftShards::default();
+    let raft_shards = {
+        let _ = shard_raft_lease;
+        cluster::RaftShards::default()
+    };
     let raft_shards = cluster::match_engines(
         &config,
         &cluster,
@@ -403,6 +424,26 @@ where
         clients,
         restore_checked,
     } = membership::Gates::new(view.is_some(), &seeded);
+    let root_sequence = crate::cluster::membership::RootSequenceSlot::default();
+    let root_rotated = CancellationToken::new();
+    #[cfg(feature = "raft")]
+    if let (Some(root), Some(membership)) = (&durable_root, &config.membership) {
+        cluster::open_raft_root(
+            &raft_shards,
+            cluster::RaftRoot {
+                root: root.clone(),
+                witness: witnesses.clone(),
+                restore_checked: restore_checked.clone(),
+                link: link.clone(),
+                node_id: membership.node_id.clone(),
+                storage_id,
+                credential: credential.clone(),
+                slot: root_sequence.clone(),
+                stop: sync_shutdown.clone(),
+                rotated: root_rotated.clone(),
+            },
+        );
+    }
     startup::bind_read_check(
         &config,
         &cluster,
@@ -591,14 +632,10 @@ where
         durable_storage.as_ref().map(|storage| storage.root()),
         view_file.clone(),
         view.as_ref().map(|_| {
-            let marks = Arc::clone(&quorum_marks);
-            membership::deferred_check(&restore_checked, own_kept, move |kept| {
-                // Readmits first: setting kept is what lets a readmission
-                // count (`QuorumMarks::knows_kept_ballots`).
-                marks.set_readmits(kept.readmits);
-                marks.set_kept_ballots(kept.ballots);
-            })
+            membership::deferred_attest(&restore_checked, own_kept, Arc::clone(&quorum_marks))
         }),
+        // Set once the Raft data root opens through the restore gate.
+        root_sequence,
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes
@@ -704,6 +741,7 @@ where
         shard_tasks,
         sync_shutdown,
         group_refused,
+        root_rotated,
         controlplane_task,
         controlplane_view,
         storage: shutdown::Storage {

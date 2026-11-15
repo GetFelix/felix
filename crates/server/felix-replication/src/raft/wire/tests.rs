@@ -89,6 +89,22 @@ fn every_request() -> Vec<RaftRequest> {
                 producer: Some(ProducerMark {
                     producer_id: 0xA1B2_C3D4_E5F6_0718,
                     sequence: 41,
+                    position: 0,
+                    len: 1,
+                }),
+                written: None,
+            },
+        ),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 9),
+            Command {
+                timestamp_micros: 101,
+                payload: Bytes::from_static(b"a piece of a batch"),
+                producer: Some(ProducerMark {
+                    producer_id: 0xA1B2_C3D4_E5F6_0718,
+                    sequence: 42,
+                    position: 2,
+                    len: 5,
                 }),
                 written: None,
             },
@@ -122,6 +138,9 @@ fn every_request() -> Vec<RaftRequest> {
                 last_log_id: Some(log_id(2, 7)),
                 last_membership: StoredMembership::new(Some(log_id(2, 7)), membership()),
             },
+            data_len: 9,
+            offset: 4,
+            data: Bytes::from_static(b"state"),
         }),
         request(Request::TransferLeader(TransferLeaderRequest::new(
             vote(2, true),
@@ -192,6 +211,7 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
         Err(Refused::NoSuchMember(addressee())),
         Err(Refused::Stopped(addressee(), "fatal".into())),
         Err(Refused::NoSnapshots(addressee())),
+        Err(Refused::OtherCopy(addressee(), 0xfeed)),
     ]
 }
 
@@ -221,7 +241,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 4);
+    assert_eq!(read.entries.len(), 5);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -266,7 +286,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[3, 3][..],
+        &[5, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -322,12 +342,12 @@ fn trailing_bytes_and_other_layouts_are_refused() {
     longer.put_u8(0);
     assert!(decode_request(longer.freeze()).is_err());
     let mut other = BytesMut::from(&bytes[..]);
-    other[0] = 4;
+    other[0] = LAYOUT + 1;
     assert!(decode_request(other.freeze()).is_err());
 
     let reply = encode_reply(&every_reply()[0]);
     let mut other = BytesMut::from(&reply[..]);
-    other[0] = 4;
+    other[0] = LAYOUT + 1;
     assert!(decode_reply(other.freeze()).is_err());
 }
 
@@ -359,6 +379,58 @@ fn a_layout_1_header_is_refused_by_layout() {
         panic!("a layout 1 answer was read");
     };
     assert!(refused.to_string().contains("layout 1"), "{refused}");
+}
+
+/// A build from before snapshots carried data writes layout 2, whose
+/// snapshot ends at the membership. It is refused by its layout: read as
+/// this one it would only look cut short.
+#[test]
+fn a_layout_2_snapshot_is_refused_by_layout() {
+    let sent = every_request().remove(4);
+    let Request::Snapshot { data, .. } = &sent.body else {
+        panic!("not the snapshot");
+    };
+    let bytes = encode_request(&sent).expect("encode");
+    // The data's length, the piece's offset, its length and its bytes.
+    let mut old = bytes[..bytes.len() - (8 + 8 + 4 + data.len())].to_vec();
+    old[0] = 2;
+    let refused = decode_request(Bytes::from(old)).expect_err("refused");
+    assert!(
+        refused.to_string().contains("layout 2"),
+        "refused for something else: {refused}"
+    );
+
+    let reply = encode_reply(&every_reply()[0]);
+    let mut old = BytesMut::from(&reply[..]);
+    old[0] = 2;
+    let Err(refused) = decode_reply(old.freeze()) else {
+        panic!("a layout 2 answer was read");
+    };
+    assert!(refused.to_string().contains("layout 2"), "{refused}");
+}
+
+/// Layout 3 is what a build with snapshot data but no target version
+/// writes. Its membership is shorter, so it is refused by layout rather
+/// than misread.
+#[test]
+fn a_layout_3_body_is_refused_by_layout() {
+    let bytes = encode_request(&every_request()[2]).expect("encode");
+    let mut old = BytesMut::from(&bytes[..]);
+    old[0] = 3;
+    let refused = decode_request(old.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("layout 3"), "{refused}");
+}
+
+/// Layout 4 is what a build without the piece entry writes. It would refuse
+/// a piece by its tag in the middle of an append, so it is refused by layout
+/// first.
+#[test]
+fn a_layout_4_body_is_refused_by_layout() {
+    let bytes = encode_request(&every_request()[2]).expect("encode");
+    let mut old = BytesMut::from(&bytes[..]);
+    old[0] = 4;
+    let refused = decode_request(old.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("layout 4"), "{refused}");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does

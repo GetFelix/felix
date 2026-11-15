@@ -73,8 +73,14 @@ pub const SEGMENT_COUNT: &str = "felix_storage_segment_count";
 pub const RAFT_KEPT_COPIES: &str = "felix_storage_raft_kept_copies";
 /// Bytes those directories hold.
 pub const RAFT_KEPT_COPY_BYTES: &str = "felix_storage_raft_kept_copy_bytes";
+/// Seconds since the batched Raft log marks of a data root were last
+/// written up to the flushed logs: about the batch interval when healthy.
+/// From five intervals the root's Raft shards' appends wait for them. Not
+/// labelled, like the kept-copy gauges.
+pub const RAFT_LOG_MARK_AGE_SECONDS: &str = "felix_storage_raft_log_mark_age_seconds";
 /// Sealed segments whose file and index are open, across every log. Bounded
-/// by `LogConfig::max_open_sealed_segments` per storage root.
+/// by `LogConfig::max_open_sealed_segments` for each cache, which the broker
+/// shares across all its logs.
 pub const OPEN_SEALED_SEGMENTS: &str = "felix_storage_open_sealed_segments";
 
 /// Sealed segments deleted by retention.

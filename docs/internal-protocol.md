@@ -124,6 +124,8 @@ never have dialled the one that shipped to it.
 | `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
 | `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
 | `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
+| `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
+| `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
 
 #### Storage identity
 
@@ -180,8 +182,8 @@ current broker offers the bit when it dials.
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
 as an older build would, and checks only the generation of what it is sent. It
 still offers `GENERATION_LABELS`, `FORWARD_OFFSETS`, `RECORD_TIMES`, `PING`,
-`HEAD_TRIM`, `RECORD_HEADERS` and `SEQUENCED_FORWARDS`, which are not the
-fence's.
+`HEAD_TRIM`, `RECORD_HEADERS`, `SEQUENCED_FORWARDS` and
+`PLAIN_SEQUENCED_FORWARDS`, which are not the fence's.
 
 A promoted cache shard is fenced only when every replica offered `FENCE`,
 `TAIL_FETCH` and `CACHE_FENCE`; otherwise it opens on the lease, until the
@@ -357,14 +359,25 @@ The owner applies it the way it applies an idempotent Kafka batch: if its log
 already holds that sequence for that producer, it writes nothing and answers
 with the held batch's offsets, after the same quorum wait a new batch gets. A
 held sequence with different payloads is refused `StorageFailed` and nothing is
-written. The batch must carry at least one key-and-headers block; the MQTT
-listener, its only sender, always does.
+written.
+
+A sequenced batch whose records carry no key-and-headers block has no
+encoding as kind 52, whose section must hold one. It travels as
+`PlainSequencedForwardPublish` (64) instead: the `AuthorizedForwardPublish`
+body followed by the same two `u64`s, with no block section, and it decodes
+with no headers. That is the form a Raft shard's owner can take, since it
+refuses any forward with headers until Raft stores them. It goes only to an
+owner that offered `PLAIN_SEQUENCED_FORWARDS` and `SEQUENCED_FORWARDS`. A
+batch with a block still travels as kind 52, byte for byte as before. The
+MQTT listener, today's only sender of a sequenced forward, always attaches a
+block.
 
 This is what lets the ingress broker send a batch again after its answer was
 lost (see "Retrying a forwarded publish"). The sequences live in the log and
 are replicated with it, so a promoted replica answers a re-send exactly as the
-old leader would have. The frame goes only to an owner that offered
-`SEQUENCED_FORWARDS` and `RECORD_HEADERS`. To any other the pool refuses to
+old leader would have. Kind 52 goes only to an owner that offered
+`SEQUENCED_FORWARDS` and `RECORD_HEADERS`; kind 64 needs `SEQUENCED_FORWARDS`
+and `PLAIN_SEQUENCED_FORWARDS`, not `RECORD_HEADERS`. To any other the pool refuses to
 send it, and the MQTT listener refuses the message as `not_owner`, which is
 what it did before this kind existed.
 
@@ -1158,7 +1171,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 3 (layout 1 had no report byte, layout 2 no target version in a membership). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 5 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
@@ -1174,15 +1187,21 @@ After the report byte comes the message:
   leader's commit (optional), and for message 2 a `u32` count and that many
   entries. An entry is its log id and a payload: `u8` 0 for a blank entry,
   1 for a record (append time `u64`, `u32` length, the bytes), 2 for a
-  membership.
+  membership, 3 for the one record of an idempotent batch (producer id
+  `u64` and sequence `u64`, then the record), 4 for a record of an
+  idempotent batch of several (producer id `u64`, sequence `u64`, position
+  `u32`, batch length `u32`, then the record).
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.
 - **Snapshot**: the leader's vote, the last log id the snapshot covers
   (optional), and its membership with that membership's log id (optional).
-  It carries no data. A stream shard's state is its log, so no member takes
-  a snapshot: each answers `NoSnapshots`, and a member that is behind is
-  sent entries.
+  Then one piece of the snapshot's data: the whole snapshot's length
+  (`u64`), where this piece starts in it (`u64`), and the piece (`u32`
+  length, then the bytes). A cache shard's member keeps the pieces in order
+  and installs the snapshot at the last. A stream shard's snapshot has no
+  data, and its state is its log, so no member takes one: each answers
+  `NoSnapshots`, and a member that is behind is sent entries.
 - **Leader transfer**: the leader's vote, the member to take over, and the
   leader's last log id (optional).
 - **Written position**: the member that sends it, and the log id of the
@@ -1225,6 +1244,17 @@ answer as a partial acknowledgement and sends the rest next. An append that
 could not arrive in time would be cut the same way on every retry, so a
 follower far behind would never catch up.
 
+Two smaller limits apply first, when the leader builds the append: at most
+1,024 entries (`RuntimeConfig::append_entries`) and at most 4 MiB of records
+read from the log (the log reader's page). At 1 KiB records that is about
+1 MiB per append, and never more than 4 MiB. The wire budget (256 KiB
+to 32 MiB) still cuts an append that does not fit. So the cut above only
+shortens an append whose deadline is under about 130 ms, or one record
+larger than the budget's rest.
+openraft's default of 300 entries would cap an append of
+1 KiB records at about 300 KB, and a follower behind would take over ten
+times the round trips to catch up.
+
 Raft calls have in-flight budgets per peer of their own
 (`FELIX_INTERNAL_MAX_INFLIGHT` each), so groups waiting on a slow peer cannot
 take the permits its pings and fences need. Appends that carry entries have
@@ -1242,6 +1272,73 @@ The listener reads the deadline from bytes 2 to 6 without decoding the rest,
 and gives up on a message at that deadline, or at 10 s if it names longer,
 answering `ReplicateError` `Unavailable`. The sender has given up by then, so a
 member stuck on storage cannot hold the stream's permits.
+
+
+### Sealing a shard for the switch to Raft
+
+Moving a shard from the hybrid protocol to Raft starts with a seal: the
+hybrid leader of a new generation `G` fences the shard, appends one last
+record at offset `N`, the base, and counts the copies that hold it. The
+steps and why they are safe are in `docs/per-shard-raft.md`, "Moving a shard
+from the hybrid to Raft". Five kinds carry it, sent only to a peer that
+offered `SWITCH_SEAL`. No existing body changes, so two brokers that never
+seal exchange the same bytes as before.
+
+- **`SealFence`** (kind 59) is `Fence` without election fields, on the
+  shard's own log, followed by the seal leader's 16-byte storage identity,
+  its copy id. The replica takes it as a fence and, in place of a plain
+  ballot, promises the seal on disk: from then on it takes the shard's
+  batches only from that copy, refuses rebuilds and bootstraps at that
+  generation and election ballots from a candidate, and answers no
+  pre-vote. A rebuild or bootstrap from a later generation is not refused
+  by the promise: its own ballot decides it. A control-plane
+  promotion, which names the set with no candidate, is still taken. The
+  promise has no timeout. It ends only
+  when the replica accepts a later generation.
+- **`SealFenceOk`** (kind 60) is the `FenceOk` body (never an attestation),
+  a `u8` that is 1 for a kept ballot and 0 otherwise (any other value is
+  refused), then three `u64` starts: where the shard's log, its dead letters
+  and its group cursors begin on this copy.
+- **`SealAck`** (kind 61) is the correlation id, the shard (names, shard
+  `u32`, generation `u64`), the sealing copy id, the record's offset and
+  append time (`u64` each), then the record's payload to the end of the
+  frame. The replica checks its copy against the payload's digests and
+  appends the record at `N`.
+- **`SealAckOk`** (kind 62) is the correlation id and the replica's own copy
+  id, sent only once the record is on disk.
+
+The check behind `SealAck` reads every record from the seal's start, which
+can outlast a request on a large log. The replica runs it off the request.
+A request that has waited 2 s is answered `ReplicateError` `Unavailable`,
+and the check runs on: the leader's next `SealAck` for the same record joins
+it or reads its result, and no second check starts. A copy whose records
+matched the digest once does not read them again for a repeat of that seal.
+
+A `SealFence` or `SealAck` for an incarnated stream travels inside
+`Incarnated`, like `Fence`. Both go on the control stream.
+
+A replica refuses the seal's fence with `ReplicateError` when it keeps no
+dead-letter and cursor logs for the shard or any of the three logs does not
+fsync on commit, and refuses `SealAck` when its copy differs from the
+digests. A build without the Raft engine answers both with `UnsupportedKind`.
+
+While its own promise holds, the seal leader wraps each batch for the
+shard's log to a peer that offered `SWITCH_SEAL` in **`FromCopy`** (kind 63): the correlation id, the 16-byte copy
+id, the inner kind (`u16`), then the inner body as it would travel alone.
+`FromCopy` is always outermost and never nested, and its correlation id must
+equal the inner one. Its 26 bytes count toward `MAX_BODY_BYTES`: a batch that
+would pass the limit once wrapped is `FrameTooLarge` on encode, and the
+shipping budget leaves room for it. A request inside `FromCopy` still needs
+every capability it needs alone, so a batch holding a trim goes only to a
+peer that also offered `HEAD_TRIM`. A promised replica takes a batch only when the copy id
+is the one its promise names, so the same broker back after a wipe, under a
+new copy id, cannot write past what the seal covers. A batch from another
+copy id is refused `FencedEpoch`, which stops that leader's replication to
+the replica. A batch with no copy id at the promise's generation is the
+leader's own, sent before it took its promise: it is refused `Unavailable`,
+which the leader retries, and the retry carries the copy id. Once the leader has
+appended the record at `N`, it ships nothing from `N` on: a follower gets
+that record only through `SealAck`, which checks its copy first.
 
 ## Errors
 
@@ -1263,7 +1360,7 @@ Typed, because they need different responses:
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 | `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
-| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to that kind | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
+| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to a sequenced forward (kind 52 or 64) | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
 
 ### Refusal reasons
 
@@ -1298,7 +1395,9 @@ back to the detail whenever the fields are absent.
 `ReplicateHeaderedFetch` 50, `HeaderedForwardPublish` 51,
 `SequencedForwardPublish` 52, `FenceKeptOk` 53 and
 `FenceAttestedOk` 54, `ReplicateStampedRecords` 55,
-`ReplicateStampedFetch` 56, `Raft` 57 and `RaftAnswer` 58. A peer
+`ReplicateStampedFetch` 56, `Raft` 57, `RaftAnswer` 58, `SealFence` 59,
+`SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62, `FromCopy` 63 and
+`PlainSequencedForwardPublish` 64. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
@@ -1352,8 +1451,8 @@ produced inside the broker is invisible to the client, which holds the
 `request_id` and is the only layer that could deduplicate. A client that wants
 the retry can reissue and know that it did.
 
-The exception is a `SequencedForwardPublish`. Its owner recognises a batch it
-already holds, so the MQTT listener sends it again after a lost answer, under
+The exception is a sequenced forward (`SequencedForwardPublish` or
+`PlainSequencedForwardPublish`). Its owner recognises a batch it already holds, so the MQTT listener sends it again after a lost answer, under
 the same producer id and sequence, to whichever broker owns the shard by then,
 this one included. It keeps trying within the forward budget
 (`BrokerConfig::forward_budget`). Once an answer was lost, only a later success

@@ -401,8 +401,28 @@ static LIVE: Mutex<Vec<std::sync::Weak<CopyTrust>>> = Mutex::new(Vec::new());
 /// (in the record a running broker holds too, so its readers see it at once),
 /// then the id is written. A crash between the two leaves a record naming
 /// another id than the directory's, which reads as unknown.
+///
+/// The root's Raft mark log (`raft-marks`) is removed first. Every shard
+/// directory minted under the old id rotates when it opens, so its marks
+/// protect nothing any more, and a log kept under the new id would hold a
+/// root sequence nothing outside the root has a copy of: the Raft restore
+/// gate would hold the root after a reboot. A crash after the removal leaves
+/// the old id with no marks, which rotates every directory too. Nothing may
+/// hold the mark log open: the gate's own rotation reopens it after.
 pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
+    forget_raft_marks(root)?;
     let next = StorageId::from_bytes(fresh);
+    if let Some(from) = storage_identity::load(root)? {
+        // Bound to the registration the directory holds now, so a later
+        // start can tell whether the node registered elsewhere since.
+        let bound = super::registration_binding(root)?;
+        let rotation = super::Rotation {
+            to: next,
+            from,
+            bound,
+        };
+        super::record_rotation(root, rotation)?;
+    }
     let canonical = canonical(root);
     let live = LIVE
         .lock()
@@ -414,6 +434,18 @@ pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
         None => distrust_all(root, next)?,
     }
     storage_identity::replace(root, fresh)
+}
+
+/// The root's per-shard Raft mark log; see `raft_copy`.
+pub(crate) const RAFT_MARKS: &str = "raft-marks";
+
+/// Remove the root's Raft mark log, durably, if it has one.
+pub(crate) fn forget_raft_marks(root: &Path) -> Result<()> {
+    match crate::fs::remove_file(root.join(RAFT_MARKS)) {
+        Ok(()) => crate::io::sync_dir(root).map_err(StorageError::from),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err.into()),
+    }
 }
 
 impl CopyTrust {

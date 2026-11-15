@@ -616,10 +616,12 @@ Four properties:
    A marker that cannot be read cuts and rewrites nothing; the open logs a warning and still
    writes the state files again.
 
-   A per-shard Raft copy is the exception. A leader can count what a copy
-   has written, before it is synced, toward a `Quorum` acknowledgement
-   (`await_quorum_ack`), so the cut could remove a record that was
-   acknowledged. An open refuses a poisoned directory that
+   A per-shard Raft copy is the exception. On a `Quorum` stream under
+   `Periodic` or `None`, a leader answers the publisher once a majority has
+   written the record, before it is synced (`await_quorum_ack`), as the
+   hybrid does. So the cut could remove a record that was acknowledged. Such a
+   record is lost only if a majority of copies each lose their unsynced tail,
+   by a power cut or a failed flush. An open refuses a poisoned directory that
    holds a copy file (`raft-copy`) and leaves the marker. The copy root
    rotates the copy instead: it moves the directory aside as it is and
    starts an empty one under a new copy id. See `docs/per-shard-raft.md`,
@@ -686,6 +688,7 @@ Four properties:
    - *Node records* under the durable root: the storage id, `run-state`,
      the registration, `head-trimmed`, `record-headers`,
      `record-generations`, `replaced-storage`, `lost-copy`, `rotated-ids`,
+     `last-rotation`, `registered-at`,
      `copy-trust`, `copy-trust-kept`, `run-token`, `controlplane.view`
      (written or removed), the stream incarnation markers under `.streams/`,
      and moving a deleted stream's directory into `.deleted/`. There is no
@@ -936,9 +939,14 @@ Invalid combinations fail at startup, not at the first publish.
 
 Sealed segments are opened lazily: an open reads only each sealed segment's
 header and last index entry, and the first read that reaches a segment opens
-its file and loads its sparse index into a cache shared per storage root,
-bounded by `LogConfig::max_open_sealed_segments` (default 256, least recently
-used evicted). Retention chooses segments and deletes their files outside the
+its file and loads its sparse index into a cache shared by every log opened
+with the same `LogConfig::sealed_cache` (a provider's logs together when it
+is unset), bounded by `LogConfig::max_open_sealed_segments` (default 256 for a
+standalone log; the broker sets 4,096 through
+`FELIX_DURABLE_MAX_OPEN_SEALED_SEGMENTS` and shares one cache across all its
+logs; least recently used evicted). A read in flight when a segment is
+deleted, truncated or its log closed may still use the handle it opened, but
+never caches it. Retention chooses segments and deletes their files outside the
 segment lock; the lock is held only to drop them from the list.
 
 ### Opening and closing shards
@@ -1449,7 +1457,11 @@ nothing is acknowledged while it is still only in the process's memory.
 - The one exception is a replicated log's commit offset, which is written
   behind in every mode: under `OnCommit` by a write that starts at once and
   serves every advance made while it runs, otherwise at most once a second
-  (`DiskLog::advance_commit_offset`). After a crash it can read back behind, so
+  (`DiskLog::advance_commit_offset`). A Raft log's committed index is also
+  written at most once a second, and once more after the last advance, since
+  it moves on almost every entry ([storage-format.md](storage-format.md),
+  "`replica`: the accepted generation and the commit offset"). After a crash
+  it can read back behind, so
   a follower's refusal to
   truncate below it guards less until the leader's next batch carries it
   again. It is not a record and not what the id vouches for: a follower
@@ -1682,6 +1694,30 @@ A copy taken during the last run and put back before the next start holds
 the current token. The control plane's check cannot see that case either,
 since the copy recorded the incarnation the control plane still holds; such a
 restore needs `storage-id` deleted, or `felix-broker restore-point`.
+
+### Raft copy marks
+
+Under the Raft engine each data root also keeps `raft-marks`: per shard, the
+copy id, the highest vote and the last log id the copy reached on disk. An
+open compares a shard directory with them, and a directory below either mark
+was put back, so its copy is replaced under a new id. Every synced write of
+the file raises the root's sequence, which the run witness and the control
+plane copy (see `docs/per-shard-raft.md`, "The root sequence").
+
+The vote mark is synced, and the witness told, before a vote is answered. The
+log mark is batched: once a second one synced write carries the flushed
+position of every shard on the root that moved. It names only what a flush
+has already covered, so it is never above the log, and a member that opens
+marks what it recovered at once. The cost is a window: a shard directory, or
+the whole root in the same run, put back to a state no older than the last
+mark write (about a second, up to about six while a mark write hangs) with
+no vote since is not caught. A failed write of `raft-marks` stops appends
+and votes for every shard on the root until the broker restarts. A write
+that hangs fails nothing: once the marks are five seconds old the batched
+shards' appends wait for the next batch, and votes wait on the same writer,
+so both resume when the disk does. Restoring a single shard
+directory is unsupported for that reason. See `docs/per-shard-raft.md`, "What
+this does not catch".
 
 ## Restoring to a backup point
 

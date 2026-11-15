@@ -131,6 +131,15 @@ const PLACED_LEVEL: u16 = 31;
 /// stream and cache creates until it is recorded.
 const IDENTITY_LEVEL: u16 = 32;
 
+/// The metadata level whose members keep each broker's root sequence
+/// (`ControlPlaneStore::root_sequence`).
+const ROOT_SEQUENCE_LEVEL: u16 = 33;
+
+/// The metadata level whose members record a shard's switch to Raft
+/// (`ShardAssignment::switch`): the seal order, the one report accepted for
+/// it, and the give-up.
+const SWITCH_LEVEL: u16 = 34;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -146,6 +155,23 @@ pub struct RaftStore {
     handle: RaftHandle,
     machine: Arc<MetadataStateMachine>,
     soft: Arc<SoftState>,
+    /// Heartbeats carry a root sequence every time, so a group that keeps
+    /// none is logged once per level.
+    root_sequence_unkept: OncePerLevel,
+}
+
+/// Whether a condition seen on every request has already been logged at
+/// this metadata level.
+#[derive(Debug, Default)]
+struct OncePerLevel(std::sync::atomic::AtomicU32);
+
+impl OncePerLevel {
+    /// True the first time it is called at `level`, and again after a call
+    /// at another level.
+    fn first_at(&self, level: u16) -> bool {
+        let marked = u32::from(level) + 1;
+        self.0.swap(marked, std::sync::atomic::Ordering::Relaxed) != marked
+    }
 }
 
 impl RaftStore {
@@ -157,6 +183,7 @@ impl RaftStore {
             handle,
             machine,
             soft,
+            root_sequence_unkept: OncePerLevel::default(),
         }
     }
 
@@ -249,6 +276,7 @@ impl RaftStore {
         assignment.previous_generation = None;
         assignment.readmitted.clear();
         assignment.placed = None;
+        assignment.switch = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -346,6 +374,20 @@ impl RaftStore {
             .map_err(StoreError::Unexpected)?;
         let result = decode_result(&bytes).map_err(StoreError::from)?;
         result.map_err(StoreError::from)
+    }
+
+    /// Propose a switch command. Refused below [`SWITCH_LEVEL`], before it
+    /// reaches the log: a member that could not apply it would keep a
+    /// hybrid shard where the others hold a sealed or switched one.
+    async fn propose_switch(&self, command: MetaCommand) -> StoreResult<AssignmentWrite> {
+        debug_assert_eq!(command.version(), SWITCH_LEVEL);
+        match self.propose(command).await? {
+            MetaResponse::Assignment { assignment } => Ok(AssignmentWrite::Written(assignment)),
+            MetaResponse::StaleAssignment { current_generation } => Ok(AssignmentWrite::Stale {
+                current: current_generation,
+            }),
+            _ => Err(unexpected_shape("assignment")),
+        }
     }
 
     async fn propose_for_keys(&self, command: MetaCommand) -> StoreResult<TenantSigningKeys> {
@@ -1041,6 +1083,46 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    async fn seal_shard(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::SealShard {
+            key: key.clone(),
+            expected_generation,
+        })
+        .await
+    }
+
+    async fn accept_seal_report(
+        &self,
+        key: &ShardKey,
+        report: crate::model::SealReport,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::AcceptSealReport {
+            key: key.clone(),
+            report,
+            sealer: sealer.to_string(),
+        })
+        .await
+    }
+
+    async fn give_up_seal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::GiveUpSeal {
+            key: key.clone(),
+            generation,
+            sealer: sealer.to_string(),
+        })
+        .await
+    }
+
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
         self.local()?.get_shard_assignment(key).await
     }
@@ -1316,6 +1398,55 @@ impl ControlPlaneStore for RaftStore {
 
     async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
         self.identity().await
+    }
+
+    async fn root_sequence(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<crate::model::RootSequence>> {
+        self.local()?.root_sequence(node_id).await
+    }
+
+    /// One entry per heartbeat in which the sequence moved: what the local
+    /// copy already holds is not proposed again. Below level 33 nothing is
+    /// kept, and the broker's gate then has no control-plane copy, which
+    /// holds rather than passes a root nothing else vouches for.
+    async fn record_root_sequence(
+        &self,
+        node_id: &str,
+        heard: crate::model::RootSequence,
+    ) -> StoreResult<bool> {
+        let held = self.local()?.root_sequence(node_id).await?;
+        if !crate::model::RootSequence::moved_by(held.as_ref(), &heard) {
+            return Ok(false);
+        }
+        let level = self.group_level().await;
+        if level < ROOT_SEQUENCE_LEVEL {
+            if self.root_sequence_unkept.first_at(level) {
+                tracing::warn!(
+                    level,
+                    needed = ROOT_SEQUENCE_LEVEL,
+                    "the metadata group is below the level that keeps brokers' root \
+                     sequences, so none is kept; a broker restarted with a Raft data root \
+                     and no run witness holds its Raft members until the group is upgraded",
+                );
+            }
+            return Ok(false);
+        }
+        match self
+            .propose(MetaCommand::RecordRootSequence {
+                node_id: node_id.to_string(),
+                heard,
+            })
+            .await?
+        {
+            MetaResponse::Unit => Ok(true),
+            _ => Err(unexpected_shape("unit")),
+        }
+    }
+
+    async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
+        self.local()?.root_sequences().await
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

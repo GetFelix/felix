@@ -97,6 +97,9 @@ struct RegistrationResponse {
 #[derive(Debug, Deserialize)]
 struct NodeDetail {
     node: NodeView,
+    /// Absent from a control plane that keeps none.
+    #[serde(default)]
+    root_sequence: Option<RootSequenceBody>,
 }
 
 /// The longest wait between asks at startup, where nothing is served until
@@ -111,19 +114,36 @@ struct NodeView {
 #[derive(Debug, Deserialize)]
 struct NodeStatusView {
     incarnation: u64,
+    /// Absent from a control plane that does not send it.
+    #[serde(default)]
+    registered_at_millis: Option<u64>,
     lifecycle: String,
     /// Absent from a broker that registered before storage ids.
     #[serde(default)]
     storage_id: Option<String>,
 }
 
+/// The highest root sequence the control plane holds for a node.
+#[derive(Debug, Serialize, Deserialize)]
+struct RootSequenceBody {
+    storage_id: String,
+    sequence: u64,
+}
+
 /// What the control plane holds from a node's last registration.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Registered {
     pub incarnation: u64,
+    /// When the node record was created. Deleting the node and adding it
+    /// again starts `incarnation` over, under a new time.
+    pub registered_at_millis: Option<u64>,
     /// The data directory's identity it registered with, as 32 lowercase
     /// hex digits. `None` from a broker that predates storage ids.
     pub storage_id: Option<String>,
+    /// The highest root sequence the node's heartbeats carried, under the
+    /// storage id they carried it for: the per-shard Raft restore gate's
+    /// control-plane copy. `None` when the control plane holds none.
+    pub root_sequence: Option<(StorageId, u64)>,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,6 +158,11 @@ struct HeartbeatRequest {
     /// answer's `assignment_seq`. Left out otherwise, as before.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     want_assignment_seq: bool,
+    /// The open Raft data root's storage id and last synced root sequence.
+    /// Left out while no root is open, so the request is what an older
+    /// control plane always read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root: Option<RootSequenceBody>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,9 +202,42 @@ pub struct Registration {
     /// This process's incarnation. Sent with every heartbeat so one delayed
     /// past a restart is rejected instead of counted for its successor.
     pub incarnation: u64,
+    /// When the control plane created the node record; see
+    /// [`Registered::registered_at_millis`].
+    pub registered_at_millis: Option<u64>,
     pub heartbeat_interval_ms: u64,
     /// The fleet features enabled as of this registration.
     pub fleet_features: BTreeSet<String>,
+    /// What the heartbeat reports of the open Raft data root.
+    pub root: RootSequenceSlot,
+}
+
+/// The open Raft data root's storage id and last synced root sequence, for
+/// the heartbeat. Empty until the root opens through the restore gate, and
+/// set once. Cheap to clone; every clone is the same slot.
+#[derive(Clone, Default)]
+pub struct RootSequenceSlot(Arc<std::sync::OnceLock<RootRead>>);
+
+type RootRead = Box<dyn Fn() -> (StorageId, u64) + Send + Sync>;
+
+impl RootSequenceSlot {
+    /// Report what `read` returns from the next heartbeat on. It must return
+    /// the synced sequence only. False if the slot was already set.
+    pub fn set(&self, read: impl Fn() -> (StorageId, u64) + Send + Sync + 'static) -> bool {
+        self.0.set(Box::new(read)).is_ok()
+    }
+
+    pub(crate) fn read(&self) -> Option<(StorageId, u64)> {
+        self.0.get().map(|read| read())
+    }
+}
+
+impl std::fmt::Debug for RootSequenceSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("RootSequenceSlot")
+            .field(&self.read())
+            .finish()
+    }
 }
 
 /// Why a membership call did not succeed.
@@ -285,8 +343,10 @@ pub async fn register(
         node_id: config.node_id.clone(),
         token: credential.clone(),
         incarnation: registered.node.status.incarnation,
+        registered_at_millis: registered.node.status.registered_at_millis,
         heartbeat_interval_ms: registered.heartbeat_interval_ms,
         fleet_features: registered.fleet_features,
+        root: RootSequenceSlot::default(),
     })
 }
 
@@ -357,9 +417,15 @@ async fn lookup(
         .json()
         .context("decode node lookup response")
         .map_err(LookupFailure::Undecodable)?;
+    // One under a storage id that does not parse is no copy.
+    let root_sequence = detail
+        .root_sequence
+        .and_then(|held| StorageId::from_hex(&held.storage_id).map(|id| (id, held.sequence)));
     Ok(Some(Registered {
         incarnation: detail.node.status.incarnation,
+        registered_at_millis: detail.node.status.registered_at_millis,
         storage_id: detail.node.status.storage_id,
+        root_sequence,
     }))
 }
 
@@ -561,6 +627,13 @@ async fn run_heartbeat_checked(
                 incarnation: registration.incarnation,
                 suspects,
                 want_assignment_seq: lease.awaits_routes(),
+                root: registration
+                    .root
+                    .read()
+                    .map(|(id, sequence)| RootSequenceBody {
+                        storage_id: id.to_hex(),
+                        sequence,
+                    }),
             },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
@@ -703,6 +776,7 @@ pub fn spawn(
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
     restore_check: Option<DeferredCheck>,
+    root: RootSequenceSlot,
 ) -> MembershipTask {
     spawn_with(
         link,
@@ -719,6 +793,7 @@ pub fn spawn(
         record_in.clone(),
         record_in.map(crate::cluster::controlplane_view::ViewFile::new),
         restore_check,
+        root,
         true,
     )
 }
@@ -742,6 +817,7 @@ pub(crate) fn spawn_with(
     record_in: Option<std::path::PathBuf>,
     view: Option<crate::cluster::controlplane_view::ViewFile>,
     restore_check: Option<DeferredCheck>,
+    root: RootSequenceSlot,
     own_thread: bool,
 ) -> MembershipTask {
     let fatal = CancellationToken::new();
@@ -790,7 +866,7 @@ pub(crate) fn spawn_with(
 
             loop {
                 let mut attempt = 0u64;
-                let registration = loop {
+                let mut registration = loop {
                     match register(&link, &config, &credential, storage_id).await {
                         Ok(registration) => break registration,
                         Err(MembershipError::Rejected(message)) => {
@@ -845,13 +921,19 @@ pub(crate) fn spawn_with(
                     return;
                 }
                 if let Some(root) = &record_in {
-                    record_registration(root, registration.incarnation).await;
+                    record_registration(
+                        root,
+                        registration.incarnation,
+                        registration.registered_at_millis,
+                    )
+                    .await;
                 }
                 consecutive_failures.store(0, Ordering::Release);
                 adopt_fleet(&fleet, &registration.fleet_features);
                 incarnation.store(registration.incarnation, Ordering::Release);
                 registered.send_replace(Some(registration.incarnation));
                 let pace = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
+                registration.root = root.clone();
 
                 match run_heartbeat_checked(
                     link.clone(),
@@ -1164,10 +1246,26 @@ impl RuntimePulse {
 /// `incarnation`, so a later start can tell this directory from an older
 /// copy of it. A failure is logged and not retried: the next start then reads
 /// the directory as older and rotates its id, which is safe.
-async fn record_registration(root: &std::path::Path, incarnation: u64) {
+///
+/// A registration the control plane dated also moves the directory's
+/// rotation record on to it, which is what keeps a rotated id's readmission
+/// credit across this registration (`node::storage::credits`).
+async fn record_registration(
+    root: &std::path::Path,
+    incarnation: u64,
+    registered_at_millis: Option<u64>,
+) {
+    use felix_storage::run_state;
     let root = root.to_path_buf();
-    let written = felix_common::blocking::spawn(move || {
-        felix_storage::run_state::record_registration(&root, incarnation)
+    let written = felix_common::blocking::spawn(move || match registered_at_millis {
+        Some(registered_at_millis) => run_state::record_dated_registration(
+            &root,
+            run_state::Binding {
+                registered_at_millis,
+                incarnation,
+            },
+        ),
+        None => run_state::record_registration(&root, incarnation),
     })
     .await;
     match written {

@@ -6,6 +6,9 @@
 use std::future::Future;
 use std::time::Duration;
 
+use bytes::Bytes;
+
+use super::cache::{Answer, CacheCommand};
 use super::propose::{self, AckAt, Batch, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
@@ -86,7 +89,8 @@ impl RaftEngine {
     /// The acknowledgement of a `Leader` write that [`Self::propose`]
     /// returned as `written`: at once while the lease holds, and otherwise
     /// when the write is committed, as [`Self::await_commit`] says it.
-    /// [`Self::publish`] does not use it yet and answers at commit.
+    /// [`Self::publish`] asks the same check itself, since its batch waits
+    /// for the commit either way before it is delivered.
     pub fn await_ack(
         &self,
         shard: &ShardKey,
@@ -133,11 +137,10 @@ impl RaftEngine {
     /// [`Self::await_commit`]. On any other stream it also returns once a
     /// majority of the shard's voters has written the record, each on its
     /// own word and before its fsync, when that comes before the commit. It
-    /// can be lost if one of those copies loses power before its fsync and a
-    /// majority then elects without a copy that still holds the record. A
-    /// failed flush is no worse: that copy restarts under a new copy id and
-    /// does not vote with its cut log (`docs/per-shard-raft.md`, "A poisoned
-    /// log"). Outside that case it survives
+    /// is lost only if a majority of copies each lose their unsynced tail, by
+    /// a power cut or a failed flush: such a copy restarts under a new copy id
+    /// and does not vote with its cut log (`docs/per-shard-raft.md`, "A
+    /// poisoned log"). Outside that case it survives
     /// process crashes, a change of leader and a membership change, which
     /// the model checks to the end; two terms with two writes and a
     /// membership change across a change of leader have not finished
@@ -170,11 +173,13 @@ impl RaftEngine {
     }
 
     /// Confirm that this broker still leads `term`, by one read-index
-    /// round: a majority answers a heartbeat sent after the call. A reader
-    /// of `shard`'s state takes [`Self::open_term`] first, then its value,
-    /// then calls this with that term. A broker deposed and elected again
-    /// in between is refused: its value can miss what the leader in
-    /// between committed.
+    /// round: a majority answers a heartbeat sent after the call, and this
+    /// broker has applied the read index. A reader of `shard`'s state takes
+    /// [`Self::open_term`] first, then calls this with that term, then takes
+    /// its value. A value taken before this returns can miss a write
+    /// answered before it was applied. A broker deposed and elected again
+    /// in between is refused: it can miss what the leader in between
+    /// committed.
     ///
     /// No answer from a majority is a timeout, not a lost leadership, and
     /// does not close the shard.
@@ -211,6 +216,64 @@ impl RaftEngine {
         shard: &ShardKey,
     ) -> Option<tokio::sync::watch::Receiver<super::commit::Commits>> {
         Some(self.runtime.group(shard)?.commits())
+    }
+
+    // HOOK(#2238 broker routing): the broker's cache and counter paths call
+    // the four below once a shard is routed to Raft.
+
+    /// Commit a cache write on this leader and return what it answered
+    /// when it was first applied. A retry of the same request gets that
+    /// answer and is not applied again. `ttl` is in microseconds and only
+    /// a put has one; zero is none.
+    ///
+    /// An error is an unknown outcome: the write may still commit.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no cache shard is routed here yet")
+    )]
+    pub(crate) async fn cache_write(
+        &self,
+        shard: &ShardKey,
+        command: CacheCommand,
+        ttl: u64,
+        timeout: Duration,
+    ) -> Result<Answer, CommitError> {
+        let group = self.runtime.group(shard);
+        let group = group.ok_or_else(|| propose::lost(NO_GROUP))?;
+        group.cache_write(command, ttl, timeout).await
+    }
+
+    /// `key`'s value and version on this leader, never one that has
+    /// expired by its clock or by the log's time.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no cache shard is routed here yet")
+    )]
+    pub(crate) async fn cache_read(
+        &self,
+        shard: &ShardKey,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<(Bytes, u64)>, CommitError> {
+        let group = self.runtime.group(shard);
+        let group = group.ok_or_else(|| propose::lost(NO_GROUP))?;
+        group.cache_read(key, timeout).await
+    }
+
+    /// A counter's sum on this leader.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no cache shard is routed here yet")
+    )]
+    pub(crate) async fn counter_read(
+        &self,
+        shard: &ShardKey,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<i64>, CommitError> {
+        let group = self.runtime.group(shard);
+        let group = group.ok_or_else(|| propose::lost(NO_GROUP))?;
+        group.counter_read(key, timeout).await
     }
 
     /// The term this broker has `shard` open in, for a reader to take

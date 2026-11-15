@@ -31,8 +31,10 @@ mod reclaim;
 pub(crate) mod tests;
 
 pub use copy_file::CopyFile;
-pub use gate::{Behind, Evidence, Gate, GatePassed, Unchecked, check};
-pub use judge::{CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, kept_copies};
+pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
+pub use judge::{
+    CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, holds_log_without_copy, kept_copies,
+};
 pub use marks::{CopyMarks, MarkLog};
 pub use placement_ack::{
     ack_placement_incarnation, acked_placement_incarnation, all_acked_placement_incarnation,

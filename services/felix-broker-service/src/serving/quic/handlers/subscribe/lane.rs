@@ -41,6 +41,8 @@ pub(super) enum ConnectionCommand {
         subscriber_id: u64,
         frame: Bytes,
         item_count: usize,
+        /// Offset of the frame's first record, for drop accounting.
+        base_offset: Option<u64>,
         first_enqueued_at: Instant,
         enqueue_at: Instant,
         /// The bytes behind this frame, held until it is written or dropped.
@@ -67,6 +69,8 @@ pub(crate) enum LaneCommand {
         subscriber_id: u64,
         frame: Bytes,
         item_count: usize,
+        /// Offset of the frame's first record, for drop accounting.
+        base_offset: Option<u64>,
         first_enqueued_at: Instant,
         enqueue_at: Instant,
         /// The bytes behind this frame, held until it is written or dropped.

@@ -24,11 +24,11 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use super::{ShardMarks, VoteMark, log_below};
-use crate::StorageId;
 use crate::raft_log::{LogPoint, LogPositions, state_file};
 use crate::run_state::witness;
+use crate::{StorageId, metrics_names};
 
-pub(crate) const FILE_NAME: &str = "raft-marks";
+pub(crate) const FILE_NAME: &str = crate::run_state::copy_trust::RAFT_MARKS;
 /// `"FLMK"`.
 const MAGIC: u32 = 0x464C_4D4B;
 const VERSION: u16 = 1;
@@ -46,6 +46,11 @@ const FLAG_COMMITTED: u8 = 2;
 const FLAG_LOG: u8 = 4;
 /// No rewrite below this size, so a small root never rewrites.
 const COMPACT_FLOOR: u64 = 1 << 20;
+/// How many batch intervals old the batched log marks may get before the
+/// batched shards' appends wait for them. A healthy mark write takes
+/// milliseconds; this rides out a slow disk's stalls of a few seconds while
+/// bounding how far a restored root can trail its log.
+pub(crate) const STALL_INTERVALS: u32 = 5;
 
 /// The mark log of one data root. Cheap to clone; every clone is the same
 /// log. Opened only by the gate.
@@ -69,7 +74,16 @@ struct Inner {
     batcher: AtomicBool,
     /// Set once a write fails, for callers that cannot wait on the writer.
     failed: parking_lot::Mutex<Option<Arc<str>>>,
+    /// True while the batched marks are too old to take another append.
+    held: watch::Sender<bool>,
     compact_floor: AtomicU64,
+    /// The root's vouched-unsynced marker was synced in this process.
+    vouched: AtomicBool,
+    #[cfg(any(test, feature = "fault-injection"))]
+    fail_vouch: AtomicBool,
+    /// Write-held by a test to stall the marker's sync.
+    #[cfg(any(test, feature = "fault-injection"))]
+    stall_vouch: Arc<tokio::sync::RwLock<()>>,
     #[cfg(test)]
     stall: tokio::sync::RwLock<()>,
     #[cfg(test)]
@@ -177,7 +191,13 @@ impl MarkLog {
                 batched: parking_lot::Mutex::default(),
                 batcher: AtomicBool::new(false),
                 failed: parking_lot::Mutex::default(),
+                held: watch::channel(false).0,
                 compact_floor: AtomicU64::new(COMPACT_FLOOR),
+                vouched: AtomicBool::new(false),
+                #[cfg(any(test, feature = "fault-injection"))]
+                fail_vouch: AtomicBool::new(false),
+                #[cfg(any(test, feature = "fault-injection"))]
+                stall_vouch: Arc::default(),
                 #[cfg(test)]
                 stall: tokio::sync::RwLock::default(),
                 #[cfg(test)]
@@ -201,12 +221,51 @@ impl MarkLog {
         *self.inner.storage_id.lock()
     }
 
-    pub(crate) fn set_storage_id(&self, id: StorageId) {
-        *self.inner.storage_id.lock() = id;
+    /// Sync the root's vouched-unsynced marker, once per process. A copy
+    /// calls this before it reports a record written ahead of its fsync, and
+    /// says nothing if it fails. See `run_state::record_vouched_unsynced`.
+    pub async fn vouch_unsynced(&self) -> io::Result<()> {
+        if self.inner.vouched.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        #[cfg(any(test, feature = "fault-injection"))]
+        if self.inner.fail_vouch.load(Ordering::Relaxed) {
+            return Err(io::Error::other("the vouched-unsynced marker was failed"));
+        }
+        #[cfg(any(test, feature = "fault-injection"))]
+        let _stalled = self.inner.stall_vouch.read().await;
+        let inner = Arc::clone(&self.inner);
+        tokio::task::spawn_blocking(move || {
+            crate::run_state::record_vouched_unsynced(&inner.root).map_err(io::Error::other)?;
+            inner.vouched.store(true, Ordering::Release);
+            Ok(())
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    /// Fail every later [`Self::vouch_unsynced`] that has to write, as a
+    /// failed fsync would. For tests.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub fn fail_vouch(&self) {
+        self.inner.fail_vouch.store(true, Ordering::Relaxed);
+    }
+
+    /// Hold every [`Self::vouch_unsynced`] that has to write until the guard
+    /// drops, as a slow fsync would. For tests.
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "fault-injection"))]
+    pub async fn stall_vouch(&self) -> tokio::sync::OwnedRwLockWriteGuard<()> {
+        Arc::clone(&self.inner.stall_vouch).write_owned().await
     }
 
     pub(crate) fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    pub(crate) fn witness_dir(&self) -> Option<&Path> {
+        self.inner.witness.as_deref()
     }
 
     /// Tell the witness the root's sequence under its current storage id.
@@ -227,6 +286,34 @@ impl MarkLog {
             .lock()
             .as_deref()
             .map(|why| io::Error::other(why.to_string()))
+    }
+
+    /// Wait while the batched log marks are [`STALL_INTERVALS`] intervals
+    /// behind, so a batched log runs at most about `STALL_INTERVALS + 1`
+    /// intervals ahead of its mark. Fails once the log stopped.
+    pub(crate) async fn caught_up(&self) -> io::Result<()> {
+        let mut held = self.inner.held.subscribe();
+        loop {
+            if let Some(err) = self.failure() {
+                return Err(err);
+            }
+            if !*held.borrow_and_update() {
+                return Ok(());
+            }
+            // The sender lives as long as `self`.
+            let _ = held.changed().await;
+        }
+    }
+
+    fn hold_appends(&self, hold: bool) {
+        self.inner
+            .held
+            .send_if_modified(|held| std::mem::replace(held, hold) != hold);
+    }
+
+    /// Whether `other` is this same log: one data root's.
+    pub fn same_log(&self, other: &MarkLog) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
     }
 
     /// Marks for `shard` as copy `copy`.
@@ -282,7 +369,7 @@ impl MarkLog {
             drop(live);
             // Under the sources' lock, so a truncation that holds a shard
             // after this read queues its lower mark after this one.
-            self.enqueue(updates)?
+            self.enqueue_batch(updates)?
         };
         match ticket {
             Some(ticket) => self.wait(ticket).await,
@@ -294,26 +381,73 @@ impl MarkLog {
     /// dropped or a batch fails. Started once per log, so the first batched
     /// shard's interval sets it for the whole root; later calls do nothing.
     /// A failed batch stops the log, and from then on the batched shards'
-    /// appends fail too (see [`Self::failure`]), so no leader keeps acking
-    /// past a mark that stopped moving.
+    /// appends fail too (see [`Self::failure`]). A batch that hangs is not
+    /// an error: once the marks are [`STALL_INTERVALS`] intervals old, the
+    /// batched shards' appends wait (see [`Self::caught_up`]) until a batch
+    /// is written. The check runs once an interval, so a log runs at most
+    /// about `STALL_INTERVALS + 1` intervals ahead of its mark.
     pub(crate) fn start_batcher(&self, interval: Duration) {
         if self.inner.batcher.swap(true, Ordering::AcqRel) {
             return;
         }
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
+        let limit = interval.saturating_mul(STALL_INTERVALS);
         tokio::spawn(async move {
             let mut ticks = tokio::time::interval(interval);
             ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The start of the last batch written: every position flushed
+            // before it is marked.
+            let mut marked_at = tokio::time::Instant::now();
             loop {
                 ticks.tick().await;
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
                 let log = MarkLog { inner };
-                if let Err(err) = log.mark_batched().await {
-                    tracing::error!(error = %err, "the batched log marks were not written");
-                    log.stop(err).await;
-                    return;
+                let started = tokio::time::Instant::now();
+                let batch = log.mark_batched();
+                tokio::pin!(batch);
+                let mut checks = tokio::time::interval_at(started + interval, interval);
+                // After a freeze, one late check rather than a burst of them.
+                checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let result = loop {
+                    tokio::select! {
+                        // A batch that finished is taken before a check that
+                        // came due at the same time, so it is never held for.
+                        biased;
+                        result = &mut batch => break result,
+                        _ = checks.tick() => {
+                            let age = marked_at.elapsed();
+                            metrics::gauge!(metrics_names::RAFT_LOG_MARK_AGE_SECONDS)
+                                .set(age.as_secs_f64());
+                            tracing::warn!(?age, ?limit, "the batched log marks are behind");
+                            if age >= limit {
+                                log.hold_appends(true);
+                            }
+                        }
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        marked_at = started;
+                        let age = marked_at.elapsed();
+                        metrics::gauge!(metrics_names::RAFT_LOG_MARK_AGE_SECONDS)
+                            .set(age.as_secs_f64());
+                        if age < limit {
+                            log.hold_appends(false);
+                        } else {
+                            // What was flushed during a long write is not
+                            // marked yet: write again now, still holding.
+                            ticks.reset_immediately();
+                        }
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "the batched log marks were not written");
+                        log.poison(&err);
+                        // Held appends wake to the failure.
+                        log.hold_appends(false);
+                        return;
+                    }
                 }
             }
         });
@@ -373,6 +507,36 @@ impl MarkLog {
     /// Queue `updates`, or `None` when each is already synced and nothing
     /// queued names its shard.
     fn enqueue(&self, updates: Vec<Queued>) -> io::Result<Option<u64>> {
+        self.enqueue_with(updates, false)
+    }
+
+    /// As [`Self::enqueue`], dropping the positions of shards whose copy
+    /// changed since the batch read them: a shard reopened under a new copy
+    /// between the read and here. Failing the batch would stop the whole log.
+    fn enqueue_batch(&self, updates: Vec<Queued>) -> io::Result<Option<u64>> {
+        self.enqueue_with(updates, true)
+    }
+
+    /// Queue a batched log position for `shard` as the batch does.
+    #[cfg(test)]
+    pub(crate) fn enqueue_batched_log(
+        &self,
+        shard: &str,
+        copy: u64,
+        point: LogPoint,
+    ) -> io::Result<Option<u64>> {
+        self.enqueue_batch(vec![Queued {
+            shard: Arc::from(shard),
+            copy,
+            update: Update::Log(Some(point)),
+        }])
+    }
+
+    fn enqueue_with(
+        &self,
+        mut updates: Vec<Queued>,
+        drop_foreign: bool,
+    ) -> io::Result<Option<u64>> {
         let mut queue = self.inner.queue.lock();
         {
             let live = self.inner.live.read();
@@ -386,18 +550,26 @@ impl MarkLog {
             }) {
                 return Ok(None);
             }
-            for queued in &updates {
+            let belongs = |queued: &Queued| {
                 let fresh_queued = queue.updates.iter().any(|earlier| {
                     earlier.shard == queued.shard
                         && earlier.copy == queued.copy
                         && matches!(earlier.update, Update::Fresh)
                 });
-                let belongs = matches!(queued.update, Update::Fresh)
+                matches!(queued.update, Update::Fresh)
                     || fresh_queued
                     || live
                         .get(&queued.shard)
-                        .is_some_and(|marks| marks.copy == queued.copy);
-                if !belongs {
+                        .is_some_and(|marks| marks.copy == queued.copy)
+            };
+            if drop_foreign {
+                updates.retain(|queued| belongs(queued));
+                if updates.is_empty() {
+                    return Ok(None);
+                }
+            }
+            for queued in &updates {
+                if !belongs(queued) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
@@ -439,6 +611,9 @@ impl MarkLog {
                 Some(failed) if ticket >= failed => Err(writer.failure()),
                 _ => Ok(()),
             };
+        }
+        if writer.failed.is_none() {
+            writer.failed = inner.failed.lock().clone();
         }
         if writer.failed.is_some() {
             return Err(writer.failure());
@@ -598,13 +773,14 @@ impl MarkLog {
         io::Error::new(err.kind(), message.to_string())
     }
 
-    /// Stop every later write after `err`, if a failed write has not
-    /// already.
-    async fn stop(&self, err: io::Error) {
-        let mut writer = self.inner.writer.lock().await;
-        if writer.failed.is_none() {
-            let _ = self.fail(&mut writer, err);
-        }
+    /// Fail the batched shards' appends with `err` at once, and every write
+    /// that takes the writer from now on.
+    fn poison(&self, err: &io::Error) {
+        let message: Arc<str> = Arc::from(format!(
+            "{}: the mark log stopped: {err}",
+            self.inner.root.join(FILE_NAME).display()
+        ));
+        self.inner.failed.lock().get_or_insert(message);
     }
 }
 
@@ -665,6 +841,21 @@ impl CopyMarks {
     /// this returns.
     pub async fn log(&self, point: Option<LogPoint>) -> io::Result<()> {
         self.submit(Update::Log(point)).await
+    }
+
+    /// Raise the log mark to `point` if it is below it. `point` must be on
+    /// disk. Synced before this returns.
+    pub(crate) async fn raise_log(&self, point: Option<LogPoint>) -> io::Result<()> {
+        let current = self
+            .log
+            .marks(&self.shard)
+            .filter(|marks| marks.copy == self.copy)
+            .and_then(|marks| marks.log);
+        if log_below(current, point) {
+            self.log(point).await
+        } else {
+            Ok(())
+        }
     }
 
     /// Lower the log mark to `point` if it is above it, before a truncation

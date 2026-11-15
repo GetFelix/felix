@@ -93,7 +93,7 @@ impl RaftRefusal {
 pub struct RaftPublish(Option<felix_broker::ProposedPublish<CommitError>>);
 
 impl RaftPublish {
-    /// Wait for the commit. Returns the first record's offset.
+    /// Wait for the acknowledgement. Returns the first record's offset.
     pub async fn complete(self) -> Result<Option<u64>, CommitError> {
         match self.0 {
             Some(proposed) => {
@@ -112,10 +112,12 @@ pub struct RaftIdempotentPublish(felix_replication::raft::IdempotentPublish);
 #[cfg(feature = "raft")]
 impl RaftIdempotentPublish {
     /// Wait for the commit of the batch, or of the one the log already
-    /// held under its sequence. Returns the first record's offset.
-    pub async fn complete(self) -> Result<Option<u64>, CommitError> {
+    /// held under its sequence. Returns the first and the last record's
+    /// offsets. A batch a leader change cut can have other records between
+    /// them.
+    pub async fn complete(self) -> Result<Option<(u64, u64)>, CommitError> {
         let idempotent = self.0.complete().await?;
-        Ok(idempotent.outcome.offsets.map(|(first, _)| first))
+        Ok(idempotent.outcome.offsets)
     }
 }
 
@@ -125,7 +127,7 @@ pub enum RaftIdempotentPublish {}
 
 #[cfg(not(feature = "raft"))]
 impl RaftIdempotentPublish {
-    pub async fn complete(self) -> Result<Option<u64>, CommitError> {
+    pub async fn complete(self) -> Result<Option<(u64, u64)>, CommitError> {
         match self {}
     }
 }
@@ -160,8 +162,12 @@ impl StreamEngine {
     ///
     /// Call it in the shard's publish order: the batch takes its offsets
     /// and its place in the delivery order here. [`RaftPublish::complete`]
-    /// answers at the commit for every consistency level and fsync policy,
-    /// so no acknowledged write waits on the hybrid's marks or this
+    /// answers a `Quorum` stream's publisher at the commit when the stream
+    /// fsyncs on commit, and otherwise once a majority of the voters has
+    /// written the batch, if that is first. A `Leader` stream's publisher is answered once the
+    /// batch is on this leader's log, while the group's leader lease holds,
+    /// and at the commit while it does not. Subscribers get the batch at
+    /// its commit either way. No write waits on the hybrid's marks or this
     /// broker's lease.
     pub fn publish_on_raft(
         &self,
@@ -174,7 +180,7 @@ impl StreamEngine {
     ) -> Option<Result<RaftPublish, RaftRefusal>> {
         #[cfg(feature = "raft")]
         {
-            use felix_replication::raft::AckAt;
+            use felix_replication::raft::{AckAt, AnswerAt};
             let raft = self.raft(shard)?;
             // A term is served only once its stream is at the committed
             // tail, and only the term the write was routed at. The group
@@ -189,11 +195,29 @@ impl StreamEngine {
             let ack = broker.durable_storage().map_or(AckAt::Flushed, |storage| {
                 AckAt::for_fsync(&storage.config().fsync_mode)
             });
-            // A `Quorum` stream on a periodic fsync waits for the commit,
-            // not `await_quorum_ack`, until a copy whose flush failed cannot
-            // vote with its cut log (#2469). The commit is never weaker.
+            // A `Quorum` stream not fsynced on commit is answered once a
+            // majority has written the batch, the hybrid's periodic promise.
+            // A copy that lost its unsynced tail to a failed flush (#2469) or
+            // a power cut (#2423) restarts under a new copy id and does not
+            // vote with its cut log, so the batch is lost only if a majority
+            // of copies each lose their unsynced tail that way.
+            let answer = match (handle.consistency(), ack) {
+                (felix_broker::ConsistencyLevel::Leader, _) => AnswerAt::Lease,
+                (felix_broker::ConsistencyLevel::Quorum, AckAt::Written) => AnswerAt::Majority,
+                (felix_broker::ConsistencyLevel::Quorum, AckAt::Flushed) => AnswerAt::Commit,
+            };
+            let proposed = raft.publish(
+                broker,
+                handle,
+                shard,
+                Some(term),
+                payloads,
+                ack,
+                answer,
+                timeout,
+            );
             Some(
-                raft.publish(broker, handle, shard, Some(term), payloads, ack, timeout)
+                proposed
                     .map(|proposed| RaftPublish(Some(proposed)))
                     .map_err(RaftRefusal::Broker),
             )

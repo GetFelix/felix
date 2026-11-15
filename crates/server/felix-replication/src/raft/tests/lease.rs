@@ -15,7 +15,7 @@ use crate::engine::CommitError;
 
 const SOON: Duration = Duration::from_secs(10);
 
-fn vote_of(term: u64, broker: &str, committed: bool) -> VoteOf<ShardTypes> {
+pub(super) fn vote_of(term: u64, broker: &str, committed: bool) -> VoteOf<ShardTypes> {
     let leader = LeaderIdOf::<ShardTypes>::new(term, MemberId::new(broker, 1));
     <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader, committed)
 }
@@ -40,7 +40,7 @@ fn pre_vote_request(term: u64, from: &str) -> Request {
 }
 
 /// A candidacy `from` a member whose log is behind nobody's.
-fn stands(term: u64, from: &str) -> Request {
+pub(super) fn stands(term: u64, from: &str) -> Request {
     let last = LogIdOf::<ShardTypes>::new((term - 1).into(), 1 << 40);
     Request::Vote(VoteRequest::new(vote_of(term, from, false), Some(last)))
 }
@@ -54,7 +54,7 @@ fn heartbeat(vote: VoteOf<ShardTypes>) -> Request {
     })
 }
 
-fn dropped(answer: &Result<RaftReply, Refused>) -> bool {
+pub(super) fn dropped(answer: &Result<RaftReply, Refused>) -> bool {
     matches!(answer, Err(Refused::Unreachable(_)))
 }
 
@@ -68,7 +68,7 @@ fn granted(answer: Result<RaftReply, Refused>) -> bool {
 
 /// Poll `check` for a short while: a rule that is missing fails the test
 /// in seconds.
-async fn soon(what: &str, mut check: impl FnMut() -> bool) {
+pub(super) async fn soon(what: &str, mut check: impl FnMut() -> bool) {
     let deadline = tokio::time::Instant::now() + SOON;
     while !check() {
         assert!(tokio::time::Instant::now() < deadline, "{what}");
@@ -250,6 +250,9 @@ async fn a_snapshot_of_a_higher_term_voids_the_lease() {
     let snapshot = Request::Snapshot {
         vote: vote_of(led.term + 3, &from, true),
         meta: Default::default(),
+        data_len: 0,
+        offset: 0,
+        data: bytes::Bytes::new(),
     };
     let answer = runtime.handle(to(&led.leader.broker, snapshot)).await;
     assert!(matches!(answer, Err(Refused::NoSnapshots(_))));
@@ -534,13 +537,17 @@ fn a_lease_that_can_outlast_a_followers_promise_is_refused() {
         clock_drift_ppm,
         ..RuntimeConfig::default()
     };
-    assert!(RuntimeConfig::default().raft().is_ok());
+    assert!(
+        RuntimeConfig::default()
+            .raft(crate::ShardKind::Stream)
+            .is_ok()
+    );
     // 2 s * 0.9 / 1.1 is 1636.36 ms.
-    assert!(with(1_636, 100_000).raft().is_ok());
-    assert!(with(1_637, 100_000).raft().is_err());
-    assert!(with(2_000, 0).raft().is_ok());
-    assert!(with(2_001, 0).raft().is_err());
-    assert!(with(1, 1_000_000).raft().is_err());
+    assert!(with(1_636, 100_000).raft(crate::ShardKind::Stream).is_ok());
+    assert!(with(1_637, 100_000).raft(crate::ShardKind::Stream).is_err());
+    assert!(with(2_000, 0).raft(crate::ShardKind::Stream).is_ok());
+    assert!(with(2_001, 0).raft(crate::ShardKind::Stream).is_err());
+    assert!(with(1, 1_000_000).raft(crate::ShardKind::Stream).is_err());
 }
 
 /// **A restarted member takes no vote and no pre-vote for one election

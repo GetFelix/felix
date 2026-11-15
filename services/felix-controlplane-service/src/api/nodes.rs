@@ -17,6 +17,7 @@
 pub(crate) mod fleet;
 pub(crate) mod listing;
 pub(crate) mod reports;
+pub(crate) mod seals;
 
 use std::sync::Arc;
 

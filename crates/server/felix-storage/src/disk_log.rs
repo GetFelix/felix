@@ -56,7 +56,7 @@ pub(crate) mod crash_point;
 pub(crate) mod dir_lock;
 pub(crate) mod durable_mark;
 #[cfg(feature = "raft")]
-pub(crate) use durable_mark::left_poisoned;
+pub(crate) use durable_mark::{forget_poisoned_dir, left_poisoned};
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -75,7 +75,7 @@ mod set;
 pub mod switch;
 mod sync;
 
-pub use producers::ProducerSequence;
+pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
 pub use set::{Member, Membership, ReplicaSet};
@@ -88,7 +88,7 @@ use parking_lot::{Mutex, RwLock};
 
 use self::append::RollState;
 use self::producers::ProducerState;
-use self::sealed::SealedFiles;
+pub(crate) use self::sealed::SealedFiles;
 use self::segments::SegmentSet;
 use self::sync::{Durability, PeriodicSyncer};
 use crate::io::log_thread::LogThread;
@@ -218,7 +218,7 @@ impl DiskLog {
         label: impl Into<String>,
         config: LogConfig,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -247,7 +247,7 @@ impl DiskLog {
         config: LogConfig,
         base_offset: Offset,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         Self::open_shared(
             dir.into(),
             label.into(),
@@ -273,7 +273,7 @@ impl DiskLog {
         config: LogConfig,
         keep_alive: Arc<dyn std::any::Any + Send + Sync>,
     ) -> Result<Self> {
-        let files = SealedFiles::new(config.max_open_sealed_segments);
+        let files = SealedFiles::for_config(&config);
         let log = Self::open_shared(
             dir.into(),
             label.into(),
@@ -371,6 +371,11 @@ impl DiskLog {
         self.inner.segments.read().open_sealed_segments()
     }
 
+    #[cfg(test)]
+    pub(crate) fn uses_sealed_files(&self, files: &Arc<SealedFiles>) -> bool {
+        self.inner.segments.read().uses_sealed_files(files)
+    }
+
     /// Every segment on disk, oldest first.
     pub fn segments(&self) -> Vec<SegmentDescriptor> {
         self.inner.segments.read().descriptors()
@@ -382,6 +387,102 @@ impl DiskLog {
     /// serialises a producer's batches sees each one as soon as it is written.
     pub fn producer_sequence(&self, producer_id: u64, sequence: u64) -> ProducerSequence {
         self.inner.producers.lock().classify(producer_id, sequence)
+    }
+
+    /// `producer_id`'s batch `sequence` if this log holds part of it and
+    /// not all: its writer stopped partway. [`Self::producer_sequence`] does
+    /// not count a batch another record has cut, so a writer that finishes
+    /// one asks this first. See [`UnfinishedBatch`].
+    pub fn producer_unfinished(&self, producer_id: u64, sequence: u64) -> Option<UnfinishedBatch> {
+        self.inner
+            .producers
+            .lock()
+            .unfinished(producer_id, sequence)
+    }
+
+    /// The cut batches a copy of this log that starts at `base` has to
+    /// refuse by name: the ones a purge to `base` would forget, and the ones
+    /// this log carries already. A copy that takes them in with
+    /// [`Self::remember_forgotten_cuts`] answers a re-send the way a copy
+    /// that holds the records would. Read from the committed records below
+    /// `base` and what earlier purges and installs carried, never from what
+    /// this copy alone saw, so every copy hands on the same.
+    ///
+    /// Reads the log from its base, a chunk at a time, letting appends in
+    /// between chunks.
+    pub async fn forgotten_cuts_from(&self, base: Offset) -> Result<ForgottenCuts> {
+        if !self.inner.config.raft_log {
+            return Ok(ForgottenCuts::default());
+        }
+        let inner = Arc::clone(&self.inner);
+        felix_common::blocking::spawn(move || {
+            'scan: loop {
+                let (log_base, mut next, mut carried) = {
+                    let segments = inner.segments.read();
+                    segments.check_open()?;
+                    let log_base = segments.base_offset();
+                    let carried =
+                        producers::CarriedFrom::new(inner.producers.lock().carried().clone());
+                    (
+                        log_base,
+                        segments.first_markable_offset().max(log_base),
+                        carried,
+                    )
+                };
+                while next < base {
+                    let records = {
+                        let segments = inner.segments.read();
+                        segments.check_open()?;
+                        // A purge or reset moved the base, and what it
+                        // forgot is carried now: start over from there.
+                        if segments.base_offset() != log_base {
+                            continue 'scan;
+                        }
+                        segments.read(
+                            next,
+                            crate::segment::ReadBudget::new(
+                                producers::REBUILD_READ_BYTES,
+                                usize::MAX,
+                            )
+                            .with_trims(crate::segment::TrimRecords::Include),
+                        )?
+                    };
+                    let Some(last) = records.last() else { break };
+                    next = last.offset + 1;
+                    for record in records.iter().take_while(|record| record.offset < base) {
+                        carried.observe(record.offset, record.mark, &record.payload);
+                    }
+                }
+                return Ok(carried.finish(base));
+            }
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
+    /// Take in the cut batches a snapshot at `base` carries, saved to
+    /// `producers.forgotten` before this returns, ahead of the reset to
+    /// `base`. Their re-send is refused as if this log had purged them. A
+    /// producer's higher sequence wins. The reset to `base` then drops the
+    /// unfinished batches this log held below it: the snapshot speaks for
+    /// those records. Only a Raft log keeps cut batches, so any other log
+    /// takes nothing.
+    pub async fn remember_forgotten_cuts(&self, base: Offset, cuts: ForgottenCuts) -> Result<()> {
+        if !self.inner.config.raft_log {
+            return Ok(());
+        }
+        let inner = Arc::clone(&self.inner);
+        felix_common::blocking::spawn(move || {
+            // Held so a close cannot land between the check and the write:
+            // the directory may then be another log's.
+            let segments = inner.segments.read();
+            segments.check_open()?;
+            let mut producers = inner.producers.lock();
+            producers.install(base, cuts);
+            inner.store_forgotten(&producers)
+        })
+        .await
+        .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
     /// The sequence `producer_id` owes next in this log, or `None` when the
@@ -638,30 +739,7 @@ impl DiskLog {
         let operation = Arc::clone(&inner);
         felix_common::blocking::spawn(move || {
             let _fence = fence;
-            let mut manifest = operation.manifest.lock();
-            let _appends = operation.append_lock.lock();
-            let mut segments = operation.segments.write();
-            let commit = operation.commit_offset.load(Ordering::Acquire);
-            let discarded_from = segments.base_offset().max(base_offset);
-            if discarded_from < commit.min(segments.tail_offset()) {
-                return Err(StorageError::BelowCommit {
-                    offset: discarded_from,
-                    commit,
-                });
-            }
-            segments.check_open()?;
-            operation.forget_all_offloaded(&mut manifest)?;
-            let rewound = (|| {
-                segments.reset_to(base_offset)?;
-                segments.active_mut().sync()?;
-                operation.note_rewound(&segments)?;
-                operation.durability.reset_after_truncate(base_offset);
-                let mut epochs = operation.epochs.lock();
-                *epochs = epochs::EpochMap::default();
-                epochs::store(&operation.dir, &epochs)?;
-                operation.reset_producers(&segments)
-            })();
-            operation.poison_after_rewind(rewound)
+            operation.reset_holding(base_offset)
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -687,6 +765,9 @@ impl DiskLog {
             let _fence = fence;
             let mut manifest = operation.manifest.lock();
             let _appends = operation.append_lock.lock();
+            // Before `segments`; see the lock order on `replica_persisted`.
+            let mut persisted = operation.replica_persisted.lock();
+            operation.hold_between_locks();
             let mut segments = operation.segments.write();
             segments.check_open()?;
             let (base, tail) = (segments.base_offset(), segments.tail_offset());
@@ -695,38 +776,36 @@ impl DiskLog {
             }
             // Lowered on disk before anything is cut, so a restore interrupted
             // between the two can simply be run again.
-            {
-                let mut persisted = operation.replica_persisted.lock();
-                if operation.commit_offset.load(Ordering::Acquire) > offset {
-                    // The generation saved named the record below the old
-                    // offset. A Raft log names the one below the new offset.
-                    let mut committed = operation.committed_generation.lock();
-                    #[cfg(feature = "raft")]
-                    let below = match offset.checked_sub(1) {
-                        Some(last) if operation.config.raft_log && last >= base => segments
-                            .read_plan(last)
-                            .generation_at(last, &operation.label)?
-                            .flatten()
-                            .unwrap_or(0),
-                        _ => 0,
-                    };
-                    #[cfg(not(feature = "raft"))]
-                    let below = 0;
-                    let state = replica_state::ReplicaState {
-                        commit_offset: offset,
-                        committed_generation: below,
-                        ..operation.replica_state_with(*committed)
-                    };
-                    operation.poison_on_sync_failure(
-                        "the replica state",
-                        replica_state::store(&operation.dir, &state),
-                    )?;
-                    *committed = below;
-                    operation.commit_offset.store(offset, Ordering::Release);
-                    operation.commit_persisted.store(offset, Ordering::Release);
-                    *persisted = (state, Some(tokio::time::Instant::now()));
-                }
+            if operation.commit_offset.load(Ordering::Acquire) > offset {
+                // The generation saved named the record below the old
+                // offset. A Raft log names the one below the new offset.
+                let mut committed = operation.committed_generation.lock();
+                #[cfg(feature = "raft")]
+                let below = match offset.checked_sub(1) {
+                    Some(last) if operation.config.raft_log && last >= base => segments
+                        .read_plan(last)
+                        .generation_at(last, &operation.label)?
+                        .flatten()
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                #[cfg(not(feature = "raft"))]
+                let below = 0;
+                let state = replica_state::ReplicaState {
+                    commit_offset: offset,
+                    committed_generation: below,
+                    ..operation.replica_state_with(*committed)
+                };
+                operation.poison_on_sync_failure(
+                    "the replica state",
+                    replica_state::store(&operation.dir, &state),
+                )?;
+                *committed = below;
+                operation.commit_offset.store(offset, Ordering::Release);
+                operation.commit_persisted.store(offset, Ordering::Release);
+                *persisted = (state, Some(tokio::time::Instant::now()));
             }
+            drop(persisted);
             if offset == tail {
                 return Ok(());
             }
@@ -1215,8 +1294,12 @@ impl DiskLog {
         }
         // Before the log is usable, so no append can be accepted against a
         // producer state that does not yet include what is already on disk.
-        let producer_state =
-            producers::rebuild(&epochs_dir, &segments, Some(&recovered.active_marks))?;
+        let (producer_state, forgotten_saved) = producers::rebuild(
+            &epochs_dir,
+            &segments,
+            Some(&recovered.active_marks),
+            config.raft_log,
+        )?;
         let active_has_trims = recovered
             .active_marks
             .iter()
@@ -1263,6 +1346,8 @@ impl DiskLog {
             ballot: RwLock::new(accepted),
             #[cfg(feature = "raft")]
             switch_seal: Mutex::new(switch::seal::load(&epochs_dir)?),
+            #[cfg(feature = "raft")]
+            seal_matched: Mutex::new(None),
             set_generation: AtomicU64::new(set_generation),
             replica_set: RwLock::new(replica_set),
             wiped: RwLock::new(wiped),
@@ -1279,6 +1364,7 @@ impl DiskLog {
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
+            forgotten_saved: Mutex::new(forgotten_saved),
             head: Mutex::new(head),
             head_pending: std::sync::atomic::AtomicBool::new(true),
             head_floor: AtomicU64::new(0),
@@ -1307,6 +1393,10 @@ impl DiskLog {
             #[cfg(test)]
             slow_inline_roll_millis: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
+            hold_between_locks_millis: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            hold_between_locks_entries: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
             flushes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             inline_roll_active: std::sync::atomic::AtomicBool::new(false),
@@ -1320,6 +1410,36 @@ impl DiskLog {
             appender: LogThread::spinning("felix-append", APPEND_SPIN),
             flusher: LogThread::new("felix-flush"),
         });
+
+        // An install's purge past the tail stores the purged id and then
+        // resets. After a crash in between, the records below the id stay,
+        // and nothing later is sure to redo it: an append at the id's next
+        // index skips the reset. They may be ones the leader never had, and
+        // a snapshot would read them as this log's own, so the reset is
+        // finished here, before anything can read the log. Records below a
+        // purged id with no install pending are committed, and a switched
+        // log keeps them on purpose.
+        #[cfg(feature = "raft")]
+        if config.raft_log
+            && let Some(first) =
+                crate::raft_log::first_after_purged(&inner.dir).map_err(StorageError::Io)?
+        {
+            let (base, tail) = {
+                let segments = inner.segments.read();
+                (segments.base_offset(), segments.tail_offset())
+            };
+            let installed = inner.producers.lock().installed();
+            if installed == Some(first) && base < first && tail <= first {
+                tracing::warn!(
+                    shard = %inner.label,
+                    base,
+                    tail,
+                    first,
+                    "finishing the reset after a snapshot install that a crash interrupted"
+                );
+                inner.reset_holding(first)?;
+            }
+        }
 
         if let FsyncMode::Periodic { interval } = config.fsync_mode {
             let weak = Arc::downgrade(&inner);
@@ -1467,6 +1587,15 @@ impl DiskLog {
     /// as one with nothing new to sync, pass.
     pub fn fail_flush_past(&self, offset: Offset) {
         self.inner.fail_flush_past.store(offset, Ordering::Release);
+    }
+
+    /// Fail every write of this log's poison marker, as a full or failing
+    /// disk would.
+    pub fn fail_poison_marker(&self) {
+        self.inner
+            .mark
+            .fail_poison_marker
+            .store(true, Ordering::Release);
     }
 }
 
@@ -1887,7 +2016,8 @@ struct LogInner {
     config: LogConfig,
     /// Guards the segment set. Held only for pointer work: a range read plans
     /// under the read lock and does its I/O after releasing it, and an append
-    /// writes its batch after releasing it.
+    /// writes its batch after releasing it. Taken after `replica_persisted`;
+    /// see the lock order there.
     segments: RwLock<SegmentSet>,
     /// Held by an append from placing its batch to taking it in, and by
     /// anything else that changes the active segment: a background roll's
@@ -1938,6 +2068,10 @@ struct LogInner {
     /// The switch seal this copy promised, as on disk. Held while the file
     /// is written, so two promises cannot interleave.
     switch_seal: Mutex<Option<switch::seal::SealPromise>>,
+    #[cfg(feature = "raft")]
+    /// The seal whose digest this process last found its records to match.
+    /// See [`DiskLog::ack_seal`].
+    seal_matched: Mutex<Option<switch::SwitchBase>>,
     /// The generation of `replica_set`, zero for none, read without a lock on
     /// every stamped batch. Raised only after the set is on disk.
     set_generation: AtomicU64,
@@ -1972,10 +2106,19 @@ struct LogInner {
     replica_writes: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     /// Tokio's clock, so a simulation decides when to persist on virtual time.
+    ///
+    /// Lock order: `append_lock`, then `replica_persisted`, then `segments`.
+    /// The set raise and the sealing append hold this lock and read
+    /// `segments` without `append_lock`, so taking `segments` first and then
+    /// this one deadlocks.
     replica_persisted: Mutex<(replica_state::ReplicaState, Option<tokio::time::Instant>)>,
-    /// Each idempotent producer's place in the log. Written only under the
-    /// `segments` write lock, in offset order, so it always matches the tail.
+    /// Each idempotent producer's place in the log. Its records are observed
+    /// only under the `segments` write lock, in offset order, so it always
+    /// matches the tail. Carried forgotten batches are taken in under the
+    /// read lock: they add refusals and change no offset.
     producers: Mutex<producers::ProducerState>,
+    /// What `producers.forgotten` holds on disk. Taken under `producers`.
+    forgotten_saved: Mutex<producers::SavedForgotten>,
     /// The log's trim records and the floor they set. Taken under `segments`
     /// when both are held.
     head: Mutex<head::Head>,
@@ -2064,6 +2207,13 @@ struct LogInner {
     /// Milliseconds an inline rollover holds the segment lock, for tests.
     #[cfg(test)]
     slow_inline_roll_millis: std::sync::atomic::AtomicU64,
+    /// Milliseconds a restore and a set raise sleep after their first of
+    /// `replica_persisted` and `segments`, so a test can overlap the two.
+    #[cfg(test)]
+    hold_between_locks_millis: std::sync::atomic::AtomicU64,
+    /// Times the hook above has run, so a test can wait for the first holder.
+    #[cfg(test)]
+    hold_between_locks_entries: std::sync::atomic::AtomicU64,
     /// Set while a stretched inline rollover holds the segment lock.
     #[cfg(test)]
     inline_roll_active: std::sync::atomic::AtomicBool,
@@ -2228,6 +2378,7 @@ impl LogInner {
             epochs.truncate_from(offset);
         }
         epochs::store(&self.dir, &epochs)?;
+        self.discard_snapshots()?;
         self.reset_producers(segments)
     }
 
@@ -2264,7 +2415,8 @@ impl LogInner {
     }
 
     /// Save a snapshot taken by [`Self::snapshot`]. Failing costs a longer
-    /// open later, so it is logged rather than returned.
+    /// open later, so it is logged rather than returned: everything in it
+    /// can be read back from the records, or is in the forgotten file.
     fn store_snapshot(&self, snapshot: Snapshot) {
         // Held so a close cannot land between the check and the write.
         let segments = self.segments.read();
@@ -2289,12 +2441,21 @@ impl LogInner {
         }
     }
 
+    /// Remove the producer snapshot, the head file, and a cache's key index
+    /// snapshot when this log backs a cache, durably. Called before a reset
+    /// or truncation rebuilds from the log: one that came back after a crash
+    /// would be read as describing the records that replaced them. All three
+    /// are rebuilt from the records, so removing them early is safe.
+    fn discard_snapshots(&self) -> Result<()> {
+        head::discard(&self.dir).map_err(StorageError::Io)?;
+        producers::discard(&self.dir).map_err(StorageError::Io)?;
+        crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
+        crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
+        Ok(())
+    }
+
     /// Rebuild producer state and the head entries after the log was cut
-    /// back to its tail. The producer snapshot, the head file, and a cache's
-    /// key index snapshot when this log backs a cache, may describe records
-    /// that are gone, so all three are removed first, durably: one that came
-    /// back after a crash would be read as describing the records that
-    /// replaced them.
+    /// back to its tail, once [`Self::discard_snapshots`] has run.
     fn reset_producers(&self, segments: &SegmentSet) -> Result<()> {
         {
             let mut head = self.head.lock();
@@ -2302,19 +2463,78 @@ impl LogInner {
             head.prune_below(segments.base_offset());
             self.publish_head(&head);
         }
-        head::discard(&self.dir).map_err(StorageError::Io)?;
-        producers::discard(&self.dir).map_err(StorageError::Io)?;
-        crate::index_snapshot::remove(&self.dir).map_err(StorageError::Io)?;
-        crate::io::sync_dir(&self.dir).map_err(StorageError::Io)?;
-        let state = producers::rebuild(&self.dir, segments, None)?;
+        let (state, saved) = producers::rebuild(&self.dir, segments, None, self.config.raft_log)?;
         self.batch_open
             .store(state.is_open(), std::sync::atomic::Ordering::Release);
-        *self.producers.lock() = state;
+        let mut producers = self.producers.lock();
+        *producers = state;
+        *self.forgotten_saved.lock() = saved;
         Ok(())
     }
 }
 
 impl LogInner {
+    /// [`DiskLog::reset_to`] once no roll or flush can run: taken under its
+    /// fence and flush lock, or at open before anything else has the log.
+    fn reset_holding(&self, base_offset: Offset) -> Result<()> {
+        let mut manifest = self.manifest.lock();
+        let _appends = self.append_lock.lock();
+        let mut segments = self.segments.write();
+        let commit = self.commit_offset.load(Ordering::Acquire);
+        let discarded_from = segments.base_offset().max(base_offset);
+        if discarded_from < commit.min(segments.tail_offset()) {
+            return Err(StorageError::BelowCommit {
+                offset: discarded_from,
+                commit,
+            });
+        }
+        segments.check_open()?;
+        self.forget_all_offloaded(&mut manifest)?;
+        let rewound = (|| {
+            // Saved before the records go. A batch the log held part of
+            // below the new base stays refused.
+            {
+                let mut producers = self.producers.lock();
+                producers.forget_before(base_offset);
+                self.store_forgotten(&producers)?;
+            }
+            // Before the drop: a snapshot as of the new base, left by a roll
+            // at the old tail, would pass for the new log's after a crash,
+            // and the open would not redo a reset that already moved the base.
+            self.discard_snapshots()?;
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
+            segments.reset_to(base_offset)?;
+            segments.active_mut().sync()?;
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
+            // Only now: until the records are gone, a reset redone after
+            // a crash has to know it follows an install.
+            {
+                let mut producers = self.producers.lock();
+                producers.reset_done();
+                self.store_forgotten(&producers)?;
+            }
+            self.note_rewound(&segments)?;
+            self.durability.reset_after_truncate(base_offset);
+            let mut epochs = self.epochs.lock();
+            *epochs = epochs::EpochMap::default();
+            epochs::store(&self.dir, &epochs)?;
+            self.reset_producers(&segments)
+        })();
+        self.poison_after_rewind(rewound)
+    }
+
+    #[cfg(test)]
+    fn hold_between_locks(&self) {
+        self.hold_between_locks_entries
+            .fetch_add(1, Ordering::Release);
+        let millis = self.hold_between_locks_millis.load(Ordering::Acquire);
+        std::thread::sleep(std::time::Duration::from_millis(millis));
+    }
+
+    #[cfg(not(test))]
+    #[inline]
+    fn hold_between_locks(&self) {}
+
     /// How long the commit writer waits before its next write: the rest of
     /// [`COMMIT_PERSIST_INTERVAL`] on a Raft log, nothing otherwise.
     fn commit_write_wait(&self) -> Option<std::time::Duration> {

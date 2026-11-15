@@ -48,13 +48,16 @@ impl DiskLog {
             // Refused before the roll, which would otherwise move the log
             // onto v9 ahead of the fleet gate, and refused past the gate too:
             // replication cannot carry these kinds yet. A Raft log is v9
-            // throughout and its membership entries are these records.
+            // throughout: its membership entries are these records, and its
+            // producer batches are written as pieces.
             let raft_log = inner.config.raft_log;
             if records.iter().any(|r| {
-                r.mark.needs_generation() && !(raft_log && r.mark == RecordMark::Membership)
+                r.mark.needs_generation()
+                    && !(raft_log
+                        && matches!(r.mark, RecordMark::Membership | RecordMark::Piece(_)))
             }) {
                 return Err(StorageError::Unsupported(
-                    "membership and counter records are not written yet",
+                    "membership, counter and batch piece records are not written yet",
                 ));
             }
             records
@@ -284,6 +287,13 @@ pub(super) enum WriteIf {
     },
     /// The batch must start at exactly this offset.
     At(Offset),
+    /// The batch is a switch seal's record: it must start at exactly
+    /// `offset`, and the promise to the seal at `generation` must still hold.
+    #[cfg(feature = "raft")]
+    Sealing {
+        offset: Offset,
+        generation: u64,
+    },
 }
 
 impl LogInner {
@@ -309,6 +319,12 @@ impl LogInner {
         if gone() {
             return Ok(Err(self.segments.read().tail_offset()));
         }
+        // A later generation is accepted under this lock, so none lands
+        // between the promise check below and the record. Taken before
+        // `segments`, which its other holders read.
+        #[cfg(feature = "raft")]
+        let _accepting =
+            matches!(condition, WriteIf::Sealing { .. }).then(|| self.replica_persisted.lock());
         let mut segments = self.segments.write();
         if segments.would_roll_within(records, self.roll_pending()) {
             // A refused record must not leave the log on a newer version.
@@ -336,6 +352,10 @@ impl LogInner {
                 sequence,
             } => self.batch_open_at_tail(&segments, producer_id, sequence),
             WriteIf::At(offset) => segments.tail_offset() == offset,
+            #[cfg(feature = "raft")]
+            WriteIf::Sealing { offset, generation } => {
+                segments.tail_offset() == offset && self.promises_seal(generation)
+            }
         };
         if !holds {
             return Ok(Err(segments.tail_offset()));
@@ -702,6 +722,9 @@ impl LogInner {
     /// one, and a later flush failing for the same underlying reason should not
     /// overwrite it.
     pub(super) fn poison(&self, reason: String) {
+        // First: a reopen that finds the log stopped must also find the
+        // directory counted, whatever fails below.
+        super::durable_mark::note_poisoned_dir(self.mark.dir());
         {
             let mut failure = self.failure.lock();
             if failure.is_some() {

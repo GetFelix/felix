@@ -431,22 +431,26 @@ The last frame on the event stream of a subscription that reached the `end` it
 asked for. The broker finishes the stream after it. Every record below `end` was
 delivered, or holds no event (a skip the event batches already report). It is
 sent only in answer to a `subscribe` that carried `end`, so no other client
-sees it. A stream that closes without it did not reach `end`.
+sees it. A stream that closes without it did not reach `end`. A subscription
+that lost records on the way ends with `subscription_lagged` instead, even when
+the broker had read up to `end`.
 
 ### SubscriptionLagged (server -> client)
 ```
 { "type": "subscription_lagged", "subscription_id": <u64>, "resume_from": <u64> }
 ```
 
-The last frame on the event stream of a durable-stream subscription whose queue
-on the broker dropped records. `resume_from` is the first offset that queue
-dropped, or where a resumed subscription's catch-up ended when the drops before
-that were filled from disk. Nothing at or above it was sent. Below it, a frame
-can still have been dropped after the queue, by the connection writer's queue
-for this subscription (`felix_sub_queue_dropped_total`), which ends nothing and
-is not reported. So a client resumes after the last event it received, and
-from `resume_from` only when it received none; felix-client's
-`ClusterSubscription` and `ShardedSubscription` do that. The broker sends it as
+The last frame on the event stream of a durable-stream subscription that had
+records dropped, either by its queue on the broker or by the connection
+writer's queue for it. `resume_from` is the lowest offset either dropped, or
+where a resumed subscription's catch-up ended when the drops before that were
+filled from disk. Nothing at or above it was sent: once the writer drops a
+frame, it drops every later one for that subscription too, and sends this frame
+in place of whatever would have ended the stream, `subscription_ended`
+included. A client can resume
+from `resume_from`, or after the last event it received, which is never past
+it; felix-client's `ClusterSubscription` and `ShardedSubscription` do the
+latter. The broker sends it as
 soon as the events queued before the drop are written, not when the next
 publish arrives, and finishes the stream after it.
 
@@ -1550,7 +1554,12 @@ records as batches of one, each under its own sequence. On Raft each record is
 a log entry of its own, and a leader change or a lapsed lease partway through
 a batch could leave some of its records written and not others. A re-send
 could not then be told from a new batch, so the batch is refused whole instead
-(#2524). See `docs/per-shard-raft.md`, "Idempotent publishes".
+(#2524). A re-send of a batch of several records that the log already holds is
+still answered: one held whole as a duplicate, and one a leader change cut
+short by writing only its missing records, answered from the first record's
+original offset. No client can start a multi-record batch on Raft yet: the lease-hole half
+of #2472 is done, and lifting the refusal is #2524. So no cut exists in any
+log today. See `docs/per-shard-raft.md`, "Idempotent publishes".
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch
@@ -1954,7 +1963,11 @@ last, after the owner if `0x0080` is set too:
 u64 offset
 ```
 
-A batch's offsets are contiguous, so the record at index `i` is at `offset + i`.
+A batch's offsets are contiguous, so the record at index `i` is at `offset + i`,
+with one exception: on a Raft shard, a re-sent idempotent batch that a leader
+change cut short is answered with its first record's original offset, and other
+records can lie between the part written before the cut and the rest. See
+`docs/per-shard-raft.md`, "Idempotent publishes".
 
 An ack carries an offset only if the broker sent it after the batch was
 written. The broker leaves the bit off when it has no offset to give: the stream

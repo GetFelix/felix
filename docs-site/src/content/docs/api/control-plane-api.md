@@ -392,6 +392,7 @@ take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded durable shard's log and place the shard afresh. **This loses data**: records only the old leader held are gone, acknowledged ones included. 409 `not_stranded` if the leader is serving or a replica can take over |
+| `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to the Raft engine. The shard is closed until its leader reports the seal or gives it up. 409 `raft_unavailable` until the fleet has finalized `shard_raft` (no release reports it yet), `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only |
 
 ```http
 POST /v1/shard-moves
@@ -421,7 +422,8 @@ A start is refused where placement would not make the move: 404
 `already_leader`, `at_capacity`, `already_moving`, `leader_unavailable` or
 `move_limit`. A cancel answers `cancel` before the fence and `retake` after
 it, when the leader that stopped serves again at a new generation; with no
-move in progress it is 409 `not_moving`. Under `replica_election`, a start is
+move in progress it is 409 `not_moving`. A start, a cancel and an abandon on
+a shard that switched to Raft are 409 `switched`. Under `replica_election`, a start is
 409 `set_change_pending` while a cut-over's change of replica set waits for
 the leader to report it on both sets; a cancel drops that change and keeps
 the old set (`pending_set_cancelled`).
@@ -693,6 +695,8 @@ The endpoints not covered above:
 | `POST /v1/nodes` | register a broker; the answer carries the heartbeat interval, the expiry timeout and the enabled fleet features | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration, plus `"suspects"`, the leaders it cannot reach, when there are any | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/replica-status` | a leader reports which replicas hold each shard it leads, which failover reads to pick a successor, and per shard `by_round` when it serves without its lease, which placement needs before it acts on its followers' word (kept only when the body's `incarnation` is the node's current one); 409 if any shard's report was refused | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/seal-report` | a seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/seal-give-up` | a seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on | `node.manage` over the node |
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |
 | `GET /v1/shard-assignments/{snapshot,changes}` | the assignment feed brokers follow | `node.view:cluster:*` |
 | `GET /v1/regions`, `GET /v1/regions/{region_id}` | the region this control plane serves (`FELIX_REGION_ID`, default `local`) | none |
