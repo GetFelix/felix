@@ -30,7 +30,7 @@
 (*                                                                         *)
 (*   NoReadBelowFloor  -- a leader serving reads (it has applied every     *)
 (*                        committed entry) serves no record below the      *)
-(*                        floor of the committed log.                      *)
+(*                        highest floor any live member ever had.          *)
 (*   NoAckedLoss       -- every member holds every committed record at or  *)
 (*                        above the committed floor, up to the end of its  *)
 (*                        log. No purge and no install removes one.        *)
@@ -39,8 +39,9 @@
 (*   TablesAgree       -- every member's tables are the fold of the log    *)
 (*                        up to the entry it has applied, across purges,   *)
 (*                        installs and restarts.                           *)
-(*   OffsetNeverReused -- a re-form never gives out again an offset that a *)
-(*                        copy it read held, purged or trimmed below.      *)
+(*   OffsetNeverReused -- a re-form never gives out again a committed      *)
+(*                        offset that a copy it read held or installed a   *)
+(*                        snapshot or floor for (a history variable).      *)
 (*   CatchUpPossible   -- a member behind the leader's purge can install   *)
 (*                        the leader's snapshot. Not safety: a member that *)
 (*                        fails it is stuck until a later purge.           *)
@@ -58,8 +59,10 @@
 (*                        tables are the member's current ones.            *)
 (*   ReformCarriesFloor = FALSE -- a re-form keeps each copy's own floor,  *)
 (*                        not the highest floor it read.                   *)
+(*   ReformStoresFloor = FALSE -- the re-form raises the floor in memory   *)
+(*                        only, so a restart loses it.                     *)
 (*   ReformReads          -- what a re-form reads of a copy: "full" is its *)
-(*                        last entry, purged id and floor - 1; "purged"    *)
+(*                        last entry, purged id and floor; "purged"        *)
 (*                        leaves the floor out; "entries" reads the last   *)
 (*                        entry only, so an empty log reads as nothing.    *)
 (*                                                                         *)
@@ -88,7 +91,8 @@ CONSTANTS
     SnapAtApplied,
     TablesAtApplied,
     ReformReads,
-    ReformCarriesFloor
+    ReformCarriesFloor,
+    ReformStoresFloor
 
 ASSUME
     /\ Voters \subseteq Members /\ Voters # {}
@@ -97,6 +101,7 @@ ASSUME
     /\ PurgeBelowFloorRule \in BOOLEAN /\ InstallRule \in BOOLEAN
     /\ LeaderCaps \in BOOLEAN /\ SnapAtApplied \in BOOLEAN
     /\ TablesAtApplied \in BOOLEAN /\ ReformCarriesFloor \in BOOLEAN
+    /\ ReformStoresFloor \in BOOLEAN
     /\ ReformReads \in {"full", "purged", "entries"}
 
 VARIABLES
@@ -113,10 +118,14 @@ VARIABLES
     cpFloor,  \* the control plane's offset floor: a commit a leader reported
     reused,   \* history: a re-form gave out an offset a read copy vouched for
     installed, \* history: the members that installed a snapshot
+    given,    \* history, per member: the highest committed offset it held or
+              \* installed a snapshot or floor for
+    hiFloor,  \* history, per member: the highest floor it ever had
     trims, changes, restarts, reforms
 
 vars == <<log, commit, leader, live, len, purged, applied, floor, tbl, snap,
-          cpFloor, reused, installed, trims, changes, restarts, reforms>>
+          cpFloor, reused, installed, given, hiFloor, trims, changes, restarts,
+          reforms>>
 
 Symm == Permutations(Voters) \cup Permutations(Members \ Voters)
 
@@ -133,8 +142,11 @@ Recs(lo, hi) == Cardinality({i \in lo..hi : log[i].kind = "rec"})
 \* The floor of the trims in log[1..hi].
 FloorUpTo(hi) == Max({1} \cup {log[i].f : i \in {j \in 1..hi : log[j].kind = "trim"}})
 
-\* Every member's floor came from a committed trim, applied or installed.
-CommittedFloor == Max({FloorUpTo(commit)} \cup {floor[m] : m \in live})
+\* Every floor a live member ever had came from a committed trim. A restart
+\* that loses a floor does not lower this.
+CommittedFloor == Max({FloorUpTo(commit)} \cup {hiFloor[m] : m \in live})
+
+RaiseHiFloor == hiFloor' = [k \in Members |-> Max({hiFloor[k], floor'[k]})]
 
 NoSnap == [idx |-> 0, floor |-> 1, tbl |-> 0]
 
@@ -154,6 +166,8 @@ Init ==
     /\ cpFloor = 0
     /\ reused = FALSE
     /\ installed = {}
+    /\ given = [m \in Members |-> 0]
+    /\ hiFloor = [m \in Members |-> 1]
     /\ trims = 0 /\ changes = 0 /\ restarts = 0 /\ reforms = 0
 
 AppendEntry(e) ==
@@ -165,7 +179,7 @@ AppendEntry(e) ==
 Write ==
     /\ AppendEntry(Rec)
     /\ UNCHANGED <<commit, leader, live, purged, applied, floor, tbl, snap,
-                   cpFloor, reused, installed, trims, changes, restarts, reforms>>
+                   cpFloor, reused, installed, trims, changes, restarts, reforms, given, hiFloor>>
 
 \* The leader's retention driver proposes a floor at or below its tail,
 \* above the floor it has applied.
@@ -175,7 +189,7 @@ ProposeTrim(f) ==
     /\ AppendEntry(Trim(f))
     /\ trims' = trims + 1
     /\ UNCHANGED <<commit, leader, live, purged, applied, floor, tbl, snap,
-                   cpFloor, reused, installed, changes, restarts, reforms>>
+                   cpFloor, reused, installed, changes, restarts, reforms, given, hiFloor>>
 
 \* The leader sends a follower its next entry, which it still holds.
 Replicate(n) ==
@@ -183,8 +197,9 @@ Replicate(n) ==
     /\ len[n] < Len(log)
     /\ len[n] + 1 > purged[leader]
     /\ len' = [len EXCEPT ![n] = @ + 1]
+    /\ given' = [given EXCEPT ![n] = Max({@, Min({len[n] + 1, commit})})]
     /\ UNCHANGED <<log, commit, leader, live, purged, applied, floor, tbl, snap,
-                   cpFloor, reused, installed, trims, changes, restarts, reforms>>
+                   cpFloor, reused, installed, trims, changes, restarts, reforms, hiFloor>>
 
 \* The leader has purged the follower's next entry: it sends its snapshot.
 Installable(s, n) ==
@@ -200,6 +215,8 @@ Install(n) ==
     /\ purged' = [purged EXCEPT ![n] = s.idx]
     /\ applied' = [applied EXCEPT ![n] = s.idx]
     /\ floor' = [floor EXCEPT ![n] = IF s.floor > @ THEN s.floor ELSE @]
+    /\ RaiseHiFloor
+    /\ given' = [given EXCEPT ![n] = Max({@, s.idx, s.floor})]
     /\ tbl' = [tbl EXCEPT ![n] = s.tbl]
     /\ snap' = [snap EXCEPT ![n] = s]
     /\ installed' = installed \cup {n}
@@ -214,15 +231,16 @@ Commit(i) ==
     /\ i \in (commit + 1)..Len(log)
     /\ Quorum(i)
     /\ commit' = i
+    /\ given' = [m \in Members |-> Max({given[m], Min({len[m], i})})]
     /\ UNCHANGED <<log, leader, live, len, purged, applied, floor, tbl, snap,
-                   cpFloor, reused, installed, trims, changes, restarts, reforms>>
+                   cpFloor, reused, installed, trims, changes, restarts, reforms, hiFloor>>
 
 \* A leader reports its commit to the control plane.
 ReportFloor ==
     /\ cpFloor < commit
     /\ cpFloor' = commit
     /\ UNCHANGED <<log, commit, leader, live, len, purged, applied, floor, tbl,
-                   snap, reused, installed, trims, changes, restarts, reforms>>
+                   snap, reused, installed, trims, changes, restarts, reforms, given, hiFloor>>
 
 Apply(m) ==
     LET i == applied[m] + 1 IN
@@ -231,11 +249,13 @@ Apply(m) ==
     /\ applied' = [applied EXCEPT ![m] = i]
     /\ floor' = [floor EXCEPT ![m] =
           IF log[i].kind = "trim" /\ log[i].f > @ THEN log[i].f ELSE @]
+    /\ RaiseHiFloor
     /\ tbl' = [tbl EXCEPT ![m] = IF log[i].kind = "rec" THEN @ + 1 ELSE @]
     /\ UNCHANGED <<log, commit, leader, live, len, purged, snap, cpFloor,
-                   reused, installed, trims, changes, restarts, reforms>>
+                   reused, installed, trims, changes, restarts, reforms, given>>
 
-\* A member purges its log up to p and writes its snapshot.
+\* A member purges its log up to p and writes its snapshot. It builds the
+\* tables as of p from its previous snapshot and the log it still holds.
 Purge(m, p) ==
     /\ m \in live
     /\ p \in (purged[m] + 1)..applied[m]
@@ -245,9 +265,10 @@ Purge(m, p) ==
     /\ snap' = [snap EXCEPT ![m] =
           [idx |-> IF SnapAtApplied THEN applied[m] ELSE p,
            floor |-> floor[m],
-           tbl |-> IF SnapAtApplied \/ TablesAtApplied THEN tbl[m] ELSE Recs(1, p)]]
+           tbl |-> IF SnapAtApplied \/ TablesAtApplied THEN tbl[m]
+                  ELSE snap[m].tbl + Recs(snap[m].idx + 1, p)]]
     /\ UNCHANGED <<log, commit, leader, live, len, applied, floor, tbl, cpFloor,
-                   reused, installed, trims, changes, restarts, reforms>>
+                   reused, installed, trims, changes, restarts, reforms, given, hiFloor>>
 
 \* A member restarts: its state machine is its snapshot again, and it
 \* applies its log from there.
@@ -259,7 +280,7 @@ Restart(m) ==
     /\ tbl' = [tbl EXCEPT ![m] = snap[m].tbl]
     /\ restarts' = restarts + 1
     /\ UNCHANGED <<log, commit, leader, live, len, purged, snap, cpFloor, reused,
-                   installed, trims, changes, reforms>>
+                   installed, trims, changes, reforms, given, hiFloor>>
 
 \* A voter holding the committed log is elected. Entries past its log are
 \* dropped; they were never committed.
@@ -272,19 +293,18 @@ ChangeLeader(n) ==
     /\ leader' = n
     /\ changes' = changes + 1
     /\ UNCHANGED <<commit, live, purged, applied, floor, tbl, snap, cpFloor,
-                   reused, installed, trims, restarts, reforms>>
+                   reused, installed, trims, restarts, reforms, given, hiFloor>>
 
-\* What a re-form reads as the last offset a copy vouches for.
+\* What a re-form reads as the last offset a copy vouches for. A floor f
+\* vouches for f itself: a trim names a floor at or below the tail, so the
+\* record at f was committed before the trim was.
 ReadLast(m) ==
     CASE ReformReads = "full" ->
-           Max({len[m], purged[m], floor[m] - 1})
+           Max({len[m], purged[m], IF floor[m] > 1 THEN floor[m] ELSE 0})
       [] ReformReads = "purged" ->
            Max({len[m], purged[m]})
       [] ReformReads = "entries" ->
            IF len[m] > purged[m] THEN len[m] ELSE 0
-
-\* Every offset a copy knows was given out.
-Vouched(m) == Max({len[m], purged[m], floor[m] - 1})
 
 \* The operator re-forms the group from the copies in R. Each read copy is
 \* a voter of the new epoch; the leader is one that holds the base, and the
@@ -300,7 +320,8 @@ Reform(R) ==
     /\ R # {} /\ R \subseteq live /\ R \cap Voters # {}
     /\ l \in Voters
     /\ log' = SubSeq(log, 1, keep) \o [i \in 1..(b - keep) |-> Gap]
-    /\ reused' = (reused \/ \E m \in R : Vouched(m) > b)
+    /\ reused' = (reused \/ \E m \in R : given[m] > b)
+    /\ given' = [m \in Members |-> Min({given[m], b})]
     /\ live' = R
     /\ leader' = l
     /\ commit' = b
@@ -310,8 +331,16 @@ Reform(R) ==
     /\ floor' = IF ReformCarriesFloor
               THEN [m \in Members |-> IF m \in R THEN Max({floor[k] : k \in R}) ELSE floor[m]]
               ELSE floor
+    /\ RaiseHiFloor
+    \* The re-form writes each read copy a snapshot at its purge point with the
+    \* floor it starts at, so a restart keeps it.
+    /\ snap' = IF ReformCarriesFloor /\ ReformStoresFloor
+              THEN [m \in Members |-> IF m \in R
+                                      THEN [snap[m] EXCEPT !.floor = floor'[m]]
+                                      ELSE snap[m]]
+              ELSE snap
     /\ reforms' = reforms + 1
-    /\ UNCHANGED <<tbl, snap, cpFloor, installed, trims, changes, restarts>>
+    /\ UNCHANGED <<tbl, cpFloor, installed, trims, changes, restarts>>
 
 Next ==
     \/ Write
