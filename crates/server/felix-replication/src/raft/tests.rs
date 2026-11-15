@@ -1363,6 +1363,7 @@ fn a_commands_token_is_not_serialized() {
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
         [
+            "commit",
             "expected",
             "headers",
             "payload",
