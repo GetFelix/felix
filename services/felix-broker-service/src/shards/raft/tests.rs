@@ -1791,6 +1791,54 @@ async fn a_request_off_the_leader_is_routed_to_it() {
     EngineShards::shutdown(&*outside.shards).await;
 }
 
+/// **A restarted follower forwards to the leader its stored vote names,
+/// before it hears from it.** It serves no reader until it does: the hint
+/// is enough to forward to, not to read from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_follower_forwards_before_it_hears_its_leader() {
+    let (net, mut members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let Member {
+        name, root, shards, ..
+    } = members.remove((leader + 1) % 3);
+    let leader = members
+        .iter()
+        .find(|member| member.shards.leading(&orders).is_some())
+        .expect("the leader");
+    EngineShards::shutdown(&*shards).await;
+    net.forget(name);
+    // Back up, but nothing reaches it, so it takes no append.
+    net.cut.lock().insert(name.to_string());
+    let restarted = Member::start_on(
+        &net,
+        name,
+        root,
+        INCARNATION,
+        ConsistencyLevel::Quorum,
+        FsyncMode::None,
+        false,
+    )
+    .await;
+    restarted
+        .shards
+        .take(&mut assignments([replicated()]))
+        .await;
+    let to_leader = Dispatch::Forward {
+        node_id: leader.name.to_string(),
+        advertise_addr: addr_of(leader.name).expect("addr"),
+        generation: term,
+        incarnation: 0,
+    };
+    until("the restarted follower forwards to its leader", || {
+        EngineShards::dispatch(&*restarted.shards, &orders, &addr_of) == Some(to_leader.clone())
+    })
+    .await;
+    assert!(!EngineShards::serves_reads(&*restarted.shards, &orders));
+    stop(&members).await;
+    EngineShards::shutdown(&*restarted.shards).await;
+}
+
 /// **A placed member that is not open yet answers not ready**, and never
 /// falls through to the hybrid's routes.
 #[tokio::test]

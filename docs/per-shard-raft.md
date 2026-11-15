@@ -1561,9 +1561,51 @@ leader's last message whether the group is idle or not. At the default
 idle interval of 2 s the follower waits three intervals, 6 s plus its
 spread, so a dead leader of an idle group is noticed in 6 to 7 s.
 
-Pre-vote is off, as it is by default in openraft. A member cut off from
-its leader therefore raises the term when it stands. That is unchanged by
-idle groups and is a separate decision.
+Pre-vote is on (openraft's `enable_pre_vote`; off by default there). A
+member that stands first asks the others whether they would vote for it,
+and raises its term only when a majority says yes. A member nobody can hear,
+such as one whose outbound connections fail, keeps its term. When it is
+heard again it follows the leader instead of deposing it with a higher term
+(#2630). Three cases skip the question and stand at once: a leadership
+transfer's target (so a transfer costs at most one term), a restarted
+leader whose stored vote is its own (`enable_leader_restore`), and a sole
+voter.
+
+openraft refuses a pre-vote only inside its own lease of `election_max`
+(2 s) from the last message a member took. In an idle group that lease
+ends just before each idle heartbeat, so a member coming back could still
+win a pre-vote there. Felix closes that gap. A follower refuses a pre-vote
+for as long as it would wait for its leader itself (6 to 7 s at the idle
+interval), and a leader refuses one while a majority answered it within
+three idle intervals. The refusal is an ordinary not-granted answer, so
+the candidate still counts the broker as reachable, adopts a higher term
+or backs off for a longer log as openraft does, and asks again at its
+next timeout. A member that takes a leadership transfer stops counting
+on the old leader, so if the target never stands, the old leader's own
+pre-vote at the transfer's expiry is granted at once. After a leader
+dies, the first follower to time out may have to wait for the others to
+time out too, which still falls inside the 6 to 7 s above.
+
+Because a cut-off member keeps its term, openraft keeps naming the leader it
+last heard, and it never steps a leader down for losing its majority. Felix
+serves readers only from a member that is still in touch with its group:
+
+- A follower counts on its leader only while it would refuse a pre-vote
+  for it.
+- A leader counts as heard while a majority answered it within three idle
+  intervals (6 s at the default). A new term no majority has answered yet
+  is timed from when the leader was first seen. A sole voter needs nobody.
+
+Past that, the member ends its subscribers and refuses new ones with
+`not_ready`. A follower still forwards writes to the leader openraft names,
+so one that has just restarted forwards at once, before it hears that
+leader. A forward to a leader that is gone fails, and the client retries.
+
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return`,
+> `a_leader_no_majority_answers_names_no_leader`,
+> `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease` and
+> `an_idle_group_elects_soon_after_a_transfer_to_a_dead_target`.
 
 ### Many groups electing at once
 
@@ -2317,8 +2359,12 @@ restarted member cannot help elect anyone but the leader it followed
 leader stands as it starts. If a follower is already open it grants, and
 the group has its leader back within one vote round: 16 ms in the
 runtime's tests, against 2.1 to 3.2 s when the followers dropped the
-request. If the leader opens first, its request finds nobody, and it asks
-again at its next election timeout: 1.3 to 2.1 s over five runs.
+request. If the leader opens first, its request finds nobody. It asks
+again at its next election timeout with a pre-vote, which the followers
+refuse until their own hold and openraft's start-up lease end, about
+`election_max` after they open. The group then elects at the next term up:
+2.2 to 4.0 s over eight runs. Without pre-vote the retry was a vote, which
+the followers let through, at 1.3 to 2.1 s.
 
 **As built.** `Group::open` reads the vote from the log before openraft
 starts, and the voters once it has. Until `election_max` has passed since the open, the
@@ -2343,7 +2389,8 @@ member of a group being formed.
 > `a_restarted_member_alone_in_a_set_not_committed_is_held`,
 > `a_held_member_grants_the_leader_its_stored_vote_names`,
 > `a_later_leaders_append_ends_what_the_stored_vote_lets_through`,
-> `a_group_restarted_whole_has_its_leader_back_within_one_vote_round` and
+> `a_group_restarted_whole_has_its_leader_back_within_one_vote_round`,
+> `a_group_restarted_whole_with_its_leader_first_has_a_leader_within_its_holds` and
 > `a_held_member_handed_the_leadership_stands_and_is_ticked`.
 
 ### Reads
@@ -2660,6 +2707,7 @@ On a broker that holds a member:
 | leads, and its stream is at the committed tail | served here, at the term |
 | follows a leader | forwarded to that leader |
 | has no leader, or leads and is still moving to the tail | answered `shard_unavailable` (`not_ready`), which a client retries |
+| leads, but no majority answers it | a publish is served here, where it waits for its commit; a subscribe is answered `not_ready` |
 
 A publish served here is proposed in the order the shard's publishes
 arrive. On a `Quorum` stream it is answered at its commit under `on_commit`,
@@ -2732,7 +2780,11 @@ fence are not asked.
 - A member with no known leader serves no subscriber: a new subscribe is
   refused with a retryable `not_ready`, and the ones it has are ended on
   the next feed pass, since a member cut off from its group may be
-  reading a log that group has moved past.
+  reading a log that group has moved past. A publish there is still
+  forwarded to the leader openraft last named, but a subscribe is not
+  redirected to it, because that leader may be the one that is gone. A
+  restarted follower therefore answers a new subscribe with `not_ready`
+  until it hears its leader, up to one idle heartbeat.
 - A leader that is deposed ends the subscribers of its term, because
   records it had not seen committed may be replaced, and a gap would read
   as a drop. They can subscribe again to the same broker, which now serves
@@ -2746,8 +2798,10 @@ fence are not asked.
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_raft_shard_is_subscribed_to_on_its_leader_and_followers`,
 > `a_follower_behind_a_resume_offset_redirects_to_its_leader`,
-> `a_member_with_no_leader_serves_no_reader`;
+> `a_member_with_no_leader_serves_no_reader`,
+> `a_leader_no_majority_answers_serves_no_reader`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_restarted_follower_forwards_before_it_hears_its_leader`,
 > `a_deposed_leader_lets_its_subscribers_go`;
 > `crates/server/felix-broker/src/broker/shards/tests.rs`,
 > `a_follower_delivers_what_is_committed_and_no_further`,

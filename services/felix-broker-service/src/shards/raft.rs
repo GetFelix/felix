@@ -846,8 +846,10 @@ impl EngineShards for RaftShards {
         if let Some(term) = self.leading(key) {
             return Some(Dispatch::Local { generation: term });
         }
+        // The hint, not the heard leader: a restarted follower forwards at
+        // once, and a forward to a leader that is gone fails and is retried.
         let leader = status
-            .leader
+            .leader_hint
             .filter(|leader| *leader.broker != *self.local)
             .map(|leader| leader.broker);
         Some(match leader {
@@ -872,6 +874,14 @@ impl EngineShards for RaftShards {
         self.runtime
             .status(key)
             .is_some_and(|status| status.leader.is_some())
+    }
+
+    fn leads_unheard(&self, key: &ShardKey) -> bool {
+        self.leading(key).is_some()
+            && self
+                .runtime
+                .status(key)
+                .is_some_and(|status| status.leader.is_none())
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
