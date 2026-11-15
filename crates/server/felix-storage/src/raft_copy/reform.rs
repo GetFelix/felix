@@ -18,12 +18,13 @@ pub struct KeptLog {
     pub path: std::path::PathBuf,
     /// The copy id it held, if it had one.
     pub copy: Option<u64>,
-    /// The last index it holds as an open reads it (a tail past its last
-    /// sync that does not decode is cut), or its purged id if that is
+    /// The last index it holds as an open reads it (a tail that does not
+    /// decode is cut), or its purged id if that is
     /// higher. None for a directory with neither.
     pub last: Option<u64>,
     /// The last index it can vouch for as committed: its saved commit, cut
-    /// to its last entry as an open cuts it. None when it saved no commit, or
+    /// to the last entry that decodes as an open cuts it, or its purged id
+    /// if that is higher. None when it saved no commit and purged nothing, or
     /// when the entry there is not the committed one's, which an open would
     /// not take either.
     pub committed: Option<u64>,
@@ -66,6 +67,9 @@ pub fn read_kept(path: &Path, index_spacing_bytes: u64) -> io::Result<KeptLog> {
             _ => None,
         },
     };
+    // Only committed entries are purged, so the purged id is committed even
+    // when the saved commit is absent or below it, as an open reads it.
+    let committed = committed.max(held.purged);
     Ok(KeptLog {
         path: path.to_path_buf(),
         copy: None,

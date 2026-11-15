@@ -43,7 +43,7 @@ async fn saved_commit_past_the_log() -> TempDir {
 }
 
 /// A kept copy is read without an open, so its saved commit is cut at its
-/// last synced entry here, to what an open of the same bytes reads.
+/// last entry that decodes here, to what an open of the same bytes reads.
 #[tokio::test]
 async fn a_kept_saved_commit_past_its_last_entry_is_cut_at_the_entry() {
     let dir = saved_commit_past_the_log().await;
@@ -163,4 +163,80 @@ async fn with_no_reservation_the_floor_and_base_decide() {
     std::fs::create_dir_all(&dir).expect("dir");
     assert_eq!(first_free_index(&dir, None, None).expect("pad"), 0);
     assert_eq!(first_free_index(&dir, None, Some(7)).expect("pad"), 8);
+}
+
+/// A purge only reaches committed entries, so a kept copy that purged
+/// through 20 vouches for 20 whether its saved commit is behind that or
+/// was never saved, as an open reads it.
+#[tokio::test]
+async fn a_kept_copy_vouches_for_its_purged_id_when_its_saved_commit_is_behind() {
+    for saved in [Some(5), None] {
+        let dir = tempfile::tempdir().expect("dir");
+        let mut raft = open(&dir);
+        let entries: Vec<_> = (0..=30).map(|index| normal(1, index, "x")).collect();
+        append_flushed(&mut raft, &entries).await;
+        if let Some(index) = saved {
+            raft.save_committed(Some(log_id(1, index)))
+                .await
+                .expect("save");
+        }
+        raft.purge(log_id(1, 20)).await.expect("purge");
+        raft.disk_log().close().await.expect("close");
+
+        let kept = read_kept(dir.path(), SPACING).expect("read");
+        assert_eq!(
+            (kept.last, kept.committed),
+            (Some(30), Some(20)),
+            "{saved:?}"
+        );
+    }
+}
+
+/// Generation 0 is no term, so a saved commit stamped with it names no
+/// entry, even where the record there is unstamped too.
+#[tokio::test]
+async fn a_kept_commit_saved_with_no_generation_vouches_for_nothing() {
+    let dir = tempfile::tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    let records: Vec<_> = (0..4u8)
+        .map(|n| crate::log::AppendRecord {
+            payload: bytes::Bytes::from(vec![n]),
+            timestamp_micros: 1,
+            mark: crate::log::RecordMark::None,
+            publisher: None,
+            headers: None,
+        })
+        .collect();
+    log.append_v9_for_tests(&records, 0).await.expect("append");
+    log.save_committed(2, 0).await.expect("save");
+    log.close().await.expect("close");
+
+    let kept = read_kept(dir.path(), SPACING).expect("read");
+    assert_eq!((kept.last, kept.committed), (Some(3), None));
+}
+
+/// A kept directory that cannot be read fails the whole read.
+#[tokio::test]
+async fn an_unreadable_kept_directory_fails_kept_logs() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let (_copies, old, new) = rotated(&root, 2).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    std::fs::write(kept.join("raft-purged"), b"garbage").expect("damage");
+
+    assert!(kept_logs(&dir, SPACING).is_err());
+    new.log.close().await.expect("close");
+}
+
+/// A reservation that does not decode cannot be padded around, so the
+/// first free index is an error, never a guess.
+#[tokio::test]
+async fn a_damaged_reservation_fails_the_first_free_index() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    std::fs::create_dir_all(&dir).expect("dir");
+    reserved::store(&dir, 10).expect("reserve");
+    std::fs::write(dir.join("raft-reserved"), b"garbage").expect("damage");
+
+    assert!(first_free_index(&dir, Some(2), None).is_err());
 }

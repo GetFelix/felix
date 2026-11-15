@@ -28,6 +28,8 @@ pub(crate) struct Held {
     /// The last record it holds, or the purged id if that is higher. None for
     /// a directory with neither.
     pub(crate) last: Option<Offset>,
+    /// The purged id's index, which only committed entries reach.
+    pub(crate) purged: Option<Offset>,
     /// The last record and the generation stamped on it, None when it is
     /// unstamped. None for a directory with no record.
     pub(crate) last_record: Option<(Offset, Option<u64>)>,
@@ -61,6 +63,7 @@ pub(crate) fn read(dir: &Path, label: &str, index_spacing_bytes: u64) -> io::Res
     let purged = purged.map(|purged| purged.index);
     Ok(Held {
         lowest,
+        purged,
         last: last.map(|(offset, _)| offset).max(purged),
         last_record: last,
     })
