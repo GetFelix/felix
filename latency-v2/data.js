@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794774131918,
+  "lastUpdate": 1794776906827,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74910,6 +74910,72 @@ window.BENCHMARK_DATA = {
             "range": "879.19",
             "unit": "us",
             "extra": "trials: 5\nmedian: 551.00\nmean: 979.60\nstdev: 879.19\ncv: 89.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "be8fdeccc7907890fc424011d1f34b97ac028e9f",
+          "message": "formal(raft): model consumer groups on a Raft stream shard (#2446) (#2645)\n\n* formal(raft): model consumer groups on a Raft stream shard (#2446)\n\nFelixRaftGroups.tla models group writes as entries in the stream's own\nRaft log, folded on every member into one group table, with trackers\nbound to a term and hydrated after a read index and an apply wait.\nTracker-driven entries carry the index their tracker was hydrated at;\napply drops one below the group's last seek or the shard's last delete.\n\nFelixRaftGroups passes NoSkip, RedrivenOwed and IfNewKeepsServed\n(8,856,873 distinct states, depth 41, 28 s with 8 workers). Six broken\nconfigurations each drop one rule and find the trace: no seek index, no\ndelete watermark, no redriven set, if_new checking the table only,\ntrackers kept across terms, hydrating without the apply wait.\n\n* formal(raft): groups model fix round: shard-wide delete, applied-only table\n\nA delete of any group raises the shard's delete watermark, so placing one\nnow retires every tracker in the shard; the leader keeps a retired\ntracker's \"handed out\" bit until the term ends, for if_new. The leader\ndecides hydrate, redrive and seek from its applied table only, after\napplying its own last proposed entry. Acknowledgement history is a set of\nhyds and forgets those past the committed log at a change of leader, so a\nreused index cannot mask a skip.\n\nNew configurations: FelixRaftGroupsTwoChanges passes (30,289,252 distinct\nstates, depth 41, 101 s); DeleteKeepsTrackers and UserOpsBeforeOwnApply\nviolate RedrivenOwed; DeadAfterAdvance violates NoSkip. FelixRaftGroups\npasses at 12,407,589 distinct states, depth 38, 40 s.\n\n* formal(raft): groups model: creation index instead of retiring every tracker\n\nEach live group keeps a creation index (its last seek's index, or the\nhydrate index of the tracker whose first entry created it), and every\ntracker-driven entry carries the one of the group it serves. Apply drops\nan entry whose creation index differs from the live group's, or that\nnames an absent group with a creation index below the shard's last\ndelete. A delete now touches only its own group, so deleting one group\nno longer retires the others' trackers.\n\nFelixRaftGroups passes (6,645,375 distinct states, depth 38, 24 s) and so\ndoes FelixRaftGroupsTwoChanges (18,608,068, depth 41, 67 s).\nStaleByHydrateIndex keeps the earlier rule and violates RedrivenOwed;\nNoCreationIndex and NoDeleteWatermark violate NoSkip.\n\n* formal(raft): groups model: drop a tracker whose entry apply dropped; term in the creation token\n\nA group with nothing committed whose tracker hydrated before another group's\ndelete had every entry dropped by the delete watermark, and the leader served\non from that tracker for the rest of the term, losing its dead letters. The\nleader now drops its tracker when it applies a dropped entry carrying that\ntracker's token. TrackerHeard checks it; FelixRaftGroupsNoRefreshOnDrop shows\nthe previous rule violates it. The creation token carries the term, so a seek\ndropped at a change of leader never matches a later seek at the same index.\n\n* docs(formal): what TrackerHeard proves, and PR 4's obligations (#2446)",
+          "timestamp": "2026-11-15T20:59:57Z",
+          "tree_id": "b77a4c4322326460e739b25d68971193ee068c3c",
+          "url": "https://github.com/GetFelix/felix/commit/be8fdeccc7907890fc424011d1f34b97ac028e9f"
+        },
+        "date": 1794776894810,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 105,
+            "range": "4.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 105.80\nstdev: 4.97\ncv: 4.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 150,
+            "range": "11.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 153.20\nstdev: 11.43\ncv: 7.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 182,
+            "range": "528.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 182.00\nmean: 514.80\nstdev: 528.42\ncv: 102.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 130,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 130.20\nstdev: 0.84\ncv: 0.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 275,
+            "range": "19.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 284.20\nstdev: 19.58\ncv: 6.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 513,
+            "range": "142.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 513.00\nmean: 542.60\nstdev: 142.29\ncv: 26.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
