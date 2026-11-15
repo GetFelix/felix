@@ -112,10 +112,12 @@ pub struct RaftIdempotentPublish(felix_replication::raft::IdempotentPublish);
 #[cfg(feature = "raft")]
 impl RaftIdempotentPublish {
     /// Wait for the commit of the batch, or of the one the log already
-    /// held under its sequence. Returns the first record's offset.
-    pub async fn complete(self) -> Result<Option<u64>, CommitError> {
+    /// held under its sequence. Returns the first and the last record's
+    /// offsets. A batch a leader change cut can have other records between
+    /// them.
+    pub async fn complete(self) -> Result<Option<(u64, u64)>, CommitError> {
         let idempotent = self.0.complete().await?;
-        Ok(idempotent.outcome.offsets.map(|(first, _)| first))
+        Ok(idempotent.outcome.offsets)
     }
 }
 
@@ -125,7 +127,7 @@ pub enum RaftIdempotentPublish {}
 
 #[cfg(not(feature = "raft"))]
 impl RaftIdempotentPublish {
-    pub async fn complete(self) -> Result<Option<u64>, CommitError> {
+    pub async fn complete(self) -> Result<Option<(u64, u64)>, CommitError> {
         match self {}
     }
 }

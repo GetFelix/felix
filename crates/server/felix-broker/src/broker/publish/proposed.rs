@@ -124,10 +124,11 @@ impl Broker {
         }
     }
 
-    /// Whether a stream on an engine takes an idempotent batch of `records`
-    /// records: [`BrokerError::NotOnEngineStream`] for more than one. For a
-    /// caller to refuse the batch before it waits for the producer's turn;
-    /// [`Self::propose_idempotent`] refuses a new one too.
+    /// Whether a stream on an engine takes a new idempotent batch of
+    /// `records` records: [`BrokerError::NotOnEngineStream`] for more than
+    /// one. [`Self::propose_idempotent`] asks after its look at the log, so
+    /// a re-send of a batch the log holds whole or in part is still
+    /// answered. A caller must not refuse a batch by this before then.
     pub fn engine_takes_idempotent(records: usize) -> Result<()> {
         if records > 1 {
             return Err(BrokerError::NotOnEngineStream {

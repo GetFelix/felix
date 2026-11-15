@@ -579,14 +579,13 @@ impl LaneWork {
                 ..
             } => {
                 // Refused here, not at its turn, so a batch that is never
-                // written waits for nothing and holds nothing up.
-                let refused = match job.headers {
-                    Some(_) => Err(felix_broker::BrokerError::NotOnEngineStream {
+                // written waits for nothing and holds nothing up. The
+                // number of records is the engine's to check: a batch of
+                // several may be one the log already holds.
+                if job.headers.is_some() {
+                    let err = felix_broker::BrokerError::NotOnEngineStream {
                         what: "record headers",
-                    }),
-                    None => Broker::engine_takes_idempotent(job.payloads.len()),
-                };
-                if let Err(err) = refused {
+                    };
                     let shard = shard.clone();
                     settle(
                         job.response,
@@ -677,8 +676,14 @@ impl LaneWork {
         match proposed {
             Ok(proposed) => {
                 self.work.spawn(async move {
-                    let result = proposed.complete().await.map_err(Into::into);
-                    settle(job.response, job.acked_on_enqueue, Some(&shard), result);
+                    let result = proposed.complete().await;
+                    let result = result.map(|offsets| offsets.map(|(first, _)| first));
+                    settle(
+                        job.response,
+                        job.acked_on_enqueue,
+                        Some(&shard),
+                        result.map_err(Into::into),
+                    );
                 });
             }
             Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
