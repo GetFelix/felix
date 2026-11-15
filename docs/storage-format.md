@@ -558,7 +558,7 @@ a delete. The record has no tag, so the step to the next record is still
 u8   version (1)
 u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
          4 discard, 5 seek, 6 delete
-u32  group name length, then the name (UTF-8)
+u32  group name length, then the name (UTF-8, never empty)
 creation token                                    (ops 0 to 4)
   u64  term
   u64  index

@@ -37,7 +37,7 @@ fn every_op() -> Vec<GroupOp> {
 #[test]
 fn every_op_round_trips() {
     for op in every_op() {
-        for group in ["", "billing", "ünïcode"] {
+        for group in ["g", "billing", "ünïcode"] {
             let entry = GroupEntry {
                 group: group.to_owned(),
                 op,
@@ -154,5 +154,23 @@ fn only_tracker_writes_carry_a_token() {
     for op in every_op() {
         let carries = !matches!(op, GroupOp::Seek { .. } | GroupOp::Delete);
         assert_eq!(op.creation().is_some(), carries, "{op:?}");
+    }
+}
+
+/// An entry naming no group is refused: no group op is valid without one,
+/// so such a record can only be damage.
+#[test]
+fn an_empty_group_name_is_refused() {
+    for op in every_op() {
+        let bytes = GroupEntry {
+            group: String::new(),
+            op,
+        }
+        .encode();
+        let refused = GroupEntry::decode(&bytes).expect_err("refused");
+        assert!(
+            matches!(refused, BrokerError::MalformedGroupEntry(_)),
+            "{op:?}: {refused}"
+        );
     }
 }
