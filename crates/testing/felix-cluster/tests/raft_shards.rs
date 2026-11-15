@@ -55,8 +55,24 @@ fn copies(held: &[Vec<u8>], payload: &[u8]) -> usize {
 /// The broker that leads the shard: the one that reports serving its Raft
 /// term. A follower accepts subscribes too, so a subscribe cannot tell them
 /// apart. Waits until exactly one broker in `among` says so, since a deposed
-/// leader's gauge trails by one feed pass. Only brokers in `among` are asked.
+/// leader's gauge trails by one feed pass, and until it still says so a
+/// little later: the broker that forms a group leads it only until it hands
+/// the first leadership to placement's leader. Only brokers in `among` are
+/// asked.
 async fn leader_among(cluster: &Cluster, among: &[String]) -> String {
+    loop {
+        let first = one_leader(cluster, among).await;
+        tokio::time::sleep(LEADER_SETTLES).await;
+        if one_leader(cluster, among).await == first {
+            return first;
+        }
+    }
+}
+
+/// How long a leader must keep leading before [`leader_among`] names it.
+const LEADER_SETTLES: Duration = Duration::from_secs(2);
+
+async fn one_leader(cluster: &Cluster, among: &[String]) -> String {
     felix_cluster::wait::until_some(ELECTED_WITHIN, "a broker to lead the shard", || async {
         let mut leading = Vec::new();
         for node in among {
