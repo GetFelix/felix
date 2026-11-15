@@ -73,6 +73,7 @@ fn batch(payload: &Bytes) -> Batch {
         ack: AckAt::Written,
         term: None,
         producer: None,
+        expected: None,
     }
 }
 
