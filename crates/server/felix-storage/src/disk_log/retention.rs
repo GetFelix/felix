@@ -406,9 +406,10 @@ impl LogInner {
         producers: &super::producers::ProducerState,
     ) -> Result<()> {
         let mut saved = self.forgotten_saved.lock();
-        if *saved != *producers.forgotten() {
-            super::producers::store_forgotten(&self.dir, producers.forgotten())?;
-            saved.clone_from(producers.forgotten());
+        let current = producers.saved();
+        if *saved != current {
+            super::producers::store_forgotten(&self.dir, &current)?;
+            *saved = current;
         }
         Ok(())
     }

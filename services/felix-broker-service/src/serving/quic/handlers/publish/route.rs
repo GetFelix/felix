@@ -523,7 +523,8 @@ pub(crate) fn targets_durable(target: &Option<PublishTarget>) -> bool {
 
 /// True when a Raft group runs the shard this publish is written to here.
 ///
-/// Such a publish is answered at its commit whatever the ack settings say:
+/// Such a publish is answered at its commit (or a written majority on a relaxed
+/// `Quorum` stream) whatever the ack settings say:
 /// an answer on enqueue would promise a write the term may not live to make.
 pub(crate) fn targets_raft(publish_ctx: &PublishContext, target: &Option<PublishTarget>) -> bool {
     matches!(

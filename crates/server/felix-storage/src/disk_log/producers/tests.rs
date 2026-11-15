@@ -449,8 +449,9 @@ fn a_version_3_snapshot_reads_with_nothing_forgotten() {
     pieces(&mut state, 3, 0, 3, &[(0, 0), (1, 1)]);
     state.observe(2, RecordMark::None, 0);
     let current = encode(&state, 3);
-    // With no producers the forgotten count is the last four bytes.
-    let body = &current[SNAPSHOT_HEADER_LEN..current.len() - 4];
+    // With no producers the forgotten, evicted and carried counts are the
+    // last twelve bytes.
+    let body = &current[SNAPSHOT_HEADER_LEN..current.len() - 12];
     let mut bytes = current[..4].to_vec();
     bytes.extend_from_slice(&3u16.to_be_bytes());
     bytes.extend_from_slice(&current[6..20]);
@@ -480,7 +481,7 @@ fn forgotten_batches_round_trip() {
     assert_eq!(state.forgotten().get(&3), Some(&4));
 
     let bytes = encode(&state, 5);
-    assert_eq!(&bytes[4..6], &4u16.to_be_bytes());
+    assert_eq!(&bytes[4..6], &5u16.to_be_bytes());
     let (mut read, as_of) = decode(&bytes).expect("decodes");
     read.keeps_cuts = true;
     assert_eq!((read, as_of), (state.clone(), 5));
@@ -489,6 +490,18 @@ fn forgotten_batches_round_trip() {
     assert_eq!(decode_forgotten(&file).as_ref(), Some(state.forgotten()));
     *file.last_mut().expect("byte") ^= 1;
     assert_eq!(decode_forgotten(&file), None);
+
+    // The file also keeps the carried batches and the installed base, and
+    // one written before them carries every batch it forgot.
+    state.install(9, ForgottenCuts([(4, 1)].into_iter().collect()));
+    let saved = state.saved();
+    assert_eq!(saved.carried.get(&4), Some(&1));
+    let file = encode_saved(&saved);
+    assert_eq!(decode_saved(&file), Some(saved.clone()));
+    let old = decode_saved(&encode_forgotten(&saved.forgotten)).expect("decodes");
+    assert_eq!(old.carried, saved.forgotten);
+    assert!(old.installed.is_none());
+    assert_eq!(old.forgotten, saved.forgotten);
 }
 
 /// An open batch whose records a purge removed is refused the same way.
@@ -684,4 +697,23 @@ fn a_version_2_snapshot_reads_as_batches_in_one_run() {
     let rewritten = encode(&state, as_of);
     assert_eq!(&rewritten[4..6], &SNAPSHOT_VERSION.to_be_bytes());
     assert_eq!(decode(&rewritten), Some((state, as_of)));
+}
+
+/// A cut batch evicted past the bound is forgotten at once, but carried only
+/// once a purge passes its records: until then a copy that starts below it
+/// reads them itself.
+#[test]
+fn an_evicted_cut_is_carried_once_purged() {
+    let mut state = ProducerState::keeping_cuts();
+    let mut offset = 0;
+    for producer in 0..=MAX_CUTS as u64 {
+        pieces(&mut state, producer, 0, 3, &[(0, offset)]);
+        state.observe(offset + 1, RecordMark::None, 0);
+        offset += 2;
+    }
+    assert_refused(&state, 0, 0);
+    assert!(state.carried().is_empty());
+    state.prune(1);
+    assert_eq!(state.carried().get(&0), Some(&0));
+    assert_eq!(state.carried().len(), 1);
 }

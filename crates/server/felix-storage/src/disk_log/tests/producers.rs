@@ -2,7 +2,7 @@
 //! retention leave behind, and how much of the log an open has to read.
 
 use super::*;
-use crate::disk_log::{ProducerSequence, UnfinishedBatch};
+use crate::disk_log::{ForgottenCuts, ProducerSequence, UnfinishedBatch, crash_point};
 use crate::log::{BatchPiece, PayloadDigest, ProducerBatch, RecordMark};
 
 /// One idempotent batch, marked as the broker marks it.
@@ -734,6 +734,53 @@ async fn reads_from(log: &DiskLog, start: Offset) -> usize {
     .len()
 }
 
+/// A Raft log reopened over a producer snapshot older than version 5, which
+/// does not say which cuts were evicted, reads its records again instead.
+/// Otherwise a cut evicted before the upgrade would not be carried once a
+/// purge passed it.
+#[tokio::test]
+async fn a_version_4_snapshot_is_rebuilt_on_a_raft_log() {
+    use crate::disk_log::producers::{self, MAX_CUTS};
+
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    // One cut more than the table keeps whole: producer 0's is evicted.
+    let cuts: Vec<AppendRecord> = (0..=MAX_CUTS as u64)
+        .flat_map(|producer| {
+            let opens = AppendRecord {
+                mark: RecordMark::for_batch(producer, 0, 3).next().expect("mark"),
+                ..record("a")
+            };
+            [opens, record("f")]
+        })
+        .collect();
+    let mut last_cut = 0;
+    for chunk in cuts.chunks(512) {
+        last_cut = log.append(chunk).await.expect("append").last_offset;
+    }
+    // Past a rollover, so the snapshot is as of a point after every cut and
+    // the reopen reads none of them again.
+    for _ in 0..8 {
+        log.append(&records(&["p"; 512])).await.expect("append");
+    }
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    let (state, as_of) = producers::load(dir.path()).expect("a snapshot");
+    assert!(as_of > last_cut, "{as_of} <= {last_cut}");
+    let bytes = producers::encode_as(&state, as_of, 4);
+    assert_eq!(producers::decode(&bytes).map(|(_, at)| at), Some(as_of));
+    std::fs::write(dir.path().join(producers::snapshot_file_name()), &bytes).expect("write");
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert!(!log.trim_before(as_of).await.expect("trim").is_empty());
+    let base = log.base_offset();
+    let carried = log.forgotten_cuts_from(base).await.expect("cuts");
+    assert_eq!(carried.sequence(0), Some(0));
+    log.shutdown().await.expect("shutdown");
+}
+
 /// A purge that cannot save the batches it forgets changes nothing, and
 /// succeeds once it can.
 #[tokio::test]
@@ -866,4 +913,212 @@ async fn a_batch_piece_is_refused_outside_a_raft_log() {
         matches!(refused, Err(StorageError::Unsupported(_))),
         "{refused:?}"
     );
+}
+
+/// A copy that starts past a cut batch it was never sent refuses its re-send
+/// once it takes in the source's forgotten cuts, and still after a reopen.
+/// Without them it would know nothing of the producer and take sequence 0
+/// as new, writing the start of the batch a second time.
+#[tokio::test]
+async fn a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts() {
+    let source_dir = tempdir().expect("dir");
+    let (source, tail) = cut_then_filled(&source_dir).await;
+    // The cut batch is still in the source's log, so a copy from its first
+    // record could finish it. One from past it can only refuse it.
+    assert!(
+        source
+            .forgotten_cuts_from(0)
+            .await
+            .expect("cuts")
+            .is_empty()
+    );
+    let cuts = source.forgotten_cuts_from(tail).await.expect("cuts");
+    assert_eq!(cuts.sequence(9), Some(0));
+    assert_eq!(ForgottenCuts::decode(&cuts.encode()), Some(cuts.clone()));
+    // Records past the base, here a batch left open at the tail, change
+    // nothing: they may be uncommitted and cut back.
+    source.append(&[piece(1, 0, 3, "c")]).await.expect("append");
+    assert_eq!(source.forgotten_cuts_from(tail).await.expect("cuts"), cuts);
+    assert_eq!(
+        source.forgotten_cuts_from(0).await.expect("cuts"),
+        ForgottenCuts::default()
+    );
+    source.shutdown().await.expect("shutdown");
+
+    let dir = tempdir().expect("dir");
+    {
+        let copy = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        copy.reset_to(tail).await.expect("reset");
+        assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Unknown);
+        copy.remember_forgotten_cuts(tail, cuts)
+            .await
+            .expect("remember");
+        assert_eq!(copy.producer_unfinished(9, 0), REFUSED);
+        assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+        copy.shutdown().await.expect("shutdown");
+    }
+    let copy = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+    copy.shutdown().await.expect("shutdown");
+}
+
+/// A log holding a cut batch of producer 7 that `cuts`' sender never had,
+/// then `rounds` appends of [`FILLED`], which then takes in `cuts` for a
+/// snapshot at `base`, ahead of the reset.
+async fn installed_over_a_stray_batch(
+    dir: &TempDir,
+    base: Offset,
+    cuts: &ForgottenCuts,
+    rounds: usize,
+) -> DiskLog {
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    let stray = |position: u32, payload: &str| AppendRecord {
+        mark: match position {
+            0 => RecordMark::Opens(ProducerBatch {
+                producer_id: 7,
+                sequence: 0,
+                len: 3,
+            }),
+            _ => RecordMark::Piece(BatchPiece {
+                producer_id: 7,
+                sequence: 0,
+                position,
+                len: 3,
+            }),
+        },
+        ..record(payload)
+    };
+    log.append(&[stray(0, "x"), stray(1, "y")])
+        .await
+        .expect("append");
+    for _ in 0..rounds {
+        log.append(&records(FILLED)).await.expect("append");
+    }
+    log.remember_forgotten_cuts(base, cuts.clone())
+        .await
+        .expect("remember");
+    log
+}
+
+/// What a snapshot carries is what the committed records below it say, the
+/// same from every sender. A sender that installed a snapshot over records
+/// of its own, here a cut batch of producer 7 the leader never had, hands
+/// on none of them, and the copy it is sent to answers producer 7 the way
+/// the leader does.
+#[tokio::test]
+async fn a_snapshot_carries_nothing_its_sender_alone_held() {
+    let leader_dir = tempdir().expect("dir");
+    let (leader, tail) = cut_then_filled(&leader_dir).await;
+    let base = tail + 1;
+    let cuts = leader.forgotten_cuts_from(base).await.expect("cuts");
+    assert_eq!(cuts.sequence(9), Some(0));
+
+    let sender_dir = tempdir().expect("dir");
+    let sender = installed_over_a_stray_batch(&sender_dir, base, &cuts, 1).await;
+    sender.reset_to(base).await.expect("reset");
+    let carried = sender.forgotten_cuts_from(base).await.expect("cuts");
+    assert_eq!(carried, cuts);
+    assert_eq!(
+        sender.producer_sequence(7, 0),
+        leader.producer_sequence(7, 0)
+    );
+
+    let copy_dir = tempdir().expect("dir");
+    let copy = DiskLog::open(copy_dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    copy.remember_forgotten_cuts(base, carried)
+        .await
+        .expect("remember");
+    copy.reset_to(base).await.expect("reset");
+    assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+    assert_eq!(copy.producer_sequence(7, 0), leader.producer_sequence(7, 0));
+    assert_eq!(copy.producer_sequence(7, 0), ProducerSequence::Unknown);
+    for log in [leader, sender, copy] {
+        log.shutdown().await.expect("shutdown");
+    }
+}
+
+/// How a purge past the tail stops short of its reset after an install.
+#[cfg(feature = "raft")]
+#[derive(Clone, Copy)]
+enum Interrupted {
+    /// The reset saved what it forgets, and the records were still there.
+    InReset,
+    /// The purged id was stored and the reset never began.
+    BeforeReset,
+    /// The log had rolled at its tail, the base, so a producer snapshot as
+    /// of the base was saved, and the reset dropped the records and stopped.
+    AfterDrop,
+}
+
+/// A Raft log that installed a snapshot at `base` over records of its own
+/// stores the purged id below `base` and then resets to `base`. Interrupted
+/// in between, the reopen finishes the reset, whether the log ends at `base`
+/// (where a later append would not reset it) or short of it. Its snapshot
+/// then carries what the leader's does, and opening again changes nothing.
+#[cfg(feature = "raft")]
+async fn a_reset_cut_short_is_finished_at_open(rounds: usize, interrupted: Interrupted) {
+    let leader_dir = tempdir().expect("dir");
+    let (leader, tail) = cut_then_filled(&leader_dir).await;
+    let base = tail + 1;
+    let cuts = leader.forgotten_cuts_from(base).await.expect("cuts");
+
+    let sender_dir = tempdir().expect("dir");
+    let sender = installed_over_a_stray_batch(&sender_dir, base, &cuts, rounds).await;
+    let held = sender.tail_offset().await.expect("tail");
+    if let Interrupted::AfterDrop = interrupted {
+        assert_eq!(held, base);
+        assert_eq!(sender.roll_now().await.expect("roll"), base);
+        assert_eq!(saved(&sender_dir).1, base);
+    }
+    crate::raft_log::store_purged(sender_dir.path(), tail, sender.accepted_generation())
+        .expect("store purged");
+    let stop = match interrupted {
+        Interrupted::BeforeReset => None,
+        Interrupted::InReset => Some(0),
+        Interrupted::AfterDrop => Some(1),
+    };
+    if let Some(stop) = stop {
+        crash_point::watch(sender_dir.path(), Some(stop));
+        let crashed = sender.reset_to(base).await;
+        crash_point::unwatch(sender_dir.path());
+        assert!(crashed.is_err(), "{crashed:?}");
+    }
+    drop(sender);
+
+    for _ in 0..2 {
+        let sender = DiskLog::open(sender_dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+        assert_eq!(sender.forgotten_cuts_from(base).await.expect("cuts"), cuts);
+        assert_eq!(
+            sender.producer_sequence(7, 0),
+            leader.producer_sequence(7, 0)
+        );
+        assert_eq!(sender.base_offset(), base, "held up to {held}");
+        assert_eq!(sender.tail_offset().await.expect("tail"), base);
+        sender.shutdown().await.expect("shutdown");
+    }
+    leader.shutdown().await.expect("shutdown");
+}
+
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_reset_cut_short_at_the_snapshot_base_is_finished_at_open() {
+    // Two stray records and 12 appends of two end the log at the base.
+    a_reset_cut_short_is_finished_at_open(12, Interrupted::BeforeReset).await;
+    a_reset_cut_short_is_finished_at_open(12, Interrupted::InReset).await;
+}
+
+/// The reset is not redone once the base moved, so nothing it leaves may
+/// pass for the new log's: here the snapshot a roll saved at the old tail.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_reset_cut_short_after_the_drop_leaves_no_snapshot_of_the_old_log() {
+    a_reset_cut_short_is_finished_at_open(12, Interrupted::AfterDrop).await;
+}
+
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_reset_cut_short_below_the_snapshot_base_is_finished_at_open() {
+    a_reset_cut_short_is_finished_at_open(1, Interrupted::BeforeReset).await;
+    a_reset_cut_short_is_finished_at_open(1, Interrupted::InReset).await;
 }
