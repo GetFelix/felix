@@ -158,6 +158,7 @@ async fn a_trim_before_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<
         felix_storage::log::FsyncMode::None,
     )
     .await;
+    broker.allow_raft_head_trims_when(|| true);
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);

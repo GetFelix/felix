@@ -260,7 +260,7 @@ impl ClientError {
                 Self::invalid(message).with_reason(felix_wire::trim_reason::NOT_DURABLE)
             }
             E::TrimOnCommitStream => Self::new(ErrorCode::StreamHasCommits, message),
-            E::HeadTrimNotEnabled => Self::new(ErrorCode::FeatureNotEnabled, message)
+            E::HeadTrimNotEnabled { .. } => Self::new(ErrorCode::FeatureNotEnabled, message)
                 .with_reason(felix_wire::trim_reason::HEAD_TRIM),
             E::RecordHeadersNotEnabled => Self::new(ErrorCode::FeatureNotEnabled, message)
                 .with_reason(felix_wire::feature_reason::RECORD_HEADERS),

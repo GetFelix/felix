@@ -552,7 +552,7 @@ async fn a_trim_is_refused_until_the_node_allows_it() {
         assert!(
             matches!(
                 trim(&broker, 2, 4).await,
-                Err(BrokerError::HeadTrimNotEnabled)
+                Err(BrokerError::HeadTrimNotEnabled { .. })
             ),
             "{consistency:?}"
         );
@@ -572,7 +572,7 @@ async fn a_trim_follows_the_fleet_gate() {
     publish(&broker, 4).await;
     assert!(matches!(
         trim(&broker, 2, 4).await,
-        Err(BrokerError::HeadTrimNotEnabled)
+        Err(BrokerError::HeadTrimNotEnabled { .. })
     ));
     finalized.store(true, std::sync::atomic::Ordering::Release);
     let outcome = trim(&broker, 2, 4).await.expect("trim");

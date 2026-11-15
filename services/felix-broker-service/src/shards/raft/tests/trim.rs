@@ -84,6 +84,7 @@ async fn a_trim_hides_the_shard_below_its_floor_on_every_member() {
     let orders = key("orders", 0);
     let term = members[leader].shards.leading(&orders).expect("term");
     let lead = &members[leader];
+    lead.broker.allow_raft_head_trims_when(|| true);
     let first = lead.publish(term, b"r0").await;
     let floor = lead.publish(term, b"r1").await;
     let tail = lead.publish(term, b"r2").await + 1;
@@ -165,6 +166,7 @@ async fn a_trim_holds_after_a_restart() {
     let orders = key("orders", 0);
     let floor = {
         let broker = broker(root.path()).await;
+        broker.allow_raft_head_trims_when(|| true);
         let shards = shards(&broker);
         shards
             .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
@@ -192,5 +194,49 @@ async fn a_trim_holds_after_a_restart() {
     let log = shards.log_of(&orders).await.expect("log");
     until("the floor is back", || log.readable_base() == floor).await;
     assert!(too_old(&broker, floor - 1).await, "read below the floor");
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **A trim waits for `raft_head_trim`.** A member that predates trim
+/// entries refuses one and replicates nothing past it, so until the node
+/// allows Raft trims one is refused by name with nothing written.
+#[tokio::test]
+async fn a_trim_is_refused_until_raft_head_trim_is_finalized() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = tempfile::tempdir().expect("tempdir");
+    let orders = key("orders", 0);
+    let broker = broker(root.path()).await;
+    let finalized = Arc::new(AtomicBool::new(false));
+    let gate = Arc::clone(&finalized);
+    broker.allow_raft_head_trims_when(move || gate.load(Ordering::Acquire));
+    let shards = shards(&broker);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("term");
+    let engine = engine(&shards);
+    publish(&broker, &engine, term, b"r0").await;
+    let tail = publish(&broker, &engine, term, b"r1").await + 1;
+
+    let log = shards.log_of(&orders).await.expect("log");
+    let base = log.readable_base();
+    let refused = trim(&broker, &engine, term, tail - 1, tail).await;
+    let not_enabled = BrokerError::HeadTrimNotEnabled {
+        feature: felix_common::fleet::RAFT_HEAD_TRIM.name(),
+    };
+    assert_eq!(refused, Err(not_enabled.to_string()));
+    assert_eq!(
+        log.tail_offset().await.expect("tail"),
+        tail,
+        "nothing written"
+    );
+    assert_eq!(log.readable_base(), base, "no floor");
+
+    finalized.store(true, Ordering::Release);
+    let trimmed = trim(&broker, &engine, term, tail - 1, tail)
+        .await
+        .expect("trimmed once finalized");
+    assert_eq!(trimmed.oldest, tail - 1);
     EngineShards::shutdown(&*shards).await;
 }

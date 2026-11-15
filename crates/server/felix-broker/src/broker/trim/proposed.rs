@@ -21,7 +21,9 @@ use crate::{ProposalCommitted, ProposalFailed, ProposedPublish};
 impl Broker {
     /// [`Self::trim_before_at`] for a shard whose engine writes its log.
     ///
-    /// Refused as the hybrid refuses, with nothing proposed: `before` past
+    /// Refused with nothing proposed until the node allows Raft trims
+    /// ([`Broker::allow_raft_head_trims_when`]), and as the hybrid refuses:
+    /// `before` past
     /// `expected` is [`BrokerError::TrimPastTail`], a tail other than
     /// `expected` is [`BrokerError::OffsetMismatch`], and a stream holding
     /// atomic commits is [`BrokerError::TrimOnCommitStream`]. A trim at or
@@ -54,6 +56,13 @@ impl Broker {
         let Some(log) = &handle.state.durable else {
             return Err(BrokerError::TrimNeedsDurableStream);
         };
+        // A member that predates trim entries refuses one, and replication
+        // to it stops there for good.
+        if !self.raft_head_trims_allowed() {
+            return Err(BrokerError::HeadTrimNotEnabled {
+                feature: felix_common::fleet::RAFT_HEAD_TRIM.name(),
+            });
+        }
         if before > expected {
             return Err(BrokerError::TrimPastTail {
                 before,

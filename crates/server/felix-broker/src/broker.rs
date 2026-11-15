@@ -176,6 +176,9 @@ pub struct Broker {
     /// Whether head trims are allowed, once the node says. Unset refuses
     /// them.
     head_trims: std::sync::OnceLock<NodeGate>,
+    /// Whether head trims on a shard on Raft are allowed, once the node
+    /// says. Unset refuses them.
+    raft_head_trims: std::sync::OnceLock<NodeGate>,
     /// The data directory's head-trim marker is known to be on disk.
     head_trim_marked: std::sync::atomic::AtomicBool,
     /// Serializes the first marker write: it goes through one temporary file.
@@ -261,6 +264,7 @@ impl Broker {
             engine_streams: std::sync::atomic::AtomicBool::new(false),
             engine_logs: std::sync::OnceLock::new(),
             head_trims: std::sync::OnceLock::new(),
+            raft_head_trims: std::sync::OnceLock::new(),
             head_trim_marked: std::sync::atomic::AtomicBool::new(false),
             head_trim_marking: tokio::sync::Mutex::new(()),
             headers_marked: std::sync::atomic::AtomicBool::new(false),
@@ -512,6 +516,21 @@ impl Broker {
 
     pub(crate) fn head_trims_allowed(&self) -> bool {
         self.head_trims.get().is_some_and(|gate| (gate.0)())
+    }
+
+    /// Allow head trims on a shard on Raft whenever `gate` says so. Only the
+    /// first call counts.
+    ///
+    /// Until it is called every such trim is refused: the trim is an entry
+    /// of its own kind, and a member that predates it refuses the entry and
+    /// replicates nothing past it. So the node says either that it runs
+    /// alone or that the fleet has finalized `raft_head_trim`.
+    pub fn allow_raft_head_trims_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.raft_head_trims.set(NodeGate(Arc::new(gate)));
+    }
+
+    pub(crate) fn raft_head_trims_allowed(&self) -> bool {
+        self.raft_head_trims.get().is_some_and(|gate| (gate.0)())
     }
 
     /// Put the data directory's head-trim marker on disk before the first
