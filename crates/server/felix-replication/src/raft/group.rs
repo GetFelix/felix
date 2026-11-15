@@ -60,6 +60,9 @@ pub(crate) struct Group {
     transport: Arc<dyn RaftTransport>,
     /// The written positions other members told this one.
     reports: Arc<Reports>,
+    /// The furthest entry acknowledged on `reports` before its commit,
+    /// which a confirmed read must wait to have applied.
+    answered: Arc<parking_lot::Mutex<Option<LogPoint>>>,
     /// The data root's mark log, when the member has one. Its
     /// vouched-unsynced marker is synced before this member's unsynced write
     /// is told to a leader or counted here, so a power cut rotates the copy.
@@ -477,7 +480,8 @@ impl Group {
             copy_id,
             log.first_index_reader(),
         );
-        let (machine, commits, cache) = Machine::open(snapshots, id.shard.kind).await?;
+        let (machine, commits, cache) =
+            Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
@@ -540,6 +544,7 @@ impl Group {
             hold,
             transport,
             reports,
+            answered: Arc::default(),
             root,
             refusals,
             positions,
@@ -949,10 +954,10 @@ impl Group {
                     }
                 }
             }
-            // A stream group's snapshot carries no records, and installing
-            // one purges the log up to it: the member would drop records it
-            // was never sent. Refused until retention says how a member
-            // that far behind gets them.
+            // A stream group's snapshot carries no records, only the cut
+            // batches its sender refuses by name, and installing one purges
+            // the log up to it: the member would drop records it was never
+            // sent. Refused until the records below it travel too.
             Request::Snapshot { vote, meta, .. } => {
                 self.lease.named(term_of(&vote));
                 let member = Box::new(Addressee {
@@ -1077,6 +1082,7 @@ impl Group {
                 index,
             });
         let reports = Arc::clone(&self.reports);
+        let answered = Arc::clone(&self.answered);
         let raft = self.raft.clone();
         let me = self.member.clone();
         let root = self.root.clone();
@@ -1100,7 +1106,15 @@ impl Group {
                 // First, so a member that no longer leads is refused even
                 // with a majority's reports in hand.
                 committed = commit => committed,
-                () = majority => Ok(()),
+                () = majority => {
+                    // Before the caller is told, so a read that starts
+                    // after the answer waits for this entry.
+                    let mut answered = answered.lock();
+                    if answered.is_none_or(|was| (was.term, was.index) < (at.term, at.index)) {
+                        *answered = Some(at);
+                    }
+                    Ok(())
+                }
             }
         }
     }
@@ -1113,17 +1127,35 @@ impl Group {
     ///
     /// A majority that does not answer is a timeout, and so is a lapsed
     /// lease: neither says another leader exists, and neither closes the
-    /// shard. Ok only once this member has applied the read index, so a
-    /// value the reader takes after this returns has every answered write.
+    /// shard. Ok only once this member has applied the read index and
+    /// still has `term` open, so a value the reader takes after this
+    /// returns has every answered write.
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
         let patience = Duration::from_millis(self.pace.timers.election_max);
         let deadline = tokio::time::Instant::now() + patience;
         let bound = self.read_index(term).await?;
+        // The read index is the commit index, and a write answered once a
+        // majority had written it can be past it. It is of this term and
+        // on a majority, so it commits unless this member stops leading.
+        let answered = *self.answered.lock();
+        let answered = answered
+            .filter(|at| at.term == term)
+            .map_or(0, |at| at.index + 1);
         let unanswered = CommitError::TimedOut {
             what: "read",
             timeout: patience,
         };
-        self.applied_through(bound - 1, deadline, unanswered).await
+        self.applied_through(bound.max(answered) - 1, deadline, unanswered)
+            .await?;
+        // The wait can outlast the term: a member deposed during it still
+        // applies the index as a follower.
+        if self.open_term() != Some(term) {
+            return Err(CommitError::LeadershipLost {
+                what: "read",
+                detail: "the shard closed while the read waited for its apply",
+            });
+        }
+        Ok(())
     }
 
     /// One past the index a reader must have applied before it reads: the
