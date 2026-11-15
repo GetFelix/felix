@@ -288,6 +288,7 @@ expectations=(
   "FelixHeadTrimHiddenTrims violates StaleTrimRefused"
   "FelixHeadTrimNoOpUnchecked violates StaleTrimRefused"
   "FelixHeadTrimRetention violates StaleTrimRefused"
+  "FelixHeadTrimFollowerNoReadIndex violates NoReadBelowAckedTrim"
   "FelixShardFencedAckTwoPromotionsStart pass"
   "FelixShardFencedAckStagedMoveDestination violates AckedHeldByLeader"
   "FelixShardFencedAckMoveShort pass"
