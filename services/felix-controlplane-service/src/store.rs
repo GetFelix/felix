@@ -594,7 +594,10 @@ pub trait ControlPlaneStore: Send + Sync {
     /// delete go out only while this holds: a broker still on an older
     /// incarnation could take a target or delete issued before the restore
     /// as current. A broker with no acknowledgement held counts as 0, which
-    /// is only enough before the first restore.
+    /// is only enough before the first restore. An acknowledgement above the
+    /// incarnation does not count; recording one raises the incarnation past
+    /// it. The answer is this store's own copy: callers act on it only where
+    /// that copy is current, as on the Raft leader after a confirmed read.
     async fn placement_acked_by(&self, brokers: &[String]) -> StoreResult<bool> {
         let incarnation = self.placement_incarnation().await?;
         let acked = self

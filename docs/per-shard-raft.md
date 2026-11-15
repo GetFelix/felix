@@ -3194,14 +3194,23 @@ what stops that.
   incarnation, left out while it is 0. A broker with a Raft data root open
   writes it to `raft-placement-incarnation` in the root and syncs it before
   its next heartbeat reports it. The file never goes back. The control
-  plane keeps the highest acknowledgement each broker process reported. A
-  later process replaces it whatever it reports, so a broker whose root was
-  wiped is not counted at its predecessor's value.
+  plane keeps the highest acknowledgement each broker process reported,
+  heard only from the node's current process. Another process replaces it
+  whatever it reports, so a broker whose root was wiped is not counted at
+  its predecessor's value.
+- **An acknowledgement above the incarnation raises it.** A broker can hold
+  more than the control plane issued, when the control plane was rebuilt
+  from a backup older than its last restore. Recording that acknowledgement
+  raises the incarnation one above it, so every broker has to acknowledge
+  again before anything goes out.
 - **Nothing goes out until every broker has.** `placement_acked_by` holds
-  only while every broker named has acknowledged the current incarnation
-  (the model's `AllAcked`). A broker that never reported counts as 0, which
-  is enough only before the first restore. On a Raft control plane it also
-  waits until every member is known to apply level 35. Target writes, their
+  only while every broker named has acknowledged exactly the current
+  incarnation (the model's `AllAcked`). A broker that never reported counts
+  as 0, which is enough only before the first restore. On a Raft control
+  plane it also waits until every member is known to apply level 35, and it
+  answers from the member's own copy, so a caller asks it on the leader. A
+  restore made while the group was below level 35 raised nothing and is not
+  fenced by it. Target writes, their
   delivery and copy deletes are to wait for it; none of them is built yet
   (`FelixRaftPlacementStaleWipeRewindNoAck.cfg` is what happens without it).
 

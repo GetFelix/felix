@@ -87,9 +87,11 @@ pub fn restored_placement_incarnation(current: u64, restored: u64) -> u64 {
 }
 
 /// Whether the control plane may send a target or a copy delete at
-/// `incarnation`: every broker in `brokers` has durably acknowledged it. A
-/// broker with no acknowledgement in `acked` counts as 0, as every broker
-/// starts: that passes only before the first restore.
+/// `incarnation`: every broker in `brokers` has durably acknowledged exactly
+/// it (the model's `ack[s] = inc`). A broker with no acknowledgement in
+/// `acked` counts as 0, as every broker starts: that passes only before the
+/// first restore. One above `incarnation` holds a newer control plane's
+/// word, and does not count.
 pub fn all_acked_placement_incarnation<'a, B: Ord + 'a>(
     incarnation: u64,
     brokers: impl IntoIterator<Item = &'a B>,
@@ -97,7 +99,7 @@ pub fn all_acked_placement_incarnation<'a, B: Ord + 'a>(
 ) -> bool {
     brokers
         .into_iter()
-        .all(|broker| acked.get(broker).copied().unwrap_or(0) >= incarnation)
+        .all(|broker| acked.get(broker).copied().unwrap_or(0) == incarnation)
 }
 
 /// Whether a copy delete the control plane told at incarnation `told` is

@@ -82,7 +82,12 @@ pub(crate) async fn report_health(
     }
 
     // As the root sequence: after the accept, and lost only for this beat.
-    if let Some(incarnation) = request.placement_incarnation {
+    // Only from the node's current process: a beat from above it is accepted
+    // after a restore rewound the record, and must not stand for the process
+    // the next registration starts.
+    if let Some(incarnation) = request.placement_incarnation
+        && request.incarnation == node.status.incarnation
+    {
         let heard = crate::model::PlacementAck {
             incarnation,
             node_incarnation: request.incarnation,

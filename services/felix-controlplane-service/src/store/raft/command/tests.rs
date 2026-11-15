@@ -369,6 +369,7 @@ async fn an_import_raises_the_incarnation_from_level_35() {
             .expect("rewritten");
         serde_json::from_slice(&settled).expect("json")
     };
+    assert_eq!(METADATA_VERSION, level);
     assert!(settled(level - 1).get("raise_incarnation").is_none());
     assert_eq!(settled(level)["raise_incarnation"], true);
 

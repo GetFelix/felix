@@ -302,16 +302,15 @@ pub struct PlacementAck {
 
 impl PlacementAck {
     /// Whether `heard` changes what is held: a higher acknowledgement from
-    /// the same process, or any from a later one. A later process may report
+    /// the same process, or any from another one. Another process may report
     /// less, as one whose data root was wiped does, and must not be counted
-    /// at its predecessor's acknowledgement.
+    /// at its predecessor's acknowledgement. Not "a later one": a restore
+    /// rewinds node incarnations, so the next process can carry a lower one.
+    /// Only the node's current process is heard (`report_health`), so a late
+    /// beat of an earlier process never gets here.
     pub fn moved_by(held: Option<&PlacementAck>, heard: &PlacementAck) -> bool {
         held.is_none_or(|held| {
-            if held.node_incarnation == heard.node_incarnation {
-                held.incarnation < heard.incarnation
-            } else {
-                held.node_incarnation < heard.node_incarnation
-            }
+            held.node_incarnation != heard.node_incarnation || held.incarnation < heard.incarnation
         })
     }
 }

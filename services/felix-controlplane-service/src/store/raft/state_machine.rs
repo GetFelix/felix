@@ -701,8 +701,10 @@ impl MetadataStateMachine {
                 let mut state = *state;
                 state.forget_placed(mark_unplaced);
                 if raise_incarnation {
-                    // From the store before the import, so the restore moves
-                    // past what brokers acknowledged as well as the backup.
+                    // From the store before the import, so every member raises
+                    // to the same value. An acknowledgement above it, from
+                    // brokers that saw a control plane this one did not keep,
+                    // raises it again when heard (`record_placement_ack`).
                     state.placement_incarnation =
                         felix_storage::raft_copy::restored_placement_incarnation(
                             store.placement_incarnation().await?,

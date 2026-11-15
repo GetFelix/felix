@@ -55,6 +55,9 @@ fn nothing_goes_out_until_every_broker_has_acknowledged() {
     assert!(!all_acked_placement_incarnation(2, &brokers, &acked));
     acked.insert("c", 2);
     assert!(all_acked_placement_incarnation(2, &brokers, &acked));
+    // Acknowledged at a control plane this one was not restored from.
+    acked.insert("c", 3);
+    assert!(!all_acked_placement_incarnation(2, &brokers, &acked));
 }
 
 // Every broker starts at 0 (`ack` in FelixRaftPlacement's Init), so one that

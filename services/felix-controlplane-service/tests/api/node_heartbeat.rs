@@ -1154,4 +1154,11 @@ async fn a_heartbeat_reports_the_placement_acknowledgement_and_hears_the_incarna
             .await
             .expect("gate")
     );
+
+    // A beat from above the recorded incarnation, as one is after a restore
+    // rewound the node, is accepted but its acknowledgement is not kept: the
+    // next registration starts a process under a lower incarnation.
+    beat(serde_json::json!({ "incarnation": 3, "placement_incarnation": 7 })).await;
+    let acks = store.placement_acks().await.expect("acks");
+    assert_eq!(acks[0].1.incarnation, 2, "{acks:?}");
 }

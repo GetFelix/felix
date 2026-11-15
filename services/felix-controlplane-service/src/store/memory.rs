@@ -901,6 +901,15 @@ impl ControlPlaneStore for InMemoryStore {
         if !crate::model::PlacementAck::moved_by(placement.acks.get(node_id), &heard) {
             return Ok(false);
         }
+        // A broker that acknowledged more than this store ever issued saw a
+        // control plane this one was not restored from. Moving past it keeps
+        // a delete told there from passing as current here.
+        if heard.incarnation > placement.current {
+            placement.current = felix_storage::raft_copy::restored_placement_incarnation(
+                placement.current,
+                heard.incarnation,
+            );
+        }
         placement.acks.insert(node_id.to_string(), heard);
         Ok(true)
     }
