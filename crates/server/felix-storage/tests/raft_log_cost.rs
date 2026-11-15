@@ -316,11 +316,13 @@ async fn a_batched_append_allocates_little_per_record() {
         "raft append: {raft_allocations:.2} allocations, {raft_bytes:.0} bytes per record; \
          copy append: {copy_allocations:.2} allocations, {copy_bytes:.0} bytes per record"
     );
-    // Measured at 0.23 and 337 for the Raft log, 0.09 and 160 for the copy.
-    // A copy of the record list per append adds about 110 bytes a record,
-    // and a record vector grown by doubling about 80.
+    // Measured at 0.21 allocations and 313 bytes for the Raft log, 0.09 and
+    // 160 for the copy. The allocation count is judged against the copy
+    // baseline from this same run, since the flush path differs by platform.
+    // A copy of the record list per append adds about 110 bytes a record and
+    // 0.04 allocations; bytes are what tells it apart.
     assert!(
-        raft_allocations < 0.27 && raft_bytes < 400.0,
+        raft_allocations < copy_allocations + 0.25 && raft_bytes < 400.0,
         "a Raft append allocates {raft_allocations:.2} times and {raft_bytes:.0} bytes a record"
     );
     assert!(

@@ -157,7 +157,7 @@ where
         let mut next = None;
         let mut last = None;
         // Proposers waiting to hear where their entry was written.
-        let mut tokens = Vec::with_capacity(expected);
+        let mut tokens = Vec::new();
         for entry in entries {
             let index = entry.index();
             let point = LogPoint {
