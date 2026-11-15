@@ -29,6 +29,7 @@ async fn pump(cluster: &Cluster, count: u64) -> u64 {
                     payload: Bytes::from(format!("record {record}")),
                     written: None,
                     producer: None,
+                    expected: None,
                 };
                 member.raft().client_write(command).await
             }
