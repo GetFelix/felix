@@ -139,7 +139,8 @@ impl<K: Ord + Copy> Waiters<K> {
     /// while the value's key is below `key`; it may return `None` above it
     /// too, and is then asked again on every advance.
     ///
-    /// The waiter is queued before it looks, so an advance that lands
+    /// A value that is ready already is returned after one look. Otherwise
+    /// the waiter is queued before it looks again, so an advance that lands
     /// between the look and the sleep still wakes it.
     pub async fn wait_for<V, T>(
         &self,

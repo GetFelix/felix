@@ -84,3 +84,26 @@ async fn a_reappend_after_a_truncate_wakes_a_written_waiter() {
     );
     woken.expect("woken by the re-append").expect("open");
 }
+
+/// A waiter that wants the written position to fall: only the truncate's
+/// own advance can wake it, as nothing is appended afterwards.
+#[tokio::test]
+async fn a_truncate_wakes_a_written_waiter_the_cut_satisfies() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    append(
+        &mut raft,
+        vec![blank(1, 0), normal(1, 1, "a"), normal(1, 2, "b")],
+    )
+    .await;
+
+    let positions = raft.positions();
+    let waiters = raft.written_waiters();
+    let wait = waiters.wait_for(&positions, (1, 0), |p| {
+        p.written.filter(|at| at.index <= 1).map(|_| ())
+    });
+    let wait = tokio::time::timeout(BOUND, wait);
+    let (woken, cut) = tokio::join!(wait, raft.truncate_after(Some(log_id(1, 1))));
+    cut.expect("cut");
+    woken.expect("woken by the cut").expect("open");
+}
