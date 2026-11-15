@@ -1473,6 +1473,11 @@ impl Group {
         });
     }
 
+    /// The data root's mark log, when the member has one.
+    pub(crate) fn mark_root(&self) -> Option<&MarkLog> {
+        self.root.as_ref()
+    }
+
     /// Stop the member's tasks. Entries and the vote it acknowledged are
     /// already on disk; nothing is written here.
     pub(crate) async fn shutdown(&self) {

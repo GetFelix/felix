@@ -34,6 +34,8 @@ use crate::{ShardKey, ShardKind};
 /// How often a kept-copy reclaim that waits only on a commit save looks
 /// again. A Raft log saves its commit at most this often.
 const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
+/// How long a shutdown waits for its last batch of log marks.
+const LAST_MARK_LIMIT: Duration = Duration::from_secs(5);
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -931,7 +933,8 @@ impl GroupRuntime {
         true
     }
 
-    /// Stop the ticker and every group. Later opens are refused.
+    /// Stop the ticker and every group, then write the batched log marks
+    /// once more. Later opens are refused.
     pub async fn shutdown(&self) {
         let inner = &self.inner;
         inner.stop.cancel();
@@ -955,6 +958,19 @@ impl GroupRuntime {
             groups
         };
         futures::future::join_all(groups.iter().map(|group| group.shutdown())).await;
+        // One last batch, so a planned stop leaves every batched log mark at
+        // its flushed log. Each root's second call has nothing to write. A
+        // hung disk does not hold the stop: the next open marks what it
+        // recovered anyway.
+        for root in groups.iter().filter_map(|group| group.mark_root()) {
+            match tokio::time::timeout(LAST_MARK_LIMIT, root.mark_batched()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(err)) => {
+                    tracing::warn!(error = %err, "the last batched log marks were not written");
+                }
+                Err(_) => tracing::warn!("the last batched log marks timed out"),
+            }
+        }
     }
 
     /// Hand a peer's message to the member it names.

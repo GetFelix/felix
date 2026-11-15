@@ -24,9 +24,9 @@ use std::time::Duration;
 use tokio::sync::watch;
 
 use super::{ShardMarks, VoteMark, log_below};
-use crate::StorageId;
 use crate::raft_log::{LogPoint, LogPositions, state_file};
 use crate::run_state::witness;
+use crate::{StorageId, metrics_names};
 
 pub(crate) const FILE_NAME: &str = crate::run_state::copy_trust::RAFT_MARKS;
 /// `"FLMK"`.
@@ -46,6 +46,11 @@ const FLAG_COMMITTED: u8 = 2;
 const FLAG_LOG: u8 = 4;
 /// No rewrite below this size, so a small root never rewrites.
 const COMPACT_FLOOR: u64 = 1 << 20;
+/// How many batch intervals the batched log marks may go unwritten before
+/// the log stops. A healthy mark write takes milliseconds; this rides out a
+/// slow disk's stalls of a few seconds while bounding how far a restored
+/// root can trail its log unnoticed.
+pub(crate) const STALL_INTERVALS: u32 = 5;
 
 /// The mark log of one data root. Cheap to clone; every clone is the same
 /// log. Opened only by the gate.
@@ -346,25 +351,60 @@ impl MarkLog {
     /// shard's interval sets it for the whole root; later calls do nothing.
     /// A failed batch stops the log, and from then on the batched shards'
     /// appends fail too (see [`Self::failure`]), so no leader keeps acking
-    /// past a mark that stopped moving.
+    /// past a mark that stopped moving. So does a batch still unwritten
+    /// [`STALL_INTERVALS`] intervals after the last one started: a write
+    /// that hangs is not an error, but the mark stops moving all the same.
     pub(crate) fn start_batcher(&self, interval: Duration) {
         if self.inner.batcher.swap(true, Ordering::AcqRel) {
             return;
         }
         let weak: Weak<Inner> = Arc::downgrade(&self.inner);
+        let limit = interval.saturating_mul(STALL_INTERVALS);
         tokio::spawn(async move {
             let mut ticks = tokio::time::interval(interval);
             ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // The start of the last batch written: every position flushed
+            // before it is marked.
+            let mut marked_at = tokio::time::Instant::now();
             loop {
                 ticks.tick().await;
                 let Some(inner) = weak.upgrade() else {
                     return;
                 };
                 let log = MarkLog { inner };
-                if let Err(err) = log.mark_batched().await {
-                    tracing::error!(error = %err, "the batched log marks were not written");
-                    log.stop(err).await;
-                    return;
+                let started = tokio::time::Instant::now();
+                let batch = log.mark_batched();
+                tokio::pin!(batch);
+                let mut checks = tokio::time::interval_at(started + interval, interval);
+                let result = loop {
+                    tokio::select! {
+                        result = &mut batch => break result,
+                        _ = checks.tick() => {
+                            let age = marked_at.elapsed();
+                            metrics::gauge!(metrics_names::RAFT_LOG_MARK_AGE_SECONDS)
+                                .set(age.as_secs_f64());
+                            if age >= limit {
+                                break Err(io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    format!("the batched log marks were not written for {age:?}"),
+                                ));
+                            }
+                            tracing::warn!(?age, ?limit, "the batched log marks are behind");
+                        }
+                    }
+                };
+                match result {
+                    Ok(()) => {
+                        marked_at = started;
+                        metrics::gauge!(metrics_names::RAFT_LOG_MARK_AGE_SECONDS)
+                            .set(marked_at.elapsed().as_secs_f64());
+                    }
+                    Err(err) => {
+                        tracing::error!(error = %err, "the batched log marks were not written");
+                        // Without the writer: a write that hangs holds it.
+                        log.poison(&err);
+                        return;
+                    }
                 }
             }
         });
@@ -529,6 +569,9 @@ impl MarkLog {
                 _ => Ok(()),
             };
         }
+        if writer.failed.is_none() {
+            writer.failed = inner.failed.lock().clone();
+        }
         if writer.failed.is_some() {
             return Err(writer.failure());
         }
@@ -687,13 +730,14 @@ impl MarkLog {
         io::Error::new(err.kind(), message.to_string())
     }
 
-    /// Stop every later write after `err`, if a failed write has not
-    /// already.
-    async fn stop(&self, err: io::Error) {
-        let mut writer = self.inner.writer.lock().await;
-        if writer.failed.is_none() {
-            let _ = self.fail(&mut writer, err);
-        }
+    /// Fail the batched shards' appends with `err` at once, and every write
+    /// that takes the writer from now on.
+    fn poison(&self, err: &io::Error) {
+        let message: Arc<str> = Arc::from(format!(
+            "{}: the mark log stopped: {err}",
+            self.inner.root.join(FILE_NAME).display()
+        ));
+        self.inner.failed.lock().get_or_insert(message);
     }
 }
 

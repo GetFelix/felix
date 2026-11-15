@@ -1708,9 +1708,10 @@ position of every shard on the root that moved. It names only what a flush
 has already covered, so it is never above the log, and a member that opens
 marks what it recovered at once. The cost is a window: a shard directory, or
 the whole root in the same run, put back to a state no older than the last
-mark write (about a second) with no vote since is not caught. A failed write
-of `raft-marks` stops appends and votes for every shard on the root until
-the broker restarts. Restoring a single shard
+mark write (about a second, at most five while the mark writer is backed
+up) with no vote since is not caught. A failed write of `raft-marks`, or a
+batch still unwritten five seconds after the last one started, stops
+appends and votes for every shard on the root until the broker restarts. Restoring a single shard
 directory is unsupported for that reason. See `docs/per-shard-raft.md`, "What
 this does not catch".
 
