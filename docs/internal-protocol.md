@@ -125,6 +125,7 @@ never have dialled the one that shipped to it.
 | `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
 | `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
 | `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
+| `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
 
 #### Storage identity
 
@@ -181,8 +182,8 @@ current broker offers the bit when it dials.
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
 as an older build would, and checks only the generation of what it is sent. It
 still offers `GENERATION_LABELS`, `FORWARD_OFFSETS`, `RECORD_TIMES`, `PING`,
-`HEAD_TRIM`, `RECORD_HEADERS` and `SEQUENCED_FORWARDS`, which are not the
-fence's.
+`HEAD_TRIM`, `RECORD_HEADERS`, `SEQUENCED_FORWARDS` and
+`PLAIN_SEQUENCED_FORWARDS`, which are not the fence's.
 
 A promoted cache shard is fenced only when every replica offered `FENCE`,
 `TAIL_FETCH` and `CACHE_FENCE`; otherwise it opens on the lease, until the
@@ -358,14 +359,25 @@ The owner applies it the way it applies an idempotent Kafka batch: if its log
 already holds that sequence for that producer, it writes nothing and answers
 with the held batch's offsets, after the same quorum wait a new batch gets. A
 held sequence with different payloads is refused `StorageFailed` and nothing is
-written. The batch must carry at least one key-and-headers block; the MQTT
-listener, its only sender, always does.
+written.
+
+A sequenced batch whose records carry no key-and-headers block has no
+encoding as kind 52, whose section must hold one. It travels as
+`PlainSequencedForwardPublish` (64) instead: the `AuthorizedForwardPublish`
+body followed by the same two `u64`s, with no block section, and it decodes
+with no headers. That is the form a Raft shard's owner can take, since it
+refuses any forward with headers until Raft stores them. It goes only to an
+owner that offered `PLAIN_SEQUENCED_FORWARDS` and `SEQUENCED_FORWARDS`. A
+batch with a block still travels as kind 52, byte for byte as before. The
+MQTT listener, today's only sender of a sequenced forward, always attaches a
+block.
 
 This is what lets the ingress broker send a batch again after its answer was
 lost (see "Retrying a forwarded publish"). The sequences live in the log and
 are replicated with it, so a promoted replica answers a re-send exactly as the
-old leader would have. The frame goes only to an owner that offered
-`SEQUENCED_FORWARDS` and `RECORD_HEADERS`. To any other the pool refuses to
+old leader would have. Kind 52 goes only to an owner that offered
+`SEQUENCED_FORWARDS` and `RECORD_HEADERS`; kind 64 needs `SEQUENCED_FORWARDS`
+and `PLAIN_SEQUENCED_FORWARDS`, not `RECORD_HEADERS`. To any other the pool refuses to
 send it, and the MQTT listener refuses the message as `not_owner`, which is
 what it did before this kind existed.
 
@@ -1178,7 +1190,15 @@ After the report byte comes the message:
   membership, 3 for the one record of an idempotent batch (producer id
   `u64` and sequence `u64`, then the record), 4 for a record of an
   idempotent batch of several (producer id `u64`, sequence `u64`, position
-  `u32`, batch length `u32`, then the record).
+  `u32`, batch length `u32`, then the record), 5 for a conditional
+  publish's record (the offset it must be written at, `u64`, then the
+  record). A member writes entry 5 as the record only when the entry's
+  index is that offset, and as a blank entry otherwise. A leader replicates
+  entries read back from its log, which hold only that outcome, so it sends
+  entry 5 to no one today. Adding it left the layout at 5, so every other
+  frame is byte-identical to a build without it, and such a build refuses
+  a conditional entry by its tag (`5 is not an entry payload`) rather
+  than store the record unconditionally.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.
@@ -1348,7 +1368,7 @@ Typed, because they need different responses:
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 | `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
-| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to that kind | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
+| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to a sequenced forward (kind 52 or 64) | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
 
 ### Refusal reasons
 
@@ -1384,7 +1404,8 @@ back to the detail whenever the fields are absent.
 `SequencedForwardPublish` 52, `FenceKeptOk` 53 and
 `FenceAttestedOk` 54, `ReplicateStampedRecords` 55,
 `ReplicateStampedFetch` 56, `Raft` 57, `RaftAnswer` 58, `SealFence` 59,
-`SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62 and `FromCopy` 63. A peer
+`SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62, `FromCopy` 63 and
+`PlainSequencedForwardPublish` 64. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol
@@ -1438,8 +1459,8 @@ produced inside the broker is invisible to the client, which holds the
 `request_id` and is the only layer that could deduplicate. A client that wants
 the retry can reissue and know that it did.
 
-The exception is a `SequencedForwardPublish`. Its owner recognises a batch it
-already holds, so the MQTT listener sends it again after a lost answer, under
+The exception is a sequenced forward (`SequencedForwardPublish` or
+`PlainSequencedForwardPublish`). Its owner recognises a batch it already holds, so the MQTT listener sends it again after a lost answer, under
 the same producer id and sequence, to whichever broker owns the shard by then,
 this one included. It keeps trying within the forward budget
 (`BrokerConfig::forward_budget`). Once an answer was lost, only a later success

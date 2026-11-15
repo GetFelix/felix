@@ -12,7 +12,7 @@ use std::path::Path;
 use felix_storage::DiskLog;
 use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
-    CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, reclaim_kept,
 };
 use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::impls::leader_id_std::LeaderId;
@@ -34,6 +34,9 @@ use crate::{ShardKey, ShardKind};
 /// How often a kept-copy reclaim that waits only on a commit save looks
 /// again. A Raft log saves its commit at most this often.
 const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
+/// How long a shutdown waits for its last batch of log marks, all roots
+/// together.
+const LAST_MARK_LIMIT: Duration = Duration::from_secs(5);
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,7 +77,9 @@ pub struct RuntimeConfig {
     /// time a broker's clock may run.
     pub clock_drift_ppm: u32,
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
-    /// mark at the data root.
+    /// mark at the data root. The default batches every shard's mark into
+    /// one synced write per second; see `docs/per-shard-raft.md`,
+    /// "What this does not catch", for what the trailing mark gives up.
     pub log_mark: LogMarkMode,
     /// Record bytes the shard groups' Raft logs of this runtime keep in
     /// memory for replication reads, all groups together. Each log keeps at
@@ -108,7 +113,9 @@ impl Default for RuntimeConfig {
             // clocks up to 10% off.
             lease: Duration::from_millis(1500),
             clock_drift_ppm: 100_000,
-            log_mark: LogMarkMode::Exact,
+            // An exact mark is a second synced write, and a witness
+            // rewrite, on every flush round of every member.
+            log_mark: LogMarkMode::Batched(Duration::from_secs(1)),
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
             append_entries: 1024,
         }
@@ -420,6 +427,9 @@ struct Inner {
     clock: parking_lot::RwLock<Clock>,
     stop: CancellationToken,
     ticker: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Every data root a member opened here keeps marks at, once each. The
+    /// shutdown writes their last batch even after the members closed.
+    mark_roots: parking_lot::Mutex<Vec<MarkLog>>,
 }
 
 impl GroupRuntime {
@@ -472,6 +482,7 @@ impl GroupRuntime {
                 host: OnceLock::new(),
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
+                mark_roots: parking_lot::Mutex::default(),
             }),
         })
     }
@@ -727,6 +738,12 @@ impl GroupRuntime {
             group.shutdown().await;
             return Err(OpenError::Closed);
         }
+        if let Some(root) = group.mark_root() {
+            let mut roots = inner.mark_roots.lock();
+            if !roots.iter().any(|known| known.same_log(root)) {
+                roots.push(root.clone());
+            }
+        }
         Ok(())
     }
 
@@ -927,7 +944,8 @@ impl GroupRuntime {
         true
     }
 
-    /// Stop the ticker and every group. Later opens are refused.
+    /// Stop the ticker and every group, then write the batched log marks
+    /// once more. Later opens are refused.
     pub async fn shutdown(&self) {
         let inner = &self.inner;
         inner.stop.cancel();
@@ -951,6 +969,20 @@ impl GroupRuntime {
             groups
         };
         futures::future::join_all(groups.iter().map(|group| group.shutdown())).await;
+        // One last batch per root, so a planned stop leaves every batched log
+        // mark at its flushed log, members closed before this included. A
+        // hung disk does not hold the stop: the next open marks what it
+        // recovered anyway.
+        let roots = std::mem::take(&mut *inner.mark_roots.lock());
+        let last = futures::future::join_all(roots.iter().map(MarkLog::mark_batched));
+        match tokio::time::timeout(LAST_MARK_LIMIT, last).await {
+            Ok(results) => {
+                for err in results.into_iter().filter_map(Result::err) {
+                    tracing::warn!(error = %err, "the last batched log marks were not written");
+                }
+            }
+            Err(_) => tracing::warn!("the last batched log marks timed out"),
+        }
     }
 
     /// Hand a peer's message to the member it names.

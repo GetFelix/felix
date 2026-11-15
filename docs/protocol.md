@@ -175,6 +175,14 @@ writes: after a failover a writer's expected offset is stale even with no
 rival, and the refusal tells it where to resume. An empty batch and a stream
 with no log are refused with `error` (`invalid_request`).
 
+On a stream shard that runs on Raft (`docs/per-shard-raft.md`, "Conditional
+publishes") two things differ. The batch must hold exactly one record; a
+batch of several is refused with `error` (`invalid_request`). And a refused
+`publish_if` consumes one offset. The leader's log stores a blank entry in
+its place and followers copy it. Readers skip the blank, subscribers are
+never sent it, and the tail in `offset_mismatch` is the offset after it. Either answer comes once the entry
+is committed, whatever the stream's consistency level.
+
 Not forwarded: a broker that does not lead the shard answers `not_leader` to a
 client that offered `FEATURE_REDIRECT`, as it does for `commit`. Sent on its
 own bidirectional stream, outside the publish pipeline, and only to a broker
@@ -1554,7 +1562,12 @@ records as batches of one, each under its own sequence. On Raft each record is
 a log entry of its own, and a leader change or a lapsed lease partway through
 a batch could leave some of its records written and not others. A re-send
 could not then be told from a new batch, so the batch is refused whole instead
-(#2524). See `docs/per-shard-raft.md`, "Idempotent publishes".
+(#2524). A re-send of a batch of several records that the log already holds is
+still answered: one held whole as a duplicate, and one a leader change cut
+short by writing only its missing records, answered from the first record's
+original offset. No client can start a multi-record batch on Raft yet: the lease-hole half
+of #2472 is done, and lifting the refusal is #2524. So no cut exists in any
+log today. See `docs/per-shard-raft.md`, "Idempotent publishes".
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch
@@ -1958,7 +1971,11 @@ last, after the owner if `0x0080` is set too:
 u64 offset
 ```
 
-A batch's offsets are contiguous, so the record at index `i` is at `offset + i`.
+A batch's offsets are contiguous, so the record at index `i` is at `offset + i`,
+with one exception: on a Raft shard, a re-sent idempotent batch that a leader
+change cut short is answered with its first record's original offset, and other
+records can lie between the part written before the cut and the rest. See
+`docs/per-shard-raft.md`, "Idempotent publishes".
 
 An ack carries an offset only if the broker sent it after the batch was
 written. The broker leaves the bit off when it has no offset to give: the stream

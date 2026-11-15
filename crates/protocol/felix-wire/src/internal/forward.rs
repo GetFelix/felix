@@ -37,12 +37,15 @@ pub struct ForwardPublish {
     pub headers: Option<Vec<Option<Bytes>>>,
     /// The producer id and batch sequence to apply the batch under, so a
     /// re-send after a lost answer is recognised as the batch already held
-    /// rather than written again. `Some` travels as `SequencedForwardPublish`,
-    /// sent only to an owner that advertised
-    /// [`PeerCapabilities::SEQUENCED_FORWARDS`]; it carries header blocks and
-    /// a credential, as that kind extends the headered one.
+    /// rather than written again. `Some` travels as `SequencedForwardPublish`
+    /// when a record has a header block, sent only to an owner that
+    /// advertised [`PeerCapabilities::SEQUENCED_FORWARDS`], and as
+    /// `PlainSequencedForwardPublish` otherwise, sent only to one that also
+    /// advertised [`PeerCapabilities::PLAIN_SEQUENCED_FORWARDS`]. Either needs
+    /// a credential.
     ///
     /// [`PeerCapabilities::SEQUENCED_FORWARDS`]: super::PeerCapabilities::SEQUENCED_FORWARDS
+    /// [`PeerCapabilities::PLAIN_SEQUENCED_FORWARDS`]: super::PeerCapabilities::PLAIN_SEQUENCED_FORWARDS
     pub producer: Option<ForwardProducer>,
 }
 

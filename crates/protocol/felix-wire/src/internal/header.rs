@@ -283,6 +283,13 @@ pub enum Kind {
     ///
     /// [`PeerCapabilities::SWITCH_SEAL`]: super::PeerCapabilities::SWITCH_SEAL
     FromCopy = 63,
+    /// `AuthorizedForwardPublish` followed by the producer id and batch
+    /// sequence: a sequenced forward with no key-and-headers block, which
+    /// `SequencedForwardPublish` has no encoding for. Sent only to a peer
+    /// that offered [`PeerCapabilities::PLAIN_SEQUENCED_FORWARDS`].
+    ///
+    /// [`PeerCapabilities::PLAIN_SEQUENCED_FORWARDS`]: super::PeerCapabilities::PLAIN_SEQUENCED_FORWARDS
+    PlainSequencedForwardPublish = 64,
 }
 
 impl Kind {
@@ -353,6 +360,7 @@ impl Kind {
             61 => Ok(Kind::SealAck),
             62 => Ok(Kind::SealAckOk),
             63 => Ok(Kind::FromCopy),
+            64 => Ok(Kind::PlainSequencedForwardPublish),
             other => Err(Error::UnsupportedInternalKind(other)),
         }
     }

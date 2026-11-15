@@ -527,6 +527,10 @@ impl CommitGate {
                 Err(felix_replication::quorum::QuorumError::LeadershipLost { .. }) => {
                     return false;
                 }
+                // Only a conditional stream publish is answered with it.
+                Err(felix_replication::quorum::QuorumError::OffsetMismatch { .. }) => {
+                    return false;
+                }
             }
         }
     }

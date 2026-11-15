@@ -389,6 +389,7 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
                 position: position as u32,
                 len: 4,
             }),
+            expected: None,
             written: None,
         };
         group.raft().client_write(command).await.expect("written");
@@ -523,5 +524,121 @@ async fn a_batch_resent_to_the_next_leader_is_not_written_again() {
     );
     assert_eq!(log_from(&broker, first).await, ["a", "c", "theirs", "d"]);
     led.heal();
+    led.cluster.stop().await;
+}
+
+/// **A member that installs a snapshot past a cut batch it was never sent
+/// refuses the batch's re-send, as the members that purged it do.** The
+/// snapshot carries the cut batches its sender refuses by name. Without
+/// them the member, once it leads, knows nothing of the producer and takes
+/// sequence 0 as new, writing the start of the batch a second time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_installed_past_a_cut_batch_refuses_its_resend() {
+    use crate::raft::types::ProducerMark;
+    use openraft::type_config::alias::{LeaderIdOf, VoteOf};
+    use openraft::vote::{RaftLeaderId, RaftVote};
+
+    let mut led = led().await;
+    let behind = *BROKERS
+        .iter()
+        .find(|broker| ***broker != *led.leader.broker)
+        .expect("a follower");
+    led.cluster.net.cut.lock().insert(behind.into());
+
+    // Two of batch 0's four records, then a record that cuts it.
+    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let group = group.expect("group");
+    for (position, payload) in [b"a", b"b"].into_iter().enumerate() {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+            producer: Some(ProducerMark {
+                producer_id: PRODUCER,
+                sequence: 0,
+                position: position as u32,
+                len: 4,
+            }),
+            expected: None,
+            written: None,
+        };
+        group.raft().client_write(command).await.expect("written");
+    }
+    let last = led.cluster.write(0, b"after").await;
+    assert_eq!(led.cluster.elected(0).await, led.leader);
+
+    // Every member that holds the batch purges past it.
+    let holders: Vec<_> = BROKERS.iter().filter(|b| **b != behind).collect();
+    for broker in &holders {
+        led.cluster.snapshot(broker, 0, last).await;
+        let member = led.cluster.runtime(broker).group(&shard(0)).expect("group");
+        member
+            .raft()
+            .trigger()
+            .purge_log(last)
+            .await
+            .expect("purge");
+        let purged = eventually(|| led.cluster.purged(broker, 0).filter(|at| *at >= last));
+        assert_eq!(purged.await, last);
+    }
+
+    // What a leader whose log is purged past a member sends it.
+    let snapshot = group.raft().get_snapshot().await.expect("read");
+    let snapshot = snapshot.expect("snapshot");
+    assert!(snapshot.meta.last_log_id.is_some_and(|id| id.index >= last));
+    let leads = LeaderIdOf::<ShardTypes>::new(group.status().term, led.leader.clone());
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true);
+    let installing = led.cluster.runtime(behind).group(&shard(0)).expect("group");
+    installing
+        .raft()
+        .install_full_snapshot(vote, snapshot)
+        .await
+        .expect("install");
+    for broker in BROKERS {
+        let log = &led.cluster.logs[&(broker.to_string(), 0)];
+        assert_eq!(
+            log.producer_sequence(PRODUCER, 0),
+            felix_storage::disk_log::ProducerSequence::Expired,
+            "{broker}"
+        );
+    }
+
+    // It leads from the snapshot. Its leader's log is purged past it, and
+    // the snapshot it was sent is refused, so it is not caught up by
+    // appends first: the leader's last entry is the snapshot's.
+    led.heal();
+    let member = MemberId::new(behind, 1);
+    let transfer = group.raft().trigger().transfer_leader(member.clone()).await;
+    transfer.expect("transfer");
+    let runtime = led.cluster.runtime(behind);
+    let leads = || {
+        runtime
+            .status(&shard(0))
+            .filter(|status| status.leader == Some(member.clone()))
+    };
+    let term = eventually(|| leads().map(|status| status.term)).await;
+    let engine = RaftEngine::new(runtime.clone());
+    eventually(|| {
+        engine
+            .read_bound(&shard(0))
+            .ok()
+            .filter(|bound| *bound > last + 1)
+    })
+    .await;
+
+    let (broker, handle, _root) = broker_over(&led.cluster, &member, &engine).await;
+    let producer = Producer {
+        engine: &engine,
+        broker: &broker,
+        handle: &handle,
+        term,
+    };
+    let again = producer
+        .propose(0, &[b"a", b"b", b"c", b"d"], SequenceReuse::Refuse)
+        .await;
+    assert!(matches!(
+        again.map(|_| ()),
+        Err(BrokerError::SequenceExpired { sequence: 0 })
+    ));
+    assert!(log_from(&broker, last + 1).await.is_empty());
     led.cluster.stop().await;
 }

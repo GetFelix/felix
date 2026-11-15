@@ -14,10 +14,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use felix_storage::log::FsyncMode;
 use felix_storage::raft_log::{LogPoint, LogPositions, WrittenAt, WrittenToken};
+use felix_storage::waiters::Waiters;
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
-use openraft::impls::ProgressResponder;
 use openraft::raft::{WriteOption, WriteResult};
 use openraft::{Raft, ServerState};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -70,6 +70,14 @@ pub enum AnswerAt {
     /// does not. A `Leader` stream: the batch can still be lost if this
     /// broker stops leading before it commits.
     Lease,
+    /// Once a majority of the shard's voters has written the batch
+    /// ([`super::RaftEngine::await_quorum_ack`]), or at the commit if that
+    /// is first. A `Quorum` stream that is not fsynced on commit: the batch
+    /// survives a change of leader and process crashes, and is lost only
+    /// if a majority of copies each lose their unsynced tail, by a power
+    /// cut or a failed flush. With
+    /// [`AckAt::Flushed`] it is the commit.
+    Majority,
 }
 
 /// A publish batch for [`super::RaftEngine::propose`]. It must hold a record.
@@ -82,6 +90,11 @@ pub struct Batch {
     pub term: Option<u64>,
     /// Set when the batch is an idempotent producer's.
     pub producer: Option<Sequenced>,
+    /// Set on a conditional publish: the offset its one record must be
+    /// written at. Written anywhere else, the leader's log stores a blank
+    /// entry there, followers copy it, and the record is never delivered.
+    /// Never set with `producer`.
+    pub expected: Option<u64>,
 }
 
 /// An idempotent producer's batch: whose it is and its sequence. The
@@ -121,6 +134,8 @@ const EMPTY: &str = "the batch held no record";
 const WRONG_KIND: &str = "the shard's group does not take this kind of write";
 const NOT_THE_REST: &str =
     "the records are not the rest of the producer's batch, so nothing was written";
+const CONDITIONAL_SHAPE: &str =
+    "a conditional publish on Raft is one record of no producer's batch, so nothing was written";
 const SEVERAL: &str =
     "an idempotent batch of several records is not written on Raft, so nothing was written";
 
@@ -309,10 +324,15 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         ack,
         term,
         producer,
+        expected,
     } = batch;
     let count = records.len();
     if count == 0 {
         return Err(lost(EMPTY));
+    }
+    // One entry, so its index alone says whether it landed where expected.
+    if expected.is_some() && (count != 1 || producer.is_some()) {
+        return Err(lost(CONDITIONAL_SHAPE));
     }
     let first = match producer {
         None => None,
@@ -351,6 +371,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                     position: first.position + index,
                     ..first
                 }),
+                expected,
                 written: None,
             }
         })
@@ -367,6 +388,7 @@ pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting),
             timestamp_micros: 0,
             payload: Bytes::new(),
             producer: None,
+            expected: None,
             written: None,
         })
         .collect();
@@ -553,36 +575,22 @@ pub(crate) async fn run(
     }
 }
 
-/// Hand `commands` to openraft, in order. With a term, each is appended
-/// only if this member still leads that term, which openraft checks as it
-/// appends: what was stamped or admitted at one term never lands in another.
+/// Hand `commands` to openraft, in order, as one write. With a term, the
+/// write is appended only if this member still leads that term, which
+/// openraft checks as it appends: what was stamped or admitted at one term
+/// never lands in another. openraft admits or refuses the write whole, for
+/// the term and for its lease alike, and appends it at consecutive indexes.
 pub(super) async fn write(
     raft: &Raft<ShardTypes, Machine>,
     commands: Vec<Command>,
     term: Option<u64>,
 ) -> Result<BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>, Fatal<ShardTypes>>
 {
-    let Some(term) = term else {
-        return raft
-            .client_write_many(commands, WriteOption::default())
-            .await;
+    let option = match term {
+        Some(term) => WriteOption::expect_leader(term),
+        None => WriteOption::default(),
     };
-    let mut answers = Vec::with_capacity(commands.len());
-    for command in commands {
-        let (responder, answered) = ProgressResponder::complete_only();
-        raft.write(command)
-            .with_leader(term)
-            .responder(responder)
-            .await?;
-        answers.push(answered);
-    }
-    let results = futures::stream::iter(answers).then(|answered| async move {
-        match answered.await {
-            Ok(result) => Ok(result.map(Into::into)),
-            Err(_) => Err(Fatal::Stopped),
-        }
-    });
-    Ok(results.boxed())
+    raft.client_write_many(commands, option).await
 }
 
 /// Run `work` until it ends or `stop`, and meanwhile hand on the answers of
@@ -719,11 +727,11 @@ pub(super) async fn answer(
                 })),
             };
         }
-        // Records that name a term are refused one by one, so some of a
-        // batch can be in the log when the rest is not. A term change cuts
-        // a prefix, but a lapsed lease can cut any subset (#2472). No
-        // refusal's "nothing was written" holds for it, and the records
-        // that were applied are committed.
+        // openraft admits a call whole, but a leader that stops before the
+        // call commits can leave the next leader only its start: the rest
+        // is discarded. Some of a batch is then in the log when the rest
+        // is not. No refusal's "nothing was written" holds for it, and the
+        // records that were applied are committed.
         let span = match (span, written_end) {
             (Ok(span), _) => span.ok_or_else(|| lost(EMPTY).into()),
             (Err(_), Some(end)) => Err(Unacknowledged {
@@ -776,7 +784,8 @@ fn unled(why: Lost, unwritten: bool) -> CommitError {
 /// error says how far.
 pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     waiting: Waiting<W>,
-    mut positions: watch::Receiver<LogPositions>,
+    positions: watch::Receiver<LogPositions>,
+    flush_waiters: Waiters<(u64, u64)>,
     mut leading: impl Leading,
     stop: CancellationToken,
 ) -> Result<Written, Unacknowledged> {
@@ -822,9 +831,9 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     };
     let written = match span.written(records) {
         Ok(written) => written,
-        // Tokens exist only for the first and last record, so a lease cut
-        // that refuses a record between them looks like this. openraft's
-        // answer says how far the batch was written.
+        // Tokens exist only for the first and last record. A call is
+        // appended as one run, so this is not expected, but openraft's
+        // answer says how far the batch was written either way.
         Err(_) => {
             let told = tokio::select! {
                 biased;
@@ -843,13 +852,17 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     let last = span.last;
     let flushed = async {
         let reached = |at: &LogPositions| {
-            at.flushed.is_some_and(|flushed| {
+            at.flushed.filter(|flushed| {
                 flushed.term > last.term
                     || (flushed.term == last.term && flushed.index >= last.index)
             })
         };
-        let at = positions.wait_for(reached).await.ok()?;
-        at.flushed.map(|flushed| flushed.term)
+        let key = (last.term, last.index);
+        let at = flush_waiters
+            .wait_for(&positions, key, reached)
+            .await
+            .ok()?;
+        Some(at.term)
     };
     let flushed = tokio::select! {
         biased;

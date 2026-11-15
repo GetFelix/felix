@@ -640,13 +640,24 @@ impl StreamState {
             return false;
         }
         state.log.drop_below(floor);
-        let next = offset + 1;
-        state.generation_start_run = match state.generation_start_run {
-            Some((at, run)) if at == offset => Some((next, run + 1)),
-            _ => Some((next, 1)),
-        };
-        state.next_seq = state.next_seq.max(next);
+        state.pass_blank(offset);
         true
+    }
+
+    /// A conditional publish stored as a blank at `offset` reached the ring
+    /// in its turn. The ring stays; the next publish reports the offset as
+    /// skipped rather than as a drop.
+    pub(crate) fn pass_blank(&self, offset: u64) {
+        let mut state = self.log_state.lock();
+        // As for a released batch: behind a gap on a broker that no longer
+        // leads, the pass over the log moves the sequence.
+        if self.engine_log
+            && offset > state.next_seq
+            && !self.leads_engine_log.load(Ordering::Acquire)
+        {
+            return;
+        }
+        state.pass_blank(offset);
     }
 
     /// A generation-start record sits at `offset` at the tail, the last of
@@ -1106,6 +1117,17 @@ impl LogState {
         if start > self.next_seq.saturating_add(skipped) {
             self.state_view = None;
         }
+    }
+
+    /// Move past `offset`, which holds no record a reader is given, as past
+    /// a generation-start record.
+    fn pass_blank(&mut self, offset: u64) {
+        let next = offset + 1;
+        self.generation_start_run = match self.generation_start_run {
+            Some((at, run)) if at == offset => Some((next, run + 1)),
+            _ => Some((next, 1)),
+        };
+        self.next_seq = self.next_seq.max(next);
     }
 }
 

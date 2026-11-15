@@ -44,6 +44,7 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
         timestamp_micros: stamp,
         payload: command.encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     let written = member.raft().client_write(command).await.expect("write");
@@ -202,6 +203,7 @@ async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
         timestamp_micros: 10,
         payload: put("k", b"one", sequence).encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     assert!(!group.write_in_term(command(1), term - 1).await);
@@ -379,6 +381,7 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
         timestamp_micros: 20,
         payload: put("k", b"two", 2).encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -413,6 +416,7 @@ async fn a_read_whose_apply_lags_past_the_election_timeout_waits_out_its_own_dea
         timestamp_micros: 20,
         payload: put("k", b"two", 2).encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -446,14 +450,15 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
     use openraft::type_config::alias::{EntryOf, LogIdOf};
     let dir = tempdir().expect("dir");
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
-    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
-    let (mut machine, _, cache) = opened.expect("open");
+    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
+    let (mut machine, _, _, cache) = opened.expect("open");
     let cache = cache.expect("a cache group");
     let entry = |index: u64, command: CacheCommand| {
         let command = Command {
             timestamp_micros: index * 10,
             payload: command.encode(),
             producer: None,
+            expected: None,
             written: None,
         };
         let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -480,8 +485,8 @@ async fn cache_machine(
     dir: &std::path::Path,
 ) -> (super::super::machine::Machine, super::super::machine::Cache) {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
-    let (machine, _, cache) = opened.expect("open");
+    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
+    let (machine, _, _, cache) = opened.expect("open");
     (machine, cache.expect("a cache group"))
 }
 
@@ -501,6 +506,7 @@ fn entries(
                 timestamp_micros: index * 10,
                 payload: command(index).encode(),
                 producer: None,
+                expected: None,
                 written: None,
             };
             let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -1286,6 +1292,7 @@ async fn a_cache_shard_takes_no_stream_batch_and_a_stream_shard_no_cache_write()
     cluster.form(1).await;
     let (engine, group) = leading(&cluster).await;
     let batch = || Batch {
+        expected: None,
         records: vec![Record {
             timestamp_micros: 10,
             payload: Bytes::from_static(b"a stream record"),
@@ -1400,6 +1407,7 @@ async fn what_a_write_call_per_entry_costs() {
                     timestamp_micros: 10,
                     payload: put("k", b"value", (mode * ROUNDS + round) * 1_000 + entry).encode(),
                     producer: None,
+                    expected: None,
                     written: None,
                 });
                 let commands = commands.collect();

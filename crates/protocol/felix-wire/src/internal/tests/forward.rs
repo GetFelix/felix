@@ -470,15 +470,6 @@ fn a_sequenced_forward_is_its_own_kind_and_round_trips() {
     );
     assert_eq!(InternalMessage::decode(bytes).expect("decode"), message);
 
-    // The decoder refuses a section with no block, so there is nothing to
-    // send for a sequenced batch without one.
-    for bare in [
-        sequenced_forward(None),
-        sequenced_forward(Some(vec![None, None])),
-    ] {
-        assert!(matches!(bare.encode(), Err(Error::InvalidRecordHeaders(_))));
-    }
-
     let InternalMessage::ForwardPublish(base) = message else {
         panic!("a forward");
     };
@@ -495,6 +486,77 @@ fn a_sequenced_forward_is_its_own_kind_and_round_trips() {
         Kind::Incarnated
     );
     assert_eq!(InternalMessage::decode(bytes).expect("decode"), incarnated);
+}
+
+/// **A sequenced forward with no header block travels on a kind without the
+/// section, and decodes with no headers**, so an owner that cannot store
+/// headers, a Raft shard's, still takes it. A batch with a block keeps the
+/// headered kind, byte for byte.
+#[test]
+fn a_sequenced_forward_without_a_block_round_trips_without_headers() {
+    for bare in [
+        sequenced_forward(None),
+        sequenced_forward(Some(vec![None, None])),
+    ] {
+        assert_eq!(bare.kind(), Kind::PlainSequencedForwardPublish);
+        assert_eq!(
+            bare.required_capability(),
+            Some(
+                PeerCapabilities::SEQUENCED_FORWARDS
+                    .union(PeerCapabilities::PLAIN_SEQUENCED_FORWARDS)
+            )
+        );
+        let bytes = bare.encode().expect("encode");
+        assert_eq!(
+            &bytes[bytes.len() - 16..],
+            &[0, 0, 0, 0, 0, 0, 0xfe, 0xed, 0, 0, 0, 0, 0, 0, 0, 9]
+        );
+        let InternalMessage::ForwardPublish(decoded) =
+            InternalMessage::decode(bytes).expect("decode")
+        else {
+            panic!("a forward");
+        };
+        let InternalMessage::ForwardPublish(sent) = bare else {
+            panic!("a forward");
+        };
+        assert_eq!(decoded.headers, None);
+        assert_eq!(
+            decoded,
+            ForwardPublish {
+                headers: None,
+                ..sent
+            }
+        );
+    }
+
+    // The same body as the headered sequenced kind with its section removed:
+    // it is the authorized body and the sequence.
+    let InternalMessage::ForwardPublish(plain) = sequenced_forward(None) else {
+        panic!("a forward");
+    };
+    let authorized = InternalMessage::ForwardPublish(ForwardPublish {
+        producer: None,
+        ..plain.clone()
+    })
+    .encode()
+    .expect("encode");
+    let sequenced = InternalMessage::ForwardPublish(plain)
+        .encode()
+        .expect("encode");
+    assert_eq!(
+        &sequenced[InternalHeader::LEN..sequenced.len() - 16],
+        &authorized[InternalHeader::LEN..]
+    );
+
+    // Without a credential there is nothing for the owner to check.
+    let InternalMessage::ForwardPublish(base) = sequenced_forward(None) else {
+        panic!("a forward");
+    };
+    let anonymous = InternalMessage::ForwardPublish(ForwardPublish {
+        credential: String::new(),
+        ..base
+    });
+    assert!(anonymous.encode().is_err());
 }
 
 /// A sequenced body cut short of its sequence does not decode as a shorter

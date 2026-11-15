@@ -13,13 +13,13 @@ use bytes::Bytes;
 use felix_broker::{
     Broker, BrokerError, PublishOutcome, StateOp, StateRead, StreamHandle, TrimOutcome,
 };
-use felix_replication::engine::Engine;
+use felix_replication::engine::{CommitError, Engine};
 use felix_wire::StateChange;
 
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::PublishContext;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
-use crate::shards::routing::{Dispatch, dispatch, dispatch_write};
+use crate::shards::routing::{Dispatch, RaftRefusal, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Why a write was not made.
@@ -129,6 +129,9 @@ pub(crate) async fn publish_at(
         crate::serving::quic::handlers::publish::admit_unqueued(publish_ctx, tenant_id, &payloads)
             .await?;
     let shard = shard_key(publish_ctx, tenant_id, namespace, stream, key, named)?;
+    if publish_ctx.engine.on_raft(&shard) {
+        return publish_at_on_raft(broker, publish_ctx, &shard, payloads, expected_offset).await;
+    }
     leader_write(
         broker,
         publish_ctx,
@@ -142,6 +145,49 @@ pub(crate) async fn publish_at(
         },
     )
     .await
+}
+
+/// [`publish_at`] on a shard a Raft group runs here. The leader's log
+/// decides the condition at the entry's final index, so a refusal is known
+/// only at the commit, and it took an offset. See `docs/per-shard-raft.md`,
+/// "Conditional publishes".
+async fn publish_at_on_raft(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    shard: &ShardKey,
+    payloads: Vec<Bytes>,
+    expected_offset: u64,
+) -> Result<u64, NotWritten> {
+    let (dispatched, _) = dispatch_write(publish_ctx.ingress.as_deref(), shard).await;
+    let term = owned(dispatched, shard)?;
+    let handle = broker
+        .resolve_stream_handle(
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+        )
+        .await
+        .map_err(|err| ClientError::from_broker(&err, "publish not served"))?;
+    let proposed = publish_ctx
+        .engine
+        .publish_at_on_raft(
+            broker,
+            &handle,
+            shard,
+            term,
+            payloads,
+            expected_offset,
+            publish_ctx.quorum_timeout,
+        )
+        .unwrap_or(Err(RaftRefusal::NotLeading { term }))
+        .map_err(|refused| ClientError::from_anyhow(&refused.into_anyhow()))?;
+    match proposed.complete().await {
+        Ok(Some(offset)) => Ok(offset),
+        Ok(None) => Err(ClientError::internal("a write reported no offset").into()),
+        Err(CommitError::OffsetMismatch { tail }) => Err(NotWritten::OffsetMismatch { tail }),
+        Err(err) => Err(ClientError::from_anyhow(&err.into()).into()),
+    }
 }
 
 /// Hide `shard` of `stream` below `before`, only if its next offset is

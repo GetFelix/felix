@@ -44,6 +44,8 @@ mod read_rounds;
 mod root;
 mod runtime;
 pub mod switch;
+#[cfg(any(test, feature = "testing"))]
+mod testing;
 #[cfg(test)]
 mod tests;
 mod ticker;
@@ -64,6 +66,14 @@ pub use runtime::{
     GroupRuntime, GroupStatus, InitializeError, InvalidTimers, NotBlank, OpenError, OpenedMember,
     Role, RuntimeConfig,
 };
+#[cfg(any(test, feature = "testing"))]
+pub use testing::UncheckedRecord;
+
+/// The name `shard`'s marks go by at its data root. For tests.
+#[cfg(any(test, feature = "testing"))]
+pub fn mark_name(shard: &crate::ShardKey) -> String {
+    runtime::mark_name(shard)
+}
 pub use types::{GroupId, MemberId};
 
 pub use felix_storage::raft_copy::LogMarkMode;
