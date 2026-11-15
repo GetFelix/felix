@@ -1098,9 +1098,10 @@ async fn a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused()
 }
 
 /// **A read that waits for an answered write to apply is refused if the
-/// shard closes during the wait.** A member deposed after its read-index
-/// round still applies the write as a follower, so the apply alone does not
-/// say it still leads.
+/// shard closes during the wait.** The apply alone does not say the term
+/// is still open: here the term is voided by a transfer while the member
+/// stays Raft leader. A member deposed outright goes through the same
+/// `open_term` check.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_read_is_refused_if_the_shard_closes_while_it_waits_for_the_apply() {
     let mut led = led().await;
