@@ -29,6 +29,7 @@ use super::machine::SnapshotData;
 use super::reach::{Reach, Refusals, Waits};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
+use crate::ShardKind;
 
 /// One Raft message for one member of one group. What is in it is this
 /// module's business; a transport carries it to [`Self::to`]'s broker.
@@ -204,8 +205,8 @@ pub(crate) struct Router {
     refusals: Arc<Refusals>,
     /// openraft's settings, for its usual retry delays.
     config: Arc<Config>,
-    /// The broker of the one member this copy calls, once openraft has
-    /// asked for a client to it.
+    /// The broker of the one member this copy calls, when its retries may
+    /// wait longer while that broker is down.
     to: Option<Arc<str>>,
 }
 
@@ -235,10 +236,12 @@ impl Router {
         }
     }
 
-    /// This router, for openraft's client to `target`.
-    fn toward(&self, target: &MemberId) -> Self {
+    /// This router, for openraft's client to `target` in `group`. A cache
+    /// shard keeps openraft's delays: they also pace its snapshot pieces,
+    /// whose wait the ticker's walk cannot cut short.
+    fn toward(&self, target: &MemberId, group: &GroupId) -> Self {
         Self {
-            to: Some(Arc::clone(&target.broker)),
+            to: (group.shard.kind == ShardKind::Stream).then(|| Arc::clone(&target.broker)),
             ..self.clone()
         }
     }
@@ -454,8 +457,8 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
         }
     }
 
-    /// openraft's own retry delays, which grow further while the member's
-    /// broker is down.
+    /// openraft's own retry delays, which grow further while a stream
+    /// shard member's broker is down.
     fn backoff(&self) -> Option<Backoff> {
         let broker = Arc::clone(self.to.as_ref()?);
         let usual = self.config.build_backoff();
@@ -477,6 +480,7 @@ impl RaftNetworkFactory<ShardTypes> for Network {
     type Network = GroupNetworkAdapter<ShardTypes, GroupId, Router>;
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
-        GroupNetworkAdapter::new(self.router.toward(&target), target, self.group.clone())
+        let router = self.router.toward(&target, &self.group);
+        GroupNetworkAdapter::new(router, target, self.group.clone())
     }
 }

@@ -207,7 +207,7 @@ impl Pace {
         if sent.as_ref().is_some_and(|sent| last <= sent) {
             return false;
         }
-        *sent = Some(last.clone());
+        *sent = Some(*last);
         true
     }
 

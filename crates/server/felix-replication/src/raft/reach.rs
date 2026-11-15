@@ -21,12 +21,13 @@ use tokio::time::Instant;
 use super::types::GroupId;
 
 /// openraft's longest backoff to a broker that is not down. No member is
-/// retried early more often than
-/// this, so a struggling peer is never called faster than without the wake.
+/// retried early more often than this, so a struggling peer is never called
+/// faster than without the wake.
 pub(crate) const CEILING: Duration = Duration::from_secs(1);
 
-/// The longest a member's stream waits between retries while its broker is
-/// down. Its first answer ends the wait, so this costs no time to recover.
+/// The longest a stream shard member's stream waits between retries while
+/// its broker is down. Its first answer ends the wait, so this costs no time
+/// to recover.
 pub(crate) const WHILE_DOWN: Duration = Duration::from_secs(10);
 
 /// A broker no call has failed to for this long is forgotten.
