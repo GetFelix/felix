@@ -409,6 +409,9 @@ fn routed(
     mut assignment: ShardAssignment,
     incarnation: Option<u64>,
 ) -> RoutedShardAssignment {
+    // Brokers read copy ids from the target's members, so the record's
+    // own are not sent: they would go out before the gate opens.
+    assignment.raft_copy_ids.clear();
     let target = assignment
         .raft_target
         .take()

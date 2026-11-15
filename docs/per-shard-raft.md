@@ -3432,6 +3432,12 @@ target counter (metadata level 36):
   counter value in the same CAS as the new set. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
+- **It counts within one stream incarnation.** A stream deleted and
+  created again gets a new shard record under the same key, and its counter
+  starts at 1 again. The feed sends the stream incarnation beside the
+  target, and a broker keys a target by shard key and stream incarnation,
+  so a recreated stream is a new group, never a newer target for the old
+  one.
 - **It survives a control-plane leader change.** The counter is part of the
   shard record, written through the metadata Raft log by CAS, so a new
   control-plane leader starts from the last committed value and the next

@@ -374,6 +374,7 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
     let mut state = serde_json::to_value(state).expect("json");
     for entry in state["shards"].as_array_mut().expect("shards") {
         entry[1]["raft_target"] = serde_json::json!({"counter": 3, "members": {"broker-x": 7}});
+        entry[1]["raft_copy_ids"] = serde_json::json!({"broker-x": 7});
     }
     let state = serde_json::from_value(state).expect("state");
     fixture.store.import_state(state).await.expect("import");
@@ -402,6 +403,7 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
         serde_json::json!({"version": {"incarnation": 0, "counter": 3}, "members": {"broker-x": 7}})
     );
     assert!(item.get("raft_target").is_none(), "{item}");
+    assert!(item.get("raft_copy_ids").is_none(), "{item}");
 
     // A broker holds an incarnation this store never issued: the store
     // moves past it, and nobody has acknowledged the new one.
@@ -437,5 +439,19 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
     assert_eq!(
         snapshot().await["items"][0]["target"]["version"],
         serde_json::json!({"incarnation": current, "counter": 3})
+    );
+    // Records read before a restore that landed during the read go out
+    // without their target, even once everyone has acknowledged.
+    assert_eq!(
+        super::target_incarnation(&fixture.state, current)
+            .await
+            .expect("gate"),
+        Some(current)
+    );
+    assert_eq!(
+        super::target_incarnation(&fixture.state, current - 1)
+            .await
+            .expect("gate"),
+        None
     );
 }

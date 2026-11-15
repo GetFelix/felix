@@ -218,6 +218,8 @@ impl InMemoryStore {
         // Under the shard lock, so a reader that sees the restored records
         // also sees the raised incarnation: the feed stamps a target with
         // the incarnation it reads around them.
+        #[cfg(test)]
+        self.faults.pause_import().await;
         *self.placement.write().await = super::PlacementIncarnation {
             current: state.placement_incarnation,
             acks: state.placement_acks.into_iter().collect(),

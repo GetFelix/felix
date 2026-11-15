@@ -1002,6 +1002,14 @@ impl ControlPlaneStore for InMemoryStore {
         Ok(true)
     }
 
+    /// From one view of the nodes and acknowledgements, so a registration
+    /// or a restore cannot land between the two reads.
+    async fn placement_acked_by_all(&self) -> StoreResult<bool> {
+        let nodes = self.nodes.read().await;
+        let placement = self.placement.read().await;
+        Ok(all_registered_acked(&nodes, &placement))
+    }
+
     async fn placement_acks(&self) -> StoreResult<Vec<(String, crate::model::PlacementAck)>> {
         Ok(self
             .placement
@@ -1461,6 +1469,10 @@ pub(crate) struct Faults {
     /// Once set, the next shard write says it has read its stream or cache,
     /// then waits to be resumed (or 300 ms) before it writes.
     pub(crate) shard_write_pause: std::sync::Mutex<Option<ShardWritePause>>,
+    /// Once set, the next import says it has replaced the shard records,
+    /// then waits to be resumed (or 300 ms) before it writes the placement
+    /// incarnation.
+    pub(crate) import_pause: std::sync::Mutex<Option<ShardWritePause>>,
 }
 
 #[cfg(test)]
@@ -1472,7 +1484,15 @@ pub(crate) struct ShardWritePause {
 #[cfg(test)]
 impl Faults {
     async fn pause_shard_write(&self) {
-        let pause = self.shard_write_pause.lock().expect("pause").take();
+        Self::pause(&self.shard_write_pause).await;
+    }
+
+    async fn pause_import(&self) {
+        Self::pause(&self.import_pause).await;
+    }
+
+    async fn pause(slot: &std::sync::Mutex<Option<ShardWritePause>>) {
+        let pause = slot.lock().expect("pause").take();
         if let Some(pause) = pause {
             let _ = pause.reached.send(());
             let _ = tokio::time::timeout(std::time::Duration::from_millis(300), pause.resume).await;

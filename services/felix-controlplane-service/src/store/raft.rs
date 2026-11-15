@@ -287,6 +287,8 @@ impl RaftStore {
         assignment.readmitted.clear();
         assignment.placed = None;
         assignment.switch = None;
+        assignment.raft_copy_ids.clear();
+        assignment.raft_target = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -1119,9 +1121,10 @@ impl ControlPlaneStore for RaftStore {
         .await
     }
 
-    /// Refused unless every member is known to apply level 36: below it a
-    /// member would keep no target where the others hold one. The apply
-    /// decides again against the record it lands on.
+    /// `propose` already refuses the entry below the group's level. This
+    /// also refuses it while some member's level is unknown, rather than
+    /// counting it at the join floor. The apply decides the rest against
+    /// the record it lands on.
     async fn record_raft_copy_id(
         &self,
         key: &ShardKey,
@@ -1553,6 +1556,20 @@ impl ControlPlaneStore for RaftStore {
             return Ok(false);
         }
         self.local()?.placement_acked_by(brokers).await
+    }
+
+    /// As [`Self::placement_acked_by`]: false until every member is known
+    /// to be at level 35.
+    async fn placement_acked_by_all(&self) -> StoreResult<bool> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < PLACEMENT_INCARNATION_LEVEL)
+        {
+            return Ok(false);
+        }
+        self.local()?.placement_acked_by_all().await
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

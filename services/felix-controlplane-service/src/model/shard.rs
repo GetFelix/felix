@@ -301,8 +301,10 @@ pub struct ShardAssignment {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub raft_copy_ids: BTreeMap<String, u64>,
     /// The voters the shard's Raft group should have: see [`RaftTarget`].
-    /// Written in the same write that changes the set or a copy id, and
-    /// never otherwise. Store-owned like `generation`. Under Raft it needs
+    /// Today only a copy-id report moves it; a set change will too once Raft
+    /// shards are placed. Its counter counts within this record, at the
+    /// stream's `incarnation`: a stream created again starts a new group and
+    /// a new count. Store-owned like `generation`. Under Raft it needs
     /// metadata level 36.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_target: Option<RaftTarget>,

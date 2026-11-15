@@ -543,8 +543,10 @@ pub struct RoutedShardAssignment {
     /// The voters the shard's Raft group should have, with the version a
     /// broker compares targets by. Absent for a hybrid shard, for one with
     /// no target yet, and while some registered broker has not acknowledged
-    /// the placement incarnation. The record's own `raft_target` is never
-    /// sent here.
+    /// the placement incarnation. The record's own `raft_target` and
+    /// `raft_copy_ids` are never sent here. The version counts within the
+    /// shard at the stream incarnation `incarnation` beside it, so a broker
+    /// keys a target by shard key and stream incarnation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<RaftTargetView>,
 }

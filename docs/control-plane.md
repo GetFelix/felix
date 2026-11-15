@@ -1083,21 +1083,25 @@ uses it to tell that it lost its storage: if the set names a different id
 for it, it stops voting until it has caught up (`docs/replication-design.md`,
 "A copy that lost its storage does not vote"). The promotion fence never
 reads it, because a registered id is not the id a report vouched for.
+The Raft store writes it only at metadata level 22.
 
 A shard that switched to Raft also carries `raft_copy_ids`, the copy id each
 broker in its set reported through `POST /v1/nodes/{node_id}/raft-copy-id`,
 and `raft_target`: `counter` and `members`, copy id by node id. The store
-writes the target once every broker in the set has an id, and again with
-the next counter whenever an id or the set changes; nothing else moves the
-counter. Both are written in place, at the shard's generation. A target
-change is refused while some registered broker, serving or not, has not
-acknowledged the placement incarnation. The assignment feeds leave the
-record's `raft_target` out and send `target` instead, with
-`version: {incarnation, counter}`, only while every registered broker has
-acknowledged it; the confirmed reads never send one. The Raft store needs
-every member known at metadata level 36 (`docs/per-shard-raft.md`, "Where a
-target comes from").
-The Raft store writes it only at metadata level 22.
+writes the target once every broker in the set has an id, and again with the
+next counter whenever an id changes. Today only a copy-id report moves the
+counter; a set change will too once Raft shards are placed. Both are written
+in place, at the shard's generation. A target change is refused while some
+registered broker, serving or not, has not acknowledged the placement
+incarnation. The assignment feeds leave the record's `raft_target` out and
+send `target` instead, with `version: {incarnation, counter}`, only while
+every registered broker has acknowledged it; the confirmed reads never send
+one. `raft_copy_ids` is never sent to brokers. A version counts within one
+shard record at its stream incarnation, the `incarnation` sent beside it: a
+stream deleted and created again starts its counter at 1 under the same key,
+so a broker keys a target by shard key and stream incarnation, and a
+recreated stream is a new group. The Raft store needs every member known at
+metadata level 36 (`docs/per-shard-raft.md`, "Where a target comes from").
 
 Under `joint_fence` an assignment also carries `learners`: the members the
 control plane holds as learners because their storage was replaced. Empty
