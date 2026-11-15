@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794784933255,
+  "lastUpdate": 1794785289463,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59280,6 +59280,58 @@ window.BENCHMARK_DATA = {
             "range": "42789.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1578976.48\nmean: 1568090.04\nstdev: 42789.75\ncv: 2.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "33b3136345131fca94a27c10260ee16a262963fe",
+          "message": "perf(raft): hand a formed group's first leadership to placement's leader (#2653)\n\n* perf(raft): hand a formed group's first leadership to placement's leader\n\nThe lowest broker of a set forms every group of that set and wins its\nfirst election, so one broker led every Raft shard and took every write.\nThe forming broker now transfers the first leadership to the broker\nplacement names, once that broker holds its whole log.\n\n* perf(raft): close the shard before waiting for the hand-over target\n\nReview: under load the target's match trails the last index, so a hand-over\nthat waited for it before closing the shard could time out. Close first,\nthen wait for the target, then ask. The cluster tests' leader probe waits\nfor the leader to settle past the first hand-over.\n\n* test(raft): a formed group is led by placement's leader; note leaders do not follow placement later\n\n* chore: spec pairing note for first-leader hand-over\n\nSpec-Unaffected: the hand-over is a plain openraft leadership transfer, asked once after the group forms and its target has caught up. It changes which member wins the next term, not the election, commit or fence rules. Raft safety is openraft's and no Felix-modelled rule (offsets, fences, voter sets) changes.",
+          "timestamp": "2026-11-15T23:19:55Z",
+          "tree_id": "273f475af69fe87433698c4f26df5379426847ce",
+          "url": "https://github.com/GetFelix/felix/commit/33b3136345131fca94a27c10260ee16a262963fe"
+        },
+        "date": 1794785288906,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 337433.95,
+            "range": "14284.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337433.95\nmean: 333796.54\nstdev: 14284.69\ncv: 4.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 337433.95,
+            "range": "14284.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 337433.95\nmean: 333796.54\nstdev: 14284.69\ncv: 4.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80140.67,
+            "range": "592.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80140.67\nmean: 80029.47\nstdev: 592.34\ncv: 0.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801406.73,
+            "range": "5923.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801406.73\nmean: 800294.66\nstdev: 5923.45\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
