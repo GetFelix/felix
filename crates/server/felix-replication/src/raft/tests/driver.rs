@@ -700,7 +700,7 @@ async fn a_target_adds_a_voter() {
     // An older target changes nothing, and is not kept, even told in a
     // newer term. The same version is kept again only for a newer term.
     let a = cluster.runtime("a");
-    // `a` may not have led, and then it was told nothing.
+    // Seed `a` at term 0, so what follows holds whether or not it led.
     a.retarget(&shard(0), target(&["a", "b", "c"], 2), 0);
     assert!(!a.retarget(&shard(0), target(&["a", "b"], 1), u64::MAX));
     assert!(a.retarget(&shard(0), target(&["a", "b", "c"], 2), u64::MAX - 1));

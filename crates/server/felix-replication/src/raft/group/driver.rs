@@ -29,8 +29,8 @@ pub(crate) const REFUSALS_TOTAL: &str = "felix_broker_raft_membership_refusals_t
 /// that leads it last saw.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum MembershipProgress {
-    /// This member does not lead the group, or has no target newer than
-    /// the membership.
+    /// This member does not lead the group, holds no target told for the
+    /// term it leads, or holds none newer than the membership.
     #[default]
     Idle,
     /// The membership is the target.
