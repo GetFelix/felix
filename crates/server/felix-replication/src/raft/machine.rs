@@ -442,7 +442,13 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     .apply(entry.log_id.index, command.0, &command.1);
                 written += 1;
             }
-            let record = matches!(entry.payload, EntryPayload::Normal(_));
+            // openraft applies entries read back from the log, where a
+            // conditional publish off its offset is already a blank. Checked
+            // again in case one ever reaches apply as the command.
+            let record = match &entry.payload {
+                EntryPayload::Normal(command) => !command.blank_at(entry.log_id.index),
+                _ => false,
+            };
             if let EntryPayload::Membership(membership) = entry.payload {
                 self.state.membership =
                     StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);

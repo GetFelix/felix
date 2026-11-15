@@ -77,6 +77,7 @@ fn every_request() -> Vec<RaftRequest> {
                 timestamp_micros: 99,
                 payload: Bytes::from_static(b"a record"),
                 producer: None,
+                expected: None,
                 written: None,
             },
         ),
@@ -92,6 +93,7 @@ fn every_request() -> Vec<RaftRequest> {
                     position: 0,
                     len: 1,
                 }),
+                expected: None,
                 written: None,
             },
         ),
@@ -106,6 +108,17 @@ fn every_request() -> Vec<RaftRequest> {
                     position: 2,
                     len: 5,
                 }),
+                expected: None,
+                written: None,
+            },
+        ),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 10),
+            Command {
+                timestamp_micros: 102,
+                payload: Bytes::from_static(b"a conditional publish"),
+                producer: None,
+                expected: Some(10),
                 written: None,
             },
         ),
@@ -241,7 +254,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 5);
+    assert_eq!(read.entries.len(), 6);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -433,6 +446,45 @@ fn a_layout_4_body_is_refused_by_layout() {
     assert!(refused.to_string().contains("layout 4"), "{refused}");
 }
 
+/// The conditional entry is a new tag, not a new layout, so every other
+/// frame is what a build without it writes. That build reads tags 0 to 4
+/// and refuses any other by name, so it never stores a conditional record
+/// as a plain one.
+#[test]
+fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
+    let payload = Bytes::from_static(b"a conditional publish");
+    let written = request(Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 10),
+            Command {
+                timestamp_micros: 102,
+                payload: payload.clone(),
+                producer: None,
+                expected: Some(10),
+                written: None,
+            },
+        )],
+        leader_commit: None,
+    }));
+    let bytes = encode_request(&written).expect("encode");
+    assert_eq!(bytes[0], 5, "the layout is unchanged");
+    // The tag, then the expected offset, the append time, the length and the
+    // record.
+    let at = bytes.len() - payload.len() - 4 - 8 - 8 - 1;
+    assert_eq!(bytes[at], ENTRY_CONDITIONAL);
+    const { assert!(ENTRY_CONDITIONAL > ENTRY_PIECE) };
+    // An older build takes 5 the way this one takes any tag it lacks.
+    let mut unknown = BytesMut::from(&bytes[..]);
+    unknown[at] = ENTRY_CONDITIONAL + 1;
+    let refused = decode_request(unknown.freeze()).expect_err("refused");
+    assert!(
+        refused.to_string().contains("is not an entry payload"),
+        "{refused}"
+    );
+}
+
 /// A peer cannot make this broker reserve room for entries the body does
 /// not hold.
 #[test]
@@ -486,6 +538,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                     timestamp_micros: 1,
                     payload: record.clone(),
                     producer: None,
+                    expected: None,
                     written: None,
                 },
             )
@@ -532,6 +585,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                     timestamp_micros: 1,
                     payload: record.clone(),
                     producer: None,
+                    expected: None,
                     written: None,
                 },
             )
@@ -628,6 +682,7 @@ fn an_entry_that_continues_a_batch_is_refused() {
         timestamp_micros: 100,
         payload: Bytes::from_static(b"a record"),
         producer: None,
+        expected: None,
         written: None,
     };
     let written = request(Request::Append(AppendEntriesRequest {

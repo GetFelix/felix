@@ -35,6 +35,7 @@ impl GroupRuntime {
                 timestamp_micros: 1_700_000_000,
                 payload,
                 producer,
+                expected: None,
                 written: None,
             };
             let written = group.raft().client_write(command).await.ok()?;
