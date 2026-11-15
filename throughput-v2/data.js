@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794761589514,
+  "lastUpdate": 1794767777577,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58812,6 +58812,58 @@ window.BENCHMARK_DATA = {
             "range": "82947.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1605304.64\nmean: 1573885.58\nstdev: 82947.35\ncv: 5.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2ef4ddc007d92ba27ae377cdda1f891a2864c0b0",
+          "message": "test(raft): hold the handover until the removal test has seen its new leader (#2617) (#2631)\n\na_removal_is_finished_under_a_leader_change mutes the member the target\nkeeps so only the dropped member can be elected. That member hands over\nwithin about 10 ms of its election, to the muted member, which cannot win.\nCluster::elected polls every 10 ms and needs every member to agree on one\nleader, so it usually missed that window and the group cycled through\nfailed transfers and dueling candidates until a poll happened to land:\npassing runs took 3 to 115 s and a run past PATIENCE (120 s) failed with\n\"group 0 has no leader\".\n\nTransfers are now lost while the successor is muted and restored with the\nrest of the network, so the new leader keeps its term until the test has\nseen it. A run takes about 5 s.\n\nSpec-Unaffected: test-only change; the modelled protocol is unchanged.",
+          "timestamp": "2026-11-15T18:30:27Z",
+          "tree_id": "b97ee98094b371bd056cadb45fe7423ae2e82c0f",
+          "url": "https://github.com/GetFelix/felix/commit/2ef4ddc007d92ba27ae377cdda1f891a2864c0b0"
+        },
+        "date": 1794767776759,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355994.7,
+            "range": "11101.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355994.70\nmean: 357095.05\nstdev: 11101.47\ncv: 3.11%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355994.7,
+            "range": "11101.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355994.70\nmean: 357095.05\nstdev: 11101.47\ncv: 3.11%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79975.33,
+            "range": "2568.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79975.33\nmean: 79575.79\nstdev: 2568.76\ncv: 3.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 799753.35,
+            "range": "25687.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 799753.35\nmean: 795757.96\nstdev: 25687.63\ncv: 3.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
