@@ -1273,8 +1273,8 @@ stops depends on where it is:
   the kept file while it was still whole and carried its value, and a
   reservation is never lowered after that. A copy raising its own value
   does not prove the carry by itself: an older build could have rotated
-  without it. That is the downgrade the fleet feature rules out (below),
-  so this holds only while no broker of the fleet ran a build without the
+  without it. That is the downgrade ruled out below, so this holds only
+  while no broker of the fleet ran a build without the
   file after the shard took a reservation. Then stop the
   broker and delete only the damaged `raft-reserved` file in that kept
   directory, not the directory. An absent file reads as no reservation,
@@ -1309,10 +1309,9 @@ without it after any copy reserved is unsafe (#2611).
 A build that carries this file but reserves only under `periodic` or
 `none` leaves an `on_commit` copy unreserved. The first open by a build
 that reserves in every mode raises it over the copy's whole log before
-Raft counts anything, so an upgraded copy is covered. The re-form, which
-is not built yet, will wait on a fleet feature that only builds reserving
-in every mode report, so it never reads a copy that an older build is
-still counting from without a reservation.
+Raft counts anything, so an upgraded copy is covered. No released build
+has the file at all (above), so only an unreleased build can leave such a
+copy.
 
 ## `raft-snapshot`: a Raft group's snapshot
 

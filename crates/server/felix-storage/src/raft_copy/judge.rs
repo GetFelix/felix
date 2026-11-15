@@ -284,23 +284,29 @@ pub fn highest_reserved(dir: &Path) -> io::Result<Option<u64>> {
 }
 
 /// Whether a group reached an earlier copy of `dir`: one rotations moved
-/// aside holds a log entry, or a reservation was carried. A group formed
-/// on the rotated copies alone would start at index 0 and give out offsets
-/// the old one acknowledged. A kept copy that cannot be read is an error.
+/// aside holds a log entry or a reservation, or `dir` holds a reservation
+/// but no entry, so a rotation carried it. A group formed on the rotated
+/// copies alone would start at index 0 and give out offsets the old one
+/// acknowledged. A kept copy that cannot be read is an error.
 pub fn reached_before(dir: &Path, index_spacing_bytes: u64) -> io::Result<bool> {
-    if highest_reserved(dir)?.is_some() {
-        return Ok(true);
-    }
     for kept in kept_copies(dir)? {
         let label = kept.path.display().to_string();
-        if held::read(&kept.path, &label, index_spacing_bytes)?
-            .last
-            .is_some()
+        if reserved::load(&kept.path)?.is_some()
+            || held::read(&kept.path, &label, index_spacing_bytes)?
+                .last
+                .is_some()
         {
             return Ok(true);
         }
     }
-    Ok(false)
+    // Every copy reserves its own entries, so a reservation beside entries
+    // says nothing about an earlier copy. Those entries came from a group,
+    // which the copy is then a member of.
+    if reserved::load(dir)?.is_none() {
+        return Ok(false);
+    }
+    let label = dir.display().to_string();
+    Ok(held::read(dir, &label, index_spacing_bytes)?.last.is_none())
 }
 
 /// The directories rotations moved aside from `dir`, by name.

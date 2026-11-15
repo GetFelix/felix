@@ -671,8 +671,11 @@ fleet-wide restore, or a power cut across relaxed brokers, each copy comes
 back with a new copy id, no vote and an empty log. That is what a copy no
 group has reached looks like, and a group formed from them would start at
 index 0 and give out offsets it already acknowledged (issue #2620). So a
-copy whose directory has a kept copy in `.kept/` holding a log entry, or a
-reservation (`raft-reserved`), never says it is blank: it refuses the
+copy whose directory has a kept copy in `.kept/` holding a log entry or a
+reservation, or that holds a reservation (`raft-reserved`) but no entry of
+its own, as a rotation's carry leaves it, never says it is blank. A
+copy's reservation beside its own entries does not count: every copy
+reserves what it writes. Such a copy refuses the
 question the forming broker asks, and a broker whose own copy is like that
 does not form the group. A kept copy that cannot be read counts as one
 that holds entries, and so does a group that never acknowledged a record
@@ -4675,10 +4678,11 @@ broker append at an old term lands after the vote for a newer one.
 
 > **Partly built, not enabled.** Every broker still fsyncs a Raft log
 > before openraft hears an append is flushed, and everything else on this
-> page describes that. The log side is built behind a fleet feature
-> that no build reports yet, `raft_written_commit`: it waits for the
-> re-form that pads above every reservation. "What is built" below lists
-> the parts.
+> page describes that. Reservations are taken in every fsync mode with
+> no gate. Counting a written entry is built behind a fleet feature that
+> no build reports yet, `raft_written_commit`: it waits for the re-form
+> that pads above every reservation. "What is built" below lists the
+> parts.
 
 A broker whose `fsync_mode` is `periodic` or `none` (a relaxed broker)
 does not wait for the disk before it acknowledges a write. Its Raft logs
