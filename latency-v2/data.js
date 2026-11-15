@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794704244671,
+  "lastUpdate": 1794704645233,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -72996,6 +72996,72 @@ window.BENCHMARK_DATA = {
             "range": "715.18",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2179.00\nmean: 2038.20\nstdev: 715.18\ncv: 35.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06ac0313e83b37b33c8fd8bcaa525babb32d6b8a",
+          "message": "perf(replication): a nothing-due cache expiry tick no longer walks the expiring set (#2565) (#2573)\n\n* perf(replication): no expiry-set walk on a nothing-due tick, cheaper layered puts (#2461)\n\nThe cache keeps when its first value expires, so `next_expiry` and a\nnothing-due `due` no longer descend the expiring set (std's BTreeSet is\ndeeper than imbl's at 1M keys, which cost 2 ns on that cell).\n\nDuring a snapshot build a put finds its delta slot in one lookup and\ntells base expiring members from delta ones by the base's value, not a\nlookup in the set. The fold moves a key's value and its members together\nso that holds between fold chunks.\n\n* test(replication): first expiry kept when one of two sharing it is removed; changelog (#2565)\n\nSpec-Unaffected: the cache projection's contents and the order of expiry deletes are unchanged; only how the first expiry is found and how a fold moves members.\n\n* docs(replication): note the fold_into entry branch invariant (#2461)\n\nSpec-Unaffected: comment only",
+          "timestamp": "2026-11-14T16:58:00-08:00",
+          "tree_id": "e7fbb5e557a95d94431e69d4aaef35100bf4cb36",
+          "url": "https://github.com/GetFelix/felix/commit/06ac0313e83b37b33c8fd8bcaa525babb32d6b8a"
+        },
+        "date": 1794704632966,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 153.60\nstdev: 0.89\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "5.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 209.60\nstdev: 5.46\ncv: 2.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 262,
+            "range": "61.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 291.20\nstdev: 61.53\ncv: 21.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 201.40\nstdev: 1.67\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 396,
+            "range": "10.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 396.00\nmean: 399.40\nstdev: 10.14\ncv: 2.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 815,
+            "range": "984.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 815.00\nmean: 1136.00\nstdev: 984.18\ncv: 86.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
