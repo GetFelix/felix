@@ -14,7 +14,7 @@ use felix_storage::waiters::Waiters;
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::raft::SnapshotResponse;
 use openraft::storage::{RaftLogReader, Snapshot};
-use openraft::type_config::alias::VoteOf;
+use openraft::type_config::alias::{LogIdOf, VoteOf};
 use openraft::vote::RaftLeaderId;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
@@ -170,6 +170,8 @@ pub(crate) struct Pace {
     /// As a leader: when it last sent an entry to anyone.
     wrote: AtomicU64,
     peers: parking_lot::Mutex<Vec<Peer>>,
+    /// As a leader: the newest entry any append has carried.
+    sent: parking_lot::Mutex<Option<LogIdOf<ShardTypes>>>,
     /// Spreads the members of a group over the idle wait, so they do not
     /// all stand in the same tick.
     jitter: u64,
@@ -201,12 +203,27 @@ impl Pace {
             promised: AtomicU64::new(timers.heartbeat),
             wrote: AtomicU64::new(now),
             peers: parking_lot::Mutex::new(Vec::new()),
+            sent: parking_lot::Mutex::new(None),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
         }
     }
 
+    /// Whether an append whose last entry is `last` carries an entry no
+    /// append carried before. Only that makes the group busy: a retry to a
+    /// member that is down, or a catch-up, sends nothing new, and would
+    /// otherwise hold the group at the short gap for as long as it lasts.
+    pub(crate) fn new_entries(&self, last: &LogIdOf<ShardTypes>) -> bool {
+        let mut sent = self.sent.lock();
+        if sent.as_ref().is_some_and(|sent| last <= sent) {
+            return false;
+        }
+        *sent = Some(*last);
+        true
+    }
+
     /// The leader is sending `to` an append. The gap it names is the idle
-    /// one once no entry has gone out for `idle_after`.
+    /// one once no entry has gone out for `idle_after`. `entries` is
+    /// whether the append carries a new one ([`Self::new_entries`]).
     pub(crate) fn sending(&self, to: &MemberId, entries: bool) -> Sent {
         let timers = &self.timers;
         if entries {
@@ -493,6 +510,7 @@ impl Group {
                 Arc::clone(&reports),
                 reach,
                 Arc::clone(&refusals),
+                Arc::clone(&config),
             ),
             group: id.clone(),
         };
@@ -641,6 +659,13 @@ impl Group {
         }
     }
 
+    /// If this member leads, heartbeat now, whatever its gap.
+    pub(crate) async fn heartbeat_now(&self) {
+        if self.leads() {
+            let _ = self.raft.trigger().heartbeat().await;
+        }
+    }
+
     fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader
@@ -668,10 +693,21 @@ impl Group {
             tick, election_min, ..
         } = pace.timers;
         let now = pace.timers.now();
-        match self.raft.metrics().borrow_watched().state {
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        match metrics.state {
             // One past the interval, so the check lands after the heartbeat
-            // is due and not just before it.
-            ServerState::Leader => now + pace.leader_gap(now) + 1,
+            // is due and not just before it. An entry not yet committed
+            // keeps the short gap: it waits on a member that is down, and a
+            // heartbeat is what finds that member back and retries it.
+            ServerState::Leader => {
+                let committed = metrics.local_committed.map(|log_id| log_id.index);
+                let gap = match metrics.last_log_index > committed {
+                    true => pace.timers.heartbeat,
+                    false => pace.leader_gap(now),
+                };
+                now + gap + 1
+            }
             ServerState::Follower | ServerState::Candidate => {
                 let heard = pace.heard.load(Ordering::Relaxed);
                 heard.saturating_add(pace.follower_wait()).max(now + tick)
