@@ -463,6 +463,7 @@ async fn replan(extra: &[(u64, u64)]) -> Result<ReformPlan<&'static str>, Refuse
             .expect("a file")
             .bases,
         floor: None,
+        offset_floor: None,
         placed: Some(BTreeSet::from(["a", "b", "c"])),
         dead: BTreeSet::new(),
     };

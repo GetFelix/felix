@@ -26,6 +26,10 @@ pub(crate) struct GroupRecord<B> {
     pub(crate) bases: Vec<EpochBase>,
     /// The highest commit a leader reported, if any.
     pub(crate) floor: Option<EpochLogId>,
+    /// The highest committed index a leader of any epoch of this
+    /// incarnation reported (`offset_floor` on the shard's record). The
+    /// next epoch gives out no offset at or below it.
+    pub(crate) offset_floor: Option<u64>,
     /// Every broker placed in the current epoch, removed ones included.
     /// `None` when the shard has no such record.
     pub(crate) placed: Option<BTreeSet<B>>,
@@ -343,7 +347,12 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .max()
         .map(|r| r.checked_add(1).ok_or(Refused::NoIndexLeft))
         .transpose()?;
-    let floor_end = record.floor.map(|floor| floor.index + 1);
+    let floor_end = record
+        .floor
+        .map(|floor| floor.index)
+        .max(record.offset_floor)
+        .map(|index| index.checked_add(1).ok_or(Refused::NoIndexLeft))
+        .transpose()?;
     // Never below an index an earlier epoch gave out: its first index, or
     // a record any copy of the incarnation holds.
     let earlier = record.bases.iter().map(|base| base.first_index).max();

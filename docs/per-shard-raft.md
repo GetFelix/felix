@@ -789,7 +789,8 @@ What `plan` works out for one group, and `apply` then does:
    learner. The record of brokers placed in the new epoch starts with the
    brokers placed now and every listed broker, voter or learner.
 5. **Start.** Members start at the new epoch from the base, as in the
-   switch. Messages carry the epoch, so the two never mix.
+   switch. Messages carry the epoch, so the two never mix. See "Starting
+   the new epoch" below for what a start writes.
 
 **What it keeps and what it loses.** Every record held by a copy the
 command reached is at or below the base, or is cut as uncommitted. What is
@@ -852,9 +853,39 @@ one report interval while the control plane is reachable and the whole
 outage while it is not, since writes go on without it. Brokers batch the
 floors of their shards into one report, so the control plane makes one
 metadata write per broker per interval, not one per shard. The new epoch's
-log starts above the base with an index gap up to the floor, and how the
-adapter represents that gap is settled in the pull request that builds
-re-forming. See Questions, 13.
+log starts above the base with an index gap up to the floor. How a copy
+holds that gap is in "Starting the new epoch" below.
+
+**Starting the new epoch.** openraft numbers entries densely after the
+last log id it knows, so a copy cannot simply leave the gap empty. A
+voter's start keeps its base records and writes a purged id, a snapshot id
+and a saved commit, all at `first_index - 1` in the base's last term. The
+first leader then appends at `first_index`, and nothing is ever written in
+the gap. On the next re-form, a copy whose purged id ends its newest
+epoch's gap and whose records end at that epoch's base reads as its base:
+its last log id is the base's, and terms below come from its records. A
+record in the gap, or a base whose records are gone, keeps the purged id,
+and the plan refuses with a record in the gap.
+
+A learner holding records past the base empties its log and catches up
+from the leader by snapshot. A learner within the base keeps its prefix.
+
+Two promises the vouch rule depends on are checked before a start
+finishes, and a start that cannot keep them fails (#2640):
+
+- every copy is reserved through `first_index - 1` before its first
+  append, so an offset below the new first index is never given out again;
+- a voter's saved commit is at or above the base's end, which the gap
+  clause of the vouch rule relies on.
+
+The first index also stays above the shard record's `offset_floor`, the
+highest index any leader of the incarnation reported committed.
+
+A start runs under a `reform-building` file in the copy's directory, and
+`raft-epoch` is written before the purged id, because a purged id at the
+gap's end only reads as the base under the epoch that made the gap. A
+directory holding the marker does not open, and running the start again
+over a crashed one redoes every step.
 
 **Why the floor is a log id, not an offset (#2402).** An offset alone
 covers offsets above the end of the base, not offsets inside it. Take

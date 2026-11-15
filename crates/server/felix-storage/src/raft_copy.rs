@@ -38,6 +38,11 @@ mod reclaim;
 )]
 mod reform;
 mod rotated_by;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the re-form command, not built yet, calls it")
+)]
+mod start;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg_attr(
@@ -76,6 +81,11 @@ pub(crate) use reform::{
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use rotated_by::RotatedBy;
+#[allow(
+    unused_imports,
+    reason = "the re-form command, not built yet, uses them"
+)]
+pub(crate) use start::{Role, Start, building, start_copy};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
