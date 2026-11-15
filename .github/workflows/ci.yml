@@ -659,7 +659,11 @@ jobs:
         env:
           FELIX_TEST_TIMEOUT_SCALE: "3"
           FELIX_TEST_RAFT_SHARDS: "1"
-        run: cargo test --locked -p felix-cluster --test raft_shards
+        # The Kafka and MQTT failover tests on Raft live beside their
+        # default-engine twins in `failures`.
+        run: |
+          cargo test --locked -p felix-cluster --test raft_shards
+          cargo test --locked -p felix-cluster --test failures -- on_a_raft_shard
 
   # Lint and the repository checks, beside the tests rather than in front of
   # them.

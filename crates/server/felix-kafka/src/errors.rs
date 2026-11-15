@@ -59,13 +59,14 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::TrimNeedsDurableStream
         | BrokerError::TrimOnCommitStream
         | BrokerError::HeadTrimNotEnabled { .. }
-        | BrokerError::RecordHeadersNotEnabled { .. }
         | BrokerError::TrimTimedOut { .. }
         | BrokerError::StateViewBusy
         | BrokerError::StateNotReadable(_)
         | BrokerError::ReleaseInFlight => ResponseError::UnknownServerError,
         // The same on every broker, so not to be retried.
         BrokerError::NotOnEngineStream { .. } => ResponseError::InvalidRequest,
+        // As the listener refuses keys and headers a shard cannot store yet.
+        BrokerError::RecordHeadersNotEnabled { .. } => ResponseError::InvalidRecord,
     }
 }
 

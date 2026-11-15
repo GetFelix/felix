@@ -555,7 +555,9 @@ impl Broker {
         let _ = self.raft_record_headers.set(NodeGate(Arc::new(gate)));
     }
 
-    pub(crate) fn raft_record_headers_allowed(&self) -> bool {
+    /// Whether a shard on Raft may store record headers now; see
+    /// [`Self::allow_raft_record_headers_when`].
+    pub fn raft_record_headers_allowed(&self) -> bool {
         self.raft_record_headers
             .get()
             .is_some_and(|gate| (gate.0)())

@@ -31,7 +31,7 @@ use kafka_protocol::messages::{ProduceRequest, ProduceResponse};
 use kafka_protocol::protocol::StrBytes;
 
 use super::partition::resolve_write;
-use crate::cluster::{Principal, WriteError};
+use crate::cluster::{Principal, Produce, ProduceError, ShardRef, WriteError, WritePermit};
 use crate::records::decode::{self, Batch, Refused};
 use crate::service::Shared;
 
@@ -162,11 +162,6 @@ impl From<WriteError> for Failure {
                         .to_string(),
                 ),
             },
-            // Not retriable: every broker answers the same.
-            WriteError::Unsupported => Self {
-                error: ResponseError::InvalidRequest,
-                message: Some("a stream on Raft does not take Kafka produces".to_string()),
-            },
         }
     }
 }
@@ -183,6 +178,20 @@ async fn write(
     let located = resolve_write(shared, principal, topic, partition).await?;
     let keep_headers = shared.settings.record_headers && shared.broker.records_headers();
     let batches = decode::decode(records, keep_headers)?;
+    // Before the quota is charged: nothing is written.
+    if batches.iter().any(|batch| batch.blocks.is_some())
+        && let Some(feature) = shared
+            .cluster
+            .refuses_record_headers(&shared.broker, &located.shard_ref())
+    {
+        crate::metrics::produce_refused_for("record_headers_not_finalized");
+        return Err(Failure {
+            error: ResponseError::InvalidRecord,
+            message: Some(format!(
+                "this partition stores record keys and headers once the cluster finalizes {feature}"
+            )),
+        });
+    }
     // A kept block is charged with its payload; both are bytes the broker stores.
     let (count, bytes) = batches.iter().fold((0u64, 0u64), |(count, bytes), batch| {
         let blocks = batch.blocks.iter().flatten().flatten().map(Bytes::len);
@@ -208,7 +217,7 @@ async fn write(
 
     let mut written: Option<(u64, u64)> = None;
     for batch in &batches {
-        let outcome = publish(shared, &handle, batch).await?;
+        let outcome = publish(shared, &located.shard_ref(), &handle, &permit, batch).await?;
         if let Some((first, last)) = outcome.offsets {
             written = Some((written.map_or(first, |(start, _)| start), last));
         }
@@ -235,7 +244,9 @@ async fn write(
 
 async fn publish(
     shared: &Shared,
+    shard: &ShardRef<'_>,
     handle: &StreamHandle,
+    permit: &WritePermit,
     batch: &Batch,
 ) -> Result<PublishOutcome, Failure> {
     // Blocks are built only when the listener opted in and the broker accepts
@@ -244,22 +255,36 @@ async fn publish(
         crate::metrics::dropped(batch.keyed, batch.with_headers);
     }
     let headers = batch.blocks.as_deref();
-    let result = if batch.producer_id >= 0 {
+    let producer = if batch.producer_id >= 0 {
         let Ok(sequence) = u64::try_from(batch.base_sequence) else {
             return Err(Failure {
                 error: ResponseError::InvalidRecord,
                 message: Some("an idempotent batch needs a base sequence".to_string()),
             });
         };
+        Some((batch.producer_id as u64, sequence))
+    } else {
+        None
+    };
+    let produce = Produce {
+        payloads: &batch.values,
+        headers,
+        producer,
+    };
+    let produced = shared
+        .cluster
+        .produce(&shared.broker, shard, handle, permit, produce)
+        .await;
+    let result = if let Some(produced) = produced {
+        match produced {
+            Ok(produced) => Ok((produced.outcome, produced.duplicate)),
+            Err(ProduceError::Broker(err)) => Err(err),
+            Err(ProduceError::Write(err)) => return Err(err.into()),
+        }
+    } else if let Some((producer_id, sequence)) = producer {
         shared
             .broker
-            .publish_records_idempotent(
-                handle,
-                batch.producer_id as u64,
-                sequence,
-                &batch.values,
-                headers,
-            )
+            .publish_records_idempotent(handle, producer_id, sequence, &batch.values, headers)
             .await
             .map(|IdempotentOutcome { outcome, duplicate }| (outcome, duplicate))
     } else {

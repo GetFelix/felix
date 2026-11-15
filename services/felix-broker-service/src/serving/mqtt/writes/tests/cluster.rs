@@ -332,6 +332,45 @@ async fn a_batch_that_cannot_be_forwarded_is_refused_as_not_owner() {
     );
 }
 
+/// **A refusal that waiting cannot change is answered at once on a broker
+/// that runs Raft.** Only a Raft group here without a leader is waited out;
+/// an anonymous forward or an owner's refusal of a shard on the default
+/// engine is not.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_lasting_refusal_is_answered_at_once_on_a_broker_that_runs_raft() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let owner = ScriptedOwner::new([Err(PeerError::Unsupported {
+        node_id: OWNER.to_string(),
+        kind: Kind::SequencedForwardPublish,
+    })]);
+    let (writes, broker, _dir) = forwarding(&owner, Duration::from_secs(10)).await;
+    let shards = fixture::shards(&broker);
+    writes.engine().set_raft(Arc::clone(&shards));
+    assert!(writes.engine().runs_raft());
+
+    let mut anonymous = batch(0, 41, &["plant/a"]);
+    anonymous.credential = None;
+    let started = Instant::now();
+    assert_eq!(
+        writes.write(anonymous).await,
+        Err(WriteError::Refused(Refusal::NotOwner))
+    );
+    assert_eq!(
+        writes.write(batch(1, 41, &["plant/a"])).await,
+        Err(WriteError::Refused(Refusal::NotOwner))
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "waited {:?} on a refusal that cannot change",
+        started.elapsed()
+    );
+    assert_eq!(owner.sent().len(), 1);
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// **On the owner, a `Quorum` stream's batch is not acknowledged before a
 /// majority holds it.** The record is durable here, but until the mark passes
 /// it the client is not told; once it does, the same batch is answered.
