@@ -1512,7 +1512,7 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
         fsync_mode: FsyncMode::None,
         ..LogConfig::default()
     };
-    let log = DiskLog::open(&dir.path().join("log"), "t/ns/c/0", config).expect("log");
+    let log = DiskLog::open(dir.path().join("log"), "t/ns/c/0", config).expect("log");
     let record = AppendRecord {
         payload: bytes::Bytes::from_static(b"entry"),
         timestamp_micros: 1_700_000_000,
