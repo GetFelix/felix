@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794730493596,
+  "lastUpdate": 1794731532553,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58292,6 +58292,58 @@ window.BENCHMARK_DATA = {
             "range": "17004.06",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1670657.01\nmean: 1674953.23\nstdev: 17004.06\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dd9829113bb6a63b21dbbb8c70524c87de4dcca1",
+          "message": "perf(raft): no record-list copy per append, presized batch vectors (#2596)\n\n* perf(raft): no record-list copy per append, presized batch vectors\n\nDiskLog::append_pending_at takes the records by value, and the Raft log\nwriter gets them back from the append (append_pending_at_keeping) to fill\nits tail cache, instead of the log copying the list on every append. The\nwriter also presizes its record and token vectors from the entry count.\n\nMeasured with a counting allocator, 64-record appends:\n- RaftLog::append: 0.29 -> 0.23 allocations, 530 -> 337 bytes a record\n- plain-log append_pending_at (hybrid follower): 0.10 -> 0.09, 272 -> 160\n- propose, one write in flight: 1.67 -> 1.59 allocations, 1478 -> 1258 bytes\n- propose, eight in flight: 2.23 -> 1.52, 2056 -> 1485 bytes\n\nSegment bytes are unchanged (compared past the header's per-run bytes).\nraft_log_cost now bounds the per-record cost and fails with the copy back.\n\n* perf(storage): drop the token presize, make the append allocation bound relative (#2581)\n\n* test(replication): the append allocation test sets Batch.expected after the main merge",
+          "timestamp": "2026-11-15T08:27:03Z",
+          "tree_id": "faf3de004130d7bc3cb6b70bec42968a6ed74fbf",
+          "url": "https://github.com/GetFelix/felix/commit/dd9829113bb6a63b21dbbb8c70524c87de4dcca1"
+        },
+        "date": 1794731531941,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 518837.16,
+            "range": "32441.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 518837.16\nmean: 518384.33\nstdev: 32441.90\ncv: 6.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 518837.16,
+            "range": "32441.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 518837.16\nmean: 518384.33\nstdev: 32441.90\ncv: 6.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117731.6,
+            "range": "1036.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117731.60\nmean: 118036.78\nstdev: 1036.75\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1177316.01,
+            "range": "10367.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1177316.01\nmean: 1180367.82\nstdev: 10367.56\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
