@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794773760202,
+  "lastUpdate": 1794774136512,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58968,6 +58968,58 @@ window.BENCHMARK_DATA = {
             "range": "7156.67",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 815885.58\nmean: 814948.73\nstdev: 7156.67\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "40d08067f3a6462b2c4282ac59da9584aed688c3",
+          "message": "feat(raft): Kafka produce and MQTT publish on a Raft stream shard (#2446) (#2633)\n\n* feat(raft): Kafka produce and MQTT publish on a Raft stream shard (#2446)\n\nA Kafka produce is proposed to the shard's Raft group through a new\nCluster::produce hook; an idempotent producer's records go one per batch\nat their own sequence, as the hybrid stores them. An MQTT batch is\nproposed as the connection's idempotent batch, one message per batch on a\nbroker that runs Raft shards. Both answer and refuse as the hybrid does.\n\n* test(raft): Kafka and MQTT on a Raft shard across a leader failover; docs (#2446)\n\nSpec-Unaffected: service-level routing of Kafka/MQTT writes onto the existing Raft publish and idempotent proposals; no change to the Raft entry format, apply, or the modelled batch protocol.\n\n* fix(raft): review of Kafka and MQTT on a Raft shard (#2446)\n\nKafka keys and headers bound for a Raft shard before raft_record_headers\nis finalized are refused with INVALID_RECORD before the quota is charged,\nnot dropped. A record refused behind a failed earlier record of its batch\nis answered with that failure rather than a fatal sequence gap. MQTT waits\nout an election within the forward budget instead of refusing not_owner.\nThe Raft CI job runs the Kafka and MQTT failover tests, which now cut a\nmulti-record Kafka batch with the kill and publish MQTT once per message.\nBatching MQTT on Raft is #2638.\n\nSpec-Unaffected: service-level answers and retries around existing Raft proposals; no change to the Raft entry format, apply, or the modelled batch protocol.\n\n* fix(raft): wait only for a leaderless Raft group, count the Kafka headers refusal (#2446)\n\nAn MQTT message on a broker that runs Raft waited out the whole forward\nbudget on any first not_owner, including refusals waiting cannot change\n(an anonymous forward, an owner that refuses the sequenced kind) and\nshards on the default engine. Only a Raft group here without a leader is\nwaited out now.\n\nA Kafka produce with keys or headers to a Raft partition before\nraft_record_headers is finalized is counted in\nfelix_kafka_produce_refused_total{reason=\"record_headers_not_finalized\"}.",
+          "timestamp": "2026-11-15T20:17:06Z",
+          "tree_id": "217e653fd4dba447f5e67600902174e48b83a6c1",
+          "url": "https://github.com/GetFelix/felix/commit/40d08067f3a6462b2c4282ac59da9584aed688c3"
+        },
+        "date": 1794774135794,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 514837.69,
+            "range": "26102.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514837.69\nmean: 507345.77\nstdev: 26102.12\ncv: 5.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 514837.69,
+            "range": "26102.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 514837.69\nmean: 507345.77\nstdev: 26102.12\ncv: 5.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123617.41,
+            "range": "1175.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123617.41\nmean: 123090.03\nstdev: 1175.33\ncv: 0.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1236174.07,
+            "range": "11753.33",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1236174.07\nmean: 1230900.25\nstdev: 11753.33\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
