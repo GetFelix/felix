@@ -805,8 +805,11 @@ async fn a_removal_is_finished_under_a_leader_change() {
     cluster.net.muted.lock().insert(lead.clone());
     cluster.net.cut.lock().insert(lead.clone());
     // Only the member the target drops can ask for a vote, so it is the
-    // one elected, and it has to hand over before the removal.
+    // one elected, and it has to hand over before the removal. Its handover
+    // is lost until it has been seen leading: a muted successor cannot win,
+    // and the new leader hands over within milliseconds of its election.
     cluster.net.muted.lock().insert(stays.into());
+    cluster.net.lose_transfers.store(true, Ordering::Relaxed);
     let kept = [&*lead, stays];
     tell_all(&cluster, &target(&kept, 2));
     let next = cluster.elected(0).await;
@@ -815,6 +818,7 @@ async fn a_removal_is_finished_under_a_leader_change() {
     // The new set needs the old leader's answer to commit.
     cluster.net.muted.lock().clear();
     cluster.net.cut.lock().clear();
+    cluster.net.lose_transfers.store(false, Ordering::Relaxed);
     held_by(&cluster, &kept, &settled(&kept, &[], 2)).await;
     progress_of(&cluster, MembershipProgress::Settled).await;
     watch.check().await;
