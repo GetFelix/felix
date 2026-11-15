@@ -584,19 +584,34 @@ impl DiskLog {
     pub async fn append_pending_at(
         &self,
         first_offset: Offset,
-        records: &[AppendRecord],
+        records: Vec<AppendRecord>,
         writers: WrittenBy,
     ) -> Result<Option<PendingAppend>> {
+        Ok(self
+            .append_pending_at_keeping(first_offset, records, writers)
+            .await?
+            .map(|(pending, _records)| pending))
+    }
+
+    /// [`DiskLog::append_pending_at`], handing the records back once they
+    /// are written, so a caller that keeps them, as the Raft log's tail
+    /// cache does, needs no copy of its own.
+    pub(crate) async fn append_pending_at_keeping(
+        &self,
+        first_offset: Offset,
+        records: Vec<AppendRecord>,
+        writers: WrittenBy,
+    ) -> Result<Option<(PendingAppend, Vec<AppendRecord>)>> {
         let inner = Arc::clone(&self.inner);
-        let written = Self::write_batch(
+        let (written, records) = Self::write_batch_keeping(
             inner,
-            records.to_vec(),
+            records,
             append::WriteIf::At(first_offset),
             None,
             writers,
         )
         .await?;
-        Ok(written.ok().map(|written| written.pending))
+        Ok(written.ok().map(|written| (written.pending, records)))
     }
 
     /// Write the rest of `producer_id`'s batch `sequence`, which the log holds
