@@ -216,11 +216,13 @@ async fn no_report_is_lost_between_a_look_and_a_sleep() {
     }
 }
 
-/// A member that stops leading finds the voters unknown at its next look,
-/// which the next report brings, and the wait ends without an answer. A
-/// report from a newer term reaches every older entry.
+/// A member that stops leading finds the voters unknown at its next look
+/// and the wait ends without an answer. Here the look comes from a report
+/// of a newer term, which sorts above every key and reaches every older
+/// entry. A deposed leader's same-term reports sort below some keys and do
+/// not wake those waits; the commit arm of the caller ends them.
 #[tokio::test(flavor = "current_thread")]
-async fn a_lost_term_ends_the_wait_at_the_next_report() {
+async fn a_report_of_a_newer_term_ends_a_wait_on_a_lost_term() {
     let reports = Arc::new(Reports::new());
     let voters = [set(&["a", "b", "c"])];
     let deposed = Arc::new(AtomicBool::new(false));
@@ -248,6 +250,80 @@ async fn a_report_at_another_term_does_not_end_the_wait() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(!wait.is_finished(), "answered on another term's report");
     reports.heard(member("b"), at(1, 1));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+/// Voters a test can swap while a wait sleeps.
+type SharedVoters = Arc<parking_lot::Mutex<Vec<BTreeSet<MemberId>>>>;
+
+/// Starts a wait on the entry `at(1, 1)` whose voters can be swapped while
+/// it sleeps, as a membership change does.
+fn waiting_on_changing_voters(
+    reports: &Arc<Reports>,
+    voters: Vec<BTreeSet<MemberId>>,
+) -> (SharedVoters, tokio::task::JoinHandle<bool>) {
+    let voters = Arc::new(parking_lot::Mutex::new(voters));
+    let wait = {
+        let (reports, voters) = (Arc::clone(reports), Arc::clone(&voters));
+        tokio::spawn(async move {
+            let entry = at(1, 1);
+            reports
+                .written(entry, |heard| {
+                    look(&voters.lock(), &member("a"), heard, entry)
+                })
+                .await
+        })
+    };
+    (voters, wait)
+}
+
+/// Voters growing from three to five raise the shortfall from one follower
+/// to two. The report that would have completed the write on three voters
+/// moves it to the longer wait instead of answering.
+#[tokio::test(flavor = "current_thread")]
+async fn more_voters_raise_the_count_a_wait_needs() {
+    let reports = Arc::new(Reports::new());
+    let (voters, wait) = waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c"])]);
+    settle().await;
+    *voters.lock() = vec![set(&["a", "b", "c", "d", "e"])];
+    reports.heard(member("b"), at(1, 1));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "answered on one follower of five");
+    reports.heard(member("c"), at(1, 1));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+/// Voters shrinking from five to three lower the shortfall: the follower
+/// already written is a majority, and the next report wakes the wait.
+#[tokio::test(flavor = "current_thread")]
+async fn fewer_voters_lower_the_count_a_wait_needs() {
+    let reports = Arc::new(Reports::new());
+    let (voters, wait) =
+        waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c", "d", "e"])]);
+    settle().await;
+    reports.heard(member("b"), at(1, 1));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "answered on one follower of five");
+    *voters.lock() = vec![set(&["a", "b", "c"])];
+    reports.heard(member("d"), at(1, 1));
+    let wrote = tokio::time::timeout(PATIENCE, wait).await;
+    assert!(wrote.expect("woken").expect("the wait ran"));
+}
+
+/// A change to a joint membership needs a majority of both halves: a
+/// follower of the old half alone does not answer, one of the new half does.
+#[tokio::test(flavor = "current_thread")]
+async fn a_joint_change_needs_both_halves_to_answer() {
+    let reports = Arc::new(Reports::new());
+    let (voters, wait) = waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c"])]);
+    settle().await;
+    *voters.lock() = vec![set(&["a", "b", "c"]), set(&["a", "d", "e"])];
+    reports.heard(member("b"), at(1, 1));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!wait.is_finished(), "answered without the new half");
+    reports.heard(member("d"), at(1, 1));
     let wrote = tokio::time::timeout(PATIENCE, wait).await;
     assert!(wrote.expect("woken").expect("the wait ran"));
 }

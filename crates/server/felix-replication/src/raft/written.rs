@@ -148,7 +148,7 @@ impl Reports {
                     // membership read before the entry was appended could
                     // be two changes behind, and count a set that no
                     // longer elects. Read on every look, so a change is
-                    // seen at the next report.
+                    // seen at the next wake.
                     let metrics = metrics.borrow_watched();
                     let leads =
                         metrics.state == ServerState::Leader && metrics.current_term == at.term;
