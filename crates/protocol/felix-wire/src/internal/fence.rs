@@ -163,6 +163,10 @@ impl PeerCapabilities {
     /// reads a request wrapped in [`FromCopy`](super::FromCopy). A peer
     /// without it is sent none of these.
     pub const SWITCH_SEAL: Self = Self(1 << 24);
+    /// Reads `PlainSequencedForwardPublish`: a sequenced forward whose
+    /// records carry no key-and-headers block. Offered with
+    /// `SEQUENCED_FORWARDS`, whose kind cannot carry a batch without one.
+    pub const PLAIN_SEQUENCED_FORWARDS: Self = Self(1 << 25);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

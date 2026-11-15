@@ -125,6 +125,7 @@ never have dialled the one that shipped to it.
 | `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
 | `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
 | `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
+| `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
 
 #### Storage identity
 
@@ -181,8 +182,8 @@ current broker offers the bit when it dials.
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
 as an older build would, and checks only the generation of what it is sent. It
 still offers `GENERATION_LABELS`, `FORWARD_OFFSETS`, `RECORD_TIMES`, `PING`,
-`HEAD_TRIM`, `RECORD_HEADERS` and `SEQUENCED_FORWARDS`, which are not the
-fence's.
+`HEAD_TRIM`, `RECORD_HEADERS`, `SEQUENCED_FORWARDS` and
+`PLAIN_SEQUENCED_FORWARDS`, which are not the fence's.
 
 A promoted cache shard is fenced only when every replica offered `FENCE`,
 `TAIL_FETCH` and `CACHE_FENCE`; otherwise it opens on the lease, until the
@@ -358,8 +359,18 @@ The owner applies it the way it applies an idempotent Kafka batch: if its log
 already holds that sequence for that producer, it writes nothing and answers
 with the held batch's offsets, after the same quorum wait a new batch gets. A
 held sequence with different payloads is refused `StorageFailed` and nothing is
-written. The batch must carry at least one key-and-headers block; the MQTT
-listener, its only sender, always does.
+written.
+
+A sequenced batch whose records carry no key-and-headers block has no
+encoding as kind 52, whose section must hold one. It travels as
+`PlainSequencedForwardPublish` (64) instead: the `AuthorizedForwardPublish`
+body followed by the same two `u64`s, with no block section, and it decodes
+with no headers. That is the form a Raft shard's owner can take, since it
+refuses any forward with headers until Raft stores them. It goes only to an
+owner that offered `PLAIN_SEQUENCED_FORWARDS` and `SEQUENCED_FORWARDS`. A
+batch with a block still travels as kind 52, byte for byte as before. The
+MQTT listener, today's only sender of a sequenced forward, always attaches a
+block.
 
 This is what lets the ingress broker send a batch again after its answer was
 lost (see "Retrying a forwarded publish"). The sequences live in the log and
@@ -1384,7 +1395,8 @@ back to the detail whenever the fields are absent.
 `SequencedForwardPublish` 52, `FenceKeptOk` 53 and
 `FenceAttestedOk` 54, `ReplicateStampedRecords` 55,
 `ReplicateStampedFetch` 56, `Raft` 57, `RaftAnswer` 58, `SealFence` 59,
-`SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62 and `FromCopy` 63. A peer
+`SealFenceOk` 60, `SealAck` 61, `SealAckOk` 62, `FromCopy` 63 and
+`PlainSequencedForwardPublish` 64. A peer
 that predates any of them rejects the
 kind rather than misreading the body, which is why
 each is a new kind rather than a field on `ReplicateRecords`: this protocol

@@ -2759,6 +2759,13 @@ The publisher id (the principal that published a record, which is not the
 producer id) is still not stored, and a batch with record headers is still
 refused.
 
+An idempotent batch can also reach the leader as a forward from another
+broker. One whose records carry no key-and-headers block travels as
+`PlainSequencedForwardPublish`, so the leader takes it. One with a block
+travels as `SequencedForwardPublish` and is refused `UnsupportedKind`, the
+same as a direct publish with headers (`docs/internal-protocol.md`, "A
+forward that names its producer").
+
 > `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
 > `a_batch_sent_again_is_answered_and_not_written_again`,
 > `a_resend_of_an_uncommitted_batch_waits_for_its_commit`,
@@ -2787,7 +2794,9 @@ refused.
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
 > `a_forward_to_a_raft_leader_commits_through_its_group`,
 > `a_forwarded_resend_of_a_cut_batch_is_finished_on_the_owner` and
-> `a_forwarded_resend_of_a_forgotten_batch_is_refused_as_expired`.
+> `a_forwarded_resend_of_a_forgotten_batch_is_refused_as_expired`;
+> `crates/protocol/felix-wire/src/internal/tests/forward.rs`,
+> `a_sequenced_forward_without_a_block_round_trips_without_headers`.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
