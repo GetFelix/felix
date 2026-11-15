@@ -14,13 +14,13 @@
 //! that decodes is damage, and the open fails. When the file is well past
 //! the size of the live marks it is rewritten whole through a temporary.
 
-use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::Duration;
 
+use felix_common::random::{HashMap, HashSet};
 use tokio::sync::watch;
 
 use super::{ShardMarks, VoteMark, log_below};
@@ -644,7 +644,7 @@ impl MarkLog {
     async fn write(&self, writer: &mut Writer, batch: Vec<Queued>) -> io::Result<()> {
         let inner = &self.inner;
         let mut order: Vec<Arc<str>> = Vec::new();
-        let mut changed: HashMap<Arc<str>, ShardMarks> = HashMap::new();
+        let mut changed: HashMap<Arc<str>, ShardMarks> = HashMap::default();
         {
             let live = inner.live.read();
             for Queued {
@@ -1111,7 +1111,7 @@ fn read(bytes: &[u8]) -> Result<Read, String> {
         return Err("the header does not decode".into());
     }
     let mut sequence = header_sequence(bytes);
-    let mut live = HashMap::new();
+    let mut live = HashMap::default();
     let mut at = HEADER_LEN;
     while at < bytes.len() {
         let Some(frame) = decode_frame(&bytes[at..]) else {

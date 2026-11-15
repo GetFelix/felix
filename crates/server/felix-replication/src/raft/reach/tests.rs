@@ -133,3 +133,22 @@ async fn retries_to_a_broker_that_is_down_wait_longer() {
     reach.answered(&b);
     assert_eq!(waits.next(), Some(Duration::from_secs(1)), "back");
 }
+
+/// The ticker starts a walk or a scout per broker in the order it walks
+/// this map, so under a simulator that order has to repeat run to run.
+#[test]
+fn a_seeded_run_walks_the_brokers_in_the_same_order() {
+    fn order() -> Vec<Arc<str>> {
+        std::thread::spawn(|| {
+            felix_common::jitter::sim::seed(2);
+            let reach = Reach::new(Instant::now(), Duration::from_millis(200));
+            for n in 0..16 {
+                reach.lost(&Arc::from(format!("b{n}")), 0);
+            }
+            reach.peers().keys().cloned().collect()
+        })
+        .join()
+        .unwrap()
+    }
+    assert_eq!(order(), order());
+}
