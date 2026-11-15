@@ -29,6 +29,15 @@ class Compare(unittest.TestCase):
         self.assertEqual(r["verdict"], "PASS")
         self.assertGreater(r["tolerance"], 0.08)
 
+    def test_huge_variance_cannot_buy_a_pass(self):
+        r = s.compare([60, 40, 80], [100, 100, 100], True)
+        self.assertEqual(r["verdict"], "FAIL")
+        self.assertLessEqual(r["tolerance"], 0.10)
+
+    def test_zero_failed_sends_pass(self):
+        self.assertEqual(s.compare([0, 0], [0, 0], False)["verdict"], "PASS")
+        self.assertEqual(s.compare([3, 0], [0, 0], False)["verdict"], "FAIL")
+
     def test_missing_side_fails(self):
         self.assertEqual(s.compare([], [1, 2], True)["verdict"], "FAIL")
 
@@ -71,6 +80,15 @@ class Run(unittest.TestCase):
         res = s.summarize(self.write(rows))
         self.assertEqual(res["verdict"], "PASS")
         self.assertIn("rf3-oncommit-tput: PASS", s.markdown(res))
+
+    def test_one_failed_round_fails_the_cell(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-oncommit-tput", "hybrid", "ok", self.ingest(1000, 500)))
+            ok = rnd == 3
+            rows.append((rnd, "rf3-oncommit-tput", "raft", "ok" if ok else "loadgen-failed",
+                         self.ingest(1000, 500) if ok else None))
+        self.assertEqual(s.summarize(self.write(rows))["verdict"], "FAIL")
 
     def test_failover_without_catch_up_fails(self):
         rows = []

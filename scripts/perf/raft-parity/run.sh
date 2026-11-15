@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Raft vs hybrid parity matrix on the GCP build boxes (felix-build-1..3,
 # us-central1-a, internal network). One binary on both sides; FELIX_SHARD_ENGINE
-# picks the engine. See docs/perf/raft-parity.md for how to read the result.
+# picks the engine. See docs/perf-raft-parity.md for how to read the result.
 #
 # Every cell, on each side, in each round gets a fresh cluster: a control plane
 # (in memory, dev tokens) on box 1, brokers with their own data dirs under
@@ -9,7 +9,7 @@
 # stopped and wiped. Odd rounds run hybrid first, even rounds Raft first, and
 # the two sides of a cell run back to back.
 #
-# The generator rotates over the boxes by round (use ROUNDS as a multiple of 3);
+# The generator rotates over the boxes by round (use ROUNDS as a multiple of 6 so hybrid and Raft each go first equally often);
 # both sides of a round use the same one. A single node cell runs its broker on
 # box 2 and its generator on box 3. While it runs it holds all four build slots
 # on every box, and refuses to start unless every box is quiet.
@@ -19,7 +19,7 @@
 #   scripts/perf/raft-parity/run.sh --smoke # one round, one cheap cell, one box
 #
 # Settings (environment):
-#   ROUNDS=3
+#   ROUNDS=3 (6 balances order)
 #   CELLS="..."   cell ids, default all (see summarize.py); names are
 #                 <single|rf3>-<oncommit|quorum|leader>-<lat|tput>, rf3-failover,
 #                 rf3-kafka, rf3-mqtt, rf3-fanout
@@ -226,7 +226,7 @@ run_cell() {
         hybrid:"env=hybrid raft_dirs=0 alive=1") ;;
         raft:"env=raft raft_dirs="*" alive=1")
           n=${e#*raft_dirs=}; n=${n%% *}
-          if [ "$RF" = 1 ] || [ "$n" -ge "$NSHARDS" ]; then :; else status=engine-mismatch; fi ;;
+          [ "$n" -ge "$NSHARDS" ] || status=engine-mismatch ;;
         *) status=engine-mismatch ;;
       esac
     done

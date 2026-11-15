@@ -17,6 +17,9 @@ import sys
 NOISE_FLOOR = float(os.environ.get("NOISE_FLOOR", "0.03"))
 # Width of the noise band in standard errors of the mean ratio.
 NOISE_K = float(os.environ.get("NOISE_K", "2"))
+# Noise never buys more than this: a side that swings wildly is a failed measurement,
+# not a pass.
+NOISE_CAP = float(os.environ.get("NOISE_CAP", "0.10"))
 
 # metric id -> (label, getter on the loadgen JSON, higher is better)
 def _lat(key, q):
@@ -38,8 +41,10 @@ METRICS = {
 }
 
 # cell id -> (title, [(metric id, gates the verdict)])
-LAT = [("ack_p50", True), ("ack_p99", True), ("ack_p999", True), ("msg_s", False), ("failed", False)]
-TPUT = [("msg_s", True), ("ack_p99", True), ("ack_p50", False), ("failed", False)]
+LAT = [("ack_p50", True), ("ack_p99", True), ("ack_p999", True), ("msg_s", False), ("failed", True)]
+TPUT = [("msg_s", True), ("ack_p99", True), ("ack_p50", False), ("failed", True)]
+# Kafka and MQTT report no failed-send count.
+TPUT_NOFAIL = [m for m in TPUT if m[0] != "failed"]
 MODES = [("oncommit", "Quorum, fsync on_commit"), ("quorum", "Quorum, fsync periodic"),
          ("leader", "Leader, fsync periodic")]
 CELLS = {}
@@ -50,7 +55,7 @@ for topo, topo_name in (("single", "single node"), ("rf3", "RF 3")):
 CELLS["rf3-failover"] = ("RF 3, Quorum on_commit, leader kill recovery",
                          [("first_commit", True), ("caught_up", True)])
 CELLS["rf3-kafka"] = ("RF 3, Quorum on_commit, Kafka produce", TPUT)
-CELLS["rf3-mqtt"] = ("RF 3, Quorum on_commit, MQTT QoS 1 publish", TPUT)
+CELLS["rf3-mqtt"] = ("RF 3, Quorum on_commit, MQTT QoS 1 publish", TPUT_NOFAIL)
 CELLS["rf3-fanout"] = ("RF 3, Quorum on_commit, consumer fanout",
                        [("deliv_msg_s", True), ("pub_msg_s", False), ("pubsub_ack_p99", True),
                         ("deliv_p99", True)])
@@ -70,6 +75,11 @@ def compare(raft, hybrid, higher):
                 "ratio": None, "tolerance": None}
     rm, rsd = mean_sd(raft)
     hm, hsd = mean_sd(hybrid)
+    if not higher and hm == 0 and rm == 0:
+        # A count that should be zero (failed sends) and is, on both sides.
+        return {"verdict": "PASS", "ratio": 1.0, "tolerance": 0.0, "noise": None, "rounds": len(raft),
+                "raft": {"mean": 0.0, "sd": None, "min": 0, "max": 0, "values": raft},
+                "hybrid": {"mean": 0.0, "sd": None, "min": 0, "max": 0, "values": hybrid}}
     if rm <= 0 or hm <= 0:
         return {"verdict": "FAIL", "reason": "non-positive mean", "ratio": None, "tolerance": None}
     # Ratio is always Raft's standing: above 1 means Raft is better.
@@ -79,7 +89,7 @@ def compare(raft, hybrid, higher):
         noise = None
     else:
         noise = NOISE_K * math.sqrt((rsd / rm) ** 2 / len(raft) + (hsd / hm) ** 2 / len(hybrid))
-    tol = max(noise or 0.0, NOISE_FLOOR)
+    tol = max(min(noise or 0.0, NOISE_CAP), NOISE_FLOOR)
     ok = ratio >= 1.0 - tol
     return {"verdict": "PASS" if ok else "FAIL", "ratio": ratio, "tolerance": tol,
             "noise": noise, "rounds": n,
@@ -137,7 +147,14 @@ def summarize(run):
             res.update({"id": mid, "label": label, "higher_is_better": higher, "gates": gates})
             cell["metrics"].append(res)
         gating = [m for m in cell["metrics"] if m["gates"]]
-        cell["verdict"] = "PASS" if gating and all(m["verdict"] == "PASS" for m in gating) else "FAIL"
+        # Every scheduled round on both sides must have measured: a dropped round is
+        # a failure, not a smaller sample.
+        incomplete = [(side, rd, st) for side in ("hybrid", "raft")
+                      for rd, st, d in data.get((cid, side), []) if d is None]
+        if incomplete:
+            cell["notes"].append("incomplete: a cell with an unmeasured round fails")
+        cell["verdict"] = "PASS" if (gating and not incomplete
+                                     and all(m["verdict"] == "PASS" for m in gating)) else "FAIL"
         cells.append(cell)
     overall = "PASS" if cells and all(c["verdict"] == "PASS" for c in cells) else "FAIL"
     return {"env": env, "noise_floor": NOISE_FLOOR, "noise_k": NOISE_K, "verdict": overall, "cells": cells}
@@ -154,7 +171,7 @@ def markdown(res):
            "```\n%s\n```\n" % "\n".join("%s %s" % kv for kv in res["env"].items()),
            "Gate: Raft >= hybrid on every gating metric within the measured noise. The ratio is "
            "Raft's standing (above 1 is better, for latency too). The tolerance is "
-           "max(%g standard errors of the ratio, %g%%).\n" % (res["noise_k"], res["noise_floor"] * 100),
+           "between %g%% and %g%%, %g standard errors of the ratio.\n" % (res["noise_floor"] * 100, NOISE_CAP * 100, res["noise_k"]),
            "| cell | verdict |\n|---|---|"]
     for c in res["cells"]:
         out.append("| %s | %s |" % (c["title"], c["verdict"]))
@@ -165,6 +182,8 @@ def markdown(res):
         out.append("|---|---|---|---|---|---|---|")
         for m in c["metrics"]:
             if m.get("raft") is None:
+                if not m["gates"]:
+                    continue
                 out.append("| %s | %s | - | - | - | - | %s (%s) |" % (
                     m["label"], "yes" if m["gates"] else "no", m["verdict"], m["reason"]))
                 continue

@@ -26,7 +26,7 @@ What it does:
 2. `run.sh` runs every cell on both engines for `ROUNDS` rounds. Each cell on each side gets a
    fresh cluster (control plane in memory on box 1, a data directory per broker), one stream,
    one measurement, then everything is stopped and wiped. Odd rounds run hybrid first, even
-   rounds Raft first. The generator rotates over the boxes by round, so use a multiple of 3.
+   rounds Raft first. The generator rotates over the boxes by round, so use a multiple of 6: the side order and the generator box then balance.
 3. Before measuring, it checks each broker's environment and, for Raft, the engine marker in
    every shard directory, so a run cannot silently compare an engine with itself.
 4. `summarize.py` writes `results.md` and `results.json` under
@@ -63,10 +63,12 @@ Each cell has a table of its metrics:
 
 - **ratio** is Raft's standing. Above 1 means Raft is better, for latency as well as throughput
   (it is hybrid over Raft for a metric where lower is better).
-- **tolerance** is the larger of 2 standard errors of the ratio, taken from the round to round
-  spread of both sides, and 3%. With few rounds the spread is itself uncertain, so the floor
+- **tolerance** is 2 standard errors of the ratio, from the round to round spread of both sides,
+  held between 3% and 10%. With few rounds the spread is itself uncertain, so the floor
   keeps three quiet rounds from turning a 1% dip into a failure and a lucky pair of rounds
-  from passing a real one. Both are environment variables (`NOISE_K`, `NOISE_FLOOR`).
+  from passing a real one. The cap means a side that swings wildly cannot buy a pass. Environment variables:
+  `NOISE_K`, `NOISE_FLOOR`, `NOISE_CAP`. A cell also fails if any scheduled round on either side
+  did not measure.
 - **verdict** is PASS when `ratio >= 1 - tolerance`. Metrics marked `info` are shown and do not
   gate. A cell passes when every gating metric passes. The matrix passes when every cell does.
 
