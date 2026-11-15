@@ -342,7 +342,7 @@ fn a_shard_switch_needs_level_34() {
             assert_eq!(settle_for_level(&raw, 34), Ok(None), "{command:?}");
         }
     }
-    assert!(METADATA_VERSION >= 34);
+    const { assert!(METADATA_VERSION >= 34) };
 }
 
 /// **`joint_fence` is finalized only where a refusal report is kept.** A
