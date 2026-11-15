@@ -17,9 +17,17 @@ const SPACING: u64 = 4096;
 
 /// A log of entries 0..`len` in term 1, closed.
 async fn log_of(dir: &Path, len: u64) {
+    log_in_terms(dir, &vec![1; len as usize]).await;
+}
+
+/// A log whose entry at index `i` is in term `terms[i]`, closed.
+async fn log_in_terms(dir: &Path, terms: &[u64]) {
     let log = DiskLog::open(dir, "t/ns/raft/0", config()).expect("open");
     let mut raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
-    let entries: Vec<_> = (0..len).map(|index| normal(1, index, "base")).collect();
+    let entries: Vec<_> = (0..)
+        .zip(terms)
+        .map(|(index, term)| normal(*term, index, "base"))
+        .collect();
     append_flushed(&mut raft, &entries).await;
     raft.disk_log().close().await.expect("close");
 }
@@ -39,6 +47,8 @@ fn start(role: Role) -> Start {
             }],
         },
         role,
+        base_terms: vec![(0, 1)],
+        accept_loss: false,
         meta: Bytes::from_static(b"meta"),
         data: Bytes::from_static(b"data"),
     }
@@ -176,4 +186,82 @@ async fn a_start_reserves_through_the_gap() {
     let dir = tempfile::tempdir().expect("dir");
     start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
     assert_eq!(reserved::load(dir.path()).expect("reserved"), Some(7));
+}
+
+/// A base whose term changes from 1 to 2 at index 2, ending at (2, 4).
+fn two_term_learner() -> Start {
+    let mut start = start(Role::Learner);
+    start.base_terms = vec![(0, 1), (2, 2)];
+    start.epoch.bases[0].base_last = Some(EpochLogId {
+        index: 4,
+        epoch: 0,
+        term: 2,
+    });
+    start
+}
+
+/// A learner within the base keeps its prefix only where its terms are the
+/// base's: one that holds a different entry at an index the base has is
+/// emptied, so no two members hold different entries at one index.
+#[tokio::test]
+async fn a_learner_whose_terms_differ_from_the_base_is_emptied() {
+    let same = tempfile::tempdir().expect("dir");
+    log_in_terms(same.path(), &[1, 1, 2, 2]).await;
+    start_copy(same.path(), &two_term_learner(), SPACING).expect("start");
+    let read = read_copy(same.path(), SPACING, &BTreeSet::new()).expect("read");
+    assert_eq!(read.last, Some(LogPoint { term: 2, index: 3 }));
+
+    for terms in [&[1, 1, 1, 1][..], &[1, 1, 1, 2], &[1, 2], &[2]] {
+        let dir = tempfile::tempdir().expect("dir");
+        log_in_terms(dir.path(), terms).await;
+        start_copy(dir.path(), &two_term_learner(), SPACING).expect("start");
+        let read = read_copy(dir.path(), SPACING, &BTreeSet::new()).expect("read");
+        assert_eq!((read.last, read.purged), (None, None), "{terms:?}");
+    }
+}
+
+/// An emptied learner keeps no saved commit, including when the start was
+/// cut right after the emptying and runs again.
+#[tokio::test]
+async fn an_emptied_learner_claims_no_commit() {
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 7).await;
+    crate::disk_log::store_saved_commit(dir.path(), 6, 2).expect("commit");
+    start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
+    assert_eq!(
+        crate::disk_log::saved_commit(dir.path()).expect("commit").0,
+        0
+    );
+
+    let dir = tempfile::tempdir().expect("dir");
+    crate::disk_log::store_saved_commit(dir.path(), 6, 2).expect("commit");
+    start_copy(dir.path(), &start(Role::Learner), SPACING).expect("start");
+    assert_eq!(
+        crate::disk_log::saved_commit(dir.path()).expect("commit").0,
+        0
+    );
+}
+
+/// A voter's saved commit past the first index is lowered only by a re-form
+/// that accepts the loss; otherwise the start refuses and changes nothing
+/// the vouch rule reads.
+#[tokio::test]
+async fn a_voter_commit_past_the_first_index_is_lowered_only_on_accepted_loss() {
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 5).await;
+    crate::disk_log::store_saved_commit(dir.path(), 9, 2).expect("commit");
+    start_copy(dir.path(), &start(Role::Voter), SPACING).expect_err("would lower the commit");
+    assert_eq!(
+        crate::disk_log::saved_commit(dir.path()).expect("commit").0,
+        9
+    );
+    assert!(building(dir.path()).expect("marker"));
+
+    let mut lossy = start(Role::Voter);
+    lossy.accept_loss = true;
+    start_copy(dir.path(), &lossy, SPACING).expect("start");
+    assert_eq!(
+        crate::disk_log::saved_commit(dir.path()).expect("commit").0,
+        8
+    );
 }

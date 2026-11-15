@@ -37,6 +37,13 @@ pub(crate) struct Start {
     /// The copy's `raft-epoch` once started: its last base is the new epoch's.
     pub(crate) epoch: EpochFile,
     pub(crate) role: Role,
+    /// Where each term starts in the base, as (first index, term), ascending
+    /// and through the base's last log id. A learner keeps its prefix only
+    /// where its terms match these.
+    pub(crate) base_terms: Vec<(u64, u64)>,
+    /// The re-form accepts losing committed entries past the base, so a
+    /// voter's saved commit above the first index may be lowered to it.
+    pub(crate) accept_loss: bool,
     /// The meta and data of a voter's snapshot at the end of the gap.
     pub(crate) meta: Bytes,
     pub(crate) data: Bytes,
@@ -73,15 +80,39 @@ pub(crate) fn start_copy(dir: &Path, start: &Start, index_spacing_bytes: u64) ->
     let record_last = held.last_record.map(|(index, _)| index);
     let base_last = base.base_last.map(|last| last.index);
     match start.role {
-        Role::Learner if record_last > base_last => {
-            empty_log(dir)?;
-            step()?;
+        Role::Learner => {
+            let keeps = record_last <= base_last
+                && held.purged.is_none()
+                && prefix_matches(dir, &label, index_spacing_bytes, &held, &start.base_terms)?;
+            if !keeps {
+                empty_log(dir)?;
+                step()?;
+            }
+            // An empty learner must not claim a commit: it would count
+            // entries it lacks once it opens. Checked on its own so a start
+            // cut right after the emptying still clears it when run again.
+            if (!keeps || held.last.is_none())
+                && crate::disk_log::saved_commit(dir)
+                    .map_err(io::Error::other)?
+                    .0
+                    > 0
+            {
+                crate::disk_log::store_saved_commit(dir, 0, 0).map_err(io::Error::other)?;
+                step()?;
+            }
         }
-        Role::Learner => {}
         Role::Voter => {
             if record_last != base_last {
                 return Err(invalid(format!(
                     "{label}: the log ends at {record_last:?}, the base at {base_last:?}"
+                )));
+            }
+            let (commit, _) = crate::disk_log::saved_commit(dir).map_err(io::Error::other)?;
+            if commit > base.first_index && !start.accept_loss {
+                return Err(invalid(format!(
+                    "{label}: its saved commit {commit} is past the first index {}; only a \
+                     re-form that accepts the loss may lower it",
+                    base.first_index
                 )));
             }
         }
@@ -139,6 +170,47 @@ pub(super) fn check_started(dir: &Path, start: &Start) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether every record `held` has carries the base's term at its index.
+/// Terms never fall along a log, so a stretch with one base term matches
+/// when its first and last records both carry it.
+fn prefix_matches(
+    dir: &Path,
+    label: &str,
+    index_spacing_bytes: u64,
+    held: &held::Held,
+    base_terms: &[(u64, u64)],
+) -> io::Result<bool> {
+    let (Some(lowest), Some((last, _))) = (held.lowest, held.last_record) else {
+        return Ok(true);
+    };
+    let term_at = |index: u64| -> io::Result<Option<u64>> {
+        Ok(held::generation_at(dir, label, index_spacing_bytes, index)?
+            .flatten()
+            .and_then(crate::raft_log::term_of_generation))
+    };
+    let base_term = |index: u64| {
+        base_terms
+            .iter()
+            .take_while(|(start, _)| *start <= index)
+            .last()
+            .map(|(_, term)| *term)
+    };
+    let mut from = lowest;
+    while from <= last {
+        let to = base_terms
+            .iter()
+            .map(|(start, _)| *start)
+            .find(|start| *start > from)
+            .map_or(last, |next| (next - 1).min(last));
+        let want = base_term(from);
+        if want.is_none() || term_at(from)? != want || term_at(to)? != want {
+            return Ok(false);
+        }
+        from = to + 1;
+    }
+    Ok(true)
 }
 
 /// Remove every segment, index, purged id and snapshot in `dir`. The copy
