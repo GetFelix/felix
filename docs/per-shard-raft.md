@@ -678,9 +678,12 @@ does not form the group. A kept copy that cannot be read counts as one
 that holds entries, and so does a group that never acknowledged a record
 but wrote its first entry. The shard answers "not ready" until it is
 re-formed. Until the re-form command below is built, opening it means
-giving up its records: delete the stream and create it again, or stop
-every broker that holds the shard and remove the shard's directory and its
-kept copies on each. A shard whose
+giving up its records: delete the stream and create it again. That makes a
+new incarnation, which starts clean. Do not stop the brokers and remove the
+shard's directory and its kept copies by hand: the shard then re-forms as
+the same incarnation at index 0 and gives out offsets it already
+acknowledged (issue #2620), which is the case this rule exists to stop.
+A shard whose
 every broker lost its whole data root leaves no kept copy, so nothing
 holds it; only the offset floor below covers that case.
 

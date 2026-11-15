@@ -256,6 +256,18 @@ pub enum NotBlank {
     ReachedBefore(MemberId),
 }
 
+impl NotBlank {
+    /// Whether the set was refused because an earlier copy held records,
+    /// here or on a peer, so only an operator re-form opens it.
+    pub fn held_records(&self) -> bool {
+        match self {
+            Self::ReachedBefore(_) => true,
+            Self::Unanswered(_, why) => why.contains(group::REACHED_BEFORE),
+            _ => false,
+        }
+    }
+}
+
 /// A member [`GroupRuntime::open_copy`] started.
 pub struct OpenedMember {
     /// This broker and the copy id the directory holds.
@@ -584,10 +596,18 @@ impl GroupRuntime {
                 .flatten()
         };
         // A kept copy that cannot be read may hold the group's records.
+        let kept_unreadable = earlier.is_err();
         let earlier = earlier.unwrap_or_else(|err| {
             tracing::warn!(dir = %dir.display(), error = %err, "kept shard copies cannot be read, so no group forms on this one");
             true
         });
+        if earlier && !kept_unreadable {
+            tracing::warn!(
+                shard = ?shard,
+                "a Raft shard is held: this broker held records of it before and every copy rotated, \
+                 so no group forms on it until it is re-formed (docs/per-shard-raft.md, \"Re-forming a group\")"
+            );
+        }
         let started = self
             .start_member(
                 reserved,

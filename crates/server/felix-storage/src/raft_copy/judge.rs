@@ -270,7 +270,8 @@ impl CopyRoot {
     }
 }
 
-/// The highest reservation among the copy in `dir` and every copy
+/// The highest reservation among the copy in `dir` (its own
+/// `raft-reserved` counts, not only the kept copies') and every copy
 /// rotations moved aside from it, or `None` when none took one. A re-form
 /// starts its epoch above it. A reservation that does not decode is an
 /// error, never skipped.
