@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794785289463,
+  "lastUpdate": 1794786928976,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59332,6 +59332,58 @@ window.BENCHMARK_DATA = {
             "range": "5923.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 801406.73\nmean: 800294.66\nstdev: 5923.45\ncv: 0.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6d1916631269a7d78b580acfcf2cb08f05c9954",
+          "message": "feat(raft): group records and the Raft group entry (#2655)\n\nAdds the group record mark (v9, Raft logs only), Raft entry tag 9 and the GroupEntry codec for consumer groups on Raft. Tracker-decided ops carry the creation token; an empty group name is refused at decode. RAFT_CONSUMER_GROUPS is defined but not yet implemented. Part of #2446.",
+          "timestamp": "2026-11-15T23:50:15Z",
+          "tree_id": "6a3f93cbfbdd59d0be1b233e8a05bf3ba4b536dd",
+          "url": "https://github.com/GetFelix/felix/commit/e6d1916631269a7d78b580acfcf2cb08f05c9954"
+        },
+        "date": 1794786928379,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 497095.21,
+            "range": "30784.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497095.21\nmean: 493817.91\nstdev: 30784.00\ncv: 6.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 497095.21,
+            "range": "30784.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497095.21\nmean: 493817.91\nstdev: 30784.00\ncv: 6.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120784.61,
+            "range": "2405.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120784.61\nmean: 119866.59\nstdev: 2405.80\ncv: 2.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1207846.06,
+            "range": "24057.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1207846.06\nmean: 1198665.95\nstdev: 24057.99\ncv: 2.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
