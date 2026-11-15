@@ -29,10 +29,12 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///
 /// - A hybrid move left on it is dropped: the group sends none of the
 ///   reports it waits for.
-/// - A leader that is down stays named. The group elects without placement,
-///   and the broker leads again where placed once it is back.
-/// - A leader on a draining broker, or one outside the stream's region, is
-///   moved to a live member.
+/// - A leader that is down, on a draining broker, or outside the stream's
+///   region is moved to a live member. A down one is renamed even while
+///   placement is paused, as the hybrid still replaces a failed leader:
+///   brokers with no member forward to the leader placement names.
+/// - A down leader with no live member stays named, with no alert: the
+///   group cannot elect either until a member is back.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering.
@@ -50,9 +52,7 @@ pub(super) fn raft_step<'a>(
         return Decision::Move(MoveStep::RaftMoveDropped, dropped);
     }
     let leader = existing.leader.as_str();
-    if !is_serving(leader) {
-        return Decision::Kept;
-    }
+    let down = !is_serving(leader);
     let key = &existing.key;
     // Only a member can lead: a node outside the set holds no copy.
     let members: Vec<&'a str> = existing
@@ -92,10 +92,11 @@ pub(super) fn raft_step<'a>(
     } else {
         match fewest(&|node| leaders.total(node)) {
             Some(to) => to,
+            None if down => return Decision::Kept,
             None => return Decision::Waiting(Blocked::NoDestination),
         }
     };
-    if moves.paused() {
+    if moves.paused() && !down {
         return Decision::Waiting(Blocked::Paused);
     }
     if moves.raft_leaders >= RAFT_LEADERS_PER_PASS {

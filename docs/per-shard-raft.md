@@ -3414,9 +3414,12 @@ of a shard it has placed:
   leaves a group only through a membership change. A shard with no other
   live member, such as one at replication factor 1, keeps its leader and
   shows as waiting with "no live node can take this shard".
-- A leader that goes down stays named. The group elects a new one without
-  the control plane, so placement writes no failover and counts no
-  unplaceable shard. The broker is preferred again once it is back.
+- A leader that goes down is renamed to a live member, in the same kind of
+  write, because a broker with no member forwards to the leader placement
+  names. The group elects a new one without the control plane, so placement
+  counts no unplaceable shard. With no live member left the name stays.
+- A leader-only write keeps the shard's Raft target and its version, so it
+  does not cancel a membership change in flight.
 - An operator move to a broker that is not a member is refused with
   `not_a_member`.
 - A move an older control plane started on the shard is dropped at the next

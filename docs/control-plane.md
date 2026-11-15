@@ -1105,7 +1105,10 @@ retry of a wiped copy's old id cannot replace its successor's. A restore can
 bring back ids a broker has since replaced, so a broker has to report its ids
 again once it acknowledges a new placement incarnation. Today only a copy-id report moves
 the counter; a set change will too once Raft shards are placed. Both are written
-in place, at the shard's generation. A target change is refused while some
+in place, at the shard's generation. A placement write that names the same
+brokers, such as a leader move, keeps the ids and the target with its counter,
+so it does not cancel a membership change in flight. One that changes the set
+drops both, since the target named the old members. A target change is refused while some
 registered broker, serving or not, has not acknowledged the placement
 incarnation. The assignment feeds leave the record's `raft_target` out and
 send `target` instead, with `version: {incarnation, counter}`, only while
@@ -1765,7 +1768,7 @@ only says which member it wants leading:
 | --- | --- | --- |
 | Balance, drain or operator move | Stage, fence, cut over | One write that changes only `leader`, to another member |
 | Destination outside the set | Copied in first | Refused (`not_a_member`), never chosen |
-| Leader down | Failover to a caught-up follower, or `Unplaceable` | Nothing written; the group elects |
+| Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
 | Follower on a draining broker | Replaced | Stays |
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
@@ -1774,7 +1777,9 @@ at most 64 new Raft leaders: once brokers follow placement
 leadership transfer, which closes the shard for an election. Until then the
 group's leader stays where it was elected, so a drained broker's shutdown
 costs its groups an election rather than a hand-off. Pausing placement holds them, and balance
-waits while a broker is down, as for the hybrid. The set changes only
+waits while a broker is down, as for the hybrid. A down leader is renamed even
+while paused, as the hybrid still replaces a failed leader: a broker with no
+member forwards requests to the leader placement names. The set changes only
 through the group's membership target
 ([#2235](https://github.com/GetFelix/felix/issues/2235)). A shard switched
 from the hybrid is not placed here at all. See
@@ -1784,7 +1789,7 @@ shard".
 > `services/felix-controlplane-service/src/cluster/placement/tests/raft_leaders.rs`,
 > `a_balance_pass_moves_a_raft_leader_in_one_write`,
 > `a_drain_moves_every_raft_leader_off_the_broker_in_one_pass`,
-> `a_dead_leaders_raft_shard_keeps_its_placement`,
+> `a_dead_raft_leader_is_renamed_to_a_live_member`,
 > `an_operator_moves_a_raft_leader_only_to_a_member` and
 > `a_drain_on_a_raft_cluster_finishes_through_the_store`.
 

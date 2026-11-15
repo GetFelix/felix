@@ -124,18 +124,33 @@ fn a_drain_moves_every_raft_leader_off_the_broker_in_one_pass() {
 }
 
 #[test]
-fn a_dead_leaders_raft_shard_keeps_its_placement() {
+fn a_dead_raft_leader_is_renamed_to_a_live_member() {
     let streams = vec![replicated_stream("orders", 1, 3)];
     let existing = vec![member_of(0, "broker-a")];
     let mut nodes = live(&ABC);
     nodes[0].status.lifecycle = NodeLifecycle::Down;
 
-    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+    // Even paused: brokers with no member forward to the named leader.
+    let paused = MovePolicy {
+        paused: true,
+        ..raft()
+    };
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, paused);
 
-    assert_eq!(plan.shards[0].decision, Decision::Kept);
+    let written = leader_writes(&plan, &existing);
+    assert_eq!(written.len(), 1, "{plan:?}");
+    assert_ne!(written[0].leader, "broker-a");
     assert_eq!(plan.unplaceable().count(), 0, "no alert: the group elects");
 
+    // With no live member left there is nobody to name, and no alert.
+    nodes[1].status.lifecycle = NodeLifecycle::Down;
+    nodes[2].status.lifecycle = NodeLifecycle::Down;
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+    assert_eq!(plan.shards[0].decision, Decision::Kept);
+    assert_eq!(plan.unplaceable().count(), 0);
+
     // The same shard on the hybrid waits for a caught-up follower.
+    nodes[1].status.lifecycle = NodeLifecycle::Live;
     let hybrid = plan_with(
         &streams,
         &[],
