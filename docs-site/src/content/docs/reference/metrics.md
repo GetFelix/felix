@@ -259,7 +259,7 @@ The durable log. Every series is process-wide, not per stream. Compare `felix_st
 | `felix_storage_segment_count` | gauge | - | Segments currently on disk for a shard. |
 | `felix_storage_raft_kept_copies` | gauge | - | Shard directories a Raft rotation moved aside that are still on disk, summed over data roots. Measured in the background after a rotation, a reclaim or a stream delete. |
 | `felix_storage_raft_kept_copy_bytes` | gauge | - | Bytes those directories hold. |
-| `felix_storage_raft_log_mark_age_seconds` | gauge | - | Seconds since the batched Raft log marks of a data root were last written up to the flushed logs. About the batch interval (1 s) when healthy. At five intervals the root's Raft shards stop taking appends and votes. |
+| `felix_storage_raft_log_mark_age_seconds` | gauge | - | Seconds since the batched Raft log marks of a data root were last written up to the flushed logs. About the batch interval (1 s) when healthy. From five intervals the root's Raft shards' appends wait until the marks are written again. |
 | `felix_storage_open_sealed_segments` | gauge | - | Sealed segments whose file and index are open, across every log. |
 | `felix_storage_retention_segments_deleted_total` | counter | - | Sealed segments deleted by retention. |
 | `felix_storage_retention_bytes_reclaimed_total` | counter | - | Bytes reclaimed by retention. |

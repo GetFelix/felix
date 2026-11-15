@@ -6,6 +6,8 @@
   synced before a vote is answered. A single shard directory, or a whole root in the same run,
   put back to a state no older than the last mark write (about a second) with no vote since is
   no longer detected; older restores still are (`docs/per-shard-raft.md`, "What this does not catch").
-  A batch still unwritten five seconds after the last one started stops the root's appends and votes,
-  as a failed mark write does, and `felix_storage_raft_log_mark_age_seconds` shows how far behind
-  the marks are. A planned stop writes one last batch. The exact mark is kept for tests.
+  A failed mark write stops the root's appends and votes. A mark write that hangs fails nothing:
+  once the marks are five seconds old the root's appends wait for them (votes wait on the same
+  writer) and resume when the disk does, so no ack is more than about six seconds ahead of its
+  mark. `felix_storage_raft_log_mark_age_seconds` shows how far behind the marks are. A planned
+  stop writes one last batch per data root. The exact mark is kept for tests.

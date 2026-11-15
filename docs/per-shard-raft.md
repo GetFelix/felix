@@ -460,8 +460,8 @@ it and treat it as a copy that may hold less than it reported.
 **What this does not catch.** Two restores to a state no older than the
 last mark write, with no vote saved since, pass every check. The batch runs
 once a second, so that is about the last second, longer while the mark
-writer is backed up behind its own fsync or queued votes, and never more
-than five seconds (see below):
+writer is backed up behind its own fsync or queued votes, and about six
+seconds at most (see below):
 
 - **One shard directory** put back to such a state. A steady leader's term does not change, so the copy's vote equals
   its mark, and its log is not below the trailing mark. Example: A and C
@@ -479,12 +479,18 @@ it recovered at once (`RaftLog::mark_recovered`), so an idle copy after a
 restart does not keep an old mark. A batch write that fails stops the
 root's mark log: from then on every shard on the root fails its appends and
 votes until the broker restarts, rather than let the log run ahead of a
-mark that no longer moves. So does a batch still unwritten five intervals
-after the last written one started: a hung fsync is not an error, but the
-mark stops moving all the same. `felix_storage_raft_log_mark_age_seconds`
-shows how far behind the marks are, and a warning is logged each second
-they are more than one interval behind. A planned stop writes one last
-batch, so the marks end at the flushed logs. An exact mark fails the same way. Wipes, lost roots and crashes
+mark that no longer moves. A write that hangs is not a failure. Once the
+marks are five intervals old, appends on the root's batched shards wait
+until a batch is written, then go on; nothing fails and nothing restarts.
+The age is checked once an interval, so no acknowledged entry is more than
+about six seconds ahead of its mark. While the write hangs, a vote waits on
+the same mark writer, so votes wait too rather than fail. The hybrid engine
+and an exact mark also stall on a hung disk and resume when it returns.
+`felix_storage_raft_log_mark_age_seconds` shows how far behind the marks
+are, and a warning is logged each second they are more than one interval
+behind. A planned stop writes one last batch per data root after the
+members close, waiting at most five seconds in all, so the marks end at the
+flushed logs. A failed exact mark write fails the same way as a batch. Wipes, lost roots and crashes
 do not depend on the log mark at all. The design accepts this residual
 (Questions, 11); restoring one shard directory is unsupported.
 

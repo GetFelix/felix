@@ -12,7 +12,7 @@ use std::path::Path;
 use felix_storage::DiskLog;
 use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
-    CopyMarks, CopyRoot, KeptReport, LogMarkMode, Rotation, reclaim_kept,
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, reclaim_kept,
 };
 use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::impls::leader_id_std::LeaderId;
@@ -34,7 +34,8 @@ use crate::{ShardKey, ShardKind};
 /// How often a kept-copy reclaim that waits only on a commit save looks
 /// again. A Raft log saves its commit at most this often.
 const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
-/// How long a shutdown waits for its last batch of log marks.
+/// How long a shutdown waits for its last batch of log marks, all roots
+/// together.
 const LAST_MARK_LIMIT: Duration = Duration::from_secs(5);
 
 /// The timers every group on a broker shares.
@@ -426,6 +427,9 @@ struct Inner {
     clock: parking_lot::RwLock<Clock>,
     stop: CancellationToken,
     ticker: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Every data root a member opened here keeps marks at, once each. The
+    /// shutdown writes their last batch even after the members closed.
+    mark_roots: parking_lot::Mutex<Vec<MarkLog>>,
 }
 
 impl GroupRuntime {
@@ -478,6 +482,7 @@ impl GroupRuntime {
                 host: OnceLock::new(),
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
+                mark_roots: parking_lot::Mutex::default(),
             }),
         })
     }
@@ -733,6 +738,12 @@ impl GroupRuntime {
             group.shutdown().await;
             return Err(OpenError::Closed);
         }
+        if let Some(root) = group.mark_root() {
+            let mut roots = inner.mark_roots.lock();
+            if !roots.iter().any(|known| known.same_log(root)) {
+                roots.push(root.clone());
+            }
+        }
         Ok(())
     }
 
@@ -958,18 +969,19 @@ impl GroupRuntime {
             groups
         };
         futures::future::join_all(groups.iter().map(|group| group.shutdown())).await;
-        // One last batch, so a planned stop leaves every batched log mark at
-        // its flushed log. Each root's second call has nothing to write. A
+        // One last batch per root, so a planned stop leaves every batched log
+        // mark at its flushed log, members closed before this included. A
         // hung disk does not hold the stop: the next open marks what it
         // recovered anyway.
-        for root in groups.iter().filter_map(|group| group.mark_root()) {
-            match tokio::time::timeout(LAST_MARK_LIMIT, root.mark_batched()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(err)) => {
+        let roots = std::mem::take(&mut *inner.mark_roots.lock());
+        let last = futures::future::join_all(roots.iter().map(MarkLog::mark_batched));
+        match tokio::time::timeout(LAST_MARK_LIMIT, last).await {
+            Ok(results) => {
+                for err in results.into_iter().filter_map(Result::err) {
                     tracing::warn!(error = %err, "the last batched log marks were not written");
                 }
-                Err(_) => tracing::warn!("the last batched log marks timed out"),
             }
+            Err(_) => tracing::warn!("the last batched log marks timed out"),
         }
     }
 

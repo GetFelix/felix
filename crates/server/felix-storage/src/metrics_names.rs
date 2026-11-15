@@ -75,7 +75,7 @@ pub const RAFT_KEPT_COPIES: &str = "felix_storage_raft_kept_copies";
 pub const RAFT_KEPT_COPY_BYTES: &str = "felix_storage_raft_kept_copy_bytes";
 /// Seconds since the batched Raft log marks of a data root were last
 /// written up to the flushed logs: about the batch interval when healthy.
-/// Past five intervals the root's Raft shards stop taking appends. Not
+/// From five intervals the root's Raft shards' appends wait for them. Not
 /// labelled, like the kept-copy gauges.
 pub const RAFT_LOG_MARK_AGE_SECONDS: &str = "felix_storage_raft_log_mark_age_seconds";
 /// Sealed segments whose file and index are open, across every log. Bounded
