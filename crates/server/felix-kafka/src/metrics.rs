@@ -76,6 +76,13 @@ pub(crate) fn produce_refused(error: i16) {
         .increment(1);
 }
 
+/// A refused partition whose cause the error code does not tell, by reason:
+/// `record_headers_not_finalized` is a keyed or headered record for a shard
+/// that cannot store them until the cluster finalizes a fleet feature.
+pub(crate) fn produce_refused_for(reason: &'static str) {
+    metrics::counter!("felix_kafka_produce_refused_total", "reason" => reason).increment(1);
+}
+
 fn api_name(api: ApiKey) -> &'static str {
     match api {
         ApiKey::ApiVersions => "ApiVersions",
