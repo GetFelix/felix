@@ -78,7 +78,8 @@ impl InternalMessage {
                     self.kind(),
                     Kind::HeaderedForwardPublish | Kind::SequencedForwardPublish
                 );
-                if !m.credential.is_empty() || blocks {
+                let plain_sequenced = self.kind() == Kind::PlainSequencedForwardPublish;
+                if !m.credential.is_empty() || blocks || plain_sequenced {
                     put_credential(&mut body, &m.credential)?;
                 }
                 if blocks {
@@ -88,11 +89,11 @@ impl InternalMessage {
                             "headers count differs from payloads",
                         ));
                     }
-                    // The decoder refuses a section with no block, so a
-                    // sequenced batch without one has no encoding.
+                    // The decoder refuses a section with no block. `kind`
+                    // never picks these kinds for such a batch.
                     if !any_block(headers) {
                         return Err(Error::InvalidRecordHeaders(
-                            "a sequenced forward carries no block",
+                            "a headered forward carries no block",
                         ));
                     }
                     put_blocks(&mut body, headers);
@@ -634,7 +635,8 @@ impl InternalMessage {
             kind @ (Kind::ForwardPublish
             | Kind::AuthorizedForwardPublish
             | Kind::HeaderedForwardPublish
-            | Kind::SequencedForwardPublish) => {
+            | Kind::SequencedForwardPublish
+            | Kind::PlainSequencedForwardPublish) => {
                 let correlation_id = take_u64(&mut body)?;
                 let tenant_id = take_str(&mut body)?;
                 let namespace = take_str(&mut body)?;
@@ -664,12 +666,18 @@ impl InternalMessage {
                 } else {
                     take_credential(&mut body)?
                 };
-                let sequenced = kind == Kind::SequencedForwardPublish;
-                let headers = if kind == Kind::HeaderedForwardPublish || sequenced {
+                let headers = if matches!(
+                    kind,
+                    Kind::HeaderedForwardPublish | Kind::SequencedForwardPublish
+                ) {
                     Some(take_blocks(&mut body, payloads.len(), true)?)
                 } else {
                     None
                 };
+                let sequenced = matches!(
+                    kind,
+                    Kind::SequencedForwardPublish | Kind::PlainSequencedForwardPublish
+                );
                 let producer = if sequenced {
                     Some(ForwardProducer {
                         producer_id: take_u64(&mut body)?,

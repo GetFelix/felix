@@ -48,6 +48,9 @@ impl Roots {
     }
 }
 
+/// How long a publish answered on a written majority may take.
+const ANSWERED: Duration = Duration::from_secs(10);
+
 /// Set in the process that poisons a log for [`flush_failed_copy`].
 const POISONING_PROCESS: &str = "FELIX_TEST_POISONING_PROCESS";
 
@@ -110,6 +113,175 @@ async fn the_first_members_are_the_copies_the_brokers_hold() {
     for log in logs {
         log.close().await.expect("close");
     }
+}
+
+/// The broker's members batch their log marks: a run of writes costs each
+/// root a few synced mark writes (the votes and one batch a second), not one
+/// per flush round, and the mark still catches up with the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_shipped_log_mark_is_one_write_a_second() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.push(opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let first = cluster.write(0, b"first").await;
+    cluster.committed_everywhere(0, first).await;
+    let term = |broker: &str| {
+        cluster
+            .runtime(broker)
+            .status(&shard(0))
+            .expect("status")
+            .term
+    };
+    let before: HashMap<_, _> = BROKERS
+        .iter()
+        .map(|broker| {
+            let sequence = roots.roots[broker].mark_log().sequence();
+            (*broker, (sequence, term(broker)))
+        })
+        .collect();
+    let started = std::time::Instant::now();
+    let mut last = first;
+    for _ in 0..100 {
+        last = cluster.write(0, b"record").await;
+    }
+    cluster.committed_everywhere(0, last).await;
+    let seconds = started.elapsed().as_secs_f64().ceil() as u64;
+    for broker in BROKERS {
+        let (sequence, at) = before[broker];
+        let writes = roots.roots[broker].mark_log().sequence() - sequence;
+        // A batch a second, one more for the tick either side, and an
+        // election on a loaded runner costs a root a vote and its commit
+        // (one spare). An exact mark would take about 100.
+        let terms = term(broker) - at;
+        assert!(
+            writes <= seconds + 2 + 3 * terms,
+            "{broker}: {writes} mark writes for 100 writes in {seconds} s over {terms} terms"
+        );
+    }
+    let name = runtime::mark_name(&shard(0));
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    for broker in BROKERS {
+        while roots.roots[broker]
+            .mark_log()
+            .marks(&name)
+            .and_then(|marks| marks.log)
+            .is_none_or(|at| at.index < last)
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{broker}: the batched mark never caught up"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.expect("close");
+    }
+}
+
+/// One broker's copy under a batch that never ticks again after the open,
+/// with five records written.
+async fn written_under_an_idle_batch(cluster: &mut Cluster, roots: &Roots) -> (OpenedMember, u64) {
+    let opened = cluster
+        .runtime("a")
+        .open_copy(
+            group(0),
+            &roots.shard_dir("a"),
+            log_config(),
+            &roots.roots["a"],
+        )
+        .await
+        .expect("open copy");
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), BTreeSet::from([opened.member.clone()]))
+        .await
+        .expect("initialize");
+    let mut last = 0;
+    for _ in 0..5 {
+        last = cluster.write(0, b"record").await;
+    }
+    assert!(log_mark(roots) < Some(last), "the batch ran");
+    (opened, last)
+}
+
+fn idle_batch() -> Cluster {
+    Cluster::with(
+        RuntimeConfig {
+            log_mark: felix_storage::raft_copy::LogMarkMode::Batched(Duration::from_secs(3600)),
+            ..timers()
+        },
+        true,
+    )
+}
+
+fn log_mark(roots: &Roots) -> Option<u64> {
+    roots.roots["a"]
+        .mark_log()
+        .marks(&runtime::mark_name(&shard(0)))
+        .and_then(|marks| marks.log)
+        .map(|at| at.index)
+}
+
+/// A copy closed before its batch ran comes back with its log mark at what
+/// it recovered, before any append: otherwise the mark trails the log until
+/// the next write, however long that is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reopened_copy_marks_what_it_recovered() {
+    let mut cluster = idle_batch();
+    let roots = Roots::new();
+    let (first, last) = written_under_an_idle_batch(&mut cluster, &roots).await;
+    assert!(cluster.runtime("a").close(&shard(0)).await);
+    first.log.close().await.expect("close");
+    assert!(log_mark(&roots) < Some(last), "the close marked the log");
+
+    let second = cluster
+        .runtime("a")
+        .open_copy(
+            group(0),
+            &roots.shard_dir("a"),
+            log_config(),
+            &roots.roots["a"],
+        )
+        .await
+        .expect("reopen");
+    assert_eq!(log_mark(&roots), Some(last));
+    cluster.stop().await;
+    second.log.close().await.ok();
+}
+
+/// A planned stop writes the batched log marks once more, so they end at
+/// the flushed log instead of up to a batch interval behind it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_planned_stop_writes_the_last_batch() {
+    let mut cluster = idle_batch();
+    let roots = Roots::new();
+    let (opened, last) = written_under_an_idle_batch(&mut cluster, &roots).await;
+    cluster.stop().await;
+    assert_eq!(log_mark(&roots), Some(last));
+    opened.log.close().await.expect("close");
 }
 
 /// A copy whose directory was wiped comes back under a new id. A request
@@ -461,6 +633,27 @@ fn start_sim_run(root: &Path, mint_from: u64, control_plane: Option<ControlPlane
 /// after the cut, its log mark included, is lost at the reboot.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
+    power_cut_keeps(Acked::Counted).await;
+}
+
+/// The same loss, with R a `Quorum` publish on a stream not fsynced on
+/// commit: its publisher is answered on the written majority, so R is a
+/// record a client was told is kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_answered_on_a_written_majority_survives_a_power_cut() {
+    power_cut_keeps(Acked::Published).await;
+}
+
+/// How R is acknowledged in [`power_cut_keeps`].
+#[derive(Clone, Copy)]
+enum Acked {
+    /// A wait on the written count.
+    Counted,
+    /// A publish answered at `AnswerAt::Majority`.
+    Published,
+}
+
+async fn power_cut_keeps(acked: Acked) {
     let dir = tempdir().expect("dir");
     let root_of = |broker: &str| dir.path().join(broker);
     let mut roots = HashMap::new();
@@ -585,14 +778,41 @@ async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
     }
     cluster.net.cut.lock().insert(other.into());
     cluster.net.muted.lock().insert(other.into());
-    let r = engine
-        .propose(&shard(0), batch(b"R"))
-        .await
-        .expect("written");
-    engine
-        .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
-        .await
-        .expect("R acknowledged on the written count");
+    let r_at = match acked {
+        Acked::Counted => {
+            let r = engine
+                .propose(&shard(0), batch(b"R"))
+                .await
+                .expect("written");
+            engine
+                .await_quorum_ack(&shard(0), r, AckAt::Written, PATIENCE)
+                .await
+                .expect("R acknowledged on the written count");
+            r.end - 1
+        }
+        Acked::Published => {
+            let (broker, handle) = super::deliver::broker_on(&engine).await;
+            let proposed = engine
+                .publish(
+                    &broker,
+                    &handle,
+                    &shard(0),
+                    None,
+                    vec![Bytes::from_static(b"R")],
+                    AckAt::Written,
+                    AnswerAt::Majority,
+                    PATIENCE,
+                )
+                .expect("proposed");
+            let answered = tokio::time::timeout(ANSWERED, tokio::spawn(proposed.complete()));
+            let outcome = answered
+                .await
+                .expect("R answered")
+                .expect("joined")
+                .expect("R answered on the written majority");
+            outcome.offsets.expect("offsets").0
+        }
+    };
     assert!(
         cut.load(std::sync::atomic::Ordering::Acquire),
         "the power was not cut in R's append"
@@ -643,10 +863,10 @@ async fn a_copy_back_from_a_power_cut_does_not_vote_with_the_cut_log() {
         cut.insert(failing.into());
     }
     let after = cluster.write(0, b"after").await;
-    assert!(after > r.end - 1);
+    assert!(after > r_at);
     for broker in [&*leader.broker, other] {
         let range = felix_storage::log::ReadRange {
-            start: r.end - 1,
+            start: r_at,
             max_bytes: 1 << 20,
         };
         let records = logs[broker]

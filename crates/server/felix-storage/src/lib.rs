@@ -52,6 +52,8 @@
 //!   member may start on a data directory. `raft_copy`, behind the same
 //!   feature: which copy of a shard a Raft member is, the marks the data root
 //!   keeps for it, and the gate a restored root fails.
+//! - [`waiters`]: tasks waiting on a watched position, woken only by the
+//!   advance that reaches theirs.
 //! - [`tiered`] is an interface with no implementation yet.
 //! - `fuzzing`, behind the feature of that name, is how the targets in `fuzz/`
 //!   reach decoders this crate does not export.
@@ -89,6 +91,7 @@ pub mod sim_fs;
 pub mod storage_identity;
 mod task;
 pub mod tiered;
+pub mod waiters;
 
 pub use cache::{
     CacheChange, CacheCondition, CacheObserver, CacheSnapshotEntry, ConditionalWrite,

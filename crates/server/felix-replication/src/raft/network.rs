@@ -12,7 +12,7 @@ use bytes::Bytes;
 use futures::future::BoxFuture;
 use futures::stream::{BoxStream, FuturesOrdered};
 use futures::{Stream, StreamExt};
-use openraft::EntryPayload;
+use openraft::entry::RaftEntry;
 use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
 use openraft::network::v2::RaftNetworkV2;
@@ -22,6 +22,7 @@ use openraft::raft::{
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
 use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, SnapshotOf, VoteOf};
+use openraft::{Config, EntryPayload};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use felix_storage::raft_log::LogPoint;
@@ -29,9 +30,10 @@ use felix_storage::raft_log::LogPoint;
 use super::group::Pace;
 use super::lease::Lease;
 use super::machine::SnapshotData;
-use super::reach::{Reach, Refusals};
+use super::reach::{Reach, Refusals, Waits};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
+use crate::ShardKind;
 
 /// One Raft message for one member of one group. What is in it is this
 /// module's business; a transport carries it to [`Self::to`]'s broker.
@@ -178,7 +180,6 @@ pub struct AgreeingPeers;
 #[async_trait]
 impl RaftTransport for AgreeingPeers {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
-        use openraft::entry::RaftEntry;
         Ok(RaftReply(match request.body {
             Request::Append(rpc) => {
                 let last = rpc.entries.last().map(|entry| entry.log_id());
@@ -206,6 +207,11 @@ pub(crate) struct Router {
     reports: Arc<Reports>,
     reach: Arc<Reach>,
     refusals: Arc<Refusals>,
+    /// openraft's settings, for its usual retry delays.
+    config: Arc<Config>,
+    /// The broker of the one member this copy calls, when its retries may
+    /// wait longer while that broker is down.
+    to: Option<Arc<str>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -220,6 +226,7 @@ impl Router {
         reports: Arc<Reports>,
         reach: Arc<Reach>,
         refusals: Arc<Refusals>,
+        config: Arc<Config>,
     ) -> Self {
         Self {
             transport,
@@ -228,6 +235,20 @@ impl Router {
             reports,
             reach,
             refusals,
+            config,
+            to: None,
+        }
+    }
+
+    /// This router, for openraft's client to `target` in `group`. A cache
+    /// shard keeps openraft's delays: they also pace its snapshot pieces,
+    /// whose wait the ticker's walk cannot cut short. A stream shard's
+    /// snapshot pieces would wait up to 10 s the same way; that is harmless
+    /// only while stream members refuse snapshots (`Group::answer`).
+    fn toward(&self, target: &MemberId, group: &GroupId) -> Self {
+        Self {
+            to: (group.shard.kind == ShardKind::Stream).then(|| Arc::clone(&target.broker)),
+            ..self.clone()
         }
     }
 
@@ -249,7 +270,13 @@ impl Router {
             }
         }
         let sent = match &body {
-            Request::Append(rpc) => Some(self.pace.sending(&to, !rpc.entries.is_empty())),
+            Request::Append(rpc) => {
+                let new = rpc
+                    .entries
+                    .last()
+                    .is_some_and(|last| self.pace.new_entries(&last.log_id()));
+                Some(self.pace.sending(&to, new))
+            }
             _ => None,
         };
         // The members that take this stop refusing votes, and the target
@@ -283,7 +310,14 @@ impl Router {
             self.lease.named(term);
         }
         match &answer {
-            Ok(Err(Refused::Unreachable(_))) | Err(_) => self.reach.lost(&to.broker, sent_at),
+            Ok(Err(Refused::Unreachable(_))) | Err(_) => {
+                self.reach.lost(&to.broker, sent_at);
+                // Only a leader's append: a candidate's vote leaves the
+                // ticker nothing to heartbeat.
+                if sent.is_some() {
+                    self.reach.lost_by(&to.broker, &self.refusals.group);
+                }
+            }
             // The broker is up, but this group's member is not open there.
             Ok(Err(Refused::NoSuchMember(_) | Refused::OtherCopy(..) | Refused::Stopped(..))) => {
                 self.reach.answered(&to.broker);
@@ -435,6 +469,18 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             _ => Err(wrong_reply().into()),
         }
     }
+
+    /// openraft's own retry delays, which grow further while a stream
+    /// shard member's broker is down.
+    fn backoff(&self) -> Option<Backoff> {
+        let broker = Arc::clone(self.to.as_ref()?);
+        let usual = self.config.build_backoff();
+        Some(Backoff::new(Waits::new(
+            usual,
+            Arc::clone(&self.reach),
+            broker,
+        )))
+    }
 }
 
 /// One group's side of the router.
@@ -447,10 +493,11 @@ impl RaftNetworkFactory<ShardTypes> for Network {
     type Network = Pipelined;
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
+        let router = self.router.toward(&target, &self.group);
         Pipelined {
             #[cfg(test)]
             opened: (self.router.reach.clone(), target.broker.clone()),
-            unary: GroupNetworkAdapter::new(self.router.clone(), target, self.group.clone()),
+            unary: GroupNetworkAdapter::new(router, target, self.group.clone()),
         }
     }
 }
@@ -511,7 +558,6 @@ where
     Fut: Future<Output = Answer>,
     G: FnMut(&mut AppendEntriesRequest<ShardTypes>) -> bool,
 {
-    use openraft::entry::RaftEntry;
     struct Window<S, F, A: Future> {
         input: Option<S>,
         send: F,

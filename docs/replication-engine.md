@@ -844,12 +844,13 @@ change `5c3ad1bc2d`. From `5c3ad1bc2d` to `a8d0092bc8` there are four more:
 a CI-only change, `b3d8c1b6b2` (the `Raft::write()` builder returns an
 unboxed future; callers that only await it are unchanged), `5457dc5a62`
 (`Raft::write_many()`, additive), and `a8d0092bc8`, which adds a
-`WriteOption` argument to `client_write_many` (openraft#2321). Felix passes
-`WriteOption::default()`, the previous behaviour, so untermed batches are
-admitted as before. The read path
+`WriteOption` argument to `client_write_many` (openraft#2321). The publish
+task (`raft/propose.rs`) uses it for every call: a term-bound drain goes
+down as one `client_write_many` with `WriteOption::expect_leader`, which
+openraft admits or refuses whole, and an untermed one with
+`WriteOption::default()`, the previous behaviour. The read path
 (`get_read_log_id` still returns the larger of the no-op and committed ids)
-and the term-bound write path (`raft/propose.rs`, `with_leader`) behave
-the same for Felix. The pin as a whole also carries a `#[non_exhaustive]` on some name enums,
+behaves the same for Felix. The pin as a whole also carries a `#[non_exhaustive]` on some name enums,
 benchmark changes, and one change to the state-machine worker: it merges
 `Apply` commands that are already queued into one `apply()` call. That
 call still gets the committed entries in log order, each once, with each
