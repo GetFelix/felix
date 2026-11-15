@@ -760,8 +760,16 @@ impl DiskLog {
                     producers.forget_before(base_offset);
                     operation.store_forgotten(&producers)?;
                 }
+                crash_point::reached(&operation.dir).map_err(StorageError::Io)?;
                 segments.reset_to(base_offset)?;
                 segments.active_mut().sync()?;
+                // Only now: until the records are gone, a reset redone after
+                // a crash has to know it follows an install.
+                {
+                    let mut producers = operation.producers.lock();
+                    producers.reset_done();
+                    operation.store_forgotten(&producers)?;
+                }
                 operation.note_rewound(&segments)?;
                 operation.durability.reset_after_truncate(base_offset);
                 let mut epochs = operation.epochs.lock();

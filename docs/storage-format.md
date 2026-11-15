@@ -1705,9 +1705,10 @@ write. Versions 1 and 2 have no cut batches. Their open batch is
 their held batches are `first u64, len u32, digest`: every batch they
 describe is one run. Versions 1 to 3 have no `forgotten` count, and versions
 1 to 4 no `evicted` or `carried` counts. All are still read, and the next
-snapshot is written as version 5. A build that predates version 5 ignores a
-version 5 snapshot and
-rebuilds the state from the log. Any other version is ignored, like a damaged
+snapshot is written as version 5, except that a Raft log ignores one older
+than version 5 and rebuilds from the log: it cannot say which cut batches
+were evicted, so a later purge would not carry them. A build that predates
+version 5 ignores a version 5 snapshot and rebuilds the state from the log. Any other version is ignored, like a damaged
 snapshot.
 
 An open reads it and replays only the marks after `as_of`. Those are normally
@@ -1741,9 +1742,12 @@ base   u64  the installed snapshot's base, u64::MAX for none
 ```
 
 The second list is the `carried` entries, and `base` is the base of the
-snapshot whose carried batches were taken in last, until the reset to it. A
-file that ends after the first list, as one written before these were kept
-does, carries nothing.
+snapshot whose carried batches were taken in last. It is cleared only once
+the reset to it has dropped the log, so a reset redone after a crash still
+follows the install. A file that ends after the first list, as one written
+before these were kept does, carries every entry in it: it cannot say which
+were this log's own, and refusing too much is safe, since every copy that
+holds or purged the records refuses them too.
 
 It is written through a temporary and a rename, and flushed with its
 directory, before a purge unlinks a segment and before a reset drops the

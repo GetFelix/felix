@@ -492,14 +492,15 @@ fn forgotten_batches_round_trip() {
     assert_eq!(decode_forgotten(&file), None);
 
     // The file also keeps the carried batches and the installed base, and
-    // one written before them carries nothing.
+    // one written before them carries every batch it forgot.
     state.install(9, ForgottenCuts([(4, 1)].into_iter().collect()));
     let saved = state.saved();
     assert_eq!(saved.carried.get(&4), Some(&1));
     let file = encode_saved(&saved);
     assert_eq!(decode_saved(&file), Some(saved.clone()));
     let old = decode_saved(&encode_forgotten(&saved.forgotten)).expect("decodes");
-    assert!(old.carried.is_empty() && old.installed.is_none());
+    assert_eq!(old.carried, saved.forgotten);
+    assert!(old.installed.is_none());
     assert_eq!(old.forgotten, saved.forgotten);
 }
 

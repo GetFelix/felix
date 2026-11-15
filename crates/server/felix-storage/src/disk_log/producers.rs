@@ -562,12 +562,14 @@ impl ProducerState {
     /// `base`, every record it held was applied, so committed, and the
     /// batches are carried like a purge's. After an install the records
     /// below `base` may be ones the leader never had, so nothing they say is
-    /// kept: the snapshot carried what the committed ones do.
+    /// kept: the snapshot carried what the committed ones do. The install
+    /// stays noted until [`Self::reset_done`], so a reset redone after a
+    /// crash still knows it follows one.
     pub(crate) fn forget_before(&mut self, base: Offset) {
         if !self.keeps_cuts {
             return;
         }
-        let installed = self.installed.take() == Some(base);
+        let installed = self.installed == Some(base);
         let unfinished: Vec<_> =
             self.open
                 .take()
@@ -590,6 +592,11 @@ impl ProducerState {
                 self.carry(batch);
             }
         }
+    }
+
+    /// The reset after [`Self::forget_before`] has dropped the records.
+    pub(crate) fn reset_done(&mut self) {
+        self.installed = None;
     }
 
     /// The cut batches the table no longer holds, by producer.
@@ -758,6 +765,12 @@ fn path_in(dir: &Path) -> PathBuf {
 }
 
 pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
+    encode_as(state, as_of, SNAPSHOT_VERSION)
+}
+
+/// [`encode`] as `version` 4 or later wrote it, so a test can write an
+/// older file.
+pub(super) fn encode_as(state: &ProducerState, as_of: Offset, version: u16) -> Vec<u8> {
     let mut body = Vec::new();
     match &state.open {
         None => body.push(0),
@@ -775,16 +788,18 @@ pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
         body.extend_from_slice(&id.to_be_bytes());
         body.extend_from_slice(&sequence.to_be_bytes());
     }
-    body.extend_from_slice(&(state.evicted.len() as u32).to_be_bytes());
-    for (id, (sequence, next)) in &state.evicted {
-        body.extend_from_slice(&id.to_be_bytes());
-        body.extend_from_slice(&sequence.to_be_bytes());
-        body.extend_from_slice(&next.to_be_bytes());
-    }
-    body.extend_from_slice(&(state.carried.len() as u32).to_be_bytes());
-    for (id, sequence) in &state.carried {
-        body.extend_from_slice(&id.to_be_bytes());
-        body.extend_from_slice(&sequence.to_be_bytes());
+    if version >= CARRIED_SINCE {
+        body.extend_from_slice(&(state.evicted.len() as u32).to_be_bytes());
+        for (id, (sequence, next)) in &state.evicted {
+            body.extend_from_slice(&id.to_be_bytes());
+            body.extend_from_slice(&sequence.to_be_bytes());
+            body.extend_from_slice(&next.to_be_bytes());
+        }
+        body.extend_from_slice(&(state.carried.len() as u32).to_be_bytes());
+        for (id, sequence) in &state.carried {
+            body.extend_from_slice(&id.to_be_bytes());
+            body.extend_from_slice(&sequence.to_be_bytes());
+        }
     }
     for (id, producer) in &state.producers {
         body.extend_from_slice(&id.to_be_bytes());
@@ -799,7 +814,7 @@ pub(super) fn encode(state: &ProducerState, as_of: Offset) -> Vec<u8> {
     }
     let mut out = Vec::with_capacity(SNAPSHOT_HEADER_LEN + body.len());
     out.extend_from_slice(&SNAPSHOT_MAGIC.to_be_bytes());
-    out.extend_from_slice(&SNAPSHOT_VERSION.to_be_bytes());
+    out.extend_from_slice(&version.to_be_bytes());
     out.extend_from_slice(&0u16.to_be_bytes());
     out.extend_from_slice(&as_of.to_be_bytes());
     out.extend_from_slice(&(state.producers.len() as u32).to_be_bytes());
@@ -825,7 +840,15 @@ fn encode_digest(body: &mut Vec<u8>, digest: Option<PayloadDigest>) {
     body.extend_from_slice(&digest.map_or(0, PayloadDigest::to_bits).to_be_bytes());
 }
 
+#[cfg(test)]
 pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
+    decode_versioned(bytes).map(|(state, as_of, _)| (state, as_of))
+}
+
+/// The first snapshot version with evicted and carried cuts.
+const CARRIED_SINCE: u16 = 5;
+
+pub(super) fn decode_versioned(bytes: &[u8]) -> Option<(ProducerState, Offset, u16)> {
     let mut reader = Reader(bytes);
     if reader.u32()? != SNAPSHOT_MAGIC {
         return None;
@@ -837,7 +860,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
     let with_digests = version >= 2;
     let with_cuts = version >= 3;
     let with_forgotten = version >= 4;
-    let with_carried = version >= 5;
+    let with_carried = version >= CARRIED_SINCE;
     reader.u16()?;
     let as_of = reader.u64()?;
     let count = reader.u32()? as usize;
@@ -915,6 +938,7 @@ pub(super) fn decode(bytes: &[u8]) -> Option<(ProducerState, Offset)> {
             keeps_cuts: false,
         },
         as_of,
+        version,
     ))
 }
 
@@ -1016,8 +1040,14 @@ pub(super) fn rebuild(
 ) -> crate::Result<(ProducerState, SavedForgotten)> {
     let base = segments.base_offset();
     let tail = segments.tail_offset();
-    let (mut state, from) = match load(dir) {
-        Some((state, as_of)) if base <= as_of && as_of <= tail => (state, as_of),
+    let (mut state, from) = match load_versioned(dir) {
+        // An older snapshot does not say which of a Raft log's cuts were
+        // evicted, so it cannot tell what a later purge carries.
+        Some((state, as_of, version))
+            if base <= as_of && as_of <= tail && (!keeps_cuts || version >= CARRIED_SINCE) =>
+        {
+            (state, as_of)
+        }
         // Nothing before the first v3 segment can carry a mark, so a log
         // written before marks existed costs nothing to open.
         _ => (
@@ -1098,9 +1128,14 @@ pub(super) const REBUILD_READ_BYTES: usize = 1024 * 1024;
 
 /// The saved state and the offset it is as of, or `None` when there is no
 /// usable snapshot. Unreadable is the same as absent: the log has the answer.
+#[cfg(test)]
 pub(super) fn load(dir: &Path) -> Option<(ProducerState, Offset)> {
+    load_versioned(dir).map(|(state, as_of, _)| (state, as_of))
+}
+
+fn load_versioned(dir: &Path) -> Option<(ProducerState, Offset, u16)> {
     let bytes = crate::fs::read(path_in(dir)).ok()?;
-    let decoded = decode(&bytes);
+    let decoded = decode_versioned(&bytes);
     if decoded.is_none() {
         tracing::warn!(
             dir = %dir.display(),
@@ -1150,8 +1185,10 @@ pub(crate) struct SavedForgotten {
 
 // The file is the forgotten batches in the layout below, then the carried
 // ones the same way, then the installed base u64 (u64::MAX for none). The
-// crc covers all of it. A file with the forgotten batches alone carries
-// nothing.
+// crc covers all of it. A file with the forgotten batches alone predates the
+// carried set and cannot say which were this copy's own, so it carries all
+// of them: refusing too much is safe, since every copy that holds or purged
+// the records refuses them too.
 fn encode_saved(saved: &SavedForgotten) -> Vec<u8> {
     let mut out = encode_forgotten(&saved.forgotten);
     let mut body = out.split_off(8);
@@ -1176,7 +1213,9 @@ fn decode_saved(bytes: &[u8]) -> Option<SavedForgotten> {
         forgotten: reader.forgotten()?,
         ..SavedForgotten::default()
     };
-    if !reader.0.is_empty() {
+    if reader.0.is_empty() {
+        saved.carried = saved.forgotten.clone();
+    } else {
         saved.carried = reader.forgotten()?;
         saved.installed = Some(reader.u64()?).filter(|base| *base != u64::MAX);
     }
