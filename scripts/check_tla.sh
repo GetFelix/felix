@@ -1338,7 +1338,7 @@ weights=(
   "FelixRaftWrittenCrash 5"
   "FelixRaftWrittenCommitsPowerCut 24"
   "FelixRaftWrittenCommitsReform 2"
-  "FelixRaftWrittenCommitsReformTermsFloorHolder 8"
+  "FelixRaftWrittenCommitsReformTermsFloorHolder 70"
   "FelixRaftReformTwoReformsTrailingFloor 9"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
