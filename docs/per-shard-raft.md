@@ -1749,7 +1749,7 @@ segments.
 
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
-> `retention_trims_a_shard_under_constant_publishes`,
+> `retention_trims_a_shard_when_a_publish_lands_mid_pass`,
 > `a_member_not_leading_proposes_no_trim`,
 > `retention_writes_nothing_until_raft_head_trim_is_finalized`,
 > `a_zero_retention_interval_starts_no_timer`,
