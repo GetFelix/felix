@@ -299,7 +299,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[6, 3][..],
+        &[5, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -446,17 +446,43 @@ fn a_layout_4_body_is_refused_by_layout() {
     assert!(refused.to_string().contains("layout 4"), "{refused}");
 }
 
-/// Layout 5 is what a build without the conditional entry writes, and it
-/// reads only layout 5. Each side refuses the other by layout, so an older
-/// member never takes a conditional record for a plain one and stores it
-/// at whatever offset it lands.
+/// The conditional entry is a new tag, not a new layout, so every other
+/// frame is what a build without it writes. That build reads tags 0 to 4
+/// and refuses any other by name, so it never stores a conditional record
+/// as a plain one.
 #[test]
-fn a_layout_5_body_is_refused_by_layout() {
-    let bytes = encode_request(&every_request()[2]).expect("encode");
-    let mut old = BytesMut::from(&bytes[..]);
-    old[0] = 5;
-    let refused = decode_request(old.freeze()).expect_err("refused");
-    assert!(refused.to_string().contains("layout 5"), "{refused}");
+fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
+    let payload = Bytes::from_static(b"a conditional publish");
+    let written = request(Request::Append(AppendEntriesRequest {
+        vote: vote(2, true),
+        prev_log_id: None,
+        entries: vec![EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 10),
+            Command {
+                timestamp_micros: 102,
+                payload: payload.clone(),
+                producer: None,
+                expected: Some(10),
+                written: None,
+            },
+        )],
+        leader_commit: None,
+    }));
+    let bytes = encode_request(&written).expect("encode");
+    assert_eq!(bytes[0], 5, "the layout is unchanged");
+    // The tag, then the expected offset, the append time, the length and the
+    // record.
+    let at = bytes.len() - payload.len() - 4 - 8 - 8 - 1;
+    assert_eq!(bytes[at], ENTRY_CONDITIONAL);
+    const { assert!(ENTRY_CONDITIONAL > ENTRY_PIECE) };
+    // An older build takes 5 the way this one takes any tag it lacks.
+    let mut unknown = BytesMut::from(&bytes[..]);
+    unknown[at] = ENTRY_CONDITIONAL + 1;
+    let refused = decode_request(unknown.freeze()).expect_err("refused");
+    assert!(
+        refused.to_string().contains("is not an entry payload"),
+        "{refused}"
+    );
 }
 
 /// A peer cannot make this broker reserve room for entries the body does

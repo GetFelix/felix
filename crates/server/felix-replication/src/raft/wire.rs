@@ -31,8 +31,8 @@ use crate::{ShardKey, ShardKind};
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
-/// version to a membership, 5 the piece entry, 6 the conditional entry.
-const LAYOUT: u8 = 6;
+/// version to a membership, 5 the piece entry.
+const LAYOUT: u8 = 5;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
@@ -466,8 +466,9 @@ const ENTRY_PIECE: u8 = 4;
 /// A conditional publish's record: the offset it must be written at comes
 /// before the record. Never an idempotent producer's. openraft replicates
 /// entries read back from the log, which hold only the outcome, so none is
-/// sent today. Kept so a member on an older layout refuses one by name
-/// rather than store the record unconditionally if one ever is.
+/// sent today. A new tag rather than a new layout: a build without it
+/// refuses the entry by its tag rather than store the record
+/// unconditionally, and every other frame stays byte-identical.
 const ENTRY_CONDITIONAL: u8 = 5;
 
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {

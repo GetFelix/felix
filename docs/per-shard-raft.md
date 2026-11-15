@@ -2907,12 +2907,14 @@ publisher id.
 There is no fleet setting to turn this on. On disk the leader writes only
 a plain record or a blank, and followers copy that, so a member on an older
 build replicates a conditional publish's outcome like any other entry and a
-downgraded broker reads the log. The conditional entry also has its own tag
-in Raft wire layout 6 (`docs/internal-protocol.md`). openraft never sends
-it at this pin, since it replicates from storage, so the tag is
-defence-in-depth: should a leader ever send the command itself, a member
-built before it refuses the append by layout instead of storing the record
-unconditionally at whatever offset it lands.
+downgraded broker reads the log. The conditional entry also has its own
+tag, 5, in the Raft wire's entry payloads (`docs/internal-protocol.md`).
+The layout stays 5, so heartbeats, votes and every other append are
+byte-identical to an older build's. openraft never sends the tag at this
+pin, since it replicates from storage, so it is defence-in-depth: should a
+leader ever send the command itself, a member built before it refuses the
+entry by its tag instead of storing the record unconditionally at whatever
+offset it lands.
 
 `FelixRaftCond.tla` checks the rule: a kept record is always at its
 expected offset, at most one publish naming an offset is kept, members
@@ -2928,7 +2930,7 @@ model) lands between the guess and the append.
 > `a_conditional_publish_off_its_offset_is_a_blank_on_every_member` and
 > `a_conditional_publish_of_other_than_one_record_is_refused`;
 > `crates/server/felix-replication/src/raft/wire/tests.rs`,
-> `a_layout_5_body_is_refused_by_layout`;
+> `a_conditional_entry_is_refused_by_its_tag_on_an_older_build`;
 > `crates/server/felix-storage/src/raft_log/tests.rs`,
 > `a_command_the_codec_blanks_is_stored_as_a_blank_entry`;
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,

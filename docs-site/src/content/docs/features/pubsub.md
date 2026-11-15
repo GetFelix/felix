@@ -180,9 +180,10 @@ A few things to know:
   any Raft publish it does not keep the publisher id. Use a
   [commit](/features/atomic-commits/) when the batch must be all or nothing.
 - If the answer is lost, do not resend: the retry would be refused by your own
-  write. Read the shard at the expected offset to see whether it landed. On the
-  Raft engine a refused publish leaves a blank there that reads skip, so check
-  that the record you read back is at the expected offset, not just after it. To
+  write. Read the shard at the expected offset and compare the payload you get
+  with the one you sent: another publisher may have taken that offset, so a
+  record there is not proof that yours landed. On the Raft engine a refused
+  publish leaves a blank where its entry landed, which reads skip. To
   retry a batch that landed whole without checking, publish through an
   [idempotent producer](/clients/python/#idempotent-producers) instead. It
   recognises a batch only once all of it is held, so a re-send after a cut can
