@@ -808,3 +808,23 @@ async fn a_term_closed_before_it_opened_is_not_waited_on() {
     assert_eq!(engine.open_term(&shard(0)), None);
     cluster.stop().await;
 }
+
+/// Only the leader reports a floor, and it is the committed log id.
+#[tokio::test]
+async fn only_the_leader_reports_its_committed_log_id() {
+    let led = led().await;
+    let committed = led.committed_on(&led.leader.broker).await - 1;
+    for broker in BROKERS {
+        let commits = led.cluster.runtime(broker).led_commits();
+        if broker == &*led.leader.broker {
+            let [(group, at)] = commits.as_slice() else {
+                panic!("one led group, got {commits:?}");
+            };
+            assert_eq!(*group.shard, shard(0));
+            assert!(at.index >= committed, "{at:?} below {committed}");
+            assert_eq!(at.term, led.term);
+        } else {
+            assert!(commits.is_empty(), "{broker} leads nothing");
+        }
+    }
+}

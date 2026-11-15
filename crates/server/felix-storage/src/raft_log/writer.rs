@@ -234,13 +234,14 @@ where
                 tail
             }
         };
-        // Before the write: a copy that finds an entry on disk at start
-        // counts it as flushed, so a crash between the write and a later
-        // raise would leave a counted entry above the synced reservation.
-        // A failed raise fails the append and the callback never fires.
-        if shared.written_commit
-            && let Some(last) = last
-        {
+        // In every fsync mode: a re-form can cut a copy to its saved commit,
+        // below an entry it fsynced and counted, and pads only up to the
+        // reservations it reads. Before the write: a copy that finds an
+        // entry on disk at start counts it as flushed, so a crash between
+        // the write and a later raise would leave a counted entry above the
+        // synced reservation. A failed raise fails the append and the
+        // callback never fires.
+        if let Some(last) = last {
             shared.reserve_through(last.index).await?;
         }
         if earlier

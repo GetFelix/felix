@@ -117,11 +117,13 @@ pub struct RaftPublish(Option<felix_broker::ProposedPublish<CommitError>>);
 impl RaftPublish {
     /// Wait for the acknowledgement. Returns the first record's offset.
     pub async fn complete(self) -> Result<Option<u64>, CommitError> {
+        Ok(self.complete_offsets().await?.map(|(first, _)| first))
+    }
+
+    /// [`Self::complete`], returning the first and the last record's offsets.
+    pub async fn complete_offsets(self) -> Result<Option<(u64, u64)>, CommitError> {
         match self.0 {
-            Some(proposed) => {
-                let outcome = proposed.complete().await?;
-                Ok(outcome.offsets.map(|(first, _)| first))
-            }
+            Some(proposed) => Ok(proposed.complete().await?.offsets),
             None => Ok(None),
         }
     }
@@ -150,8 +152,12 @@ impl RaftIdempotentPublish {
     /// offsets. A batch a leader change cut can have other records between
     /// them.
     pub async fn complete(self) -> Result<Option<(u64, u64)>, CommitError> {
-        let idempotent = self.0.complete().await?;
-        Ok(idempotent.outcome.offsets)
+        Ok(self.complete_outcome().await?.outcome.offsets)
+    }
+
+    /// [`Self::complete`], saying whether the log already held the batch.
+    pub async fn complete_outcome(self) -> Result<felix_broker::IdempotentOutcome, CommitError> {
+        self.0.complete().await
     }
 }
 
@@ -162,6 +168,10 @@ pub enum RaftIdempotentPublish {}
 #[cfg(not(feature = "raft"))]
 impl RaftIdempotentPublish {
     pub async fn complete(self) -> Result<Option<(u64, u64)>, CommitError> {
+        match self {}
+    }
+
+    pub async fn complete_outcome(self) -> Result<felix_broker::IdempotentOutcome, CommitError> {
         match self {}
     }
 }
@@ -176,6 +186,15 @@ impl StreamEngine {
             let _ = shard;
             false
         }
+    }
+
+    /// Whether this broker runs stream shards on Raft groups. Another
+    /// broker's shard it forwards to may be on one too.
+    pub fn runs_raft(&self) -> bool {
+        #[cfg(feature = "raft")]
+        return self.raft.get().is_some();
+        #[cfg(not(feature = "raft"))]
+        false
     }
 
     /// Refuse `what` on a shard a Raft group runs here. Its log takes plain

@@ -845,6 +845,14 @@ impl ControlPlaneStore for InMemoryStore {
         .await
     }
 
+    async fn record_raft_floors(
+        &self,
+        node_id: &str,
+        floors: Vec<crate::model::RaftFloorReport>,
+    ) -> StoreResult<u32> {
+        Ok(self.apply_record_raft_floors(node_id, &floors).await)
+    }
+
     async fn give_up_seal(
         &self,
         key: &ShardKey,

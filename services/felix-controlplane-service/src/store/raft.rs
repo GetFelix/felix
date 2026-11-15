@@ -154,6 +154,10 @@ const RAFT_TARGET_LEVEL: u16 = 36;
 /// every held replica report (`MetaCommand::DeleteNode`).
 const FORGET_REPORTS_LEVEL: u16 = 37;
 
+/// The metadata level whose members keep each Raft shard's offset floor
+/// (`ShardAssignment::raft_floor`).
+const RAFT_FLOOR_LEVEL: u16 = 38;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -293,6 +297,7 @@ impl RaftStore {
         assignment.switch = None;
         assignment.raft_copy_ids.clear();
         assignment.raft_target = None;
+        assignment.raft_floor = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -1160,6 +1165,40 @@ impl ControlPlaneStore for RaftStore {
             .await?
         {
             MetaResponse::Count { count } => Ok(count > 0),
+            _ => Err(unexpected_shape("count")),
+        }
+    }
+
+    /// Refused, like a copy id, while any member's level is unknown or
+    /// below 38. The apply decides each entry against its record.
+    async fn record_raft_floors(
+        &self,
+        node_id: &str,
+        floors: Vec<crate::model::RaftFloorReport>,
+    ) -> StoreResult<u32> {
+        if floors.is_empty() {
+            return Ok(0);
+        }
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < RAFT_FLOOR_LEVEL)
+        {
+            return Err(StoreError::Conflict(format!(
+                "a control-plane member is below metadata version {RAFT_FLOOR_LEVEL}"
+            )));
+        }
+        match self
+            .propose(MetaCommand::RecordRaftFloors {
+                node_id: node_id.to_string(),
+                floors,
+            })
+            .await?
+        {
+            MetaResponse::Count { count } => {
+                Ok(u32::try_from(count).map_err(|_| unexpected_shape("count"))?)
+            }
             _ => Err(unexpected_shape("count")),
         }
     }

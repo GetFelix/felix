@@ -154,6 +154,19 @@ impl Broker {
             duplicate: false,
         })
     }
+
+    /// The log's 64-bit count for a record `producer_id` numbered
+    /// `sequence` (31 bits, wrapping), as [`Self::publish_records_idempotent`]
+    /// reads it. For a caller that writes such a producer's records through
+    /// an engine, one record per batch.
+    pub fn record_sequence(&self, handle: &StreamHandle, producer_id: u64, sequence: u64) -> u64 {
+        let owed = handle
+            .state
+            .durable
+            .as_ref()
+            .and_then(|log| log.producer_next_sequence(producer_id));
+        lift(sequence, owed)
+    }
 }
 
 /// The 64-bit count `sequence` stands for: of the values that agree with it

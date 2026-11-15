@@ -671,8 +671,13 @@ fleet-wide restore, or a power cut across relaxed brokers, each copy comes
 back with a new copy id, no vote and an empty log. That is what a copy no
 group has reached looks like, and a group formed from them would start at
 index 0 and give out offsets it already acknowledged (issue #2620). So a
-copy whose directory has a kept copy in `.kept/` holding a log entry, or a
-reservation (`raft-reserved`), never says it is blank: it refuses the
+copy whose directory has a kept copy in `.kept/` holding a log entry or a
+reservation, or into which a rotation carried a reservation
+(`raft-reserved-carried` beside `raft-reserved`) and that holds no entry
+yet, never says it is blank. A copy's own reservation does not count, even
+with no entry: every copy reserves before its first write, so a broker
+that dies before that write reaches the disk leaves a reservation on a
+copy no group reached, and the shard forms as usual. Such a copy refuses the
 question the forming broker asks, and a broker whose own copy is like that
 does not form the group. A kept copy that cannot be read counts as one
 that holds entries, and so does a group that never acknowledged a record
@@ -881,6 +886,13 @@ that copy can vouch for as committed:
 The base is the longest log kept that way, padded up to the floor. A
 record is lost only if every copy that holds it has it above its saved
 commit index, in a log that ends in a term other than the floor's.
+
+Cutting a copy to its saved commit index can drop an entry it fsynced and
+counted, so the cut base can end below a committed offset even on a
+broker that fsyncs on commit. That is why every copy reserves offsets in
+every fsync mode (below): the new epoch starts above the reservations it
+reads, so a committed offset the cut dropped is lost, never given out
+again.
 
 The model checks each part. With one term every copy can vouch for all it
 holds, and no record a disk holds is lost
@@ -2728,15 +2740,58 @@ the shard's engine ("Head trims" and "Atomic commits", above).
 > `services/felix-broker-service/src/serving/group_ops/tests.rs`,
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
-A Kafka produce and an MQTT publish to a Raft shard are refused by name
-too, before anything is claimed. Both write with a producer's sequence. A Kafka client gets `INVALID_REQUEST`,
-which it does not retry; an MQTT client gets `PUBACK` 0x83 with the reason
-string `raft_stream`.
+**Kafka produce and MQTT publish.** Both work on a Raft shard and get the
+same answers as on the hybrid.
+
+A Kafka produce goes to the shard's leader, as on the hybrid, and is
+proposed to its group. A plain batch is one proposal. An idempotent
+producer numbers records, not batches, so each record is proposed as a
+one-record idempotent batch at its own sequence. That is how the hybrid
+stores Kafka records too, so a re-send finds the records the log holds,
+writes only the rest, and is answered with the first arrival's offsets. The
+sequence errors (`OUT_OF_ORDER_SEQUENCE_NUMBER`, `UNKNOWN_PRODUCER_ID`,
+`DUPLICATE_SEQUENCE_NUMBER`) are the hybrid's. The answer waits for what the
+stream's level asks for, as any Raft publish does, so `acks=1` on a `Quorum`
+stream is answered at the commit: later than on the hybrid, never weaker.
+Kafka keys and headers are stored once the cluster finalizes
+`raft_record_headers`. Before that a produce whose records carry any is
+refused with `INVALID_RECORD`, before the tenant's quota is charged and
+with nothing written, as a native publish with headers is refused, and
+counted in `felix_kafka_produce_refused_total`; a produce without them is
+written. If a record of an idempotent batch is
+refused because one before it failed (its sequence is then a gap), the
+answer is that earlier failure, which the producer retries, not
+`OUT_OF_ORDER_SEQUENCE_NUMBER`, which it takes as fatal.
+
+An MQTT message is written as the connection's idempotent batch, as on the
+hybrid, and answered at its commit. A Raft shard takes an idempotent batch
+of one record only (#2524), so a broker that runs Raft shards sends each
+MQTT message as its own batch. A broker that is not a member forwards it to
+the leader under its producer sequence, and the leader proposes it. Until
+the cluster finalizes `raft_record_headers` an MQTT message, which always
+carries headers, is refused `record_headers_disabled`. While the shard has
+no leader (an election), a broker that is a member of its group waits for
+one within the forward budget, as the hybrid's dispatch waits for a shard
+that is not ready, rather than refusing the message `not_owner`. A refusal
+that waiting cannot change, such as an anonymous connection's message for
+a shard led elsewhere, is answered at once.
+
+One message per batch costs a commit round trip per message on a
+connection, QoS 0 included; real batching on Raft is tracked in #2638.
 
 > `services/felix-broker-service/src/serving/kafka/tests.rs`,
-> `a_produce_to_a_raft_shard_is_refused_for_good`;
+> `a_produce_to_a_raft_shard_lands_once`;
 > `services/felix-broker-service/src/serving/mqtt/writes/tests.rs`,
-> `a_message_for_a_raft_shard_is_refused_by_name`.
+> `a_message_for_a_raft_shard_lands_once_with_its_headers` and
+> `a_message_for_a_raft_shard_between_leaders_waits_for_the_next`;
+> `services/felix-broker-service/src/serving/mqtt/writes/tests/cluster.rs`,
+> `a_lasting_refusal_is_answered_at_once_on_a_broker_that_runs_raft`;
+> `crates/server/felix-mqtt/src/service/tests/publish.rs`,
+> `queued_publishes_go_one_per_batch_when_the_broker_says_so`;
+> `crates/testing/felix-cluster/tests/failures/kafka_produce.rs`,
+> `an_idempotent_kafka_producer_on_a_raft_shard_lands_each_record_once_through_failover`;
+> `crates/testing/felix-cluster/tests/failures/mqtt_publish.rs`,
+> `qos1_on_a_raft_shard_survives_its_leader_without_duplicates`.
 
 **Idempotent publishes.** A producer that names itself and numbers its
 batches (`publish_idempotent`, `docs/protocol.md`) gets the same contract on
@@ -3894,6 +3949,55 @@ A broker is to refuse a delete told at an incarnation below the highest it
 has seen, its acknowledgement or any membership in the copy's log
 (`copy_delete_is_void`). That check lands with the delete itself.
 
+#### Offset floor
+
+The control plane keeps `raft_floor` on each Raft shard's record, per stream
+`incarnation`. It holds two separate things:
+
+- `offset_floor`: the highest committed index any leader reported, in any
+  reform epoch of the incarnation. The re-form start reads it ("Offsets are
+  not reused") so a new epoch gives out no offset at or below one that was
+  acknowledged.
+- `epoch`, `index` and `term`: the exact last committed log id a leader of
+  the current epoch reported. A rule that matches a copy's log against a log
+  id reads this one. Its index and term always come from the same report.
+
+- **Every leader reports once a second.** Each broker batches the commit log
+  id of every group it leads into one `POST /v1/nodes/{node_id}/raft-floors`,
+  so the control plane makes one metadata write per broker per second. A
+  request carries at most 1024 entries; the rest go on the next tick.
+- **An entry is owed until a 200 answers it.** A group's entry stays pending
+  until a 200 answers a batch that carried it. A 404, 409, 503 or any other
+  error keeps it pending. So the first accepted report after level 38 goes
+  live covers every group the broker leads, idle ones included. A group that
+  stops leading on the broker is dropped, and is owed again if it leads there
+  again.
+- **Cache groups are reported too.** The control plane skips a shard it does
+  not keep a floor for, a cache shard or one not on Raft, without failing the
+  batch.
+- **It only rises within an epoch.** A report replaces the exact log id when
+  its index is higher and its term is not lower. An equal or lower index
+  changes nothing. A higher index at a lower term contradicts the held log
+  id and is skipped.
+- **It is kept per incarnation and epoch.** A report for another stream
+  incarnation, or for a reform epoch other than the shard's
+  (`placed.epoch`), is skipped, so a late report from an old group never
+  sets the new group's floor. A new epoch's first report replaces the exact
+  log id with its own, whatever its index, since the earlier epoch's id says
+  nothing about the new log. `offset_floor` keeps the higher index, since
+  offsets the earlier epoch gave out stay given out. Terms are compared only
+  within one epoch. A write at the same stream
+  incarnation keeps the floor, a recreated stream starts without one, and
+  an export and import carry it.
+- **Each entry is decided on its own.** A skipped entry is not counted and
+  the rest of the batch still applies. The answer is `raised`, the number of
+  floors that moved.
+
+The floor is metadata level 38. Below it every report is refused with 409,
+by the store and again by the leader that would append it. Nothing reads
+the floor yet: the re-form's refusal to run a first form for an incarnation
+that has a floor is not built.
+
 ### Shards with one replica
 
 An RF 1 shard runs a group with one voter. It elects itself and commits on
@@ -4739,10 +4843,11 @@ broker append at an old term lands after the vote for a newer one.
 
 > **Partly built, not enabled.** Every broker still fsyncs a Raft log
 > before openraft hears an append is flushed, and everything else on this
-> page describes that. The log side is built behind a fleet feature
-> that no build reports yet, `raft_written_commit`: it waits for the
-> re-form that pads above every reservation. "What is built" below lists
-> the parts.
+> page describes that. Reservations are taken in every fsync mode with
+> no gate. Counting a written entry is built behind a fleet feature that
+> no build reports yet, `raft_written_commit`: it waits for the re-form
+> that pads above every reservation. "What is built" below lists the
+> parts.
 
 A broker whose `fsync_mode` is `periodic` or `none` (a relaxed broker)
 does not wait for the disk before it acknowledges a write. Its Raft logs
@@ -4868,7 +4973,8 @@ built to write on without it, so the proposal keeps the hybrid's rule,
 the bound is stored before the count, and stores the bound on the copy:
 
 - **Each copy reserves offsets ahead of what it counts.** A copy keeps a
-  reservation, an index, in a synced file in its shard directory. Before
+  reservation, an index, in a synced file in its shard directory. In every
+  fsync mode, not only on a relaxed broker, before
   its flush callback fires for entries past the reservation, it raises
   the reservation well ahead (a step of about a million entries) and
   syncs it. So the leader's own count and every follower's answer are
@@ -4964,15 +5070,18 @@ not move.
 - The reservation file, carried by a rotation and holding a kept
   directory against reclaim, and loaded on every open: a copy whose
   `raft-reserved` does not decode does not open.
+- Every Raft log, in every fsync mode, raises the reservation, synced, a
+  million entries past an append it does not cover, before the write. A
+  failed raise fails the append and writes nothing, and no callback
+  fires. Raft counts every entry it finds at start as flushed, so every
+  open first raises the reservation over the entries already on disk (a
+  copy written by a build that reserved only under `periodic` or `none`
+  has none), and the open fails if that raise does. In steady state that
+  is one extra synced small-file write per million entries per shard.
 - `RaftLog::new` accepts `periodic` and `none` only on a root whose run in
   this process began relaxed (`run_state::rotates_on_crash`). Such a log
-  raises the reservation, synced, a million entries past the append when
-  it does not cover it, before the write, then fires `IOFlushed` once the
-  entries are written. A failed raise fails the append and writes nothing.
-  Raft counts every entry it finds at start as flushed, so opening such a
-  log first raises the reservation over the entries already on disk (a
-  copy written under `on_commit` has none), and the open fails if that
-  raise does. A flush or exact log mark that fails after the callback
+  fires `IOFlushed` once the entries are written and reserved, where an
+  `on_commit` log waits for the fsync. A flush or exact log mark that fails after the callback
   stops the log, except one that fails because the log was closed: a
   close syncs the log itself. A member's stop waits for its queued
   flushes before the log closes, so a clean stop never rotates. `flushed` and the exact log mark still wait for

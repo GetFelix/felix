@@ -11,8 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use felix_authz::{Action, Namespace, PermissionMatcher, StreamName, TenantId, stream_resource};
-use felix_broker::{PublishOutcome, StreamHandle};
+use felix_broker::{Broker, BrokerError, IdempotentOutcome, PublishOutcome, StreamHandle};
 
 /// The broker's side of the Kafka listener.
 #[async_trait]
@@ -49,6 +50,38 @@ pub trait Cluster: Send + Sync + 'static {
     /// must be open. Hold the permit until the write is durable, so a move
     /// waits for it.
     async fn admit_write(&self, shard: &ShardRef<'_>) -> Result<WritePermit, WriteError>;
+
+    /// The fleet feature a shard needs before it stores record keys and
+    /// headers, when it does not have it yet: the produce is refused rather
+    /// than its keys and headers dropped. `None` when it may store them.
+    fn refuses_record_headers(
+        &self,
+        broker: &Broker,
+        shard: &ShardRef<'_>,
+    ) -> Option<&'static str> {
+        let _ = (broker, shard);
+        None
+    }
+
+    /// Write one batch to a shard whose log the broker's own publish path
+    /// does not write, such as one a Raft group runs here. `None` leaves the
+    /// batch to that path. `permit` is the one [`Self::admit_write`] gave.
+    ///
+    /// Answered once the batch has what its stream's consistency asks for,
+    /// so [`Self::await_consistency`] has nothing left to wait for. Refused
+    /// and answered as the broker's own path would be: a producer's sequence
+    /// is checked per record, from `producer`'s first.
+    async fn produce(
+        &self,
+        broker: &Broker,
+        shard: &ShardRef<'_>,
+        handle: &StreamHandle,
+        permit: &WritePermit,
+        produce: Produce<'_>,
+    ) -> Option<Result<IdempotentOutcome, ProduceError>> {
+        let _ = (broker, shard, handle, permit, produce);
+        None
+    }
 
     /// Wait until a written batch has what its stream's consistency asks for:
     /// a majority of the replica set on a `Quorum` stream, nothing more on a
@@ -104,6 +137,15 @@ impl WritePermit {
         }
     }
 
+    /// A permit at `generation` that holds no fence, for a shard whose
+    /// writes never enter one.
+    pub fn at(generation: u64) -> Self {
+        Self {
+            generation,
+            _guard: None,
+        }
+    }
+
     /// The generation the write was admitted at; zero for a permit that
     /// holds no fence.
     pub fn generation(&self) -> u64 {
@@ -122,9 +164,24 @@ pub enum WriteError {
     QuorumTimeout,
     /// Leadership moved after the write and before a majority held it.
     LeadershipLost,
-    /// The shard's log does not take a Kafka produce, here or on any other
-    /// broker. Nothing was written.
-    Unsupported,
+}
+
+/// One record batch for [`Cluster::produce`].
+#[derive(Debug, Clone, Copy)]
+pub struct Produce<'a> {
+    pub payloads: &'a [Bytes],
+    /// Each record's key and headers block, when the listener keeps them.
+    pub headers: Option<&'a [Option<Bytes>]>,
+    /// An idempotent producer's id and its first record's sequence.
+    pub producer: Option<(u64, u64)>,
+}
+
+/// Why [`Cluster::produce`] did not answer with the batch's offsets.
+#[derive(Debug)]
+pub enum ProduceError {
+    /// Refused as the broker's own publish path refuses it.
+    Broker(BrokerError),
+    Write(WriteError),
 }
 
 /// A broker's Kafka listener, as clients are told to reach it.

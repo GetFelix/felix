@@ -444,6 +444,13 @@ where
                 rotated: root_rotated.clone(),
             },
         );
+        cluster::report_raft_floors(
+            &raft_shards,
+            link.clone(),
+            membership.node_id.clone(),
+            credential.clone(),
+            sync_shutdown.clone(),
+        );
     }
     startup::bind_read_check(
         &config,

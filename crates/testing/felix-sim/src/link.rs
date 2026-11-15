@@ -149,6 +149,16 @@ impl ControlPlaneLink for NodeLink {
         self.cut.through(REQUEST_TIMEOUT, call).await
     }
 
+    async fn report_raft_floors(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        floors: &[felix_replication::controlplane_link::RaftFloor],
+    ) -> Result<LinkResponse> {
+        let call = self.inner.report_raft_floors(bearer, node_id, floors);
+        self.cut.through(REQUEST_TIMEOUT, call).await
+    }
+
     async fn confirmed_assignment(
         &self,
         bearer: Option<&str>,

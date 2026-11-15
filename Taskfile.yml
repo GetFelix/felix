@@ -409,6 +409,16 @@ tasks:
         "$PY" scripts/perf/normalize_and_aggregate.py
         "$PY" scripts/perf/make_charts.py
         "$PY" scripts/perf/render_markdown_snippets.py
+  perf:raft-parity:
+    desc: "Raft vs hybrid parity matrix on the GCP build boxes: builds one binary, runs every cell on both engines, writes results.md and results.json with a PASS/FAIL gate (docs/perf-raft-parity.md)"
+    cmds:
+      - "scripts/perf/raft-parity/build.sh"
+      - "STRICT=1 scripts/perf/raft-parity/run.sh {{.CLI_ARGS}}"
+  perf:raft-parity:test:
+    desc: "Unit tests for the parity matrix's gate arithmetic"
+    dir: scripts/perf/raft-parity
+    cmds:
+      - "python3 -m unittest test_summarize"
   perf:fast:
     desc: "Fast chart pass (~15-20 min vs hours): one profile, 5 presets, 3 trials; only the two chart-bearing shapes (acked-latency json batch=1, sustained-throughput binary batch=64)"
     cmds:
