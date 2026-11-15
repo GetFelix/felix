@@ -35,8 +35,8 @@ pub(crate) const RAFT_APPEND_ENTRIES: u8 = 2;
 
 /// The group a Raft body is for, as its bytes: three names, the shard, its
 /// kind and the epoch, after the six-byte header (see `raft/wire.rs`). The
-/// pool sends every append of one group on one stream, so they arrive in
-/// the order they left. `None` for a body too short to name one.
+/// pool sends every append with entries of one group on one stream, so
+/// they arrive in the order they left. `None` for a body too short to name one.
 pub(crate) fn raft_group(body: &[u8]) -> Option<&[u8]> {
     const HEADER: usize = 6;
     const SHARD_KIND_EPOCH: usize = 4 + 1 + 8;

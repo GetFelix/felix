@@ -61,8 +61,17 @@ struct Follower {
 
 impl Follower {
     fn new(input: Vec<AppendEntriesRequest<ShardTypes>>, window: usize) -> (Self, Out) {
+        Self::cutting(input, window, |_| false)
+    }
+
+    /// With `fit` standing in for the byte budget.
+    fn cutting(
+        input: Vec<AppendEntriesRequest<ShardTypes>>,
+        window: usize,
+        fit: impl FnMut(&mut AppendEntriesRequest<ShardTypes>) -> bool + Send + 'static,
+    ) -> (Self, Out) {
         let (tx, sent) = mpsc::unbounded_channel();
-        let out = pipeline(futures::stream::iter(input), window, move |rpc| {
+        let out = pipeline(futures::stream::iter(input), window, fit, move |rpc| {
             let (answer, answered) = oneshot::channel();
             tx.send((rpc, answer)).expect("the test holds the receiver");
             async move { answered.await.unwrap_or_else(|_| lost()) }
@@ -248,4 +257,59 @@ async fn an_append_under_another_vote_is_not_sent() {
     assert_acked(&mut out, 2);
     assert_ended(&mut out);
     assert_eq!(follower.sent(), 2);
+}
+
+/// An append without entries goes on another stream than the appends
+/// ahead of it, so it waits for them to land.
+#[tokio::test]
+async fn an_append_without_entries_waits_for_the_flight_to_land() {
+    let input = vec![append(TERM, 0, 1), append(TERM, 1, 1)];
+    let (mut follower, mut out) = Follower::new(input, 4);
+    assert!(ready(&mut out).is_none());
+    assert_eq!(follower.sent(), 1);
+    follower.take(0);
+    assert_acked(&mut out, 1);
+    assert!(ready(&mut out).is_none());
+    assert_eq!(follower.sent(), 2, "it leaves once nothing is ahead of it");
+    assert!(follower.waiting[1].0.entries.is_empty());
+    follower.take(1);
+    assert_acked(&mut out, 1);
+    assert_ended(&mut out);
+}
+
+/// An append with entries carries a commit at least as new as the one an
+/// append without entries waits to carry, and goes in its place.
+#[tokio::test]
+async fn an_append_with_entries_replaces_one_without() {
+    let input = vec![append(TERM, 0, 1), append(TERM, 1, 1), append(TERM, 1, 2)];
+    let (mut follower, mut out) = Follower::new(input, 4);
+    assert!(ready(&mut out).is_none());
+    assert_eq!(follower.sent(), 2, "the entries do not wait");
+    assert!(!follower.waiting[1].0.entries.is_empty());
+    follower.take(1);
+    follower.take(0);
+    assert_acked(&mut out, 1);
+    assert_acked(&mut out, 2);
+    assert_ended(&mut out);
+    assert_eq!(follower.sent(), 2);
+}
+
+/// Nothing goes behind an append cut to fit one message, and its answer
+/// reads as partial, which ends the stream.
+#[tokio::test]
+async fn nothing_is_sent_behind_a_cut_append() {
+    let input = vec![append(TERM, 0, 4), append(TERM, 4, 5)];
+    let fit = |rpc: &mut AppendEntriesRequest<ShardTypes>| {
+        let cut = rpc.entries.len() > 2;
+        rpc.entries.truncate(2);
+        cut
+    };
+    let (mut follower, mut out) = Follower::cutting(input, 4, fit);
+    assert!(ready(&mut out).is_none());
+    assert_eq!(follower.sent(), 1);
+    assert_eq!(follower.waiting[0].0.entries.len(), 2);
+    follower.take(0);
+    assert_acked(&mut out, 2);
+    assert_ended(&mut out);
+    assert_eq!(follower.sent(), 1);
 }

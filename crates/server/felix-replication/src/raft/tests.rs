@@ -139,6 +139,8 @@ struct Net {
     /// Appends a disorder applies to, by broker, so a disorder by count
     /// reorders one follower's appends.
     entry_appends: parking_lot::Mutex<HashMap<String, u32>>,
+    /// By broker: the late append waiting for the one behind it.
+    behind: parking_lot::Mutex<HashMap<String, Arc<tokio::sync::Notify>>>,
     /// Appends a member answered with a conflict while a disorder was on.
     conflicts: std::sync::atomic::AtomicU32,
 }
@@ -295,14 +297,25 @@ impl RaftTransport for Net {
             }
             None => 0,
         };
-        match disorder {
-            Some(Disorder::Lost) if nth % 5 == 4 => {
-                // Noticed late, as a timeout is: those behind are answered.
-                tokio::time::sleep(late * 3).await;
+        // A late append waits for the one sent behind it to be answered,
+        // so the overtaking happens whatever the timing. The wait is
+        // bounded for a stream that sends nothing behind it.
+        let to = request.to().broker.to_string();
+        let behind = async {
+            let notify = Arc::new(tokio::sync::Notify::new());
+            self.behind.lock().insert(to.clone(), Arc::clone(&notify));
+            let _ = tokio::time::timeout(late * 30, notify.notified()).await;
+        };
+        let late_one = match disorder {
+            Some(Disorder::Lost) => nth % 5 == 4,
+            Some(Disorder::LateArrivals) => nth % 2 == 0,
+            _ => false,
+        };
+        if late_one {
+            behind.await;
+            if matches!(disorder, Some(Disorder::Lost)) {
                 return Err(Refused::Unreachable("lost".into()));
             }
-            Some(Disorder::LateArrivals) if nth % 2 == 0 => tokio::time::sleep(late * 3).await,
-            _ => {}
         }
         let answer = match runtime {
             Some(runtime) => {
@@ -314,6 +327,12 @@ impl RaftTransport for Net {
             }
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
+        if disorder.is_some()
+            && !late_one
+            && let Some(ahead) = self.behind.lock().remove(&to)
+        {
+            ahead.notify_one();
+        }
         let conflict = matches!(
             &answer,
             Ok(RaftReply(super::network::Reply::Append(Err(

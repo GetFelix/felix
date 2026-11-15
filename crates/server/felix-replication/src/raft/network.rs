@@ -478,20 +478,39 @@ type Answer = Result<AppendResult<ShardTypes>, RPCError<ShardTypes>>;
 /// follower took it before the append ahead of it (a lost append, or a
 /// reconnect that reordered them), and openraft would read the conflict as
 /// a follower that lost acknowledged entries. A real conflict shows again
-/// on the next stream's first append. The stream also stops sending at an
-/// append under another vote than the first; openraft opens one stream per
-/// leader vote.
-pub(crate) fn pipeline<S, F, Fut>(input: S, window: usize, send: F) -> impl Stream<Item = Answer>
+/// on the next stream's first append.
+///
+/// Three rules keep a stream from throwing its window away:
+/// - An append without entries, which openraft sends when only the commit
+///   moved, waits until nothing is in flight. It goes on the control
+///   stream, not its group's replication stream, so sent behind an append
+///   it would usually overtake it. The next append with entries carries a
+///   commit at least as new and replaces it.
+/// - `fit` cuts an append to what one message may carry, and says if it
+///   did. Nothing is sent behind a cut append: it follows entries the
+///   follower will not get.
+/// - Sending stops at an append under another vote than the first.
+///   openraft opens one stream per leader vote.
+pub(crate) fn pipeline<S, F, Fut, G>(
+    input: S,
+    window: usize,
+    mut fit: G,
+    send: F,
+) -> impl Stream<Item = Answer>
 where
     S: Stream<Item = AppendEntriesRequest<ShardTypes>> + Unpin,
     F: FnMut(AppendEntriesRequest<ShardTypes>) -> Fut,
     Fut: Future<Output = Answer>,
+    G: FnMut(&mut AppendEntriesRequest<ShardTypes>) -> bool,
 {
     use openraft::entry::RaftEntry;
     struct Window<S, F, A: Future> {
         input: Option<S>,
         send: F,
         flight: FuturesOrdered<A>,
+        /// An append without entries, waiting for the flight to land or
+        /// for an append with entries to replace it.
+        held: Option<AppendEntriesRequest<ShardTypes>>,
         vote: Option<VoteOf<ShardTypes>>,
         acked: bool,
     }
@@ -501,28 +520,38 @@ where
             None => std::future::pending().await,
         }
     }
-    let sent = move |send: &mut F, rpc: AppendEntriesRequest<ShardTypes>| {
+    // The answer is checked against the append openraft made, so a cut
+    // one reads as the partial acknowledgement it is.
+    let launch = move |send: &mut F, mut rpc: AppendEntriesRequest<ShardTypes>| {
         let last: Option<LogIdOf<ShardTypes>> = rpc
             .entries
             .last()
             .map(|entry| entry.log_id())
             .or_else(|| rpc.prev_log_id.clone());
+        let cut = fit(&mut rpc);
         let answer = send(rpc);
-        async move { (last, answer.await) }
+        (async move { (last, answer.await) }, cut)
     };
     let window = window.max(1);
     let start = Window {
         input: Some(input),
         send,
         flight: FuturesOrdered::new(),
+        held: None,
         vote: None,
         acked: false,
     };
-    futures::stream::unfold(Some(start), move |state| async move {
-        let mut state = state?;
+    futures::stream::unfold(Some((start, launch)), move |state| async move {
+        let (mut state, mut launch) = state?;
         loop {
+            if state.flight.is_empty()
+                && let Some(rpc) = state.held.take()
+            {
+                let (answer, _) = launch(&mut state.send, rpc);
+                state.flight.push_back(answer);
+            }
             let room = state.input.is_some() && state.flight.len() < window;
-            if !room && state.flight.is_empty() {
+            if !room && state.flight.is_empty() && state.held.is_none() {
                 return None;
             }
             tokio::select! {
@@ -532,18 +561,28 @@ where
                     return match answer {
                         Ok(Ok(acked)) if acked == last => {
                             state.acked = true;
-                            Some((Ok(Ok(acked)), Some(state)))
+                            Some((Ok(Ok(acked)), Some((state, launch))))
                         }
                         Ok(Err(AppendError::Conflict { .. })) if state.acked => None,
                         answer => Some((answer, None)),
                     };
                 }
                 rpc = next(&mut state.input), if room => match rpc {
-                    Some(rpc) if *state.vote.get_or_insert_with(|| rpc.vote.clone()) == rpc.vote => {
-                        let answer = sent(&mut state.send, rpc);
-                        state.flight.push_back(answer);
+                    Some(rpc) if *state.vote.get_or_insert_with(|| rpc.vote.clone()) != rpc.vote => {
+                        state.input = None;
                     }
-                    _ => state.input = None,
+                    Some(rpc) if rpc.entries.is_empty() && !state.flight.is_empty() => {
+                        state.held = Some(rpc);
+                    }
+                    Some(rpc) => {
+                        state.held = None;
+                        let (answer, cut) = launch(&mut state.send, rpc);
+                        state.flight.push_back(answer);
+                        if cut {
+                            state.input = None;
+                        }
+                    }
+                    None => state.input = None,
                 },
             }
         }
@@ -570,7 +609,11 @@ impl RaftNetworkV2<ShardTypes> for Pipelined {
         S: Stream<Item = AppendEntriesRequest<ShardTypes>> + Send + Unpin + 'static,
     {
         let unary = self.unary.clone();
-        let answers = pipeline(input, APPEND_WINDOW, move |rpc| {
+        let deadline = option.hard_ttl();
+        let fit = move |rpc: &mut AppendEntriesRequest<ShardTypes>| {
+            super::wire::fit_entries(rpc, deadline)
+        };
+        let answers = pipeline(input, APPEND_WINDOW, fit, move |rpc| {
             let mut unary = unary.clone();
             let option = option.clone();
             async move { unary.append_entries(rpc, option).await }

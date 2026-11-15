@@ -96,10 +96,14 @@ pub(crate) fn append_budget(deadline: Duration) -> usize {
 
 /// Cut an append's entries to its [`append_budget`], keeping at least one.
 pub(crate) fn fit(request: &mut RaftRequest) {
-    let budget = append_budget(request.deadline);
-    let Request::Append(rpc) = &mut request.body else {
-        return;
-    };
+    if let Request::Append(rpc) = &mut request.body {
+        fit_entries(rpc, request.deadline);
+    }
+}
+
+/// [`fit`] for an append that is not yet a request. True if it cut any.
+pub(crate) fn fit_entries(rpc: &mut AppendEntriesRequest<ShardTypes>, deadline: Duration) -> bool {
+    let budget = append_budget(deadline);
     let mut bytes = 0;
     let keep = rpc
         .entries
@@ -114,7 +118,9 @@ pub(crate) fn fit(request: &mut RaftRequest) {
         })
         .unwrap_or(rpc.entries.len())
         .max(1);
+    let cut = keep < rpc.entries.len();
     rpc.entries.truncate(keep);
+    cut
 }
 
 pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {

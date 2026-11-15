@@ -485,7 +485,7 @@ impl Drop for PeerConnection {
 /// never share a stream. The replication driver keeps at most one exchange
 /// outstanding per follower and log, so round-robin within a class cannot
 /// reorder a shard. Raft appends do rely on a stream's order, and every
-/// append of one group goes on the same one.
+/// append with entries of one group goes on the same one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LaneClass {
     /// The handshake, fences, tail fetches, pre-votes, pings, and Raft

@@ -1256,16 +1256,20 @@ answers each `Raft` as it finishes, matched by correlation id, like the
 control requests: an append waits for an fsync that a vote behind it should
 not.
 
-A leader keeps up to four appends on their way to a follower at
-once, and they must reach the follower's log in the order they left. The pool
-sends every append of one group on the same replication stream, chosen by a
-hash of the group's bytes. The listener takes each `Raft` frame as it reads it,
-and a member is handed its appends in the order they were taken, whichever
-answer finishes first. Other groups and other messages do not wait. If one
-arrives out of order anyway, over a stream that was replaced for example, the
-follower answers it with a conflict; the leader drops a conflict behind an
+A leader keeps up to four appends on their way to a follower at once, and
+they must reach the follower's log in the order they left. The pool sends
+every append with entries of one group on the same replication stream, chosen
+by a hash of the group's bytes. Appends without entries go on the control
+stream, so the leader sends one only when nothing is in flight to that
+follower. The listener takes each `Raft` frame as it reads it, and a member is
+handed its appends in the order they were taken, whichever answer finishes
+first. Other groups and other messages do not wait. If one arrives out of
+order anyway, over a stream that was replaced for example, the follower
+answers it with a conflict. The leader drops a conflict behind an
 acknowledged append and sends again from what was acknowledged
-(`docs/per-shard-raft.md`, "Pipelined appends"). At most 1,024 Raft messages run per stream; past that one is refused
+(`docs/per-shard-raft.md`, "Pipelined appends").
+
+At most 1,024 Raft messages run per stream; past that one is refused
 with `ReplicateError` `Overload`, and the sender treats it as unreachable.
 The listener reads the deadline from bytes 2 to 6 without decoding the rest,
 and gives up on a message at that deadline, or at 10 s if it names longer,

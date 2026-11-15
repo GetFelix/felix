@@ -1563,7 +1563,12 @@ just acknowledged: the follower took that append out of order. Passed on,
 openraft would read it as a follower that lost acknowledged entries. A real
 conflict shows on the next stream's first append, which openraft handles as
 before. The stream also stops sending at an append under another vote than
-its first. The follower's side of the ordering is in
+its first. An append without entries, which openraft sends when only the
+commit moved, travels on the control stream and would overtake the appends
+ahead of it, so it waits until nothing is in flight; an append with entries
+that comes first carries a newer commit and takes its place. Nothing is sent
+behind an append cut to fit one message (`wire::fit_entries`), since what
+follows it would be refused. The follower's side of the ordering is in
 `docs/internal-protocol.md`, "Raft messages".
 
 A leader's messages carry the gap described in "Idle groups", which is
