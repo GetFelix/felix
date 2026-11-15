@@ -75,6 +75,7 @@ fn assigned(key: ShardKey, replicas: &[&str]) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        target: None,
     }
 }
 

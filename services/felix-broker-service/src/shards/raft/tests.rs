@@ -2,7 +2,8 @@ use std::path::Path;
 
 use felix_broker::{ConsistencyLevel, StreamMetadata};
 use felix_replication::raft::{
-    AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
+    AgreeingPeers, MembershipProgress, RaftReply, RaftRequest, RaftTransport, Refused, Role,
+    RuntimeConfig,
 };
 
 use super::*;
@@ -34,6 +35,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        target: None,
     }
 }
 
@@ -2327,5 +2329,6 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
     );
 }
 
+mod retarget;
 mod retention;
 mod trim;

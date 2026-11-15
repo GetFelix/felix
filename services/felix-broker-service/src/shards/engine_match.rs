@@ -271,6 +271,18 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
         let _ = self.wake.set(wake);
     }
 
+    fn follow_lease(&self, lease: Arc<crate::cluster::lease::LeaseState>) {
+        if let Some(inner) = &self.inner {
+            inner.follow_lease(lease);
+        }
+    }
+
+    fn answered(&self, as_of: Option<tokio::time::Instant>, checkpoint: Option<u64>) {
+        if let Some(inner) = &self.inner {
+            inner.answered(as_of, checkpoint);
+        }
+    }
+
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
         Box::pin(async move {
             match &self.inner {

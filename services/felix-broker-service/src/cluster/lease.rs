@@ -92,6 +92,23 @@ pub struct LeaseState {
     /// Signalled when a renewal is waiting on the routes, so the watch asks at
     /// once instead of finishing a long-poll.
     routes_wanted: tokio::sync::Notify,
+    /// Set while a shard this broker leads waits for the assignment feed's
+    /// head, so the heartbeat asks for it.
+    head_wanted: AtomicBool,
+    /// The newest head an accepted heartbeat brought, with the tokio instant
+    /// that heartbeat was sent at.
+    head: parking_lot::Mutex<Option<Head>>,
+    /// Woken when a head arrives while one is wanted.
+    head_wake: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+}
+
+/// The assignment feed's head as the control plane accepted a heartbeat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Head {
+    /// When the heartbeat was sent, on tokio's clock, which the feed's
+    /// answers are stamped on too.
+    pub(crate) sent: tokio::time::Instant,
+    pub(crate) seq: u64,
 }
 
 /// The routes that confirm the renewals since a surrender.
@@ -158,6 +175,47 @@ impl LeaseState {
             routes_unconfirmed: AtomicBool::new(false),
             confirm: parking_lot::Mutex::new(None),
             routes_wanted: tokio::sync::Notify::new(),
+            head_wanted: AtomicBool::new(false),
+            head: parking_lot::Mutex::new(None),
+            head_wake: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Whether a led shard waits for the feed's head. The heartbeat asks
+    /// for it while so.
+    pub(crate) fn wants_head(&self) -> bool {
+        self.head_wanted.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn want_head(&self, wanted: bool) {
+        self.head_wanted.store(wanted, Ordering::Release);
+    }
+
+    /// Wake `wake` when a head arrives while one is wanted. Only the first
+    /// call counts.
+    pub(crate) fn wake_on_head(&self, wake: Arc<tokio::sync::Notify>) {
+        let _ = self.head_wake.set(wake);
+    }
+
+    /// The newest head a heartbeat brought.
+    pub(crate) fn head(&self) -> Option<Head> {
+        *self.head.lock()
+    }
+
+    /// Record the head an accepted heartbeat sent at `sent` brought. An
+    /// answer to an older heartbeat does not replace a newer one's.
+    pub(crate) fn record_head(&self, sent: tokio::time::Instant, seq: u64) {
+        {
+            let mut head = self.head.lock();
+            if head.is_some_and(|held| held.sent > sent) {
+                return;
+            }
+            *head = Some(Head { sent, seq });
+        }
+        if self.wants_head()
+            && let Some(wake) = self.head_wake.get()
+        {
+            wake.notify_one();
         }
     }
 
