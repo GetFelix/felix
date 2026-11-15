@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794709427453,
+  "lastUpdate": 1794713185277,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57720,6 +57720,58 @@ window.BENCHMARK_DATA = {
             "range": "74513.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1191293.18\nmean: 1160863.72\nstdev: 74513.29\ncv: 6.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ab43db71bbd7b8cf40e24229e39ca856bce6973b",
+          "message": "fix(wire): a sequenced forward with no header block reaches a Raft owner (#2570) (#2583)\n\n* fix(wire): a sequenced forward with no header block reaches a Raft owner (#2570)\n\nSequencedForwardPublish has no encoding without a block, and a Raft owner\nrefuses any forward with headers, so no idempotent batch could reach a Raft\nshard through a forward. A sequenced batch with no block now travels as\nPlainSequencedForwardPublish (64): the authorized body plus the producer id\nand sequence, no block section, gated on the new PLAIN_SEQUENCED_FORWARDS\ncapability. It decodes with no headers, so the Raft owner takes it. A batch\nwith a block still travels as kind 52, byte for byte.\n\n* docs(wire): name both capabilities a plain sequenced forward needs\n\n* docs(wire): LeadershipLost and the capability rule cover both sequenced forward kinds; test the no-legacy-retry guard\n\n* chore(forward): spec pairing for the plain sequenced forward (#2570)\n\nSpec-Unaffected: kind 64 is a wire encoding of a sequenced forward without a header block. It carries the same producer id, sequence, credential and fence fields as kind 52 and goes only to a peer that offers the new capability bit. The TLA+ models describe forwards and their dedup by producer and sequence, not frame kinds or capability bits, so no modelled behaviour changes.",
+          "timestamp": "2026-11-15T03:12:56Z",
+          "tree_id": "51ca7dbd84bfe0c16cb5f2ddd547018a022ffda0",
+          "url": "https://github.com/GetFelix/felix/commit/ab43db71bbd7b8cf40e24229e39ca856bce6973b"
+        },
+        "date": 1794713184370,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 406070.7,
+            "range": "16173.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 406070.70\nmean: 408745.23\nstdev: 16173.84\ncv: 3.96%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 406070.7,
+            "range": "16173.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 406070.70\nmean: 408745.23\nstdev: 16173.84\ncv: 3.96%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 96398.26,
+            "range": "1379.80",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 96398.26\nmean: 95879.56\nstdev: 1379.80\ncv: 1.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 963982.58,
+            "range": "13797.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 963982.58\nmean: 958795.58\nstdev: 13797.94\ncv: 1.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
