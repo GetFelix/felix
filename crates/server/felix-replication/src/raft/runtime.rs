@@ -239,9 +239,6 @@ pub enum InitializeError {
     /// since has a new id, so it cannot start the group again on an empty log.
     #[error("{0} is not in the first member set")]
     NotAMember(MemberId),
-    /// A group reached an earlier copy of this member's directory.
-    #[error("{0}: {reason}", reason = group::REACHED_BEFORE)]
-    ReachedBefore(MemberId),
     #[error("the group was not formed: {0}")]
     Raft(String),
 }
@@ -789,9 +786,6 @@ impl GroupRuntime {
             .registry
             .get(shard)
             .ok_or(InitializeError::NoSuchGroup)?;
-        if group.reached_before() {
-            return Err(InitializeError::ReachedBefore(group.member.clone()));
-        }
         if !members.contains(&group.member) {
             return Err(InitializeError::NotAMember(group.member.clone()));
         }
