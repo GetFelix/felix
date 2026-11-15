@@ -19,7 +19,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
-use super::reach::CEILING;
+use super::reach::{CEILING, Peer};
 use super::runtime::Registry;
 
 /// Times the ticker ended on a panic and was started again. Any increase
@@ -77,7 +77,7 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
             panic!("tripped by a test");
         }
         registry.tail_budget.report();
-        back.retry(&registry);
+        back.retry(&registry, Duration::from_millis(timers.heartbeat));
         let due = looks.due(registry.ticked(), &timers);
         tokio::select! {
             biased;
@@ -104,13 +104,16 @@ struct Back {
 struct Walk {
     last: Option<Instant>,
     busy: Arc<AtomicBool>,
+    /// When a group last heartbeat to the broker while it was down.
+    scouted: Option<Instant>,
+    scouting: Arc<AtomicBool>,
 }
 
 /// Retry commands sent to the groups' cores at once.
 const RESETS_AT_ONCE: usize = 64;
 
 impl Back {
-    fn retry(&mut self, registry: &Registry) {
+    fn retry(&mut self, registry: &Registry, heartbeat: Duration) {
         let reach = &registry.reach;
         #[cfg(test)]
         if reach.no_wake.load(Ordering::Relaxed) {
@@ -121,6 +124,7 @@ impl Back {
         let now = Instant::now();
         for (broker, peer) in peers.iter() {
             let walk = self.walks.entry(Arc::clone(broker)).or_default();
+            scout(registry, peer, walk, now, heartbeat);
             if walk.busy.load(Ordering::Acquire) {
                 continue;
             }
@@ -201,6 +205,33 @@ impl Looks {
         }
         due
     }
+}
+
+/// While a broker is down, one group that leads here heartbeats to it each
+/// short gap. Idle groups heartbeat it only every idle gap, and the walk
+/// that retries them all waits for the broker's first answer, so this keeps
+/// that answer within about a heartbeat of the broker coming back. It costs
+/// one group's heartbeat per dead broker, whatever the number of groups.
+fn scout(registry: &Registry, peer: &Peer, walk: &mut Walk, now: Instant, heartbeat: Duration) {
+    if !peer.is_down()
+        || walk.scouting.load(Ordering::Acquire)
+        || walk.scouted.is_some_and(|at| now - at < heartbeat)
+    {
+        return;
+    }
+    walk.scouted = Some(now);
+    let Some(group) = peer
+        .scout()
+        .and_then(|id| registry.get(&id.shard).filter(|group| group.id == id))
+    else {
+        return;
+    };
+    walk.scouting.store(true, Ordering::Release);
+    let scouting = Arc::clone(&walk.scouting);
+    tokio::spawn(async move {
+        group.heartbeat_now().await;
+        scouting.store(false, Ordering::Release);
+    });
 }
 
 /// One timer check on each of `groups`, until `deadline`.

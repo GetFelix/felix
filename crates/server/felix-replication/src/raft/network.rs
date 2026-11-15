@@ -238,7 +238,9 @@ impl Router {
 
     /// This router, for openraft's client to `target` in `group`. A cache
     /// shard keeps openraft's delays: they also pace its snapshot pieces,
-    /// whose wait the ticker's walk cannot cut short.
+    /// whose wait the ticker's walk cannot cut short. A stream shard's
+    /// snapshot pieces would wait up to 10 s the same way; that is harmless
+    /// only while stream members refuse snapshots (`Group::answer`).
     fn toward(&self, target: &MemberId, group: &GroupId) -> Self {
         Self {
             to: (group.shard.kind == ShardKind::Stream).then(|| Arc::clone(&target.broker)),
@@ -304,7 +306,10 @@ impl Router {
             self.lease.named(term);
         }
         match &answer {
-            Ok(Err(Refused::Unreachable(_))) | Err(_) => self.reach.lost(&to.broker, sent_at),
+            Ok(Err(Refused::Unreachable(_))) | Err(_) => {
+                self.reach.lost(&to.broker, sent_at);
+                self.reach.lost_by(&to.broker, &self.refusals.group);
+            }
             // The broker is up, but this group's member is not open there.
             Ok(Err(Refused::NoSuchMember(_) | Refused::OtherCopy(..) | Refused::Stopped(..))) => {
                 self.reach.answered(&to.broker);

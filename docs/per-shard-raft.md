@@ -1557,7 +1557,8 @@ leave by retention and never because a snapshot was taken; and
 `allow_log_reversion` off (Questions, 2). Every log is opened with `purge_within`, so a purge
 past the stored snapshot is refused.
 
-The retry delays are openraft's defaults. After a call to a follower is
+The retry delays start as openraft's defaults; a stream shard's grow
+longer while a broker is down (below). After a call to a follower is
 refused, openraft waits before it sends that follower's stream again:
 200, 400 and 800 ms, then 1 s each, and only a call that succeeds ends the
 wait. Left alone, a follower back from a cut of a second or two would wait
@@ -1590,9 +1591,15 @@ doubling past that second, up to 10 s. A dead broker then costs each such
 group about one call every 2 s, its idle heartbeat, plus a retry every
 10 s, instead of a heartbeat every 200 ms and a retry every second. In
 the idle-CPU test with 300 groups and one broker of three dead, that took
-the calls to it from 5.1 a second per group to 0.6. The longer wait costs
-no time to recover: the heartbeats are not held by it, and the first
-answer from the broker ends every wait, as above. A cache shard keeps
+the calls to it from 5.1 a second per group to 0.6. The longer wait does
+not slow recovery: the heartbeats are not held by it, and the first
+answer from the broker ends every wait, as above. Two rules keep that
+answer within about a heartbeat (200 ms) of the broker coming back,
+although most groups heartbeat it only every 2 s. A leader with an entry
+not yet committed stays at the short heartbeat. And while a broker is
+down, the ticker has one group that leads here heartbeat it every short
+gap: the last group whose call to it failed. That is 5 calls a second per
+dead broker, whatever the number of groups. A cache shard keeps
 openraft's delays, since they also pace its snapshot pieces, and the walk
 cannot cut those short.
 

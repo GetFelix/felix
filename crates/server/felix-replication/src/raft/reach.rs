@@ -26,8 +26,10 @@ use super::types::GroupId;
 pub(crate) const CEILING: Duration = Duration::from_secs(1);
 
 /// The longest a stream shard member's stream waits between retries while
-/// its broker is down. Its first answer ends the wait, so this costs no time
-/// to recover.
+/// its broker is down. Its first answer ends the wait, and a heartbeat at
+/// the short gap finds it: the group's own while it has an entry not yet
+/// committed, otherwise the one the ticker sends each short gap to a broker
+/// that is down.
 pub(crate) const WHILE_DOWN: Duration = Duration::from_secs(10);
 
 /// A broker no call has failed to for this long is forgotten.
@@ -67,6 +69,9 @@ pub(crate) struct Peer {
     used: AtomicU64,
     /// Groups whose member there refused and has since answered.
     opened: parking_lot::Mutex<Vec<GroupId>>,
+    /// The group whose call to it failed last: while it is down, the ticker
+    /// has that group heartbeat at the short gap.
+    scout: parking_lot::Mutex<Option<GroupId>>,
 }
 
 impl Reach {
@@ -112,6 +117,13 @@ impl Reach {
                 .state
                 .compare_exchange(state, next, Ordering::AcqRel, Ordering::Relaxed);
         });
+    }
+
+    /// A call from `group` to `broker` failed, as reported to [`Self::lost`].
+    pub(crate) fn lost_by(&self, broker: &Arc<str>, group: &GroupId) {
+        if let Some(peer) = self.peers.load().get(broker) {
+            *peer.scout.lock() = Some(group.clone());
+        }
     }
 
     /// `broker` answered a call, whatever the answer said.
@@ -195,6 +207,12 @@ impl Peer {
 
     pub(crate) fn take_opened(&self) -> Vec<GroupId> {
         std::mem::take(&mut self.opened.lock())
+    }
+
+    /// A group whose call to it failed, for the ticker's heartbeat while it
+    /// is down.
+    pub(crate) fn scout(&self) -> Option<GroupId> {
+        self.scout.lock().clone()
     }
 
     pub(crate) fn is_down(&self) -> bool {

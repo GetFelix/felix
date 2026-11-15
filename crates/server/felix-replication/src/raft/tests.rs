@@ -135,6 +135,10 @@ struct Net {
     lose_answers: std::sync::atomic::AtomicBool,
     /// Calls to a cut broker.
     cut_calls: std::sync::atomic::AtomicU64,
+    /// A cut broker that comes back just after the next heartbeat to it is
+    /// refused, and when it did.
+    heal_after_beat: parking_lot::Mutex<Option<String>>,
+    healed_after_beat: parking_lot::Mutex<Option<std::time::Instant>>,
 }
 
 impl Net {
@@ -209,6 +213,17 @@ impl RaftTransport for Net {
         if cut && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty()) {
             self.refused_entries(broker);
         }
+        if cut
+            && matches!(&request.body, Request::Append(rpc) if rpc.entries.is_empty())
+            && self
+                .heal_after_beat
+                .lock()
+                .take_if(|to| to == broker)
+                .is_some()
+        {
+            self.cut.lock().remove(broker);
+            *self.healed_after_beat.lock() = Some(std::time::Instant::now());
+        }
         let key = (broker.to_string(), request.group.shard.shard);
         let closed = self.closed.lock().get(&key).copied();
         if !cut && let Some(left) = closed {
@@ -273,6 +288,8 @@ struct Cluster {
     root: TempDir,
     net: Arc<Net>,
     timers: RuntimeConfig,
+    /// Brokers that run timers of their own instead of `timers`.
+    own_timers: HashMap<&'static str, RuntimeConfig>,
     logs: HashMap<(String, u32), DiskLog>,
 }
 
@@ -283,10 +300,19 @@ impl Cluster {
     }
 
     fn with(timers: RuntimeConfig, ticking: bool) -> Self {
+        Self::with_own(timers, HashMap::new(), ticking)
+    }
+
+    fn with_own(
+        timers: RuntimeConfig,
+        own_timers: HashMap<&'static str, RuntimeConfig>,
+        ticking: bool,
+    ) -> Self {
         let cluster = Self {
             root: tempdir().expect("dir"),
             net: Arc::default(),
             timers,
+            own_timers,
             logs: HashMap::new(),
         };
         cluster.start(ticking);
@@ -296,8 +322,9 @@ impl Cluster {
     fn start(&self, ticking: bool) {
         for broker in BROKERS {
             let transport: Arc<dyn RaftTransport> = self.net.clone();
-            let runtime = GroupRuntime::without_ticker(broker, self.timers.clone(), transport)
-                .expect("timers");
+            let timers = self.own_timers.get(broker).unwrap_or(&self.timers);
+            let runtime =
+                GroupRuntime::without_ticker(broker, timers.clone(), transport).expect("timers");
             if ticking {
                 runtime.start_ticker();
             }
@@ -1789,6 +1816,9 @@ async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
         cluster.form(n).await;
     }
     let dead = "c";
+    // Muted too: its members stand while it is cut, and their vote requests
+    // would depose leaders inside the window.
+    cluster.net.muted.lock().insert(dead.into());
     cluster.net.cut.lock().insert(dead.into());
     let mut written = Vec::new();
     for n in 0..GROUPS {
@@ -1801,13 +1831,18 @@ async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
     let before = cluster.net.cut_calls.load(Relaxed);
     tokio::time::sleep(window).await;
     let calls = cluster.net.cut_calls.load(Relaxed) - before;
-    let per_group = calls as f64 / window.as_secs_f64() / f64::from(GROUPS);
+    // Less the one group's heartbeat each short gap that finds the broker
+    // back, which costs the same whatever the number of groups.
+    let scout = window.as_secs_f64() / timers().heartbeat.as_secs_f64();
+    let per_group = (calls as f64 - scout) / window.as_secs_f64() / f64::from(GROUPS);
     eprintln!("{per_group:.2} calls a second per group to the dead broker");
-    // An idle heartbeat is 0.5 a second. Without the fix it was about five:
-    // a heartbeat every 200 ms and a retry every second.
-    assert!(per_group < 0.9, "{per_group:.2} calls a second per group");
+    // An idle heartbeat is 0.5 a second and a retry every 10 s adds 0.1.
+    // Without either half of the fix it is 1.5 or more, and about five
+    // without both: a heartbeat every 200 ms and a retry every second.
+    assert!(per_group < 1.2, "{per_group:.2} calls a second per group");
 
     cluster.net.cut.lock().remove(dead);
+    cluster.net.muted.lock().remove(dead);
     let healed = tokio::time::Instant::now();
     let returned = cluster.runtime(dead);
     for (n, index) in (0..GROUPS).zip(written) {
@@ -1819,10 +1854,118 @@ async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
     }
     // The first answer from the broker, within an idle heartbeat (2 s),
     // ends every group's wait. Its members stood while it was cut, so their
-    // higher term costs an election on top (pre-vote is off).
+    // higher term costs an election on top (pre-vote is off), on real
+    // timers: `eventually` bounds it, and the prompt answer has a test of
+    // its own below.
+    eprintln!("caught up {:?} after the heal", healed.elapsed());
+    cluster.stop().await;
+}
+
+/// A group whose entry waits on brokers that are down stays at the short
+/// heartbeat, so the first of them back takes the entry within about one,
+/// not within an idle heartbeat (#2567).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_one_back() {
+    // b and c do not stand while they are cut.
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(20),
+        election_max: Duration::from_secs(40),
+        ..timers()
+    };
+    let own = HashMap::from([("b", patient.clone()), ("c", patient)]);
+    let mut cluster = Cluster::with_own(timers(), own, true);
+    cluster.form(0).await;
+    let before = cluster.write(0, b"committed").await;
+    cluster.committed_everywhere(0, before).await;
+    let leader = cluster.elected(0).await;
+    assert_eq!(&*leader.broker, "a");
+    let member = cluster.runtime("a").group(&shard(0)).expect("group");
+
+    for broker in ["b", "c"] {
+        cluster.net.cut.lock().insert(broker.into());
+    }
+    let raft = member.raft().clone();
+    let write = tokio::spawn(async move {
+        raft.client_write(Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(b"while b and c are down"),
+            producer: None,
+            written: None,
+        })
+        .await
+    });
+    // Past the idle wait and the silence after which b and c no longer
+    // hold the leader at the short gap.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert!(!write.is_finished(), "committed with b and c down");
+
+    *cluster.net.heal_after_beat.lock() = Some("c".into());
+    let written = tokio::time::timeout(PATIENCE, write)
+        .await
+        .expect("answered")
+        .expect("task")
+        .expect("committed");
+    let healed = cluster.net.healed_after_beat.lock().expect("c came back");
     let took = healed.elapsed();
-    eprintln!("caught up {took:?} after the heal");
-    assert!(took < Duration::from_secs(6), "caught up after {took:?}");
+    eprintln!("c back to the commit: {took:?}");
+    assert_eq!(written.log_id.index, before + 1);
+    assert_eq!(
+        leader,
+        cluster.elected(0).await,
+        "this measured an election"
+    );
+    // A heartbeat is 200 ms. At the idle one it took up to 2 s.
+    assert!(
+        took < Duration::from_millis(900),
+        "the commit took {took:?} after c was back"
+    );
+    cluster.stop().await;
+}
+
+/// A broker that was down gets what it missed within about a heartbeat of
+/// coming back, even from a group with nothing left to commit, which
+/// heartbeats only every idle gap: one group heartbeats to a broker that is
+/// down at the short gap, and its first answer has every group retry it.
+/// One group, so no other group's heartbeat finds the broker first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_group_catches_a_broker_up_within_about_a_heartbeat_of_it_coming_back() {
+    // c does not stand while it is cut.
+    let patient = RuntimeConfig {
+        election_min: Duration::from_secs(20),
+        election_max: Duration::from_secs(40),
+        ..timers()
+    };
+    let own = HashMap::from([("b", patient.clone()), ("c", patient)]);
+    let mut cluster = Cluster::with_own(timers(), own, true);
+    cluster.form(0).await;
+    assert_eq!(&*cluster.elected(0).await.broker, "a");
+    cluster.net.cut.lock().insert("c".into());
+    let missed = cluster.write(0, b"missed").await;
+    // Past the idle wait and c's silence: both groups heartbeat every 2 s.
+    tokio::time::sleep(Duration::from_secs(7)).await;
+    assert!(
+        cluster
+            .runtime("a")
+            .group(&shard(0))
+            .expect("group")
+            .leader_gap()
+            > 1000
+    );
+
+    *cluster.net.heal_after_beat.lock() = Some("c".into());
+    let returned = cluster.runtime("c");
+    eventually(|| {
+        let last = returned.status(&shard(0))?.last_index;
+        (last >= Some(missed)).then_some(())
+    })
+    .await;
+    let healed = cluster.net.healed_after_beat.lock().expect("c came back");
+    let took = healed.elapsed();
+    eprintln!("c back to caught up: {took:?}");
+    assert!(
+        took < Duration::from_millis(900),
+        "c caught up {took:?} after it was back"
+    );
     cluster.stop().await;
 }
 

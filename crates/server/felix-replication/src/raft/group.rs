@@ -647,6 +647,13 @@ impl Group {
         }
     }
 
+    /// If this member leads, heartbeat now, whatever its gap.
+    pub(crate) async fn heartbeat_now(&self) {
+        if self.leads() {
+            let _ = self.raft.trigger().heartbeat().await;
+        }
+    }
+
     fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader
@@ -674,10 +681,21 @@ impl Group {
             tick, election_min, ..
         } = pace.timers;
         let now = pace.timers.now();
-        match self.raft.metrics().borrow_watched().state {
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        match metrics.state {
             // One past the interval, so the check lands after the heartbeat
-            // is due and not just before it.
-            ServerState::Leader => now + pace.leader_gap(now) + 1,
+            // is due and not just before it. An entry not yet committed
+            // keeps the short gap: it waits on a member that is down, and a
+            // heartbeat is what finds that member back and retries it.
+            ServerState::Leader => {
+                let committed = metrics.local_committed.map(|log_id| log_id.index);
+                let gap = match metrics.last_log_index > committed {
+                    true => pace.timers.heartbeat,
+                    false => pace.leader_gap(now),
+                };
+                now + gap + 1
+            }
             ServerState::Follower | ServerState::Candidate => {
                 let heard = pace.heard.load(Ordering::Relaxed);
                 heard.saturating_add(pace.follower_wait()).max(now + tick)
