@@ -90,7 +90,7 @@ impl InternalMessage {
                         ));
                     }
                     // The decoder refuses a section with no block. `kind`
-                    // sends a batch without one on a kind with no section.
+                    // never picks these kinds for such a batch.
                     if !any_block(headers) {
                         return Err(Error::InvalidRecordHeaders(
                             "a headered forward carries no block",
