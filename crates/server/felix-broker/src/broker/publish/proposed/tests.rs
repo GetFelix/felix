@@ -355,6 +355,81 @@ async fn a_batch_given_up_on_restarts_the_ring_above_it() {
     assert_eq!(handle.state.oldest_seq(), 2);
 }
 
+/// **A conditional publish stored as a blank keeps the replay ring.** Its
+/// outcome is known, so unlike a batch given up on it is no reason to send
+/// readers to the log, and the next record reports the blank as skipped.
+#[tokio::test]
+async fn a_refused_conditional_publish_keeps_the_ring() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    let first = {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"a")],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
+            .expect("handed over")
+    };
+    let (told, tail) = oneshot::channel();
+    let refused = {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish_at(
+                &handle,
+                vec![Bytes::from_static(b"if")],
+                0,
+                Duration::MAX,
+                move |tail| {
+                    let _ = told.send(tail);
+                    "offset mismatch"
+                },
+                move |_| engine.propose(1),
+            )
+            .expect("handed over")
+    };
+    let first = tokio::spawn(first.complete());
+    let refused = tokio::spawn(refused.complete());
+    engine.commit(0, Ok(()));
+    engine.commit(1, Ok(()));
+    first.await.expect("joined").expect("committed");
+    assert_eq!(
+        refused.await.expect("joined").err(),
+        Some("offset mismatch")
+    );
+    assert_eq!(tail.await, Ok(2));
+    let last = {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(b"b")],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
+            .expect("handed over")
+    };
+    let last = tokio::spawn(last.complete());
+    engine.commit(2, Ok(()));
+    last.await.expect("joined").expect("committed");
+    assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(2));
+    assert_eq!(
+        envelope.skipped_before(),
+        1,
+        "the blank is a skip, not a drop"
+    );
+    assert_eq!(
+        handle.state.oldest_seq(),
+        0,
+        "the ring still holds offset 0"
+    );
+}
+
 /// **A reader resuming right after a batch the engine gave up on starts
 /// above it.** The ring is empty then, so the reader joins live at the
 /// stream's sequence. Left at the batch before, it would read history only

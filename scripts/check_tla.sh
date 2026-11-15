@@ -113,6 +113,7 @@ module_of() {
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
     FelixRaftWritten*) echo FelixRaftWritten ;;
     FelixRaftBatch*) echo FelixRaftBatch ;;
+    FelixRaftCond*) echo FelixRaftCond ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -560,6 +561,12 @@ expectations=(
   "FelixRaftWrittenReachEarly violates NeverAcksEarly"
   "FelixRaftWrittenReachEarlyInJoint violates NeverAcksEarlyInJoint"
   "FelixRaftWrittenReachCommitsAfterFailover violates NeverCommitsAfterFailover"
+  "FelixRaftWrittenCommitsPowerCut pass"
+  "FelixRaftWrittenCommitsPowerCutKeeps violates AckedNeverLost"
+  "FelixRaftWrittenCommitsReform pass"
+  "FelixRaftWrittenCommitsReformTrailing violates OffsetNeverReused"
+  "FelixRaftWrittenCommitsReformLoses violates NeverLosesCommitted"
+  "FelixRaftWrittenReformOnCommit pass"
   "FelixRaftBatch pass"
   "FelixRaftBatchKeepsCut pass"
   "FelixRaftBatchEachRecord violates BatchExactlyOnce"
@@ -576,6 +583,11 @@ expectations=(
   "FelixRaftBatchReachInstall violates NeverInstalls"
   "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
   "FelixRaftBatchReachHeld violates NeverAnswersHeld"
+  "FelixRaftCond pass"
+  "FelixRaftCondTwoTerms pass"
+  "FelixRaftCondLeaderDecides violates CondKeptAtExpected"
+  "FelixRaftCondLeaderDecidesNoMembers pass"
+  "FelixRaftCondReachAnswers violates NeverOkAndMismatch"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityBatched pass"
   "FelixRaftIdentityRelaxedCrash pass"
@@ -1061,6 +1073,8 @@ fi
 # got).
 # FelixRaftWrittenFailoverPowerCut passes in 15 minutes with 8 workers on a
 # 32-core machine and is not registered: a box run checks it.
+# FelixRaftWrittenCommitsFailoverPowerCut passes in 17 minutes with 30
+# workers on a 32-core machine and is not registered: a box run checks it.
 # FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a
@@ -1308,8 +1322,13 @@ weights=(
   "FelixRaftMembershipTerms 109"
   "FelixRaftWritten 40"
   "FelixRaftWrittenCrash 5"
+  "FelixRaftWrittenCommitsPowerCut 24"
+  "FelixRaftWrittenCommitsReform 2"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
+  "FelixRaftCond 300"
+  "FelixRaftCondTwoTerms 40"
+  "FelixRaftCondLeaderDecidesNoMembers 200"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
@@ -1506,7 +1525,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache Cond"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"

@@ -611,6 +611,13 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
+| `FelixRaftWrittenCommitsPowerCut.cfg` | the proposal to commit on a written majority on relaxed brokers: `WrittenCommits`, `CutRotates` and `Reserve`, one term, two writes, one process crash, one power cut | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `CommittedHeld`, `AckedHeld`, `AckedNeverLost` (11.4M distinct states, 24 minutes on a CI runner) |
+| `FelixRaftWrittenCommitsFailoverPowerCut.cfg` | the same at failover bounds: two terms, one write, one process crash, two power cuts, with `Reserve` off (without a re-form a reservation only holds back counts and reports, so this checks more behaviours) | pass the same (71.2M distinct states, 17 minutes with 30 workers on a 32-core machine; not registered, a box run checks it) |
+| `FelixRaftWrittenCommitsPowerCutKeeps.cfg` | the proposal with the cut copy kept | violate `AckedNeverLost` |
+| `FelixRaftWrittenCommitsReform.cfg` | the proposal, two power cuts and the operator's re-form, padded up to the highest reservation | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `CommittedHeld`, `AckedNeverLost`, `OffsetNeverReused` (781k distinct states) |
+| `FelixRaftWrittenCommitsReformTrailing.cfg` | the same without the reservation: the re-form pads up to the trailing floor only | violate `OffsetNeverReused` |
+| `FelixRaftWrittenCommitsReformLoses.cfg` | witness: under the proposal a power cut of a majority loses a committed record | violate `NeverLosesCommitted` |
+| `FelixRaftWrittenReformOnCommit.cfg` | the design as built (commit on fsynced copies), two power cuts and a re-form with the trailing floor alone | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `OffsetNeverReused`, `NeverLosesCommitted` (58k distinct states) |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472; the code now takes the term-bound shape, and this stays as the counterexample twin); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
@@ -627,6 +634,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
 | `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
 | `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
+| `FelixRaftCond.cfg` | `FelixRaftCond.tla`: three members, three terms, logs up to five entries, one plain publish, one membership entry, three conditional publishes (two naming offset 2, one offset 3); each member decides `kept` from the entry and its index | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold` (169,456,277 distinct states, depth 34, 24 minutes with 12 workers on a 32-core machine) |
+| `FelixRaftCondTwoTerms.cfg` | the same with two terms | pass the same (18,646,633 distinct states, depth 30, 3 minutes with 12 workers on a 32-core machine) |
+| `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
+| `FelixRaftCondLeaderDecidesNoMembers.cfg` | the same with no membership entry | pass the same as `FelixRaftCond.cfg` (101,575,424 distinct states, depth 36, 23 minutes with 8 workers on a 32-core machine): the membership entry is what breaks the guess |
+| `FelixRaftCondReachAnswers.cfg` | witness, one term: one conditional publish is answered "ok" and another "mismatch" | violate `NeverOkAndMismatch` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityBatched.cfg` | the same faults plus the relaxed-fsync crash, with the batched log mark the broker ships; no restore, so the mark never moves | pass the same (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
@@ -2844,6 +2856,43 @@ Each knob drops one rule, and each twin fails with no power cut at all:
 - `WrittenCommits`: the commit index counts written reports too. An entry
   commits on copies that are not on disk, and one power cut takes it.
 
+`WrittenCommits` is also a proposal, written up in
+[Per-shard Raft](../per-shard-raft.md) under "Proposal: commit on a written
+majority on relaxed brokers" and not built: on a broker where a power cut
+rotates every copy, openraft hears an append is flushed once it is written,
+so the commit, apply and delivery move on a written majority. With
+`CutRotates` the twin's loss goes away: the copy that lost the entry no longer
+votes (`FelixRaftWrittenCommitsPowerCut.cfg` passes, and
+`FelixRaftWrittenCommitsPowerCutKeeps.cfg` without the rotation does not).
+
+Two more knobs model what the proposal needs after a power cut of a majority:
+
+- `MaxReforms`: with 1, once no broker leads or can be elected, the operator
+  re-forms the group (`Reform`). The base is the longest log any copy holds
+  or a rotated copy kept, and the new epoch starts above it, padded up to the
+  floor: the last commit index a leader reported to the control plane
+  (`ReportFloor`). `FelixRaftReform.tla` has the command's steps and why the
+  floor carries a term. Every re-form configuration here has one term, where
+  every log is a prefix of the leader's and the longest is the base. With two
+  terms and the commit on written copies, the longest kept log can hold an
+  uncommitted entry at an offset another term committed, and only the design's
+  cut to the saved commit index stops it. No configuration checks that yet
+  ([#2592](https://github.com/GetFelix/felix/issues/2592)).
+- `Reserve`: a copy counts or reports an entry only below an index it has
+  reserved in a synced file, which a rotation keeps, and the re-form pads up
+  to the highest reservation too.
+
+`OffsetNeverReused` says that after the re-form every committed offset holds
+the same record in the base or lies in the padded gap. Subscribers get only
+committed records, so no offset one was given comes back with another record.
+With the commit on written copies, two cut tails can take committed records
+(`FelixRaftWrittenCommitsReformLoses.cfg` finds it). Without `Reserve`, a
+record committed after the last floor report is above the floor, and its
+offset is given out again (`FelixRaftWrittenCommitsReformTrailing.cfg`). With
+it, `OffsetNeverReused` holds (`FelixRaftWrittenCommitsReform.cfg`). The design
+as built, with the commit on fsynced copies, loses nothing and reuses nothing
+with the trailing floor alone (`FelixRaftWrittenReformOnCommit.cfg`).
+
 Abstracted: votes are durable and followers do not learn the commit index
 (`FelixRaft.tla` has the adapter's rules and what followers apply), snapshots,
 the subscriber and the lease. A message is one atomic step between two brokers.
@@ -4055,6 +4104,56 @@ still refuses a batch of several records in `raft/propose.rs`.
    it. A re-send is then refused when the producer is unknown and its
    sequence is not 0, but a cut first batch (sequence 0) is taken as new.
    That is the `"forget"` case, and the code change has to close it.
+
+### Conditional publishes on a Raft shard
+
+`FelixRaftCond.tla` models a conditional publish on a Raft stream shard
+(#2446). A conditional publish names an offset, `expected`, and lands there
+or not at all. The offset is the Raft index.
+
+What is modelled:
+
+- Raft in the abstract: per-member logs of entries with terms, elections by
+  vote, followers that cut a conflicting tail before they append, and a
+  commit at a majority in the leader's own term.
+- The leader appends one entry for a conditional publish wherever its log
+  ends. Every member decides from the entry and its index alone: at
+  `expected` it holds the record, anywhere else a blank that readers skip.
+  The stored entry carries that decision as `kept`, worked out when the
+  member writes it. A cut removes the entry and its decision together.
+- Plain publishes, the blank a leader writes when its term starts, and a
+  membership entry the leader may append at any time. Publishes go through
+  the leader's queue in order. The blank and the membership entry do not.
+- The leader answers a client once its entry is committed: "ok at i" when it
+  is kept, "mismatch" otherwise.
+
+What it promises, over each member's committed prefix:
+
+- `CondKeptAtExpected`: every kept conditional record is at its expected
+  offset.
+- `OneKeptPerOffset`: of the publishes naming one offset, at most one is kept.
+- `MembersAgree`: two members that committed an index hold the same entry
+  there, `kept` included.
+- `AnswersHold`: a client answered "ok at i" is kept at i, its expected
+  offset, on every member that committed i. One answered "mismatch" is kept
+  nowhere.
+
+`LeaderDecides = TRUE` drops the rule: the leader decides `kept` when the
+publish arrives, from its guess of the index (its log, plus the queue ahead,
+plus one), and followers copy it. A membership entry appended between the
+guess and the append moves the publish one index on, where it is kept
+(`FelixRaftCondLeaderDecides.cfg`). With no membership entry the guess is
+right (`FelixRaftCondLeaderDecidesNoMembers.cfg`), which shows the
+membership entry is what breaks it. `FelixRaftCondReachAnswers.cfg` shows the
+passes are not vacuous: one publish is answered "ok" and another "mismatch".
+The leader's queue is modelled only for the guess. When members decide at
+write time, a publish is appended as it arrives, which changes no outcome.
+
+Abstracted: disks, crashes and snapshots (`FelixRaft.tla` has them). A
+message is one step that reads both members, and a leader counts a follower
+toward a commit by reading its log. A client sends once; a retry is a new
+publish. Any leader holding the entry committed may answer, which allows more
+than the code.
 
 ## How CI checks the models
 
