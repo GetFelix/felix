@@ -6,6 +6,7 @@ mod judge;
 mod marks;
 mod placement_ack;
 mod reclaim;
+mod reform;
 
 use std::io;
 use std::path::{Path, PathBuf};

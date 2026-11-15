@@ -27,6 +27,7 @@ mod judge;
 mod marks;
 mod placement_ack;
 mod reclaim;
+mod reform;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -43,6 +44,7 @@ pub use placement_ack::{
     restored_placement_incarnation,
 };
 pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
+pub use reform::{KeptLog, first_free_index, kept_logs, read_kept};
 
 use std::sync::Arc;
 use std::time::Duration;

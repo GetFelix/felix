@@ -4692,10 +4692,19 @@ not move.
 - A broker opens a shard's Raft log with its own fsync mode only when the
   fleet has finalized `raft_written_commit` and the root's run is relaxed;
   otherwise `OnCommit`.
+- What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
+  (`first_free_index`, `kept_logs`): the first index the new epoch may give
+  out, above the base, the stored floor and every reservation in the shard
+  directory and its kept directories; and for each kept directory, read
+  without opening it, its last index and the commit it can vouch for, its
+  saved commit cut to its last synced entry as an open cuts it.
 
-Not built: the re-form's pad and cap of kept directories and the RF 1
-restore (item 8 under "Every start that must rotate first"), which the
-feature waits for; the written-report rules
+Not built: the re-form command and the RF 1 restore themselves (item 8
+under "Every start that must rotate first"), and with them the offset
+floor ("Re-forming a group"). The feature waits for them, since they are
+what would call the reads above. Until then nothing starts a new epoch on
+a Raft group, so a group that lost a majority stays closed and no offset
+is given out again. Also not built: the written-report rules
 (a relaxed leader still asks every follower, which is safe and only
 redundant, #2612); the perf measurement.
 
@@ -4711,10 +4720,10 @@ redundant, #2612); the perf measurement.
 | The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | `felix-replication/src/raft/group.rs:740-775`, `group.rs:1025-1050`, `raft/engine.rs:152` | no `Request::Written` from a relaxed leader to a relaxed follower; a relaxed leader with strict followers acknowledges a `Quorum` write on their written reports, before their fsync |
 | A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (item 6 above) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
 | A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (item 8 above) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
-| A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | the re-form, not built | a kept directory whose saved commit is past its last synced entry is cut at the entry, not at the saved index |
+| A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last synced entry is cut at the entry, not at the saved index |
 | Snapshot waits for the durable bound | `felix-replication/src/raft/machine.rs:286` | a snapshot never covers an entry above `flushed` |
 | The periodic flusher's failure poisons a Raft log and rotates the copy | `felix-storage/src/disk_log/sync.rs:239` | a failed tick rotates, as a failed commit flush does |
-| The re-form reads every reservation and pads above the highest (with the re-form command) | the re-form, not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
+| The re-form reads every reservation and pads above the highest (with the re-form command) | `raft_copy/reform.rs` (`first_free_index`); the re-form command is not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
 | Docs: this page's commit, read-bound and floor claims, `docs/durable-storage.md`, the status table | `docs/` | |
 
 Cluster and simulator tests: the `power-loss` nemesis on a relaxed RF 3
