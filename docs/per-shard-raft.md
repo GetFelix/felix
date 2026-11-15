@@ -891,8 +891,8 @@ cells need it, and modelled first").
 The publish path on a Raft shard:
 
 1. The broker hands the batch to `propose`, in its commit order.
-2. The engine hands openraft one entry per record, and names the term
-   the publish was admitted at ("A batch is written only at the term it
+2. The engine hands openraft one entry per record, in one write, and
+   names the term the publish was admitted at ("A batch is written only at the term it
    was admitted at"). openraft assigns each the next index, which is the
    record's offset.
 3. openraft calls the adapter's `append`. The adapter runs `begin_append`
@@ -1136,12 +1136,13 @@ could not be delivered or acknowledged. It would still commit, and a
 publisher that retried its failed publish would write the records twice.
 
 So a batch carries its admitted term into the queue, and the task names
-that term on every record it hands over (openraft's `write` with
-`with_leader`). openraft compares the term with the one it leads inside
-its own loop, in the same step that appends the record. No election can
-fall between the check and the append. A record whose term is not the one
-led is refused before anything is appended, and its publisher is told the
-broker does not lead the term the batch was admitted at.
+that term on each call it makes (openraft's `client_write_many` with
+`WriteOption::expect_leader`). openraft compares the term with the one it
+leads inside its own loop, in the same step that appends the call's
+records. No election can fall between the check and the append. A call
+whose term is not the one led is refused before anything is appended, and
+its publishers are told the broker does not lead the term their batches
+were admitted at.
 
 ```mermaid
 sequenceDiagram
@@ -1153,34 +1154,25 @@ sequenceDiagram
     B->>B: admitted at term 4
     B->>Q: batch, term 4
     Note over R: deposed, elected again: leads term 6
-    Q->>R: write each record, only if term 4 is led
+    Q->>R: write the batch, only if term 4 is led
     R-->>Q: refused, nothing appended
     Q-->>B: leadership lost, nothing written
     B-->>P: leadership lost
 ```
 
-A term-bound record is its own message to openraft, where an unbound call
-is one message for all its records. openraft folds messages that wait
-together and name the same term back into one append, so a busy shard
-still shares appends.
+A call is one message to openraft, whether it names a term or not, and
+openraft admits or refuses it whole. The term check and the write lease
+("openraft's write lease") are checked once for the call, so a call is
+either appended in full, at consecutive indexes, or not at all. No other
+write can land between two of its records.
 
-A batch of several records can therefore be cut part way, which one
-message could not be. openraft checks each record on its own, so:
-
-- Leadership can be lost between two records (a term change). The first
-  ones are in the log at the admitted term and the rest are refused, so the
-  cut is a prefix: a term cannot come back.
-- The write lease can lapse between two records ("openraft's write
-  lease"). openraft checks the lease once per message and a batch is one
-  message per record, so a renewal between two records can append a later
-  record after an earlier one was refused. The records that were written
-  can be any subset of the batch, not a prefix (#2472; the upstream
-  request is databendlabs/openraft#2321).
-
-Neither writes a record at another term. The publisher is told only some
-of the batch was written, which is an unknown outcome like any other, and a
-retry can redeliver records out of order after a lease cut: the
-written records may commit. Only the broker core learns where the last of
+A batch can still end up written in part after it was appended. If the
+leader stops before the call commits, the next leader may hold only the
+start of it. It commits that start and discards the rest, so the cut is a
+prefix of the call. openraft answers each discarded record with
+`LogEntryDiscarded`. The publisher is told only some of the batch was
+written, which is an unknown outcome like any other: the written records
+may commit. Only the broker core learns where the last of
 them ends: `RaftEngine::publish` hands it to the broker to move the stream's
 offsets, and the publisher gets the bare error, as a `RaftEngine::propose`
 caller does. The batch is not delivered live on the leader, whose
@@ -1194,14 +1186,16 @@ whatever commits there from the log, which is the only place a follower
 delivers from. The same holds for a batch that was written whole and then
 lost its acknowledgement.
 
-A caller that names no term (`None`) gets the unbound call. The broker
-always names one.
+A caller that names no term (`None`) gets the same call with
+`WriteOption::default()`, which takes any term. The broker always names
+one.
 
 > `crates/server/felix-replication/src/raft/tests/propose.rs`,
 > `a_batch_admitted_at_an_earlier_term_is_not_written`,
 > `a_drain_takes_batches_admitted_at_one_term`,
 > `a_batch_written_in_part_is_told_so`,
-> `a_batch_cut_part_way_is_told_how_far_it_was_written` and
+> `a_batch_cut_part_way_is_told_how_far_it_was_written`,
+> `a_term_bound_drain_lands_as_one_run_beside_another_writer` and
 > `a_batch_known_written_says_where_it_ends`.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_reader_resuming_in_a_batch_written_in_part_goes_to_the_log`.
@@ -1217,7 +1211,7 @@ to answer. The batches behind
 wait in the queue, so nothing is proposed twice and nothing changes
 place. A leader that is the only voter needs no answer and is not held. If
 no majority answers, the write is sent and openraft refuses it, with
-nothing appended for the records it refuses. A refused batch is not proposed again by the task:
+nothing of the call appended. A refused batch is not proposed again by the task:
 later batches may already be on their way, and it would land behind them.
 While the task waits on the lease for the next call, it still hands on
 openraft's answers to the calls it already made, so a refused publisher
@@ -2656,16 +2650,12 @@ the answer waits for that entry's commit, so a re-send is never
 acknowledged ahead of the batch it repeats.
 
 **A batch of more than one record is refused.** An entry's index is its
-record's offset, so a batch of several records would be several entries,
-and nothing writes those all or none:
-
-- A leader can stop with only the start of the batch replicated. The
-  re-send would write the whole batch after that start, and the start's
-  records would be in the stream twice (#2516).
-- The leader can lose its majority's lease partway. openraft checks the
-  lease for each entry, so any of the batch's records could be the ones
-  written, not only its first (#2472), and the re-send could not be matched
-  to them.
+record's offset, so a batch of several records would be several entries.
+openraft appends a drain whole or not at all, so a lapsed lease cannot
+leave a hole in a batch (#2472), but nothing commits several entries all
+or none. A leader can stop with only the start of the batch replicated.
+The re-send would write the whole batch after that start, and the start's
+records would be in the stream twice (#2516).
 
 So the leader refuses a new batch of several records before it writes
 anything: `invalid_request`, not retryable, "a stream on Raft does not take
@@ -2675,8 +2665,8 @@ at the producer's turn, after the look at the log. Only the log can tell a new b
 from a re-send of one it holds whole or in part, and a re-send is still
 answered, as below.
 
-The first of the two cases is already handled underneath the refusal, so
-that lifting it later is a small step (#2524). Every record of a batch is
+That case is already handled underneath the refusal, so that lifting it
+later is a small step (#2524). Every record of a batch is
 an entry that names the batch and its own position in it
 (`docs/storage-format.md`, "Producer marks"). That is enough for each
 member to know exactly which records of a batch its log holds, even with
@@ -2748,12 +2738,12 @@ copying segments derives it from the records it was sent, since a shard
 group's snapshot carries no records and no producer state, so it does not
 know a cut batch none of whose records it was sent.
 
-What is still missing before the refusal can go is the second case: a
-write of several entries that openraft checks once, so a lapsed lease
-cannot leave a batch with a hole in it (#2472). Until then a batch with a
-hole is one of the cases above that is refused. #2524 tracks the rest, and
-it has to land before a stream that holds data can move from the hybrid to
-Raft, because the hybrid takes these batches.
+A batch with a hole is refused if one is ever found, though a drain is one
+write that openraft checks once ("A batch is written only at the term it
+was admitted at"), so a lapsed lease cannot make one. Lifting the refusal
+itself is #2524, and it has to land before a stream
+that holds data can move from the hybrid to Raft, because the hybrid takes
+these batches.
 
 The publisher id (the principal that published a record, which is not the
 producer id) is still not stored, and a batch with record headers is still
