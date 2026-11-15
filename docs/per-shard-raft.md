@@ -882,6 +882,13 @@ The base is the longest log kept that way, padded up to the floor. A
 record is lost only if every copy that holds it has it above its saved
 commit index, in a log that ends in a term other than the floor's.
 
+Cutting a copy to its saved commit index can drop an entry it fsynced and
+counted, so the cut base can end below a committed offset even on a
+broker that fsyncs on commit. That is why every copy reserves offsets in
+every fsync mode (below): the new epoch starts above the reservations it
+reads, so a committed offset the cut dropped is lost, never given out
+again.
+
 The model checks each part. With one term every copy can vouch for all it
 holds, and no record a disk holds is lost
 (`FelixRaftReformTwoRotatedOffsets.cfg` passes `LossNeedsLostDisk`).
@@ -4797,7 +4804,8 @@ built to write on without it, so the proposal keeps the hybrid's rule,
 the bound is stored before the count, and stores the bound on the copy:
 
 - **Each copy reserves offsets ahead of what it counts.** A copy keeps a
-  reservation, an index, in a synced file in its shard directory. Before
+  reservation, an index, in a synced file in its shard directory. In every
+  fsync mode, not only on a relaxed broker, before
   its flush callback fires for entries past the reservation, it raises
   the reservation well ahead (a step of about a million entries) and
   syncs it. So the leader's own count and every follower's answer are
@@ -4893,15 +4901,18 @@ not move.
 - The reservation file, carried by a rotation and holding a kept
   directory against reclaim, and loaded on every open: a copy whose
   `raft-reserved` does not decode does not open.
+- Every Raft log, in every fsync mode, raises the reservation, synced, a
+  million entries past an append it does not cover, before the write. A
+  failed raise fails the append and writes nothing, and no callback
+  fires. Raft counts every entry it finds at start as flushed, so every
+  open first raises the reservation over the entries already on disk (a
+  copy written by a build that reserved only under `periodic` or `none`
+  has none), and the open fails if that raise does. In steady state that
+  is one extra synced small-file write per million entries per shard.
 - `RaftLog::new` accepts `periodic` and `none` only on a root whose run in
   this process began relaxed (`run_state::rotates_on_crash`). Such a log
-  raises the reservation, synced, a million entries past the append when
-  it does not cover it, before the write, then fires `IOFlushed` once the
-  entries are written. A failed raise fails the append and writes nothing.
-  Raft counts every entry it finds at start as flushed, so opening such a
-  log first raises the reservation over the entries already on disk (a
-  copy written under `on_commit` has none), and the open fails if that
-  raise does. A flush or exact log mark that fails after the callback
+  fires `IOFlushed` once the entries are written and reserved, where an
+  `on_commit` log waits for the fsync. A flush or exact log mark that fails after the callback
   stops the log, except one that fails because the log was closed: a
   close syncs the log itself. A member's stop waits for its queued
   flushes before the log closes, so a clean stop never rotates. `flushed` and the exact log mark still wait for

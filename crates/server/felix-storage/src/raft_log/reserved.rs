@@ -3,9 +3,11 @@
 //!
 //! On a relaxed broker a copy can count an entry toward a commit before
 //! the entry is on disk, so a power cut can take a committed entry from
-//! every copy that held it. A re-form after that must not give the lost
-//! indexes out again, and the reservation is how it knows how far to pad:
-//! every count is at or below a reservation that was synced first. A
+//! every copy that held it. On any broker a re-form can cut a copy back to
+//! its saved commit, below an entry it fsynced and counted. A re-form must
+//! not give those indexes out again, and the reservation is how it knows
+//! how far to pad: every count, in every fsync mode, is at or below a
+//! reservation that was synced first. A
 //! rotation carries the reservation to the new copy, so it outlives the
 //! copy that took it. See `docs/storage-format.md`, "`raft-reserved`".
 //!
