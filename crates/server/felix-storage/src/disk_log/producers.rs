@@ -569,6 +569,9 @@ impl ProducerState {
         if !self.keeps_cuts {
             return;
         }
+        // The one read of `installed`. A reset refused or failed, or a purge
+        // that trims instead, leaves it set. That is harmless: it counts only
+        // for a reset to that same base, and the next install overwrites it.
         let installed = self.installed == Some(base);
         let unfinished: Vec<_> =
             self.open
@@ -597,6 +600,13 @@ impl ProducerState {
     /// The reset after [`Self::forget_before`] has dropped the records.
     pub(crate) fn reset_done(&mut self) {
         self.installed = None;
+    }
+
+    /// The base of an installed snapshot whose reset has not dropped the
+    /// records yet.
+    #[cfg(feature = "raft")]
+    pub(crate) fn installed(&self) -> Option<Offset> {
+        self.installed
     }
 
     /// The cut batches the table no longer holds, by producer.

@@ -1179,8 +1179,13 @@ Written through a temporary, an fsync, a rename and a directory sync, before
 the purge deletes any segment. The log's first index is one past `index`,
 or the oldest segment's base when that is higher. Records at or below
 `index` that remain in a segment are not entries. When `index` is at or
-past the log's last record the log is empty, and the next append restarts
-the segments at `index + 1`.
+past the log's last record the log is empty, and the purge resets the
+segments to start at `index + 1`. After a snapshot install, the records it
+drops may be ones the leader never had. A crash between writing the file and
+that reset leaves them, so the next open finishes the reset before the log
+serves when an install at `index + 1` is still pending in
+`producers.forgotten` and the log ends at or below it. A snapshot then never
+reads those records as the log's own.
 
 Nothing can rebuild this file, so one that is present and does not decode
 fails the open of the Raft log. Absent means nothing was purged.

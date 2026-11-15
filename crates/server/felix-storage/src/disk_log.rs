@@ -739,45 +739,7 @@ impl DiskLog {
         let operation = Arc::clone(&inner);
         felix_common::blocking::spawn(move || {
             let _fence = fence;
-            let mut manifest = operation.manifest.lock();
-            let _appends = operation.append_lock.lock();
-            let mut segments = operation.segments.write();
-            let commit = operation.commit_offset.load(Ordering::Acquire);
-            let discarded_from = segments.base_offset().max(base_offset);
-            if discarded_from < commit.min(segments.tail_offset()) {
-                return Err(StorageError::BelowCommit {
-                    offset: discarded_from,
-                    commit,
-                });
-            }
-            segments.check_open()?;
-            operation.forget_all_offloaded(&mut manifest)?;
-            let rewound = (|| {
-                // Saved before the records go. A batch the log held part of
-                // below the new base stays refused.
-                {
-                    let mut producers = operation.producers.lock();
-                    producers.forget_before(base_offset);
-                    operation.store_forgotten(&producers)?;
-                }
-                crash_point::reached(&operation.dir).map_err(StorageError::Io)?;
-                segments.reset_to(base_offset)?;
-                segments.active_mut().sync()?;
-                // Only now: until the records are gone, a reset redone after
-                // a crash has to know it follows an install.
-                {
-                    let mut producers = operation.producers.lock();
-                    producers.reset_done();
-                    operation.store_forgotten(&producers)?;
-                }
-                operation.note_rewound(&segments)?;
-                operation.durability.reset_after_truncate(base_offset);
-                let mut epochs = operation.epochs.lock();
-                *epochs = epochs::EpochMap::default();
-                epochs::store(&operation.dir, &epochs)?;
-                operation.reset_producers(&segments)
-            })();
-            operation.poison_after_rewind(rewound)
+            operation.reset_holding(base_offset)
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
@@ -1472,6 +1434,36 @@ impl DiskLog {
                 }
             })?;
             *inner.syncer.lock() = Some(syncer);
+        }
+
+        // An install's purge past the tail stores the purged id and then
+        // resets. After a crash in between, the records below the id stay,
+        // and nothing later is sure to redo it: an append at the id's next
+        // index skips the reset. They may be ones the leader never had, and
+        // a snapshot would read them as this log's own, so the reset is
+        // finished here, before anything can read the log. Records below a
+        // purged id with no install pending are committed, and a switched
+        // log keeps them on purpose.
+        #[cfg(feature = "raft")]
+        if config.raft_log
+            && let Some(first) =
+                crate::raft_log::first_after_purged(&inner.dir).map_err(StorageError::Io)?
+        {
+            let (base, tail) = {
+                let segments = inner.segments.read();
+                (segments.base_offset(), segments.tail_offset())
+            };
+            let installed = inner.producers.lock().installed();
+            if installed == Some(first) && base < first && tail <= first {
+                tracing::warn!(
+                    shard = %inner.label,
+                    base,
+                    tail,
+                    first,
+                    "finishing the reset after a snapshot install that a crash interrupted"
+                );
+                inner.reset_holding(first)?;
+            }
         }
 
         // The floor applies at once to what recovery kept, below the bound.
@@ -2467,6 +2459,50 @@ impl LogInner {
 }
 
 impl LogInner {
+    /// [`DiskLog::reset_to`] once no roll or flush can run: taken under its
+    /// fence and flush lock, or at open before anything else has the log.
+    fn reset_holding(&self, base_offset: Offset) -> Result<()> {
+        let mut manifest = self.manifest.lock();
+        let _appends = self.append_lock.lock();
+        let mut segments = self.segments.write();
+        let commit = self.commit_offset.load(Ordering::Acquire);
+        let discarded_from = segments.base_offset().max(base_offset);
+        if discarded_from < commit.min(segments.tail_offset()) {
+            return Err(StorageError::BelowCommit {
+                offset: discarded_from,
+                commit,
+            });
+        }
+        segments.check_open()?;
+        self.forget_all_offloaded(&mut manifest)?;
+        let rewound = (|| {
+            // Saved before the records go. A batch the log held part of
+            // below the new base stays refused.
+            {
+                let mut producers = self.producers.lock();
+                producers.forget_before(base_offset);
+                self.store_forgotten(&producers)?;
+            }
+            crash_point::reached(&self.dir).map_err(StorageError::Io)?;
+            segments.reset_to(base_offset)?;
+            segments.active_mut().sync()?;
+            // Only now: until the records are gone, a reset redone after
+            // a crash has to know it follows an install.
+            {
+                let mut producers = self.producers.lock();
+                producers.reset_done();
+                self.store_forgotten(&producers)?;
+            }
+            self.note_rewound(&segments)?;
+            self.durability.reset_after_truncate(base_offset);
+            let mut epochs = self.epochs.lock();
+            *epochs = epochs::EpochMap::default();
+            epochs::store(&self.dir, &epochs)?;
+            self.reset_producers(&segments)
+        })();
+        self.poison_after_rewind(rewound)
+    }
+
     #[cfg(test)]
     fn hold_between_locks(&self) {
         self.hold_between_locks_entries
