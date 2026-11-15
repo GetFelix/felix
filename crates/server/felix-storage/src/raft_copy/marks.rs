@@ -289,8 +289,8 @@ impl MarkLog {
     }
 
     /// Wait while the batched log marks are [`STALL_INTERVALS`] intervals
-    /// behind, so a batched log never runs further ahead of its mark than
-    /// that. Fails once the log stopped.
+    /// behind, so a batched log runs at most about `STALL_INTERVALS + 1`
+    /// intervals ahead of its mark. Fails once the log stopped.
     pub(crate) async fn caught_up(&self) -> io::Result<()> {
         let mut held = self.inner.held.subscribe();
         loop {
