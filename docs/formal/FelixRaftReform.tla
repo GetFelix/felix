@@ -79,6 +79,11 @@
 (*                         held the floor's entry and no disk that held    *)
 (*                         the record could vouch for it. Lost disks and   *)
 (*                         dead brokers are the two ways to get there.     *)
+(*                         With Kept a loss is any record no copy read     *)
+(*                         vouched for; KeptLossBound bounds that.         *)
+(*   KeptLossBound      -- with Kept, in an unmarked group where no vote   *)
+(*                         read is above every entry read, no record a     *)
+(*                         read copy holds below its epoch's cap is lost.  *)
 (*   StateMachineSafety -- no index is committed with two different        *)
 (*                         entries, in one epoch or across epochs, except  *)
 (*                         over a documented loss.                         *)
@@ -742,9 +747,11 @@ PadTo(base, n, e) ==
 \* Offsets up to the floor are not given out again.
 Pad(base, e) == IF Floor = "none" THEN base ELSE PadTo(base, cpFloor.i, e)
 
-WriteForm(e, base, padded, voters, cut, marked) ==
+\* why and held are for the checks only: which rules of the vouch decided
+\* something, and the acknowledged records KeptLossBound says must survive.
+WriteForm(e, base, padded, voters, cut, marked, why, held) ==
     LET f == [e |-> e + 1, base |-> padded, end |-> Len(base), voters |-> voters,
-              cut |-> cut, marked |-> marked]
+              cut |-> cut, marked |-> marked, why |-> why, held |-> held]
     IN /\ f \notin forms
        /\ forms' = forms \cup {f}
        /\ cpEpoch' = e + 1
@@ -757,7 +764,7 @@ WriteForm(e, base, padded, voters, cut, marked) ==
 \* loss if no disk holds it, or the base was cut and no disk that holds it
 \* can vouch for it.
 WriteEpoch(e, base, voters, cut) ==
-    /\ WriteForm(e, base, Pad(base, e + 1), voters, cut, FALSE)
+    /\ WriteForm(e, base, Pad(base, e + 1), voters, cut, FALSE, {}, {})
     /\ lost' = lost \cup
             {x \in acked : /\ x.e <= e
                            /\ \A b \in Brokers \ dead :
@@ -834,10 +841,19 @@ Marked(E) ==
 \* A copy vouches for its saved commit, for the floor's index if it holds the
 \* floor's entry, and for its whole log if the group is unmarked and its last
 \* entry has key T; never past its epoch's cap.
-VouchK(c, E, T, mk) ==
-    Min(Cap(c.e, E),
-        Max(c.commit, Max(IF cpFloor.i > 0 /\ HoldsFloor(c.log) THEN cpFloor.i ELSE 0,
-                          IF ~mk /\ LastKey(c.log) = T THEN Len(c.log) ELSE 0)))
+VouchSafe(c) == Max(c.commit, IF cpFloor.i > 0 /\ HoldsFloor(c.log) THEN cpFloor.i ELSE 0)
+VouchUncapped(c, T, mk) == Max(VouchSafe(c), IF ~mk /\ LastKey(c.log) = T THEN Len(c.log) ELSE 0)
+VouchK(c, E, T, mk) == Min(Cap(c.e, E), VouchUncapped(c, T, mk))
+
+\* What the vouch rule decided at a re-form: "cap" when an epoch's cap
+\* lowered a copy, "T" when T kept one copy whole and left another, longer
+\* than its safe part, cut to it.
+Decided(R, E, T, mk) ==
+    {w \in {"cap", "T"} :
+        IF w = "cap" THEN \E c \in R : VouchUncapped(c, T, mk) > Cap(c.e, E)
+        ELSE /\ ~mk
+             /\ \E c \in R : LastKey(c.log) = T /\ Len(c.log) > VouchSafe(c)
+             /\ \E c \in R : LastKey(c.log) # T /\ Len(c.log) > VouchSafe(c)}
 
 ReformKept(p, src) ==
     LET e == p.e
@@ -850,6 +866,11 @@ ReformKept(p, src) ==
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
         top == Max(Len(base), Max(IF Floor = "none" THEN 0 ELSE cpFloor.i,
                                    MaxOf({c.res : c \in R})))
+        \* Unmarked, and no vote read is above every entry read.
+        tEntry == ~mk /\ T = MaxKey({LastKey(c.log) : c \in R})
+        held == IF tEntry
+                THEN {x \in acked \ lost : x.e <= e /\ \E c \in R : Has(c.log, x) /\ x.i <= Cap(c.e, e)}
+                ELSE {}
     IN /\ Kept
        /\ e < MaxEpoch
        /\ IF NoCas THEN e <= cpEpoch ELSE e = cpEpoch
@@ -859,7 +880,7 @@ ReformKept(p, src) ==
        /\ ReportNotPromise \/ \A b \in S : ep[b] = e => retired[b]
        /\ \A c \in R : V(c) <= V(src)
        /\ voters # {}
-       /\ WriteForm(e, base, PadTo(base, top, e + 1), voters, TRUE, mk)
+       /\ WriteForm(e, base, PadTo(base, top, e + 1), voters, TRUE, mk, Decided(R, e, T, mk), held)
        /\ lost' = lost \cup
             {x \in acked : x.e <= e /\ \A c \in R : ~Has(c.log, x) \/ x.i > V(c)}
        \* The next epoch's record leaves out the dead.
@@ -976,6 +997,13 @@ ElectedGroupLeftAlone ==
     [][\A b \in Brokers : (~retired[b] /\ retired'[b]) =>
             \A l \in Brokers : ~(Leads(l) /\ ep[l] = ep[b])]_vars
 
+\* With Kept, AckedSurvive allows any record the vouch rule left out. This
+\* bounds it: in an unmarked group where no vote read is above every entry
+\* read, no acknowledged record a read copy holds below its epoch's cap is
+\* lost.
+KeptLossBound ==
+    [][\A f \in forms' \ forms : f.held \cap lost' = {}]_vars
+
 \* No record is lost while a disk that is not declared dead holds it.
 LossNeedsLostDisk ==
     [][\A x \in lost' \ lost : \A b \in Brokers \ dead : ~Has(log[b], x)]_vars
@@ -1031,7 +1059,17 @@ NeverPads == \A f \in forms : \A j \in 1..Len(f.base) : f.base[j].k # "gap"
 \* alone: a copy that counted a record and lost it to a power cut still
 \* keeps its offset from being given out again.
 NeverPadsByReserve ==
-    \A f \in forms : f.e < 2 \/ Len(f.base) <= Max(f.end, cpFloor.i)
+    ~/\ cuts = 2
+     /\ \E f \in forms : f.e = 2 /\ Len(f.base) > Max(f.end, cpFloor.i)
+     /\ \E b \in Brokers : \E k \in keptLogs[b] :
+            /\ k.by = "power-cut" /\ k.res > Len(k.log)
+            /\ \E x \in acked : x.e = k.e /\ x.t > 0 /\ x.i = k.res
+
+\* The cap of an epoch lowers what a copy of it vouches for.
+NeverCaps == \A f \in forms : "cap" \notin f.why
+
+\* T keeps one copy whole and cuts another.
+NeverVouchesByT == \A f \in forms : "T" \notin f.why
 
 \* At the second re-form a restored epoch-0 copy and an epoch-0 voter
 \* declared dead leave the group unmarked, and an epoch-1 record is in the
@@ -1060,4 +1098,13 @@ TwoReformsShape ==
     /\ cpEpoch = 0 => UNCHANGED <<term, log, commit, msgs, cuts>>
     /\ writes' # writes => writes < cpEpoch
     /\ (cpEpoch = 1 /\ plans' # plans) => EpochOneCommitted
+
+\* The shape of the OldKept configs: epoch 0 writes and a broker is declared
+\* dead in it; epoch 1 elects nobody, and the dead broker returns in it with
+\* its epoch-0 copy, which the second re-form reads.
+OldKeptShape ==
+    /\ writes' # writes => cpEpoch = 0
+    /\ dead' \ dead # {} => cpEpoch = 0
+    /\ returns' # returns => cpEpoch = 1
+    /\ elected' # elected => cpEpoch = 0
 ================================================================================
