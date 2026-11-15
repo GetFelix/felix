@@ -244,6 +244,9 @@ impl CopyRoot {
             crate::io::sync_dir(&parent)?;
             // After the rename, so a crash leaves a kept copy without it,
             // which reads as a restore, never a live directory with one.
+            // A crash before copy_file::store below leaves this naming a copy id
+            // that was never written. The retry mints a new id, so a real power cut
+            // reads as a restore and only asks for --accept-loss.
             rotated_by::store(&kept, RotatedBy::of(reason, copy))?;
             step()?;
             crate::incarnation::kept_gauges::refresh(&parent);

@@ -4928,7 +4928,8 @@ not move.
   `read_copies` for the survey and `probes` for the indexes it needs): per
   copy, current and kept, it reads the epoch (`raft-epoch`), last log id,
   vote, saved commit, reservation and `rotated-by`, which every rotation
-  now writes. It keys log ids by (epoch, term), takes T as the highest key
+  now writes. A crash in the middle of a rotation can turn a power cut into
+  a restore, which only asks for `--accept-loss`. It keys log ids by (epoch, term), takes T as the highest key
   of any vote or entry read and of the floor, and vouches each copy for
   its saved commit, the floor's index if it holds the floor's entry, and
   its whole log if its last key is T and the group is unmarked, capped at
