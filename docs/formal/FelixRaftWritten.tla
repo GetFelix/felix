@@ -159,7 +159,7 @@ Blank(t) == [term |-> t, kind |-> "blank", val |-> 0, cfg |-> NoCfg]
 Record(t, v) == [term |-> t, kind |-> "record", val |-> v, cfg |-> NoCfg]
 Member(t, c) == [term |-> t, kind |-> "member", val |-> 0, cfg |-> c]
 NoId == [term |-> 0, idx |-> 0]
-NoReform == [base |-> <<>>, start |-> -1]
+NoReform == [on |-> FALSE, base |-> <<>>, start |-> 0]
 
 LastIdx(s) == Len(log[s])
 LastTerm(s) == IF log[s] = <<>> THEN 0 ELSE log[s][Len(log[s])].term
@@ -455,14 +455,14 @@ Reform ==
     /\ used.reforms < MaxReforms
     /\ \A s \in Servers : role[s] # "leader" /\ ~Electable(s)
     /\ LET base == CHOOSE l \in Copies : \A m \in Copies : Len(m) <= Len(l)
-       IN reform' = [base |-> base, start |-> Max(Len(base), ReformFloor)]
+       IN reform' = [on |-> TRUE, base |-> base, start |-> Max(Len(base), ReformFloor)]
     /\ used' = [used EXCEPT !.reforms = @ + 1]
     /\ UNCHANGED <<election, raft, wrote, acked, lost, gone, kept, reserve, cpFloor>>
 
 \* After the re-form the old epoch is over, and the model stops there.
 Next ==
     \/ Reform
-    \/ /\ reform = NoReform
+    \/ /\ ~reform.on
        /\ \/ \E s \in Servers :
                 \/ Campaign(s) \/ BecomeLeader(s)
                 \/ AppendRecord(s) \/ EnterJoint(s) \/ LeaveJoint(s)
@@ -523,7 +523,7 @@ AckedNeverLost ==
 \* A committed offset after a re-form is the same record in the base, or a
 \* gap below where the new epoch starts. Never another record.
 OffsetNeverReused ==
-    reform # NoReform =>
+    reform.on =>
         \A k \in 1..Len(committed) :
             IF k <= Len(reform.base) THEN reform.base[k] = committed[k].e
             ELSE k <= reform.start
@@ -550,6 +550,6 @@ NeverCommitsAfterFailover ==
 \* fsynced copies. With WrittenCommits a power cut of a majority loses a
 \* committed, delivered record, and TLC must find it.
 NeverLosesCommitted ==
-    reform # NoReform => Len(committed) <= Len(reform.base)
+    reform.on => Len(committed) <= Len(reform.base)
 
 =============================================================================
