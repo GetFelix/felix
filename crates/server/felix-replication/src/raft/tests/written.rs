@@ -198,6 +198,7 @@ async fn no_report_is_lost_between_a_look_and_a_sleep() {
     for _ in 0..20 {
         let reports = Arc::new(Reports::new());
         let deposed = Arc::new(AtomicBool::new(false));
+        let (waits, _) = waiting(&reports, &voters, WRITES, &deposed);
         let reporter = {
             let reports = Arc::clone(&reports);
             tokio::spawn(async move {
@@ -207,7 +208,6 @@ async fn no_report_is_lost_between_a_look_and_a_sleep() {
                 }
             })
         };
-        let (waits, _) = waiting(&reports, &voters, WRITES, &deposed);
         reporter.await.expect("the reporter ran");
         for wait in waits {
             let wrote = tokio::time::timeout(PATIENCE, wait).await;

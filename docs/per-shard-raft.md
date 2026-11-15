@@ -1015,9 +1015,11 @@ a candidate whose log is behind its own, unsynced entries included.
 
 A report does not wake every write waiting on the count. A write that needs
 two followers cannot have its majority before two senders have reported
-positions at or past it, so it sleeps in a queue (`felix_storage::waiters`)
-keyed by the second furthest position heard, and a report wakes only the
-writes that position now reaches. Each wake still reads the reports and the
+positions at or past it. It sleeps in a queue (`felix_storage::waiters`)
+under its own entry and wakes when the second furthest position heard
+reaches it. A write that position has passed without a majority, because
+a learner or another term's report is ahead, wakes on every report as
+before. Each wake still reads the reports and the
 voters again and applies the rules above, so the queue changes when a write
 looks, never what it counts. A change of voters is seen at the write's next
 look; until then the commit answers it as before.

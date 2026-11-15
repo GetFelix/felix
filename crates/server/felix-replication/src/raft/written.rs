@@ -220,6 +220,24 @@ impl Reports {
 /// A log id of another term says nothing about what sits below it. Only
 /// voters count, the leader included, and a joint membership needs both
 /// sets. A member that has said nothing has written nothing.
+pub(crate) fn majority_wrote(
+    voters: &[BTreeSet<MemberId>],
+    me: &MemberId,
+    heard: &[(MemberId, LogPoint)],
+    at: LogPoint,
+) -> bool {
+    let wrote = |member: &MemberId| {
+        member == me
+            || heard.iter().any(|(from, point)| {
+                from == member && point.term == at.term && point.index >= at.index
+            })
+    };
+    !voters.is_empty()
+        && voters
+            .iter()
+            .all(|set| 2 * set.iter().filter(|member| wrote(member)).count() > set.len())
+}
+
 /// One look at `heard` for the entry at `at` under `voters`.
 pub(crate) fn look(
     voters: &[BTreeSet<MemberId>],
@@ -238,22 +256,4 @@ pub(crate) fn look(
         majority.saturating_sub(usize::from(set.contains(me)))
     });
     Look::Short(needed.max().unwrap_or(1))
-}
-
-pub(crate) fn majority_wrote(
-    voters: &[BTreeSet<MemberId>],
-    me: &MemberId,
-    heard: &[(MemberId, LogPoint)],
-    at: LogPoint,
-) -> bool {
-    let wrote = |member: &MemberId| {
-        member == me
-            || heard.iter().any(|(from, point)| {
-                from == member && point.term == at.term && point.index >= at.index
-            })
-    };
-    !voters.is_empty()
-        && voters
-            .iter()
-            .all(|set| 2 * set.iter().filter(|member| wrote(member)).count() > set.len())
 }
