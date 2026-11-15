@@ -756,4 +756,22 @@ impl felix_broker::ReadBounds for RaftReads {
             Err(_) => ReadBound::Refused,
         }
     }
+
+    fn records_end(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        end: u64,
+    ) -> u64 {
+        let key = ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            kind: ShardKind::Stream,
+        };
+        self.engine.records_end(&key, end)
+    }
 }

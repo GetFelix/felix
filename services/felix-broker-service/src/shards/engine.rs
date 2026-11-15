@@ -574,6 +574,14 @@ impl Engine for StreamEngine {
         self.hybrid.committed_bound(shard)
     }
 
+    fn records_end(&self, shard: &ShardKey, end: u64) -> u64 {
+        #[cfg(feature = "raft")]
+        if let Some(raft) = self.raft(shard) {
+            return raft.records_end(shard, end);
+        }
+        self.hybrid.records_end(shard, end)
+    }
+
     async fn confirm_read(&self, shard: &ShardKey) -> anyhow::Result<()> {
         self.hybrid.confirm_read(shard).await
     }

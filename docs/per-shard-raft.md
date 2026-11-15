@@ -3211,9 +3211,12 @@ before it takes its value, instead of the hybrid's lease. It then waits
 until the view holds everything committed at that point, so it never misses
 a commit whose event a history read already returns: history reads stop at
 the commit, but the view moves only when the leader releases the commit
-from the hold, and a full `Block` subscriber can hold that release up. A
-read that waits past the request's quorum timeout is answered
-`shard_unavailable` with reason `not_ready`.
+from the hold, and a full `Block` subscriber can hold that release up.
+"Everything committed" means every record: a leader's blank entry or a
+membership change after the last record moves the commit but holds no
+record, and the view does not wait for it. A read that waits past the
+request's quorum timeout is answered `shard_unavailable` with reason
+`not_ready`.
 
 A commit entry has its own tag, 8, in the Raft wire's entry payloads. A
 member built before it refuses the whole append by that tag, so a commit

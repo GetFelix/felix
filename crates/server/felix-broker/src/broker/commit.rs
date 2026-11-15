@@ -26,8 +26,9 @@ const REBUILD_PAGE_BYTES: usize = 1 << 20;
 /// reached under a steady stream of commits.
 const MAX_REBUILDS: usize = 8;
 
-/// How often [`Broker::await_state_view`] looks at the ring again.
-const VIEW_RECHECK: Duration = Duration::from_millis(2);
+/// How often [`Broker::await_state_view`] looks at the ring again when
+/// nothing wakes it.
+const VIEW_RECHECK: Duration = Duration::from_millis(50);
 
 /// A state read: a key's value and the commit that wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,15 +173,25 @@ impl Broker {
                 return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling));
             }
         };
+        // Entries at the bound's tail that hold no record leave the ring
+        // below it until the next publish; on an idle shard that is forever.
+        let end = state.records_end(end);
         let deadline = tokio::time::Instant::now() + wait;
-        // A release appends to the ring without a wake, so this rechecks.
-        while state.tail_seq() < end {
-            if tokio::time::Instant::now() >= deadline {
+        loop {
+            let moved = state.ring_moved.notified();
+            tokio::pin!(moved);
+            moved.as_mut().enable();
+            if state.tail_seq() >= end {
+                return Ok(());
+            }
+            // The recheck covers the few moves of the ring that do not wake.
+            let recheck = deadline.min(tokio::time::Instant::now() + VIEW_RECHECK);
+            if tokio::time::timeout_at(recheck, moved).await.is_err()
+                && tokio::time::Instant::now() >= deadline
+            {
                 return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling));
             }
-            tokio::time::sleep(VIEW_RECHECK).await;
         }
-        Ok(())
     }
 
     /// `key` in the shard's state, as of the last commit readers can see.

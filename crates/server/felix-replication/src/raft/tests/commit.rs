@@ -417,6 +417,62 @@ async fn a_write_whose_index_commits_under_another_term_is_refused() {
     led.cluster.stop().await;
 }
 
+/// **A bound past entries that hold no record ends, for the ring, at the
+/// last record.** A membership change after the last record, then a new
+/// term's blank: the ring stays at the record until the next publish, so a
+/// state read waits only for that.
+#[test]
+fn records_end_below_a_trailing_membership_change_and_term_blank() {
+    let mut commits = Commits::default();
+    commits.advance(at(1, 0));
+    commits.holds_no_record(0);
+    commits.advance(at(1, 1));
+    assert_eq!(commits.records_end(commits.read_bound()), 2);
+
+    // A membership change in the same term.
+    commits.advance(at(1, 2));
+    commits.holds_no_record(2);
+    assert_eq!(commits.records_end(commits.read_bound()), 2);
+    // The next term's blank joins the run, and the older bound is still known.
+    commits.advance(at(2, 3));
+    commits.holds_no_record(3);
+    assert_eq!(commits.records_end(4), 2);
+    assert_eq!(commits.records_end(3), 2);
+
+    // A record after the run: the bound is the record's.
+    commits.advance(at(2, 4));
+    assert_eq!(commits.records_end(5), 5);
+    assert_eq!(commits.records_end(4), 2);
+}
+
+/// **An idle shard's term blank leaves the records where they were.** A
+/// new leader's blank entry moves the read bound, and nothing else follows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_blank_on_an_idle_shard_ends_no_records() {
+    let mut led = led().await;
+    let records = led.committed + 1;
+    assert_eq!(led.engine.records_end(&shard(0), records), records);
+
+    let follower = led.followers().next().expect("a follower");
+    let member = led
+        .cluster
+        .runtime(&follower)
+        .group(&shard(0))
+        .expect("group");
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    let bound = loop {
+        let bound = led.engine.read_bound(&shard(0)).expect("bound");
+        if bound > records {
+            break bound;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no new term");
+        member.raft().trigger().elect(false).await.expect("elect");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    };
+    assert_eq!(led.engine.records_end(&shard(0), bound), records);
+    led.cluster.stop().await;
+}
+
 /// Whatever the leader has written and fsynced, a reader is shown nothing
 /// past what a majority holds, on the leader or on a follower.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
