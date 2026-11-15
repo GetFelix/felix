@@ -12,7 +12,7 @@ use std::path::Path;
 use felix_storage::DiskLog;
 use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
-    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, reclaim_kept,
+    CopyMarks, CopyRoot, KeptReport, LogMarkMode, MarkLog, Rotation, reached_before, reclaim_kept,
 };
 use felix_storage::raft_log::{LogPoint, LogPositions, TailBudget};
 use openraft::impls::leader_id_std::LeaderId;
@@ -252,6 +252,8 @@ pub enum NotBlank {
     Unanswered(MemberId, String),
     #[error("{0} already holds a vote or an entry of a group")]
     Formed(MemberId),
+    #[error("{0}: {reason}", reason = group::REACHED_BEFORE)]
+    ReachedBefore(MemberId),
 }
 
 /// A member [`GroupRuntime::open_copy`] started.
@@ -543,7 +545,8 @@ impl GroupRuntime {
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
         let reserved = self.reserve(&group)?;
         let member = MemberId::new(self.inner.broker.clone(), copy);
-        self.start_member(reserved, group, member, log, None).await
+        self.start_member(reserved, group, member, log, None, false)
+            .await
     }
 
     /// Start this broker's member of `group` on the shard directory `dir`,
@@ -573,6 +576,18 @@ impl GroupRuntime {
             .await?;
         let member = MemberId::new(self.inner.broker.clone(), opened.copy);
         let log = opened.log;
+        let earlier = {
+            let (dir, spacing) = (dir.to_path_buf(), kept_config.index_spacing_bytes);
+            tokio::task::spawn_blocking(move || reached_before(&dir, spacing))
+                .await
+                .map_err(std::io::Error::other)
+                .flatten()
+        };
+        // A kept copy that cannot be read may hold the group's records.
+        let earlier = earlier.unwrap_or_else(|err| {
+            tracing::warn!(dir = %dir.display(), error = %err, "kept shard copies cannot be read, so no group forms on this one");
+            true
+        });
         let started = self
             .start_member(
                 reserved,
@@ -580,6 +595,7 @@ impl GroupRuntime {
                 member.clone(),
                 log.clone(),
                 Some(opened.marks),
+                earlier,
             )
             .await;
         if let Err(err) = started {
@@ -703,6 +719,7 @@ impl GroupRuntime {
         member: MemberId,
         log: DiskLog,
         marks: Option<CopyMarks>,
+        reached_before: bool,
     ) -> Result<(), OpenError> {
         let inner = &self.inner;
         let registry = &inner.registry;
@@ -727,6 +744,9 @@ impl GroupRuntime {
             Arc::clone(&registry.reach),
         )
         .await?;
+        if reached_before {
+            group.set_reached_before();
+        }
         let group = Arc::new(group);
         group.start_expiry();
         group.drive();
@@ -795,6 +815,9 @@ impl GroupRuntime {
             .registry
             .get(shard)
             .ok_or(NotBlank::NoSuchGroup)?;
+        if group.reached_before() {
+            return Err(NotBlank::ReachedBefore(group.member.clone()));
+        }
         let asks = members
             .iter()
             .filter(|member| **member != group.member)
@@ -825,6 +848,9 @@ impl GroupRuntime {
             .registry
             .get(shard)
             .ok_or(NotBlank::NoSuchGroup)?;
+        if group.reached_before() {
+            return Err(NotBlank::ReachedBefore(group.member.clone()));
+        }
         let asks = brokers
             .into_iter()
             .filter(|broker| **broker != *group.member.broker)

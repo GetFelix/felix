@@ -49,6 +49,11 @@ pub(crate) mod membership;
 
 use driver::MembershipProgress;
 
+/// Why a member a group reached before its rotation does not answer that
+/// it is blank. Re-forming the group is an operator command.
+pub(super) const REACHED_BEFORE: &str =
+    "an earlier copy of this shard held records, so no group forms on it until it is re-formed";
+
 pub(crate) struct Group {
     pub(crate) id: GroupId,
     pub(crate) member: MemberId,
@@ -85,6 +90,9 @@ pub(crate) struct Group {
     copy: felix_storage::raft_copy::CurrentCopy,
     /// Whether this member leads and the shard is open.
     leadership: Arc<Leadership>,
+    /// Set when a group reached an earlier copy of this directory. The
+    /// member then never answers that it is blank, so no group forms on it.
+    reached_before: AtomicBool,
     /// A cache shard's projection, as this member has applied it.
     cache: Option<Cache>,
     /// The snapshot a cache shard's member is being sent.
@@ -632,6 +640,7 @@ impl Group {
             applied,
             copy,
             leadership,
+            reached_before: AtomicBool::new(false),
             cache,
             incoming: Arc::default(),
             clock,
@@ -738,6 +747,16 @@ impl Group {
     /// grants no vote at first".
     pub(super) fn holds_votes(&self) -> bool {
         self.pace.timers.now() < self.hold.until
+    }
+
+    /// Mark this member as one a group reached an earlier copy of. Called
+    /// before the member takes messages.
+    pub(super) fn set_reached_before(&self) {
+        self.reached_before.store(true, Ordering::Release);
+    }
+
+    pub(super) fn reached_before(&self) -> bool {
+        self.reached_before.load(Ordering::Acquire)
     }
 
     /// Whether this group's member on `broker` refused the last call to it.
@@ -940,6 +959,13 @@ impl Group {
             };
             Refused::Stopped(Box::new(member), reason)
         };
+        // A term-0 pre-vote is the question a group is formed on.
+        if let Request::PreVote(rpc) = &body
+            && rpc.vote.leader_id.term == 0
+            && self.reached_before()
+        {
+            return Err(stopped(REACHED_BEFORE.to_string()));
+        }
         let held = self.holds_votes();
         let asks = match &body {
             Request::Vote(rpc) => !(held && self.hold.lets_through(&rpc.vote)),
