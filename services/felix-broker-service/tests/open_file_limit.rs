@@ -122,10 +122,9 @@ async fn a_shard_that_runs_out_of_descriptors_opens_once_they_free_up() {
 
     // The open fails with an error that names the limit, and nothing it
     // opened on the way stays open.
-    let refused = storage
-        .open_stream("t1", "ns", "orders", 2)
-        .err()
-        .expect("an open with no descriptors left");
+    let Err(refused) = storage.open_stream("t1", "ns", "orders", 2) else {
+        panic!("an open with no descriptors left succeeded");
+    };
     assert!(
         matches!(refused, BrokerError::OpenFileLimit(_)),
         "{refused}"
@@ -147,7 +146,7 @@ async fn a_shard_that_runs_out_of_descriptors_opens_once_they_free_up() {
         before,
         "the failed opens left descriptors open"
     );
-    set_soft_limit(&original, original.rlim_cur as u64);
+    set_soft_limit(&original, original.rlim_cur);
 
     reconcile(&lifecycle, &store, &assignments(&[0, 1])).await;
     assert_eq!(lifecycle.lock().await.phase(&key(1)), Phase::Active);
