@@ -675,11 +675,12 @@ copy whose directory has a kept copy in `.kept/` holding a log entry, or a
 reservation (`raft-reserved`), never says it is blank: it refuses the
 question the forming broker asks, and a broker whose own copy is like that
 does not form the group. A kept copy that cannot be read counts as one
-that holds entries. The shard answers "not ready" until it is re-formed.
-Until the re-form command below is built, the only ways to open it are to
-bring back a copy that kept its id, or to give up its records: delete the
-stream and create it again, or stop every broker that holds the shard and
-remove the shard's directory and its kept copies on each. A shard whose
+that holds entries, and so does a group that never acknowledged a record
+but wrote its first entry. The shard answers "not ready" until it is
+re-formed. Until the re-form command below is built, opening it means
+giving up its records: delete the stream and create it again, or stop
+every broker that holds the shard and remove the shard's directory and its
+kept copies on each. A shard whose
 every broker lost its whole data root leaves no kept copy, so nothing
 holds it; only the offset floor below covers that case.
 
