@@ -346,6 +346,9 @@ async fn a_batch_with_blocks_is_refused_when_headers_are_not_accepted() {
         .publish_records_idempotent(&handle, 7, 0, &bytes(&["a"]), Some(&blocks))
         .await
         .expect_err("refused");
-    assert!(matches!(err, BrokerError::RecordHeadersNotEnabled), "{err}");
+    assert!(
+        matches!(err, BrokerError::RecordHeadersNotEnabled { .. }),
+        "{err}"
+    );
     assert!(stored(&handle).await.is_empty());
 }

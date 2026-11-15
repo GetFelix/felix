@@ -742,6 +742,9 @@ async fn a_transfer_for_a_term_not_led_is_not_asked() {
         written: None,
         producer: None,
         expected: None,
+        headers: None,
+        publisher: None,
+        trim: None,
     };
     leader.raft().client_write(record).await.expect("write");
     drop(leader);
@@ -760,6 +763,9 @@ async fn a_move_off_the_leader_grows_transfers_and_shrinks() {
         written: None,
         producer: None,
         expected: None,
+        headers: None,
+        publisher: None,
+        trim: None,
     };
     let written = leader.raft().client_write(record).await.expect("write");
     let before = written.log_id.index;

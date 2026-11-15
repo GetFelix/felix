@@ -511,6 +511,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
         let record = Record {
             timestamp_micros: at,
             payload,
+            headers: None,
         };
         let batch = Batch {
             expected: None,
@@ -519,6 +520,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             ack: AckAt::Flushed,
             term,
             producer: None,
+            publisher: None,
         };
         let written = engine.propose_reaching(&shard(0), batch);
         let written = async move {
@@ -1028,6 +1030,7 @@ async fn a_conditional_publish_off_its_offset_is_a_blank_on_every_member() {
             &shard(0),
             None,
             vec![Bytes::from_static(payload)],
+            Default::default(),
             at,
             AckAt::Flushed,
             PATIENCE,
@@ -1201,6 +1204,7 @@ async fn a_conditional_publish_of_other_than_one_record_is_refused() {
             &shard(0),
             None,
             payloads,
+            Default::default(),
             led.committed + 1,
             AckAt::Flushed,
             PATIENCE,

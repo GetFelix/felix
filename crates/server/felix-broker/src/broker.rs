@@ -30,9 +30,9 @@ pub use inspect::SubscriptionPage;
 pub use metadata::{CacheMetadata, ConsistencyLevel, StreamMetadata};
 pub use mounts::MountedStream;
 pub use publish::{
-    ClaimedPublish, IdempotentClaim, IdempotentOutcome, IdempotentProposal, LogDelivery,
-    OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish, PublishOutcome,
-    RECORD_SEQUENCE_WRAP, SequenceReuse,
+    Attribution, ClaimedPublish, IdempotentClaim, IdempotentOutcome, IdempotentProposal,
+    LogDelivery, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish,
+    PublishOutcome, RECORD_SEQUENCE_WRAP, SequenceReuse,
 };
 pub use read::ReadPage;
 pub use shard_logs::LogKind;
@@ -179,6 +179,9 @@ pub struct Broker {
     /// Whether head trims on a shard on Raft are allowed, once the node
     /// says. Unset refuses them.
     raft_head_trims: std::sync::OnceLock<NodeGate>,
+    /// Whether a shard on Raft stores publishers and record headers, once
+    /// the node says. Unset stores neither.
+    raft_record_headers: std::sync::OnceLock<NodeGate>,
     /// The data directory's head-trim marker is known to be on disk.
     head_trim_marked: std::sync::atomic::AtomicBool,
     /// Serializes the first marker write: it goes through one temporary file.
@@ -265,6 +268,7 @@ impl Broker {
             engine_logs: std::sync::OnceLock::new(),
             head_trims: std::sync::OnceLock::new(),
             raft_head_trims: std::sync::OnceLock::new(),
+            raft_record_headers: std::sync::OnceLock::new(),
             head_trim_marked: std::sync::atomic::AtomicBool::new(false),
             head_trim_marking: tokio::sync::Mutex::new(()),
             headers_marked: std::sync::atomic::AtomicBool::new(false),
@@ -537,6 +541,24 @@ impl Broker {
 
     pub(crate) fn raft_head_trims_allowed(&self) -> bool {
         self.raft_head_trims.get().is_some_and(|gate| (gate.0)())
+    }
+
+    /// Let a shard on Raft store publishers and record headers whenever
+    /// `gate` says so. Only the first call counts.
+    ///
+    /// Until it is called a publish with headers to such a shard is
+    /// refused and its publisher is not stored: the record is an entry a
+    /// member that predates them refuses, replicating nothing past it. So
+    /// the node says either that it runs alone or that the fleet has
+    /// finalized `raft_record_headers`.
+    pub fn allow_raft_record_headers_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.raft_record_headers.set(NodeGate(Arc::new(gate)));
+    }
+
+    pub(crate) fn raft_record_headers_allowed(&self) -> bool {
+        self.raft_record_headers
+            .get()
+            .is_some_and(|gate| (gate.0)())
     }
 
     /// Put the data directory's head-trim marker on disk before the first

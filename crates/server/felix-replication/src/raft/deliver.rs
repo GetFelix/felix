@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{
-    Broker, BrokerError, IdempotentOutcome, IdempotentProposal, LogDelivery, ProducerTurn,
-    ProposalCommitted, ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome, ReadBound,
-    SequenceReuse, StreamHandle,
+    Attribution, Broker, BrokerError, IdempotentOutcome, IdempotentProposal, LogDelivery,
+    ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome,
+    ReadBound, SequenceReuse, StreamHandle,
 };
 use futures::future::BoxFuture;
 use tokio::sync::oneshot;
@@ -33,6 +33,24 @@ const LOG_RETRY_MAX: Duration = Duration::from_secs(5);
 /// Failed deliveries from the log in a row after which the stream's
 /// subscribers are ended, so their clients resubscribe where the log reads.
 const LOG_FAILURES_TO_END: u32 = 5;
+
+/// `payloads` as records stamped `timestamp_micros`, each with its headers
+/// block when `headers` has one per record.
+fn with_headers(
+    payloads: Vec<Bytes>,
+    headers: Option<Vec<Option<Bytes>>>,
+    timestamp_micros: u64,
+) -> Vec<Record> {
+    let mut headers = headers.unwrap_or_default().into_iter();
+    payloads
+        .into_iter()
+        .map(|payload| Record {
+            timestamp_micros,
+            payload,
+            headers: headers.next().flatten(),
+        })
+        .collect()
+}
 
 /// A stream batch on its way to its commit, as the broker waits on it.
 type Settling = BoxFuture<'static, Result<ProposalCommitted, ProposalFailed<CommitError>>>;
@@ -81,6 +99,39 @@ impl RaftEngine {
         answer: AnswerAt,
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        self.publish_with(
+            broker,
+            stream,
+            shard,
+            term,
+            payloads,
+            Attribution::default(),
+            ack,
+            answer,
+            timeout,
+        )
+    }
+
+    /// [`Self::publish`] with the batch's publisher and its records'
+    /// headers, stored in each entry as the hybrid stores them in each
+    /// record, and so read back by every member, after a restart and by
+    /// history reads. What is stored is what
+    /// [`Broker::admit_attribution`] lets through: headers it refuses
+    /// refuse the publish with nothing proposed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_with(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: Option<u64>,
+        payloads: Vec<Bytes>,
+        attribution: Attribution,
+        ack: AckAt,
+        answer: AnswerAt,
+        timeout: Duration,
+    ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        let attribution = broker.admit_attribution(&payloads, attribution)?;
         let records = payloads.clone();
         let (on_lease, answered) = oneshot::channel();
         let (on_lease, on_majority) = match answer {
@@ -91,14 +142,16 @@ impl RaftEngine {
         // A leader cut off from its majority is not deposed, and every batch
         // it is handed waits, payload in hand, until the partition heals.
         // Refusing once the oldest has waited out its timeout bounds them.
-        let proposed = broker.propose_publish(
+        let proposed = broker.propose_publish_with(
             stream,
             payloads,
+            attribution.clone(),
             timeout,
             self.proposer(
                 shard,
                 term,
                 records,
+                attribution,
                 None,
                 None,
                 ack,
@@ -135,7 +188,8 @@ impl RaftEngine {
     /// refused publish still takes an offset, which readers skip, and is
     /// answered with [`CommitError::OffsetMismatch`] once committed,
     /// carrying the offset after it. The answer always waits for the
-    /// commit.
+    /// commit. The record carries `attribution` as [`Self::publish_with`]
+    /// stores it.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_at(
         &self,
@@ -144,14 +198,17 @@ impl RaftEngine {
         shard: &ShardKey,
         term: Option<u64>,
         payloads: Vec<Bytes>,
+        attribution: Attribution,
         expected: u64,
         ack: AckAt,
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        let attribution = broker.admit_attribution(&payloads, attribution)?;
         let records = payloads.clone();
         let proposed = broker.propose_publish_at(
             stream,
             payloads,
+            attribution.clone(),
             expected,
             timeout,
             |tail| CommitError::OffsetMismatch { tail },
@@ -159,6 +216,7 @@ impl RaftEngine {
                 shard,
                 term,
                 records,
+                attribution,
                 Some(expected),
                 None,
                 ack,
@@ -211,6 +269,7 @@ impl RaftEngine {
                     shard,
                     term,
                     vec![headers],
+                    Attribution::default(),
                     Some(expected),
                     Some(before),
                     ack,
@@ -235,6 +294,7 @@ impl RaftEngine {
         shard: &ShardKey,
         term: Option<u64>,
         records: Vec<Bytes>,
+        attribution: Attribution,
         expected: Option<u64>,
         trim: Option<u64>,
         ack: AckAt,
@@ -246,13 +306,8 @@ impl RaftEngine {
         let shard = shard.clone();
         move |timestamp_micros| {
             let count = records.len() as u64;
-            let records = records
-                .into_iter()
-                .map(|payload| Record {
-                    timestamp_micros,
-                    payload,
-                })
-                .collect();
+            let Attribution { publisher, headers } = attribution;
+            let records = with_headers(records, headers, timestamp_micros);
             let batch = Batch {
                 records,
                 ack,
@@ -260,6 +315,7 @@ impl RaftEngine {
                 producer: None,
                 expected,
                 trim,
+                publisher,
             };
             let written = engine.propose_reaching(&shard, batch);
             let batch = Proposed {
@@ -310,15 +366,19 @@ impl RaftEngine {
         turn: ProducerTurn,
         sequence: u64,
         payloads: Vec<Bytes>,
+        attribution: Attribution,
         reuse: SequenceReuse,
         timeout: Duration,
     ) -> Result<IdempotentPublish, BrokerError> {
         let producer_id = turn.producer_id();
+        let attribution = broker.admit_attribution(&payloads, attribution)?;
+        let publisher = attribution.publisher.clone();
         let proposal = broker.propose_idempotent(
             stream,
             turn,
             sequence,
             payloads,
+            attribution,
             reuse,
             timeout,
             |timestamp_micros, turn, owed| {
@@ -329,14 +389,7 @@ impl RaftEngine {
                     len: owed.len,
                 };
                 let count = owed.payloads.len() as u64;
-                let records = owed
-                    .payloads
-                    .into_iter()
-                    .map(|payload| Record {
-                        timestamp_micros,
-                        payload,
-                    })
-                    .collect();
+                let records = with_headers(owed.payloads, owed.headers, timestamp_micros);
                 // The answer waits for the commit whatever this says.
                 // Written is when the log knows the batch, so the
                 // producer's next one is not held for the fsync.
@@ -347,6 +400,7 @@ impl RaftEngine {
                     producer: Some(producer),
                     expected: None,
                     trim: None,
+                    publisher,
                 };
                 let written = self.propose_reaching(shard, batch);
                 // On a task of its own, so the turn is given up when

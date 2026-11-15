@@ -363,7 +363,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
 /// have been partway, so it is not.
 fn claim_failure(err: BrokerError) -> Sent {
     match err {
-        BrokerError::RecordHeadersNotEnabled => Sent::Refused(Refusal::HeadersDisabled),
+        BrokerError::RecordHeadersNotEnabled { .. } => Sent::Refused(Refusal::HeadersDisabled),
         BrokerError::StreamHandleInactive(_) => Sent::Refused(Refusal::StreamUnavailable),
         err => {
             tracing::debug!(error = %err, "mqtt write failed while claiming its offsets");

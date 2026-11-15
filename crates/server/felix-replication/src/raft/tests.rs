@@ -445,6 +445,8 @@ impl Cluster {
                 producer: None,
                 expected: None,
                 trim: None,
+                publisher: None,
+                headers: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -476,6 +478,8 @@ impl Cluster {
                     producer: None,
                     expected: None,
                     trim: None,
+                    publisher: None,
+                    headers: None,
                     written: None,
                 })
             });
@@ -1300,6 +1304,8 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
         payload: Bytes::from_static(b"proposed"),
         producer: None,
         written: Some(token),
+        headers: None,
+        publisher: None,
     };
     let raft = member.raft().clone();
     let mut write = tokio::spawn(async move { raft.client_write(command).await });
@@ -1346,6 +1352,8 @@ fn a_commands_token_is_not_serialized() {
         payload: Bytes::from_static(b"p"),
         producer: None,
         written: Some(token),
+        headers: None,
+        publisher: None,
     };
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
@@ -1754,6 +1762,8 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         };
         last = member
@@ -1969,6 +1979,8 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         })
         .await
@@ -2145,6 +2157,8 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         })
         .await
@@ -2265,6 +2279,8 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
                     producer: None,
                     expected: None,
                     trim: None,
+                    publisher: None,
+                    headers: None,
                     written: None,
                 })
                 .await
