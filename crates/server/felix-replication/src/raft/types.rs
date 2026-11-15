@@ -196,6 +196,10 @@ pub(crate) struct Command {
     /// event and its state updates), stored with the log's commit mark so
     /// every member's state view is rebuilt from the same record.
     pub(crate) commit: bool,
+    /// Set on a consumer group's write: the payload is the encoded group
+    /// entry (`felix_broker::GroupEntry`), stored with the log's group mark
+    /// so every member folds the same writes into its group table.
+    pub(crate) group: bool,
     /// The principal that published the record, stored with it.
     pub(crate) publisher: Option<Bytes>,
     /// The record's encoded key and headers block, stored as given. Boxed
@@ -221,6 +225,7 @@ impl PartialEq for Command {
             expected,
             trim,
             commit,
+            group,
             publisher,
             headers,
             written: _,
@@ -231,6 +236,7 @@ impl PartialEq for Command {
             && *expected == other.expected
             && *trim == other.trim
             && *commit == other.commit
+            && *group == other.group
             && *publisher == other.publisher
             && *headers == other.headers
     }
@@ -249,9 +255,10 @@ impl Command {
     }
 
     /// Whether the command, written at `index`, holds a client record. A
-    /// trim holds only its floor and headers.
+    /// trim holds only its floor and headers, and a group's write only the
+    /// group's.
     pub(crate) fn holds_record_at(&self, index: u64) -> bool {
-        self.trim.is_none() && !self.blank_at(index)
+        self.trim.is_none() && !self.group && !self.blank_at(index)
     }
 }
 
@@ -260,6 +267,7 @@ impl fmt::Display for Command {
         match self.trim {
             Some(before) => write!(f, "trim below {before}"),
             None if self.commit => write!(f, "commit of {} bytes", self.payload.len()),
+            None if self.group => write!(f, "group write of {} bytes", self.payload.len()),
             None => write!(f, "record of {} bytes", self.payload.len()),
         }
     }

@@ -81,7 +81,8 @@ pub use cache::{CacheChangeEvent, CacheWatchFilter, CacheWatchHub, CacheWatchSub
 
 // Queues.
 pub use queue::{
-    Claimed, ConsumerGroups, DeadLetters, GroupConsumer, GroupKey, GroupReader, GroupSnapshot, Seek,
+    Claimed, ConsumerGroups, CreatedBy, CreationToken, DeadLetters, GroupConsumer, GroupEntry,
+    GroupKey, GroupOp, GroupReader, GroupSnapshot, Seek,
 };
 
 // Durability.

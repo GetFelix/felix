@@ -3390,6 +3390,37 @@ refused (`stream_has_commits`), as on the hybrid.
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid`.
 
+**Consumer groups.** Not served on a Raft shard yet: a group operation on
+one is refused as `invalid_request`. What is built is the entry the groups
+will write. A group's writes (a cursor advance, a dead letter, a redrive and
+its finish, a discard, a seek, a delete) are entries in the shard's own Raft
+log, stored as group records (`docs/storage-format.md`, "Group records").
+Every member will fold them, in log order, into the same group table, so a
+new leader serves the group from exactly the state the old one committed.
+`docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
+leaves out discard, which only drops a dead letter, and `if_new`, which the
+leader decides before it proposes the seek.
+
+The payload is a `GroupEntry` (`felix-broker`, `queue/entry.rs`): the
+group's name, the operation, and for every write a tracker decides, the
+group's creation token. The token names the incarnation of the group the
+write was decided for (the term and index of the seek that created or last
+reset it, or of the hydrate that created it), so a write that lands after a
+seek or a delete of its group is dropped rather than applied to the group
+that replaced it. A seek's own token is its entry's log id.
+
+A group entry has its own tag, 9, in the Raft wire's entry payloads, and a
+member built before it refuses the whole append by that tag. Serving groups
+on Raft will wait for the fleet feature `raft_consumer_groups`, which no
+build reports yet.
+
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_group_write_round_trips_through_its_record`;
+> `crates/server/felix-broker/src/queue/entry/tests.rs`,
+> `the_layout_is_the_documented_one`.
+
 **Publishers and record headers.** A record on a Raft shard keeps what it
 keeps on the hybrid: the publisher id (the principal that published it,
 which is not the producer id) and its key-and-headers block

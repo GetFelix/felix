@@ -446,6 +446,7 @@ impl Cluster {
                 expected: None,
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -480,6 +481,7 @@ impl Cluster {
                     expected: None,
                     trim: None,
                     commit: false,
+                    group: false,
                     publisher: None,
                     headers: None,
                     written: None,
@@ -1341,6 +1343,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
         producer: None,
@@ -1390,6 +1393,7 @@ fn a_commands_token_is_not_serialized() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
         producer: None,
@@ -1403,6 +1407,7 @@ fn a_commands_token_is_not_serialized() {
         [
             "commit",
             "expected",
+            "group",
             "headers",
             "payload",
             "producer",
@@ -1699,6 +1704,7 @@ async fn a_restarted_member_reads_back_publisher_and_headers() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: Some(publisher.clone()),
         headers: Some(Box::new(headers.clone())),
         written: None,
@@ -1862,6 +1868,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,
@@ -2080,6 +2087,7 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,
@@ -2510,6 +2518,7 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,
@@ -2633,6 +2642,7 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
                     expected: None,
                     trim: None,
                     commit: false,
+                    group: false,
                     publisher: None,
                     headers: None,
                     written: None,
@@ -2792,6 +2802,72 @@ fn a_membership_stored_before_versions_reads_as_the_zero_version() {
     let voters = BTreeSet::from([voter("a"), voter("b")]);
     let want = Membership::new(vec![voters], [voter("c")].into(), TargetVersion::default());
     assert_eq!(read, want);
+}
+
+/// A group write is stored with the log's group mark and reads back as one.
+/// It holds no client record, and it is never stored with a producer, a
+/// publisher or headers, or as a commit or a trim.
+#[test]
+fn a_group_write_round_trips_through_its_record() {
+    let group = || Command {
+        timestamp_micros: 9,
+        payload: Bytes::from_static(b"an encoded group entry"),
+        producer: None,
+        expected: None,
+        trim: None,
+        commit: false,
+        group: true,
+        publisher: None,
+        headers: None,
+        written: None,
+    };
+    let record = ShardCodec.encode_data(&group()).expect("encode");
+    assert_eq!(record.mark, felix_storage::log::RecordMark::Group);
+    assert!(!record.mark.is_data());
+    let read = ShardCodec
+        .decode_data(felix_storage::log::LogRecord {
+            offset: 4,
+            timestamp_micros: record.timestamp_micros,
+            checksum: 0,
+            payload: record.payload,
+            mark: record.mark,
+            publisher: None,
+            headers: None,
+            generation: Some(3),
+        })
+        .expect("decode");
+    assert_eq!(read, group());
+    assert!(!read.holds_record_at(4));
+    let forged = felix_storage::log::LogRecord {
+        offset: 4,
+        timestamp_micros: 9,
+        checksum: 0,
+        payload: Bytes::from_static(b"x"),
+        mark: felix_storage::log::RecordMark::Group,
+        publisher: Some(Bytes::from_static(b"alice")),
+        headers: None,
+        generation: Some(3),
+    };
+    ShardCodec.decode_data(forged).expect_err("refused");
+    let producer = types::ProducerMark {
+        producer_id: 1,
+        sequence: 1,
+        position: 0,
+        len: 1,
+    };
+    let refusals: [fn(&mut Command, types::ProducerMark); 6] = [
+        |c, _| c.commit = true,
+        |c, _| c.trim = Some(3),
+        |c, p| c.producer = Some(p),
+        |c, _| c.expected = Some(4),
+        |c, _| c.publisher = Some(Bytes::from_static(b"alice")),
+        |c, _| c.headers = Some(Box::new(Bytes::from_static(b"h"))),
+    ];
+    for refuse in refusals {
+        let mut command = group();
+        refuse(&mut command, producer);
+        ShardCodec.encode_data(&command).expect_err("refused");
+    }
 }
 
 #[test]
