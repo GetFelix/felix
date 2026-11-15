@@ -73,6 +73,19 @@ pub enum WriteError {
     /// client must not be told either way; the connection is closed and the
     /// client sends the message again. The text is the reason counted.
     OutcomeUnknown(&'static str),
+    /// Only from a broker that numbers each record
+    /// ([`Writes::sequence_per_record`]): the first `written` records are
+    /// written as the batch would have been, and the rest ended as `rest`
+    /// says.
+    Partly { written: usize, rest: Unwritten },
+}
+
+/// How the records after a [`WriteError::Partly`] batch's written ones
+/// ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unwritten {
+    Refused(Refusal),
+    OutcomeUnknown(&'static str),
 }
 
 /// The broker's side of a PUBLISH.

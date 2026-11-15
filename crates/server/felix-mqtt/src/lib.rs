@@ -21,4 +21,4 @@ pub use auth::{AuthError, Authenticator, Credential, Principal};
 pub use mount::{MountedTopic, Mounts, NoMounts};
 pub use service::MqttService;
 pub use settings::Settings;
-pub use write::{NoWrites, Record, Refusal, WriteBatch, WriteError, Writes};
+pub use write::{NoWrites, Record, Refusal, Unwritten, WriteBatch, WriteError, Writes};

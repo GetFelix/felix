@@ -288,6 +288,25 @@ async fn qos1_on_a_raft_shard_survives_its_leader_without_duplicates() {
 #[serial]
 #[tokio::test]
 async fn pipelined_qos1_on_a_raft_shard_survives_its_leader_in_order() {
+    pipelined_across(Fault::Kill).await;
+}
+
+/// **As above, with the leader paused until another is elected, then
+/// woken.** Its proposals in flight then fail with the term they were
+/// written in, on a broker that is still serving the connection, which
+/// sends each unsettled message again through the new leader.
+#[serial]
+#[tokio::test]
+async fn pipelined_qos1_on_a_raft_shard_survives_a_deposed_leader_in_order() {
+    pipelined_across(Fault::Pause).await;
+}
+
+enum Fault {
+    Kill,
+    Pause,
+}
+
+async fn pipelined_across(fault: Fault) {
     if !super::raft::opted_in() {
         return;
     }
@@ -346,7 +365,19 @@ async fn pipelined_qos1_on_a_raft_shard_survives_its_leader_in_order() {
     })
     .await
     .expect("publishing");
-    cluster.stop_node(&leader).await.expect("kill the leader");
+    let live: Vec<String> = nodes
+        .iter()
+        .filter(|node| **node != leader)
+        .cloned()
+        .collect();
+    match fault {
+        Fault::Kill => cluster.stop_node(&leader).await.expect("kill the leader"),
+        Fault::Pause => {
+            cluster.pause_node(&leader).expect("pause the leader");
+            super::raft::leader_among(&cluster, &live).await;
+            cluster.resume_node(&leader).expect("wake the old leader");
+        }
+    }
     let at_kill = follower_acked.load(Ordering::Acquire);
     // The follower's connection may be closed by a message whose outcome
     // the election left unknown, so this is not required.
@@ -366,7 +397,6 @@ async fn pipelined_qos1_on_a_raft_shard_survives_its_leader_in_order() {
         "never more than one message in flight through the leader"
     );
 
-    let live: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
     let next = super::raft::leader_among(&cluster, &live).await;
     let stored = read_back(&cluster, &next).await;
     for (label, published) in [('L', &through_leader), ('F', &through_follower)] {
@@ -456,7 +486,7 @@ async fn publish_pipelined(
         {
             break;
         }
-        match tokio::time::timeout(Duration::from_secs(20), events.poll()).await {
+        match tokio::time::timeout(Duration::from_secs(45), events.poll()).await {
             Ok(Ok(Event::Outgoing(Outgoing::Publish(pkid)))) => {
                 in_flight.insert(pkid, published.sent);
                 published.sent += 1;

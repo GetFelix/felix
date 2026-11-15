@@ -373,3 +373,28 @@ async fn a_message_for_a_raft_shard_between_leaders_waits_for_the_next() {
     assert_eq!(written, Ok(()));
     EngineShards::shutdown(&*shards).await;
 }
+
+/// A record that fails after the ones before it were written is reported
+/// with that count, so the client is answered for them; the first record's
+/// failure is the batch's.
+#[test]
+fn a_failure_partway_names_the_records_written() {
+    use felix_mqtt::Unwritten;
+
+    let refused = WriteError::Refused(Refusal::NotOwner);
+    assert_eq!(super::partly(0, refused), refused);
+    assert_eq!(
+        super::partly(2, refused),
+        WriteError::Partly {
+            written: 2,
+            rest: Unwritten::Refused(Refusal::NotOwner)
+        }
+    );
+    assert_eq!(
+        super::partly(1, WriteError::OutcomeUnknown("quorum_timeout")),
+        WriteError::Partly {
+            written: 1,
+            rest: Unwritten::OutcomeUnknown("quorum_timeout")
+        }
+    );
+}

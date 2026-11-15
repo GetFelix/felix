@@ -32,7 +32,7 @@ use crate::auth::Credential;
 use crate::metrics;
 use crate::mount::MountedTopic;
 use crate::topic::check_topic_name;
-use crate::write::{Record, Refusal, WriteBatch, WriteError, Writes};
+use crate::write::{Record, Refusal, Unwritten, WriteBatch, WriteError, Writes};
 
 /// Longest the connection stops reading to keep a tenant within its publish
 /// quota.
@@ -325,28 +325,51 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             .in_flight
             .take()
             .expect("a result comes from a batch in flight");
-        match result {
-            Ok(()) => {
-                *publishing.sequences.entry(batch.key).or_insert(0) += batch.sequences;
-                let acknowledged = batch.owed.iter().flatten().count();
-                metrics::published("1", acknowledged as u64);
-                metrics::published("0", (batch.owed.len() - acknowledged) as u64);
-                for position in batch.owed.into_iter().flatten() {
-                    publishing.answer(position, ReasonCode::Success, None);
-                }
+        let (written, rest) = match result {
+            Ok(()) => (batch.owed.len(), None),
+            Err(WriteError::Partly { written, rest }) => {
+                (written.min(batch.owed.len()), Some(rest))
             }
+            Err(WriteError::Refused(refusal)) => (0, Some(Unwritten::Refused(refusal))),
+            Err(WriteError::OutcomeUnknown(reason)) => (0, Some(Unwritten::OutcomeUnknown(reason))),
+        };
+        if written > 0 {
+            // A batch is written whole or, when the broker numbers each
+            // record, record by record.
+            let sequences = if rest.is_none() {
+                batch.sequences
+            } else {
+                written as u64
+            };
+            *publishing.sequences.entry(batch.key).or_insert(0) += sequences;
+            let done = &batch.owed[..written];
+            let acknowledged = done.iter().flatten().count();
+            metrics::published("1", acknowledged as u64);
+            metrics::published("0", (done.len() - acknowledged) as u64);
+            for position in done.iter().flatten() {
+                publishing.answer(*position, ReasonCode::Success, None);
+            }
+        }
+        match rest {
+            None => {}
             // Not told either way: an error reason would say "not delivered",
             // which may be false. Closing leaves the resend to the client.
-            Err(WriteError::OutcomeUnknown(reason)) => return Err(End::Close(reason)),
-            Err(WriteError::Refused(refusal)) => {
+            Some(Unwritten::OutcomeUnknown(reason)) => {
+                self.release(publishing)?;
+                return Err(End::Close(reason));
+            }
+            Some(Unwritten::Refused(refusal)) => {
                 let (reason, label) = describe(refusal);
-                for position in batch.owed {
+                for position in &batch.owed[written..] {
                     match (version, position) {
                         (Version::V5, Some(position)) => {
                             metrics::refused(label);
-                            publishing.answer(position, reason, Some(label));
+                            publishing.answer(*position, reason, Some(label));
                         }
-                        (_, Some(_)) => return Err(End::Close(label)),
+                        (_, Some(_)) => {
+                            self.release(publishing)?;
+                            return Err(End::Close(label));
+                        }
                         // Nobody is owed anything; the message is dropped.
                         (_, None) => metrics::refused(label),
                     }

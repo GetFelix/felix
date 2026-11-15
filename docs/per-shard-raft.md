@@ -2829,9 +2829,10 @@ no leader (an election), a broker that is a member of its group waits for
 one within the forward budget, as the hybrid's dispatch waits for a shard
 that is not ready, rather than refusing the message `not_owner`. A refusal
 that waiting cannot change, such as an anonymous connection's message for
-a shard led elsewhere, is answered at once. If a later message of a batch
-is refused after earlier ones were written, the connection is closed
-rather than told the batch was not written.
+a shard led elsewhere, is answered at once. If a message partway through a
+batch fails, the messages before it are acknowledged and only it and the
+ones after it get the refusal, or the closed connection when their outcome
+is unknown.
 
 > `services/felix-broker-service/src/serving/kafka/tests.rs`,
 > `a_produce_to_a_raft_shard_lands_once`;

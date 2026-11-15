@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bytes::Bytes;
 use felix_broker::{Attribution, Broker, BrokerError, PublishOutcome, SequenceReuse, StreamHandle};
-use felix_mqtt::{Refusal, WriteBatch, WriteError, Writes};
+use felix_mqtt::{Refusal, Unwritten, WriteBatch, WriteError, Writes};
 use felix_replication::engine::{CommitError, Engine};
 use felix_replication::peer::{PeerPool, PeerRequester};
 use felix_replication::quorum::QuorumError;
@@ -167,7 +167,9 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
         if self.engine.runs_raft() {
             self.write_records(&batch, &key, &handle).await
         } else {
-            self.write_batch(&batch, &key, &handle, None).await
+            let deadline = self.forwarding.as_ref().map(|f| Instant::now() + f.budget);
+            self.write_batch(&batch, &key, &handle, None, deadline)
+                .await
         }
     }
 }
@@ -202,6 +204,8 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                     .await
                 {
                     Ok(record) => proposed.push(record),
+                    // Nothing of it was handed over, so it and the rest
+                    // are sent one by one below.
                     Err(_) => break,
                 }
             }
@@ -211,28 +215,29 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             let unanswered = match proposed.next() {
                 Some(record) => match committed(record.complete().await) {
                     Sent::Written => continue,
-                    Sent::Unknown(reason) => return Err(WriteError::OutcomeUnknown(reason)),
+                    Sent::Unknown(reason) => {
+                        return Err(partly(at, WriteError::OutcomeUnknown(reason)));
+                    }
                     Sent::Unanswered(reason) => Some(reason),
-                    Sent::Refused(_) | Sent::Leaderless => None,
+                    Sent::Refused(_) | Sent::Leaderless => {
+                        unreachable!("a proposed record is written or unanswered")
+                    }
                 },
                 None => None,
             };
             let record = record_batch(batch, at);
-            match self.write_batch(&record, key, handle, unanswered).await {
-                Ok(()) => {}
-                // The records before it are written, so the client cannot
-                // be told the batch was not.
-                Err(WriteError::Refused(_)) if at > 0 => {
-                    return Err(WriteError::OutcomeUnknown("partly_written"));
-                }
-                Err(err) => return Err(err),
+            if let Err(err) = self
+                .write_batch(&record, key, handle, unanswered, deadline)
+                .await
+            {
+                return Err(partly(at, err));
             }
         }
         Ok(())
     }
 
     /// Write `batch` whole, sending it again until its outcome is known or
-    /// the budget ends. `unanswered` is set when an earlier send of it was
+    /// `deadline` passes. `unanswered` is set when an earlier send of it was
     /// not answered.
     async fn write_batch(
         &self,
@@ -240,6 +245,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
         key: &ShardKey,
         handle: &StreamHandle,
         mut unanswered: Option<&'static str>,
+        deadline: Option<Instant>,
     ) -> Result<(), WriteError> {
         let payloads: Vec<Bytes> = batch.records.iter().map(|r| r.payload.clone()).collect();
         let headers: Vec<Option<Bytes>> = batch
@@ -247,7 +253,6 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             .iter()
             .map(|r| Some(r.headers.clone()))
             .collect();
-        let deadline = self.forwarding.as_ref().map(|f| Instant::now() + f.budget);
 
         // Once a send's answer is lost, nothing short of a later send's
         // success says what happened to the batch, so every other ending is
@@ -540,6 +545,17 @@ fn record_batch(batch: &WriteBatch, at: usize) -> WriteBatch {
         records: vec![batch.records[at].clone()],
         acknowledged: batch.acknowledged,
     }
+}
+
+/// `err` for record `at` of a batch whose records before it are written.
+fn partly(at: usize, err: WriteError) -> WriteError {
+    let rest = match err {
+        _ if at == 0 => return err,
+        WriteError::Refused(refusal) => Unwritten::Refused(refusal),
+        WriteError::OutcomeUnknown(reason) => Unwritten::OutcomeUnknown(reason),
+        WriteError::Partly { .. } => return err,
+    };
+    WriteError::Partly { written: at, rest }
 }
 
 /// How a batch proposed to a Raft group ended.

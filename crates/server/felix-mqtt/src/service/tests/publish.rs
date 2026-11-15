@@ -628,3 +628,58 @@ async fn over_quota_the_connection_stops_reading_for_the_hold() {
         start.elapsed()
     );
 }
+
+/// **A batch written partway acknowledges the messages that were written**
+/// and refuses only the rest, and the next batch's sequence follows the
+/// last written one. Closing instead would leave the written ones to be
+/// sent again under a new producer, as copies.
+#[tokio::test(start_paused = true)]
+async fn a_batch_written_partway_acknowledges_what_was_written() {
+    let writes = FakeWrites::new();
+    writes
+        .sequence_per_record
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    writes.hold();
+    let mut h = connected_with(Version::V5, Settings::default(), Arc::clone(&writes)).await;
+    for id in 1..=4 {
+        h.client
+            .send(
+                Packet::Publish(publish(QoS::AtLeastOnce, Some(id))),
+                Version::V5,
+            )
+            .await;
+        settle_down().await;
+    }
+    writes.release(1);
+    assert_eq!(puback(h.client.recv().await).packet_id, 1);
+    // The second batch holds messages 2 to 4, and only 2 and 3 land.
+    writes.fail_with(Err(WriteError::Partly {
+        written: 2,
+        rest: crate::write::Unwritten::Refused(Refusal::NotOwner),
+    }));
+    writes.release(1);
+    let mut answers = Vec::new();
+    for _ in 2..=4 {
+        let ack = puback(h.client.recv().await);
+        answers.push((ack.packet_id, ack.reason));
+    }
+    assert_eq!(
+        answers,
+        [
+            (2, ReasonCode::Success),
+            (3, ReasonCode::Success),
+            (4, ReasonCode::ImplementationSpecificError)
+        ]
+    );
+    writes.fail_with(Ok(()));
+    h.client
+        .send(
+            Packet::Publish(publish(QoS::AtLeastOnce, Some(5))),
+            Version::V5,
+        )
+        .await;
+    writes.release(1);
+    assert_eq!(puback(h.client.recv().await).reason, ReasonCode::Success);
+    let sequences: Vec<_> = writes.batches().iter().map(|b| b.sequence).collect();
+    assert_eq!(sequences, [0, 1, 3]);
+}
