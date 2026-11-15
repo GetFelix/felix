@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794784928878,
+  "lastUpdate": 1794785285582,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75240,6 +75240,72 @@ window.BENCHMARK_DATA = {
             "range": "945.76",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1013.00\nmean: 1355.00\nstdev: 945.76\ncv: 69.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "33b3136345131fca94a27c10260ee16a262963fe",
+          "message": "perf(raft): hand a formed group's first leadership to placement's leader (#2653)\n\n* perf(raft): hand a formed group's first leadership to placement's leader\n\nThe lowest broker of a set forms every group of that set and wins its\nfirst election, so one broker led every Raft shard and took every write.\nThe forming broker now transfers the first leadership to the broker\nplacement names, once that broker holds its whole log.\n\n* perf(raft): close the shard before waiting for the hand-over target\n\nReview: under load the target's match trails the last index, so a hand-over\nthat waited for it before closing the shard could time out. Close first,\nthen wait for the target, then ask. The cluster tests' leader probe waits\nfor the leader to settle past the first hand-over.\n\n* test(raft): a formed group is led by placement's leader; note leaders do not follow placement later\n\n* chore: spec pairing note for first-leader hand-over\n\nSpec-Unaffected: the hand-over is a plain openraft leadership transfer, asked once after the group forms and its target has caught up. It changes which member wins the next term, not the election, commit or fence rules. Raft safety is openraft's and no Felix-modelled rule (offsets, fences, voter sets) changes.",
+          "timestamp": "2026-11-15T23:19:55Z",
+          "tree_id": "273f475af69fe87433698c4f26df5379426847ce",
+          "url": "https://github.com/GetFelix/felix/commit/33b3136345131fca94a27c10260ee16a262963fe"
+        },
+        "date": 1794785273794,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "2.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.80\nstdev: 2.95\ncv: 1.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "45.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 227.00\nstdev: 45.31\ncv: 19.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 266,
+            "range": "975.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 728.80\nstdev: 975.22\ncv: 133.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 198.60\nstdev: 0.55\ncv: 0.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 394,
+            "range": "8.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 394.00\nmean: 395.00\nstdev: 8.89\ncv: 2.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 544,
+            "range": "236.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 544.00\nmean: 633.20\nstdev: 236.89\ncv: 37.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
