@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -167,6 +168,9 @@ pub(crate) enum Pass {
     Stepped,
     /// Nothing to do until the target or the term changes.
     Parked(Wait),
+    /// A target is held, but it was not told for the term this member
+    /// leads. Nothing to do until it is told again.
+    Untold,
     /// Something this leader cannot hurry: a commit, a learner catching
     /// up, a transfer.
     Waiting(Wait),
@@ -239,11 +243,21 @@ impl<M: Member> Driver<M> {
     /// told for the term this member leads. One told in an earlier term may
     /// be older than what an earlier leader of this term's view acted on.
     pub(crate) async fn pass(&mut self, told: Option<&Told>) -> Pass {
-        self.pass_for(|term| {
-            told.filter(|told| told.term == term)
-                .map(|told| &told.target)
-        })
-        .await
+        let untold = AtomicBool::new(false);
+        let pass = self
+            .pass_for(|term| {
+                untold.store(
+                    told.is_some_and(|told| told.term != term),
+                    Ordering::Relaxed,
+                );
+                told.filter(|told| told.term == term)
+                    .map(|told| &told.target)
+            })
+            .await;
+        match pass {
+            Pass::Parked(Wait::NoTarget) if untold.load(Ordering::Relaxed) => Pass::Untold,
+            pass => pass,
+        }
     }
 
     /// `pass` with a target taken whatever term it was told in.
@@ -364,7 +378,15 @@ impl<M: Member> Driver<M> {
     /// next look, or `None` to wait for the target or the term to change.
     pub(crate) fn after(&mut self, pass: &Pass) -> Option<Duration> {
         let stalled = match pass {
-            Pass::NotLeading | Pass::Closed => {
+            Pass::NotLeading | Pass::Untold => {
+                self.idle_looks = 0;
+                if let Some(left) = self.stuck_left() {
+                    return Some(left);
+                }
+                self.progress.set(MembershipProgress::Idle);
+                return None;
+            }
+            Pass::Closed => {
                 self.idle_looks = 0;
                 self.progress.set(MembershipProgress::Idle);
                 return None;
@@ -419,6 +441,25 @@ impl<M: Member> Driver<M> {
             .first
             .saturating_mul(1 << (self.idle_looks - 1).min(16));
         Some(doubled.min(self.retry.cap))
+    }
+
+    /// How much longer a group stuck on transfers that do not land stays
+    /// reported stuck while this member does not lead, or leads a term no
+    /// target was told for. Each failed transfer ends a term, so without
+    /// this the report would clear once a term during the very failure it
+    /// is for. It lasts as long as the transfers are paced: after that the
+    /// member that leads reports for itself.
+    fn stuck_left(&self) -> Option<Duration> {
+        if !matches!(*self.progress.0.borrow(), MembershipProgress::Stuck(_))
+            || self.transfers < self.retry.attempts
+        {
+            return None;
+        }
+        let since = self.last_transfer?.elapsed();
+        self.retry
+            .stuck
+            .checked_sub(since)
+            .filter(|left| !left.is_zero())
     }
 
     /// A new target starts every count again.

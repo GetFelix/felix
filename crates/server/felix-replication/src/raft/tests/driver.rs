@@ -70,6 +70,9 @@ struct Log {
     hangs: bool,
     /// No entry of this term is committed yet.
     fresh: bool,
+    /// A transfer never lands, and this member leads the next term, as
+    /// when no successor answers.
+    transfers_fail: bool,
 }
 
 struct Fake {
@@ -94,6 +97,7 @@ impl Fake {
                 keeps_leavers: false,
                 hangs: false,
                 fresh: false,
+                transfers_fail: false,
             }),
         })
     }
@@ -205,10 +209,14 @@ impl Member for Arc<Fake> {
 
     async fn transfer(&self, term: u64, to: MemberId) -> Option<u64> {
         let mut log = self.log.lock();
-        (log.leads && log.term == term).then(|| {
+        let asked = (log.leads && log.term == term).then(|| {
             log.transfers.push((term, to));
             term
-        })
+        });
+        if asked.is_some() && log.transfers_fail {
+            log.term += 1;
+        }
+        asked
     }
 }
 
@@ -502,6 +510,45 @@ async fn transfers_that_never_land_are_paced_and_reported() {
     tokio::time::sleep(retry.stuck).await;
     assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Stepped);
     assert_eq!(fake.written(), []);
+}
+
+/// Each failed transfer ends a term, and the target is told again for the
+/// next. Told again, the same target keeps the pacing of the transfers, and
+/// the group stays reported stuck while the new term waits for it; a new
+/// target starts the count again.
+#[tokio::test(start_paused = true)]
+async fn a_target_told_again_keeps_the_transfer_pacing() {
+    let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
+    fake.log.lock().transfers_fail = true;
+    let (driver, progress) = driving(&fake);
+    let (goal, goals) = watch::channel(None);
+    let (_lead, leads) = watch::channel(Lead::default());
+    let stop = CancellationToken::new();
+    let running = tokio::spawn(driver::run(driver, goals, leads, stop.clone()));
+    let retry = Retry::default();
+    let term = || fake.log.lock().term;
+    let asked = || fake.log.lock().transfers.len();
+    let stuck = || matches!(*progress.borrow(), MembershipProgress::Stuck(_));
+
+    for _ in 0..retry.attempts {
+        goal.send_replace(Some(told(&["b", "c"], 2, term())));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(asked(), retry.attempts as usize);
+    // The new term has been told nothing yet.
+    assert!(stuck(), "{:?}", *progress.borrow());
+
+    goal.send_replace(Some(told(&["b", "c"], 2, term())));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(asked(), retry.attempts as usize);
+    assert!(stuck(), "{:?}", *progress.borrow());
+
+    goal.send_replace(Some(told(&["b", "c"], 3, term())));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(asked(), retry.attempts as usize + 1);
+
+    stop.cancel();
+    running.await.expect("the driver");
 }
 
 #[allow(clippy::field_reassign_with_default)]
