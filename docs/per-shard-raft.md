@@ -4321,7 +4321,12 @@ ones settled by the decisions of issue #2167 say so.
     Decided: (a), with a one-second interval. The exact mark was not free:
     every flush round on every member appended to the root's mark file,
     synced it and rewrote the run witness before Raft heard of the flush,
-    one shared writer for every shard of the root. The broker now ships
+    one shared writer for every shard of the root. On three build boxes
+    (RF 3, six shards, 1 KiB records in batches of 16) the batched mark
+    raised Quorum throughput by 23% with fsync on commit and 27% with
+    periodic fsync, cut the batch ack p50 and p99 by about a fifth, left
+    Leader unchanged, and cut fdatasync calls per 1000 messages from about
+    104 to 69 and renames from about 41 to 0.15. The broker now ships
     `LogMarkMode::Batched(1 s)`, and the model pins the residual
     (`FelixRaftIdentityMarkBatched.cfg` and
     `FelixRaftIdentityRootRestoreYoung.cfg` must fail `AckedHeldByLeader`;
