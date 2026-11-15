@@ -1104,6 +1104,8 @@ fi
 # FelixRaftPlacement{StaleReturnWipe,StaleReturnWipeAnyVersion} ran past
 # 45 minutes on a build box at their bounds; each is registered once a
 # dispatch run gives its declared outcome.
+# FelixRaftPlacementPlacedTarget, Placed with one target change, is not
+# registered until a dispatch run passes it.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
