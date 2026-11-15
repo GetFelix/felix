@@ -507,10 +507,16 @@ impl RetentionPlan {
     /// the records written since the last roll. Nor is a segment holding any
     /// offset at or above `floor`. Runs without the lock: an age check reads
     /// the newest record of each candidate, which may be cold.
+    ///
+    /// A segment wholly below `hidden_below`, which a head trim already
+    /// hides, is taken without reading it: on a log that keeps hidden
+    /// segments, an age check would otherwise read every one of them on
+    /// every pass.
     pub(super) fn choose(
         &self,
         bounds: crate::log::Retention,
         floor: Option<Offset>,
+        hidden_below: Offset,
         now_micros: u64,
         label: &str,
     ) -> Result<Vec<SegmentId>> {
@@ -524,26 +530,36 @@ impl RetentionPlan {
             if floor.is_some_and(|floor| candidate.descriptor().last_offset >= floor) {
                 break;
             }
+            let hidden = candidate.descriptor().last_offset < hidden_below;
             let over_size = max_bytes.is_some_and(|max| total_bytes > max);
-            let too_old = match max_age_micros {
-                // The newest record decides: a segment is only expired once
-                // every record in it is, so nothing younger than the bound goes.
-                Some(max_age) => match candidate.newest_timestamp(&self.files, label)? {
-                    Some(newest) => now_micros.saturating_sub(newest) > max_age,
-                    // A sealed segment always holds a record; treat an
-                    // unreadable timestamp as "keep" rather than deleting on
-                    // missing evidence.
+            let too_old = !hidden
+                && match max_age_micros {
+                    // The newest record decides: a segment is only expired once
+                    // every record in it is, so nothing younger than the bound goes.
+                    Some(max_age) => match candidate.newest_timestamp(&self.files, label)? {
+                        Some(newest) => now_micros.saturating_sub(newest) > max_age,
+                        // A sealed segment always holds a record; treat an
+                        // unreadable timestamp as "keep" rather than deleting on
+                        // missing evidence.
+                        None => false,
+                    },
                     None => false,
-                },
-                None => false,
-            };
-            if !over_size && !too_old {
+                };
+            if !hidden && !over_size && !too_old {
                 break;
             }
             total_bytes = total_bytes.saturating_sub(candidate.valid_bytes());
             chosen.push(candidate.id());
         }
         Ok(chosen)
+    }
+
+    /// One past the last record of the first `count` candidates: where the
+    /// log starts once [`Self::choose`] has deleted that many. `None` for
+    /// none.
+    pub(super) fn end_of(&self, count: usize) -> Option<Offset> {
+        let last = self.candidates.get(count.checked_sub(1)?)?;
+        Some(last.descriptor().last_offset + 1)
     }
 }
 
