@@ -123,7 +123,7 @@ pub(crate) struct CarriedOver {
 /// mode lets Raft count an entry once it is written, which is safe only on a
 /// root whose run rotates after a machine crash, and only once every broker
 /// carries the copy's reservation (`raft_written_commit`). Otherwise
-/// `OnCommit`. See `docs/per-shard-raft.md`, "Commit on a written majority".
+/// `OnCommit`. See `docs/per-shard-raft.md`, "Proposal: commit on a written majority".
 fn raft_fsync_mode(broker: FsyncMode, written_commit: bool, dir: &Path) -> FsyncMode {
     if written_commit
         && felix_storage::run_state::relaxed(&broker)

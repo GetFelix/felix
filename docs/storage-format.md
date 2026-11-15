@@ -1243,8 +1243,12 @@ before it is synced. A power cut of a majority can then lose committed
 entries, and a re-form must start above every index that was counted. The
 reservation is synced before any count above it, so it bounds them. The
 design is in `docs/per-shard-raft.md`, "Proposal: commit on a written
-majority on relaxed brokers". No broker takes a reservation yet. Only a
-rotation writes this file, when the copies it replaced had one.
+majority on relaxed brokers". A Raft log opened with `periodic` or
+`none` raises it, synced, to a million entries past an append it does not
+cover, before Raft counts the append; that happens only once the fleet
+finalizes `raft_written_commit`, which no build reports yet. A rotation
+also writes it, when the copies it replaced had one. Every open loads it,
+and a file that does not decode fails the open.
 
 Written through a temporary, an fsync, a rename and a directory sync. A
 rotation reads the highest reservation of the old directory and every kept

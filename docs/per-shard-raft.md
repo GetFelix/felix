@@ -1003,8 +1003,8 @@ no member can come to hold a different record at a committed offset. On a
 stream with fsync on commit, `Quorum` waits for the commit index. The
 publish path answers this way (`AnswerAt::Majority`, "Acknowledging a
 write"). A proposal to commit on a written majority on relaxed brokers is
-under "Proposal: commit on a written majority on relaxed brokers". It is
-not built.
+under "Proposal: commit on a written majority on relaxed brokers". Its log
+side is built but not enabled.
 
 Votes are the exception, and must be. A voter compares the candidate's
 last log id with the last entry its own log has accepted, written or not
@@ -4113,10 +4113,12 @@ broker append at an old term lands after the vote for a newer one.
 
 ## Proposal: commit on a written majority on relaxed brokers
 
-> **Not implemented.** This is a proposal for review. Nothing below is in
-> the code. The Raft log still fsyncs before openraft hears an append is
-> flushed, on every broker, and everything else on this page describes
-> that.
+> **Partly built, not enabled.** Every broker still fsyncs a Raft log
+> before openraft hears an append is flushed, and everything else on this
+> page describes that. The log side is built behind a fleet feature
+> that no build reports yet, `raft_written_commit`: it waits for the
+> re-form that pads above every reservation. "What is built" below lists
+> the parts.
 
 A broker whose `fsync_mode` is `periodic` or `none` (a relaxed broker)
 does not wait for the disk before it acknowledges a write. Its Raft logs
@@ -4332,6 +4334,31 @@ count is the exact log mark, a second synced write per flush, which the
 batched mark removes on its own (Questions, 11), so the gain must be
 measured after that change, on the three-box layout. `on_commit` cells do
 not move.
+
+### What is built
+
+- The reservation file, carried by a rotation and holding a kept
+  directory against reclaim, and loaded on every open: a copy whose
+  `raft-reserved` does not decode does not open.
+- `RaftLog::new` accepts `periodic` and `none` only on a root whose run in
+  this process began relaxed (`run_state::rotates_on_crash`). Such a log
+  raises the reservation, synced, a million entries past the append when
+  it does not cover it, then fires `IOFlushed` at the write. A failed
+  raise fails the append. `flushed` and the exact log mark still wait for
+  the log's own fsync; the batched mark reads `flushed`, so it never names
+  an unsynced entry. A truncation syncs first.
+- A cache shard's snapshot syncs the log before it is stored.
+- A failed periodic tick poisons the log and leaves `flushed` behind.
+- A crash under `periodic` restarted on `on_commit` rotates, and the
+  strict run's logs fsync on commit again (start 6).
+- A broker opens a shard's Raft log with its own fsync mode only when the
+  fleet has finalized `raft_written_commit` and the root's run is relaxed;
+  otherwise `OnCommit`.
+
+Not built: the re-form's pad and cap of kept directories and the RF 1
+restore (start 8), which the feature waits for; the written-report rules
+(a relaxed leader still asks every follower, which is safe and only
+redundant, #2612); the perf measurement.
 
 ### Code changes it would take
 

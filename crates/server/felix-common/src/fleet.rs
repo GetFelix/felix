@@ -253,7 +253,7 @@ pub const SHARD_RAFT: FleetFeature = FleetFeature::new("shard_raft");
 /// without its hold, and once a re-form pads above the highest reservation.
 /// No build reports it until that re-form exists, and a fleet that finalized
 /// it must not downgrade below the build that carries the reservation
-/// (`docs/per-shard-raft.md`, "Commit on a written majority").
+/// (`docs/per-shard-raft.md`, "Proposal: commit on a written majority").
 pub const RAFT_WRITTEN_COMMIT: FleetFeature = FleetFeature::new("raft_written_commit");
 
 /// The most features one gate tracks. A report longer than this is cut, which

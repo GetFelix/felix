@@ -239,7 +239,7 @@ where
     /// under a root whose run rotates its storage id after a machine crash
     /// ([`run_state::rotates_on_crash`](crate::run_state::rotates_on_crash)),
     /// so a copy that loses a counted entry no longer votes. See
-    /// `docs/per-shard-raft.md`, "Commit on a written majority".
+    /// `docs/per-shard-raft.md`, "Proposal: commit on a written majority".
     ///
     /// Refused when the copy's `raft-reserved` does not decode, on every
     /// open: nothing can rebuild it.
