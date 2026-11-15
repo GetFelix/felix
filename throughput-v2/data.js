@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794784550338,
+  "lastUpdate": 1794784933255,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59228,6 +59228,58 @@ window.BENCHMARK_DATA = {
             "range": "14142.84",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1205299.44\nmean: 1204097.17\nstdev: 14142.84\ncv: 1.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14e1750171f7dae34f1517d44e672750a17899d5",
+          "message": "fix(controlplane): Raft shards move only their placement leader (#2650) (#2651)\n\n* fix(controlplane): Raft shards move only their placement leader (#2650)\n\nOn a cluster whose identity records shard_engine raft, placement no\nlonger runs the hybrid's moves or failover on a durable stream's shard.\nA balance pass, a drain and an operator move write only `leader`, to a\nlive member of the set; a down leader stays named and the group elects;\na hybrid move left on such a shard is dropped. An operator move to a\nbroker outside the set is refused with not_a_member. Hybrid shards,\nin-memory streams and switched shards plan as before.\n\n* fix(controlplane): Raft balance keeps each stream's spread; tally and docs per review\n\nThe cluster rule moved a Raft leader for the totals even where that\nunbalanced its stream, which the stream rule undid on the next pass.\nThe old leader is now uncounted on any live broker, region aside, and\nthe docs say the group's leader follows placement only once #2649 lands.\n\n* fix(controlplane): leader moves keep the Raft target; rename a dead Raft leader\n\nA placement write that names the same brokers keeps the shard's raft_target\nand copy ids, so a leader move does not cancel a membership change in flight.\nA set change still drops them.\n\nA down Raft leader is renamed to a live member, even while paused, since\nbrokers with no member forward to the placement leader.\n\n* chore: spec pairing note for #2650\n\nSpec-Unaffected: control-plane placement writes only choose which voter leads a Raft shard. The voter set, raft_target and copy ids are unchanged by a leader move, and the hybrid placement paths FelixShard models are untouched. FelixRaftPlacement covers set changes, which this does not make.",
+          "timestamp": "2026-11-15T23:17:49Z",
+          "tree_id": "ba54009c5e7631206dd2c9d78e6776353abc1301",
+          "url": "https://github.com/GetFelix/felix/commit/14e1750171f7dae34f1517d44e672750a17899d5"
+        },
+        "date": 1794784932547,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 689566.6,
+            "range": "65770.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 689566.60\nmean: 674573.01\nstdev: 65770.98\ncv: 9.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 689566.6,
+            "range": "65770.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 689566.60\nmean: 674573.01\nstdev: 65770.98\ncv: 9.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157897.65,
+            "range": "4278.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157897.65\nmean: 156809.00\nstdev: 4278.97\ncv: 2.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1578976.48,
+            "range": "42789.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1578976.48\nmean: 1568090.04\nstdev: 42789.75\ncv: 2.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
