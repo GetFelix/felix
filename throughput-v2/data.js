@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794768083121,
+  "lastUpdate": 1794773760202,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58916,6 +58916,58 @@ window.BENCHMARK_DATA = {
             "range": "11354.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1214172.32\nmean: 1212811.74\nstdev: 11354.42\ncv: 0.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de70d6305362985ab12159f097a756480e1df3c1",
+          "message": "fix(raft): reserve before every fsynced count, in every mode (#2632) (#2636)\n\n* fix(raft): reserve before a fsynced count too (#2632)\n\nA re-form keeps a copy's log only up to its saved commit unless the copy\ncan vouch for all of it, so the cut base can end below an entry the copy\nfsynced and counted. It pads only up to the reservations it reads, so an\nunreserved fsynced count let the new epoch reuse a committed offset.\n\nEvery Raft log now raises raft-reserved, synced, before an append's\nwrite in every fsync mode, and every open raises it over the entries\nalready on disk. A damaged reservation fails the open in every mode.\n\nSpec: matches FelixRaftWritten strict reservation rule, PR #2626\n\n* fix(raft): a copy's own reservation beside its entries is not an earlier copy (#2632)\n\nEvery copy now reserves what it writes, so reached_before counts the\ndirectory's own raft-reserved only when it holds no entry, as a\nrotation's carry leaves it. Kept copies still count by entry or\nreservation. Fixes two reclaim tests that assumed an on_commit copy\nnever reserves, and the docs that now contradicted each other.\n\nSpec-Unaffected: reached_before only reads which copies count as an earlier copy\n\n* fix(raft): only a carried reservation says a shard was reached before (#2632)\n\nA copy reserves before its first write, so a broker that dies before\nthat write reaches the disk leaves a reservation and no entry. That read\nas a rotation's carry and held a new shard until an operator re-formed\nit. A rotation now writes raft-reserved-carried before it carries a\nreservation in, and reached_before counts the current directory only\nwhen that mark is there and it holds no entry.\n\nSpec-Unaffected: reached_before only reads which copies count as an earlier copy\n\n* test(raft): an in-place rotation keeps the carried mark; note pre-mark roots (#2632)\n\nSpec-Unaffected: tests and docs only",
+          "timestamp": "2026-11-15T20:07:34Z",
+          "tree_id": "db0e846b76a7e03457eda4b2b2bda720f7c76b5d",
+          "url": "https://github.com/GetFelix/felix/commit/de70d6305362985ab12159f097a756480e1df3c1"
+        },
+        "date": 1794773759559,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347836.98,
+            "range": "14596.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347836.98\nmean: 353527.27\nstdev: 14596.09\ncv: 4.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347836.98,
+            "range": "14596.09",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347836.98\nmean: 353527.27\nstdev: 14596.09\ncv: 4.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81588.56,
+            "range": "715.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81588.56\nmean: 81494.87\nstdev: 715.67\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 815885.58,
+            "range": "7156.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 815885.58\nmean: 814948.73\nstdev: 7156.67\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
