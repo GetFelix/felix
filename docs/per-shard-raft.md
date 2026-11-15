@@ -1060,7 +1060,7 @@ look; until then the commit answers it as before.
 > `a_report_wakes_only_the_writes_it_can_complete`,
 > `no_report_is_lost_between_a_look_and_a_sleep`,
 > `a_learner_ahead_does_not_hide_a_voters_report` and
-> `a_lost_term_ends_the_wait_at_the_next_report`.
+> `a_report_of_a_newer_term_ends_a_wait_on_a_lost_term`.
 
 What the acknowledgement promises, and what it does not
 (`docs/formal/FelixRaftWritten.tla`):
