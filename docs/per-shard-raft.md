@@ -315,7 +315,7 @@ What the gate cannot see:
   with no vote saved since. Example: a mark batch is written, the root is
   copied, C acknowledges R, C is killed before the next batch, and the
   copy is put back. This is the residual of "What this does not catch"
-  below at the scale of a root, and Questions, 11 decides both. The
+  below at the scale of a root, and Questions, 11 accepts both. The
   witness cannot count appends itself, because an ordinary crash would
   then leave it ahead of the root and read as a restore.
 - **Without a witness,** a root restored from a backup newer than the last
@@ -457,15 +457,42 @@ it and treat it as a copy that may hold less than it reported.
 > leader and a follower whose flush then fails, with the third member cut
 > off; the record survives and the follower does not vote).
 
-**What this does not catch.** A single shard directory that goes back to a
-state younger than one mark interval, with no vote saved since, passes
-both checks. A steady leader's term does not change, so the copy's vote
-equals its mark, and its log is above the trailing floor. Example: A and C
-acknowledge R inside the last interval, C's shard directory goes back to
-before R, A dies, and C votes for B, which lacks R. No leader is left to
-notice. Whole-root restores are caught by the gate, down to the window
-named under "The root sequence". Whether to accept this
-residual or pay for an exact mark is Questions, 11.
+**What this does not catch.** Two restores to a state no older than the
+last mark write, with no vote saved since, pass every check. The batch runs
+once a second, so that is about the last second, longer while the mark
+writer is backed up behind its own fsync or queued votes, and about six
+seconds at most (see below):
+
+- **One shard directory** put back to such a state. A steady leader's term does not change, so the copy's vote equals
+  its mark, and its log is not below the trailing mark. Example: A and C
+  acknowledge R inside the last interval, C's shard directory goes back to
+  before R, A dies, and C votes for B, which lacks R. No leader is left to
+  notice.
+- **The whole root** put back, in the same run, to a copy taken after the
+  last mark write. The witness holds the sequence the copy holds, so the
+  gate passes it ("The root sequence").
+
+Anything older is caught: the next batch raises the mark above the copy's
+log and the root's sequence above the copy's, so a restored directory
+rotates and a restored root fails the gate. A member that opens marks what
+it recovered at once (`RaftLog::mark_recovered`), so an idle copy after a
+restart does not keep an old mark. A batch write that fails stops the
+root's mark log: from then on every shard on the root fails its appends and
+votes until the broker restarts, rather than let the log run ahead of a
+mark that no longer moves. A write that hangs is not a failure. Once the
+marks are five intervals old, appends on the root's batched shards wait
+until a batch is written, then go on; nothing fails and nothing restarts.
+The age is checked once an interval, so no acknowledged entry is more than
+about six seconds ahead of its mark. While the write hangs, a vote waits on
+the same mark writer, so votes wait too rather than fail. The hybrid engine
+and an exact mark also stall on a hung disk and resume when it returns.
+`felix_storage_raft_log_mark_age_seconds` shows how far behind the marks
+are, and a warning is logged each second they are more than one interval
+behind. A planned stop writes one last batch per data root after the
+members close, waiting at most five seconds in all, so the marks end at the
+flushed logs. A failed exact mark write fails the same way as a batch. Wipes, lost roots and crashes
+do not depend on the log mark at all. The design accepts this residual
+(Questions, 11); restoring one shard directory is unsupported.
 
 `Config::allow_log_reversion` stays off for shard groups. It lets a voter
 come back with a shorter log under the same id. Off, a leader that sees a
@@ -496,9 +523,14 @@ directory whose log was poisoned in its last run is rotated before its log is op
 only from a `GatePassed`, which the gate (`raft_copy::check`) returns for a
 root that passed, or `Behind::rotate` returns after giving the root a new
 storage id. An unchecked root yields none, so no member opens on it. `GroupRuntime::open_copy` opens a
-member that way. The log mark is exact by default (`LogMarkMode::Exact`,
-synced before the flush is reported to Raft) and can be batched
-(`LogMarkMode::Batched`) until the A/B cell prices the two (Questions, 11).
+member that way. The broker batches the log mark
+(`LogMarkMode::Batched`, from `RuntimeConfig::default`): once a second, one
+synced write carries the flushed position of every shard on the root whose
+position moved. The batch reads the position a flush has already covered,
+never the written one, so a mark is never above what is on disk. A vote
+mark is not batched: `save_vote` returns only after it is synced and the
+witness has heard it. `LogMarkMode::Exact` is still there for tests: it
+syncs the mark before the flush is reported to Raft (Questions, 11).
 `felix_replication::raft::open_root` runs the gate for a broker: it asks
 the control plane for its copy, rotates a root that is behind and returns
 it unopened (`RootOpened::Rotated`, on which the broker stops), and checks
@@ -3576,7 +3608,9 @@ second twin restores a copy to an older log and vote under its old id and
 lets it vote, and must fail the same way. A third restores one shard
 directory to a state younger than the log mark with no vote since, which
 shows the residual of Questions, 11 and is pinned as an expected violation
-if that residual is accepted. This is the model's side of #1331.
+(`FelixRaftIdentityMarkBatched.cfg`, and `FelixRaftIdentityRootRestoreYoung.cfg`
+for a whole root), since that residual is accepted. This is the model's side
+of #1331.
 
 **Re-forming.** Add the group epoch, brokers declared dead, and the
 re-form step as an operator action. It is enabled only when every placed
@@ -4385,6 +4419,20 @@ ones settled by the decisions of issue #2167 say so.
     wipes and crashes are all caught by other checks. (b) charges every
     write for it. If the A/B cell shows the exact mark is free because it
     shares the flush that already happens, take (b).
+    Decided: (a), with a one-second interval. The exact mark was not free:
+    every flush round on every member appended to the root's mark file,
+    synced it and rewrote the run witness before Raft heard of the flush,
+    one shared writer for every shard of the root. On three build boxes
+    (RF 3, six shards, 1 KiB records in batches of 16) the batched mark
+    raised Quorum throughput by 23% with fsync on commit and 27% with
+    periodic fsync, cut the batch ack p50 and p99 by about a fifth, left
+    Leader unchanged, and cut fdatasync calls per 1000 messages from about
+    104 to 69 and renames from about 41 to 0.15. The broker now ships
+    `LogMarkMode::Batched(1 s)`, and the model pins the residual
+    (`FelixRaftIdentityMarkBatched.cfg` and
+    `FelixRaftIdentityRootRestoreYoung.cfg` must fail `AckedHeldByLeader`;
+    `FelixRaftIdentityBatched.cfg`, `FelixRaftIdentityDirRestore.cfg` and
+    `FelixRaftIdentityRootRestoreBatched.cfg` pass).
 
 12. **Does the control plane keep each broker's root sequence?** The run
     witness alone catches a same-run restore only while the machine stays
