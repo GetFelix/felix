@@ -7,12 +7,12 @@
 //! never asked, and a leader is asked once per heartbeat. See
 //! `docs/per-shard-raft.md`, "One timer for every group".
 
-use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use felix_common::random::HashMap;
 use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use tokio::time::{Instant, MissedTickBehavior};
