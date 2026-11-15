@@ -748,3 +748,82 @@ async fn a_trim_answered_after_its_log_closed_is_ambiguous() {
         "{err:?}"
     );
 }
+
+/// **On an engine's log a trim's scan records no further than the engine
+/// committed.** Entries above that can be cut and written again by the next
+/// leader, so a commit put there must still refuse a later trim.
+#[tokio::test]
+async fn a_scan_on_an_engine_log_keeps_only_what_is_committed() {
+    use felix_storage::CommitSequencer;
+    use felix_storage::disk_log::DiskLog;
+    use felix_storage::log::RecordMark;
+
+    async fn append(log: &crate::durable::StreamLog, marks: &[RecordMark]) {
+        let payloads: Vec<Bytes> = marks.iter().map(|_| Bytes::from_static(b"x")).collect();
+        let order = Arc::new(CommitSequencer::new(log.tail_offset().await.expect("tail")));
+        let (pending, _turn) = log
+            .begin_append_marked(&payloads, marks, &[], None, 1, &order)
+            .await
+            .expect("append");
+        log.commit(&pending).await.expect("commit");
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let log = crate::durable::StreamLog::from_log(
+        DiskLog::open(dir.path(), "orders", config).expect("log"),
+    );
+    append(&log, &[RecordMark::None; 10]).await;
+    let broker = Broker::new(EphemeralCache::new().into());
+    broker.leave_durable_streams_to_engines();
+    let bound = Arc::new(Bound(Mutex::new(ReadBound::Committed(6))));
+    broker.set_read_bounds(Arc::clone(&bound) as Arc<dyn ReadBounds>);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "ns")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "orders",
+            StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    let handle = broker
+        .open_stream_on_engine_log("t1", "ns", "orders", 0, log.clone())
+        .await
+        .expect("open");
+    super::refuse_commit_stream(&handle, &log, 10)
+        .await
+        .expect("no commit yet");
+
+    // A new leader cuts the uncommitted 6..10 and writes a commit at 8.
+    log.truncate(6).await.expect("truncate");
+    append(
+        &log,
+        &[
+            RecordMark::None,
+            RecordMark::None,
+            RecordMark::Commit,
+            RecordMark::None,
+        ],
+    )
+    .await;
+    *bound.0.lock() = ReadBound::Committed(10);
+    let refused = super::refuse_commit_stream(&handle, &log, 10).await;
+    assert!(
+        matches!(refused, Err(BrokerError::TrimOnCommitStream)),
+        "{refused:?}"
+    );
+}
