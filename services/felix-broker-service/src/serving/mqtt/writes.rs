@@ -126,7 +126,7 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
 
     fn max_batch_records(&self) -> usize {
         // A Raft shard takes an idempotent batch of one record, and a shard
-        // another broker owns may be on Raft too.
+        // another broker owns may be on Raft too. Batching on Raft: #2638.
         if self.engine.runs_raft() {
             1
         } else {
@@ -179,9 +179,25 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
             let sent = self
                 .send(&batch, &key, &handle, &payloads, &headers, deadline)
                 .await;
+            let delay = Duration::from_millis(50u64 << resends.min(4)).min(MAX_RESEND_DELAY);
             let reason = match sent {
                 Sent::Written => return Ok(()),
                 Sent::Unknown(reason) => return Err(WriteError::OutcomeUnknown(reason)),
+                // A Raft shard has no leader during an election, which the
+                // hybrid's dispatch waits out. Nothing was written, so it is
+                // waited out here, and still a refusal if the budget ends.
+                Sent::Refused(Refusal::NotOwner)
+                    if unanswered.is_none() && self.engine.runs_raft() =>
+                {
+                    match deadline {
+                        Some(deadline) if Instant::now() + delay < deadline => {
+                            tokio::time::sleep(delay).await;
+                            resends += 1;
+                            continue;
+                        }
+                        _ => return Err(WriteError::Refused(Refusal::NotOwner)),
+                    }
+                }
                 Sent::Refused(refusal) => match unanswered {
                     None => return Err(WriteError::Refused(refusal)),
                     // During a failover nobody may own the shard for a moment.
@@ -193,7 +209,6 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
                     reason
                 }
             };
-            let delay = Duration::from_millis(50u64 << resends.min(4)).min(MAX_RESEND_DELAY);
             match deadline {
                 Some(deadline) if Instant::now() + delay < deadline => {
                     tokio::time::sleep(delay).await;

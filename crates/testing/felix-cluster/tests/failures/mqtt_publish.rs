@@ -139,10 +139,13 @@ async fn qos1_through_a_non_owner_survives_a_failover_without_duplicates() {
     cluster.shutdown().await;
 }
 
-/// **On a Raft shard, every acknowledged QoS 1 message survives the leader,
-/// and one acknowledged on its first try is stored once.** Published through
-/// a follower, which forwards to the leader, and through the leader itself;
-/// the leader is then killed and publishing goes on through a survivor.
+/// **On a Raft shard, a QoS 1 message is never refused for the election a
+/// leader's death starts, and one acknowledged is stored once.** Messages go
+/// out one try each, through a follower (which forwards to the leader) and
+/// through the leader, and keep going through a follower while the leader
+/// is killed. A message caught by the kill may get no answer, but none is
+/// refused: the broker waits for the next leader as the default engine does.
+/// None is sent twice, so none may be stored twice.
 #[serial]
 #[tokio::test]
 async fn qos1_on_a_raft_shard_survives_its_leader_without_duplicates() {
@@ -184,39 +187,143 @@ async fn qos1_on_a_raft_shard_survives_its_leader_without_duplicates() {
         .collect();
     let nodes = cluster.node_ids();
     let leader = super::raft::leader_among(&cluster, &nodes).await;
-    let follower = nodes
+    let survivors: Vec<String> = nodes
         .iter()
-        .find(|node| **node != leader)
-        .expect("a follower")
-        .clone();
+        .filter(|node| **node != leader)
+        .cloned()
+        .collect();
+    let follower = survivors[0].clone();
+    let (tenant, token) = (cluster.tenant_id.clone(), cluster.client_token());
 
-    let mut retried = Vec::new();
     for (i, node) in [(0, &follower), (1, &follower), (2, &leader), (3, &leader)] {
-        if publish_until_acked(&cluster, port_of[node], i).await > 1 {
-            retried.push(i);
-        }
+        let answer = publish_once(&tenant, &token, port_of[node], i).await;
+        assert_eq!(answer, Answer::Acked, "m{i} through {node}");
     }
+
+    // One try each, without a pause, from before the kill until well after,
+    // through both survivors in turn: the one elected is placed as owner
+    // before it serves its term, the other forwards to it.
+    let stop = Arc::new(AtomicBool::new(false));
+    let sent = Arc::new(AtomicU32::new(4));
+    let publishing = {
+        let (tenant, token) = (tenant.clone(), token.clone());
+        let ports: Vec<u16> = survivors.iter().map(|node| port_of[node]).collect();
+        let (stop, sent) = (Arc::clone(&stop), Arc::clone(&sent));
+        tokio::spawn(async move {
+            let mut answers = Vec::new();
+            let mut i = 4;
+            while !stop.load(Ordering::Acquire) {
+                let port = ports[i as usize % ports.len()];
+                answers.push((i, publish_once(&tenant, &token, port, i).await));
+                i += 1;
+                sent.store(i, Ordering::Release);
+            }
+            answers
+        })
+    };
+    felix_cluster::wait::until(Duration::from_secs(30), "publishing under way", || {
+        let sent = Arc::clone(&sent);
+        async move { sent.load(Ordering::Acquire) >= 7 }
+    })
+    .await
+    .expect("publishing");
     cluster.stop_node(&leader).await.expect("kill the leader");
-    for i in 4..7 {
-        if publish_until_acked(&cluster, port_of[&follower], i).await > 1 {
-            retried.push(i);
-        }
-    }
+    let at_kill = sent.load(Ordering::Acquire);
+    felix_cluster::wait::until(Duration::from_secs(60), "publishing after the kill", || {
+        let sent = Arc::clone(&sent);
+        async move { sent.load(Ordering::Acquire) >= at_kill + 5 }
+    })
+    .await
+    .expect("publishing after the kill");
+    stop.store(true, Ordering::Release);
+    let answers = publishing.await.expect("publisher");
+
+    let refused: Vec<_> = answers
+        .iter()
+        .filter(|(_, answer)| matches!(answer, Answer::Refused(_)))
+        .collect();
+    assert!(
+        refused.is_empty(),
+        "refused during the election: {refused:?}"
+    );
+    assert!(
+        answers
+            .iter()
+            .rev()
+            .take(3)
+            .all(|(_, answer)| *answer == Answer::Acked),
+        "not served after the election: {answers:?}"
+    );
 
     let live: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
     let next = super::raft::leader_among(&cluster, &live).await;
     let stored = read_back(&cluster, &next).await;
-    for i in 0..7 {
+    let acked = (0..4).chain(
+        answers
+            .iter()
+            .filter(|(_, answer)| *answer == Answer::Acked)
+            .map(|(i, _)| *i),
+    );
+    for i in acked {
         let copies = stored.iter().filter(|p| **p == format!("m{i}")).count();
-        assert!(copies >= 1, "acknowledged m{i} was lost: {stored:?}");
-        if !retried.contains(&i) {
-            assert_eq!(
-                copies, 1,
-                "m{i} was acknowledged once and stored {copies} times"
-            );
-        }
+        assert_eq!(copies, 1, "acknowledged m{i} is stored {copies} times");
+    }
+    for (i, _) in &answers {
+        let copies = stored.iter().filter(|p| **p == format!("m{i}")).count();
+        assert!(copies <= 1, "m{i}, sent once, is stored {copies} times");
     }
     cluster.shutdown().await;
+}
+
+/// How a single try at a QoS 1 publish ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Answer {
+    Acked,
+    /// A `PUBACK` that is not success: nothing was written.
+    Refused(String),
+    /// No `PUBACK`: the connection closed or the answer did not come.
+    Unanswered,
+}
+
+/// Publish `m{i}` at QoS 1 once, on a fresh connection.
+async fn publish_once(tenant: &str, token: &str, port: u16, i: u32) -> Answer {
+    let mut options = MqttOptions::new(format!("device-{i}-{port}"), "127.0.0.1", port);
+    options.set_credentials(tenant, token);
+    let (client, mut events) = AsyncClient::new(options, 10);
+    if client
+        .publish(
+            format!("plant/line/{i}"),
+            QoS::AtLeastOnce,
+            false,
+            format!("m{i}"),
+        )
+        .await
+        .is_err()
+    {
+        return Answer::Unanswered;
+    }
+    let answer = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            match events.poll().await {
+                Ok(Event::Incoming(Packet::PubAck(ack))) if ack.reason == PubAckReason::Success => {
+                    return Answer::Acked;
+                }
+                Ok(Event::Incoming(Packet::PubAck(ack))) => {
+                    let reason = ack
+                        .properties
+                        .and_then(|properties| properties.reason_string)
+                        .unwrap_or_default();
+                    return Answer::Refused(format!("{:?} {reason}", ack.reason));
+                }
+                Ok(_) => {}
+                Err(_) => return Answer::Unanswered,
+            }
+        }
+    })
+    .await
+    .unwrap_or(Answer::Unanswered);
+    let _ = client.disconnect().await;
+    answer
 }
 
 async fn publish_until_acked(cluster: &Cluster, port: u16, i: u32) -> u32 {

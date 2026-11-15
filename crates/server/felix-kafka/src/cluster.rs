@@ -51,6 +51,18 @@ pub trait Cluster: Send + Sync + 'static {
     /// waits for it.
     async fn admit_write(&self, shard: &ShardRef<'_>) -> Result<WritePermit, WriteError>;
 
+    /// The fleet feature a shard needs before it stores record keys and
+    /// headers, when it does not have it yet: the produce is refused rather
+    /// than its keys and headers dropped. `None` when it may store them.
+    fn refuses_record_headers(
+        &self,
+        broker: &Broker,
+        shard: &ShardRef<'_>,
+    ) -> Option<&'static str> {
+        let _ = (broker, shard);
+        None
+    }
+
     /// Write one batch to a shard whose log the broker's own publish path
     /// does not write, such as one a Raft group runs here. `None` leaves the
     /// batch to that path. `permit` is the one [`Self::admit_write`] gave.

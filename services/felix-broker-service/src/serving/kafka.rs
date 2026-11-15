@@ -235,6 +235,15 @@ impl Cluster for BrokerCluster {
         }
     }
 
+    fn refuses_record_headers(
+        &self,
+        broker: &Broker,
+        shard: &ShardRef<'_>,
+    ) -> Option<&'static str> {
+        (self.replication.on_raft(&Self::key(shard)) && !broker.raft_record_headers_allowed())
+            .then(|| felix_common::fleet::RAFT_RECORD_HEADERS.name())
+    }
+
     async fn produce(
         &self,
         broker: &Broker,
@@ -324,11 +333,9 @@ impl BrokerCluster {
         term: u64,
         produce: Produce<'_>,
     ) -> Result<IdempotentOutcome, ProduceError> {
-        // Until the fleet stores headers on Raft they are dropped, as on a
-        // broker that does not take them, rather than the produce refused.
-        let headers = produce
-            .headers
-            .filter(|_| broker.raft_record_headers_allowed());
+        // `refuses_record_headers` turned away headers the group cannot
+        // store yet, before the quota was charged.
+        let headers = produce.headers;
         let Some((producer_id, sequence)) = produce.producer else {
             let attribution = Attribution {
                 publisher: None,
@@ -378,9 +385,20 @@ impl BrokerCluster {
             );
             match raft_proposed(record, term) {
                 Ok(record) => proposed.push(record),
-                // The records before it may still commit; a re-send
-                // finds them in the log.
-                Err(err) => return Err(err),
+                // The records before it may still commit; a re-send finds
+                // them in the log. A refusal that follows from one of them
+                // failing (a gap, which Kafka producers treat as fatal) is
+                // answered with that failure instead.
+                Err(refused) => {
+                    let earlier = proposed.into_iter().map(|record| async move {
+                        record
+                            .complete_outcome()
+                            .await
+                            .map(drop)
+                            .map_err(commit_failure)
+                    });
+                    return Err(earlier_failure(earlier, refused).await);
+                }
             }
         }
         let mut offsets: Option<(u64, u64)> = None;
@@ -400,6 +418,23 @@ impl BrokerCluster {
             duplicate,
         })
     }
+}
+
+/// The first of `earlier` to fail, else `refused`: a later record's refusal
+/// only follows from an earlier record's failure, which is the answer.
+async fn earlier_failure<F>(
+    earlier: impl IntoIterator<Item = F>,
+    refused: ProduceError,
+) -> ProduceError
+where
+    F: std::future::Future<Output = Result<(), ProduceError>>,
+{
+    for record in earlier {
+        if let Err(err) = record.await {
+            return err;
+        }
+    }
+    refused
 }
 
 /// What was proposed, or why nothing was.

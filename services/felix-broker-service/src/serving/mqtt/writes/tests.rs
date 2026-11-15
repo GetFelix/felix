@@ -256,3 +256,59 @@ async fn a_message_for_a_raft_shard_lands_once_with_its_headers() {
     );
     EngineShards::shutdown(&*shards).await;
 }
+
+/// Forwards nothing: a test whose writes all stay on this broker.
+#[cfg(feature = "raft")]
+struct NoPeers;
+
+#[cfg(feature = "raft")]
+impl felix_replication::peer::PeerRequester for NoPeers {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: std::net::SocketAddr,
+        _message: felix_wire::internal::InternalMessage,
+    ) -> Result<felix_wire::internal::InternalMessage, felix_replication::peer::pool::PeerError>
+    {
+        panic!("forwarded to {node_id}");
+    }
+}
+
+/// **An MQTT message for a Raft shard between leaders waits for the next
+/// one** within the forward budget, as the hybrid's dispatch waits for a
+/// shard that is not ready, rather than being refused `not_owner`. Written
+/// as the group opens, before it has elected anyone.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_message_for_a_raft_shard_between_leaders_waits_for_the_next() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    broker.record_headers_when(|| true);
+    broker.allow_raft_record_headers_when(|| true);
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(fixture::engine(&shards)),
+        Duration::from_secs(1),
+    )
+    .with_forwarding(Arc::new(NoPeers), Duration::from_secs(10));
+    let mut message = batch(0, writes.new_producer_id(), &["plant/a"]);
+    message.tenant_id = "t1".into();
+    message.target.stream = "orders".into();
+
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    let led_at_once = shards.leading(&orders).is_some();
+    let written = writes.write(message).await;
+
+    assert!(
+        !led_at_once,
+        "the group led before the write: nothing to wait out"
+    );
+    assert_eq!(written, Ok(()));
+    EngineShards::shutdown(&*shards).await;
+}

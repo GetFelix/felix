@@ -433,3 +433,34 @@ async fn header_bytes_count_toward_the_quota() {
         &[("t1".to_string(), 1, 2 + block.len() as u64)],
     );
 }
+
+/// **A shard that cannot store keys and headers yet refuses a record with
+/// them**, before the quota is charged, rather than dropping them. A record
+/// with neither is still written.
+#[tokio::test]
+async fn keys_and_headers_a_shard_cannot_store_yet_are_refused_not_dropped() {
+    let fixture = stream_fixture(true, true).await;
+    *fixture.cluster.headers_refused.lock().expect("lock") = Some("raft_record_headers");
+    let mut client = fixture.connect();
+
+    let refused = produce(
+        &mut client,
+        1,
+        batch(&[record(0, "a", Some("k1"), &[("trace", Some("t-1"))])]),
+    )
+    .await;
+    let charged = fixture.cluster.produce_charges.lock().expect("lock").len();
+    let plain = produce(&mut client, 1, batch(&[record(0, "b", None, &[])])).await;
+
+    assert_eq!(refused.error_code, 87, "INVALID_RECORD: {refused:?}");
+    assert!(
+        refused
+            .error_message
+            .as_ref()
+            .is_some_and(|message| message.as_str().contains("raft_record_headers")),
+        "{refused:?}"
+    );
+    assert_eq!(charged, 0, "a refused produce was charged to the quota");
+    assert_eq!(plain.error_code, 0, "{plain:?}");
+    assert_eq!(fetched(&mut client).await, vec![seen("b", None, &[])]);
+}

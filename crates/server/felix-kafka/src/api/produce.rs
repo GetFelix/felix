@@ -178,6 +178,19 @@ async fn write(
     let located = resolve_write(shared, principal, topic, partition).await?;
     let keep_headers = shared.settings.record_headers && shared.broker.records_headers();
     let batches = decode::decode(records, keep_headers)?;
+    // Before the quota is charged: nothing is written.
+    if batches.iter().any(|batch| batch.blocks.is_some())
+        && let Some(feature) = shared
+            .cluster
+            .refuses_record_headers(&shared.broker, &located.shard_ref())
+    {
+        return Err(Failure {
+            error: ResponseError::InvalidRecord,
+            message: Some(format!(
+                "this partition stores record keys and headers once the cluster finalizes {feature}"
+            )),
+        });
+    }
     // A kept block is charged with its payload; both are bytes the broker stores.
     let (count, bytes) = batches.iter().fold((0u64, 0u64), |(count, bytes), batch| {
         let blocks = batch.blocks.iter().flatten().flatten().map(Bytes::len);
