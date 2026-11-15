@@ -61,6 +61,8 @@ struct Log {
     keeps_leavers: bool,
     /// Never answer a step.
     hangs: bool,
+    /// No entry of this term is committed yet.
+    fresh: bool,
 }
 
 struct Fake {
@@ -84,6 +86,7 @@ impl Fake {
                 refusals: VecDeque::new(),
                 keeps_leavers: false,
                 hangs: false,
+                fresh: false,
             }),
         })
     }
@@ -141,7 +144,7 @@ impl Member for Arc<Fake> {
                 )),
                 membership: log.membership.clone(),
                 committed: true,
-                own_term_committed: true,
+                own_term_committed: !log.fresh,
                 commit_index: LAST,
             },
             replication: Replication {
@@ -307,6 +310,48 @@ async fn no_membership_without_its_leader_is_written() {
     let pass = driver.pass(Some(&goal)).await;
     assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
     assert_eq!(fake.written(), []);
+}
+
+/// Decisions that break the other two rules `allowed` checks.
+fn stamp_without_the_leader(_view: &View, _target: Option<&Target>) -> Step {
+    Step::Stamp {
+        learners: BTreeSet::new(),
+        version: v(2),
+    }
+}
+
+fn transfer_to_itself(_view: &View, _target: Option<&Target>) -> Step {
+    Step::Transfer(m("a"))
+}
+
+#[tokio::test]
+async fn no_stamp_without_the_leader_and_no_transfer_to_itself() {
+    let fake = Fake::leading(settled(&["b", "c"], &[], 1));
+    let (mut driver, _progress) = driving(&fake);
+    driver.decide = stamp_without_the_leader;
+    let pass = driver.pass(Some(&target(&["b", "c"], 2))).await;
+    assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
+    assert_eq!(fake.written(), []);
+
+    let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
+    let (mut driver, _progress) = driving(&fake);
+    driver.decide = transfer_to_itself;
+    let pass = driver.pass(Some(&target(&["b", "c"], 2))).await;
+    assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
+    assert_eq!(fake.log.lock().transfers, []);
+}
+
+/// A fresh leader with no target is idle while its first entry commits,
+/// not converging toward nothing.
+#[tokio::test]
+async fn a_fresh_leader_with_no_target_is_idle() {
+    let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
+    fake.log.lock().fresh = true;
+    let (mut driver, progress) = driving(&fake);
+    let pass = driver.pass(None).await;
+    assert_eq!(pass, Pass::Parked(Wait::NoTarget));
+    assert_eq!(driver.after(&pass), None);
+    assert_eq!(*progress.borrow(), MembershipProgress::Idle);
 }
 
 #[tokio::test]
@@ -667,6 +712,38 @@ async fn a_target_removes_a_voter_and_keeps_no_learner() {
     held_by(&cluster, &kept, &settled(&kept, &[], 2)).await;
     progress_of(&cluster, MembershipProgress::Settled).await;
     watch.check().await;
+    cluster.stop().await;
+}
+
+/// A transfer asked for a term the member no longer leads gives up
+/// nothing: the successor was picked from that term's log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_transfer_for_a_term_not_led_is_not_asked() {
+    let (mut cluster, leader) = pair().await;
+    let term = leader.status().term;
+    let other = if &*leader.member.broker == "a" {
+        "b"
+    } else {
+        "a"
+    };
+    let to = cluster
+        .runtime(other)
+        .group(&shard(0))
+        .expect("group")
+        .member
+        .clone();
+    assert_eq!(leader.transfer_in(term - 1, to).await, None);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let status = leader.status();
+    assert_eq!((status.role, status.term), (Role::Leader, term));
+    let record = Command {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(b"still leading"),
+        written: None,
+        producer: None,
+    };
+    leader.raft().client_write(record).await.expect("write");
+    drop(leader);
     cluster.stop().await;
 }
 

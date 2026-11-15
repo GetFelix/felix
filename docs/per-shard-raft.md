@@ -3038,7 +3038,9 @@ brokers into the members a target names, the way the first members are
 asked for ("Forming a group"): a question to copy 0 is refused with the
 copy the broker holds. A broker that does not answer keeps the member the
 membership already names on it, so a down voter that stays does not block
-a change; a new broker that does not answer stops the call. A broker
+a change; a new broker that does not answer stops the call. The asking
+broker's own member is named only when the list names its broker, so a
+target can drain the leader's broker. A broker
 whose copy was wiped answers with its new id, so the target names the new
 copy: the driver adds it as a learner and drops the old id once the new
 copy has caught up.
@@ -3073,7 +3075,8 @@ What the driver keeps between looks only paces it: the term a transfer
 was asked in and its retry counts. A
 new leader, or the same broker after a restart, starts from what its log
 holds: it leaves a joint membership it finds before it reads the target,
-and otherwise does nothing until it is told one.
+and otherwise does nothing until it is told one. With no target and no
+joint membership it reports idle, even before its first entry commits.
 
 **A move off the leader.** When the target leaves the leader out, the
 leader first adds the new members as learners, then grows the voters to
@@ -3082,7 +3085,21 @@ keeps that holds its whole log. The next leader shrinks the voters to the
 target. If the transfer does not go through, openraft ends the term after
 one election timeout. Whoever wins the next election looks again: the old
 leader asks for the transfer again, and never falls back to a change that
-removes itself.
+removes itself. A leader that a joint membership leaves out prefers a
+successor its own newer target keeps, so the next leader is not one that
+target moves out again.
+
+**What the control plane must guarantee (not yet wired).** The grown set
+keeps the membership's version, so a successor holding a different target
+does not see it as stale. Two members holding targets that each leave the
+other's seat out hand leadership back and forth, paced by the transfer
+count above. Members do not report the target version they hold, so the
+leader cannot check its successor's. Before the control plane sends
+targets, it must deliver the same target version to every member before
+any transfer can follow from it. A successor still holding an older target
+whose version equals the membership's shrinks the grown set back to that
+older target. That is a liveness cost, not a safety one: every set it
+writes contains its leader and goes through the same checks. Tracked in #2591.
 
 **Refusals.** A step can fail in two ways, and the driver treats them
 differently:

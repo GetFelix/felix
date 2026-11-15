@@ -190,6 +190,43 @@ async fn a_target_names_the_copy_a_new_broker_holds() {
     }
 }
 
+/// A target that leaves out the leader's own broker names no member there,
+/// so draining the leader's broker can be asked for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_target_without_the_leaders_broker_leaves_its_member_out() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut opened = HashMap::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let member = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        opened.insert(broker, member.member);
+        logs.push(member.log);
+    }
+    let (a, key, within) = (cluster.runtime("a"), shard(0), Duration::from_secs(5));
+    let first = a.first_members(&key, BROKERS, within).await.expect("blank");
+    a.initialize(&key, first).await.expect("initialize");
+    cluster.elected(0).await;
+
+    let drained = a
+        .target_members(&key, ["b", "c"], within)
+        .await
+        .expect("members");
+    assert_eq!(drained, [opened["b"].clone(), opened["c"].clone()].into());
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.expect("close");
+    }
+}
 /// A copy whose directory was wiped comes back under a new id. A request
 /// for the old id is refused, the group still counts the old id as its
 /// voter, and the new copy never votes: the old promise is not made again

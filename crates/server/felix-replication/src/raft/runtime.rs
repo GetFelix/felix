@@ -842,9 +842,12 @@ impl GroupRuntime {
     ///
     /// A broker joins a group as a learner only through the copy its
     /// directory holds, opened with [`Self::open_copy`], so its id is asked
-    /// for, never guessed. A broker that does not answer keeps the member
-    /// the group's membership already names on it, which leaves that member
-    /// as it is. One the membership does not name stops the call.
+    /// for, never guessed. A broker that refuses any other way (silence, an
+    /// error, an answer with no copy id) keeps the member the group's
+    /// membership already names on it, which leaves that member as it is. One
+    /// the membership does not name stops the call. This broker's own member
+    /// is in the result only when `brokers` names this broker, so a target can
+    /// drain the leader's broker.
     pub async fn target_members(
         &self,
         shard: &ShardKey,
@@ -857,6 +860,10 @@ impl GroupRuntime {
             .get(shard)
             .ok_or(NotBlank::NoSuchGroup)?;
         let known = group.members();
+        let brokers: Vec<&str> = brokers.into_iter().collect();
+        let names_self = brokers
+            .iter()
+            .any(|broker| **broker == *group.member.broker);
         let asks = brokers
             .into_iter()
             .filter(|broker| **broker != *group.member.broker)
@@ -882,7 +889,9 @@ impl GroupRuntime {
             .await?
             .into_iter()
             .collect();
-        members.insert(group.member.clone());
+        if names_self {
+            members.insert(group.member.clone());
+        }
         Ok(members)
     }
 

@@ -184,6 +184,21 @@ fn a_leader_the_joint_leaves_out_transfers_instead_of_flattening() {
 }
 
 #[test]
+fn a_leader_the_joint_leaves_out_prefers_a_successor_its_target_keeps() {
+    let view = joint(&["a", "b", "c"], &["b", "c", "d"]);
+    let newer = target(&["c", "d", "e"], 2);
+    assert_eq!(next_step(&view, Some(&newer)), Step::Transfer(m("c")));
+    // Not a newer target: the joint's own set decides.
+    let same = target(&["c", "d", "e"], 1);
+    assert_eq!(next_step(&view, Some(&same)), Step::Transfer(m("b")));
+    // No member it keeps holds the log: any successor of the joint's set.
+    let mut view = view;
+    view.matched.insert(m("c"), view.last_index - 1);
+    view.matched.insert(m("d"), view.last_index - 1);
+    assert_eq!(next_step(&view, Some(&newer)), Step::Transfer(m("b")));
+}
+
+#[test]
 fn a_leader_the_target_leaves_out_grows_then_transfers() {
     // The leader's seat moves to `d`: never a change without itself.
     let goal = target(&["b", "c", "d"], 2);
@@ -254,6 +269,16 @@ fn the_same_voters_at_a_newer_version_are_stamped() {
 #[test]
 fn no_target_no_step() {
     let view = leader(&["a", "b", "c"], &["d"]);
+    assert_eq!(next_step(&view, None), Step::Wait(Wait::NoTarget));
+}
+
+/// A fresh leader with nothing to do is idle before its first entry
+/// commits, not waiting on it.
+#[test]
+fn no_target_on_a_fresh_leader_is_no_target() {
+    let mut view = leader(&["a", "b", "c"], &[]);
+    view.own_term_committed = false;
+    view.config_committed = false;
     assert_eq!(next_step(&view, None), Step::Wait(Wait::NoTarget));
 }
 
