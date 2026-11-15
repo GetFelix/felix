@@ -457,11 +457,12 @@ it and treat it as a copy that may hold less than it reported.
 > leader and a follower whose flush then fails, with the third member cut
 > off; the record survives and the follower does not vote).
 
-**What this does not catch.** Two restores that land inside one mark
-interval (one second), with no vote saved since, pass every check:
+**What this does not catch.** Two restores to a state no older than the
+last mark write, with no vote saved since, pass every check. The batch runs
+once a second, so that is about the last second, longer while the mark
+writer is backed up behind its own fsync or queued votes:
 
-- **One shard directory** put back to a state from less than one interval
-  ago. A steady leader's term does not change, so the copy's vote equals
+- **One shard directory** put back to such a state. A steady leader's term does not change, so the copy's vote equals
   its mark, and its log is not below the trailing mark. Example: A and C
   acknowledge R inside the last interval, C's shard directory goes back to
   before R, A dies, and C votes for B, which lacks R. No leader is left to
@@ -472,7 +473,12 @@ interval (one second), with no vote saved since, pass every check:
 
 Anything older is caught: the next batch raises the mark above the copy's
 log and the root's sequence above the copy's, so a restored directory
-rotates and a restored root fails the gate. Wipes, lost roots and crashes
+rotates and a restored root fails the gate. A member that opens marks what
+it recovered at once (`RaftLog::mark_recovered`), so an idle copy after a
+restart does not keep an old mark. A batch write that fails stops the
+root's mark log: from then on every shard on the root fails its appends and
+votes until the broker restarts, rather than let the log run ahead of a
+mark that no longer moves. An exact mark fails the same way. Wipes, lost roots and crashes
 do not depend on the log mark at all. The design accepts this residual
 (Questions, 11); restoring one shard directory is unsupported.
 

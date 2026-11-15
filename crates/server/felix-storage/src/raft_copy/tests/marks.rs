@@ -330,3 +330,19 @@ async fn an_aborted_taker_fails_its_batch() {
         .await
         .expect_err("a write after the abandoned one");
 }
+
+/// A batch that finds its shard reopened under another copy drops that
+/// position instead of failing, since a failed batch stops the whole log.
+#[tokio::test]
+async fn a_batch_for_a_replaced_copy_is_dropped_not_failed() {
+    let root = Root::new();
+    let log = open(&root);
+    log.fresh(Arc::from(SHARD), 7).await.expect("fresh");
+    log.fresh(Arc::from(SHARD), 8).await.expect("rotated");
+    let ticket = log
+        .enqueue_batched_log(SHARD, 7, point(1, 4))
+        .expect("dropped, not failed");
+    assert_eq!(ticket, None);
+    assert!(log.failure().is_none());
+    assert_eq!(log.marks(SHARD).expect("marks").log, None);
+}

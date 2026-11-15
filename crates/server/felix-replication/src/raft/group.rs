@@ -458,6 +458,7 @@ impl Group {
         let root = marks.as_ref().map(|(marks, _)| marks.mark_log().clone());
         if let Some((marks, mode)) = marks {
             log.mark_with(marks, mode)?;
+            log.mark_recovered().await?;
         }
         let positions = log.positions();
         let copy = felix_storage::raft_copy::CurrentCopy::new(

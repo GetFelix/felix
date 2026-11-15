@@ -275,6 +275,24 @@ where
         Ok(())
     }
 
+    /// Mark the log as it was recovered: sync it, then raise the log mark
+    /// to its last entry. Until the first append the batch has no flushed
+    /// position to mark, so without this a reopened copy's mark could trail
+    /// what it holds for as long as it takes no append. Call it after
+    /// [`Self::mark_with`] and before the log is handed to Raft.
+    pub async fn mark_recovered(&self) -> io::Result<()> {
+        let Some(marking) = self.shared.marking.get() else {
+            return Ok(());
+        };
+        let log = &self.shared.log;
+        log.sync().await.map_err(writer::io_error)?;
+        let last = last_point(log).await?;
+        if last.is_some() {
+            marking.marks.raise_log(last).await?;
+        }
+        Ok(())
+    }
+
     /// The log's written and flushed positions, as they change.
     pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.shared.positions.subscribe()

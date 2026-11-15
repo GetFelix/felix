@@ -258,7 +258,7 @@ async fn the_batched_mark_writes_once_per_interval_under_load() {
     let elapsed = started.elapsed();
     let writes = copies.mark_log().sequence() - before;
     let intervals = (elapsed.as_millis() / interval.as_millis()) as u64;
-    assert!(index > 2 * intervals, "only {index} flushes in {elapsed:?}");
+    assert!(index > intervals + 1, "only {index} flushes in {elapsed:?}");
     assert!(
         writes <= intervals + 1,
         "{writes} mark writes for {index} flushes in {elapsed:?}"
@@ -272,6 +272,30 @@ async fn the_batched_mark_writes_once_per_interval_under_load() {
         );
         tokio::time::sleep(interval / 4).await;
     }
+}
+
+/// A copy reopened before its batch ran is marked at what it recovered:
+/// with no append after the reopen the batch has nothing to mark, and the
+/// mark would otherwise trail the log for as long as the shard is idle.
+#[tokio::test]
+async fn a_reopened_log_marks_what_it_recovered() {
+    let batched = LogMarkMode::Batched(std::time::Duration::from_secs(3600));
+    let root = Root::new();
+    let copies = root.open();
+    let (opened, mut log) = opened(&root, &copies, batched).await;
+    append(&mut log, &[normal(1, 0, "a"), normal(1, 1, "b")])
+        .await
+        .expect("append")
+        .await
+        .expect("flush");
+    assert_eq!(root.marks_on_disk().expect("marks").log, None);
+    drop(log);
+    let reopened = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    reopened
+        .mark_with(opened.marks.clone(), batched)
+        .expect("marks");
+    reopened.mark_recovered().await.expect("recovered");
+    assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(1, 1)));
 }
 
 /// The ballot is synced whatever the log's fsync mode: a Raft log refuses

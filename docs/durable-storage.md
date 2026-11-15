@@ -1705,9 +1705,12 @@ plane copy (see `docs/per-shard-raft.md`, "The root sequence").
 The vote mark is synced, and the witness told, before a vote is answered. The
 log mark is batched: once a second one synced write carries the flushed
 position of every shard on the root that moved. It names only what a flush
-has already covered, so it is never above the log. The cost is a window: a
-shard directory, or the whole root in the same run, put back to a state from
-the last second with no vote since is not caught. Restoring a single shard
+has already covered, so it is never above the log, and a member that opens
+marks what it recovered at once. The cost is a window: a shard directory, or
+the whole root in the same run, put back to a state no older than the last
+mark write (about a second) with no vote since is not caught. A failed write
+of `raft-marks` stops appends and votes for every shard on the root until
+the broker restarts. Restoring a single shard
 directory is unsupported for that reason. See `docs/per-shard-raft.md`, "What
 this does not catch".
 

@@ -333,7 +333,7 @@ impl MarkLog {
             drop(live);
             // Under the sources' lock, so a truncation that holds a shard
             // after this read queues its lower mark after this one.
-            self.enqueue(updates)?
+            self.enqueue_batch(updates)?
         };
         match ticket {
             Some(ticket) => self.wait(ticket).await,
@@ -424,6 +424,36 @@ impl MarkLog {
     /// Queue `updates`, or `None` when each is already synced and nothing
     /// queued names its shard.
     fn enqueue(&self, updates: Vec<Queued>) -> io::Result<Option<u64>> {
+        self.enqueue_with(updates, false)
+    }
+
+    /// As [`Self::enqueue`], dropping the positions of shards whose copy
+    /// changed since the batch read them: a shard reopened under a new copy
+    /// between the read and here. Failing the batch would stop the whole log.
+    fn enqueue_batch(&self, updates: Vec<Queued>) -> io::Result<Option<u64>> {
+        self.enqueue_with(updates, true)
+    }
+
+    /// Queue a batched log position for `shard` as the batch does.
+    #[cfg(test)]
+    pub(crate) fn enqueue_batched_log(
+        &self,
+        shard: &str,
+        copy: u64,
+        point: LogPoint,
+    ) -> io::Result<Option<u64>> {
+        self.enqueue_batch(vec![Queued {
+            shard: Arc::from(shard),
+            copy,
+            update: Update::Log(Some(point)),
+        }])
+    }
+
+    fn enqueue_with(
+        &self,
+        mut updates: Vec<Queued>,
+        drop_foreign: bool,
+    ) -> io::Result<Option<u64>> {
         let mut queue = self.inner.queue.lock();
         {
             let live = self.inner.live.read();
@@ -437,18 +467,26 @@ impl MarkLog {
             }) {
                 return Ok(None);
             }
-            for queued in &updates {
+            let belongs = |queued: &Queued| {
                 let fresh_queued = queue.updates.iter().any(|earlier| {
                     earlier.shard == queued.shard
                         && earlier.copy == queued.copy
                         && matches!(earlier.update, Update::Fresh)
                 });
-                let belongs = matches!(queued.update, Update::Fresh)
+                matches!(queued.update, Update::Fresh)
                     || fresh_queued
                     || live
                         .get(&queued.shard)
-                        .is_some_and(|marks| marks.copy == queued.copy);
-                if !belongs {
+                        .is_some_and(|marks| marks.copy == queued.copy)
+            };
+            if drop_foreign {
+                updates.retain(|queued| belongs(queued));
+                if updates.is_empty() {
+                    return Ok(None);
+                }
+            }
+            for queued in &updates {
+                if !belongs(queued) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         format!(
@@ -716,6 +754,21 @@ impl CopyMarks {
     /// this returns.
     pub async fn log(&self, point: Option<LogPoint>) -> io::Result<()> {
         self.submit(Update::Log(point)).await
+    }
+
+    /// Raise the log mark to `point` if it is below it. `point` must be on
+    /// disk. Synced before this returns.
+    pub(crate) async fn raise_log(&self, point: Option<LogPoint>) -> io::Result<()> {
+        let current = self
+            .log
+            .marks(&self.shard)
+            .filter(|marks| marks.copy == self.copy)
+            .and_then(|marks| marks.log);
+        if log_below(current, point) {
+            self.log(point).await
+        } else {
+            Ok(())
+        }
     }
 
     /// Lower the log mark to `point` if it is above it, before a truncation

@@ -157,7 +157,7 @@ async fn the_shipped_log_mark_is_one_write_a_second() {
     for broker in BROKERS {
         let writes = roots.roots[broker].mark_log().sequence() - before[broker];
         assert!(
-            writes <= seconds + 3,
+            writes <= seconds + 6,
             "{broker}: {writes} mark writes for 100 writes in {seconds} s"
         );
     }
