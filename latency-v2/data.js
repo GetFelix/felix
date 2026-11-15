@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794724408179,
+  "lastUpdate": 1794726451698,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73656,6 +73656,72 @@ window.BENCHMARK_DATA = {
             "range": "917.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 667.00\nmean: 1071.80\nstdev: 917.82\ncv: 85.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d31f2df5e63be667fb363dbd6b015684b229f2c6",
+          "message": "fix(raft): a Raft sim seed repeats: seeded ticker maps, and the Raft sim seeds them (#2567) (#2608)\n\n* test(raft): the dead-broker commit test names no expected offset\n\n#2590 added a test that builds a Command, and #2589 then added the\nrequired `expected` field, so main's felix-replication tests no longer\ncompiled.\n\nSpec-Unaffected: test-only fix for a compile error.\n\n* fix(raft): seeded maps for the ticker's brokers, so a sim seed repeats (#2567)\n\nThe Raft ticker walks Reach's map of peer brokers and, since the dead-peer\nscout, spawns a heartbeat task per down broker in that order. Reach and the\nticker used std's HashMap, whose keys come from the OS, so two runs of one\nseed spawned those tasks in different orders and diverged (raft seed 2\ndiffered at event 666 under FELIX_SIM_CLOCKS=bounded). Both now use\nfelix_common::random::HashMap, as the rest of replication does.\n\nThe batched log marks (#2584) had the same std maps and write their records\nin the map's order, and random_copy_id hashed the host clock with std keys;\nboth now draw from the seed under a simulator.\n\nSpec-Unaffected: map hashers and id draws only; no modelled step changes.\n\n* fix(sim): the Raft simulation seeds felix_common's draws (#2567)\n\nrun_seed seeded tokio and openraft's timers but never called\nfelix_common::jitter::sim::seed, so every felix_common::random map in the\nengine took random keys there, and the seeded maps of the previous commit\nstill walked in a new order each run. The ticker's walk then sent\nResetBackoff to b3 first in one run and b1 first in the next. The run now\nseeds the thread and asserts it is seeded.\n\nSpec-Unaffected: simulator seeding only; no modelled step changes.\n\n* fix(sim): soften seed claim for marks, assert the run's own seed, wrap doc line",
+          "timestamp": "2026-11-14T23:00:11-08:00",
+          "tree_id": "3b3a2261a8fb15f2097bcc6409dccae37295f5e9",
+          "url": "https://github.com/GetFelix/felix/commit/d31f2df5e63be667fb363dbd6b015684b229f2c6"
+        },
+        "date": 1794726442362,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 99,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 98.60\nstdev: 0.55\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.20\nstdev: 1.64\ncv: 1.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 179,
+            "range": "1079.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 179.00\nmean: 658.40\nstdev: 1079.81\ncv: 164.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 134.60\nstdev: 0.55\ncv: 0.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 264,
+            "range": "6.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 266.00\nstdev: 6.04\ncv: 2.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 387,
+            "range": "255.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 387.00\nmean: 474.20\nstdev: 255.43\ncv: 53.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
