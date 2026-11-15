@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794713179656,
+  "lastUpdate": 1794714338660,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73326,6 +73326,72 @@ window.BENCHMARK_DATA = {
             "range": "50.47",
             "unit": "us",
             "extra": "trials: 5\nmedian: 446.00\nmean: 418.20\nstdev: 50.47\ncv: 12.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "097807c93f2f63fa86d194d1e57c6f9ac88d2eeb",
+          "message": "perf(raft): wake a waiting write only when its position is reached (#2577) (#2582)\n\n* perf(raft): wake a waiting write only when its position is reached (#2577)\n\nEvery in-flight write on a Raft shard waited on a tokio watch: the commit\ntable for await_commit, and the log's positions for a flushed ack and a\nfollower's written report. watch::wait_for wakes every receiver on every\nsend, so with 512 writes in flight each applied run woke all 512 to look\nand sleep again.\n\nfelix_storage::waiters adds an ordered queue beside a watch. A waiter\nregisters under its key before it looks at the value, and an advance wakes\nonly the keys it reaches, so a send between the look and the sleep is not\nlost. The watch still holds the value and decides the answer; the queue\nonly says when to look. The state machine advances it per published run,\nthe Raft log per positions send, and dropping the owner wakes everyone as\nclosed. Term loss, stop and timeout still end the waits as before.\n\n512 waiters advanced one index at a time: watch::wait_for looked 95,526\ntimes, the queue 1,024.\n\nSpec-Unaffected: a wake-up mechanism change; no spec models how waiters are woken.\n\n* fix(storage): drop a waiter's waker outside the queue lock\n\nSpec-Unaffected: lock hygiene in the wake-up queue; no spec models it.\n\n* test(storage): pin the Raft log's waiter queue advances; skip the queue for a satisfied wait\n\n* test(storage): pin the truncate's queue advance; say the fast path looks first",
+          "timestamp": "2026-11-15T03:38:11Z",
+          "tree_id": "c83c2349c93cc65e7e6c1d7bb6d926382739d031",
+          "url": "https://github.com/GetFelix/felix/commit/097807c93f2f63fa86d194d1e57c6f9ac88d2eeb"
+        },
+        "date": 1794714331513,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 62,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 62.00\nmean: 62.00\nstdev: 0.71\ncv: 1.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 83,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 83.00\nstdev: 1.22\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 114,
+            "range": "33.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 114.00\nmean: 123.40\nstdev: 33.40\ncv: 27.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 78,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 78.00\nmean: 78.40\nstdev: 0.55\ncv: 0.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 168,
+            "range": "8.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 168.00\nmean: 170.00\nstdev: 8.63\ncv: 5.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 295,
+            "range": "31.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 295.00\nmean: 284.80\nstdev: 31.51\ncv: 11.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
