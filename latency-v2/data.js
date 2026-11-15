@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794776906827,
+  "lastUpdate": 1794777222618,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74976,6 +74976,72 @@ window.BENCHMARK_DATA = {
             "range": "142.29",
             "unit": "us",
             "extra": "trials: 5\nmedian: 513.00\nmean: 542.60\nstdev: 142.29\ncv: 26.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a00a8e0bbfd8df239a9a7349e37c66f1a36ad52",
+          "message": "perf: re-runnable Raft vs hybrid parity matrix (#2646) (#2648)\n\n* perf: re-runnable Raft vs hybrid parity matrix (#2646)\n\ntask perf:raft-parity builds one binary and runs single node and RF 3 cells\n(on_commit, Quorum periodic, Leader periodic; batch 1 latency and batched\nthroughput), leader-kill recovery, Kafka produce, MQTT publish and consumer\nfanout on both shard engines, then writes markdown and JSON with a per-cell\nPASS/FAIL against the measured noise. felix-loadgen gains failover and\nmqtt-publish scenarios.\n\n* perf: parity gate fails on dropped rounds, caps noise, gates failed sends\n\n* perf: parity harness stops its own processes, measures failover from the kill, waits for a writable disk",
+          "timestamp": "2026-11-15T21:01:44Z",
+          "tree_id": "d4c9248a48fbdc9377349f1d83735c889029be31",
+          "url": "https://github.com/GetFelix/felix/commit/6a00a8e0bbfd8df239a9a7349e37c66f1a36ad52"
+        },
+        "date": 1794777213981,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 74,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 74.00\nmean: 73.60\nstdev: 0.55\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "1.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 127.00\nstdev: 1.22\ncv: 0.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 157,
+            "range": "4.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 156.20\nstdev: 4.66\ncv: 2.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 90.40\nstdev: 3.21\ncv: 3.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 191,
+            "range": "150.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 191.00\nmean: 260.60\nstdev: 150.12\ncv: 57.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 319,
+            "range": "759.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 319.00\nmean: 669.60\nstdev: 759.84\ncv: 113.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
