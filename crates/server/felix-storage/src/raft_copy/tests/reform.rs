@@ -377,3 +377,113 @@ fn an_epoch_file_that_breaks_its_rules_does_not_decode() {
     std::fs::write(&path, &bytes).expect("write");
     fails();
 }
+
+/// A copy as a start leaves it: entries 0..=4 of term 1 as its base, the
+/// epoch's first index at 8, and a purged id at 7 so its first entry lands
+/// there. `extra` is appended above the base first.
+async fn started(extra: &[(u64, u64)]) -> TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let mut entries: Vec<_> = (0..5).map(|index| normal(1, index, "base")).collect();
+    entries.extend(extra.iter().map(|&(term, index)| normal(term, index, "x")));
+    append_flushed(&mut raft, &entries).await;
+    raft.disk_log().close().await.expect("close");
+    crate::raft_log::store_purged(dir.path(), 7, crate::raft_log::generation_of(1).unwrap())
+        .expect("purged");
+    let file = EpochFile {
+        incarnation: 1,
+        bases: vec![EpochBase {
+            base_last: Some(EpochLogId {
+                index: 4,
+                epoch: 0,
+                term: 1,
+            }),
+            first_index: 8,
+        }],
+    };
+    epoch_file::store(dir.path(), &file).expect("epoch");
+    dir
+}
+
+/// The purged id a start writes ends its gap and names no entry: the copy
+/// reads as its base, with every base index's term from its records.
+#[tokio::test]
+async fn a_started_copy_reads_as_its_base() {
+    let dir = started(&[]).await;
+    let probes = BTreeSet::from([2, 4, 6, 7]);
+    let read = read_copy(dir.path(), SPACING, &probes).expect("read");
+    assert_eq!(read.last, Some(LogPoint { term: 1, index: 4 }));
+    assert_eq!(read.purged, None);
+    assert_eq!(
+        read.terms,
+        BTreeMap::from([(2, Some(1)), (4, Some(1)), (6, None), (7, None)])
+    );
+}
+
+/// A record in the gap is not the base: the purged id stays, so the plan
+/// sees an id in the gap and refuses.
+#[tokio::test]
+async fn a_started_copy_with_a_record_in_its_gap_keeps_its_purged_id() {
+    let dir = started(&[(1, 5)]).await;
+    let read = read_copy(dir.path(), SPACING, &BTreeSet::new()).expect("read");
+    assert_eq!(read.last, Some(LogPoint { term: 1, index: 7 }));
+    assert_eq!(read.purged, Some(7));
+}
+
+/// Plan a re-form of epoch 1 from three copies read off disk, each as
+/// `started` left it with `extra` above its base.
+async fn replan(extra: &[(u64, u64)]) -> Result<ReformPlan<&'static str>, Refused<&'static str>> {
+    let dirs = [
+        started(extra).await,
+        started(extra).await,
+        started(extra).await,
+    ];
+    let probes: BTreeSet<u64> = (0..10).collect();
+    let mut reports = BTreeMap::new();
+    for ((name, dir), copy) in ["a", "b", "c"].into_iter().zip(&dirs).zip(1..) {
+        let mut current = read_copy(dir.path(), SPACING, &probes).expect("read");
+        current.copy = Some(copy);
+        current.vote = Some(1);
+        reports.insert(
+            name,
+            BrokerReport {
+                leads: false,
+                names: BTreeSet::new(),
+                copies: BrokerCopies {
+                    current,
+                    kept: vec![],
+                },
+            },
+        );
+    }
+    let record = GroupRecord {
+        incarnation: 1,
+        bases: epoch_file::load(dirs[0].path())
+            .expect("epoch")
+            .expect("a file")
+            .bases,
+        floor: None,
+        placed: Some(BTreeSet::from(["a", "b", "c"])),
+        dead: BTreeSet::new(),
+    };
+    plan_reform(&record, &reports)
+}
+
+/// #2640: a voter that started its epoch and is re-formed again vouches its
+/// whole base, though its purged id sits at the end of the gap.
+#[tokio::test]
+async fn a_started_voter_re_formed_again_vouches_its_whole_base() {
+    let plan = replan(&[]).await.expect("a plan");
+    assert!(!plan.marked);
+    assert_eq!(plan.base_end(), 5);
+}
+
+/// A real record in the gap still refuses the plan.
+#[tokio::test]
+async fn a_started_copy_with_a_record_in_its_gap_refuses_the_plan() {
+    let refused = replan(&[(1, 5)]).await.expect_err("refused");
+    assert!(
+        matches!(refused, Refused::RecordInGap { index: 7, .. }),
+        "{refused:?}"
+    );
+}

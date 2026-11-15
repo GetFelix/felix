@@ -180,8 +180,9 @@ pub(crate) fn read_copy(
     }
     let kept = read_kept(path, index_spacing_bytes)?;
     let held = held::read(path, &label, index_spacing_bytes)?;
-    let purged = crate::raft_log::purged_point(path).map_err(named)?;
-    let last = match held.last_record {
+    let epoch = epoch_file::load(path)?;
+    let mut purged = crate::raft_log::purged_point(path).map_err(named)?;
+    let mut last = match held.last_record {
         Some((index, generation)) if purged.is_none_or(|purged| index > purged.index) => {
             Some(LogPoint {
                 index,
@@ -190,6 +191,39 @@ pub(crate) fn read_copy(
         }
         _ => purged,
     };
+    // A start puts its first entry at the epoch's first index by purging up
+    // to the end of the gap, and keeps its base below it. That purged id is
+    // no entry: the copy's log is its base, read from its records (#2640).
+    if let Some(top) = epoch.as_ref().and_then(|file| file.bases.last())
+        && purged.is_some_and(|purged| purged.index.checked_add(1) == Some(top.first_index))
+    {
+        let base_last = top.base_last.map(|last| last.index);
+        let record_last = held.last_record.map(|(index, _)| index);
+        if record_last >= Some(top.first_index) {
+            purged = None;
+        } else if record_last == base_last {
+            // Only a base that ends at its last record: a record in the gap,
+            // or a base whose records are gone, keeps the purged id and
+            // refuses as before.
+            purged = None;
+            last = match (top.base_last, held.last_record) {
+                (Some(want), Some((index, generation))) => {
+                    let term = term_of(generation, index, &label)?;
+                    if term != want.term {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "{label}: the record at index {index} has term {term}, its base says {}",
+                                want.term
+                            ),
+                        ));
+                    }
+                    Some(LogPoint { index, term })
+                }
+                _ => None,
+            };
+        }
+    }
     let vote = crate::disk_log::saved_vote_generation(path)
         .map_err(io::Error::other)?
         .checked_sub(1);
@@ -208,7 +242,7 @@ pub(crate) fn read_copy(
     Ok(CopyRead {
         path: path.to_path_buf(),
         copy: None,
-        epoch: epoch_file::load(path)?,
+        epoch,
         last,
         purged: purged.map(|purged| purged.index),
         committed: kept.committed,
