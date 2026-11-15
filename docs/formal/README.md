@@ -611,8 +611,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
-| `FelixRaftWrittenCommitsPowerCut.cfg` | the proposal to commit on a written majority on relaxed brokers: `WrittenCommits`, `CutRotates` and `Reserve`, one term, two writes, one process crash, one power cut | pass the same as `FelixRaftWrittenPowerCut.cfg`; not finished, not registered |
-| `FelixRaftWrittenCommitsFailoverPowerCut.cfg` | the same at failover bounds: two terms, one write, one process crash, two power cuts | pass the same; not finished, not registered |
+| `FelixRaftWrittenCommitsPowerCut.cfg` | the proposal to commit on a written majority on relaxed brokers: `WrittenCommits`, `CutRotates` and `Reserve`, one term, two writes, one process crash, one power cut | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `CommittedHeld`, `AckedHeld`, `AckedNeverLost` (11.4M distinct states, 24 minutes on a CI runner) |
+| `FelixRaftWrittenCommitsFailoverPowerCut.cfg` | the same at failover bounds: two terms, one write, one process crash, two power cuts, with `Reserve` off (without a re-form a reservation only holds back counts and reports, so this checks more behaviours) | pass the same (71.2M distinct states, 17 minutes with 30 workers on a 32-core machine; not registered, a box run checks it) |
 | `FelixRaftWrittenCommitsPowerCutKeeps.cfg` | the proposal with the cut copy kept | violate `AckedNeverLost` |
 | `FelixRaftWrittenCommitsReform.cfg` | the proposal, two power cuts and the operator's re-form, padded up to the highest reservation | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `CommittedHeld`, `AckedNeverLost`, `OffsetNeverReused` (781k distinct states) |
 | `FelixRaftWrittenCommitsReformTrailing.cfg` | the same without the reservation: the re-form pads up to the trailing floor only | violate `OffsetNeverReused` |
@@ -2869,7 +2869,8 @@ Two more knobs model what the proposal needs after a power cut of a majority:
   every log is a prefix of the leader's and the longest is the base. With two
   terms and the commit on written copies, the longest kept log can hold an
   uncommitted entry at an offset another term committed, and only the design's
-  cut to the saved commit index stops it. No configuration checks that yet.
+  cut to the saved commit index stops it. No configuration checks that yet
+  ([#2592](https://github.com/GetFelix/felix/issues/2592)).
 - `Reserve`: a copy counts or reports an entry only below an index it has
   reserved in a synced file, which a rotation keeps, and the re-form pads up
   to the highest reservation too.

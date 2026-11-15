@@ -560,6 +560,7 @@ expectations=(
   "FelixRaftWrittenReachEarly violates NeverAcksEarly"
   "FelixRaftWrittenReachEarlyInJoint violates NeverAcksEarlyInJoint"
   "FelixRaftWrittenReachCommitsAfterFailover violates NeverCommitsAfterFailover"
+  "FelixRaftWrittenCommitsPowerCut pass"
   "FelixRaftWrittenCommitsPowerCutKeeps violates AckedNeverLost"
   "FelixRaftWrittenCommitsReform pass"
   "FelixRaftWrittenCommitsReformTrailing violates OffsetNeverReused"
@@ -1064,9 +1065,8 @@ fi
 # got).
 # FelixRaftWrittenFailoverPowerCut passes in 15 minutes with 8 workers on a
 # 32-core machine and is not registered: a box run checks it.
-# FelixRaftWrittenCommitsPowerCut and FelixRaftWrittenCommitsFailoverPowerCut
-# are not registered: each is registered once a dispatch run gives its
-# declared outcome.
+# FelixRaftWrittenCommitsFailoverPowerCut passes in 17 minutes with 30
+# workers on a 32-core machine and is not registered: a box run checks it.
 # FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a
@@ -1314,6 +1314,7 @@ weights=(
   "FelixRaftMembershipTerms 109"
   "FelixRaftWritten 40"
   "FelixRaftWrittenCrash 5"
+  "FelixRaftWrittenCommitsPowerCut 24"
   "FelixRaftWrittenCommitsReform 2"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"

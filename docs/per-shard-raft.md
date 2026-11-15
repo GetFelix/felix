@@ -4109,7 +4109,8 @@ re-form's cut to the saved commit index ("Re-forming a group") keeps the
 base right. Every re-form configuration of `FelixRaftWritten.tla` has one
 term. Nor does it model a rotated copy coming back, so the inherited
 reservation and the reclaim of a kept directory are argued, not
-checked.
+checked. Both are
+[#2592](https://github.com/GetFelix/felix/issues/2592).
 
 ## Deferred: sleep and wake
 
