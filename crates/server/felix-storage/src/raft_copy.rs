@@ -109,20 +109,11 @@ pub enum LogMarkMode {
 }
 
 /// A random copy id, never 0. Copy ids only need to differ from the ids a
-/// shard had before, so a process-seeded hash of the time is enough.
+/// shard had before. Under a simulator the keys come from the seed, so a run
+/// repeats.
 pub fn random_copy_id() -> u64 {
-    use std::hash::{BuildHasher, Hasher};
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     loop {
-        let mut hasher = std::collections::hash_map::RandomState::new().build_hasher();
-        hasher.write_u128(
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |since| since.as_nanos()),
-        );
-        hasher.write_u64(COUNTER.fetch_add(1, Ordering::Relaxed));
-        let id = hasher.finish();
+        let id = felix_common::random::id_state().hash_one(0u64);
         if id != 0 {
             return id;
         }

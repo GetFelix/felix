@@ -195,3 +195,20 @@ fn a_log_id_compares_by_term_then_index() {
     assert!(log_below(Some(point(2, 4)), Some(point(2, 5))));
     assert!(!log_below(Some(point(2, 5)), Some(point(2, 5))));
 }
+
+/// A copy id goes to the control plane and into the marks file, so under a
+/// simulator it has to repeat run to run.
+#[test]
+fn a_seeded_run_draws_the_same_copy_ids() {
+    fn ids() -> Vec<u64> {
+        std::thread::spawn(|| {
+            felix_common::jitter::sim::seed(2);
+            (0..4).map(|_| random_copy_id()).collect()
+        })
+        .join()
+        .unwrap()
+    }
+    let first = ids();
+    assert_eq!(first, ids());
+    assert!(first.windows(2).all(|pair| pair[0] != pair[1]));
+}

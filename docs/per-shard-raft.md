@@ -810,7 +810,9 @@ lost record already shows. The floor is still needed with an operator-only
 re-form, because the one case left, a majority of disks lost at once, is
 exactly the case where the base can end below what was acknowledged. The
 case the model first found, a majority power loss on relaxed fsync (issue
-#2305), cannot happen now that Raft logs are fsync on commit. The floor is
+#2305), cannot happen now that Raft logs are fsync on commit (the proposal
+to commit on a written majority would bring it back, and says how it keeps
+the floor). The floor is
 the last value the control plane stored, so offsets acknowledged after it
 and then lost with a majority of the disks can be given out again. That is
 one report interval while the control plane is reachable and the whole
@@ -994,7 +996,9 @@ the offset floor and the root's log marks use fsynced positions only, so
 no member can come to hold a different record at a committed offset. On a
 stream with fsync on commit, `Quorum` waits for the commit index. The
 publish path answers this way (`AnswerAt::Majority`, "Acknowledging a
-write").
+write"). A proposal to commit on a written majority on relaxed brokers is
+under "Proposal: commit on a written majority on relaxed brokers". It is
+not built.
 
 Votes are the exception, and must be. A voter compares the candidate's
 last log id with the last entry its own log has accepted, written or not
@@ -4196,6 +4200,263 @@ a test, and the model has it:
 **Membership and adoption.** A twin where a publish claims an offset while
 a membership entry is proposed must reach the stop. So must a twin where a
 broker append at an old term lands after the vote for a newer one.
+
+## Proposal: commit on a written majority on relaxed brokers
+
+> **Not implemented.** This is a proposal for review. Nothing below is in
+> the code. The Raft log still fsyncs before openraft hears an append is
+> flushed, on every broker, and everything else on this page describes
+> that.
+
+A broker whose `fsync_mode` is `periodic` or `none` (a relaxed broker)
+does not wait for the disk before it acknowledges a write. Its Raft logs
+do. `RaftLog::new` refuses any mode but `OnCommit`, so every commit on a
+Raft shard waits for an fsync on the leader and on a follower. On one box
+at RF 3, a `Quorum` stream on `periodic` runs at 118k msg/s on Raft and
+198k on the hybrid, and Raft's `periodic` and `on_commit` cells are the
+same number. The shard is bound by commit latency, and the fsync is most of
+it.
+
+The proposal: on a relaxed broker, the adapter tells openraft an append is
+flushed as soon as it is written, before the fsync. openraft then counts
+written copies for the commit index, so commit, apply, `read_bound` and
+delivery move on a written majority, as the hybrid's mark does on
+`periodic`. A broker on `on_commit` is unchanged, byte for byte.
+
+### Why this can be safe
+
+Written is not on disk, so the rest of this section is about one fault:
+a power cut, which can take a written tail. Two things already hold on a
+relaxed broker:
+
+- **A power cut rotates every copy on the broker.** The run record of a
+  relaxed broker says the run was relaxed, so a start after a machine
+  crash takes a new storage id, and every copy on the root comes back
+  under a new copy id that never voted and rejoins as a learner (#2557).
+  The old seat never votes with the cut log. A failed fsync rotates the
+  copy too (#2475, "A poisoned log").
+- **A process crash on Linux loses nothing written.** The page cache
+  outlives the process, and a crash of the process alone keeps the
+  storage id. macOS rotates on every relaxed crash (#1367).
+
+So a copy that counted an entry either still holds it, or no longer
+votes. That is the argument `FelixRaftWrittenPowerCut.cfg` already checks
+for the written acknowledgement. The proposal extends it to the commit.
+
+### What each signal means
+
+| Signal | `on_commit` broker | relaxed broker (proposal) |
+|---|---|---|
+| openraft's flush callback (`IOFlushed`) | after the fsync | after the write, and after the copy's reservation covers the entries (below) |
+| `LogPositions::written` | after the write | after the write |
+| `LogPositions::flushed` | after the fsync | after the fsync, from the log's durable bound, never from the early callback |
+| commit index, apply, `read_bound` | a fsynced majority | a written majority |
+| a `Leader` write's acknowledgement | the leader's flush | the leader's write (as today) |
+| a `Quorum` write's acknowledgement | the commit | the commit, which is now a written majority |
+| the vote (`save_vote`) and its root mark | synced before it returns | synced before it returns |
+| the root's log mark | a fsynced log id | a fsynced log id, batched |
+| the offset floor report | the commit | the commit |
+
+`flushed` keeps meaning a real fsync, because three things read it as
+one: the root's log mark (an unsynced id would read as a restore after a
+power cut), a `Leader` write on a stream that fsyncs, and the snapshot
+rule below.
+
+Each follower answers an append by its own mode, and the leader's mode
+decides whether it asks for the written report (`await_quorum_ack`,
+`Request::Written`):
+
+- **A relaxed follower** answers at the write, so a written report would
+  say nothing its answer has not.
+- **A strict follower** answers after its fsync, and still sends the
+  written report when its leader asks for one.
+- **A relaxed leader** does not ask: its followers' answers are what
+  commits. Without the report, a `Quorum` write on a stream that does not
+  fsync would wait for a strict follower's fsync where today it does not,
+  so a relaxed leader with strict followers keeps asking them and counts
+  their reports toward the acknowledgement, as today. A strict leader
+  asks as today.
+
+A group can have members on both kinds of broker. The argument is meant
+to hold member by member: a strict copy answers after its fsync, and a
+relaxed copy rotates if it loses what it answered for. The model does not
+check a mixed group yet (below).
+
+### What readers and subscribers see
+
+- **Sooner delivery.** A subscriber is given a record once a majority has
+  written it, not once a majority has fsynced it. `read_bound` and
+  `read_committed` move with it.
+- **One power cut, or any number of process crashes, loses nothing.** A
+  committed record is in every broker that can still win an election
+  (`CommittedHeld`, `AckedNeverLost` in
+  `FelixRaftWrittenCommitsPowerCut.cfg`).
+- **A power cut of a majority can lose committed records.** If the
+  leader and enough followers to make a majority lose power before their
+  fsync, the records they had written and nobody had fsynced are gone,
+  and some may have been given to subscribers. The group has no voter left
+  and stays closed until an operator re-forms it ("Re-forming a group").
+  This is what a `periodic` stream already accepts for acknowledged
+  records, and what the hybrid does on `periodic`: its mark moves on
+  followers' written answers, and after correlated machine crashes the
+  shard waits for `felixctl placement abandon`, which keeps the furthest
+  copy and loses the rest. On `on_commit` this cannot happen
+  (`FelixRaftWrittenReformOnCommit.cfg`).
+- **Lost offsets are a gap, never another record.** After the re-form, a
+  reader that asks for a lost offset finds a gap, the way a lost record
+  already shows, and no offset a subscriber was given is given out again
+  with a different record. That needs the reservation below. It covers
+  committed offsets only. A `Leader` write is still acknowledged at the
+  leader's write, before any reservation counts it, so the offset a
+  publisher was told can be given out again after a majority power cut,
+  as it can be on a relaxed broker today.
+
+### Keeping the re-form floor
+
+"Offsets are not reused" relies on a floor: the re-form starts the new
+epoch at an offset at or above the last commit the control plane stored.
+That floor trails the commit by up to one report interval, and the page
+says the gap it leaves "cannot happen now that Raft logs are fsync on
+commit". Under this proposal it can again, and after an ordinary power
+cut rather than a lost disk: records committed on a written majority
+after the last report are lost with the cut tails, and the new epoch
+gives their offsets out again (`FelixRaftWrittenCommitsReformTrailing.cfg`
+finds it).
+
+The hybrid closes the matching window by ordering: a leader's report
+reaches the control plane before its mark moves (replication-design.md,
+"The report cannot be allowed to trail the acknowledgement"). Reused
+here, that puts a control-plane round trip on every commit and stops
+delivery whenever the control plane is unreachable. Raft shards were
+built to write on without it, so the proposal keeps the hybrid's rule,
+the bound is stored before the count, and stores the bound on the copy:
+
+- **Each copy reserves offsets ahead of what it counts.** A copy keeps a
+  reservation, an index, in a synced file in its shard directory. Before
+  its flush callback fires for entries past the reservation, it raises
+  the reservation well ahead (a step of about a million entries) and
+  syncs it. So the leader's own count and every follower's answer are
+  below a reservation that is on disk.
+- **The reservation outlives the copy.** A rotation renames the old
+  directory into `.kept/`, with the file. The new copy starts its own
+  reservation at the old one's. The new directory is written with the
+  reservation before it is renamed into place, so a crash leaves either
+  the old directory or a new one that carries it. A kept directory is
+  reclaimed only after the new copy's reservation is synced.
+- **The re-form pads up to the highest reservation it reads.** The new
+  epoch starts above the stored floor and above the highest
+  reservation of every copy the command reads, current or kept. Every
+  committed offset was counted by a majority, so at least one of those
+  copies reserved past it.
+
+`FelixRaftWrittenCommitsReform.cfg` checks `OffsetNeverReused` with the
+reservation, after a power cut of two of three copies.
+
+What it costs: one synced write per shard per step, about one every half
+minute on a shard taking 30k records a second, and a gap of up to one step
+of offsets after a re-form. Offsets are 64 bits, so the gap is free. What
+it does not cover is the residual that exists today: if the brokers
+holding every copy that counted a record are declared dead, their
+reservations are not read either, and the trailing floor is all that is
+left (Questions, 13).
+
+### Cache shards
+
+A cache shard's state machine applies entries as they commit, so under
+this proposal it can apply an entry its own log has not fsynced. A
+snapshot built then would be synced while the log below it is not. The
+rule: `build_snapshot` covers no entry above the log's durable bound. It
+waits for `flushed` to reach the last applied entry, forcing a flush if
+the periodic one is not due, before it stores the snapshot. Under `none`
+there is no periodic flush, so the snapshot's own flush is the one that
+moves `flushed`, and the batched log mark moves only then. So a
+snapshot is always backed by synced records, `purge` (which only follows a
+snapshot) never drops an unsynced entry, and a kept directory's snapshot
+and log agree. A snapshot a follower installs from its leader is unchanged:
+it holds committed entries, and installing it syncs it. The cost is one
+extra fsync per snapshot build, which is rare next to the commits it
+saves.
+
+### Every start that must rotate first
+
+The argument needs the rotation to happen before a member opens and
+answers. These are the starts, and what each relies on:
+
+1. **A start after a machine crash or power cut.** `run_state` reads a
+   crashed relaxed run and rotates the storage id before any copy root
+   opens. Built.
+2. **A start whose boot cannot be compared.** Read as a machine crash, so
+   it rotates. Built.
+3. **A start after a failed fsync**, including one in the periodic
+   flusher. The failure poisons the log (`disk_log/sync.rs`) and the run
+   record stops vouching for the boot. The proposal must check that the
+   periodic tick's failure takes the same path as a flush on commit, with
+   a test, since it has never mattered for a Raft log before.
+4. **A reopen in the same process after a failed flush.** The directory
+   is remembered and rotates (#2475). Built.
+5. **A restore, a copy put back, a deleted `storage-id`, the operator's
+   `rotate-storage-id`, a registration behind the control plane's.**
+   Rotate today. Built.
+6. **A broker moving from `periodic` to `on_commit`.** The run record
+   names the run that crashed, so a crash under the relaxed run still
+   rotates at the next start, whatever the new mode. A test pins it (the
+   code-change table).
+7. **The switch from the hybrid.** A relaxed broker's switched member
+   opens on the gate like any other copy, and the hybrid log it starts
+   from was already judged by the same storage id. Its Raft log opens
+   with the early callback from the first append.
+8. **A re-form's new epoch and a restored RF 1 copy starting by itself.**
+   Each starts a member on a root that passed the gate. They must read
+   the reservations before they write the epoch (above).
+
+### Expected gain
+
+The profile puts the gap between Raft and the hybrid on `Quorum
+periodic` at the fsync on the commit path: 97 `fdatasync` calls per 1,000
+messages on Raft against 0.4 on the hybrid, with p50 latency at 4.1 ms
+against 1.95 ms. Taking the fsync off the commit should move that cell
+from 118k toward the hybrid's 198k (+40 to +65 percent), and `Leader
+periodic`, which also commits behind the fsync, a little. Part of the fsync
+count is the exact log mark, a second synced write per flush, which the
+batched mark removes on its own (Questions, 11), so the gain must be
+measured after that change, on the three-box layout. `on_commit` cells do
+not move.
+
+### Code changes it would take
+
+| Change | Where | Test |
+|---|---|---|
+| Accept `Periodic` and `None` on a Raft log opened on a relaxed root, with a proof from the gate that the root rotates on a crash; keep refusing otherwise | `felix-storage/src/raft_log.rs:205-227`, `run_state.rs:168` | opens on a relaxed root; refused on a strict one |
+| Fire `IOFlushed` at the write on such a log; set `flushed` only from the log's durable bound | `felix-storage/src/raft_log/writer.rs:266-302`, `raft_log/flush_queue.rs:57` | a power cut after the callback and before the fsync leaves `flushed` behind; the callback order still follows the appends |
+| Batched log mark on relaxed roots, fed by `flushed` | `felix-replication/src/raft/runtime.rs:111`, `felix-storage/src/raft_copy/marks.rs:314-323` | the mark never names an unsynced id |
+| The reservation: a synced file per shard directory, raised before the callback, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
+| Open the shard's Raft log with the broker's own fsync mode instead of `OnCommit` | `felix-broker-service/src/shards/raft.rs:227` | a relaxed broker's shard commits before any fsync |
+| The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | `felix-replication/src/raft/group.rs:740-775`, `group.rs:1025-1050`, `raft/engine.rs:152` | no `Request::Written` from a relaxed leader to a relaxed follower; a relaxed leader with strict followers acknowledges a `Quorum` write on their written reports, before their fsync |
+| A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (start 6) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
+| A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (start 8) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
+| A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | the re-form, not built | a kept directory whose saved commit is past its last synced entry is cut at the entry, not at the saved index |
+| Snapshot waits for the durable bound | `felix-replication/src/raft/machine.rs:286` | a snapshot never covers an entry above `flushed` |
+| The periodic flusher's failure poisons a Raft log and rotates the copy | `felix-storage/src/disk_log/sync.rs:239` | a failed tick rotates, as a failed commit flush does |
+| The re-form reads every reservation and pads above the highest (with the re-form command) | the re-form, not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
+| Docs: this page's commit, read-bound and floor claims, `docs/durable-storage.md`, the status table | `docs/` | |
+
+Cluster and simulator tests: the `power-loss` nemesis on a relaxed RF 3
+group, with a majority cut, must end in a closed group, and after the
+re-form a history with gaps and no reused offset; the same on `on_commit`
+must lose nothing.
+
+What the model does not check yet: a re-form after two terms under the
+proposal. There the longest kept log can hold an uncommitted entry at an
+offset another term committed on a written majority, and only the
+re-form's cut to the saved commit index ("Re-forming a group") keeps the
+base right. Every re-form configuration of `FelixRaftWritten.tla` has one
+term. Nor does it model a rotated copy coming back, so the inherited
+reservation and the reclaim of a kept directory are argued, not
+checked. Nor does it check a group with members on both kinds of
+broker: `CutRotates` is one switch for the whole model, so no
+configuration has a strict copy that keeps its log through a power cut
+beside relaxed copies that rotate. All three are
+[#2592](https://github.com/GetFelix/felix/issues/2592).
 
 ## Deferred: sleep and wake
 

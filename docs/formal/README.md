@@ -611,6 +611,13 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachEarly.cfg` | witness: a record acknowledged on the written count before it commits | violate `NeverAcksEarly` |
 | `FelixRaftWrittenReachEarlyInJoint.cfg` | witness: the same under a joint configuration | violate `NeverAcksEarlyInJoint` |
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
+| `FelixRaftWrittenCommitsPowerCut.cfg` | the proposal to commit on a written majority on relaxed brokers: `WrittenCommits`, `CutRotates` and `Reserve`, one term, two writes, one process crash, one power cut | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `CommittedHeld`, `AckedHeld`, `AckedNeverLost` (11.4M distinct states, 24 minutes on a CI runner) |
+| `FelixRaftWrittenCommitsFailoverPowerCut.cfg` | the same at failover bounds: two terms, one write, one process crash, two power cuts, with `Reserve` off (without a re-form a reservation only holds back counts and reports, so this checks more behaviours) | pass the same (71.2M distinct states, 17 minutes with 30 workers on a 32-core machine; not registered, a box run checks it) |
+| `FelixRaftWrittenCommitsPowerCutKeeps.cfg` | the proposal with the cut copy kept | violate `AckedNeverLost` |
+| `FelixRaftWrittenCommitsReform.cfg` | the proposal, two power cuts and the operator's re-form, padded up to the highest reservation | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `CommittedHeld`, `AckedNeverLost`, `OffsetNeverReused` (781k distinct states) |
+| `FelixRaftWrittenCommitsReformTrailing.cfg` | the same without the reservation: the re-form pads up to the trailing floor only | violate `OffsetNeverReused` |
+| `FelixRaftWrittenCommitsReformLoses.cfg` | witness: under the proposal a power cut of a majority loses a committed record | violate `NeverLosesCommitted` |
+| `FelixRaftWrittenReformOnCommit.cfg` | the design as built (commit on fsynced copies), two power cuts and a re-form with the trailing floor alone | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `OffsetNeverReused`, `NeverLosesCommitted` (58k distinct states) |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472; the code now takes the term-bound shape, and this stays as the counterexample twin); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
@@ -2848,6 +2855,43 @@ Each knob drops one rule, and each twin fails with no power cut at all:
   entry, elect without it.
 - `WrittenCommits`: the commit index counts written reports too. An entry
   commits on copies that are not on disk, and one power cut takes it.
+
+`WrittenCommits` is also a proposal, written up in
+[Per-shard Raft](../per-shard-raft.md) under "Proposal: commit on a written
+majority on relaxed brokers" and not built: on a broker where a power cut
+rotates every copy, openraft hears an append is flushed once it is written,
+so the commit, apply and delivery move on a written majority. With
+`CutRotates` the twin's loss goes away: the copy that lost the entry no longer
+votes (`FelixRaftWrittenCommitsPowerCut.cfg` passes, and
+`FelixRaftWrittenCommitsPowerCutKeeps.cfg` without the rotation does not).
+
+Two more knobs model what the proposal needs after a power cut of a majority:
+
+- `MaxReforms`: with 1, once no broker leads or can be elected, the operator
+  re-forms the group (`Reform`). The base is the longest log any copy holds
+  or a rotated copy kept, and the new epoch starts above it, padded up to the
+  floor: the last commit index a leader reported to the control plane
+  (`ReportFloor`). `FelixRaftReform.tla` has the command's steps and why the
+  floor carries a term. Every re-form configuration here has one term, where
+  every log is a prefix of the leader's and the longest is the base. With two
+  terms and the commit on written copies, the longest kept log can hold an
+  uncommitted entry at an offset another term committed, and only the design's
+  cut to the saved commit index stops it. No configuration checks that yet
+  ([#2592](https://github.com/GetFelix/felix/issues/2592)).
+- `Reserve`: a copy counts or reports an entry only below an index it has
+  reserved in a synced file, which a rotation keeps, and the re-form pads up
+  to the highest reservation too.
+
+`OffsetNeverReused` says that after the re-form every committed offset holds
+the same record in the base or lies in the padded gap. Subscribers get only
+committed records, so no offset one was given comes back with another record.
+With the commit on written copies, two cut tails can take committed records
+(`FelixRaftWrittenCommitsReformLoses.cfg` finds it). Without `Reserve`, a
+record committed after the last floor report is above the floor, and its
+offset is given out again (`FelixRaftWrittenCommitsReformTrailing.cfg`). With
+it, `OffsetNeverReused` holds (`FelixRaftWrittenCommitsReform.cfg`). The design
+as built, with the commit on fsynced copies, loses nothing and reuses nothing
+with the trailing floor alone (`FelixRaftWrittenReformOnCommit.cfg`).
 
 Abstracted: votes are durable and followers do not learn the commit index
 (`FelixRaft.tla` has the adapter's rules and what followers apply), snapshots,

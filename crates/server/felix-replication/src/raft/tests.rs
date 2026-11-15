@@ -1973,6 +1973,7 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             expected: None,
             trim: None,
             written: None,
+            expected: None,
         })
         .await
     });
