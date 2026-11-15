@@ -1858,6 +1858,15 @@ impl Group {
         self.pace.heard.load(Ordering::Relaxed)
     }
 
+    /// How long ago this member last took an append, and how long it
+    /// waits for its leader after one.
+    #[cfg(test)]
+    pub(crate) fn led_age(&self) -> (u64, u64) {
+        let led = self.pace.led.load(Ordering::Relaxed);
+        let age = self.pace.timers.now().saturating_sub(led);
+        (age, self.pace.follower_wait())
+    }
+
     /// How long this member, as a leader, would wait for its next heartbeat.
     #[cfg(test)]
     pub(crate) fn leader_gap(&self) -> u64 {

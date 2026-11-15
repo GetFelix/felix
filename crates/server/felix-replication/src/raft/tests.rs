@@ -2247,9 +2247,22 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
         cluster.net.cut.lock().insert(broker.into());
         cluster.net.muted.lock().insert(broker.into());
     }
-    // Each last heard the leader 0 to 2 s ago. 2.3 s on, that is past the
-    // openraft lease and inside the 6 s idle wait.
-    tokio::time::sleep(Duration::from_millis(2300)).await;
+    let following = cluster.runtime(follower).group(&shard(0)).expect("group");
+    let acked = || {
+        use openraft::Instant as _;
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = leading.raft().metrics();
+        let acked = metrics.borrow_watched().last_quorum_acked;
+        acked.expect("a majority answered").elapsed()
+    };
+    // Ages are read rather than slept for, so a slow runner shifts the
+    // checks instead of breaking them. 3 s is past openraft's 2 s lease.
+    let past_lease = Duration::from_secs(3);
+    eventually(|| {
+        (following.led_age().0 >= past_lease.as_millis() as u64 && acked() >= past_lease)
+            .then_some(())
+    })
+    .await;
 
     let status = leading.status();
     let last = {
@@ -2269,31 +2282,57 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
             Some(last),
         )),
     };
-    for to in [follower, &*leader.broker] {
-        let answer = cluster.runtime(to).handle(pre_vote(to)).await;
+    let refused = |answer: &Result<RaftReply, Refused>| {
         // An answer, not a drop: a dropped call counts the broker as down.
-        assert!(
-            matches!(
-                answer,
-                Ok(RaftReply(super::network::Reply::Vote(ref vote))) if !vote.vote_granted
-            ),
-            "{to} did not answer the pre-vote with a refusal"
-        );
-    }
+        matches!(
+            answer,
+            Ok(RaftReply(super::network::Reply::Vote(vote))) if !vote.vote_granted
+        )
+    };
+    // Each refusal must hold while the age read after the answer is still
+    // inside the wait, about 3 s after the checks start.
+    let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
+    let (age, wait) = following.led_age();
+    assert!(
+        age < wait,
+        "the check came {age} ms after the take, past {wait} ms"
+    );
+    assert!(
+        refused(&answer),
+        "{follower} did not refuse a pre-vote {age} ms after its leader"
+    );
+    let answer = cluster
+        .runtime(&leader.broker)
+        .handle(pre_vote(&leader.broker))
+        .await;
+    let age = acked();
+    assert!(
+        age < Duration::from_secs(6),
+        "the check came {age:?} after the ack"
+    );
+    assert!(
+        refused(&answer),
+        "the leader did not refuse a pre-vote {age:?} after its ack"
+    );
 
     // Past the follower's wait it grants one, which promises nothing: its
     // own election timer runs on.
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    let following = cluster.runtime(follower).group(&shard(0)).expect("group");
     let heard = following.heard();
-    let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
-    assert!(
-        matches!(
+    loop {
+        let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
+        if matches!(
             answer,
             Ok(RaftReply(super::network::Reply::Vote(ref vote))) if vote.vote_granted
-        ),
-        "{follower} refused a pre-vote past its wait"
-    );
+        ) {
+            break;
+        }
+        let (age, wait) = following.led_age();
+        assert!(
+            age < wait + 5000,
+            "{follower} refused a pre-vote {age} ms after its leader"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     assert_eq!(following.heard(), heard, "a pre-vote restarted the timer");
     cluster.stop().await;
 }
