@@ -28,6 +28,14 @@ pub trait EntryCodec<C: RaftTypeConfig>: Send + Sync + 'static {
     /// memory and not from a segment, so a command must not depend on it.
     fn decode_data(&self, record: LogRecord) -> io::Result<C::D>;
 
+    /// Whether `data`, written at `index`, is stored as a blank entry instead
+    /// of its record. It must depend on `data` and `index` alone: the
+    /// leader's append decides at the entry's final index, and followers
+    /// copy what it stored.
+    fn blank_at(&self, _data: &C::D, _index: Offset) -> bool {
+        false
+    }
+
     /// The token `data` carries, when its proposer waits to hear where it
     /// was written. An append resolves it with the entry's index and term
     /// once the entry is written, before the fsync. The token is the
@@ -108,11 +116,15 @@ where
         publisher: None,
         headers: None,
     };
-    let record = match &entry.payload {
-        EntryPayload::Blank => internal(
+    let blank = |generation: u64| {
+        internal(
             RecordMark::GenerationStart,
             Bytes::copy_from_slice(&generation.to_be_bytes()),
-        ),
+        )
+    };
+    let record = match &entry.payload {
+        EntryPayload::Normal(data) if codec.blank_at(data, entry.log_id.index) => blank(generation),
+        EntryPayload::Blank => blank(generation),
         EntryPayload::Membership(membership) => {
             internal(RecordMark::Membership, codec.encode_membership(membership)?)
         }
