@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794749519564,
+  "lastUpdate": 1794750429446,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74382,6 +74382,72 @@ window.BENCHMARK_DATA = {
             "range": "22.06",
             "unit": "us",
             "extra": "trials: 5\nmedian: 292.00\nmean: 290.80\nstdev: 22.06\ncv: 7.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3ab3772e11d06356251fcd103ad8ccc424104288",
+          "message": "fix(raft): a shard whose every copy rotated is held, not formed again at offset 0 (#2620) (#2622)\n\n* fix(raft): a shard whose every copy rotated is not formed again (#2620)\n\nA rotated copy comes back with a new copy id, no vote and an empty log,\nwhich is what the forming broker takes as blank. With every copy rotated\nthe lowest broker formed the group again at index 0 and gave out offsets\nalready acknowledged.\n\nA member whose directory has a kept copy holding a log entry, or a\nreservation, now refuses the term-0 pre-vote the forming broker asks,\nand first_members/peers_blank refuse when the local member is one. An\nunreadable kept copy counts as holding entries.\n\n* fix(raft): initialize refuses a member a group reached before; docs per review\n\n* fix(raft): leave initialize to its callers' blank check\n\nThe re-form and reclaim tests form a group over a member with kept\nrecords on purpose, as the re-form command will.\n\n* fix(raft): warn when a shard is held after rotation, drop the by-hand directory removal from the docs",
+          "timestamp": "2026-11-15T13:43:03Z",
+          "tree_id": "34b2e61d0f900bf8a3799bf40e2b95d6b9146b33",
+          "url": "https://github.com/GetFelix/felix/commit/3ab3772e11d06356251fcd103ad8ccc424104288"
+        },
+        "date": 1794750421604,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 63,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 63.00\nmean: 62.80\nstdev: 0.84\ncv: 1.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 86,
+            "range": "2.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.00\nstdev: 2.00\ncv: 2.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 109,
+            "range": "8.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 109.00\nmean: 112.00\nstdev: 8.43\ncv: 7.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "2.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 82.00\nstdev: 2.65\ncv: 3.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "92.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 227.00\nstdev: 92.07\ncv: 40.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 450,
+            "range": "580.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 450.00\nmean: 704.40\nstdev: 580.52\ncv: 82.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
