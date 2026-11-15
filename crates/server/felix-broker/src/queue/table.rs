@@ -15,6 +15,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+
 use super::entry::{CreatedBy, CreationToken, GroupEntry, GroupOp};
 
 /// One group's state on a Raft stream shard.
@@ -175,6 +177,127 @@ impl GroupTable {
             None => cre.index < self.last_delete,
         }
     }
+}
+
+const TABLE_VERSION: u8 = 1;
+const BY_HYDRATE: u8 = 0;
+const BY_SEEK: u8 = 1;
+
+impl GroupTable {
+    /// The table as a stream shard's snapshot carries it: a member that
+    /// installs the snapshot holds no group entry below it, so this is all
+    /// it learns of them. One table always encodes to the same bytes.
+    ///
+    /// ```text
+    /// u8   version (1)
+    /// u64  applied, u64 last_delete
+    /// u32  groups, then per group in name order:
+    ///   u32 name length, name (UTF-8)
+    ///   u64 term, u64 index, u8 by (0 hydrate, 1 seek)    creation token
+    ///   u64 cursor
+    ///   u32 dead letters, then each (u64, ascending)
+    ///   u32 redriven, then each (u64, ascending)
+    /// ```
+    pub fn encode(&self) -> Bytes {
+        let mut out = BytesMut::new();
+        out.put_u8(TABLE_VERSION);
+        out.put_u64(self.applied);
+        out.put_u64(self.last_delete);
+        out.put_u32(self.groups.len() as u32);
+        for (name, state) in &self.groups {
+            out.put_u32(name.len() as u32);
+            out.put_slice(name.as_bytes());
+            out.put_u64(state.cre.term);
+            out.put_u64(state.cre.index);
+            out.put_u8(match state.cre.by {
+                CreatedBy::Hydrate => BY_HYDRATE,
+                CreatedBy::Seek => BY_SEEK,
+            });
+            out.put_u64(state.cursor);
+            for set in [&state.dead, &state.redriven] {
+                out.put_u32(set.len() as u32);
+                for offset in set {
+                    out.put_u64(*offset);
+                }
+            }
+        }
+        out.freeze()
+    }
+
+    /// `None` when `bytes` are not what [`Self::encode`] writes, including
+    /// names or offsets out of order: a member must not load a table that
+    /// differs from the one the sender folded.
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        let mut buf = bytes;
+        if take(&mut buf, 1)?.get_u8() != TABLE_VERSION {
+            return None;
+        }
+        let applied = take(&mut buf, 8)?.get_u64();
+        let last_delete = take(&mut buf, 8)?.get_u64();
+        let count = take(&mut buf, 4)?.get_u32();
+        let mut groups = BTreeMap::new();
+        let mut last_name: Option<String> = None;
+        for _ in 0..count {
+            let len = take(&mut buf, 4)?.get_u32() as usize;
+            let name = std::str::from_utf8(take(&mut buf, len)?).ok()?.to_owned();
+            if name.is_empty() || last_name.as_ref().is_some_and(|last| *last >= name) {
+                return None;
+            }
+            let cre = CreationToken {
+                term: take(&mut buf, 8)?.get_u64(),
+                index: take(&mut buf, 8)?.get_u64(),
+                by: match take(&mut buf, 1)?.get_u8() {
+                    BY_HYDRATE => CreatedBy::Hydrate,
+                    BY_SEEK => CreatedBy::Seek,
+                    _ => return None,
+                },
+            };
+            let cursor = take(&mut buf, 8)?.get_u64();
+            let dead = offsets(&mut buf)?;
+            let redriven = offsets(&mut buf)?;
+            groups.insert(
+                name.clone(),
+                GroupState {
+                    cre,
+                    cursor,
+                    dead,
+                    redriven,
+                },
+            );
+            last_name = Some(name);
+        }
+        buf.is_empty().then_some(Self {
+            groups,
+            last_delete,
+            applied,
+        })
+    }
+}
+
+/// The next `len` bytes of `buf`, `None` past its end.
+fn take<'a>(buf: &mut &'a [u8], len: usize) -> Option<&'a [u8]> {
+    if buf.len() < len {
+        return None;
+    }
+    let (head, rest) = buf.split_at(len);
+    *buf = rest;
+    Some(head)
+}
+
+/// A strictly ascending set of offsets, as [`GroupTable::encode`] writes one.
+fn offsets(buf: &mut &[u8]) -> Option<BTreeSet<u64>> {
+    let count = take(buf, 4)?.get_u32();
+    let mut set = BTreeSet::new();
+    let mut last = None;
+    for _ in 0..count {
+        let offset = take(buf, 8)?.get_u64();
+        if last.is_some_and(|last| last >= offset) {
+            return None;
+        }
+        set.insert(offset);
+        last = Some(offset);
+    }
+    Some(set)
 }
 
 /// A group created by its first write or seek, starting at `cursor`.

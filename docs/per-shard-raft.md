@@ -3013,7 +3013,8 @@ A member that installs a snapshot holds no record below it, so it cannot
 read those refusals from its log. They travel in the snapshot instead. A
 stream shard's snapshot data is the list of cut batches, by producer and
 sequence, that a log starting right after the snapshot's last entry has to
-refuse. It is what the committed records up to that entry say, and nothing
+refuse, and the group table as of that entry ("Consumer groups", below).
+It is what the committed records up to that entry say, and nothing
 else: the cut batches in those records, plus the ones earlier purges and
 installs carried. The sender's own refusals do not go in. A batch evicted
 from a full table of cut batches goes in only once a purge passes its
@@ -3338,14 +3339,38 @@ refused (`stream_has_commits`), as on the hybrid.
 
 **Consumer groups.** Not served on a Raft shard yet: a group operation on
 one is refused as `invalid_request`. What is built is the entry the groups
-will write. A group's writes (a cursor advance, a dead letter, a redrive and
+will write and the table every member folds from those entries. A group's writes (a cursor advance, a dead letter, a redrive and
 its finish, a discard, a seek, a delete) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
-Every member will fold them, in log order, into the same group table, so a
+Every member folds them, in log order, into the same group table, so a
 new leader serves the group from exactly the state the old one committed.
 `docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
 leaves out discard, which only drops a dead letter, and `if_new`, which the
 leader decides before it proposes the seek.
+
+The group table is the shard's consumer groups as one member has applied
+them: per group, its creation token, its cursor (everything below it is
+settled, dead or redriven), its dead letters, and the dead letters redriven
+but not yet settled. The shard also keeps the index of its latest delete.
+The state machine folds a group entry when it applies it, before the commit
+table moves, so a write that waits for its apply finds it folded. It is
+kept in memory, and every member gets there the same way:
+
+- At apply, only committed entries fold. A log truncation never touches
+  the table, because nothing above the commit index is in it.
+- After a restart, the member loads the table its stored snapshot carries
+  (none without one) and openraft applies the log above the snapshot
+  again, which folds the group entries there.
+- At a snapshot install, the member replaces its table with the one the
+  snapshot carries and forgets its trackers. The entries above the snapshot
+  fold on top.
+
+So the stream snapshot carries the table as of its last entry, beside the
+cut batches ("Idempotent publishes"): a member that installs it holds no
+group entry below it to fold. A snapshot with no group writes is still the
+older layout, cut batches only. A group entry a member cannot decode stops
+the member, as a cache entry does: skipping it would leave that member's
+table unlike the others'.
 
 The payload is a `GroupEntry` (`felix-broker`, `queue/entry.rs`): the
 group's name, the operation, and for every write a tracker decides, the
@@ -3365,7 +3390,13 @@ build reports yet.
 > `crates/server/felix-replication/src/raft/tests.rs`,
 > `a_group_write_round_trips_through_its_record`;
 > `crates/server/felix-broker/src/queue/entry/tests.rs`,
-> `the_layout_is_the_documented_one`.
+> `the_layout_is_the_documented_one`;
+> `crates/server/felix-replication/src/raft/tests/groups.rs`,
+> `every_member_folds_the_same_group_table_and_keeps_it_across_a_restart`,
+> `an_installed_snapshot_carries_the_group_table`,
+> `a_group_entry_that_does_not_decode_stops_the_apply`;
+> `crates/server/felix-broker/src/queue/table/tests.rs`,
+> `the_same_entries_fold_to_the_same_table`.
 
 **Publishers and record headers.** A record on a Raft shard keeps what it
 keeps on the hybrid: the publisher id (the principal that published it,

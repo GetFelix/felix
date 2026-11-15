@@ -1400,6 +1400,24 @@ once it is whole and its checksum matches. It has its own name because a
 local build can finish while a receive is in flight. The open deletes a
 `raft-snapshot.recv` a crash left, and it is never read.
 
+A stream shard's snapshot data is empty, or the cut batches alone in the
+`producers.forgotten` layout, or, once the shard has group writes, both
+together:
+
+```text
+0   4  magic          u32  "FLST"
+4   4  crc            u32  crc32 over the rest
+8   4  cuts length    u32  zero for none
+12     cut batches (producers.forgotten layout), then the group table to the end
+```
+
+The group table is the shard's consumer groups as of the snapshot's last
+entry (`felix-broker`, `GroupTable::encode`): a version byte (1), the last
+group entry applied and the latest delete (`u64` each), then per group in
+name order its name, creation token, cursor, and its dead letters and
+redriven records in ascending order. A reader refuses names or offsets out
+of order, so one table has one encoding.
+
 ## `member`: a metadata store's member file
 
 The control plane's metadata store keeps one small file beside its Raft log

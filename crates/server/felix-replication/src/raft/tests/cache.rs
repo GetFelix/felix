@@ -471,7 +471,9 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
     let dir = tempdir().expect("dir");
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
     let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
-    let (mut machine, _, _, cache) = opened.expect("open");
+    let super::super::machine::Opened {
+        mut machine, cache, ..
+    } = opened.expect("open");
     let cache = cache.expect("a cache group");
     let entry = |index: u64, command: CacheCommand| {
         let command = Command {
@@ -511,7 +513,7 @@ async fn cache_machine(
 ) -> (super::super::machine::Machine, super::super::machine::Cache) {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
     let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
-    let (machine, _, _, cache) = opened.expect("open");
+    let super::super::machine::Opened { machine, cache, .. } = opened.expect("open");
     (machine, cache.expect("a cache group"))
 }
 
@@ -1564,7 +1566,7 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
     let opened =
         super::super::machine::Machine::open(snapshots, ShardKind::Cache, Some(&log)).await;
-    let (mut machine, _, _, _) = opened.expect("open");
+    let super::super::machine::Opened { mut machine, .. } = opened.expect("open");
     let command = Command {
         timestamp_micros: 10,
         payload: put("k", b"one", 1).encode(),

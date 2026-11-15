@@ -243,6 +243,35 @@ impl RaftEngine {
         Some(self.runtime.group(shard)?.membership_progress())
     }
 
+    /// Write one consumer-group write of `shard` while this broker leads
+    /// `term`. Returns when it is on this leader's log; like a publish,
+    /// that is not committed, and an error does not mean it was not
+    /// written. Every member folds it into its group table once applied
+    /// ([`Self::groups`]).
+    pub fn propose_group(
+        &self,
+        shard: &ShardKey,
+        term: u64,
+        timestamp_micros: u64,
+        entry: &felix_broker::GroupEntry,
+    ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
+        let proposed = self
+            .runtime
+            .group(shard)
+            .map(|group| group.propose_group(entry.encode(), timestamp_micros, term))
+            .ok_or_else(|| propose::lost(NO_GROUP));
+        async move { proposed?.await.map_err(|unacked| unacked.error) }
+    }
+
+    /// `shard`'s consumer groups as this broker's member has applied them.
+    /// `None` without a member, or for a cache shard.
+    pub fn groups(
+        &self,
+        shard: &ShardKey,
+    ) -> Option<std::sync::Arc<parking_lot::RwLock<felix_broker::ShardGroups>>> {
+        self.runtime.group(shard)?.groups()
+    }
+
     /// `shard`'s commit table on this broker, if it holds a member.
     pub(crate) fn commits(
         &self,

@@ -347,3 +347,63 @@ fn the_same_entries_fold_to_the_same_table() {
     assert_eq!(leader.table(), follower.table());
     assert_eq!(leader.table().last_delete(), 4);
 }
+
+/// A table folded from every kind of write.
+fn busy_table() -> GroupTable {
+    let cre = hydrated(0);
+    let mut log = Log::new();
+    log.apply("a", GroupOp::Advance { cre, to: 3 });
+    log.apply("a", GroupOp::DeadLetter { cre, offset: 3 });
+    log.apply("a", GroupOp::DeadLetter { cre, offset: 5 });
+    log.apply("a", GroupOp::DeadLetter { cre, offset: 6 });
+    log.apply("a", GroupOp::Redrive { cre, offset: 3 });
+    log.apply("a", GroupOp::Advance { cre, to: 7 });
+    log.apply("b", GroupOp::Advance { cre, to: 1 });
+    log.apply("b", GroupOp::Delete);
+    log.apply(
+        "ünïcode",
+        GroupOp::Seek {
+            to: 2,
+            if_new: false,
+        },
+    );
+    log.table.table().clone()
+}
+
+/// A snapshot's table loads back equal, so a member that installs it holds
+/// the table its sender folded.
+#[test]
+fn a_table_round_trips() {
+    let table = busy_table();
+    assert_eq!(GroupTable::decode(&table.encode()), Some(table.clone()));
+    let empty = GroupTable::default();
+    assert_eq!(GroupTable::decode(&empty.encode()), Some(empty));
+    assert_eq!(table.last_delete(), 8);
+    assert_eq!(table.applied(), 9);
+}
+
+/// Every prefix, a trailing byte, an unknown version or creation kind, and
+/// offsets out of order are refused.
+#[test]
+fn a_damaged_table_is_refused() {
+    let bytes = busy_table().encode();
+    for len in 0..bytes.len() {
+        assert_eq!(GroupTable::decode(&bytes[..len]), None, "at {len}");
+    }
+    let mut long = bytes.to_vec();
+    long.push(0);
+    assert_eq!(GroupTable::decode(&long), None);
+    let mut version = bytes.to_vec();
+    version[0] = 2;
+    assert_eq!(GroupTable::decode(&version), None);
+    // Group "a": header 21, name 4 + 1, token 17 (kind last).
+    let mut by = bytes.to_vec();
+    by[21 + 5 + 16] = 2;
+    assert_eq!(GroupTable::decode(&by), None);
+    // Its dead letters 5 and 6, swapped.
+    let dead = 21 + 5 + 17 + 8 + 4;
+    let mut unordered = bytes.to_vec();
+    unordered[dead + 7] = 6;
+    unordered[dead + 15] = 5;
+    assert_eq!(GroupTable::decode(&unordered), None);
+}
