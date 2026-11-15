@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794703019358,
+  "lastUpdate": 1794704244671,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -72930,6 +72930,72 @@ window.BENCHMARK_DATA = {
             "range": "892.79",
             "unit": "us",
             "extra": "trials: 5\nmedian: 321.00\nmean: 895.40\nstdev: 892.79\ncv: 99.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1594f3af96bbfde7d454dbaf5a1969c7eb375ffb",
+          "message": "fix(raft): idempotent batches on a Raft shard reach the engine without service pre-checks (#2561) (#2571)\n\n* feat(raft): re-sends of multi-record idempotent batches reach the engine (#2561)\n\nThe QUIC publish handler and the forward owner no longer refuse an\nidempotent batch of several records on a Raft shard before the engine\nsees it. propose_idempotent looks at the log first, so a re-send of a\nbatch the log holds whole is answered as a duplicate and one a leader\nchange cut is finished. A new batch of several records is still refused,\nnow at the producer's turn.\n\nThe forward owner answers a refused multi-record batch StorageFailed,\nnot Unavailable, so the requester does not send it again, and answers\nwith the batch's real last offset, which a cut batch puts past its first\nplus its length.\n\nService-level tests through both paths cover a cut batch finished, a\nbatch held whole, a different start refused as sequence_reused under\nboth reuse modes, and a forgotten cut refused as sequence_expired. They\nwrite the cut through a test-only unchecked write on GroupRuntime\n(felix-replication's testing feature).\n\n* docs(raft): a forward cannot carry a sequenced batch to a Raft owner yet (#2570); offsets of a finished cut batch are not one run\n\n* docs(raft): a cut batch cannot occur yet; client page names the offset exception (#2561)\n\nSpec-Unaffected: FelixShard.tla models the lease, fence and replication mark; this change touches no apply path or state machine, duplicate and cut answers come from the log's existing marks.\n\n* docs(raft): name the spec that models the re-send\n\nSpec-Unaffected: FelixRaftBatch.tla models placing a re-send (Propose/Place: held, finish, new, refuse) in Broker::propose_idempotent, which this change does not touch; it only removes a service gate the model never had, so sends reach that step at the producer's turn as modelled, and new multi-record batches are still refused.",
+          "timestamp": "2026-11-15T00:51:43Z",
+          "tree_id": "2af5a0f9ac5b72c538a7a9157b8710452db1b495",
+          "url": "https://github.com/GetFelix/felix/commit/1594f3af96bbfde7d454dbaf5a1969c7eb375ffb"
+        },
+        "date": 1794704233726,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.40\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 215,
+            "range": "8.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 219.20\nstdev: 8.67\ncv: 3.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 584,
+            "range": "177.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 584.00\nmean: 601.00\nstdev: 177.28\ncv: 29.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 204,
+            "range": "6.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 206.00\nstdev: 6.20\ncv: 3.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 446,
+            "range": "105.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 446.00\nmean: 494.00\nstdev: 105.82\ncv: 21.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 2179,
+            "range": "715.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 2179.00\nmean: 2038.20\nstdev: 715.18\ncv: 35.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
