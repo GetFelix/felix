@@ -74,6 +74,7 @@ fn batch(payload: &Bytes) -> Batch {
         term: None,
         producer: None,
         expected: None,
+        trim: None,
     }
 }
 
