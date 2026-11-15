@@ -81,6 +81,21 @@ pub(crate) async fn report_health(
         }
     }
 
+    // As the root sequence: after the accept, and lost only for this beat.
+    if let Some(incarnation) = request.placement_incarnation {
+        let heard = crate::model::PlacementAck {
+            incarnation,
+            node_incarnation: request.incarnation,
+        };
+        if let Err(err) = state.store.record_placement_ack(&node.node_id, heard).await {
+            tracing::warn!(
+                node_id = %node.node_id,
+                error = %err,
+                "could not keep this broker's placement acknowledgement",
+            );
+        }
+    }
+
     // Lost, it costs a failover the lease's wait, not the heartbeat.
     if !request.suspects.is_empty() {
         let suspicion = crate::model::NodeSuspicion {
@@ -118,6 +133,16 @@ pub(crate) async fn report_health(
         None
     };
 
+    // Left out while 0, so a group that never restored answers as before.
+    // Missing it costs the broker one beat's acknowledgement.
+    let placement_incarnation = match state.store.placement_incarnation().await {
+        Ok(incarnation) => (incarnation > 0).then_some(incarnation),
+        Err(err) => {
+            tracing::warn!(error = %err, "could not read the placement incarnation");
+            None
+        }
+    };
+
     Ok(Json(NodeHeartbeatResponse {
         node_id: node.node_id,
         lifecycle: node.status.lifecycle,
@@ -125,6 +150,7 @@ pub(crate) async fn report_health(
         expiry_timeout_ms: state.node_liveness.expiry_timeout_ms,
         fleet_features,
         assignment_seq,
+        placement_incarnation,
     }))
 }
 

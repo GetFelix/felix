@@ -57,6 +57,16 @@ fn nothing_goes_out_until_every_broker_has_acknowledged() {
     assert!(all_acked_placement_incarnation(2, &brokers, &acked));
 }
 
+// Every broker starts at 0 (`ack` in FelixRaftPlacement's Init), so one that
+// never reported holds back only an incarnation a restore raised.
+#[test]
+fn a_broker_that_never_acknowledged_counts_as_zero() {
+    let brokers: BTreeSet<&str> = ["a"].into();
+    let none = BTreeMap::new();
+    assert!(all_acked_placement_incarnation(0, &brokers, &none));
+    assert!(!all_acked_placement_incarnation(1, &brokers, &none));
+}
+
 #[test]
 fn a_delete_below_the_highest_incarnation_seen_is_void() {
     assert!(copy_delete_is_void(1, 2));

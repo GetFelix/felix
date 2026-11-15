@@ -140,6 +140,11 @@ const ROOT_SEQUENCE_LEVEL: u16 = 33;
 /// it, and the give-up.
 const SWITCH_LEVEL: u16 = 34;
 
+/// The metadata level whose members keep the placement incarnation, raise it
+/// on every import, and keep each broker's acknowledgement of it
+/// (`ControlPlaneStore::placement_incarnation`).
+const PLACEMENT_INCARNATION_LEVEL: u16 = 35;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -1447,6 +1452,60 @@ impl ControlPlaneStore for RaftStore {
 
     async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
         self.local()?.root_sequences().await
+    }
+
+    async fn placement_incarnation(&self) -> StoreResult<u64> {
+        self.local()?.placement_incarnation().await
+    }
+
+    /// As `record_root_sequence`: proposed only when it moves what the local
+    /// copy holds, and kept from level 35 on.
+    async fn record_placement_ack(
+        &self,
+        node_id: &str,
+        heard: crate::model::PlacementAck,
+    ) -> StoreResult<bool> {
+        let held = self
+            .local()?
+            .placement_acks()
+            .await?
+            .into_iter()
+            .find_map(|(node, ack)| (node == node_id).then_some(ack));
+        if !crate::model::PlacementAck::moved_by(held.as_ref(), &heard) {
+            return Ok(false);
+        }
+        if self.group_level().await < PLACEMENT_INCARNATION_LEVEL {
+            return Ok(false);
+        }
+        match self
+            .propose(MetaCommand::RecordPlacementAck {
+                node_id: node_id.to_string(),
+                heard,
+            })
+            .await?
+        {
+            MetaResponse::Unit => Ok(true),
+            _ => Err(unexpected_shape("unit")),
+        }
+    }
+
+    async fn placement_acks(&self) -> StoreResult<Vec<(String, crate::model::PlacementAck)>> {
+        self.local()?.placement_acks().await
+    }
+
+    /// Also false until every member is known to be at level 35: below it
+    /// a restore does not raise the incarnation, so an acknowledgement says
+    /// nothing about what a broker would take as current.
+    async fn placement_acked_by(&self, brokers: &[String]) -> StoreResult<bool> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < PLACEMENT_INCARNATION_LEVEL)
+        {
+            return Ok(false);
+        }
+        self.local()?.placement_acked_by(brokers).await
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

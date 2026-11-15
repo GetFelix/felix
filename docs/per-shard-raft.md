@@ -3173,6 +3173,42 @@ from. A broker that gets a write
 for a shard it does not lead answers with the leader it knows. To balance
 leaders the control plane asks the current leader for a transfer.
 
+#### The restore incarnation
+
+A control-plane restore puts back an older store, and with it an older
+target counter. Without anything else, the next target written after the
+restore could reuse a version a leader already acted on, and a copy delete
+told before the restore could pass the version rule again
+(`FelixRaftPlacementStaleWipeRewindSameInc.cfg`). The restore incarnation is
+what stops that.
+
+- **Every import raises it.** The control plane keeps a placement
+  incarnation, 0 until the first restore. An import sets it one above the
+  higher of the incarnation it replaces and the one in the backup
+  (`restored_placement_incarnation`, the model's `CpRewind`). It is worked
+  out from the store before the import, so every control-plane member raises
+  to the same value. Importing the same backup twice, or an older one, never
+  reuses an incarnation. The raise is metadata level 35: below it an import
+  keeps the backup's value, and an export carrying an incarnation is refused.
+- **Every broker acknowledges it.** Each heartbeat answer carries the
+  incarnation, left out while it is 0. A broker with a Raft data root open
+  writes it to `raft-placement-incarnation` in the root and syncs it before
+  its next heartbeat reports it. The file never goes back. The control
+  plane keeps the highest acknowledgement each broker process reported. A
+  later process replaces it whatever it reports, so a broker whose root was
+  wiped is not counted at its predecessor's value.
+- **Nothing goes out until every broker has.** `placement_acked_by` holds
+  only while every broker named has acknowledged the current incarnation
+  (the model's `AllAcked`). A broker that never reported counts as 0, which
+  is enough only before the first restore. On a Raft control plane it also
+  waits until every member is known to apply level 35. Target writes, their
+  delivery and copy deletes are to wait for it; none of them is built yet
+  (`FelixRaftPlacementStaleWipeRewindNoAck.cfg` is what happens without it).
+
+A broker is to refuse a delete told at an incarnation below the highest it
+has seen, its acknowledgement or any membership in the copy's log
+(`copy_delete_is_void`). That check lands with the delete itself.
+
 ### Shards with one replica
 
 An RF 1 shard runs a group with one voter. It elects itself and commits on

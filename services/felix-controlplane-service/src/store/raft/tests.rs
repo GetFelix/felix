@@ -69,7 +69,8 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
     crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
-    crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
+    crate::store::contract::root_sequences::run_root_sequence_contract(store.clone()).await;
+    crate::store::contract::placement_acks::run_placement_ack_contract(store).await;
 }
 
 #[tokio::test]
@@ -1675,6 +1676,7 @@ async fn an_import_is_refused_below_the_placed_level_and_marked_at_it() {
         state: Box::new(exported.clone()),
         overwrite: true,
         mark_unplaced,
+        raise_incarnation: false,
     };
     assert_eq!(import(true).version(), PLACED_LEVEL);
     let refused = store.propose(import(true)).await;
@@ -1741,6 +1743,7 @@ async fn an_import_carrying_an_identity_waits_for_the_identity_level() {
         state: Box::new(state),
         overwrite: true,
         mark_unplaced: true,
+        raise_incarnation: false,
     };
     let refused = store.propose(import.clone()).await;
     assert!(
@@ -4472,6 +4475,47 @@ async fn a_root_sequence_is_kept_only_at_level_33() {
     assert_eq!(
         store.root_sequence("broker-a").await.expect("read"),
         Some(heard)
+    );
+}
+
+/// Below level 35 no acknowledgement is kept and the gate stays shut, even
+/// at incarnation 0: a restore there does not raise the incarnation, so an
+/// acknowledgement would vouch for nothing.
+#[tokio::test]
+async fn placement_acks_and_their_gate_wait_for_level_35() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), PLACEMENT_INCARNATION_LEVEL - 1).await;
+    let heard = crate::model::PlacementAck {
+        incarnation: 0,
+        node_incarnation: 1,
+    };
+    let brokers = ["broker-a".to_string()];
+    assert!(
+        !store
+            .record_placement_ack("broker-a", heard)
+            .await
+            .expect("record")
+    );
+    assert!(store.placement_acks().await.expect("read").is_empty());
+    assert!(!store.placement_acked_by(&brokers).await.expect("gate"));
+
+    version.store(
+        PLACEMENT_INCARNATION_LEVEL,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store.placement_acked_by(&brokers).await.expect("gate") {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the gate never opened at level 35"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        store
+            .record_placement_ack("broker-a", heard)
+            .await
+            .expect("record")
     );
 }
 

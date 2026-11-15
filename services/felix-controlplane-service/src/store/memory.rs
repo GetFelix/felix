@@ -173,9 +173,19 @@ pub struct InMemoryStore {
     /// Each node's highest root sequence; see
     /// `ControlPlaneStore::root_sequence`.
     root_sequences: Arc<RwLock<std::collections::BTreeMap<String, crate::model::RootSequence>>>,
+    /// The placement incarnation and each node's acknowledgement of one;
+    /// see `ControlPlaneStore::placement_incarnation`.
+    placement: Arc<RwLock<PlacementIncarnation>>,
     /// The engine this instance is configured for, reported where no group
     /// records one.
     shard_engine: String,
+}
+
+/// The placement incarnation and what each node has acknowledged of it.
+#[derive(Debug, Default)]
+struct PlacementIncarnation {
+    current: u64,
+    acks: std::collections::BTreeMap<String, crate::model::PlacementAck>,
 }
 
 impl InMemoryStore {
@@ -391,6 +401,7 @@ impl InMemoryStore {
             revocations: Arc::new(RwLock::new(Default::default())),
             identity: Default::default(),
             root_sequences: Default::default(),
+            placement: Default::default(),
             shard_engine: "hybrid".to_string(),
         }
     }
@@ -874,6 +885,34 @@ impl ControlPlaneStore for InMemoryStore {
             .await
             .iter()
             .map(|(node, held)| (node.clone(), held.clone()))
+            .collect())
+    }
+
+    async fn placement_incarnation(&self) -> StoreResult<u64> {
+        Ok(self.placement.read().await.current)
+    }
+
+    async fn record_placement_ack(
+        &self,
+        node_id: &str,
+        heard: crate::model::PlacementAck,
+    ) -> StoreResult<bool> {
+        let mut placement = self.placement.write().await;
+        if !crate::model::PlacementAck::moved_by(placement.acks.get(node_id), &heard) {
+            return Ok(false);
+        }
+        placement.acks.insert(node_id.to_string(), heard);
+        Ok(true)
+    }
+
+    async fn placement_acks(&self) -> StoreResult<Vec<(String, crate::model::PlacementAck)>> {
+        Ok(self
+            .placement
+            .read()
+            .await
+            .acks
+            .iter()
+            .map(|(node, ack)| (node.clone(), *ack))
             .collect())
     }
 

@@ -252,6 +252,7 @@ fn seed_operator(addr: SocketAddr, peer: SocketAddr) -> String {
         state: Box::new(exported),
         overwrite: false,
         mark_unplaced: false,
+        raise_incarnation: false,
     });
     let (status, _) = http(
         addr,

@@ -1092,3 +1092,66 @@ async fn a_heartbeat_keeps_the_highest_root_sequence_and_the_detail_serves_it() 
         serde_json::json!({ "storage_id": id, "sequence": 7, "incarnation": 0 })
     );
 }
+
+/// A heartbeat's placement acknowledgement is kept per node, and the answer
+/// tells the broker the incarnation to acknowledge, left out while it is 0
+/// so a group that never restored answers as before.
+#[tokio::test]
+async fn a_heartbeat_reports_the_placement_acknowledgement_and_hears_the_incarnation() {
+    let store = store();
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("register");
+    let keys = felix_controlplane_service::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let token = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &keys,
+        "t1",
+        "p:operator",
+        vec!["node.manage:cluster:*".to_string()],
+        Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("token");
+    let beat = |body: serde_json::Value| {
+        let (store, token) = (Arc::clone(&store), token.clone());
+        async move {
+            let response = app_with(store)
+                .await
+                .oneshot(authed(&token, "POST", "/v1/nodes/broker-a/heartbeat", body))
+                .await
+                .expect("request");
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value = read_json(response).await;
+            body
+        }
+    };
+    let answer = beat(serde_json::json!({ "incarnation": 0 })).await;
+    assert!(answer.get("placement_incarnation").is_none(), "{answer}");
+    assert!(store.placement_acks().await.expect("acks").is_empty());
+
+    // A restore raised it to 2.
+    let mut state =
+        serde_json::to_value(store.export_state().await).expect("exported state serializes");
+    state["placement_incarnation"] = 2.into();
+    store
+        .import_state(serde_json::from_value(state).expect("state"))
+        .await
+        .expect("import");
+    let answer = beat(serde_json::json!({ "incarnation": 0, "placement_incarnation": 2 })).await;
+    assert_eq!(answer["placement_incarnation"], 2, "{answer}");
+    let acks = store.placement_acks().await.expect("acks");
+    assert_eq!(acks.len(), 1);
+    assert_eq!(acks[0].0, "broker-a");
+    assert_eq!(acks[0].1.incarnation, 2);
+    assert!(
+        store
+            .placement_acked_by(&["broker-a".to_string()])
+            .await
+            .expect("gate")
+    );
+}

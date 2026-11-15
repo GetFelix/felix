@@ -176,6 +176,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
             state: Box::new(exported.clone()),
             overwrite: false,
             mark_unplaced: false,
+            raise_incarnation: false,
         })
         .await
         .expect("import into unused store");
@@ -230,6 +231,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
             state: Box::new(exported.clone()),
             overwrite: false,
             mark_unplaced: false,
+            raise_incarnation: false,
         })
         .await;
     assert!(matches!(refused, Err(MetaError::Conflict(_))));
@@ -240,6 +242,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
         state: Box::new(exported),
         overwrite: true,
         mark_unplaced: false,
+        raise_incarnation: false,
     })
     .await
     .expect("overwrite import");
@@ -251,6 +254,108 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
             .expect("exists"),
         "an overwrite import leaves nothing of the old state"
     );
+}
+
+/// FelixRaftPlacement's CpRewind: every import raises the placement
+/// incarnation above the one it replaces and the backup's, so importing the
+/// same backup twice, or an older one, never reuses an incarnation.
+#[tokio::test]
+async fn an_import_raises_the_placement_incarnation_past_both_sides() {
+    let machine = machine();
+    let backup = crate::store::export::export_state_from(
+        machine.store().as_ref() as &(dyn crate::store::ControlPlaneAuthStore + Send + Sync)
+    )
+    .await
+    .expect("export");
+    assert_eq!(backup.placement_incarnation, 0);
+    let import = |state: &crate::store::export::ExportedState| MetaCommand::ImportState {
+        state: Box::new(state.clone()),
+        overwrite: true,
+        mark_unplaced: true,
+        raise_incarnation: true,
+    };
+    let incarnation = || async { machine.store().placement_incarnation().await.expect("read") };
+
+    machine.dispatch(import(&backup)).await.expect("import");
+    assert_eq!(incarnation().await, 1);
+    machine
+        .dispatch(import(&backup))
+        .await
+        .expect("import again");
+    assert_eq!(incarnation().await, 2);
+    let mut newer = backup.clone();
+    newer.placement_incarnation = 5;
+    machine
+        .dispatch(import(&newer))
+        .await
+        .expect("import newer");
+    assert_eq!(incarnation().await, 6);
+    // The older backup again: above the current one, not the backup's.
+    machine
+        .dispatch(import(&backup))
+        .await
+        .expect("import older");
+    assert_eq!(incarnation().await, 7);
+
+    // Unraised, below level 35, the backup's value is kept as it is.
+    machine
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(newer),
+            overwrite: true,
+            mark_unplaced: true,
+            raise_incarnation: false,
+        })
+        .await
+        .expect("import unraised");
+    assert_eq!(incarnation().await, 5);
+}
+
+/// FelixRaftPlacement's AllAcked: after a restore nothing goes out until
+/// every broker named has acknowledged the new incarnation, through the
+/// applied command.
+#[tokio::test]
+async fn after_a_restore_the_gate_waits_for_every_broker() {
+    let machine = machine();
+    let backup = crate::store::export::export_state_from(
+        machine.store().as_ref() as &(dyn crate::store::ControlPlaneAuthStore + Send + Sync)
+    )
+    .await
+    .expect("export");
+    let brokers = ["broker-a".to_string(), "broker-b".to_string()];
+    let ack = |node: &str, incarnation, node_incarnation| MetaCommand::RecordPlacementAck {
+        node_id: node.to_string(),
+        heard: crate::model::PlacementAck {
+            incarnation,
+            node_incarnation,
+        },
+    };
+    let open = || async {
+        machine
+            .store()
+            .placement_acked_by(&brokers)
+            .await
+            .expect("gate")
+    };
+    machine.dispatch(ack("broker-a", 0, 1)).await.expect("ack");
+    assert!(open().await, "before a restore 0 is current");
+
+    machine
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(backup),
+            overwrite: true,
+            mark_unplaced: true,
+            raise_incarnation: true,
+        })
+        .await
+        .expect("import");
+    assert!(!open().await);
+    machine.dispatch(ack("broker-a", 1, 1)).await.expect("ack");
+    assert!(!open().await, "broker-b has not acknowledged");
+    machine.dispatch(ack("broker-b", 1, 1)).await.expect("ack");
+    assert!(open().await);
+    // broker-b restarts with its root wiped.
+    machine.dispatch(ack("broker-b", 0, 2)).await.expect("ack");
+    assert!(!open().await);
 }
 
 /// The round trip every command takes: encode → decode is identity, so the
@@ -369,6 +474,7 @@ async fn an_import_forgets_the_brokers_placed_in_each_epoch() {
             state: Box::new(exported),
             overwrite: false,
             mark_unplaced: false,
+            raise_incarnation: false,
         })
         .await
         .expect("import");
@@ -423,6 +529,7 @@ async fn a_shard_first_assigned_after_an_import_starts_no_record() {
             state: Box::new(exported),
             overwrite: false,
             mark_unplaced: true,
+            raise_incarnation: false,
         })
         .await
         .expect("import");

@@ -347,6 +347,11 @@ pub struct NodeHeartbeatRequest {
     /// groups, or predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<RootReport>,
+    /// The highest placement incarnation the broker has durably
+    /// acknowledged in its Raft data root. Absent from a broker with no
+    /// Raft root open, or that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement_incarnation: Option<u64>,
 }
 
 /// A data root's storage id and last synced root sequence, as a heartbeat
@@ -382,6 +387,10 @@ pub struct NodeHeartbeatResponse {
     /// feed at or past it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignment_seq: Option<u64>,
+    /// The control plane's placement incarnation, left out while 0. A
+    /// broker acknowledges it on disk before its next heartbeat reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement_incarnation: Option<u64>,
 }
 
 /// A broker claiming its identity on boot.

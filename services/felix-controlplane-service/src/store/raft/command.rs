@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 34;
+pub const METADATA_VERSION: u16 = 35;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -400,6 +400,12 @@ pub enum MetaCommand {
         /// applying member's own choice, so every member marks the same.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         mark_unplaced: bool,
+        /// Level 35: raise the placement incarnation above the store's and
+        /// the backup's (`restored_placement_incarnation`), computed from the
+        /// store as it was before the import so every member raises to the
+        /// same value. Set by `settle_for_level`, as `mark_unplaced` is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        raise_incarnation: bool,
     },
     /// Refresh-token writes.
     ///
@@ -501,6 +507,12 @@ pub enum MetaCommand {
     RecordRootSequence {
         node_id: String,
         heard: crate::model::RootSequence,
+    },
+    /// Keep a broker's placement acknowledgement if it moves what is held
+    /// (`PlacementAck::moved_by`). Level 35.
+    RecordPlacementAck {
+        node_id: String,
+        heard: crate::model::PlacementAck,
     },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
@@ -613,6 +625,8 @@ impl MetaCommand {
             // A member before level 34 would refuse these and keep a
             // hybrid shard where the others hold a sealed or switched one.
             Self::SealShard { .. } | Self::AcceptSealReport { .. } | Self::GiveUpSeal { .. } => 34,
+            // A member before level 35 would refuse the command.
+            Self::RecordPlacementAck { .. } => 35,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -941,7 +955,8 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// later first assignment start a record that looks complete. An import
 /// whose state needs a higher level, such as an export carrying an identity
 /// (level 32), is refused below that level too: an older member would refuse
-/// it at apply while newer ones took it.
+/// it at apply while newer ones took it. From level 35 an import also raises
+/// the placement incarnation.
 ///
 /// A switch command (`seal_shard`, `accept_seal_report`, `give_up_seal`) is
 /// refused below its level and otherwise left as it is: a member that
@@ -977,6 +992,9 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     }
     let settled = edit_command_json(command, |object| {
         object.insert("mark_unplaced".to_string(), true.into());
+        if level >= super::PLACEMENT_INCARNATION_LEVEL {
+            object.insert("raise_incarnation".to_string(), true.into());
+        }
         true
     });
     // One this build cannot decode is left for the apply to answer.

@@ -163,6 +163,10 @@ struct HeartbeatRequest {
     /// control plane always read.
     #[serde(skip_serializing_if = "Option::is_none")]
     root: Option<RootSequenceBody>,
+    /// The placement incarnation acknowledged on disk in that root. Left
+    /// out while no root is open, as `root` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    placement_incarnation: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -188,6 +192,10 @@ struct HeartbeatResponse {
     /// from a control plane that predates it.
     #[serde(default)]
     assignment_seq: Option<u64>,
+    /// The control plane's placement incarnation, absent while 0 and from a
+    /// control plane that predates it.
+    #[serde(default)]
+    placement_incarnation: Option<u64>,
 }
 
 /// A registered identity, and what the control plane told us about it.
@@ -213,22 +221,71 @@ pub struct Registration {
 }
 
 /// The open Raft data root's storage id and last synced root sequence, for
-/// the heartbeat. Empty until the root opens through the restore gate, and
-/// set once. Cheap to clone; every clone is the same slot.
+/// the heartbeat, and the placement incarnation acknowledged in it. Empty
+/// until the root opens through the restore gate, and set once. Cheap to
+/// clone; every clone is the same slot.
 #[derive(Clone, Default)]
-pub struct RootSequenceSlot(Arc<std::sync::OnceLock<RootRead>>);
+pub struct RootSequenceSlot {
+    read: Arc<std::sync::OnceLock<RootRead>>,
+    placement: Arc<std::sync::OnceLock<PlacementRoot>>,
+}
 
 type RootRead = Box<dyn Fn() -> (StorageId, u64) + Send + Sync>;
+
+/// Where the placement incarnation is acknowledged, and what is on disk.
+struct PlacementRoot {
+    root: std::path::PathBuf,
+    acked: AtomicU64,
+}
 
 impl RootSequenceSlot {
     /// Report what `read` returns from the next heartbeat on. It must return
     /// the synced sequence only. False if the slot was already set.
     pub fn set(&self, read: impl Fn() -> (StorageId, u64) + Send + Sync + 'static) -> bool {
-        self.0.set(Box::new(read)).is_ok()
+        self.read.set(Box::new(read)).is_ok()
     }
 
     pub(crate) fn read(&self) -> Option<(StorageId, u64)> {
-        self.0.get().map(|read| read())
+        self.read.get().map(|read| read())
+    }
+
+    /// Acknowledge placement incarnations under `root`, which holds `acked`
+    /// on disk, and report them from the next heartbeat on. False if
+    /// already set.
+    pub fn set_placement_root(&self, root: std::path::PathBuf, acked: u64) -> bool {
+        self.placement
+            .set(PlacementRoot {
+                root,
+                acked: AtomicU64::new(acked),
+            })
+            .is_ok()
+    }
+
+    /// The placement incarnation on disk, once a root is set.
+    pub(crate) fn placement_acked(&self) -> Option<u64> {
+        self.placement
+            .get()
+            .map(|placement| placement.acked.load(Ordering::Acquire))
+    }
+
+    /// Acknowledge `told` on disk if it is above what is held. The heartbeat
+    /// reports only what this has synced, so the control plane never counts
+    /// an acknowledgement a crash could take back.
+    pub(crate) async fn ack_placement(&self, told: u64) -> std::io::Result<()> {
+        let Some(placement) = self.placement.get() else {
+            return Ok(());
+        };
+        if told <= placement.acked.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let root = placement.root.clone();
+        let acked = felix_common::blocking::spawn(move || {
+            felix_storage::raft_copy::ack_placement_incarnation(&root, told)
+        })
+        .await
+        .map_err(std::io::Error::other)??;
+        placement.acked.fetch_max(acked, Ordering::AcqRel);
+        Ok(())
     }
 }
 
@@ -634,6 +691,7 @@ async fn run_heartbeat_checked(
                         storage_id: id.to_hex(),
                         sequence,
                     }),
+                placement_incarnation: registration.root.placement_acked(),
             },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
@@ -655,6 +713,17 @@ async fn run_heartbeat_checked(
                 for feature in fleet.observe(response.fleet_features.iter().map(String::as_str)) {
                     tracing::info!(feature, "an operator finalized this fleet feature; enabled");
                     mm::record_fleet_feature(feature, true);
+                }
+                // On disk before the next beat reports it.
+                if let Some(told) = response.placement_incarnation
+                    && let Err(err) = registration.root.ack_placement(told).await
+                {
+                    tracing::error!(
+                        node_id = %registration.node_id,
+                        incarnation = told,
+                        error = %err,
+                        "could not acknowledge the control plane's placement incarnation",
+                    );
                 }
                 // The control plane owns the cadence, so a change to it takes
                 // effect without touching broker configuration.
