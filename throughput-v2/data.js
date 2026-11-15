@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794774136512,
+  "lastUpdate": 1794776911089,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59020,6 +59020,58 @@ window.BENCHMARK_DATA = {
             "range": "11753.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1236174.07\nmean: 1230900.25\nstdev: 11753.33\ncv: 0.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "be8fdeccc7907890fc424011d1f34b97ac028e9f",
+          "message": "formal(raft): model consumer groups on a Raft stream shard (#2446) (#2645)\n\n* formal(raft): model consumer groups on a Raft stream shard (#2446)\n\nFelixRaftGroups.tla models group writes as entries in the stream's own\nRaft log, folded on every member into one group table, with trackers\nbound to a term and hydrated after a read index and an apply wait.\nTracker-driven entries carry the index their tracker was hydrated at;\napply drops one below the group's last seek or the shard's last delete.\n\nFelixRaftGroups passes NoSkip, RedrivenOwed and IfNewKeepsServed\n(8,856,873 distinct states, depth 41, 28 s with 8 workers). Six broken\nconfigurations each drop one rule and find the trace: no seek index, no\ndelete watermark, no redriven set, if_new checking the table only,\ntrackers kept across terms, hydrating without the apply wait.\n\n* formal(raft): groups model fix round: shard-wide delete, applied-only table\n\nA delete of any group raises the shard's delete watermark, so placing one\nnow retires every tracker in the shard; the leader keeps a retired\ntracker's \"handed out\" bit until the term ends, for if_new. The leader\ndecides hydrate, redrive and seek from its applied table only, after\napplying its own last proposed entry. Acknowledgement history is a set of\nhyds and forgets those past the committed log at a change of leader, so a\nreused index cannot mask a skip.\n\nNew configurations: FelixRaftGroupsTwoChanges passes (30,289,252 distinct\nstates, depth 41, 101 s); DeleteKeepsTrackers and UserOpsBeforeOwnApply\nviolate RedrivenOwed; DeadAfterAdvance violates NoSkip. FelixRaftGroups\npasses at 12,407,589 distinct states, depth 38, 40 s.\n\n* formal(raft): groups model: creation index instead of retiring every tracker\n\nEach live group keeps a creation index (its last seek's index, or the\nhydrate index of the tracker whose first entry created it), and every\ntracker-driven entry carries the one of the group it serves. Apply drops\nan entry whose creation index differs from the live group's, or that\nnames an absent group with a creation index below the shard's last\ndelete. A delete now touches only its own group, so deleting one group\nno longer retires the others' trackers.\n\nFelixRaftGroups passes (6,645,375 distinct states, depth 38, 24 s) and so\ndoes FelixRaftGroupsTwoChanges (18,608,068, depth 41, 67 s).\nStaleByHydrateIndex keeps the earlier rule and violates RedrivenOwed;\nNoCreationIndex and NoDeleteWatermark violate NoSkip.\n\n* formal(raft): groups model: drop a tracker whose entry apply dropped; term in the creation token\n\nA group with nothing committed whose tracker hydrated before another group's\ndelete had every entry dropped by the delete watermark, and the leader served\non from that tracker for the rest of the term, losing its dead letters. The\nleader now drops its tracker when it applies a dropped entry carrying that\ntracker's token. TrackerHeard checks it; FelixRaftGroupsNoRefreshOnDrop shows\nthe previous rule violates it. The creation token carries the term, so a seek\ndropped at a change of leader never matches a later seek at the same index.\n\n* docs(formal): what TrackerHeard proves, and PR 4's obligations (#2446)",
+          "timestamp": "2026-11-15T20:59:57Z",
+          "tree_id": "b77a4c4322326460e739b25d68971193ee068c3c",
+          "url": "https://github.com/GetFelix/felix/commit/be8fdeccc7907890fc424011d1f34b97ac028e9f"
+        },
+        "date": 1794776910428,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 414318.87,
+            "range": "15568.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 414318.87\nmean: 414948.57\nstdev: 15568.94\ncv: 3.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 414318.87,
+            "range": "15568.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 414318.87\nmean: 414948.57\nstdev: 15568.94\ncv: 3.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 95301.34,
+            "range": "260.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 95301.34\nmean: 95278.92\nstdev: 260.42\ncv: 0.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 953013.4,
+            "range": "2604.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 953013.40\nmean: 952789.19\nstdev: 2604.24\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
