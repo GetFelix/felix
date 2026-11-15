@@ -646,6 +646,7 @@ fn copy_id_report(stream: &str) -> serde_json::Value {
         },
         "copy_id": 7,
         "incarnation": 0,
+        "registered_at_millis": 0,
     })
 }
 

@@ -588,6 +588,7 @@ fn commands() -> Vec<MetaCommand> {
         MetaCommand::RecordRaftCopyId {
             key: shard_key(),
             node_id: s("b"),
+            node_registered_at_millis: 1,
             node_incarnation: 1,
             copy_id: 1,
         },

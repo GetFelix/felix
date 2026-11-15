@@ -682,6 +682,11 @@ pub struct RaftCopyIdRequest {
     /// A report from an earlier process is refused, so a delayed retry of a
     /// wiped copy's old id cannot replace the id its successor reported.
     pub incarnation: u64,
+    /// `status.registered_at_millis` from the same registration. A node
+    /// registered again after a delete starts at incarnation 0 once more,
+    /// so the incarnation alone would match a process from before the
+    /// delete.
+    pub registered_at_millis: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

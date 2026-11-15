@@ -499,10 +499,17 @@ impl MetadataStateMachine {
             MetaCommand::RecordRaftCopyId {
                 key,
                 node_id,
+                node_registered_at_millis,
                 node_incarnation,
                 copy_id,
             } => store
-                .apply_record_raft_copy_id(&key, &node_id, node_incarnation, copy_id)
+                .apply_record_raft_copy_id(
+                    &key,
+                    &node_id,
+                    node_registered_at_millis,
+                    node_incarnation,
+                    copy_id,
+                )
                 .await
                 .map(|changed| MetaResponse::Count {
                     count: u64::from(changed),

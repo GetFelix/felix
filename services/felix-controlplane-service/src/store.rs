@@ -643,16 +643,25 @@ pub trait ControlPlaneStore: Send + Sync {
     /// [`StoreError::Conflict`] when the shard has not switched to Raft,
     /// `node_id` is not in its set, or the write would move the target while
     /// some registered broker has not acknowledged the current placement
-    /// incarnation, or `node_incarnation` is not the one `node_id` is
-    /// registered at. Decided against the record it lands on. Level 36.
+    /// incarnation, or `node_registered_at_millis` and `node_incarnation`
+    /// are not `node_id`'s current registration. Both, because a node
+    /// registered again after a delete restarts at incarnation 0. Decided
+    /// against the record it lands on. Level 36.
     async fn record_raft_copy_id(
         &self,
         key: &ShardKey,
         node_id: &str,
+        node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
     ) -> StoreResult<bool> {
-        let _ = (key, node_id, node_incarnation, copy_id);
+        let _ = (
+            key,
+            node_id,
+            node_registered_at_millis,
+            node_incarnation,
+            copy_id,
+        );
         Err(StoreError::Conflict(
             "this store keeps no Raft copy ids".to_string(),
         ))

@@ -281,7 +281,8 @@ pub(crate) async fn report_replica_status(
 /// # Errors
 /// - 404 when the shard has no assignment.
 /// - 409 when the shard has not switched to Raft, the node is not in its
-///   set, `incarnation` is not the node's registered one, the id would
+///   set, `registered_at_millis` and `incarnation` are not the node's
+///   current registration, the id would
 ///   change the target while a registered broker has not acknowledged the
 ///   placement incarnation, or a control-plane member is
 ///   below metadata version 36.
@@ -294,7 +295,13 @@ pub(crate) async fn report_raft_copy_id(
     require_node_manage(&state, &headers, &node_id).await?;
     match state
         .store
-        .record_raft_copy_id(&request.key, &node_id, request.incarnation, request.copy_id)
+        .record_raft_copy_id(
+            &request.key,
+            &node_id,
+            request.registered_at_millis,
+            request.incarnation,
+            request.copy_id,
+        )
         .await
     {
         Ok(changed) => {

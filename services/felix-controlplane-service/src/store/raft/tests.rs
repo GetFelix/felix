@@ -4726,14 +4726,15 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
     crate::store::contract::shards::on_streams_of_its_own(shared, async {
         let shard = crate::store::contract::raft_targets::switched(shared).await;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let process = shared
-            .get_node("broker-x")
-            .await
-            .expect("node")
-            .status
-            .incarnation;
+        let process = shared.get_node("broker-x").await.expect("node").status;
         let refused = shared
-            .record_raft_copy_id(&shard.key, "broker-x", process, 2)
+            .record_raft_copy_id(
+                &shard.key,
+                "broker-x",
+                process.registered_at_millis,
+                process.incarnation,
+                2,
+            )
             .await;
         assert!(
             matches!(&refused, Err(StoreError::Conflict(_))),
@@ -4744,7 +4745,8 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
         let raw = crate::store::raft::command::encode_command(&MetaCommand::RecordRaftCopyId {
             key: shard.key.clone(),
             node_id: "broker-x".to_string(),
-            node_incarnation: process,
+            node_registered_at_millis: process.registered_at_millis,
+            node_incarnation: process.incarnation,
             copy_id: 2,
         });
         let answer = store.handle.write(raw).await.expect("answered");
@@ -4766,7 +4768,13 @@ async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
         version.store(RAFT_TARGET_LEVEL, std::sync::atomic::Ordering::SeqCst);
         loop {
             match shared
-                .record_raft_copy_id(&shard.key, "broker-x", process, 2)
+                .record_raft_copy_id(
+                    &shard.key,
+                    "broker-x",
+                    process.registered_at_millis,
+                    process.incarnation,
+                    2,
+                )
                 .await
             {
                 Ok(true) => break,

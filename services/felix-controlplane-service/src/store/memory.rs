@@ -831,11 +831,18 @@ impl ControlPlaneStore for InMemoryStore {
         &self,
         key: &ShardKey,
         node_id: &str,
+        node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
     ) -> StoreResult<bool> {
-        self.apply_record_raft_copy_id(key, node_id, node_incarnation, copy_id)
-            .await
+        self.apply_record_raft_copy_id(
+            key,
+            node_id,
+            node_registered_at_millis,
+            node_incarnation,
+            copy_id,
+        )
+        .await
     }
 
     async fn give_up_seal(

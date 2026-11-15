@@ -347,6 +347,7 @@ fn a_shard_switch_needs_level_34() {
     let copy_id = encode_command(&MetaCommand::RecordRaftCopyId {
         key: copy_key,
         node_id: "b".to_string(),
+        node_registered_at_millis: 1,
         node_incarnation: 1,
         copy_id: 1,
     });

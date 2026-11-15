@@ -118,6 +118,7 @@ pub(super) async fn record_raft_copy_id(
     store: &InMemoryStore,
     key: &ShardKey,
     node_id: &str,
+    node_registered_at_millis: u64,
     node_incarnation: u64,
     copy_id: u64,
 ) -> StoreResult<bool> {
@@ -142,12 +143,12 @@ pub(super) async fn record_raft_copy_id(
     }
     // Under the nodes lock, so no registration lands between this and the
     // write: a wiped copy's old id, retried late, never replaces the id its
-    // successor process reported.
-    if nodes
-        .records
-        .get(node_id)
-        .is_none_or(|node| node.status.incarnation != node_incarnation)
-    {
+    // successor process reported. The registration time too, since a node
+    // registered again after a delete restarts at incarnation 0.
+    if nodes.records.get(node_id).is_none_or(|node| {
+        node.status.registered_at_millis != node_registered_at_millis
+            || node.status.incarnation != node_incarnation
+    }) {
         return Err(StoreError::Conflict(format!(
             "the report is not from {node_id}'s registered process"
         )));
@@ -192,10 +193,19 @@ impl InMemoryStore {
         &self,
         key: &ShardKey,
         node_id: &str,
+        node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
     ) -> StoreResult<bool> {
-        record_raft_copy_id(self, key, node_id, node_incarnation, copy_id).await
+        record_raft_copy_id(
+            self,
+            key,
+            node_id,
+            node_registered_at_millis,
+            node_incarnation,
+            copy_id,
+        )
+        .await
     }
 
     pub(crate) async fn apply_accept_seal_report(

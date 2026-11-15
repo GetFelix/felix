@@ -520,6 +520,7 @@ pub enum MetaCommand {
     RecordRaftCopyId {
         key: ShardKey,
         node_id: String,
+        node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
     },

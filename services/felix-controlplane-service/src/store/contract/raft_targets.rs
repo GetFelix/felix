@@ -17,6 +17,7 @@ pub(crate) async fn run_raft_target_contract(store: Arc<dyn ControlPlaneStore>) 
         only_a_broker_in_a_raft_shards_set_reports(store).await;
         reports_of_other_kinds_keep_the_counter(store).await;
         a_report_from_an_earlier_process_is_refused(store).await;
+        a_report_from_before_a_delete_is_refused(store).await;
         the_target_waits_for_every_registered_broker(store).await;
     })
     .await;
@@ -44,8 +45,16 @@ async fn try_report(
     node: &str,
     id: u64,
 ) -> Result<bool, StoreError> {
-    let process = store.get_node(node).await.expect("node").status.incarnation;
-    store.record_raft_copy_id(&a.key, node, process, id).await
+    let process = store.get_node(node).await.expect("node").status;
+    store
+        .record_raft_copy_id(
+            &a.key,
+            node,
+            process.registered_at_millis,
+            process.incarnation,
+            id,
+        )
+        .await
 }
 
 fn counter(a: &ShardAssignment) -> Option<u64> {
@@ -82,7 +91,7 @@ async fn copy_ids_write_the_target_and_only_a_change_moves_it(store: &dyn Contro
 async fn only_a_broker_in_a_raft_shards_set_reports(store: &dyn ControlPlaneStore) {
     let shard = switched(store).await;
     let err = store
-        .record_raft_copy_id(&shard.key, "broker-z", 1, 1)
+        .record_raft_copy_id(&shard.key, "broker-z", 1, 1, 1)
         .await
         .expect_err("not in the set");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
@@ -100,32 +109,70 @@ async fn only_a_broker_in_a_raft_shards_set_reports(store: &dyn ControlPlaneStor
 /// must not replace the id its successor reported.
 async fn a_report_from_an_earlier_process_is_refused(store: &dyn ControlPlaneStore) {
     let shard = switched(store).await;
-    let before = store
-        .get_node("broker-y")
-        .await
-        .expect("node")
-        .status
-        .incarnation;
+    let before = store.get_node("broker-y").await.expect("node").status;
     store
         .register_node(super::nodes::node("broker-y", 7501))
         .await
         .expect("register again");
-    let after = store
-        .get_node("broker-y")
-        .await
-        .expect("node")
-        .status
-        .incarnation;
-    assert!(after > before, "{before} -> {after}");
+    let after = store.get_node("broker-y").await.expect("node").status;
+    assert!(
+        after.incarnation > before.incarnation,
+        "{} -> {}",
+        before.incarnation,
+        after.incarnation
+    );
     assert!(report(store, &shard, "broker-y", 42).await);
     let err = store
-        .record_raft_copy_id(&shard.key, "broker-y", before, 41)
+        .record_raft_copy_id(
+            &shard.key,
+            "broker-y",
+            before.registered_at_millis,
+            before.incarnation,
+            41,
+        )
         .await
         .expect_err("an earlier process");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
     assert_eq!(
         read(store, &shard.key).await.raft_copy_ids.get("broker-y"),
         Some(&42)
+    );
+    clear(store).await;
+}
+
+/// A node deleted and registered again restarts at incarnation 0, so a
+/// report from the process before the delete matches on incarnation alone.
+/// Its registration time does not.
+async fn a_report_from_before_a_delete_is_refused(store: &dyn ControlPlaneStore) {
+    let register_fresh = |at: u64| async move {
+        clear(store).await;
+        store.delete_node("broker-y").await.expect("delete");
+        let mut node = super::nodes::node("broker-y", 7501);
+        node.status.registered_at_millis = at;
+        store.register_node(node).await.expect("register");
+        store.get_node("broker-y").await.expect("node").status
+    };
+    let old = register_fresh(1_699_000_100_000).await;
+    switched(store).await;
+
+    let new = register_fresh(1_699_000_200_000).await;
+    assert_eq!(new.incarnation, old.incarnation, "both fresh registrations");
+    let shard = switched(store).await;
+    assert!(report(store, &shard, "broker-y", 52).await);
+    let err = store
+        .record_raft_copy_id(
+            &shard.key,
+            "broker-y",
+            old.registered_at_millis,
+            old.incarnation,
+            51,
+        )
+        .await
+        .expect_err("a process from before the delete");
+    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
+    assert_eq!(
+        read(store, &shard.key).await.raft_copy_ids.get("broker-y"),
+        Some(&52)
     );
     clear(store).await;
 }

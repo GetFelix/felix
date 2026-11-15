@@ -11,17 +11,12 @@ async fn copy_id(
     node: &str,
     copy_id: u64,
 ) -> MetaCommand {
-    let node_incarnation = machine
-        .store()
-        .get_node(node)
-        .await
-        .expect("node")
-        .status
-        .incarnation;
+    let status = machine.store().get_node(node).await.expect("node").status;
     MetaCommand::RecordRaftCopyId {
         key: key.clone(),
         node_id: node.to_string(),
-        node_incarnation,
+        node_registered_at_millis: status.registered_at_millis,
+        node_incarnation: status.incarnation,
         copy_id,
     }
 }

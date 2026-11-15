@@ -1129,6 +1129,7 @@ impl ControlPlaneStore for RaftStore {
         &self,
         key: &ShardKey,
         node_id: &str,
+        node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
     ) -> StoreResult<bool> {
@@ -1146,6 +1147,7 @@ impl ControlPlaneStore for RaftStore {
             .propose(MetaCommand::RecordRaftCopyId {
                 key: key.clone(),
                 node_id: node_id.to_string(),
+                node_registered_at_millis,
                 node_incarnation,
                 copy_id,
             })
