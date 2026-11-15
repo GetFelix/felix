@@ -1693,6 +1693,24 @@ the current token. The control plane's check cannot see that case either,
 since the copy recorded the incarnation the control plane still holds; such a
 restore needs `storage-id` deleted, or `felix-broker restore-point`.
 
+### Raft copy marks
+
+Under the Raft engine each data root also keeps `raft-marks`: per shard, the
+copy id, the highest vote and the last log id the copy reached on disk. An
+open compares a shard directory with them, and a directory below either mark
+was put back, so its copy is replaced under a new id. Every synced write of
+the file raises the root's sequence, which the run witness and the control
+plane copy (see `docs/per-shard-raft.md`, "The root sequence").
+
+The vote mark is synced, and the witness told, before a vote is answered. The
+log mark is batched: once a second one synced write carries the flushed
+position of every shard on the root that moved. It names only what a flush
+has already covered, so it is never above the log. The cost is a window: a
+shard directory, or the whole root in the same run, put back to a state from
+the last second with no vote since is not caught. Restoring a single shard
+directory is unsupported for that reason. See `docs/per-shard-raft.md`, "What
+this does not catch".
+
 ## Restoring to a backup point
 
 A backup point (see

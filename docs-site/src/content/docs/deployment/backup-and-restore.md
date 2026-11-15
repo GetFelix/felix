@@ -131,6 +131,9 @@ changes, it still reports that shard's copy as kept and trusted, and a
 promotion can count an empty copy and lose an acknowledged write. A new
 whole data directory gets a new storage id, which the readmission rules handle.
 Version 0.8 removes the hazard ([#2376](https://github.com/GetFelix/felix/issues/2376)).
+Under the Raft engine a shard directory put back to an older state is detected
+and its copy replaced, except one put back to a state from the last second with no
+election since. Keep to whole data directories there too.
 :::
 
 1. **Stop every broker.**
