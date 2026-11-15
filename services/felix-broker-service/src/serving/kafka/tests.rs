@@ -208,11 +208,12 @@ async fn sasl_binds_a_delegated_token_to_its_actors_certificate() {
         .expect("alice's own certificate still binds her subject");
 }
 
-/// **A Kafka produce to a shard on Raft is refused before anything is
-/// claimed**, with an error the client does not retry.
+/// **A Kafka produce to a shard on Raft is proposed to its group**, and an
+/// idempotent producer's re-send lands once: each record is its own batch
+/// at its own sequence, as the hybrid stores it.
 #[cfg(feature = "raft")]
 #[tokio::test]
-async fn a_produce_to_a_raft_shard_is_refused_for_good() {
+async fn a_produce_to_a_raft_shard_lands_once() {
     use crate::shards::raft::tests as fixture;
     use crate::shards::routing::EngineShards;
 
@@ -237,9 +238,65 @@ async fn a_produce_to_a_raft_shard_is_refused_for_good() {
         stream: "orders",
         shard: 0,
     };
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    let payloads = |values: &[&'static str]| -> Vec<bytes::Bytes> {
+        values
+            .iter()
+            .map(|value| bytes::Bytes::from(*value))
+            .collect()
+    };
+    let produce = |payloads: &[bytes::Bytes], producer| {
+        let payloads = payloads.to_vec();
+        let cluster = &cluster;
+        let broker = &broker;
+        let handle = &handle;
+        async move {
+            let permit = cluster.admit_write(&shard).await.expect("admitted");
+            let produce = Produce {
+                payloads: &payloads,
+                headers: None,
+                producer,
+            };
+            cluster
+                .produce(broker, &shard, handle, &permit, produce)
+                .await
+                .expect("proposed on Raft")
+                .expect("written")
+        }
+    };
 
-    let refused = cluster.admit_write(&shard).await;
+    let plain = produce(&payloads(&["p"]), None).await;
+    let first = produce(&payloads(&["a", "b"]), Some((7, 0))).await;
+    let again = produce(&payloads(&["a", "b"]), Some((7, 0))).await;
+    let next = produce(&payloads(&["c"]), Some((7, 2))).await;
 
-    assert_eq!(refused.err(), Some(WriteError::Unsupported));
+    // A record's offset is its entry's index, after the group's own.
+    let (base, _) = plain.outcome.offsets.expect("written");
+    let at = |first: u64, last: u64| Some((base + first, base + last));
+    assert_eq!((first.outcome.offsets, first.duplicate), (at(1, 2), false));
+    assert_eq!((again.outcome.offsets, again.duplicate), (at(1, 2), true));
+    assert_eq!((next.outcome.offsets, next.duplicate), (at(3, 3), false));
+    let gap = {
+        let permit = cluster.admit_write(&shard).await.expect("admitted");
+        let records = payloads(&["e"]);
+        let produce = Produce {
+            payloads: &records,
+            headers: None,
+            producer: Some((7, 5)),
+        };
+        cluster
+            .produce(&broker, &shard, &handle, &permit, produce)
+            .await
+            .expect("proposed on Raft")
+    };
+    assert!(matches!(
+        gap,
+        Err(ProduceError::Broker(
+            felix_broker::BrokerError::SequenceGap { expected: 3 }
+        ))
+    ));
     EngineShards::shutdown(&*shards).await;
 }

@@ -197,17 +197,20 @@ async fn a_sequence_gap_is_not_told_to_the_client() {
     assert!(stored(&broker).await.is_empty());
 }
 
-/// **An MQTT message for a shard on Raft is refused before anything is
-/// claimed.** Its log takes plain publishes only.
+/// **An MQTT message for a shard on Raft is proposed to its group** as the
+/// connection's idempotent batch, with its key and headers, and a re-send
+/// of it lands once.
 #[cfg(feature = "raft")]
 #[tokio::test]
-async fn a_message_for_a_raft_shard_is_refused_by_name() {
+async fn a_message_for_a_raft_shard_lands_once_with_its_headers() {
     use crate::shards::raft::tests as fixture;
     use crate::shards::routing::EngineShards;
 
     let root = tempfile::tempdir().expect("tempdir");
     let broker = fixture::broker(root.path()).await;
     broker.record_headers_when(|| true);
+    broker.read_record_headers_when(|| true);
+    broker.allow_raft_record_headers_when(|| true);
     let shards = fixture::shards(&broker);
     let orders = fixture::key("orders", 0);
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
@@ -218,12 +221,38 @@ async fn a_message_for_a_raft_shard_is_refused_by_name() {
         Arc::new(fixture::engine(&shards)),
         Duration::from_secs(1),
     );
-    let mut message = batch(0, writes.new_producer_id(), &["plant/a"]);
-    message.tenant_id = "t1".into();
-    message.target.stream = "orders".into();
+    let producer = writes.new_producer_id();
+    let message = |sequence, topic| {
+        let mut message = batch(sequence, producer, &[topic]);
+        message.tenant_id = "t1".into();
+        message.target.stream = "orders".into();
+        message
+    };
 
-    let refused = writes.write(message).await;
+    assert_eq!(writes.max_batch_records(), 1);
+    writes.write(message(0, "plant/a")).await.expect("written");
+    writes
+        .write(message(0, "plant/a"))
+        .await
+        .expect("answered from the log");
+    writes.write(message(1, "plant/b")).await.expect("written");
 
-    assert_eq!(refused, Err(WriteError::Refused(Refusal::Unsupported)));
+    let stored: Vec<_> = broker
+        .read_durable("t1", "ns", "orders", 0, 0, 1 << 20)
+        .await
+        .expect("read")
+        .into_iter()
+        .map(|record| {
+            let block = record.headers.expect("headers stored");
+            RecordHeaders::decode((*block).clone()).expect("block").key
+        })
+        .collect();
+    assert_eq!(
+        stored,
+        vec![
+            Some(Bytes::from_static(b"plant/a")),
+            Some(Bytes::from_static(b"plant/b"))
+        ]
+    );
     EngineShards::shutdown(&*shards).await;
 }

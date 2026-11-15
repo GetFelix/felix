@@ -11,15 +11,18 @@
 //! whose answer was lost be sent again, to whichever broker owns the shard by
 //! then, including this one: a log that already holds it answers with its
 //! offsets and writes nothing. `docs/mqtt-design.md`, "Publishing".
+//!
+//! A shard a Raft group runs here is proposed to the group as the same
+//! idempotent batch, one record long, and answered at its commit.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use felix_broker::{Broker, BrokerError, PublishOutcome, SequenceReuse, StreamHandle};
+use felix_broker::{Attribution, Broker, BrokerError, PublishOutcome, SequenceReuse, StreamHandle};
 use felix_mqtt::{Refusal, WriteBatch, WriteError, Writes};
-use felix_replication::engine::Engine;
+use felix_replication::engine::{CommitError, Engine};
 use felix_replication::peer::{PeerPool, PeerRequester};
 use felix_replication::quorum::QuorumError;
 use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer};
@@ -28,7 +31,7 @@ use crate::observability::tenants;
 use crate::serving::forward::{ForwardError, ForwardKey, ForwardTarget, forward_publish};
 use crate::serving::limits::TenantRates;
 use crate::shards::lifecycle::fence;
-use crate::shards::routing::{Dispatch, StreamEngine, dispatch_write};
+use crate::shards::routing::{Dispatch, RaftRefusal, StreamEngine, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Longest wait between two sends of a batch whose answer was lost. A
@@ -121,6 +124,16 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
         hold
     }
 
+    fn max_batch_records(&self) -> usize {
+        // A Raft shard takes an idempotent batch of one record, and a shard
+        // another broker owns may be on Raft too.
+        if self.engine.runs_raft() {
+            1
+        } else {
+            usize::MAX
+        }
+    }
+
     async fn write(&self, batch: WriteBatch) -> Result<(), WriteError> {
         // Every MQTT message carries headers, so a broker that does not
         // accept them takes none; checked first so nothing else is spent.
@@ -135,11 +148,6 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
             shard: target.shard,
             kind: ShardKind::Stream,
         };
-        // A Raft log takes plain publishes only, and every MQTT message
-        // carries headers and its producer's sequence.
-        if self.engine.on_raft(&key) {
-            return Err(WriteError::Refused(Refusal::Unsupported));
-        }
         let handle = self
             .broker
             .resolve_stream_handle(
@@ -208,8 +216,15 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
         headers: &[Option<Bytes>],
         deadline: Option<Instant>,
     ) -> Sent {
+        let on_raft = self.engine.on_raft(key);
+        if on_raft && let Some(term) = self.engine.raft_term(key) {
+            return self
+                .send_on_raft(batch, key, handle, term, payloads, headers, deadline)
+                .await;
+        }
         let ingress = self.engine.serving().map(|ingress| &**ingress);
         let (permit, generation) = match dispatch_write(ingress, key).await {
+            (Dispatch::Local { .. }, _) if on_raft => return Sent::Refused(Refusal::NotOwner),
             (Dispatch::Local { generation }, mut held) => {
                 match fence::enter_or_keep(&mut held, ingress, Some(key), generation) {
                     Ok(permit) => (permit, generation),
@@ -271,11 +286,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 offsets: written.outcome.offsets,
             };
             let shard = self.engine.serving().map(|_| key);
-            // A re-send late in the budget does not wait past it.
-            let wait = deadline.map_or(self.quorum_timeout, |deadline| {
-                self.quorum_timeout
-                    .min(deadline.saturating_duration_since(Instant::now()))
-            });
+            let wait = self.wait_within(deadline);
             let quorum = self
                 .engine
                 .await_commit(handle, shard, &outcome, generation, wait)
@@ -290,6 +301,61 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             }
         }
         Sent::Written
+    }
+
+    /// Propose the batch to the shard's Raft group, which this broker leads
+    /// at `term`, as the producer's idempotent batch. Answered at its
+    /// commit, whatever the stream's level.
+    #[allow(clippy::too_many_arguments)]
+    async fn send_on_raft(
+        &self,
+        batch: &WriteBatch,
+        key: &ShardKey,
+        handle: &StreamHandle,
+        term: u64,
+        payloads: &[Bytes],
+        headers: &[Option<Bytes>],
+        deadline: Option<Instant>,
+    ) -> Sent {
+        let turn = self.broker.producer_turn(handle, batch.producer_id).await;
+        let wait = self.wait_within(deadline);
+        let proposed = self.engine.publish_idempotent_on_raft(
+            &self.broker,
+            handle,
+            key,
+            term,
+            turn,
+            batch.sequence,
+            SequenceReuse::Refuse,
+            payloads.to_vec(),
+            Attribution {
+                publisher: None,
+                headers: Some(headers.to_vec()),
+            },
+            wait,
+        );
+        let proposed = match proposed.unwrap_or(Err(RaftRefusal::NotLeading { term })) {
+            Ok(proposed) => proposed,
+            // Deposed since the check: nothing was written.
+            Err(RaftRefusal::NotLeading { .. }) => return Sent::Refused(Refusal::NotOwner),
+            Err(RaftRefusal::Broker(err)) => return claim_failure(err),
+        };
+        match proposed.complete().await {
+            Ok(_) => Sent::Written,
+            Err(CommitError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),
+            // As on the hybrid: whoever leads now answers a re-send from
+            // the log.
+            Err(_) => Sent::Unanswered("leadership_lost"),
+        }
+    }
+
+    /// The quorum wait, cut short so a re-send late in the budget does not
+    /// wait past it.
+    fn wait_within(&self, deadline: Option<Instant>) -> Duration {
+        deadline.map_or(self.quorum_timeout, |deadline| {
+            self.quorum_timeout
+                .min(deadline.saturating_duration_since(Instant::now()))
+        })
     }
 
     /// Hand the batch to the shard's owner under the connection's producer

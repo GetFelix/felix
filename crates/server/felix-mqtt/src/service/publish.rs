@@ -127,10 +127,12 @@ impl<'a> Publishing<'a> {
         let mut records = Vec::new();
         let mut owed = Vec::new();
         let mut bytes = 0u64;
-        while self
-            .queue
-            .front()
-            .is_some_and(|next| shard_key(&next.target) == key)
+        let most = writes.max_batch_records().max(1);
+        while records.len() < most
+            && self
+                .queue
+                .front()
+                .is_some_and(|next| shard_key(&next.target) == key)
         {
             let next = self.queue.pop_front().expect("front was just seen");
             bytes += next.record.payload.len() as u64;
@@ -375,7 +377,6 @@ fn describe(refusal: Refusal) -> (ReasonCode, &'static str) {
         // 0x88 is not allowed on a PUBACK.
         Refusal::StreamUnavailable => (ReasonCode::UnspecifiedError, "stream_unavailable"),
         Refusal::NotAuthorized => (NOT_AUTHORIZED.reason, NOT_AUTHORIZED.label),
-        Refusal::Unsupported => (ReasonCode::ImplementationSpecificError, "raft_stream"),
     }
 }
 
