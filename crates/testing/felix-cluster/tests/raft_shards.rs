@@ -946,6 +946,13 @@ async fn an_atomic_commit_on_a_raft_shard_reaches_every_member() {
         return;
     }
     let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["atomic_commit", "raft_atomic_commit"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("finalize the commit features");
     let nodes = cluster.node_ids();
     let leader = leader_among(&cluster, &nodes).await;
     let addr = cluster.node(&leader).expect("node").client_addr;
@@ -964,14 +971,21 @@ async fn an_atomic_commit_on_a_raft_shard_reaches_every_member() {
         ]
     };
     let (tenant, namespace) = (&cluster.tenant_id, &cluster.namespace);
+    let last_error = std::sync::Mutex::new(None);
     let receipt = felix_cluster::wait::until_some(ELECTED_WITHIN, "the commit", || async {
-        client
+        match client
             .commit(tenant, namespace, b"order-42", ops("placed"))
             .await
-            .ok()
+        {
+            Ok(receipt) => Some(receipt),
+            Err(err) => {
+                *last_error.lock().unwrap() = Some(err.to_string());
+                None
+            }
+        }
     })
     .await
-    .expect("committed");
+    .unwrap_or_else(|err| panic!("{err}; last refusal: {:?}", last_error.lock().unwrap()));
     let state = client
         .state_get(tenant, namespace, STREAM, b"order-42", "status")
         .await
