@@ -14,9 +14,9 @@ use crate::api::nodes::require_cluster_node_view;
 use crate::api::pagination::{PageParams, list_visible};
 use crate::api::types::{
     ConfirmedShardAssignmentResponse, ConfirmedShardAssignmentsRequest,
-    ConfirmedShardAssignmentsResponse, PreviousSet, RoutedShardAssignment,
-    RoutedShardAssignmentChange, ShardAssignmentChangesResponse, ShardAssignmentListResponse,
-    ShardAssignmentSnapshotResponse, SnapshotShardAssignment,
+    ConfirmedShardAssignmentsResponse, PreviousSet, RaftTargetVersion, RaftTargetView,
+    RoutedShardAssignment, RoutedShardAssignmentChange, ShardAssignmentChangesResponse,
+    ShardAssignmentListResponse, ShardAssignmentSnapshotResponse, SnapshotShardAssignment,
 };
 use crate::model::{ShardAssignment, ShardAssignmentChange, ShardKey, StreamRouting};
 use crate::store::{ConfirmedAssignment, StoreError};
@@ -61,6 +61,7 @@ pub(crate) async fn list_shard_assignments(
     require_cluster_node_view(&state, &headers).await?;
 
     let leader = query.get("leader").map(String::as_str);
+    let before = incarnation_before(&state).await?;
     let listed = list_visible(
         page.request()?,
         |page| state.store.list_shard_assignments_page(leader, page),
@@ -71,7 +72,7 @@ pub(crate) async fn list_shard_assignments(
     .map_err(|ref err| api_internal("failed to list shard assignments", err))?;
 
     Ok(Json(ShardAssignmentListResponse {
-        items: with_routing(&state, listed.items).await?,
+        items: with_routing(&state, listed.items, Some(before)).await?,
         next_cursor: listed.next_cursor,
     }))
 }
@@ -95,6 +96,7 @@ pub(crate) async fn shard_assignment_snapshot(
     headers: HeaderMap,
 ) -> Result<Json<ShardAssignmentSnapshotResponse>, ApiError> {
     require_cluster_node_view(&state, &headers).await?;
+    let before = incarnation_before(&state).await?;
     let snapshot = state
         .store
         .shard_assignment_snapshot()
@@ -120,7 +122,7 @@ pub(crate) async fn shard_assignment_snapshot(
         .into_iter()
         .map(|before| (before.key.clone(), before))
         .collect();
-    let items = with_routing(&state, snapshot.items)
+    let items = with_routing(&state, snapshot.items, Some(before))
         .await?
         .into_iter()
         .map(|assigned| {
@@ -184,7 +186,7 @@ pub(crate) async fn confirmed_shard_assignment(
         .map_err(|ref err| confirm_failed(err))?;
     let assignment = match confirmed {
         ConfirmedAssignment::Assigned(assignment) => {
-            with_routing(&state, vec![assignment]).await?.pop()
+            with_routing(&state, vec![assignment], None).await?.pop()
         }
         ConfirmedAssignment::Unassigned => None,
         ConfirmedAssignment::NotServed => {
@@ -252,7 +254,7 @@ pub(crate) async fn confirmed_shard_assignments(
             }
         }
     }
-    let mut routed = with_routing(&state, assigned).await?.into_iter();
+    let mut routed = with_routing(&state, assigned, None).await?.into_iter();
     let items = confirmed
         .iter()
         .map(|answer| ConfirmedShardAssignmentResponse {
@@ -320,6 +322,7 @@ pub(crate) async fn shard_assignment_changes(
     // and the wait still wakes it.
     let mut written = state.placement_wakes.watch_assignments();
     loop {
+        let before = incarnation_before(&state).await?;
         let changes = state
             .store
             .shard_assignment_changes(since)
@@ -338,7 +341,7 @@ pub(crate) async fn shard_assignment_changes(
                     _ = tokio::time::sleep(CHANGES_RECHECK.min(deadline - now)) => {}
                     _ = state.placement_wakes.closing().cancelled() => {
                         return Ok(Json(ShardAssignmentChangesResponse {
-                            items: changes_with_routing(&state, changes.items).await?,
+                            items: changes_with_routing(&state, changes.items, before).await?,
                             next_seq: changes.next_seq,
                         }));
                     }
@@ -346,7 +349,7 @@ pub(crate) async fn shard_assignment_changes(
             }
             _ => {
                 return Ok(Json(ShardAssignmentChangesResponse {
-                    items: changes_with_routing(&state, changes.items).await?,
+                    items: changes_with_routing(&state, changes.items, before).await?,
                     next_seq: changes.next_seq,
                 }));
             }
@@ -376,10 +379,50 @@ async fn routings<'a>(
         .map_err(|ref err| api_internal("failed to read stream routing", err))
 }
 
+/// The placement incarnation, read before the records a response carries.
+async fn incarnation_before(state: &AppState) -> Result<u64, ApiError> {
+    state
+        .store
+        .placement_incarnation()
+        .await
+        .map_err(|ref err| api_internal("failed to read the placement incarnation", err))
+}
+
+/// The incarnation a response's Raft targets go out under, for records read
+/// after `before`. `None` while some registered broker has not acknowledged
+/// it (`docs/per-shard-raft.md`, "Where a target comes from"), or when a
+/// restore landed while the records were read: they may be from either side
+/// of it, and a target from before it would go out as newer than it is.
+async fn target_incarnation(state: &AppState, before: u64) -> Result<Option<u64>, ApiError> {
+    let acked = state
+        .store
+        .placement_acked_by_all()
+        .await
+        .map_err(|ref err| api_internal("failed to read the placement acknowledgements", err))?;
+    let after = incarnation_before(state).await?;
+    Ok((acked && after == before).then_some(after))
+}
+
+/// `incarnation`: see [`target_incarnation`]; `None` leaves every target out.
 fn routed(
     routings: &HashMap<crate::model::StreamKey, StreamRouting>,
-    assignment: ShardAssignment,
+    mut assignment: ShardAssignment,
+    incarnation: Option<u64>,
 ) -> RoutedShardAssignment {
+    // Brokers read copy ids from the target's members, so the record's
+    // own are not sent: they would go out before the gate opens.
+    assignment.raft_copy_ids.clear();
+    let target = assignment
+        .raft_target
+        .take()
+        .zip(incarnation)
+        .map(|(target, incarnation)| RaftTargetView {
+            version: RaftTargetVersion {
+                incarnation,
+                counter: target.counter,
+            },
+            members: target.members,
+        });
     let routing = assignment
         .key
         .stream_key()
@@ -388,31 +431,44 @@ fn routed(
     RoutedShardAssignment {
         assignment,
         routing,
+        target,
     }
 }
 
+/// `before`: the placement incarnation read before `items` were, or `None`
+/// to leave every Raft target out, as for a confirmed read: it comes from
+/// the leader, and this member's incarnation may be behind it.
 async fn with_routing(
     state: &AppState,
     items: Vec<ShardAssignment>,
+    before: Option<u64>,
 ) -> Result<Vec<RoutedShardAssignment>, ApiError> {
     let routings = routings(state, items.iter().map(|item| &item.key)).await?;
+    let incarnation = match before {
+        Some(before) => target_incarnation(state, before).await?,
+        None => None,
+    };
     Ok(items
         .into_iter()
-        .map(|item| routed(&routings, item))
+        .map(|item| routed(&routings, item, incarnation))
         .collect())
 }
 
 async fn changes_with_routing(
     state: &AppState,
     items: Vec<ShardAssignmentChange>,
+    before: u64,
 ) -> Result<Vec<RoutedShardAssignmentChange>, ApiError> {
     let routings = routings(state, items.iter().map(|item| &item.key)).await?;
+    let incarnation = target_incarnation(state, before).await?;
     Ok(items
         .into_iter()
         .map(|change| RoutedShardAssignmentChange {
             seq: change.seq,
             op: change.op,
-            assignment: change.assignment.map(|item| routed(&routings, item)),
+            assignment: change
+                .assignment
+                .map(|item| routed(&routings, item, incarnation)),
             key: change.key,
         })
         .collect())

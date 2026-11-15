@@ -8,8 +8,9 @@ use super::require_node_manage;
 use crate::api::AppState;
 use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
 use crate::api::types::{
-    NodeHeartbeatRequest, NodeHeartbeatResponse, ReplicaStatusRequest, ReplicaStatusResponse,
-    ReportOutcome, ShardReplicaStatus, ShardReportOutcome,
+    NodeHeartbeatRequest, NodeHeartbeatResponse, RaftCopyIdRequest, RaftCopyIdResponse,
+    ReplicaStatusRequest, ReplicaStatusResponse, ReportOutcome, ShardReplicaStatus,
+    ShardReportOutcome,
 };
 use crate::store::{ReportWrite, StoreError};
 
@@ -258,6 +259,70 @@ pub(crate) async fn report_replica_status(
 }
 
 /// `reported`, if it is the node's incarnation now.
+#[utoipa::path(
+    post,
+    path = "/v1/nodes/{node_id}/raft-copy-id",
+    tag = "nodes",
+    params(("node_id" = String, Path, description = "Broker node identifier")),
+    request_body = RaftCopyIdRequest,
+    responses(
+        (status = 200, description = "The id is on the shard's record", body = RaftCopyIdResponse),
+        (status = 404, description = "The shard has no assignment", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "The id cannot be recorded now", body = crate::api::types::ErrorResponse)
+    )
+)]
+/// Record the Raft copy id a broker holds for a shard that switched to Raft.
+///
+/// Once every broker in the shard's set has reported one, the control plane
+/// writes the shard's target from them, and writes it again when a broker
+/// reports a new id. A change of the set does not rewrite the target yet.
+/// A broker reports only its own copy, from the process it registered.
+///
+/// # Errors
+/// - 404 when the shard has no assignment.
+/// - 409 when the shard has not switched to Raft, the node is not in its
+///   set, `registered_at_millis` and `incarnation` are not the node's
+///   current registration, the id would
+///   change the target while a registered broker has not acknowledged the
+///   placement incarnation, or a control-plane member is
+///   below metadata version 36.
+pub(crate) async fn report_raft_copy_id(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(node_id): Path<String>,
+    Json(request): Json<RaftCopyIdRequest>,
+) -> Result<Json<RaftCopyIdResponse>, ApiError> {
+    require_node_manage(&state, &headers, &node_id).await?;
+    match state
+        .store
+        .record_raft_copy_id(
+            &request.key,
+            &node_id,
+            request.registered_at_millis,
+            request.incarnation,
+            request.copy_id,
+        )
+        .await
+    {
+        Ok(changed) => {
+            if changed {
+                tracing::info!(
+                    node_id = %node_id,
+                    name = %request.key.stream,
+                    shard = request.key.shard,
+                    copy_id = request.copy_id,
+                    "recorded a broker's Raft copy id",
+                );
+                state.placement_wakes.assignment_written();
+            }
+            Ok(Json(RaftCopyIdResponse { changed }))
+        }
+        Err(StoreError::NotFound(_)) => Err(api_not_found("shard has no assignment")),
+        Err(StoreError::Conflict(ref message)) => Err(api_conflict("conflict", message)),
+        Err(ref err) => Err(api_internal("record the Raft copy id", err)),
+    }
+}
+
 async fn current_incarnation(
     state: &AppState,
     node_id: &str,

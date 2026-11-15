@@ -176,14 +176,20 @@ async fn a_durable_publish_with_headers_is_refused_while_the_gate_is_off() {
         .publish_batch_with_outcome(&handle, &payloads(&["a"]), None, Some(&blocks))
         .await
         .expect_err("refused");
-    assert!(matches!(refused, BrokerError::RecordHeadersNotEnabled));
+    assert!(matches!(
+        refused,
+        BrokerError::RecordHeadersNotEnabled { .. }
+    ));
     assert!(stored_headers(&broker, "orders").await.is_empty());
 
     // The claim path refuses before it takes an offset.
     let refused = broker
         .claim_publish(&handle, &payloads(&["a"]), None, Some(&blocks))
         .await;
-    assert!(matches!(refused, Err(BrokerError::RecordHeadersNotEnabled)));
+    assert!(matches!(
+        refused,
+        Err(BrokerError::RecordHeadersNotEnabled { .. })
+    ));
 
     // The same batch goes through once the node says so.
     broker.record_headers_when(|| true);

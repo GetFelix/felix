@@ -479,6 +479,8 @@ fn assignment(name: &str) -> ShardAssignment {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     }
 }
 

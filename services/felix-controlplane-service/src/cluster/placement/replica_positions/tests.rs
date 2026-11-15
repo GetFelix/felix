@@ -697,6 +697,8 @@ fn led_by_a(generation: u64) -> ShardAssignment {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     }
 }
 

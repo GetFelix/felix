@@ -93,6 +93,7 @@ impl Broker {
         let proposed = self.propose(
             handle,
             vec![headers],
+            crate::broker::publish::Attribution::default(),
             Some(expected_at),
             Some(HeldTrim { before, applied }),
             stalled_after,

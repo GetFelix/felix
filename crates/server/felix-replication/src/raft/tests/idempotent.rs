@@ -77,6 +77,7 @@ impl Producer<'_> {
             turn,
             sequence,
             payloads,
+            Default::default(),
             reuse,
             PATIENCE,
         )
@@ -161,6 +162,7 @@ async fn a_batch_sent_again_is_answered_and_not_written_again() {
         stranger,
         4,
         vec![Bytes::from_static(b"z")],
+        Default::default(),
         SequenceReuse::Refuse,
         PATIENCE,
     );
@@ -391,6 +393,8 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
             }),
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         };
         group.raft().client_write(command).await.expect("written");
@@ -464,6 +468,85 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
         ["a", "b", "c", "theirs", "d", "e", "f"]
     );
     led.heal();
+    led.cluster.stop().await;
+}
+
+/// **A re-send that finishes a cut batch stores each record's own headers.**
+/// The records the log holds are dropped from the re-send's headers along
+/// with their payloads; left in, `d` and `e` would be stored under `b`'s and
+/// `c`'s headers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cut_batch_finished_with_headers_keeps_each_records_own() {
+    use crate::raft::types::ProducerMark;
+    use felix_storage::log::{AppendOnlyLog, ReadRange};
+
+    let mut led = led().await;
+    let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+    broker.record_headers_when(|| true);
+    broker.allow_raft_record_headers_when(|| true);
+    let first = led.committed + 1;
+    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let group = group.expect("group");
+    for (position, payload) in [b"b", b"c"].into_iter().enumerate() {
+        let command = Command {
+            timestamp_micros: 1_700_000_000,
+            payload: Bytes::from_static(payload),
+            producer: Some(ProducerMark {
+                producer_id: PRODUCER,
+                sequence: 0,
+                position: position as u32,
+                len: 4,
+            }),
+            expected: None,
+            trim: None,
+            publisher: None,
+            headers: None,
+            written: None,
+        };
+        group.raft().client_write(command).await.expect("written");
+    }
+
+    let block = |tag: &'static [u8]| Bytes::from([b"\x00\x01k\x00\x01".as_slice(), tag].concat());
+    let attribution = felix_broker::Attribution {
+        publisher: None,
+        headers: Some(vec![
+            Some(block(b"b")),
+            Some(block(b"c")),
+            Some(block(b"d")),
+            Some(block(b"e")),
+        ]),
+    };
+    let turn = broker.producer_turn(&handle, PRODUCER).await;
+    let payloads = [b"b", b"c", b"d", b"e"]
+        .map(|p| Bytes::from_static(p))
+        .to_vec();
+    let proposed = led
+        .engine
+        .publish_idempotent(
+            &broker,
+            &handle,
+            &shard(0),
+            led.term,
+            turn,
+            0,
+            payloads,
+            attribution,
+            SequenceReuse::Refuse,
+            PATIENCE,
+        )
+        .expect("proposed");
+    let sent = proposed.complete().await.expect("committed");
+    assert_eq!(offsets(&sent), (first, first + 3));
+
+    let log = led.cluster.logs[&(led.leader.broker.to_string(), 0)].clone();
+    eventually(|| (log.durable_offset() > first + 3).then_some(())).await;
+    let read = ReadRange {
+        start: first,
+        max_bytes: 1 << 20,
+    };
+    let page = log.read_range(read).await.expect("read");
+    let stored: Vec<_> = page.records.iter().map(|r| r.headers.as_deref()).collect();
+    assert_eq!(stored, [None, None, Some(&block(b"d")), Some(&block(b"e"))]);
     led.cluster.stop().await;
 }
 
@@ -561,6 +644,8 @@ async fn a_member_installed_past_a_cut_batch_refuses_its_resend() {
             }),
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         };
         group.raft().client_write(command).await.expect("written");

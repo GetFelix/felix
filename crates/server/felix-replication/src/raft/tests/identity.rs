@@ -582,10 +582,12 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
             records: vec![Record {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(b"relaxed"),
+                headers: None,
             }],
             ack: AckAt::Written,
             term: None,
             producer: None,
+            publisher: None,
         };
         let written = engine.propose(&shard(0), batch).await.expect("written");
         engine
@@ -653,10 +655,12 @@ async fn a_slow_marker_sync_does_not_hold_the_commit_or_the_timeout() {
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
+            headers: None,
         }],
         ack: AckAt::Written,
         term: None,
         producer: None,
+        publisher: None,
     };
     // Well inside the wait's own timeout, so a wait stuck behind the marker
     // fails here.
@@ -813,10 +817,12 @@ async fn power_cut_keeps(acked: Acked) {
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
+            headers: None,
         }],
         ack: AckAt::Written,
         term: None,
         producer: None,
+        publisher: None,
     };
     // A wait on the written count makes the leader ask for reports.
     let primed = engine
@@ -1121,10 +1127,12 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
+            headers: None,
         }],
         ack: AckAt::Written,
         term: None,
         producer: None,
+        publisher: None,
     };
     // A wait on the written count makes the leader ask for reports.
     let primed = engine

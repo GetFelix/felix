@@ -81,6 +81,14 @@ async fn satisfies_the_placement_ack_contract() {
     crate::store::contract::placement_acks::run_placement_ack_contract(store).await;
 }
 
+/// On a store of its own: the last case leaves the incarnation raised.
+#[tokio::test]
+async fn satisfies_the_raft_target_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::raft_targets::run_raft_target_contract(store).await;
+}
+
 #[tokio::test]
 async fn satisfies_the_shard_store_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -805,6 +813,8 @@ async fn shard_renewal_waits_for_every_member() {
                     readmitted: Default::default(),
                     placed: None,
                     switch: None,
+                    raft_copy_ids: Default::default(),
+                    raft_target: None,
                 })
                 .await
                 .expect("assign");
@@ -895,6 +905,8 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     readmitted: Default::default(),
                     placed: None,
                     switch: None,
+                    raft_copy_ids: Default::default(),
+                    raft_target: None,
                 })
                 .await
                 .expect("assign");
@@ -1097,6 +1109,8 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -1219,6 +1233,8 @@ async fn a_refused_ballot_waits_for_every_member() {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1355,6 +1371,8 @@ async fn a_previous_generation_waits_for_every_member() {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1452,6 +1470,8 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -1585,6 +1605,8 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
     let first = |shard: u32| {
         let store = Arc::clone(&store);
@@ -1831,6 +1853,8 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1943,6 +1967,8 @@ async fn fence_storage_ids_wait_for_every_member() {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
 
     let written = store
@@ -2024,6 +2050,8 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -2156,6 +2184,8 @@ async fn pending_sets_wait_for_every_member() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -2327,6 +2357,8 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -2432,6 +2464,8 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -2538,6 +2572,8 @@ async fn inherited_storage_waits_for_every_member() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -2657,6 +2693,8 @@ async fn learners_wait_for_every_member() {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
     let assigned = store
         .put_shard_assignment(learning.clone())
@@ -2806,6 +2844,8 @@ async fn a_refusal_waits_for_every_member() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -2944,6 +2984,8 @@ async fn storage_ids_wait_for_every_member() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -3272,6 +3314,8 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -4188,6 +4232,8 @@ async fn adoption_waits_for_every_member() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign");
@@ -4668,4 +4714,77 @@ async fn a_switch_waits_for_every_member_at_its_level() {
         }
     };
     assert!(sealed.sealing().is_some());
+}
+
+/// Refused while any member's level is unknown or below 36: a member that
+/// cannot apply it keeps no target where the others hold one.
+#[tokio::test]
+async fn a_raft_copy_id_waits_for_every_member_known_at_level_36() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), RAFT_TARGET_LEVEL - 1).await;
+    let shared: &dyn ControlPlaneStore = store.as_ref();
+    crate::store::contract::shards::on_streams_of_its_own(shared, async {
+        let shard = crate::store::contract::raft_targets::switched(shared).await;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let process = shared.get_node("broker-x").await.expect("node").status;
+        let refused = shared
+            .record_raft_copy_id(
+                &shard.key,
+                "broker-x",
+                process.registered_at_millis,
+                process.incarnation,
+                2,
+            )
+            .await;
+        assert!(
+            matches!(&refused, Err(StoreError::Conflict(_))),
+            "proposed below level 36: {refused:?}"
+        );
+        // Raw bytes through the peer route skip the store's check; the
+        // leader refuses them too.
+        let raw = crate::store::raft::command::encode_command(&MetaCommand::RecordRaftCopyId {
+            key: shard.key.clone(),
+            node_id: "broker-x".to_string(),
+            node_registered_at_millis: process.registered_at_millis,
+            node_incarnation: process.incarnation,
+            copy_id: 2,
+        });
+        let answer = store.handle.write(raw).await.expect("answered");
+        let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
+        assert!(
+            matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 36")),
+            "{result:?}"
+        );
+        assert_eq!(
+            shared
+                .get_shard_assignment(&shard.key)
+                .await
+                .expect("read")
+                .raft_copy_ids
+                .get("broker-x"),
+            None
+        );
+
+        version.store(RAFT_TARGET_LEVEL, std::sync::atomic::Ordering::SeqCst);
+        loop {
+            match shared
+                .record_raft_copy_id(
+                    &shard.key,
+                    "broker-x",
+                    process.registered_at_millis,
+                    process.incarnation,
+                    2,
+                )
+                .await
+            {
+                Ok(true) => break,
+                other => assert!(
+                    std::time::Instant::now() < deadline,
+                    "still refused at level 36: {other:?}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await;
 }

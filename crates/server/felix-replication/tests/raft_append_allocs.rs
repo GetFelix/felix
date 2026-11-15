@@ -68,6 +68,7 @@ fn batch(payload: &Bytes) -> Batch {
             .map(|_| Record {
                 timestamp_micros: 1_700_000_000,
                 payload: payload.clone(),
+                headers: None,
             })
             .collect(),
         ack: AckAt::Written,
@@ -75,6 +76,7 @@ fn batch(payload: &Bytes) -> Batch {
         producer: None,
         expected: None,
         trim: None,
+        publisher: None,
     }
 }
 
