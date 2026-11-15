@@ -20,7 +20,9 @@
 //! the group a write was decided for, so a write from before a seek or a
 //! delete of that group is dropped rather than applied to its successor.
 //! A seek's own token is its entry's log id, so it carries none.
-//! `docs/formal/FelixRaftGroups.tla` models the rules.
+//! `docs/formal/FelixRaftGroups.tla` models the rules, except discard (a
+//! dead letter dropped) and `if_new`, which the leader decides before it
+//! proposes and the fold does not read.
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -41,6 +43,7 @@ const IF_NEW: u8 = 1;
 /// One consumer group's write, as one Raft entry of a stream shard.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GroupEntry {
+    /// The group's name, unique within the shard's stream.
     pub group: String,
     pub op: GroupOp,
 }
@@ -71,8 +74,9 @@ pub enum GroupOp {
 /// of the seek that created or last reset the group, or, for a group created
 /// by its first write, the term its tracker was made in and the index it
 /// hydrated at. `by` keeps a seek at one index apart from a hydrate at the
-/// same index.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// same index. Tokens are compared for equality; the delete watermark
+/// compares `index` alone, so there is no ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CreationToken {
     pub term: u64,
     pub index: u64,
@@ -80,7 +84,7 @@ pub struct CreationToken {
 }
 
 /// How a group's incarnation started. See [`CreationToken`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CreatedBy {
     Hydrate,
     Seek,
@@ -124,6 +128,7 @@ impl GroupOp {
 }
 
 impl GroupEntry {
+    /// The payload of the entry's group record, in the layout above.
     pub fn encode(&self) -> Bytes {
         let mut out = BytesMut::with_capacity(2 + 4 + self.group.len() + 17 + 8 + 1);
         out.put_u8(VERSION);
