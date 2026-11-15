@@ -39,6 +39,8 @@ const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 /// How long a shutdown waits for its last batch of log marks, all roots
 /// together.
 const LAST_MARK_LIMIT: Duration = Duration::from_secs(5);
+/// How often [`GroupRuntime::hand_over`] looks at a new group again.
+const HAND_OVER_POLL: Duration = Duration::from_millis(20);
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -813,6 +815,50 @@ impl GroupRuntime {
             .initialize(members)
             .await
             .map_err(InitializeError::Raft)
+    }
+
+    /// Hand the first leadership of `shard`, a group this broker just
+    /// formed, to `to`. The broker that forms a group is the lowest id in
+    /// its set and wins its first election, so without this one broker
+    /// would lead every group it forms and take every write. Waits until
+    /// this member leads and `to` holds its whole log, since openraft hands
+    /// over only to a member whose log matches. Returns whether the
+    /// transfer was asked for. One that does not go through ends the term
+    /// after an election timeout, as any transfer does.
+    pub async fn hand_over(&self, shard: &ShardKey, to: MemberId, within: Duration) -> bool {
+        let Some(group) = self.inner.registry.get(shard) else {
+            return false;
+        };
+        if to == group.member {
+            return false;
+        }
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let status = group.status();
+            match status.role {
+                Role::Leader => {
+                    let log = group.replication();
+                    if log.last_index > 0 && log.matched.get(&to) >= Some(&log.last_index) {
+                        return group.transfer_in(status.term, to).await.is_some();
+                    }
+                }
+                // Learner too: a member's metrics can still show the state
+                // it had before the group formed.
+                Role::Candidate | Role::Follower | Role::Learner => {}
+                Role::Stopped => return false,
+            }
+            if status
+                .leader
+                .as_ref()
+                .is_some_and(|leader| *leader != group.member)
+            {
+                return false;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(HAND_OVER_POLL).await;
+        }
     }
 
     /// Ask every other member of `members` whether it has heard from a

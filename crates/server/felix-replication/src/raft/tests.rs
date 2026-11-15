@@ -601,6 +601,32 @@ async fn members_told_together_elect_one_leader() {
     cluster.stop().await;
 }
 
+/// **The broker that forms a group hands its first leadership on.** The
+/// lowest broker of a set forms every group of that set, so without this it
+/// would lead them all. The target is asked only once it holds the leader's
+/// log, so the transfer goes through.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_broker_that_forms_a_group_hands_its_first_leadership_on() {
+    let mut cluster = Cluster::new(true);
+    cluster.open(0).await;
+    let key = shard(0);
+    let to = members()
+        .into_iter()
+        .find(|member| &*member.broker == "c")
+        .expect("c is a member");
+    // Asked straight after forming, as the broker does: the member may not
+    // show the group formed yet.
+    let a = cluster.runtime("a");
+    a.initialize(&key, members()).await.expect("initialize");
+    assert!(a.hand_over(&key, to.clone(), PATIENCE).await);
+    eventually(|| (cluster.leader(0)? == to).then_some(())).await;
+    cluster.write(0, b"record").await;
+    // A member that no longer leads asks for nothing.
+    assert!(!a.hand_over(&key, to.clone(), PATIENCE).await);
+    assert_eq!(cluster.leader(0), Some(to));
+    cluster.stop().await;
+}
+
 /// openraft notices a timeout only in its timer check, and the ticker is
 /// the only thing that asks for one. Forming a group needs no timer: the
 /// member told to form it stands at once.
