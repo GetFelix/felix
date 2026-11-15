@@ -212,6 +212,13 @@ impl IngressRouter {
             .is_some_and(|engine| engine.serves_reads(key))
     }
 
+    /// Whether another engine leads `key` here unheard by a majority.
+    pub(crate) fn engine_leads_unheard(&self, key: &ShardKey) -> bool {
+        self.engine_shards
+            .get()
+            .is_some_and(|engine| engine.leads_unheard(key))
+    }
+
     /// Hold writes to a moving shard under `hold` rather than refusing them.
     pub fn with_move_hold(mut self, hold: MoveHold) -> Self {
         self.hold = hold;
@@ -854,6 +861,12 @@ pub trait EngineShards: Send + Sync {
     /// although it does not lead the shard: from the engine's log, up to
     /// what the engine committed here.
     fn serves_reads(&self, _key: &ShardKey) -> bool {
+        false
+    }
+
+    /// Whether this broker leads `key` but no majority answered it lately.
+    /// Its commit index has stopped, so it serves no reader.
+    fn leads_unheard(&self, _key: &ShardKey) -> bool {
         false
     }
 

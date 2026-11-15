@@ -1582,4 +1582,40 @@ mod on_raft {
         );
         EngineShards::shutdown(&*follower.shards).await;
     }
+
+    /// **Nor does a leader no majority answers.** openraft never steps it
+    /// down, and its commit index has stopped like a cut-off follower's.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_leader_no_majority_answers_serves_no_reader() {
+        use crate::shards::routing::EngineShards;
+
+        let (net, mut members, leader) = fixture::trio().await;
+        let leading = members.remove(leader);
+        let ingress = fixture::ingress(&leading.shards);
+        let (mut receiver, _guard) = {
+            let subscription = leading.broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        assert!(redirected(&ingress).is_none());
+
+        for member in &members {
+            net.forget(member.name);
+        }
+        fixture::stop(&members).await;
+        fixture::until("the leader serves no reader", || {
+            redirected(&ingress).is_some()
+        })
+        .await;
+        leading
+            .shards
+            .take(&mut fixture::assignments([fixture::replicated()]))
+            .await;
+
+        let ended = tokio::time::timeout(Duration::from_secs(20), receiver.recv()).await;
+        assert!(
+            ended.expect("ended in time").is_none(),
+            "a cut-off leader kept its subscriber"
+        );
+        EngineShards::shutdown(&*leading.shards).await;
+    }
 }

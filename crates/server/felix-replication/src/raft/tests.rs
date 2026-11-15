@@ -2237,6 +2237,28 @@ async fn a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_retur
     cluster.stop().await;
 }
 
+/// openraft never steps a leader down for a lost majority. Its status
+/// names no leader once no majority answered it within its followers'
+/// wait, and still hints at itself (#2630).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_no_majority_answers_names_no_leader() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    cluster.net.cut.lock().insert(leader.broker.to_string());
+    cluster.net.muted.lock().insert(leader.broker.to_string());
+    let status = eventually(|| {
+        let status = cluster.runtime(&leader.broker).status(&shard(0))?;
+        status.leader.is_none().then_some(status)
+    })
+    .await;
+    assert_eq!(status.role, Role::Leader, "{status:?}");
+    assert_eq!(status.leader_hint.as_ref(), Some(&leader), "{status:?}");
+    cluster.stop().await;
+}
+
 /// openraft refuses a pre-vote only inside its 2 s lease, which ends just
 /// before each idle heartbeat. A follower that heard its leader within its
 /// own wait, and a leader a majority answered within its followers' wait,

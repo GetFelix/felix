@@ -118,6 +118,9 @@ pub(crate) struct Group {
     /// Timer checks the ticker gave up on because the group had not taken
     /// them by the next interval.
     dropped_ticks: AtomicU64,
+    /// The term this member was first seen leading, and when, on the
+    /// runtime's clock. It ages a term no majority has answered yet.
+    leads_since: parking_lot::Mutex<Option<(u64, u64)>>,
     /// Set once a timer check finds the group's core gone.
     stopped: AtomicBool,
     /// The shard's publish queue, in commit order. Its task starts with the
@@ -691,6 +694,7 @@ impl Group {
             lag_threshold,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
+            leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
@@ -840,6 +844,34 @@ impl Group {
         let acked = metrics.last_quorum_acked.map(|acked| acked.elapsed());
         metrics.state == ServerState::Leader
             && acked.is_some_and(|acked| self.pace.leads_live(acked))
+    }
+
+    /// Whether this member, as leader, is still heard by its group: a
+    /// majority answered it within its followers' wait. A term no majority
+    /// has answered yet counts from when it was first seen here. openraft
+    /// never steps a leader down for a lost majority, so without this a
+    /// cut-off leader would serve readers for good. A sole voter needs
+    /// nobody.
+    fn leads_heard(&self, metrics: &openraft::RaftMetrics<ShardTypes>) -> bool {
+        use openraft::Instant as _;
+        if metrics.membership_config.membership().voter_ids().count() <= 1 {
+            return true;
+        }
+        let now = self.pace.timers.now();
+        let mut since = self.leads_since.lock();
+        let term = metrics.current_term;
+        let first = match *since {
+            Some((led, at)) if led == term => at,
+            _ => {
+                *since = Some((term, now));
+                now
+            }
+        };
+        let age = match metrics.last_quorum_acked {
+            Some(acked) => acked.elapsed(),
+            None => Duration::from_millis(now.saturating_sub(first)),
+        };
+        self.pace.leads_live(age)
     }
 
     /// A pre-vote answer that grants nothing, naming this member's vote and
@@ -1815,15 +1847,17 @@ impl Group {
         // Pre-vote keeps a cut-off member at its term, so openraft names the
         // last leader forever. A follower counts on it only as long as it
         // would refuse a pre-vote for it.
-        let leader = metrics.current_leader.filter(|_| {
-            metrics.state == ServerState::Leader
-                || self.pace.follows_live_leader(self.pace.timers.now())
-        });
+        let live = match metrics.state {
+            ServerState::Leader => self.leads_heard(&metrics),
+            _ => self.pace.follows_live_leader(self.pace.timers.now()),
+        };
+        let leader_hint = metrics.current_leader.clone();
         GroupStatus {
             member: self.member.clone(),
             role,
             term: metrics.current_term,
-            leader,
+            leader: leader_hint.clone().filter(|_| live),
+            leader_hint,
             last_index: metrics.last_log_index,
             written: positions.written,
             flushed: positions.flushed,

@@ -1575,13 +1575,23 @@ dies, the first follower to time out may have to wait for the others to
 time out too, which still falls inside the 6 to 7 s above.
 
 Because a cut-off member keeps its term, openraft keeps naming the leader it
-last heard. Felix does not: a follower names a leader only while it would
-refuse a pre-vote for it. Past that wait it serves no reader, ends the
-subscribers it has, and answers `not_ready` instead of forwarding to a
-leader that may be gone.
+last heard, and it never steps a leader down for losing its majority. Felix
+serves readers only from a member that is still in touch with its group:
+
+- A follower counts on its leader only while it would refuse a pre-vote
+  for it.
+- A leader counts as heard while a majority answered it within three idle
+  intervals (6 s at the default). A new term no majority has answered yet
+  is timed from when the leader was first seen. A sole voter needs nobody.
+
+Past that, the member ends its subscribers and refuses new ones with
+`not_ready`. A follower still forwards writes to the leader openraft names,
+so one that has just restarted forwards at once, before it hears that
+leader. A forward to a leader that is gone fails, and the client retries.
 
 > `crates/server/felix-replication/src/raft/tests.rs`,
 > `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return`,
+> `a_leader_no_majority_answers_names_no_leader`,
 > `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease` and
 > `an_idle_group_elects_soon_after_a_transfer_to_a_dead_target`.
 
@@ -2725,8 +2735,10 @@ fence are not asked.
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_raft_shard_is_subscribed_to_on_its_leader_and_followers`,
 > `a_follower_behind_a_resume_offset_redirects_to_its_leader`,
-> `a_member_with_no_leader_serves_no_reader`;
+> `a_member_with_no_leader_serves_no_reader`,
+> `a_leader_no_majority_answers_serves_no_reader`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_restarted_follower_forwards_before_it_hears_its_leader`,
 > `a_deposed_leader_lets_its_subscribers_go`;
 > `crates/server/felix-broker/src/broker/shards/tests.rs`,
 > `a_follower_delivers_what_is_committed_and_no_further`,

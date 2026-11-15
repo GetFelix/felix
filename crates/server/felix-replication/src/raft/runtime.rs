@@ -326,11 +326,16 @@ pub struct GroupStatus {
     pub member: MemberId,
     pub role: Role,
     pub term: u64,
-    /// The leader this member follows, itself included. A follower that
-    /// has not heard its leader within its election wait names none, even
-    /// though openraft still does: under pre-vote a cut-off member keeps
-    /// its term, and with it openraft's leader.
+    /// The leader this member follows, itself included, while it is heard:
+    /// a follower names none once its leader is silent past its election
+    /// wait, and a leader names none once no majority answered it within
+    /// its followers' wait. Under pre-vote a cut-off member keeps its term,
+    /// and with it openraft's leader. Readers are served only while this
+    /// names one.
     pub leader: Option<MemberId>,
+    /// The leader openraft names at this member's term, heard lately or
+    /// not. Enough to forward a request to, which fails if it is gone.
+    pub leader_hint: Option<MemberId>,
     pub last_index: Option<u64>,
     /// The last entry this member's log has written since it was opened,
     /// fsynced or not. A power cut can still take it.

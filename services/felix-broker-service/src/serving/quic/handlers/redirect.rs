@@ -63,7 +63,15 @@ pub(crate) fn redirect_for(
     if ingress.is_some_and(|ingress| ingress.engine_serves_reads(&key)) {
         return None;
     }
-    let dispatched = dispatch(ingress, &key);
+    let dispatched = match dispatch(ingress, &key) {
+        // Like a cut-off follower, a leader nobody answers serves no reader.
+        crate::shards::routing::Dispatch::Local { .. }
+            if ingress.is_some_and(|ingress| ingress.engine_leads_unheard(&key)) =>
+        {
+            crate::shards::routing::Dispatch::Unavailable(crate::shards::routing::Reason::NotReady)
+        }
+        dispatched => dispatched,
+    };
     // A shard another engine runs is held by that engine's term. This
     // broker's lease and the hybrid's fence say nothing about it.
     if let crate::shards::routing::Dispatch::Local { generation } = dispatched
@@ -115,6 +123,9 @@ pub(crate) fn stopped_serving(
     // registered after sees the route already gone.
     if let Some(dispatched) = ingress.engine_dispatch(key) {
         return match dispatched {
+            crate::shards::routing::Dispatch::Local { .. } if ingress.engine_leads_unheard(key) => {
+                Some(moved_away(key))
+            }
             crate::shards::routing::Dispatch::Local { .. } => None,
             _ if ingress.engine_serves_reads(key) => None,
             _ => Some(moved_away(key)),
