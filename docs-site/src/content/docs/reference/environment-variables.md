@@ -2094,7 +2094,7 @@ On a `Quorum` stream, retention never deletes records a majority has not yet
 acknowledged, so a stream whose followers are down can grow past this bound
 until they return.
 
-**Note**: Raft shards ignore this setting for now; their logs take no retention yet (#2602).
+**Note**: On a Raft shard the bound hides records but frees no disk yet: the shard's leader trims the head to where the bound would start the log, and the records stay on disk until Raft logs can purge ([#2602](https://github.com/GetFelix/felix/issues/2602)).
 
 ### `FELIX_DURABLE_RETENTION_SECONDS`
 
@@ -2116,7 +2116,7 @@ export FELIX_DURABLE_RETENTION_SECONDS="604800"  # 7 days
 restoring a backup does not reset it. A segment survives until its *newest*
 record has expired, so nothing younger than the bound is ever deleted.
 
-**Note**: Raft shards ignore this setting for now; their logs take no retention yet (#2602).
+**Note**: On a Raft shard the bound hides records but frees no disk yet: the shard's leader trims the head to where the bound would start the log, and the records stay on disk until Raft logs can purge ([#2602](https://github.com/GetFelix/felix/issues/2602)).
 
 ### `FELIX_DURABLE_RETENTION_INTERVAL_SECONDS`
 

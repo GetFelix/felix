@@ -175,6 +175,52 @@ pub(super) async fn record_raft_copy_id(
     Ok(true)
 }
 
+/// [`crate::store::ControlPlaneStore::record_raft_floors`]. Deterministic:
+/// each entry is decided from the record it lands on alone.
+///
+/// A raise is written in place and records no change: leaders report every
+/// second, and a change per report would push placement's changes out of the
+/// feed's window. Nothing that watches the feed reads the floor.
+pub(super) async fn record_raft_floors(
+    store: &InMemoryStore,
+    node_id: &str,
+    floors: &[crate::model::RaftFloorReport],
+) -> u32 {
+    let mut state = store.shards.write().await;
+    let mut raised = 0;
+    for report in floors {
+        let Some(record) = state.records.get_mut(&report.key) else {
+            tracing::debug!(
+                node_id,
+                name = %report.key.stream,
+                shard = report.key.shard,
+                "skipped a Raft floor report for a shard with no assignment",
+            );
+            continue;
+        };
+        match record.raise_raft_floor(report) {
+            Ok(true) => raised += 1,
+            Ok(false) => {}
+            // Brokers report cache groups too, every second, so a shard
+            // with no floor to keep is not worth a warning.
+            Err(crate::model::RaftFloorError::NotSwitched) => tracing::debug!(
+                node_id,
+                name = %report.key.stream,
+                shard = report.key.shard,
+                "skipped a Raft floor report for a shard not on Raft",
+            ),
+            Err(err) => tracing::warn!(
+                node_id,
+                name = %report.key.stream,
+                shard = report.key.shard,
+                error = %err,
+                "skipped a Raft floor report",
+            ),
+        }
+    }
+    raised
+}
+
 /// Only the node a seal was ordered from reports it or gives it up.
 pub(super) fn not_sealer(node: &str) -> StoreError {
     StoreError::Conflict(format!("the seal was not ordered from {node}"))
@@ -206,6 +252,14 @@ impl InMemoryStore {
             copy_id,
         )
         .await
+    }
+
+    pub(crate) async fn apply_record_raft_floors(
+        &self,
+        node_id: &str,
+        floors: &[crate::model::RaftFloorReport],
+    ) -> u32 {
+        record_raft_floors(self, node_id, floors).await
     }
 
     pub(crate) async fn apply_accept_seal_report(

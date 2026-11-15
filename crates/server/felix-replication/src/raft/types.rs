@@ -186,9 +186,11 @@ pub(crate) struct Command {
     /// from the log, which holds only the outcome.
     pub(crate) expected: Option<u64>,
     /// Set on a head trim: the floor reads stop below once the entry is
-    /// committed. The payload is the trim's headers. A trim is always
-    /// conditional, so it is proposed with `expected` set, and read back
-    /// from the log it holds `trim` alone.
+    /// committed. The payload is the trim's headers. A client's trim is
+    /// conditional, proposed with `expected` set; retention's is not, since
+    /// its floor is at or below the tail it was proposed at, so at or below
+    /// any index the entry takes. Read back from the log it holds `trim`
+    /// alone.
     pub(crate) trim: Option<u64>,
     /// Set on an atomic commit: the payload is the encoded commit record (an
     /// event and its state updates), stored with the log's commit mark so

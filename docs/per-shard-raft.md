@@ -1750,13 +1750,58 @@ A peer that answers only some of its calls can count as down now and then,
 and is then retried early at most once a second, which openraft's backoff
 would do anyway.
 
-Retention does not apply to Raft shards yet (#2602). Neither the broker-wide
-bounds (`FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS`)
-nor a stream's own `retention` in the control plane bound a Raft shard's log:
-it opens without them and grows until the stream is deleted.
+**Retention.** A Raft log takes no retention bounds of its own, since only
+a purge may drop its entries and a stream shard's log is never purged yet.
+Its leader enforces them with head trims instead. On the storage's retention
+timer (`FELIX_DURABLE_RETENTION_INTERVAL_SECONDS`) it reads the stream's
+bounds, the control plane's `retention` with the broker-wide
+`FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS` for a
+bound it leaves unset, and works out where a hybrid sweep would start the
+log: one past the last whole sealed segment the bounds drop. When that is
+past the current floor, it proposes the head trim of "Head trims" below to
+that offset. Unlike a client's trim, this one is not conditional on the
+tail: on a busy shard a publish would land first nearly every time. It does
+not need to be. The cut is at or below the tail the leader read, and the
+leader appends the entry after every entry it holds, so the entry's index
+is past the floor it sets; a later leader holds the entry only at that
+same index. A stream's atomic commits are checked below that tail, and one
+appended after the check is above the floor. On the wire and in the log
+the entry is a trim like any other.
 
-A snapshot must not cost a record either, and a stream shard's snapshot
-holds none. Two settings keep that true until retention is designed:
+Followers never evaluate the bounds: their clocks and segment sizes differ,
+and two members hiding different prefixes would serve different reads. Each
+applies the floor at the trim's entry, so every member hides the same
+records. The size bound counts the hidden segments too, which stay on disk,
+so it keeps about that many bytes readable.
+
+What this does not do yet is free disk. The records below the floor stay
+in the log until stream shards can purge, which needs a snapshot that
+carries the floor and a member that accepts one
+([#2602](https://github.com/GetFelix/felix/issues/2602)). A trim needs the
+fleet to have finalized `raft_head_trim`; until then the log grows as
+before. A pass that cannot trim counts
+`felix_broker_raft_retention_trims_refused_total` and logs a warning when
+its reason changes. A leader deposed mid-pass says nothing, and the next
+one runs its own pass. A zero retention interval, valid while no stream
+sets retention, starts no timer. The pass judges only segments above the
+floor: the ones already hidden are taken as dropped without reading them,
+so an age bound does not reread them on every tick. A stream holding atomic commits
+refuses trims, so retention does not hide its records either. A Raft log
+never offloads (`FELIX_DURABLE_OFFLOAD_DIR`), since only a purge may drop its
+segments.
+
+> `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
+> `the_leader_trims_what_the_streams_retention_drops`,
+> `retention_trims_a_shard_when_a_publish_lands_mid_pass`,
+> `a_member_not_leading_proposes_no_trim`,
+> `retention_writes_nothing_until_raft_head_trim_is_finalized`,
+> `a_zero_retention_interval_starts_no_timer`,
+> `a_raft_member_does_not_offload`;
+> `crates/server/felix-storage/src/disk_log/tests/retention.rs`,
+> `a_retention_cut_does_not_judge_hidden_segments`
+
+A snapshot must not cost a record, and a stream shard's snapshot holds none.
+Two settings keep that true until stream shards purge:
 
 - `max_in_snapshot_log_to_keep` is the largest value there is. openraft's
   default keeps only the last 1,000 entries under a snapshot and purges
@@ -3209,7 +3254,9 @@ The other difference from the hybrid is deletion:
 a Raft log never deletes a segment below a floor, because only openraft's
 purge may move a Raft log's start, and stream shards are never purged
 today. So a trim on Raft hides records but frees no disk
-([#2602](https://github.com/GetFelix/felix/issues/2602)). No snapshot carries a
+([#2602](https://github.com/GetFelix/felix/issues/2602)). Retention on a Raft
+shard is a trim the leader proposes, so the same holds for it ("Retention",
+above). No snapshot carries a
 floor: a stream shard's snapshot holds no records, and the trim's own index
 is at or below any snapshot that covers it, so the log above the snapshot
 is already past the floor.
@@ -3969,6 +4016,55 @@ what stops that.
 A broker is to refuse a delete told at an incarnation below the highest it
 has seen, its acknowledgement or any membership in the copy's log
 (`copy_delete_is_void`). That check lands with the delete itself.
+
+#### Offset floor
+
+The control plane keeps `raft_floor` on each Raft shard's record, per stream
+`incarnation`. It holds two separate things:
+
+- `offset_floor`: the highest committed index any leader reported, in any
+  reform epoch of the incarnation. The re-form start reads it ("Offsets are
+  not reused") so a new epoch gives out no offset at or below one that was
+  acknowledged.
+- `epoch`, `index` and `term`: the exact last committed log id a leader of
+  the current epoch reported. A rule that matches a copy's log against a log
+  id reads this one. Its index and term always come from the same report.
+
+- **Every leader reports once a second.** Each broker batches the commit log
+  id of every group it leads into one `POST /v1/nodes/{node_id}/raft-floors`,
+  so the control plane makes one metadata write per broker per second. A
+  request carries at most 1024 entries; the rest go on the next tick.
+- **An entry is owed until a 200 answers it.** A group's entry stays pending
+  until a 200 answers a batch that carried it. A 404, 409, 503 or any other
+  error keeps it pending. So the first accepted report after level 38 goes
+  live covers every group the broker leads, idle ones included. A group that
+  stops leading on the broker is dropped, and is owed again if it leads there
+  again.
+- **Cache groups are reported too.** The control plane skips a shard it does
+  not keep a floor for, a cache shard or one not on Raft, without failing the
+  batch.
+- **It only rises within an epoch.** A report replaces the exact log id when
+  its index is higher and its term is not lower. An equal or lower index
+  changes nothing. A higher index at a lower term contradicts the held log
+  id and is skipped.
+- **It is kept per incarnation and epoch.** A report for another stream
+  incarnation, or for a reform epoch other than the shard's
+  (`placed.epoch`), is skipped, so a late report from an old group never
+  sets the new group's floor. A new epoch's first report replaces the exact
+  log id with its own, whatever its index, since the earlier epoch's id says
+  nothing about the new log. `offset_floor` keeps the higher index, since
+  offsets the earlier epoch gave out stay given out. Terms are compared only
+  within one epoch. A write at the same stream
+  incarnation keeps the floor, a recreated stream starts without one, and
+  an export and import carry it.
+- **Each entry is decided on its own.** A skipped entry is not counted and
+  the rest of the batch still applies. The answer is `raised`, the number of
+  floors that moved.
+
+The floor is metadata level 38. Below it every report is refused with 409,
+by the store and again by the leader that would append it. Nothing reads
+the floor yet: the re-form's refusal to run a first form for an incarnation
+that has a floor is not built.
 
 ### Shards with one replica
 

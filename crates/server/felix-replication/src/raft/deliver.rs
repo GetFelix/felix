@@ -353,6 +353,51 @@ impl RaftEngine {
         )
     }
 
+    /// Hide the shard's records below `before` wherever the trim lands
+    /// ([`Broker::propose_trim_below`]): for a `before` at or below the
+    /// tail, which no index the entry can take is below. Retention's cut is
+    /// one. Never stored as a blank, so a busy shard cannot keep refusing it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn trim_below(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: Option<u64>,
+        before: u64,
+        headers: Bytes,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> Result<ProposedTrim<CommitError>, BrokerError> {
+        let proposed = broker
+            .propose_trim_below(
+                stream,
+                before,
+                headers.clone(),
+                timeout,
+                self.proposer(
+                    shard,
+                    term,
+                    vec![headers],
+                    Attribution::default(),
+                    None,
+                    Some(before),
+                    false,
+                    ack,
+                    None,
+                    None,
+                    timeout,
+                ),
+            )
+            .await?;
+        Ok(
+            proposed.answer_within(timeout, move || CommitError::TimedOut {
+                what: "trim",
+                timeout,
+            }),
+        )
+    }
+
     /// What [`Broker::propose_publish`] is handed to queue a stream batch.
     #[allow(clippy::too_many_arguments)]
     fn proposer(

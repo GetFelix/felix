@@ -3,6 +3,7 @@
 mod commands;
 mod determinism;
 mod identity;
+mod raft_floors;
 mod raft_targets;
 mod retries;
 
@@ -146,6 +147,7 @@ fn shard_assignment(
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     }
 }
 

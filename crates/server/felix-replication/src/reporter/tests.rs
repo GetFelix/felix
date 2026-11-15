@@ -653,6 +653,14 @@ async fn a_fake_link_carries_a_report() {
         fn endpoint(&self) -> String {
             "fake".to_string()
         }
+        async fn report_raft_floors(
+            &self,
+            _: Option<&str>,
+            _: &str,
+            _: &[crate::controlplane_link::RaftFloor],
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
         async fn confirmed_assignment(
             &self,
             _: Option<&str>,

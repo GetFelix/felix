@@ -1762,6 +1762,20 @@ impl Group {
         }
     }
 
+    /// The committed log id, while this member leads its group.
+    pub(crate) fn led_commit(&self) -> Option<LogPoint> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        if metrics.running_state.is_err() || metrics.state != ServerState::Leader {
+            return None;
+        }
+        metrics.local_committed.as_ref().map(|id| LogPoint {
+            term: **id.committed_leader_id(),
+            index: id.index,
+        })
+    }
+
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {
         use openraft::async_runtime::watch::WatchReceiver;
         let metrics = self.raft.metrics();

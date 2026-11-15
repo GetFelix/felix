@@ -2,9 +2,10 @@
 //!
 //! Every call a broker makes to the control plane goes through
 //! [`ControlPlaneLink`]: registration and heartbeats, the assignment watch,
-//! confirmed assignment reads, the node catalog and replica reports. [`HttpControlPlaneLink`] is the one
-//! production implementation. The trait exists so a test harness can answer
-//! the same calls in-process, with faults of its own, instead of over a socket.
+//! confirmed assignment reads, the node catalog, replica reports and Raft
+//! floors. [`HttpControlPlaneLink`] is the one production implementation.
+//! The trait exists so a test harness can answer the same calls in-process,
+//! with faults of its own, instead of over a socket.
 //!
 //! A method returns the control plane's answer as a status and a body and
 //! leaves the meaning of a status to the caller, so each caller keeps its own
@@ -111,6 +112,14 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
         body: &(impl Serialize + Sync),
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
 
+    /// `POST /v1/nodes/{node_id}/raft-floors`.
+    fn report_raft_floors(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        floors: &[RaftFloor],
+    ) -> impl Future<Output = Result<LinkResponse>> + Send;
+
     /// `GET /v1/shard-assignments/confirmed` for `key`, abandoned after
     /// `timeout`.
     fn confirmed_assignment(
@@ -156,6 +165,30 @@ pub fn confirmed_body(keys: &[ShardKey]) -> serde_json::Value {
         })
         .collect();
     serde_json::json!({ "keys": keys })
+}
+
+/// A Raft group's committed log id as its leader reports it, the floor a
+/// later start of the group is held to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RaftFloor {
+    pub key: crate::ShardKey,
+    /// The stream incarnation the group runs.
+    pub incarnation: u64,
+    /// The group's reform epoch. Left out while 0, which is what a control
+    /// plane reads when it is absent.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub epoch: u64,
+    pub index: u64,
+    pub term: u64,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
+/// The body of a raft-floors report.
+pub fn raft_floors_body(floors: &[RaftFloor]) -> serde_json::Value {
+    serde_json::json!({ "floors": floors })
 }
 
 fn kind_name(kind: ShardKind) -> &'static str {
@@ -304,6 +337,19 @@ impl ControlPlaneLink for HttpControlPlaneLink {
             .client
             .post(self.url(&format!("/v1/nodes/{node_id}/replica-status")))
             .json(body);
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn report_raft_floors(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        floors: &[RaftFloor],
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .post(self.url(&format!("/v1/nodes/{node_id}/raft-floors")))
+            .json(&raft_floors_body(floors));
         finish(bearer_if(request, bearer)).await
     }
 

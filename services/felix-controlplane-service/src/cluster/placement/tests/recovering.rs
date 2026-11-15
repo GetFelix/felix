@@ -291,6 +291,7 @@ async fn a_dead_destination_unfences_through_the_store() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("fenced");

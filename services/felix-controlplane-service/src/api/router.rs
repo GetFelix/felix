@@ -180,6 +180,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(api::nodes::reports::report_raft_copy_id),
         )
         .route(
+            "/v1/nodes/{node_id}/raft-floors",
+            axum::routing::post(api::nodes::reports::report_raft_floors),
+        )
+        .route(
             "/v1/nodes/{node_id}/seal-report",
             axum::routing::post(api::nodes::seals::report_seal),
         )

@@ -742,6 +742,22 @@ impl DiskLog {
         Ok(())
     }
 
+    /// Where `retention` would start the log: one past the last head
+    /// segment it would delete, so always a segment boundary. `None` when it
+    /// would delete nothing. Nothing is deleted, and the log's own bounds
+    /// are not consulted.
+    ///
+    /// A Raft log takes no bounds, since only a purge may drop its entries,
+    /// so its leader hides what this names with a head trim instead.
+    pub async fn retention_cut(&self, retention: crate::log::Retention) -> Result<Option<Offset>> {
+        let inner = Arc::clone(&self.inner);
+        // An age bound reads the newest record of each candidate, which may
+        // be cold.
+        felix_common::blocking::spawn(move || inner.retention_cut(retention))
+            .await
+            .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
     /// The bounds retention enforces now.
     pub fn retention(&self) -> crate::log::Retention {
         *self.inner.retention_bounds.lock()
