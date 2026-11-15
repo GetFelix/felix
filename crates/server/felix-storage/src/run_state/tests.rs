@@ -284,6 +284,100 @@ fn a_clean_stop_keeps_the_id_under_every_fsync_mode() {
     }
 }
 
+/// A Raft copy that told a leader it had written a record before syncing it
+/// is counted for that record, so a machine crash rotates the id under
+/// `OnCommit` too (#2423). The run it first vouched in names its boot once
+/// the marker is synced, so a process crash of it keeps the id as a later
+/// run's does. The marker outlives the rotation.
+#[test]
+fn a_crash_after_vouching_for_an_unsynced_record_rotates_under_on_commit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!vouched_unsynced(dir.path()).expect("read"));
+    let kept = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!kept.rotated, "nothing was vouched for");
+    assert_eq!(kept.id, first.id);
+
+    record_vouched_unsynced(dir.path()).expect("record");
+    assert_eq!(
+        read(dir.path(), first.id).expect("read"),
+        relaxed_crash(BOOT),
+        "the run that vouched is relaxed from then on, in its boot"
+    );
+    let synced = syncs();
+    let same_boot = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!same_boot.rotated, "a process crash of the vouching run");
+    assert_eq!(same_boot.id, first.id);
+    assert_eq!(
+        syncs(),
+        synced + 1,
+        "the page cache was pushed to the device"
+    );
+
+    let second = begin_in(dir.path(), ON_COMMIT, REBOOTED, &mut fresh);
+    assert_eq!(second.last_run, relaxed_crash(BOOT));
+    assert!(second.rotated);
+    assert_ne!(second.id, first.id);
+    assert!(vouched_unsynced(dir.path()).expect("read"));
+    assert_eq!(
+        read(dir.path(), second.id).expect("read"),
+        relaxed_crash(REBOOTED),
+        "a run on a directory that vouched is recorded as relaxed"
+    );
+
+    let elsewhere = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(elsewhere.rotated, "a crash in another boot");
+    mark_clean(dir.path(), elsewhere.id).expect("clean stop");
+    let clean = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!clean.rotated, "a clean stop keeps the id");
+}
+
+/// The vouching run's record keeps the id only through a process crash that
+/// nothing else made unsafe. A crash between the marker and the record, a
+/// run whose boot is unknown, and a poisoned log on either side of the
+/// marker all rotate.
+#[test]
+fn a_vouching_run_names_its_boot_only_while_that_is_safe() {
+    let rotates = |vouch: &dyn Fn(&Path), boot: Option<BootId>| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut fresh = counter(0);
+        let first = begin_in(dir.path(), ON_COMMIT, boot, &mut fresh);
+        vouch(dir.path());
+        let next = begin_in(dir.path(), ON_COMMIT, boot, &mut fresh);
+        assert_eq!(next.rotated, next.id != first.id);
+        next.rotated
+    };
+    let record = |root: &Path| record_vouched_unsynced(root).expect("record");
+    let forget = |root: &Path| forget_boot(root).expect("forget");
+    assert!(!rotates(&record, BOOT));
+    assert!(rotates(&record, None), "no boot to name");
+    let marker_only = |root: &Path| {
+        write_atomically(root, VOUCHED_UNSYNCED_FILE_NAME, b"written\n", true).expect("marker");
+    };
+    assert!(rotates(&marker_only, BOOT), "a crash before the record");
+    assert!(
+        rotates(
+            &|root| {
+                forget(root);
+                record(root);
+            },
+            BOOT
+        ),
+        "a log was poisoned before the marker"
+    );
+    assert!(
+        rotates(
+            &|root| {
+                record(root);
+                forget(root);
+            },
+            BOOT
+        ),
+        "a log was poisoned after the marker"
+    );
+}
+
 /// Under `OnCommit` nothing acknowledged was unsynced, so a crash loses
 /// nothing peers counted.
 #[test]
@@ -694,6 +788,41 @@ fn a_deleted_storage_id_starts_the_raft_marks_over() {
     let begun = begin_on(dir.path(), ON_COMMIT, &mut fresh);
     assert_eq!(begun.origin, Origin::Created);
     assert!(!marks.exists());
+}
+
+/// Lets a test hold [`name_boot`] between its read and its rewrite.
+static NAME_BOOT_PAUSE: Mutex<Option<(PathBuf, std::sync::mpsc::SyncSender<()>)>> =
+    Mutex::new(None);
+
+pub(super) fn name_boot_read(root: &Path) {
+    let paused = NAME_BOOT_PAUSE.lock().take_if(|(dir, _)| dir == root);
+    if let Some((_, read)) = paused {
+        read.send(()).expect("test waits");
+        // Long enough for an unlocked `mark_clean` to land in between.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
+/// A clean stop while a detached vouch names the boot stays a clean stop.
+#[test]
+fn a_clean_stop_is_not_undone_by_a_late_boot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    let mut fresh = counter(0);
+    let first = begin_on(&root, ON_COMMIT, &mut fresh);
+    let (paused, reached) = std::sync::mpsc::sync_channel(1);
+    *NAME_BOOT_PAUSE.lock() = Some((root.clone(), paused));
+    let vouch = {
+        let root = root.clone();
+        std::thread::spawn(move || record_vouched_unsynced(&root).expect("record"))
+    };
+    reached.recv().expect("name_boot read the record");
+    mark_clean(&root, first.id).expect("mark clean");
+    vouch.join().expect("vouch");
+    assert_eq!(read(&root, first.id).expect("read"), LastRun::Clean);
+    let next = begin_on(&root, ON_COMMIT, &mut fresh);
+    assert!(!next.rotated);
+    assert_eq!(next.id, first.id);
 }
 
 fn dated(registered_at_millis: u64, incarnation: u64) -> Binding {

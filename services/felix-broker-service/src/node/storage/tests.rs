@@ -1,5 +1,5 @@
 //! Which retention hold logs open with, decided from configuration alone.
-use felix_storage::log::RetentionHold;
+use felix_storage::log::{FsyncMode, RetentionHold};
 
 use super::*;
 use crate::config::MembershipConfig;
@@ -106,6 +106,47 @@ fn only_a_crash_under_a_relaxed_fsync_mode_rotates_the_storage_id() {
             "the id announced is the one on disk"
         );
     }
+}
+
+/// **A Raft copy under `OnCommit` keeps its storage id through a crash until
+/// it has vouched for a record it had not synced (#2423).** From then on its
+/// runs are recorded as relaxed, so a machine crash rotates the id as a hybrid
+/// `Periodic` crash does; `run_state`'s tests cover that reboot. Only a
+/// process crash in a boot Linux can name keeps it.
+#[test]
+fn a_crash_under_on_commit_rotates_only_after_an_unsynced_record_was_vouched_for() {
+    use felix_storage::run_state::{LastRun, read, record_vouched_unsynced};
+    let known_boot = cfg!(target_os = "linux") && felix_storage::run_state::this_boot().is_some();
+    let root = tempfile::tempdir().expect("tempdir");
+    let log = felix_storage::log::LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        ..Default::default()
+    };
+    let first = begin_run(root.path(), &log, None).expect("first run").id;
+    let crashed = begin_run(root.path(), &log, None).expect("after a crash");
+    assert!(!crashed.rotated, "every acknowledged record was synced");
+    assert_eq!(crashed.id, first);
+    assert_eq!(
+        read(root.path(), first).expect("read"),
+        LastRun::Crashed {
+            relaxed: false,
+            boot: None
+        }
+    );
+
+    record_vouched_unsynced(root.path()).expect("marker");
+    let vouched = begin_run(root.path(), &log, None).expect("after a process crash");
+    assert_eq!(
+        vouched.rotated, !known_boot,
+        "a leader counted a record this copy may have lost"
+    );
+    assert!(
+        matches!(
+            read(root.path(), vouched.id).expect("read"),
+            LastRun::Crashed { relaxed: true, .. }
+        ),
+        "the marker outlives the crash, so a machine crash would rotate"
+    );
 }
 
 /// **A volume restored from a snapshot starts under a new id even under

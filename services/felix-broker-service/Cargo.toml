@@ -137,6 +137,8 @@ felix-broker = { path = "../../crates/server/felix-broker", version = "0.8.0-pre
 # Some unit tests slow the fsync through `felix_storage::fault`, which a
 # release build (`cargo bench`) only has with this feature.
 felix-storage = { path = "../../crates/server/felix-storage", version = "0.8.0-preview.0", features = ["fault-injection"] }
+# The Raft tests write a batch cut partway, which no proposal can.
+felix-replication = { path = "../../crates/server/felix-replication", version = "0.8.0-preview.0", features = ["testing"] }
 # The membership integration test drives the real control-plane router rather
 # than a stub, so a mismatch in the HTTP contract between the two services fails
 # here instead of in a cluster.

@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use felix_broker::{Broker, DurableStorage};
-use felix_storage::log::FsyncMode;
 use felix_storage::{EphemeralCache, StorageId};
 
 use crate::cluster::membership::Registered;
@@ -472,7 +471,8 @@ pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
 }
 
 /// Start a run on the data directory at `root` and return the id to announce.
-/// A machine crash under `Periodic` or `None` may have lost records peers
+/// A machine crash under `Periodic` or `None`, or after a Raft copy here
+/// vouched for a record before syncing it, may have lost records peers
 /// counted, and a directory older than the node's last registration may hold
 /// fewer than they counted, so either comes back with a new id. On Linux a
 /// process crash in the same boot keeps it. See `felix_storage::run_state`.
@@ -481,7 +481,7 @@ fn begin_run(
     log: &felix_storage::log::LogConfig,
     registered: Option<u64>,
 ) -> Result<felix_storage::run_state::Begun> {
-    let relaxed = !matches!(log.fsync_mode, FsyncMode::OnCommit);
+    let relaxed = felix_storage::run_state::relaxed(&log.fsync_mode);
     let begun = felix_storage::run_state::begin(
         root,
         relaxed,

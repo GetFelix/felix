@@ -56,7 +56,7 @@ pub(crate) mod crash_point;
 pub(crate) mod dir_lock;
 pub(crate) mod durable_mark;
 #[cfg(feature = "raft")]
-pub(crate) use durable_mark::left_poisoned;
+pub(crate) use durable_mark::{forget_poisoned_dir, left_poisoned};
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -1502,6 +1502,15 @@ impl DiskLog {
     /// as one with nothing new to sync, pass.
     pub fn fail_flush_past(&self, offset: Offset) {
         self.inner.fail_flush_past.store(offset, Ordering::Release);
+    }
+
+    /// Fail every write of this log's poison marker, as a full or failing
+    /// disk would.
+    pub fn fail_poison_marker(&self) {
+        self.inner
+            .mark
+            .fail_poison_marker
+            .store(true, Ordering::Release);
     }
 }
 
