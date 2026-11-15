@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794724413531,
+  "lastUpdate": 1794726456602,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58032,6 +58032,58 @@ window.BENCHMARK_DATA = {
             "range": "13117.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1213911.89\nmean: 1213651.07\nstdev: 13117.08\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d31f2df5e63be667fb363dbd6b015684b229f2c6",
+          "message": "fix(raft): a Raft sim seed repeats: seeded ticker maps, and the Raft sim seeds them (#2567) (#2608)\n\n* test(raft): the dead-broker commit test names no expected offset\n\n#2590 added a test that builds a Command, and #2589 then added the\nrequired `expected` field, so main's felix-replication tests no longer\ncompiled.\n\nSpec-Unaffected: test-only fix for a compile error.\n\n* fix(raft): seeded maps for the ticker's brokers, so a sim seed repeats (#2567)\n\nThe Raft ticker walks Reach's map of peer brokers and, since the dead-peer\nscout, spawns a heartbeat task per down broker in that order. Reach and the\nticker used std's HashMap, whose keys come from the OS, so two runs of one\nseed spawned those tasks in different orders and diverged (raft seed 2\ndiffered at event 666 under FELIX_SIM_CLOCKS=bounded). Both now use\nfelix_common::random::HashMap, as the rest of replication does.\n\nThe batched log marks (#2584) had the same std maps and write their records\nin the map's order, and random_copy_id hashed the host clock with std keys;\nboth now draw from the seed under a simulator.\n\nSpec-Unaffected: map hashers and id draws only; no modelled step changes.\n\n* fix(sim): the Raft simulation seeds felix_common's draws (#2567)\n\nrun_seed seeded tokio and openraft's timers but never called\nfelix_common::jitter::sim::seed, so every felix_common::random map in the\nengine took random keys there, and the seeded maps of the previous commit\nstill walked in a new order each run. The ticker's walk then sent\nResetBackoff to b3 first in one run and b1 first in the next. The run now\nseeds the thread and asserts it is seeded.\n\nSpec-Unaffected: simulator seeding only; no modelled step changes.\n\n* fix(sim): soften seed claim for marks, assert the run's own seed, wrap doc line",
+          "timestamp": "2026-11-14T23:00:11-08:00",
+          "tree_id": "3b3a2261a8fb15f2097bcc6409dccae37295f5e9",
+          "url": "https://github.com/GetFelix/felix/commit/d31f2df5e63be667fb363dbd6b015684b229f2c6"
+        },
+        "date": 1794726456017,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 519968,
+            "range": "48436.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519968.00\nmean: 523224.19\nstdev: 48436.59\ncv: 9.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 519968,
+            "range": "48436.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 519968.00\nmean: 523224.19\nstdev: 48436.59\ncv: 9.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 115136.79,
+            "range": "5530.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 115136.79\nmean: 114324.66\nstdev: 5530.16\ncv: 4.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1151367.86,
+            "range": "55301.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1151367.86\nmean: 1143246.60\nstdev: 55301.63\ncv: 4.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
