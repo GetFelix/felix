@@ -1716,8 +1716,14 @@ bounds, the control plane's `retention` with the broker-wide
 bound it leaves unset, and works out where a hybrid sweep would start the
 log: one past the last whole sealed segment the bounds drop. When that is
 past the current floor, it proposes the head trim of "Head trims" below to
-that offset, conditional on the tail it just read. A publish landing in
-between refuses the trim, and the next tick tries again.
+that offset. Unlike a client's trim, this one is not conditional on the
+tail: on a busy shard a publish would land first nearly every time. It does
+not need to be. The cut is at or below the tail the leader read, and the
+leader appends the entry after every entry it holds, so the entry's index
+is past the floor it sets; a later leader holds the entry only at that
+same index. A stream's atomic commits are checked below that tail, and one
+appended after the check is above the floor. On the wire and in the log
+the entry is a trim like any other.
 
 Followers never evaluate the bounds: their clocks and segment sizes differ,
 and two members hiding different prefixes would serve different reads. Each
@@ -1729,15 +1735,27 @@ What this does not do yet is free disk. The records below the floor stay
 in the log until stream shards can purge, which needs a snapshot that
 carries the floor and a member that accepts one
 ([#2602](https://github.com/GetFelix/felix/issues/2602)). A trim needs the
-fleet to have finalized `raft_head_trim`; until then the leader logs the
-refusal once and the log grows as before. A stream holding atomic commits
+fleet to have finalized `raft_head_trim`; until then the log grows as
+before. A pass that cannot trim counts
+`felix_broker_raft_retention_trims_refused_total` and logs a warning when
+its reason changes. A leader deposed mid-pass says nothing, and the next
+one runs its own pass. A zero retention interval, valid while no stream
+sets retention, starts no timer. The pass judges only segments above the
+floor: the ones already hidden are taken as dropped without reading them,
+so an age bound does not reread them on every tick. A stream holding atomic commits
 refuses trims, so retention does not hide its records either. A Raft log
 never offloads (`FELIX_DURABLE_OFFLOAD_DIR`), since only a purge may drop its
 segments.
 
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
-> `a_raft_member_does_not_offload`
+> `retention_trims_a_shard_under_constant_publishes`,
+> `a_member_not_leading_proposes_no_trim`,
+> `retention_writes_nothing_until_raft_head_trim_is_finalized`,
+> `a_zero_retention_interval_starts_no_timer`,
+> `a_raft_member_does_not_offload`;
+> `crates/server/felix-storage/src/disk_log/tests/retention.rs`,
+> `a_retention_cut_does_not_judge_hidden_segments`
 
 A snapshot must not cost a record, and a stream shard's snapshot holds none.
 Two settings keep that true until stream shards purge:

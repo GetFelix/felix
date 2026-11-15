@@ -303,13 +303,17 @@ impl RaftShards {
             .context("open the stream on the member's log");
         match handle {
             Ok(handle) => {
-                member.retention = Some(Self::spawn_retention(
-                    self.me.clone(),
-                    key.clone(),
-                    member.log.clone(),
-                    handle.clone(),
-                    retention_interval,
-                ));
+                // A zero interval is a valid setting when no log takes
+                // retention, and a timer cannot run on it.
+                member.retention = (!retention_interval.is_zero()).then(|| {
+                    Self::spawn_retention(
+                        self.me.clone(),
+                        key.clone(),
+                        member.log.clone(),
+                        handle.clone(),
+                        retention_interval,
+                    )
+                });
                 member.follow = self.engine.follow_commits(key, handle);
                 Ok(member)
             }

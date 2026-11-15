@@ -178,7 +178,7 @@ impl LogInner {
             return Ok(None);
         }
         let plan = self.segments.read().retention_plan();
-        let chosen = plan.choose(bounds, None, now_micros(), &self.label)?;
+        let chosen = plan.choose(bounds, None, self.head_floor(), now_micros(), &self.label)?;
         Ok(plan.end_of(chosen.len()))
     }
 
@@ -188,7 +188,8 @@ impl LogInner {
         // Held until the unlinks are done: see `LogInner::manifest`.
         let manifest = self.manifest.lock();
         let plan = self.segments.read().retention_plan();
-        let mut chosen = plan.choose(bounds, self.retention_floor(), now_micros(), &self.label)?;
+        let mut chosen =
+            plan.choose(bounds, self.retention_floor(), 0, now_micros(), &self.label)?;
         if let Some(offloader) = &self.offloader {
             let (segments, bytes) = self.keep_offloaded_prefix(&manifest, &mut chosen);
             offloader.note_held(&self.label, segments, bytes);

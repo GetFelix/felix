@@ -2,7 +2,8 @@
 //!
 //! The checks are the hybrid's, and so are the answers. The trim record is
 //! one entry, conditional on landing at `expected` exactly as a conditional
-//! publish is, and its floor reaches the replay ring in the entry's turn.
+//! publish is, except retention's ([`Broker::propose_trim_below`]), and its
+//! floor reaches the replay ring in the entry's turn.
 //! See `docs/per-shard-raft.md`, "Head trims".
 
 use std::future::Future;
@@ -106,6 +107,84 @@ impl Broker {
             step: Step::Proposed {
                 before,
                 expected,
+                proposed,
+                applied: applied_rx,
+            },
+        })
+    }
+}
+
+impl Broker {
+    /// A trim to `before` that is not conditional on the tail, for a
+    /// `before` the caller knows is at or below it: retention's cut, a
+    /// sealed segment boundary.
+    ///
+    /// Checked as [`Self::propose_trim_at`] checks, against the tail read
+    /// here: `before` past it is [`BrokerError::TrimPastTail`], and a stream
+    /// holding atomic commits below it is
+    /// [`BrokerError::TrimOnCommitStream`]. `propose` must queue the trim
+    /// with no expected offset. The leader appends the entry after every
+    /// entry it holds, so at an index at or past that tail; and a later
+    /// leader holds the entry only at the same index, behind the same
+    /// entries. The floor is therefore never past the trim's own entry, as
+    /// a conditional trim's never is. A commit appended after the check is
+    /// at or past the tail, so above the floor.
+    pub async fn propose_trim_below<F, E>(
+        &self,
+        handle: &StreamHandle,
+        before: u64,
+        headers: Bytes,
+        stalled_after: Duration,
+        propose: impl FnOnce(u64) -> F,
+    ) -> Result<ProposedTrim<E>>
+    where
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
+        E: Send + 'static,
+    {
+        let Some(log) = &handle.state.durable else {
+            return Err(BrokerError::TrimNeedsDurableStream);
+        };
+        if !self.raft_head_trims_allowed() {
+            return Err(BrokerError::HeadTrimNotEnabled {
+                feature: felix_common::fleet::RAFT_HEAD_TRIM.name(),
+            });
+        }
+        let floor = log.head_trim().map_or(0, |trim| trim.floor);
+        let tail = log.tail_offset().await?;
+        if before > tail {
+            return Err(BrokerError::TrimPastTail {
+                before,
+                offset: tail,
+            });
+        }
+        if before <= floor {
+            return Ok(ProposedTrim {
+                handle: handle.clone(),
+                deadline: tokio::time::Instant::now() + self.trim_wait,
+                step: Step::NoOp { expected: tail },
+            });
+        }
+        refuse_commit_stream(handle, log, tail).await?;
+        self.mark_head_trimmed().await?;
+        let (applied, applied_rx) = oneshot::channel();
+        let proposed = self.propose(
+            handle,
+            vec![headers],
+            crate::broker::publish::Attribution::default(),
+            None::<Expected<E>>,
+            Some(HeldTrim { before, applied }),
+            None,
+            stalled_after,
+            propose,
+        )?;
+        Ok(ProposedTrim {
+            handle: handle.clone(),
+            deadline: tokio::time::Instant::now() + self.trim_wait,
+            step: Step::Proposed {
+                before,
+                expected: tail,
                 proposed,
                 applied: applied_rx,
             },

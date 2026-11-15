@@ -467,3 +467,39 @@ async fn a_retention_cut_names_the_sweeps_base_and_deletes_nothing() {
     };
     assert_eq!(log.retention_cut(generous).await.expect("cut"), None);
 }
+
+/// **A retention cut takes the segments a trim already hides without
+/// reading them.** On a Raft log they stay on disk, and an age bound would
+/// otherwise read every one of them on every pass. Here they are young, so
+/// read, they would stop the cut at the base.
+#[tokio::test]
+async fn a_retention_cut_does_not_judge_hidden_segments() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", retention_config(None, None)).expect("open");
+    let now = super::now_micros();
+    for payload in ["a", "b", "c", "d", "e", "f", "g", "h"] {
+        log.append(&[aged_record(payload, now)])
+            .await
+            .expect("append");
+    }
+    let floor = 6;
+    log.append(&[AppendRecord {
+        payload: Bytes::from_static(b"trim"),
+        timestamp_micros: now,
+        mark: crate::log::RecordMark::Trim { floor },
+        publisher: None,
+        headers: None,
+    }])
+    .await
+    .expect("trim");
+    assert_eq!(log.readable_base(), floor);
+    let young = crate::log::Retention {
+        bytes: None,
+        age: Some(Duration::from_secs(3600)),
+    };
+
+    let cut = log.retention_cut(young).await.expect("cut");
+
+    let cut = cut.expect("the hidden segments are taken");
+    assert!(cut > 0 && cut <= floor, "cut {cut} is past the floor");
+}

@@ -13,17 +13,19 @@ use std::sync::Weak;
 use std::time::Duration;
 
 use bytes::Bytes;
-use felix_broker::{BrokerError, StreamHandle, TrimFailed};
-use felix_replication::engine::CommitError;
+use felix_broker::{StreamHandle, TrimFailed};
 use felix_replication::raft::AckAt;
 use felix_storage::DiskLog;
-use felix_storage::log::AppendOnlyLog;
 
 use super::{RaftShards, ShardKey};
 
 /// How long one retention trim may take before the pass gives up on it. The
 /// next tick proposes again.
 const TRIM_WITHIN: Duration = Duration::from_secs(30);
+
+/// Retention passes on a Raft shard's leader that could not trim: the trim
+/// was refused or failed. Logged when the reason changes.
+pub(crate) const RETENTION_TRIMS_REFUSED: &str = "felix_broker_raft_retention_trims_refused_total";
 
 /// What one retention pass did.
 #[derive(Debug, PartialEq, Eq)]
@@ -32,7 +34,7 @@ pub(super) enum Pass {
     Nothing,
     /// A trim moved the floor here.
     Trimmed(u64),
-    /// The trim was refused or failed; the next tick tries again.
+    /// The cut or the trim failed; the next tick tries again.
     Refused(String),
 }
 
@@ -64,6 +66,7 @@ impl RaftShards {
                         tracing::info!(shard = ?key, floor, "retention hid the shard below a new floor");
                     }
                     Pass::Refused(why) => {
+                        metrics::counter!(RETENTION_TRIMS_REFUSED).increment(1);
                         if refused.as_ref() != Some(&why) {
                             tracing::warn!(shard = ?key, reason = %why, "retention could not trim a Raft shard");
                         }
@@ -76,7 +79,15 @@ impl RaftShards {
 
     /// One retention pass on `key`, whose member's log is `log`: when this
     /// broker leads it and the stream's bounds start the log past its floor,
-    /// trim to where they start it, conditional on the tail read here.
+    /// trim to where they start it.
+    ///
+    /// The trim is not conditional on the tail, as a client's is: the cut is
+    /// a sealed segment boundary, at or below the tail and so at or below
+    /// any index the trim's entry can take ([`Broker::propose_trim_below`]).
+    /// Conditional, a busy shard's publishes would land first and refuse it
+    /// on every pass.
+    ///
+    /// [`Broker::propose_trim_below`]: felix_broker::Broker::propose_trim_below
     pub(super) async fn enforce_retention(
         &self,
         key: &ShardKey,
@@ -98,37 +109,32 @@ impl RaftShards {
         if cut <= log.head_trim().map_or(0, |trim| trim.floor) {
             return Pass::Nothing;
         }
-        // A publish landing after this refuses the trim at its index; the
-        // next tick reads the new tail.
-        let expected = match log.tail_offset().await {
-            Ok(tail) => tail,
-            Err(err) => return Pass::Refused(err.to_string()),
-        };
         let ack = AckAt::for_fsync(&storage.config().fsync_mode);
-        let proposed = self
+        let outcome = match self
             .engine
-            .trim_at(
+            .trim_below(
                 &self.broker,
                 stream,
                 key,
                 Some(term),
                 cut,
-                expected,
                 Bytes::new(),
                 ack,
                 TRIM_WITHIN,
             )
-            .await;
-        let proposed = match proposed {
-            Ok(proposed) => proposed,
-            Err(BrokerError::OffsetMismatch { .. }) => return Pass::Nothing,
-            Err(err) => return Pass::Refused(err.to_string()),
+            .await
+        {
+            Ok(proposed) => proposed.complete().await.map_err(|failed| match failed {
+                TrimFailed::Engine(err) => err.to_string(),
+                TrimFailed::Broker(err) => err.to_string(),
+            }),
+            Err(err) => Err(err.to_string()),
         };
-        match proposed.complete().await {
+        match outcome {
             Ok(outcome) => Pass::Trimmed(outcome.oldest),
-            Err(TrimFailed::Engine(CommitError::OffsetMismatch { .. })) => Pass::Nothing,
-            Err(TrimFailed::Engine(err)) => Pass::Refused(err.to_string()),
-            Err(TrimFailed::Broker(err)) => Pass::Refused(err.to_string()),
+            // Deposed mid-pass: the next leader runs its own.
+            Err(_) if self.leading(key) != Some(term) => Pass::Nothing,
+            Err(why) => Pass::Refused(why),
         }
     }
 }
