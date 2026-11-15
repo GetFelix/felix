@@ -308,7 +308,11 @@ impl Router {
         match &answer {
             Ok(Err(Refused::Unreachable(_))) | Err(_) => {
                 self.reach.lost(&to.broker, sent_at);
-                self.reach.lost_by(&to.broker, &self.refusals.group);
+                // Only a leader's append: a candidate's vote leaves the
+                // ticker nothing to heartbeat.
+                if sent.is_some() {
+                    self.reach.lost_by(&to.broker, &self.refusals.group);
+                }
             }
             // The broker is up, but this group's member is not open there.
             Ok(Err(Refused::NoSuchMember(_) | Refused::OtherCopy(..) | Refused::Stopped(..))) => {

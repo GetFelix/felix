@@ -69,8 +69,8 @@ pub(crate) struct Peer {
     used: AtomicU64,
     /// Groups whose member there refused and has since answered.
     opened: parking_lot::Mutex<Vec<GroupId>>,
-    /// The group whose call to it failed last: while it is down, the ticker
-    /// has that group heartbeat at the short gap.
+    /// The group whose leader's append to it failed last: while it is down,
+    /// the ticker has that group heartbeat at the short gap.
     scout: parking_lot::Mutex<Option<GroupId>>,
 }
 
@@ -119,7 +119,8 @@ impl Reach {
         });
     }
 
-    /// A call from `group` to `broker` failed, as reported to [`Self::lost`].
+    /// A leader's append from `group` to `broker` failed, as reported to
+    /// [`Self::lost`].
     pub(crate) fn lost_by(&self, broker: &Arc<str>, group: &GroupId) {
         if let Some(peer) = self.peers.load().get(broker) {
             *peer.scout.lock() = Some(group.clone());

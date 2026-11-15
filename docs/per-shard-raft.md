@@ -1598,7 +1598,7 @@ answer within about a heartbeat (200 ms) of the broker coming back,
 although most groups heartbeat it only every 2 s. A leader with an entry
 not yet committed stays at the short heartbeat. And while a broker is
 down, the ticker has one group that leads here heartbeat it every short
-gap: the last group whose call to it failed. That is 5 calls a second per
+gap: the last leader whose append to it failed. That is 5 calls a second per
 dead broker, whatever the number of groups. A cache shard keeps
 openraft's delays, since they also pace its snapshot pieces, and the walk
 cannot cut those short.

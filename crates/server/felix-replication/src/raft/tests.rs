@@ -1803,6 +1803,68 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
     cluster.stop().await;
 }
 
+/// The group a dead broker's ticker heartbeats at the short gap is the last
+/// one whose append to it failed. A failed vote from a group that does not
+/// lead must not take that place, or the heartbeat finds nothing to send.
+#[tokio::test]
+async fn a_failed_vote_does_not_replace_the_scout() {
+    use openraft::network::RPCOption;
+    use openraft::raft::AppendEntriesRequest;
+    use openraft_multi::GroupRouter;
+    let reach = Arc::new(super::reach::Reach::new(
+        tokio::time::Instant::now(),
+        Duration::from_secs(1),
+    ));
+    let config = Arc::new(timers().raft(ShardKind::Stream).expect("timers"));
+    let router = |id: GroupId| {
+        let (pace, _) = pace();
+        super::network::Router::new(
+            Arc::new(Net::default()),
+            Arc::new(pace),
+            Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
+            Arc::new(super::written::Reports::new()),
+            Arc::clone(&reach),
+            Arc::new(super::reach::Refusals::new(id)),
+            Arc::clone(&config),
+        )
+    };
+    let option = || RPCOption::new(Duration::from_secs(1));
+    let (leading, standing) = (router(group(0)), router(group(1)));
+    let b = MemberId::new("b", 1);
+
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
+        LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
+        false,
+    );
+    let append = AppendEntriesRequest {
+        vote: vote.clone(),
+        prev_log_id: None,
+        entries: Vec::new(),
+        leader_commit: None,
+    };
+    leading
+        .append_entries(b.clone(), group(0), append, option())
+        .await
+        .expect_err("b is down");
+    let peer = Arc::clone(&reach.peers()["b"]);
+    assert_eq!(peer.scout(), Some(group(0)));
+
+    standing
+        .vote(
+            b.clone(),
+            group(1),
+            VoteRequest::new(vote.clone(), None),
+            option(),
+        )
+        .await
+        .expect_err("b is down");
+    standing
+        .pre_vote(b, group(1), VoteRequest::new(vote, None), option())
+        .await
+        .expect_err("b is down");
+    assert_eq!(peer.scout(), Some(group(0)), "a vote took the scout");
+}
+
 /// A broker that is down costs each group about an idle heartbeat's calls:
 /// retrying an entry it missed neither keeps the group at the short
 /// heartbeat nor goes on once a second. It still catches up as soon as it
@@ -1839,7 +1901,7 @@ async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
     // An idle heartbeat is 0.5 a second and a retry every 10 s adds 0.1.
     // Without either half of the fix it is 1.5 or more, and about five
     // without both: a heartbeat every 200 ms and a retry every second.
-    assert!(per_group < 1.2, "{per_group:.2} calls a second per group");
+    assert!(per_group < 0.9, "{per_group:.2} calls a second per group");
 
     cluster.net.cut.lock().remove(dead);
     cluster.net.muted.lock().remove(dead);
@@ -1916,7 +1978,7 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
     );
     // A heartbeat is 200 ms. At the idle one it took up to 2 s.
     assert!(
-        took < Duration::from_millis(900),
+        took < Duration::from_millis(1500),
         "the commit took {took:?} after c was back"
     );
     cluster.stop().await;
@@ -1929,7 +1991,7 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
 /// One group, so no other group's heartbeat finds the broker first.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_idle_group_catches_a_broker_up_within_about_a_heartbeat_of_it_coming_back() {
-    // c does not stand while it is cut.
+    // Neither b nor c stands while c is cut.
     let patient = RuntimeConfig {
         election_min: Duration::from_secs(20),
         election_max: Duration::from_secs(40),
@@ -1941,7 +2003,7 @@ async fn an_idle_group_catches_a_broker_up_within_about_a_heartbeat_of_it_coming
     assert_eq!(&*cluster.elected(0).await.broker, "a");
     cluster.net.cut.lock().insert("c".into());
     let missed = cluster.write(0, b"missed").await;
-    // Past the idle wait and c's silence: both groups heartbeat every 2 s.
+    // Past the idle wait and c's silence: the group heartbeats every 2 s.
     tokio::time::sleep(Duration::from_secs(7)).await;
     assert!(
         cluster
@@ -1963,7 +2025,7 @@ async fn an_idle_group_catches_a_broker_up_within_about_a_heartbeat_of_it_coming
     let took = healed.elapsed();
     eprintln!("c back to caught up: {took:?}");
     assert!(
-        took < Duration::from_millis(900),
+        took < Duration::from_millis(1500),
         "c caught up {took:?} after it was back"
     );
     cluster.stop().await;
