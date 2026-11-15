@@ -982,7 +982,7 @@ async fn a_conditional_publish_off_its_offset_is_a_blank_on_every_member() {
             &handle,
             &shard(0),
             None,
-            Bytes::from_static(payload),
+            vec![Bytes::from_static(payload)],
             at,
             AckAt::Flushed,
             PATIENCE,
@@ -1009,5 +1009,35 @@ async fn a_conditional_publish_off_its_offset_is_a_blank_on_every_member() {
             (at + 2, Bytes::from_static(b"after"))
         ]
     );
+    led.cluster.stop().await;
+}
+
+/// **A conditional publish of no record, or of several, proposes nothing.**
+/// No record has no offset to land at, and the condition covers one entry.
+#[tokio::test]
+async fn a_conditional_publish_of_other_than_one_record_is_refused() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let publish_at = |payloads: Vec<Bytes>| {
+        led.engine.publish_at(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            payloads,
+            led.committed + 1,
+            AckAt::Flushed,
+            PATIENCE,
+        )
+    };
+    assert!(matches!(
+        publish_at(Vec::new()),
+        Err(BrokerError::EmptyConditionalPublish)
+    ));
+    let two = vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")];
+    assert!(matches!(
+        publish_at(two),
+        Err(BrokerError::NotOnEngineStream { .. })
+    ));
     led.cluster.stop().await;
 }

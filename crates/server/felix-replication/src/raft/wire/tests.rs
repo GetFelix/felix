@@ -446,6 +446,19 @@ fn a_layout_4_body_is_refused_by_layout() {
     assert!(refused.to_string().contains("layout 4"), "{refused}");
 }
 
+/// Layout 5 is what a build without the conditional entry writes, and it
+/// reads only layout 5. Each side refuses the other by layout, so an older
+/// member never takes a conditional record for a plain one and stores it
+/// at whatever offset it lands.
+#[test]
+fn a_layout_5_body_is_refused_by_layout() {
+    let bytes = encode_request(&every_request()[2]).expect("encode");
+    let mut old = BytesMut::from(&bytes[..]);
+    old[0] = 5;
+    let refused = decode_request(old.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("layout 5"), "{refused}");
+}
+
 /// A peer cannot make this broker reserve room for entries the body does
 /// not hold.
 #[test]

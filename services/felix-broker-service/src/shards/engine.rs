@@ -226,6 +226,61 @@ impl StreamEngine {
 }
 
 impl StreamEngine {
+    /// Propose a conditional publish to `shard`'s Raft group, at the `term`
+    /// routing answered: one record, written only at offset `expected`.
+    /// `None` when the hybrid runs the shard.
+    ///
+    /// Every member decides the condition from the entry's own index, so a
+    /// refused publish still takes an offset (a blank readers skip) and is
+    /// answered [`CommitError::OffsetMismatch`] with the offset after it.
+    /// Either answer waits for the commit, whatever the stream's level.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_at_on_raft(
+        &self,
+        broker: &felix_broker::Broker,
+        handle: &felix_broker::StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        payloads: Vec<bytes::Bytes>,
+        expected: u64,
+        timeout: Duration,
+    ) -> Option<Result<RaftPublish, RaftRefusal>> {
+        #[cfg(feature = "raft")]
+        {
+            use felix_replication::raft::AckAt;
+            let raft = self.raft(shard)?;
+            // As for a plain publish: only the term the write was routed at.
+            if self.raft_term(shard) != Some(term) {
+                return Some(Err(RaftRefusal::NotLeading { term }));
+            }
+            let ack = broker.durable_storage().map_or(AckAt::Flushed, |storage| {
+                AckAt::for_fsync(&storage.config().fsync_mode)
+            });
+            let proposed = raft.publish_at(
+                broker,
+                handle,
+                shard,
+                Some(term),
+                payloads,
+                expected,
+                ack,
+                timeout,
+            );
+            Some(
+                proposed
+                    .map(|proposed| RaftPublish(Some(proposed)))
+                    .map_err(RaftRefusal::Broker),
+            )
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = (broker, handle, shard, term, payloads, expected, timeout);
+            None
+        }
+    }
+}
+
+impl StreamEngine {
     /// Propose an idempotent producer's batch to `shard`'s Raft group, at
     /// the `term` routing answered. `None` when the hybrid runs the shard.
     ///

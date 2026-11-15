@@ -4049,6 +4049,53 @@ still refuses a batch of several records in `raft/propose.rs`.
    sequence is not 0, but a cut first batch (sequence 0) is taken as new.
    That is the `"forget"` case, and the code change has to close it.
 
+### Conditional publishes on a Raft shard
+
+`FelixRaftCond.tla` models a conditional publish on a Raft stream shard
+(#2446). A conditional publish names an offset, `expected`, and lands there
+or not at all. The offset is the Raft index.
+
+What is modelled:
+
+- Raft in the abstract: per-member logs of entries with terms, elections by
+  vote, followers that cut a conflicting tail before they append, and a
+  commit at a majority in the leader's own term.
+- The leader appends one entry for a conditional publish wherever its log
+  ends. Every member decides from the entry and its index alone: at
+  `expected` it holds the record, anywhere else a blank that readers skip.
+  The stored entry carries that decision as `kept`, worked out when the
+  member writes it. A cut removes the entry and its decision together.
+- Plain publishes, the blank a leader writes when its term starts, and a
+  membership entry the leader may append at any time. Publishes go through
+  the leader's queue in order. The blank and the membership entry do not.
+- The leader answers a client once its entry is committed: "ok at i" when it
+  is kept, "mismatch" otherwise.
+
+What it promises, over each member's committed prefix:
+
+- `CondKeptAtExpected`: every kept conditional record is at its expected
+  offset.
+- `OneKeptPerOffset`: of the publishes naming one offset, at most one is kept.
+- `MembersAgree`: two members that committed an index hold the same entry
+  there, `kept` included.
+- `AnswersHold`: a client answered "ok at i" is kept at i, its expected
+  offset, on every member that committed i. One answered "mismatch" is kept
+  nowhere.
+
+`LeaderDecides = TRUE` drops the rule: the leader decides `kept` when the
+publish arrives, from its guess of the index (its log, plus the queue ahead,
+plus one), and followers copy it. A membership entry appended between the
+guess and the append moves the publish one index on, where it is kept
+(`FelixRaftCondLeaderDecides.cfg`). With no membership entry the guess is
+right (`FelixRaftCondLeaderDecidesNoMembers.cfg`), which shows the
+membership entry is what breaks it.
+
+Abstracted: disks, crashes and snapshots (`FelixRaft.tla` has them). A
+message is one step that reads both members, and a leader counts a follower
+toward a commit by reading its log. A client sends once; a retry is a new
+publish. Any leader holding the entry committed may answer, which allows more
+than the code.
+
 ## How CI checks the models
 
 TLC reads only the spec, so the model-check jobs in `.github/workflows/ci.yml`

@@ -113,6 +113,7 @@ module_of() {
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
     FelixRaftWritten*) echo FelixRaftWritten ;;
     FelixRaftBatch*) echo FelixRaftBatch ;;
+    FelixRaftCond*) echo FelixRaftCond ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -575,6 +576,10 @@ expectations=(
   "FelixRaftBatchReachInstall violates NeverInstalls"
   "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
   "FelixRaftBatchReachHeld violates NeverAnswersHeld"
+  "FelixRaftCond pass"
+  "FelixRaftCondLeaderDecides violates CondKeptAtExpected"
+  "FelixRaftCondLeaderDecidesNoMembers pass"
+  "FelixRaftCondReachAnswers violates NeverOkAndMismatch"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"

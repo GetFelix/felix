@@ -104,7 +104,8 @@ impl RaftEngine {
     }
 
     /// [`Self::publish`] for a conditional publish: one record, written
-    /// only if it lands at offset `expected`.
+    /// only if it lands at offset `expected`. Anything but one record is
+    /// refused with nothing proposed.
     ///
     /// The condition is decided where the entry is written, on every
     /// member, from the entry's own index: off `expected`, each member
@@ -123,26 +124,19 @@ impl RaftEngine {
         stream: &StreamHandle,
         shard: &ShardKey,
         term: Option<u64>,
-        payload: Bytes,
+        payloads: Vec<Bytes>,
         expected: u64,
         ack: AckAt,
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        let records = payloads.clone();
         let proposed = broker.propose_publish_at(
             stream,
-            vec![payload.clone()],
+            payloads,
             expected,
             timeout,
             |tail| CommitError::OffsetMismatch { tail },
-            self.proposer(
-                shard,
-                term,
-                vec![payload],
-                Some(expected),
-                ack,
-                None,
-                timeout,
-            ),
+            self.proposer(shard, term, records, Some(expected), ack, None, timeout),
         )?;
         Ok(
             proposed.answer_within(timeout, move || CommitError::TimedOut {

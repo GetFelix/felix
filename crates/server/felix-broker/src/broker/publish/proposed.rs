@@ -80,8 +80,8 @@ impl Broker {
     /// outcome is the group's. See `docs/per-shard-raft.md`, "Conditional
     /// publishes".
     ///
-    /// Anything but one record is [`BrokerError::NotOnEngineStream`], with
-    /// `propose` not called.
+    /// No record is [`BrokerError::EmptyConditionalPublish`] and more than
+    /// one is [`BrokerError::NotOnEngineStream`], with `propose` not called.
     pub fn propose_publish_at<F, E>(
         &self,
         handle: &StreamHandle,
@@ -97,6 +97,9 @@ impl Broker {
             + 'static,
         E: Send + 'static,
     {
+        if payload.is_empty() {
+            return Err(BrokerError::EmptyConditionalPublish);
+        }
         if payload.len() != 1 {
             return Err(BrokerError::NotOnEngineStream {
                 what: SEVERAL_CONDITIONAL,
