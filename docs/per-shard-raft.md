@@ -1476,6 +1476,20 @@ Nothing is negotiated. Each side acts only on what it has seen:
   next heartbeat due within 200 ms. A publish does the same when it hands
   its batch to the group, before anything is sent. So a group with one
   member, or with no follower in reach, is fast again on its first write.
+- An answer to a message that named the idle gap counts only if no
+  message naming the short gap was still on its way to that follower when
+  it left. A follower stores the gap once it has handled the message, and
+  an append it took first can finish its fsync after a later heartbeat's
+  answer, which would leave it at the short gap under a slow leader. For
+  the same reason a follower keeps the gap it has when handling a
+  short-gap append took longer than the append's deadline: the leader has
+  stopped waiting for it by then. A late idle gap is still stored. The cost:
+  a follower already at the idle gap whose appends all outlast their
+  deadline (a slow disk after a burst of writes) stays at the long wait, so
+  it notices a dead leader a few seconds later than it otherwise would. The
+  one case left is an append that spends part of its
+  deadline in transit, since the follower counts the deadline from when
+  the append arrives. That needs a send sequence on the wire (#2600).
 - An entry is new the first time any append carries it. Sending it again,
   to a follower that did not take it or to one catching up, does not
   count. So a follower that is down does not keep its leader at the short
