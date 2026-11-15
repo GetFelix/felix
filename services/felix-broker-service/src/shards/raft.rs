@@ -36,6 +36,8 @@ use super::routing::{Dispatch, EngineShards, Reason, Taken};
 use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
 
+pub(crate) mod floor;
+
 /// How long a leader that could not move its stream to the committed tail
 /// waits before it tries again.
 const LEAD_RETRY: Duration = Duration::from_millis(50);
@@ -211,6 +213,16 @@ impl RaftShards {
     /// The Raft engine, when this broker holds a member of `shard`.
     pub(crate) fn engine_for(&self, shard: &ShardKey) -> Option<&RaftEngine> {
         self.runtime.status(shard).map(|_| &self.engine)
+    }
+
+    /// The committed log id of every group this broker leads, with the
+    /// stream incarnation the group runs.
+    pub(crate) fn led_floors(&self) -> Vec<(ShardKey, u64, felix_replication::raft::LogPoint)> {
+        self.runtime
+            .led_commits()
+            .into_iter()
+            .map(|(group, at)| ((*group.shard).clone(), group.epoch, at))
+            .collect()
     }
 
     /// The term this broker leads `shard` in with its stream brought up to

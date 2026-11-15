@@ -846,6 +846,23 @@ impl ControlPlaneLink for SimLink {
         .await
     }
 
+    async fn report_raft_floors(
+        &self,
+        _bearer: Option<&str>,
+        node_id: &str,
+        floors: &[felix_replication::controlplane_link::RaftFloor],
+    ) -> Result<LinkResponse> {
+        self.call(
+            Method::POST,
+            &format!("/v1/nodes/{node_id}/raft-floors"),
+            Some(felix_replication::controlplane_link::raft_floors_body(
+                floors,
+            )),
+            None,
+        )
+        .await
+    }
+
     async fn confirmed_assignment(
         &self,
         _bearer: Option<&str>,

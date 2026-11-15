@@ -49,6 +49,7 @@ async fn calls_reach_their_routes_with_the_bearer() {
         .route("/v1/nodes/{id}/heartbeat", post(record("heartbeat")))
         .route("/v1/nodes/{id}/{action}", post(record("lifecycle")))
         .route("/v1/nodes/{id}/replica-status", post(record("status")))
+        .route("/v1/nodes/{id}/raft-floors", post(record("floors")))
         .route("/v1/shard-assignments/snapshot", get(record("snapshot")))
         .route("/v1/shard-assignments/changes", get(record("changes")));
     let link = serve(app).await;
@@ -67,6 +68,9 @@ async fn calls_reach_their_routes_with_the_bearer() {
     link.replica_status(Some("t"), "n1", &body)
         .await
         .expect("status");
+    link.report_raft_floors(Some("t"), "n1", &[])
+        .await
+        .expect("floors");
 
     let names: Vec<_> = seen.lock().iter().map(|(name, _)| name.clone()).collect();
     assert_eq!(
@@ -79,7 +83,8 @@ async fn calls_reach_their_routes_with_the_bearer() {
             "page",
             "snapshot",
             "changes",
-            "status"
+            "status",
+            "floors"
         ]
     );
     let bearers: Vec<_> = seen
@@ -132,6 +137,70 @@ async fn the_cursor_and_the_checkpoint_travel_as_query_parameters() {
     assert_eq!(
         *seen.lock(),
         [r#"cursor=Some("abc")"#, r#"Some("41") Some("20000")"#]
+    );
+}
+
+#[tokio::test]
+async fn raft_floors_carry_the_shard_and_the_committed_log_id() {
+    let seen: Arc<Mutex<Option<(String, serde_json::Value)>>> = Arc::default();
+    let app = Router::new().route(
+        "/v1/nodes/{id}/raft-floors",
+        post({
+            let seen = Arc::clone(&seen);
+            move |axum::extract::Path(id): axum::extract::Path<String>,
+                  axum::Json(body): axum::Json<serde_json::Value>| async move {
+                *seen.lock() = Some((id, body));
+                axum::Json(serde_json::json!({ "raised": 1 }))
+            }
+        }),
+    );
+    let link = serve(app).await;
+    let key = |stream: &str, kind| crate::ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: stream.to_string(),
+        shard: 2,
+        kind,
+    };
+    let floors = [
+        RaftFloor {
+            key: key("orders", crate::ShardKind::Stream),
+            incarnation: 3,
+            epoch: 0,
+            index: 40,
+            term: 5,
+        },
+        RaftFloor {
+            key: key("prices", crate::ShardKind::Cache),
+            incarnation: 4,
+            epoch: 1,
+            index: 7,
+            term: 2,
+        },
+    ];
+
+    let answer = link
+        .report_raft_floors(None, "n1", &floors)
+        .await
+        .expect("floors");
+
+    assert_eq!(answer.status, StatusCode::OK);
+    let (id, body) = seen.lock().take().expect("a request");
+    assert_eq!(id, "n1");
+    assert_eq!(
+        body,
+        serde_json::json!({ "floors": [
+            {
+                "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+                         "shard": 2, "kind": "stream" },
+                "incarnation": 3, "index": 40, "term": 5,
+            },
+            {
+                "key": { "tenant_id": "t1", "namespace": "ns", "stream": "prices",
+                         "shard": 2, "kind": "cache" },
+                "incarnation": 4, "epoch": 1, "index": 7, "term": 2,
+            },
+        ]})
     );
 }
 
