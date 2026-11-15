@@ -1,0 +1,2 @@
+- A Raft group with a member on a dead broker goes idle again: retrying the entry that member missed no longer keeps its leader heartbeating every 200 ms, and a stream shard's retries wait up to 10 s while the broker is down (#2567).
+  With one broker of three down, the calls to it drop from about five a second per group to about 0.6. One group per dead broker keeps heartbeating it every 200 ms, and so does any group with an entry not yet committed, so a broker that comes back is still caught up within about a heartbeat.

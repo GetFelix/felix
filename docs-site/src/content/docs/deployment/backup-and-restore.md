@@ -131,6 +131,14 @@ changes, it still reports that shard's copy as kept and trusted, and a
 promotion can count an empty copy and lose an acknowledged write. A new
 whole data directory gets a new storage id, which the readmission rules handle.
 Version 0.8 removes the hazard ([#2376](https://github.com/GetFelix/felix/issues/2376)).
+Under the Raft engine a shard directory put back to an older state is detected
+and its copy replaced, except one put back to a state from the last second with no
+election since. That window is longer while the mark writer is backed up, up to
+about six seconds: past five, writes on that data directory wait until the marks
+are written again.
+A whole data directory put back in the same run to such a state is not detected
+either. Keep to whole data directories there too, and restore them only while
+the broker is stopped.
 :::
 
 1. **Stop every broker.**
@@ -220,7 +228,9 @@ has the same effect. Per-shard Raft is not released yet; when it is, this is
 the supported way to restore a snapshot taken while the broker ran. The
 check on a Raft data root compares it with the last root sequence the
 control plane heard from the broker, and a snapshot newer than that value,
-as one taken while the control plane was down can be, passes that check.
+as one taken while the control plane was down can be, passes that check. So
+does a snapshot put back in the same run from within the last second, or up to
+about six seconds while the mark writer is backed up, with no election since.
 
 With `FELIX_START_WITHOUT_CONTROLPLANE` on, a broker that starts while the
 control plane is down runs from the control-plane view in its data directory
