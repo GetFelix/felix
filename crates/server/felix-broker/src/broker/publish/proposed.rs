@@ -10,6 +10,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -22,6 +23,7 @@ use super::completion::spawn_release;
 use super::{PublishOutcome, SequenceReuse};
 use crate::broker::Broker;
 use crate::broker::shards::StreamHandle;
+use crate::commit::StateOp;
 use crate::error::{BrokerError, Result};
 use crate::stream::HeldBatch;
 
@@ -95,6 +97,7 @@ impl Broker {
             handle,
             payloads,
             attribution,
+            None,
             None,
             None,
             stalled_after,
@@ -184,6 +187,7 @@ impl Broker {
             attribution,
             Some(expected),
             None,
+            None,
             stalled_after,
             propose,
         )
@@ -197,6 +201,7 @@ impl Broker {
         attribution: Attribution,
         expected: Option<Expected<E>>,
         trim: Option<HeldTrim>,
+        commit: Option<Arc<[StateOp]>>,
         stalled_after: Duration,
         propose: impl FnOnce(u64) -> F,
     ) -> Result<ProposedPublish<E>>
@@ -241,6 +246,7 @@ impl Broker {
                 timestamp_micros,
                 expected,
                 trim,
+                commit,
                 handed.queued,
                 handed.turn,
             ))),
@@ -671,6 +677,7 @@ async fn finish<E>(
     timestamp_micros: u64,
     expected: Option<Expected<E>>,
     trim: Option<HeldTrim>,
+    commit: Option<Arc<[StateOp]>>,
     committed: Committing<E>,
     turn: CommitTurn<'static>,
 ) -> std::result::Result<PublishOutcome, E> {
@@ -714,7 +721,7 @@ async fn finish<E>(
             record_headers: attribution.headers.map(Into::into),
             timestamp_micros: Some(timestamp_micros),
             first_offset,
-            commit: None,
+            commit,
             trim: None,
             trim_applied: None,
             skipped_before: at.skipped_before,

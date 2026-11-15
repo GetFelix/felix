@@ -89,12 +89,23 @@ pub(crate) async fn commit(
         shard,
     )?;
     let ops = changes.into_iter().map(state_op).collect();
+    if publish_ctx.engine.on_raft(&key) {
+        return commit_on_raft(
+            broker,
+            publish_ctx,
+            &key,
+            event,
+            ops,
+            publisher.cloned(),
+            expected_offset,
+        )
+        .await;
+    }
     leader_write(
         broker,
         publish_ctx,
         &key,
         "commit not served",
-        "commits",
         |handle| async move {
             broker
                 .commit_to_handle_at(&handle, event, ops, expected_offset, publisher)
@@ -102,6 +113,66 @@ pub(crate) async fn commit(
         },
     )
     .await
+}
+
+/// [`commit`] on a shard a Raft group runs here. The commit is one entry,
+/// so every member applies its event and its state updates at one index.
+/// With `expected_offset`, the leader's log decides the condition at the
+/// entry's final index, as for a conditional publish, so a refusal is known
+/// only at the commit and took an offset. A cluster takes commits on Raft
+/// only once it finalizes `raft_atomic_commit`: an older member refuses the
+/// entry. See `docs/per-shard-raft.md`, "Atomic commits".
+async fn commit_on_raft(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    key: &ShardKey,
+    event: Bytes,
+    ops: Vec<StateOp>,
+    publisher: Option<Bytes>,
+    expected_offset: Option<u64>,
+) -> Result<u64, NotWritten> {
+    if publish_ctx.ingress.is_some()
+        && !publish_ctx
+            .engine
+            .marks()
+            .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::RAFT_ATOMIC_COMMIT))
+    {
+        return Err(ClientError::new(
+            felix_wire::ErrorCode::InvalidRequest,
+            "atomic commits on Raft shards are not enabled for this fleet (finalize `raft_atomic_commit`)",
+        )
+        .into());
+    }
+    let (dispatched, _) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
+    let term = owned(dispatched, key)?;
+    let handle = broker
+        .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        .await
+        .map_err(|err| ClientError::from_broker(&err, "commit not served"))?;
+    let proposed = publish_ctx
+        .engine
+        .commit_on_raft(
+            broker,
+            &handle,
+            key,
+            term,
+            event,
+            ops,
+            publisher,
+            expected_offset,
+            publish_ctx.quorum_timeout,
+        )
+        .unwrap_or(Err(RaftRefusal::NotLeading { term }))
+        .map_err(|refused| match refused {
+            RaftRefusal::Broker(err) => NotWritten::from_broker(&err, "commit not served"),
+            refused => ClientError::from_anyhow(&refused.into_anyhow()).into(),
+        })?;
+    match proposed.complete().await {
+        Ok(Some(offset)) => Ok(offset),
+        Ok(None) => Err(ClientError::internal("a write reported no offset").into()),
+        Err(CommitError::OffsetMismatch { tail }) => Err(NotWritten::OffsetMismatch { tail }),
+        Err(err) => Err(ClientError::from_anyhow(&err.into()).into()),
+    }
 }
 
 /// Append `payloads` to the shard of `stream` that `key` routes to, or to
@@ -146,7 +217,6 @@ pub(crate) async fn publish_at(
         publish_ctx,
         &shard,
         "publish not served",
-        "conditional publishes",
         |handle| async move {
             broker
                 .publish_batch_at(&handle, &payloads, expected_offset, publisher)
@@ -327,18 +397,12 @@ async fn leader_write<W, F>(
     publish_ctx: &PublishContext,
     key: &ShardKey,
     context: &str,
-    // What the write is, for a shard on Raft that does not take it.
-    what: &'static str,
     write: W,
 ) -> Result<u64, NotWritten>
 where
     W: FnOnce(StreamHandle) -> F,
     F: Future<Output = felix_broker::Result<PublishOutcome>>,
 {
-    publish_ctx
-        .engine
-        .refuse_on_raft(key, what)
-        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
     let generation = owned(dispatched, key)?;
     let handle = broker

@@ -646,18 +646,26 @@ impl StreamLog {
     /// gaps. A page is empty only at the tail, never because every record it
     /// read was one of them. A commit record is returned as its event.
     pub async fn read_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
+        let records = self.read_data_from(start, max_bytes).await?;
+        Ok(records
+            .into_iter()
+            .map(crate::commit::client_record)
+            .collect())
+    }
+
+    /// [`Self::read_from`] with a commit record left whole, for a reader
+    /// that applies its state updates.
+    pub(crate) async fn read_data_from(
+        &self,
+        start: Offset,
+        max_bytes: usize,
+    ) -> Result<Vec<LogRecord>> {
         let mut start = start;
         loop {
             let page = self.read_log_from(start, max_bytes).await?;
             let mut records = page.records;
             records.retain(|record| record.mark.is_data());
-            if !records.is_empty() {
-                return Ok(records
-                    .into_iter()
-                    .map(crate::commit::client_record)
-                    .collect());
-            }
-            if page.next <= start {
+            if !records.is_empty() || page.next <= start {
                 return Ok(records);
             }
             start = page.next;
