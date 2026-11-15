@@ -356,3 +356,110 @@ async fn a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<()> {
     EngineShards::shutdown(&*shards).await;
     Ok(())
 }
+
+/// **A state read on a Raft shard waits for the view to reach what readers
+/// can see.** History reads stop at the commit bound, but the view moves only
+/// when the held batch is released, here stuck behind a full `Block`
+/// subscriber. Read before then, the state missed a commit whose event a
+/// reader could already see; now the read waits and reports the shard not
+/// ready.
+#[tokio::test]
+async fn a_state_read_on_raft_waits_for_the_view_to_reach_the_read_index() -> Result<()> {
+    use felix_common::fleet::{ATOMIC_COMMIT, FleetGate, RAFT_ATOMIC_COMMIT};
+
+    let root = tempfile::tempdir()?;
+    let blocking = felix_broker::Broker::new(felix_storage::EphemeralCache::new().into())
+        .with_topic_capacity(1)?
+        .with_subscriber_queue_policy(felix_broker::SubQueuePolicy::Block);
+    let broker = fixture::registered(
+        blocking,
+        root.path(),
+        1,
+        fixture::INCARNATION,
+        felix_broker::ConsistencyLevel::Quorum,
+        felix_storage::log::LogConfig {
+            fsync_mode: felix_storage::log::FsyncMode::None,
+            preallocate_segments: false,
+            ..Default::default()
+        },
+    )
+    .await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let gate = Arc::new(FleetGate::new([
+        ATOMIC_COMMIT.name(),
+        RAFT_ATOMIC_COMMIT.name(),
+    ]));
+    gate.observe([ATOMIC_COMMIT.name(), RAFT_ATOMIC_COMMIT.name()]);
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(gate));
+    let engine = Arc::new(StreamEngine::new(
+        Some(marks),
+        Some(fixture::ingress(&shards)),
+    ));
+    engine.set_raft(Arc::clone(&shards));
+    let config = BrokerConfig {
+        publish_quorum_timeout_ms: 300,
+        ..BrokerConfig::default()
+    };
+    let cluster = ClusterContext {
+        engine,
+        ..ClusterContext::default()
+    };
+    let auth = auth_fixture("t1", default_perms());
+    let run = |frames: Vec<Result<Option<Frame>>>| {
+        let mut frames_with_auth = vec![Ok(Some(frame_from_message(auth_message(&auth))))];
+        frames_with_auth.extend(frames);
+        run_control_loop_on(
+            Arc::clone(&broker),
+            Arc::clone(&auth.auth),
+            frames_with_auth,
+            config.clone(),
+            crate::serving::quic::handlers::publish::build_publish_context(
+                Arc::clone(&broker),
+                &config,
+                cluster.clone(),
+            ),
+            Default::default(),
+        )
+    };
+
+    let (_, written) = run(vec![commit(1, b"placed", None)]).await?;
+    let Message::CommitOk { offset: at, .. } = *answer(&written, 1) else {
+        panic!("the commit was not written: {written:?}");
+    };
+    // Nobody drains `_slow`: the release fills its queue and then waits.
+    let _slow = broker.subscribe("t1", "ns", "orders", 0).await?;
+    let (_, published) = run(vec![
+        publish_if(2, b"a", at + 1),
+        publish_if(3, b"b", at + 2),
+        publish_if(4, b"c", at + 3),
+    ])
+    .await?;
+    for id in 2..=4 {
+        assert!(
+            matches!(answer(&published, id), Message::PublishOk { .. }),
+            "{published:?}"
+        );
+    }
+    let shipped = tokio::spawn(run(vec![commit(5, b"shipped", None)]));
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await?;
+    fixture::until("the second commit is committed", || {
+        handle.read_bound().covers(at + 5)
+    })
+    .await;
+
+    let (_, read) = run(vec![state_get(6)]).await?;
+    let answered = format!("{read:?}");
+    assert!(
+        !answered.contains("StateValue") && answered.contains("not_ready"),
+        "read the state without the commit readers can see: {read:?}"
+    );
+    shipped.abort();
+    EngineShards::shutdown(&*shards).await;
+    Ok(())
+}

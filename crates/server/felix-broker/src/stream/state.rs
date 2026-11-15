@@ -97,6 +97,9 @@ pub(crate) struct StreamState {
     /// Holds a release just before its ring append, for a test to act there.
     #[cfg(test)]
     pub(crate) stall_release: Stall,
+    /// Holds a trim's commit scan after it reads the log, for a test to act there.
+    #[cfg(test)]
+    pub(crate) stall_trim_scan: Stall,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -106,11 +109,15 @@ pub(crate) struct StreamState {
 /// the whole log on every trim.
 ///
 /// `seen` is set before a commit is appended or proposed here, and when one
-/// arrives by replication. On an engine's log `clear` stays within what the
-/// engine committed, since entries above it can be cut. `clear` is how far a scan found none. A trim scans from there
-/// to the tail it expects and then reads `seen`; since the trim lands only at
-/// that tail, a commit appended after the scan either set `seen` first or
-/// lands after the trim.
+/// arrives by replication or is delivered from an engine's log. `clear` is
+/// how far a scan found none. A trim scans from there to the tail it expects
+/// and then reads `seen`; since the trim lands only at that tail, a commit
+/// appended after the scan either set `seen` first or lands after the trim.
+///
+/// On an engine's log `clear` stays within what the engine had committed
+/// when the scan began, since entries above that can be cut and written
+/// again. A cut there needs no reset: it can only leave `seen` set for a
+/// proposed commit that went, which refuses trims it need not.
 ///
 /// A truncation can put a different record below `clear`, so it forgets
 /// both. Its epoch keeps a scan that started before it from recording a
@@ -220,6 +227,8 @@ impl StreamState {
             lead_wanted: tokio::sync::Notify::new(),
             #[cfg(test)]
             stall_release: Stall::default(),
+            #[cfg(test)]
+            stall_trim_scan: Stall::default(),
             commits: CommitScan::default(),
         }
     }

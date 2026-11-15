@@ -742,6 +742,10 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
             // One that does not decode goes out as it is, as
             // `client_record` returns it.
             let is_commit = first.mark.is_commit();
+            // Committed, so it cannot be cut: a trim may rely on it.
+            if is_commit {
+                state.commits.seen.store(true, Ordering::Release);
+            }
             let decoded = is_commit
                 .then(|| CommitRecord::decode(&first.payload).ok())
                 .flatten();

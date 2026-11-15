@@ -26,6 +26,9 @@ const REBUILD_PAGE_BYTES: usize = 1 << 20;
 /// reached under a steady stream of commits.
 const MAX_REBUILDS: usize = 8;
 
+/// How often [`Broker::await_state_view`] looks at the ring again.
+const VIEW_RECHECK: Duration = Duration::from_millis(2);
+
 /// A state read: a key's value and the commit that wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateRead {
@@ -148,6 +151,36 @@ impl Broker {
             stalled_after,
             propose,
         )
+    }
+
+    /// Wait, up to `wait`, until the shard's state view holds every record
+    /// the read bound covers now. History reads stop at that bound, but the
+    /// view moves only when a held batch is released into the ring, so a
+    /// state read that skipped this could miss an event a reader already saw.
+    ///
+    /// Fails with [`BrokerError::StateNotReadable`] when the bound is not
+    /// known or the view does not get there in time.
+    pub async fn await_state_view(&self, handle: &StreamHandle, wait: Duration) -> Result<()> {
+        let state = &handle.state;
+        let end = match state.read_bound() {
+            crate::ReadBound::Committed(bound) => bound,
+            crate::ReadBound::Unbounded => return Ok(()),
+            crate::ReadBound::Refused => {
+                return Err(BrokerError::StateNotReadable(crate::NotReadable::Refused));
+            }
+            crate::ReadBound::Settling => {
+                return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling));
+            }
+        };
+        let deadline = tokio::time::Instant::now() + wait;
+        // A release appends to the ring without a wake, so this rechecks.
+        while state.tail_seq() < end {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling));
+            }
+            tokio::time::sleep(VIEW_RECHECK).await;
+        }
+        Ok(())
     }
 
     /// `key` in the shard's state, as of the last commit readers can see.

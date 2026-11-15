@@ -3207,8 +3207,13 @@ never once a majority has only written it, as a plain publish can be under
 answer waits for the view anyway.
 
 A `state_get` on a Raft shard confirms the term with a read-index round
-before it takes its value, instead of the hybrid's lease. Every commit
-answered before the read started is in the view by then.
+before it takes its value, instead of the hybrid's lease. It then waits
+until the view holds everything committed at that point, so it never misses
+a commit whose event a history read already returns: history reads stop at
+the commit, but the view moves only when the leader releases the commit
+from the hold, and a full `Block` subscriber can hold that release up. A
+read that waits past the request's quorum timeout is answered
+`shard_unavailable` with reason `not_ready`.
 
 A commit entry has its own tag, 8, in the Raft wire's entry payloads. A
 member built before it refuses the whole append by that tag, so a commit

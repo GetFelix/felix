@@ -487,9 +487,9 @@ pub(crate) async fn state_get(
 }
 
 /// [`state_get`] on a shard a Raft group runs here. A read-index round
-/// confirms the term before the value is taken, and the view holds every
-/// commit answered before then: a Raft commit is answered only once its
-/// state updates are in the view.
+/// confirms the term before the value is taken. The value is then taken only
+/// once the view holds everything committed at that read index, so no reader
+/// has seen an event this read misses the state of.
 async fn state_get_on_raft(
     broker: &Broker,
     publish_ctx: &PublishContext,
@@ -513,6 +513,10 @@ async fn state_get_on_raft(
             &shard.stream,
             shard.shard,
         )
+        .await
+        .map_err(|err| ClientError::from_broker(&err, "state read not served"))?;
+    broker
+        .await_state_view(&handle, publish_ctx.quorum_timeout)
         .await
         .map_err(|err| ClientError::from_broker(&err, "state read not served"))?;
     broker
