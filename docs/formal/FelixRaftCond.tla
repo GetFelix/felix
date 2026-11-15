@@ -17,7 +17,9 @@
 (* through the leader's queue in order; the blank and the membership entry *)
 (* are written by Raft itself and do not, so a membership entry can land  *)
 (* between a publish's arrival and its append. That is why the leader     *)
-(* cannot decide `kept` from its guess of the next index.                  *)
+(* cannot decide `kept` from its guess of the next index. The queue is     *)
+(* modelled only for that guess: when members decide at write time a      *)
+(* publish is appended as it arrives, which changes no outcome.            *)
 (*                                                                         *)
 (* The leader answers a client once the client's entry is committed:       *)
 (* "ok at i" when it is kept, "mismatch" otherwise (the code reports the   *)
@@ -175,24 +177,33 @@ LearnTerm(i, j) ==
     /\ StepDown(j, term[i])
     /\ UNCHANGED <<log, commit, sent, answer, used>>
 
-\* The leader takes a publish into its queue. With LeaderDecides a
-\* conditional one is decided now, from the index the leader expects it to
-\* get: past its log and everything queued ahead of it.
+\* The leader takes a publish. With LeaderDecides it goes into the queue, and
+\* a conditional one is decided now, from the index the leader expects it to
+\* get: past its log and everything queued ahead of it. With the rule on,
+\* nothing can see a publish between its arrival and its append, so it is
+\* appended at once.
+Take(i, e) ==
+    IF LeaderDecides
+    THEN /\ queue' = [queue EXCEPT ![i] = Append(@, e)]
+         /\ UNCHANGED log
+    ELSE /\ Len(log[i]) < MaxLog
+         /\ log' = [log EXCEPT ![i] = Append(@, Store(e, Len(@) + 1))]
+         /\ UNCHANGED queue
+
 TakeCond(i, c) ==
     /\ role[i] = "leader"
     /\ c \notin sent
     /\ LET guess == Len(log[i]) + Len(queue[i]) + 1
-           e == [Entry(term[i], "cond", c) EXCEPT !.kept = LeaderDecides /\ guess = Expected[c]]
-       IN queue' = [queue EXCEPT ![i] = Append(@, e)]
+       IN Take(i, [Entry(term[i], "cond", c) EXCEPT !.kept = LeaderDecides /\ guess = Expected[c]])
     /\ sent' = sent \cup {c}
-    /\ UNCHANGED <<term, role, votedFor, granted, log, commit, answer, used>>
+    /\ UNCHANGED <<term, role, votedFor, granted, commit, answer, used>>
 
 TakePlain(i) ==
     /\ role[i] = "leader"
     /\ used.plain < MaxPlain
-    /\ queue' = [queue EXCEPT ![i] = Append(@, Entry(term[i], "plain", 0))]
+    /\ Take(i, Entry(term[i], "plain", 0))
     /\ used' = [used EXCEPT !.plain = @ + 1]
-    /\ UNCHANGED <<term, role, votedFor, granted, log, commit, sent, answer>>
+    /\ UNCHANGED <<term, role, votedFor, granted, commit, sent, answer>>
 
 \* The head of the queue goes into the leader's log.
 AppendQueued(i) ==

@@ -627,6 +627,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
 | `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
 | `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
+| `FelixRaftCond.cfg` | `FelixRaftCond.tla`: three members, three terms, logs up to five entries, one plain publish, one membership entry, three conditional publishes (two naming offset 2, one offset 3); each member decides `kept` from the entry and its index | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold` (169,456,277 distinct states, depth 34, 24 minutes with 12 workers on a 32-core machine) |
+| `FelixRaftCondTwoTerms.cfg` | the same with two terms | pass the same (18,646,633 distinct states, depth 30, 3 minutes with 12 workers on a 32-core machine) |
+| `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
+| `FelixRaftCondLeaderDecidesNoMembers.cfg` | the same with no membership entry | pass the same as `FelixRaftCond.cfg` (101,575,424 distinct states, depth 36, 23 minutes with 8 workers on a 32-core machine): the membership entry is what breaks the guess |
+| `FelixRaftCondReachAnswers.cfg` | witness, one term: one conditional publish is answered "ok" and another "mismatch" | violate `NeverOkAndMismatch` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
 | `FelixRaftIdentityRootRestore.cfg` | the whole root goes back to a backup from an earlier run; the incarnation check catches it | pass the same (0.8M distinct states) |
@@ -4093,7 +4098,10 @@ plus one), and followers copy it. A membership entry appended between the
 guess and the append moves the publish one index on, where it is kept
 (`FelixRaftCondLeaderDecides.cfg`). With no membership entry the guess is
 right (`FelixRaftCondLeaderDecidesNoMembers.cfg`), which shows the
-membership entry is what breaks it.
+membership entry is what breaks it. `FelixRaftCondReachAnswers.cfg` shows the
+passes are not vacuous: one publish is answered "ok" and another "mismatch".
+The leader's queue is modelled only for the guess. When members decide at
+write time, a publish is appended as it arrives, which changes no outcome.
 
 Abstracted: disks, crashes and snapshots (`FelixRaft.tla` has them). A
 message is one step that reads both members, and a leader counts a follower
