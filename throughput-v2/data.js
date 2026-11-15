@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794749523534,
+  "lastUpdate": 1794750433545,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58604,6 +58604,58 @@ window.BENCHMARK_DATA = {
             "range": "5495.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1252439.31\nmean: 1252317.61\nstdev: 5495.31\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3ab3772e11d06356251fcd103ad8ccc424104288",
+          "message": "fix(raft): a shard whose every copy rotated is held, not formed again at offset 0 (#2620) (#2622)\n\n* fix(raft): a shard whose every copy rotated is not formed again (#2620)\n\nA rotated copy comes back with a new copy id, no vote and an empty log,\nwhich is what the forming broker takes as blank. With every copy rotated\nthe lowest broker formed the group again at index 0 and gave out offsets\nalready acknowledged.\n\nA member whose directory has a kept copy holding a log entry, or a\nreservation, now refuses the term-0 pre-vote the forming broker asks,\nand first_members/peers_blank refuse when the local member is one. An\nunreadable kept copy counts as holding entries.\n\n* fix(raft): initialize refuses a member a group reached before; docs per review\n\n* fix(raft): leave initialize to its callers' blank check\n\nThe re-form and reclaim tests form a group over a member with kept\nrecords on purpose, as the re-form command will.\n\n* fix(raft): warn when a shard is held after rotation, drop the by-hand directory removal from the docs",
+          "timestamp": "2026-11-15T13:43:03Z",
+          "tree_id": "34b2e61d0f900bf8a3799bf40e2b95d6b9146b33",
+          "url": "https://github.com/GetFelix/felix/commit/3ab3772e11d06356251fcd103ad8ccc424104288"
+        },
+        "date": 1794750432939,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 657573.03,
+            "range": "45124.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 657573.03\nmean: 663610.55\nstdev: 45124.36\ncv: 6.80%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 657573.03,
+            "range": "45124.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 657573.03\nmean: 663610.55\nstdev: 45124.36\ncv: 6.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 162784.77,
+            "range": "2531.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 162784.77\nmean: 162595.79\nstdev: 2531.94\ncv: 1.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1627847.75,
+            "range": "25319.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1627847.75\nmean: 1625957.89\nstdev: 25319.43\ncv: 1.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
