@@ -1540,6 +1540,7 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
         producer: None,
         expected: None,
         written: None,
+        trim: None,
     };
     let id = LogIdOf::<ShardTypes>::new(1.into(), 0);
     let entry = EntryOf::<ShardTypes>::new_normal(id, command);
