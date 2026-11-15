@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794703023103,
+  "lastUpdate": 1794704248701,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57460,6 +57460,58 @@ window.BENCHMARK_DATA = {
             "range": "65733.31",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1561024.60\nmean: 1537846.73\nstdev: 65733.31\ncv: 4.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1594f3af96bbfde7d454dbaf5a1969c7eb375ffb",
+          "message": "fix(raft): idempotent batches on a Raft shard reach the engine without service pre-checks (#2561) (#2571)\n\n* feat(raft): re-sends of multi-record idempotent batches reach the engine (#2561)\n\nThe QUIC publish handler and the forward owner no longer refuse an\nidempotent batch of several records on a Raft shard before the engine\nsees it. propose_idempotent looks at the log first, so a re-send of a\nbatch the log holds whole is answered as a duplicate and one a leader\nchange cut is finished. A new batch of several records is still refused,\nnow at the producer's turn.\n\nThe forward owner answers a refused multi-record batch StorageFailed,\nnot Unavailable, so the requester does not send it again, and answers\nwith the batch's real last offset, which a cut batch puts past its first\nplus its length.\n\nService-level tests through both paths cover a cut batch finished, a\nbatch held whole, a different start refused as sequence_reused under\nboth reuse modes, and a forgotten cut refused as sequence_expired. They\nwrite the cut through a test-only unchecked write on GroupRuntime\n(felix-replication's testing feature).\n\n* docs(raft): a forward cannot carry a sequenced batch to a Raft owner yet (#2570); offsets of a finished cut batch are not one run\n\n* docs(raft): a cut batch cannot occur yet; client page names the offset exception (#2561)\n\nSpec-Unaffected: FelixShard.tla models the lease, fence and replication mark; this change touches no apply path or state machine, duplicate and cut answers come from the log's existing marks.\n\n* docs(raft): name the spec that models the re-send\n\nSpec-Unaffected: FelixRaftBatch.tla models placing a re-send (Propose/Place: held, finish, new, refuse) in Broker::propose_idempotent, which this change does not touch; it only removes a service gate the model never had, so sends reach that step at the producer's turn as modelled, and new multi-record batches are still refused.",
+          "timestamp": "2026-11-15T00:51:43Z",
+          "tree_id": "2af5a0f9ac5b72c538a7a9157b8710452db1b495",
+          "url": "https://github.com/GetFelix/felix/commit/1594f3af96bbfde7d454dbaf5a1969c7eb375ffb"
+        },
+        "date": 1794704247877,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344440.08,
+            "range": "25928.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344440.08\nmean: 336948.14\nstdev: 25928.57\ncv: 7.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344440.08,
+            "range": "25928.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344440.08\nmean: 336948.14\nstdev: 25928.57\ncv: 7.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79498.03,
+            "range": "467.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79498.03\nmean: 79658.81\nstdev: 467.93\ncv: 0.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 794980.26,
+            "range": "4679.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 794980.26\nmean: 796588.12\nstdev: 4679.32\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
