@@ -112,6 +112,77 @@ async fn the_first_members_are_the_copies_the_brokers_hold() {
     }
 }
 
+/// The broker's members batch their log marks: a run of writes costs each
+/// root a few synced mark writes (the votes and one batch a second), not one
+/// per flush round, and the mark still catches up with the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_shipped_log_mark_is_one_write_a_second() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.push(opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let first = cluster.write(0, b"first").await;
+    cluster.committed_everywhere(0, first).await;
+    let before: HashMap<_, _> = BROKERS
+        .iter()
+        .map(|broker| (*broker, roots.roots[broker].mark_log().sequence()))
+        .collect();
+    let started = std::time::Instant::now();
+    let mut last = first;
+    for _ in 0..100 {
+        last = cluster.write(0, b"record").await;
+    }
+    cluster.committed_everywhere(0, last).await;
+    let seconds = started.elapsed().as_secs();
+    for broker in BROKERS {
+        let writes = roots.roots[broker].mark_log().sequence() - before[broker];
+        assert!(
+            writes <= seconds + 3,
+            "{broker}: {writes} mark writes for 100 writes in {seconds} s"
+        );
+    }
+    let name = runtime::mark_name(&shard(0));
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    for broker in BROKERS {
+        while roots.roots[broker]
+            .mark_log()
+            .marks(&name)
+            .and_then(|marks| marks.log)
+            .is_none_or(|at| at.index < last)
+        {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{broker}: the batched mark never caught up"
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.expect("close");
+    }
+}
+
 /// A copy whose directory was wiped comes back under a new id. A request
 /// for the old id is refused, the group still counts the old id as its
 /// voter, and the new copy never votes: the old promise is not made again

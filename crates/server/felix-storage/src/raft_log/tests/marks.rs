@@ -1,6 +1,7 @@
 //! The Raft log keeps its marks: the vote mark before `save_vote` returns,
-//! the exact log mark before Raft hears of a flush, and a truncation brings
-//! the log mark down first.
+//! the exact log mark before Raft hears of a flush, the batched one once per
+//! interval and never past the flush, and a truncation brings the log mark
+//! down first.
 
 use futures_util::FutureExt;
 use openraft::storage::RaftLogStorage;
@@ -200,6 +201,77 @@ async fn the_batched_mark_trails_the_log_until_the_batch() {
         .await
         .expect("nothing moved");
     assert_eq!(copies.mark_log().sequence(), before + 1);
+}
+
+/// The batch marks the flushed position, never the written one: an entry
+/// that is not on disk yet is not marked, so a crash cannot leave a mark
+/// above the log and rotate the copy for nothing.
+#[tokio::test]
+async fn the_batched_mark_never_passes_the_flushed_log() {
+    let root = Root::new();
+    let copies = root.open();
+    let (_opened, mut log) = opened(
+        &root,
+        &copies,
+        LogMarkMode::Batched(std::time::Duration::from_secs(3600)),
+    )
+    .await;
+    append(&mut log, &[normal(1, 0, "a"), normal(1, 1, "b")])
+        .await
+        .expect("append")
+        .await
+        .expect("flush");
+    let disk = log.disk_log().clone();
+    let held = disk.hold_flushes().await;
+    let mut unflushed = append(&mut log, &[normal(1, 2, "c"), normal(1, 3, "d")])
+        .await
+        .expect("append");
+    assert_eq!(log.positions().borrow().written, Some(point(1, 3)));
+    copies.mark_log().mark_batched().await.expect("batch");
+    assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(1, 1)));
+    assert!(unflushed.as_mut().now_or_never().is_none());
+    drop(held);
+    unflushed.await.expect("flush");
+    copies.mark_log().mark_batched().await.expect("batch");
+    assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(1, 3)));
+}
+
+/// Under a steady stream of flushes the batched mark costs one synced
+/// write per interval, not one per flush round, and it still catches up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_batched_mark_writes_once_per_interval_under_load() {
+    let interval = std::time::Duration::from_millis(100);
+    let root = Root::new();
+    let copies = root.open();
+    let (_opened, mut log) = opened(&root, &copies, LogMarkMode::Batched(interval)).await;
+    let before = copies.mark_log().sequence();
+    let started = std::time::Instant::now();
+    let mut index = 0;
+    while started.elapsed() < std::time::Duration::from_millis(600) {
+        append(&mut log, &[normal(1, index, "x")])
+            .await
+            .expect("append")
+            .await
+            .expect("flush");
+        index += 1;
+    }
+    let elapsed = started.elapsed();
+    let writes = copies.mark_log().sequence() - before;
+    let intervals = (elapsed.as_millis() / interval.as_millis()) as u64;
+    assert!(index > 2 * intervals, "only {index} flushes in {elapsed:?}");
+    assert!(
+        writes <= intervals + 1,
+        "{writes} mark writes for {index} flushes in {elapsed:?}"
+    );
+    let last = Some(point(1, index - 1));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while root.marks_on_disk().expect("marks").log != last {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the mark never caught up"
+        );
+        tokio::time::sleep(interval / 4).await;
+    }
 }
 
 /// The ballot is synced whatever the log's fsync mode: a Raft log refuses

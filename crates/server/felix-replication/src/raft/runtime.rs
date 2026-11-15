@@ -74,7 +74,9 @@ pub struct RuntimeConfig {
     /// time a broker's clock may run.
     pub clock_drift_ppm: u32,
     /// How a member opened by [`GroupRuntime::open_copy`] keeps its log
-    /// mark at the data root.
+    /// mark at the data root. The default batches every shard's mark into
+    /// one synced write per second; see `docs/per-shard-raft.md`,
+    /// "What this does not catch", for what the trailing mark gives up.
     pub log_mark: LogMarkMode,
     /// Record bytes the shard groups' Raft logs of this runtime keep in
     /// memory for replication reads, all groups together. Each log keeps at
@@ -108,7 +110,9 @@ impl Default for RuntimeConfig {
             // clocks up to 10% off.
             lease: Duration::from_millis(1500),
             clock_drift_ppm: 100_000,
-            log_mark: LogMarkMode::Exact,
+            // An exact mark is a second synced write, and a witness
+            // rewrite, on every flush round of every member.
+            log_mark: LogMarkMode::Batched(Duration::from_secs(1)),
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
             append_entries: 1024,
         }
