@@ -15,6 +15,7 @@ mod moves;
 mod operator;
 mod pacing;
 mod pending_set;
+mod raft_leaders;
 mod readmit;
 mod reconciler;
 mod recovering;

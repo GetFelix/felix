@@ -8,8 +8,10 @@ use super::progress::CopyProgress;
 use super::{
     CaughtUp, MovePolicy, PlacementWakes, Plan, ReplicaPositions, assignment_for, plan_with,
 };
+use crate::config::ShardEngine;
 use crate::model::{Cache, Node, ShardAssignment, ShardKey, Stream};
 use crate::store::AssignmentWrite;
+use crate::store::identity::GroupIdentity;
 
 /// Shards assigned a leader.
 pub const SHARDS_PLACED_TOTAL: &str = "felix_shards_placed_total";
@@ -251,6 +253,9 @@ pub struct PlacementRead {
     /// Nodes that left while their lease may still run, seen as draining in
     /// [`Self::nodes`].
     pub departed: std::collections::BTreeSet<String>,
+    /// The cluster runs durable stream shards on Raft, as its identity
+    /// records ([`MovePolicy::raft_streams`]).
+    pub raft_streams: bool,
 }
 
 impl PlacementRead {
@@ -289,6 +294,14 @@ impl PlacementRead {
             .with_joint_fence(enabled.contains(felix_common::fleet::JOINT_FENCE.name()));
         let (nodes, departed) = fence_departed(nodes, liveness, now_millis);
         let paused = store.moves_paused().await?;
+        let raft_streams = match store.group_identity().await? {
+            GroupIdentity::NoGroup { shard_engine } => shard_engine == ShardEngine::Raft.as_str(),
+            GroupIdentity::Recorded(identity) => {
+                identity.shard_engine == ShardEngine::Raft.as_str()
+            }
+            // Nothing is created before the identity is recorded.
+            GroupIdentity::Pending => false,
+        };
         Ok(Self {
             streams,
             caches,
@@ -298,6 +311,7 @@ impl PlacementRead {
             paused,
             enabled,
             departed,
+            raft_streams,
         })
     }
 
@@ -315,6 +329,7 @@ impl PlacementRead {
                 .enabled
                 .contains(felix_common::fleet::JOINT_FENCE.name()),
             departed: self.departed.clone(),
+            raft_streams: self.raft_streams,
             ..policy
         }
     }

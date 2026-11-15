@@ -143,6 +143,13 @@ pub enum MoveStep {
     /// that identity and holding it as a learner until it shows the
     /// generation's start record.
     Readmit { node: String },
+    /// A Raft shard's placement leader moves to another member of its set.
+    /// Only `leader` changes: the group keeps its members, and its leader
+    /// hands over to the one placement names.
+    RaftLeader { from: String, to: String },
+    /// A hybrid move left on a Raft shard is dropped. Its group never
+    /// reports what the move waits for.
+    RaftMoveDropped,
 }
 
 impl MoveStep {
@@ -185,6 +192,8 @@ impl MoveStep {
             Self::PendingSetDropped => "pending_set_dropped",
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",
+            Self::RaftLeader { .. } => "raft_leader",
+            Self::RaftMoveDropped => "raft_move_dropped",
         }
     }
 }
