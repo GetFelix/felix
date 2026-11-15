@@ -21,7 +21,8 @@ pub(crate) fn usage() -> ! {
   --token <jwt>               Felix token, or --token-file <path>
   --namespace <ns>            default: default
   --scenario <name>           pubsub | cache | counter | watch | queue | retained |
-                              ingest | subscribe (required)
+                              ingest | subscribe | failover |
+                              mqtt-publish (required)
   --stream <name>             stream for pubsub, queue, ingest, subscribe (default: perf)
   --keys <n>                  ingest: spread batches over n routing keys (default 0,
                               unkeyed -- every record lands on shard 0)
@@ -34,6 +35,10 @@ pub(crate) fn usage() -> ! {
                               of a plain connection per publisher whose batches a non-leader
                               forwards. Works at any --batch; fire-and-forget too. Use it
                               with --keys so records spread over the shards
+  --mqtt-addrs <a,b,...>      mqtt-publish: plain-TCP MQTT listeners (host:port)
+  --mqtt-topic-prefix <p>     mqtt-publish: the mounted prefix (default: bench/);
+                              --in-flight sets the window, --concurrency the
+                              connections
   --duration-secs <n>         ingest: publish for n seconds instead of --total records;
                               subscribe: how long to count deliveries (required)
   --start-at <unix-secs>      ingest, subscribe: connect, then start at this wall-clock
@@ -82,6 +87,8 @@ pub(crate) fn parse_args() -> Result<Args> {
     let mut via_entry = false;
     let mut concurrency = 8usize;
     let mut ingest = IngestOptions::default();
+    let mut mqtt_addrs: Vec<String> = Vec::new();
+    let mut mqtt_prefix = "bench/".to_string();
     let mut environment = "unknown".to_string();
     let mut slow_subscribers = 0usize;
     let mut slow_delay_ms = 0u64;
@@ -157,6 +164,13 @@ pub(crate) fn parse_args() -> Result<Args> {
                 ingest.start_at =
                     Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(secs));
             }
+            "--mqtt-addrs" => {
+                mqtt_addrs = value("--mqtt-addrs")?
+                    .split(',')
+                    .map(str::to_string)
+                    .collect()
+            }
+            "--mqtt-topic-prefix" => mqtt_prefix = value("--mqtt-topic-prefix")?,
             "--stamp-send-time" => ingest.stamp_send_time = true,
             "--cluster" => ingest.cluster = true,
             "--concurrency" => {
@@ -197,12 +211,25 @@ pub(crate) fn parse_args() -> Result<Args> {
                 stamp_send_time: ingest.stamp_send_time,
             },
         },
+        "failover" => Scenario::Failover {
+            stream,
+            duration: ingest.duration.context("failover needs --duration-secs")?,
+            start_at: ingest.start_at,
+        },
+        "mqtt-publish" => Scenario::MqttPublish {
+            addrs: mqtt_addrs,
+            topic_prefix: mqtt_prefix,
+            window: ingest.in_flight.max(1),
+            duration: ingest
+                .duration
+                .context("mqtt-publish needs --duration-secs")?,
+        },
         "ingest" => Scenario::Ingest {
             stream,
             options: ingest,
         },
         other => bail!(
-            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest | subscribe)"
+            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest | subscribe | failover | mqtt-publish)"
         ),
     };
 

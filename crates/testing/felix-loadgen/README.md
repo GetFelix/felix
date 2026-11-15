@@ -6,7 +6,9 @@ publish acknowledgement and delivery latency, fanout, aggregate ingest, cache
 and counter round trips, cache watches, consumer groups and retained joins.
 
 Scenarios: `pubsub`, `cache`, `counter`, `watch`, `queue`, `retained`,
-`ingest` and `subscribe`. `subscribe` only subscribes, so it pairs with
+`ingest`, `subscribe`, `failover` and `mqtt-publish`. `failover` times a leader kill the
+harness performs, and `mqtt-publish` drives QoS 1 publishes over plain TCP; both are used by
+the Raft parity matrix (`docs/perf-raft-parity.md`). `subscribe` only subscribes, so it pairs with
 `ingest` on another generator for read-heavy runs:
 
 ```text

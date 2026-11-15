@@ -10,8 +10,10 @@
 
 mod cache;
 mod connect;
+mod failover;
 mod framing;
 mod ingest;
+mod mqtt;
 mod pubsub;
 mod queue;
 mod retained;
@@ -107,6 +109,22 @@ pub enum Scenario {
         stream: String,
         options: IngestOptions,
     },
+    /// Kill a shard's leader mid-run and time the recovery: the longest
+    /// silence between acked publishes, and until a live-tail subscriber
+    /// sees a record published after it. The harness does the kill.
+    Failover {
+        stream: String,
+        duration: Duration,
+        start_at: Option<SystemTime>,
+    },
+    /// MQTT QoS 1 publishes over plain TCP to a stream mounted at a topic
+    /// prefix, `window` unacknowledged per connection.
+    MqttPublish {
+        addrs: Vec<String>,
+        topic_prefix: String,
+        window: usize,
+        duration: Duration,
+    },
     /// Subscribers only, at the live tail, for a fixed time. Something else
     /// publishes.
     Subscribe {
@@ -131,6 +149,17 @@ pub async fn run(common: &Common, scenario: &Scenario) -> Result<serde_json::Val
         Scenario::Queue { stream } => queue::queue(common, stream).await,
         Scenario::Retained { cache } => retained::retained(common, cache).await,
         Scenario::Ingest { stream, options } => ingest::ingest(common, stream, options).await,
+        Scenario::Failover {
+            stream,
+            duration,
+            start_at,
+        } => failover::failover(common, stream, *duration, *start_at).await,
+        Scenario::MqttPublish {
+            addrs,
+            topic_prefix,
+            window,
+            duration,
+        } => mqtt::mqtt_publish(common, addrs, topic_prefix, *window, *duration).await,
         Scenario::Subscribe { stream, options } => {
             subscribe::subscribe(common, stream, options).await
         }
