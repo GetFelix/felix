@@ -326,6 +326,13 @@ impl DiskLog {
         self.inner.head_trim()
     }
 
+    /// Whether the log holds a trim record its apply bound has not passed
+    /// yet, so [`Self::readable_base`] may still rise without a new write.
+    pub fn trim_pending(&self) -> bool {
+        self.inner.head_floor();
+        self.inner.head_pending.load(Ordering::Acquire)
+    }
+
     /// Exclusive bound on durable offsets: everything below it survives a crash.
     pub fn durable_offset(&self) -> Offset {
         self.inner.durability.durable_upto()

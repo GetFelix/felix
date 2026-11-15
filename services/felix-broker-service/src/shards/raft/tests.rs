@@ -1244,6 +1244,9 @@ async fn an_open_member_holds_its_log_directory() {
 pub(crate) struct Loopback {
     runtimes: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
     cut: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Brokers cut off right after the next append with entries reaches
+    /// them, so they hold the entries but never hear them committed.
+    cut_after_entries: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 impl Loopback {
@@ -1259,6 +1262,10 @@ impl RaftTransport for Loopback {
         let to = request.to().broker.to_string();
         if self.cut.lock().contains(&to) {
             return Err(Refused::Unreachable(format!("broker {to} is cut off")));
+        }
+        let cut_after = request.carries_entries() && self.cut_after_entries.lock().remove(&to);
+        if cut_after {
+            self.cut.lock().insert(to.clone());
         }
         let runtime = self.runtimes.lock().get(&to).cloned();
         match runtime {

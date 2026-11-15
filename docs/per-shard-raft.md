@@ -2956,13 +2956,28 @@ record's floor once the record is below its commit offset, and rebuilds it
 at open from the trim records and the `head` file, as the hybrid does
 (`docs/durable-storage.md`, "Conditional head trim"). So once a member's
 commit passes the trim it hides the same records as every other member.
-Until then it does not: a follower that has not heard the commit yet, or a
-member restarted with its saved commit offset behind the trim, can still
-serve records below the floor after the leader answered `trim_ok`, for
-about one commit round. The other difference from the hybrid is deletion:
+
+On the hybrid only the leader serves readers, so once a trim is answered
+no reader on any broker is served below its floor. A Raft follower serves
+from its own log, so a member whose log holds a trim its commit has not
+passed yet (a follower that has not heard the commit, or a member
+restarted with its saved commit offset behind the trim) holds every
+resume, cursor subscribe and history page until it has, for at most 5 s,
+then refuses it as retryable (`NotReadable::Settling`). A follower that
+does not hold the trim's entry at all yet can still serve below the floor
+after `trim_ok` until the entry reaches it, about one append round.
+Closing that needs a read index asked of the leader
+([#2603](https://github.com/GetFelix/felix/issues/2603)).
+
+A Raft trim that does not commit within 30 s is answered as on the
+hybrid: `unacknowledged` with `detail.reason` = `trim_timed_out`, and it
+may still land.
+
+The other difference from the hybrid is deletion:
 a Raft log never deletes a segment below a floor, because only openraft's
 purge may move a Raft log's start, and stream shards are never purged
-today. So a trim on Raft hides records but frees no disk. No snapshot carries a
+today. So a trim on Raft hides records but frees no disk
+([#2602](https://github.com/GetFelix/felix/issues/2602)). No snapshot carries a
 floor: a stream shard's snapshot holds no records, and the trim's own index
 is at or below any snapshot that covers it, so the log above the snapshot
 is already past the floor.
@@ -2996,8 +3011,11 @@ condition is `FelixRaftCond.tla`'s, decided at the entry's final index.
 
 > `services/felix-broker-service/src/shards/raft/tests/trim.rs`,
 > `a_trim_hides_the_shard_below_its_floor_on_every_member`,
-> `a_trim_holds_after_a_restart` and
-> `a_trim_is_refused_until_raft_head_trim_is_finalized`;
+> `a_trim_holds_after_a_restart`,
+> `a_trim_is_refused_until_raft_head_trim_is_finalized` and
+> `a_follower_holding_the_trim_is_not_read_below_it_after_the_answer`;
+> `services/felix-broker-service/src/serving/commit_ops/tests.rs`,
+> `a_raft_trim_that_does_not_commit_in_time_is_the_hybrids_trim_timeout`;
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_trim_before_to_a_raft_shard_is_answered_as_on_the_hybrid`;
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,

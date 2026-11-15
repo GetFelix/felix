@@ -269,7 +269,8 @@ async fn trim_at_on_raft(
             before,
             expected_offset,
             headers,
-            publish_ctx.quorum_timeout,
+            // The hybrid's wait, so a stalled trim is answered after it.
+            broker.trim_wait(),
         )
         .await
         .unwrap_or(Err(RaftRefusal::NotLeading { term }));
@@ -281,14 +282,27 @@ async fn trim_at_on_raft(
         }
         Err(refused) => return Err(ClientError::from_anyhow(&refused.into_anyhow()).into()),
     };
-    match proposed.complete().await {
-        Ok(outcome) => Ok(outcome),
-        Err(TrimFailed::Engine(CommitError::OffsetMismatch { tail })) => {
-            Err(NotWritten::OffsetMismatch { tail })
+    proposed
+        .complete()
+        .await
+        .map_err(|failed| raft_trim_failed(failed, expected_offset))
+}
+
+/// A Raft trim's failure as the hybrid answers it. One that does not commit
+/// in time is the hybrid's `TrimTimedOut` at the offset it was proposed at,
+/// not a quorum timeout.
+fn raft_trim_failed(failed: TrimFailed<CommitError>, expected_offset: u64) -> NotWritten {
+    let err = match failed {
+        TrimFailed::Engine(CommitError::OffsetMismatch { tail }) => {
+            return NotWritten::OffsetMismatch { tail };
         }
-        Err(TrimFailed::Engine(err)) => Err(ClientError::from_anyhow(&err.into()).into()),
-        Err(TrimFailed::Broker(err)) => Err(NotWritten::from_broker(&err, &err.to_string())),
-    }
+        TrimFailed::Engine(CommitError::TimedOut { .. }) => BrokerError::TrimTimedOut {
+            offset: expected_offset,
+        },
+        TrimFailed::Engine(err) => return ClientError::from_anyhow(&err.into()).into(),
+        TrimFailed::Broker(err) => err,
+    };
+    NotWritten::from_broker(&err, &err.to_string())
 }
 
 /// Make `write` on the shard `key` names, if this broker leads it, inside the

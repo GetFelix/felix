@@ -247,3 +247,61 @@ async fn a_trim_is_refused_until_raft_head_trim_is_finalized() {
     assert_eq!(trimmed.oldest, tail - 1);
     EngineShards::shutdown(&*shards).await;
 }
+
+/// **A follower holding the trim is not read below its floor after
+/// `trim_ok`**, though it never hears the commit. On the hybrid only the
+/// leader serves readers, so no reader is served below a floor once it is
+/// answered; a Raft follower waits for its own commit to pass the trim.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_holding_the_trim_is_not_read_below_it_after_the_answer() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = &members[leader];
+    let holder = &members[(leader + 1) % 3];
+    lead.broker.allow_raft_head_trims_when(|| true);
+    let first = lead.publish(term, b"r0").await;
+    let floor = lead.publish(term, b"r1").await;
+    let tail = lead.publish(term, b"r2").await + 1;
+    let log = holder.shards.log_of(&orders).await.expect("log");
+    until("the holder has the publishes", || {
+        log.commit_offset() == tail
+    })
+    .await;
+
+    // The holder gets the trim's entry and nothing after it, so it never
+    // hears the trim committed. The third member keeps the leader's quorum.
+    net.cut_after_entries.lock().insert(holder.name.to_string());
+    trim(&lead.broker, &lead.engine, term, floor, tail)
+        .await
+        .expect("trimmed");
+    // The append to the holder may still be in flight.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while log.tail_offset().await.expect("tail") <= tail {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the holder has the trim"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        log.commit_offset() <= tail,
+        "the holder never heard the commit"
+    );
+    let resumed = holder
+        .broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+        .await;
+    assert!(
+        resumed.is_err(),
+        "the holder served a resume below the floor after trim_ok"
+    );
+
+    net.cut.lock().clear();
+    until("the holder hears the commit", || {
+        log.readable_base() == floor
+    })
+    .await;
+    assert!(too_old(&holder.broker, first).await, "read below the floor");
+    stop(&members).await;
+}

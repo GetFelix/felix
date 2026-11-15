@@ -239,3 +239,21 @@ async fn a_state_read_confirms_leadership_through_the_engine() {
         .await
         .expect_err("the lease lapsed");
 }
+
+/// **A stalled Raft trim is answered as the hybrid answers one**: the
+/// hybrid's `unacknowledged` trim timeout at the offset it was proposed at,
+/// not the quorum timeout its engine reports.
+#[test]
+fn a_raft_trim_that_does_not_commit_in_time_is_the_hybrids_trim_timeout() {
+    let stalled = TrimFailed::Engine(CommitError::TimedOut {
+        what: "publish",
+        timeout: Duration::from_secs(30),
+    });
+    let NotWritten::Refused(raft) = raft_trim_failed(stalled, 7) else {
+        panic!("a timeout is a refusal");
+    };
+    let timed_out = BrokerError::TrimTimedOut { offset: 7 };
+    let hybrid = ClientError::from_broker(&timed_out, timed_out.to_string());
+    assert_eq!(raft.code(), &felix_wire::ErrorCode::Unacknowledged);
+    assert_eq!(raft, hybrid, "the hybrid's answer");
+}

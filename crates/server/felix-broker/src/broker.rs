@@ -499,6 +499,12 @@ impl Broker {
             .load(std::sync::atomic::Ordering::Acquire)
     }
 
+    /// How long a head trim waits for its commit and the replay ring before
+    /// it answers [`BrokerError::TrimTimedOut`].
+    pub fn trim_wait(&self) -> std::time::Duration {
+        self.trim_wait
+    }
+
     #[cfg(test)]
     pub(crate) fn with_trim_wait(mut self, wait: std::time::Duration) -> Self {
         self.trim_wait = wait;

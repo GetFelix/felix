@@ -223,8 +223,10 @@ a writer fenced by a newer trim can tell who trimmed past it.
 
 Answered with `trim_ok` once the trim is committed (on a `Quorum` stream,
 once the committed mark passes it), after which no read is served below the
-floor (on a shard that runs on Raft, by the leader; a follower hides it
-once it hears the commit). A trim with `before` at or below the current floor writes nothing and
+floor (on a shard that runs on Raft, a member that holds the trim waits
+for its own commit to pass it before it answers a read; a follower that
+does not hold it yet can still serve below the floor until it arrives,
+[#2603](https://github.com/GetFelix/felix/issues/2603)). A trim with `before` at or below the current floor writes nothing and
 answers with the floor, but only when its tail matches: a stale no-op is
 refused like any other trim. Refusals:
 
@@ -248,7 +250,8 @@ refused like any other trim. Refusals:
 - No `stream.trim` (or `stream.manage`) on the stream: `forbidden`. The stream
   stays open.
 - The broker stopped waiting for the trim to commit (30 s): `unacknowledged`
-  with `outcome_unknown` and `detail.reason` = `trim_timed_out`.
+  with `outcome_unknown` and `detail.reason` = `trim_timed_out`, on a shard
+  that runs on Raft too.
 
 The refusals that are not `publish_refused` are `publish_error` frames
 carrying the request's `request_id`. Not forwarded: a broker that does not

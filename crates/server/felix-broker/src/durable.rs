@@ -1133,6 +1133,13 @@ impl StreamLog {
         self.log.head_trim()
     }
 
+    /// A Raft log holding a trim its member has not seen committed. Its
+    /// leader may already have answered the trim, so the floor is not yet
+    /// the one readers must get.
+    pub(crate) fn raft_trim_pending(&self) -> bool {
+        self.log.config().raft_log && self.log.trim_pending()
+    }
+
     /// [`BrokerError::CursorTooOld`] for a read from `requested`, below
     /// `oldest`, with the headers of the trim that set the floor when one
     /// did.
