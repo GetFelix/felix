@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794719553316,
+  "lastUpdate": 1794724408179,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73590,6 +73590,72 @@ window.BENCHMARK_DATA = {
             "range": "244.64",
             "unit": "us",
             "extra": "trials: 5\nmedian: 319.00\nmean: 421.20\nstdev: 244.64\ncv: 58.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dd611ee54a65cf591fb25c6fc488750137007ee1",
+          "message": "formal(raft): commit on a written majority on relaxed brokers (model and design) (#2606)\n\n* formal(raft): model committing on a written majority on relaxed roots\n\n* formal(raft): use a flag for the re-form, not a negative start\n\n* docs(raft): propose committing on a written majority on relaxed brokers\n\n* docs(raft): review fixes for the written-majority commit proposal\n\n* formal(raft): register the written-majority power-cut check, run the failover one on a box\n\nFelixRaftWrittenCommitsPowerCut passes (11.4M distinct states, 24 minutes\non a CI runner) and is registered. FelixRaftWrittenCommitsFailoverPowerCut\nruns with Reserve off, a superset of behaviours without a re-form, and\npasses (71.2M distinct states) on a box. What the model does not check\nis #2592.\n\n* formal: review round on the written-majority commit proposal\n\nFollower answers by its own mode and the leader's mode decides whether\nit asks for the written report; mixed strict/relaxed groups are not yet\nchecked (CutRotates is one switch). Code-change rows for start 6, start\n8 and capping a kept directory's saved commit index. TypeOK now types\nkept, reserve, cpFloor and reform (typing only). Cfg headers note that\na power cut only rotates a copy that loses an entry, and that two\nrotations leave FailoverPowerCut's acked checks with nothing to test.\n\n* test(replication): set the conditional-publish field in the dead-peer test\n\n#2589 and #2590 crossed on main: the test #2590 added builds a Command\nwithout the expected field #2589 added, so felix-replication's tests do\nnot compile.",
+          "timestamp": "2026-11-15T06:26:58Z",
+          "tree_id": "0a697a0d18a6f21b77ea9f81e68bb3ed6caa9dd2",
+          "url": "https://github.com/GetFelix/felix/commit/dd611ee54a65cf591fb25c6fc488750137007ee1"
+        },
+        "date": 1794724398586,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 98.20\nstdev: 0.45\ncv: 0.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.20\nstdev: 2.17\ncv: 1.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "330.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 319.80\nstdev: 330.50\ncv: 103.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 135.60\nstdev: 1.34\ncv: 0.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 272,
+            "range": "61.29",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 272.00\nmean: 295.40\nstdev: 61.29\ncv: 20.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 667,
+            "range": "917.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 667.00\nmean: 1071.80\nstdev: 917.82\ncv: 85.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
