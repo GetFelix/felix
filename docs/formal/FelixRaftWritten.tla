@@ -70,6 +70,30 @@
 (*                      is enough.                                         *)
 (*   WrittenCommits  -- the commit index counts written reports too.       *)
 (*                                                                         *)
+(* WrittenCommits is also the proposal for relaxed roots in                *)
+(* docs/per-shard-raft.md ("Proposal: commit on a written majority"):      *)
+(* openraft hears an append is flushed once it is written, so the commit   *)
+(* index, apply and delivery move on a written majority. With it go:       *)
+(*                                                                         *)
+(*   Reserve    -- a copy counts (or reports) an entry only below an index *)
+(*                 it has reserved in a synced file that a rotation keeps. *)
+(*   MaxReforms -- 1 lets the operator re-form a group that lost a         *)
+(*                 majority to power cuts (Reform). The new epoch starts   *)
+(*                 above the longest log any copy kept, padded up to the   *)
+(*                 floor: the last commit index a leader reported to the   *)
+(*                 control plane (ReportFloor), and with Reserve the       *)
+(*                 highest reservation of any copy. FelixRaftReform.tla    *)
+(*                 has the command's steps and the floor's terms; here     *)
+(*                 one term is enough, so every log is a prefix of the     *)
+(*                 leader's and the base is the longest.                   *)
+(*                                                                         *)
+(*   OffsetNeverReused   -- after a re-form, no committed offset holds     *)
+(*                          another record: each is in the base or below   *)
+(*                          where the new epoch starts. A subscriber is    *)
+(*                          given only committed records.                  *)
+(*   NeverLosesCommitted -- a re-form keeps every committed record. A      *)
+(*                          witness under WrittenCommits.                  *)
+(*                                                                         *)
 (* Abstracted: votes are durable and followers do not learn the commit     *)
 (* index (FelixRaft.tla has the adapter's rules and what followers apply), *)
 (* snapshots, the subscriber and the lease. One membership change: the     *)
@@ -92,7 +116,9 @@ CONSTANTS
     OtherTermCounts,
     JointOneHalf,
     WrittenCommits,
-    CutRotates
+    CutRotates,
+    Reserve,
+    MaxReforms
 
 VARIABLES
     role,       \* "follower", "candidate" or "leader"
@@ -109,11 +135,16 @@ VARIABLES
     acked,      \* history: [val, by, joint] for each record acknowledged
     lost,       \* history: the record values a power cut took from each broker
     used,       \* budgets spent: writes, changes, crashes, cuts
-    gone        \* brokers whose copy a power cut rotated (CutRotates)
+    gone,       \* brokers whose copy a power cut rotated (CutRotates)
+    kept,       \* what a rotated copy kept, read by a re-form
+    reserve,    \* the index each copy reserved, synced; a rotation keeps it
+    cpFloor,    \* the highest commit index a leader reported to the control plane
+    reform      \* the re-form, once: the base and where the new epoch starts
 
 election == <<role, term, votedFor, granted, elected>>
 raft == <<log, synced, commitIdx, match, committed>>
-vars == <<election, raft, wrote, acked, lost, used, gone>>
+floor == <<kept, reserve, cpFloor, reform>>
+vars == <<election, raft, wrote, acked, lost, used, gone, floor>>
 
 \* Only brokers that every named set treats alike permute.
 Symm == Permutations(InitVoters \cap NewVoters)
@@ -128,6 +159,7 @@ Blank(t) == [term |-> t, kind |-> "blank", val |-> 0, cfg |-> NoCfg]
 Record(t, v) == [term |-> t, kind |-> "record", val |-> v, cfg |-> NoCfg]
 Member(t, c) == [term |-> t, kind |-> "member", val |-> 0, cfg |-> c]
 NoId == [term |-> 0, idx |-> 0]
+NoReform == [base |-> <<>>, start |-> -1]
 
 LastIdx(s) == Len(log[s])
 LastTerm(s) == IF log[s] = <<>> THEN 0 ELSE log[s][Len(log[s])].term
@@ -157,7 +189,10 @@ Common(i, j) ==
 Reported(i, j, n) ==
     /\ wrote[i][j].idx >= n
     /\ OtherTermCounts \/ wrote[i][j].term = term[i]
-Wrote(i, n) == {i} \cup {j \in Servers \ {i} : Reported(i, j, n)}
+\* With Reserve, a leader counts its own unsynced entry only below its
+\* reservation.
+SelfWrote(i, n) == ~Reserve \/ reserve[i] >= n
+Wrote(i, n) == (IF SelfWrote(i, n) THEN {i} ELSE {}) \cup {j \in Servers \ {i} : Reported(i, j, n)}
 
 WrittenHalf(Q, V, c) ==
     2 * Cardinality(Q \cap (IF LearnerCounts THEN V \cup c.learners ELSE V)) > Cardinality(V)
@@ -182,8 +217,12 @@ Init ==
     /\ committed = <<>>
     /\ acked = {}
     /\ lost = [s \in Servers |-> {}]
-    /\ used = [writes |-> 0, changes |-> 0, crashes |-> 0, cuts |-> 0]
+    /\ used = [writes |-> 0, changes |-> 0, crashes |-> 0, cuts |-> 0, reforms |-> 0]
     /\ gone = {}
+    /\ kept = [s \in Servers |-> <<>>]
+    /\ reserve = [s \in Servers |-> 0]
+    /\ cpFloor = 0
+    /\ reform = NoReform
 
 \* Only a voter of the configuration it holds campaigns.
 Campaign(c) ==
@@ -195,7 +234,7 @@ Campaign(c) ==
     /\ votedFor' = [votedFor EXCEPT ![c] = c]
     /\ role' = [role EXCEPT ![c] = "candidate"]
     /\ granted' = [granted EXCEPT ![c] = {c}]
-    /\ UNCHANGED <<elected, raft, wrote, acked, lost, gone, used>>
+    /\ UNCHANGED <<elected, raft, wrote, acked, lost, gone, used, floor>>
 
 \* A voter compares the candidate's log with its own, unsynced entries
 \* included.
@@ -210,7 +249,7 @@ GrantVote(s, c) ==
     /\ votedFor' = [votedFor EXCEPT ![s] = c]
     /\ role' = [role EXCEPT ![s] = "follower"]
     /\ granted' = [granted EXCEPT ![c] = @ \cup {s}, ![s] = {}]
-    /\ UNCHANGED <<elected, raft, wrote, acked, lost, gone, used>>
+    /\ UNCHANGED <<elected, raft, wrote, acked, lost, gone, used, floor>>
 
 BecomeLeader(c) ==
     /\ role[c] = "candidate"
@@ -219,14 +258,14 @@ BecomeLeader(c) ==
     /\ elected' = elected \cup {<<term[c], c>>}
     /\ log' = [log EXCEPT ![c] = Append(@, Blank(term[c]))]
     /\ match' = [match EXCEPT ![c] = [t \in Servers |-> 0]]
-    /\ UNCHANGED <<term, votedFor, granted, synced, commitIdx, committed, wrote, acked, lost, gone, used>>
+    /\ UNCHANGED <<term, votedFor, granted, synced, commitIdx, committed, wrote, acked, lost, gone, used, floor>>
 
 AppendRecord(i) ==
     /\ role[i] = "leader"
     /\ used.writes < MaxWrites
     /\ log' = [log EXCEPT ![i] = Append(@, Record(term[i], used.writes + 1))]
     /\ used' = [used EXCEPT !.writes = @ + 1]
-    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone>>
+    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone, floor>>
 
 \* The one change: into the joint configuration, once the previous
 \* membership is committed.
@@ -239,7 +278,7 @@ EnterJoint(i) ==
     /\ log' = [log EXCEPT ![i] = Append(@, Member(term[i],
             [old |-> Cfg(i).new, new |-> NewVoters, learners |-> Cfg(i).learners \ NewVoters]))]
     /\ used' = [used EXCEPT !.changes = @ + 1]
-    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone>>
+    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone, floor>>
 
 \* openraft leaves the joint configuration once its entry is committed. A
 \* new leader that finds one does the same.
@@ -249,7 +288,7 @@ LeaveJoint(i) ==
     /\ commitIdx[i] >= LastMember(i)
     /\ log' = [log EXCEPT ![i] = Append(@, Member(term[i],
             [old |-> Cfg(i).new, new |-> Cfg(i).new, learners |-> Cfg(i).learners]))]
-    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone, used>>
+    /\ UNCHANGED <<election, synced, commitIdx, match, committed, wrote, acked, lost, gone, used, floor>>
 
 \* AppendEntries with one entry after the highest index the two logs agree
 \* on, to a voter or a learner of the leader's configuration. A follower
@@ -268,12 +307,12 @@ Replicate(i, j) ==
     /\ votedFor' = [votedFor EXCEPT ![j] = IF term[j] < term[i] THEN i ELSE @]
     /\ role' = [role EXCEPT ![j] = "follower"]
     /\ granted' = [granted EXCEPT ![j] = {}]
-    /\ UNCHANGED <<elected, commitIdx, match, committed, wrote, acked, lost, gone, used>>
+    /\ UNCHANGED <<elected, commitIdx, match, committed, wrote, acked, lost, gone, used, floor>>
 
 Flush(s) ==
     /\ synced[s] < LastIdx(s)
     /\ synced' = [synced EXCEPT ![s] = LastIdx(s)]
-    /\ UNCHANGED <<election, log, commitIdx, match, committed, wrote, acked, lost, gone, used>>
+    /\ UNCHANGED <<election, log, commitIdx, match, committed, wrote, acked, lost, gone, used, floor>>
 
 \* The follower's answer to an append: how far its log matches the
 \* leader's and is fsynced.
@@ -285,7 +324,7 @@ Ack(i, j) ==
     /\ LET p == Min(Common(i, j), synced[j])
        IN /\ p > match[i][j]
           /\ match' = [match EXCEPT ![i][j] = p]
-    /\ UNCHANGED <<election, log, synced, commitIdx, committed, wrote, acked, lost, gone, used>>
+    /\ UNCHANGED <<election, log, synced, commitIdx, committed, wrote, acked, lost, gone, used, floor>>
 
 \* The written report: the id of the sender's last entry, fsynced or not.
 \* Nothing ties it to the sender's vote or to the leader's term.
@@ -293,10 +332,11 @@ Report(i, j) ==
     /\ i # j
     /\ j \notin gone
     /\ role[i] = "leader"
+    /\ ~Reserve \/ reserve[j] >= LastIdx(j)
     /\ LET id == [term |-> LastTerm(j), idx |-> LastIdx(j)]
        IN /\ id # wrote[i][j]
           /\ wrote' = [wrote EXCEPT ![i][j] = id]
-    /\ UNCHANGED <<election, raft, acked, lost, gone, used>>
+    /\ UNCHANGED <<election, raft, acked, lost, gone, used, floor>>
 
 \* The early acknowledgement: a record of the leader's own term that a
 \* majority of the voters has written.
@@ -309,12 +349,12 @@ AckWritten(i) ==
            /\ e.val \notin AckedVals
            /\ WrittenQuorum(Wrote(i, n), Cfg(i))
            /\ acked' = acked \cup {[val |-> e.val, by |-> "written", joint |-> Joint(Cfg(i))]}
-    /\ UNCHANGED <<election, raft, wrote, lost, gone, used>>
+    /\ UNCHANGED <<election, raft, wrote, lost, gone, used, floor>>
 
 \* The commit index counts fsynced copies only, the leader's own included.
 Agree(i, n) ==
     {j \in Servers :
-        IF j = i THEN synced[i] >= n \/ WrittenCommits
+        IF j = i THEN synced[i] >= n \/ (WrittenCommits /\ SelfWrote(i, n))
         ELSE match[i][j] >= n \/ (WrittenCommits /\ Reported(i, j, n))}
 
 \* An entry of the leader's own term on a majority's disks commits it and
@@ -336,7 +376,7 @@ AdvanceCommit(i) ==
                                         [e |-> log[i][have + k], by |-> term[i]]]
                 /\ acked' = acked \cup
                     {[val |-> v, by |-> "commit", joint |-> Joint(Cfg(i))] : v \in new \ AckedVals}
-    /\ UNCHANGED <<election, log, synced, match, wrote, lost, gone, used>>
+    /\ UNCHANGED <<election, log, synced, match, wrote, lost, gone, used, floor>>
 
 Forget(s) ==
     /\ role' = [role EXCEPT ![s] = "follower"]
@@ -349,7 +389,7 @@ Crash(s) ==
     /\ used.crashes < MaxCrashes
     /\ Forget(s)
     /\ used' = [used EXCEPT !.crashes = @ + 1]
-    /\ UNCHANGED <<term, votedFor, elected, log, synced, commitIdx, committed, acked, lost, gone>>
+    /\ UNCHANGED <<term, votedFor, elected, log, synced, commitIdx, committed, acked, lost, gone, floor>>
 
 \* The machine loses power and takes some of the unsynced tail with it.
 \* With CutRotates the broker comes back under a new storage id, so its copy
@@ -366,6 +406,8 @@ PowerCut(s) ==
     /\ \E n \in {x \in synced[s]..LastIdx(s) : x < LastIdx(s)} :
         /\ log' = [log EXCEPT ![s] = IF CutRotates THEN <<>> ELSE SubSeq(@, 1, n)]
         /\ commitIdx' = [commitIdx EXCEPT ![s] = IF CutRotates THEN 0 ELSE Min(@, n)]
+        /\ kept' = IF CutRotates /\ MaxReforms > 0
+                   THEN [kept EXCEPT ![s] = SubSeq(log[s], 1, n)] ELSE kept
         /\ lost' = [lost EXCEPT ![s] = @ \cup
                 {log[s][k].val : k \in {x \in (n + 1)..LastIdx(s) : log[s][x].kind = "record"}}]
     /\ synced' = [synced EXCEPT ![s] = IF CutRotates THEN 0 ELSE @]
@@ -373,17 +415,63 @@ PowerCut(s) ==
     /\ gone' = IF CutRotates THEN gone \cup {s} ELSE gone
     /\ Forget(s)
     /\ used' = [used EXCEPT !.cuts = @ + 1]
-    /\ UNCHANGED <<term, elected, committed, acked>>
+    /\ UNCHANGED <<term, elected, committed, acked, reserve, cpFloor, reform>>
 
+\* With the logs as they stand, a later term could elect this broker: it
+\* is a voter of the configuration it holds, and the brokers whose logs are
+\* not ahead of its own make a majority of each voter set. A broker a power
+\* cut rotated neither stands nor votes.
+Electable(s) ==
+    /\ s \notin gone
+    /\ s \in Voters(Cfg(s))
+    /\ Quorum({t \in Servers \ gone : UpToDate(s, t)}, Cfg(s))
+
+\* A copy reserves up to its last entry in a synced file. The broker would
+\* reserve far ahead, in steps; a larger reservation only widens the gap a
+\* re-form leaves.
+ReserveTo(s) ==
+    /\ Reserve
+    /\ s \notin gone
+    /\ reserve[s] < LastIdx(s)
+    /\ reserve' = [reserve EXCEPT ![s] = LastIdx(s)]
+    /\ UNCHANGED <<election, raft, wrote, acked, lost, used, gone, kept, cpFloor, reform>>
+
+\* The leader's report of its commit index, which the control plane keeps
+\* as the floor. It trails the commit by as long as the report takes.
+ReportFloor(i) ==
+    /\ MaxReforms > 0
+    /\ role[i] = "leader"
+    /\ commitIdx[i] > cpFloor
+    /\ cpFloor' = commitIdx[i]
+    /\ UNCHANGED <<election, raft, wrote, acked, lost, used, gone, kept, reserve, reform>>
+
+\* What the re-form reads: the logs of copies still in place, and what each
+\* rotated copy kept.
+Copies == {log[s] : s \in Servers \ gone} \cup {kept[s] : s \in gone}
+ReformFloor == Max(cpFloor, IF Reserve THEN MaxOf({reserve[s] : s \in Servers}) ELSE 0)
+
+\* The operator's re-form, once no broker leads and none can be elected.
+Reform ==
+    /\ used.reforms < MaxReforms
+    /\ \A s \in Servers : role[s] # "leader" /\ ~Electable(s)
+    /\ LET base == CHOOSE l \in Copies : \A m \in Copies : Len(m) <= Len(l)
+       IN reform' = [base |-> base, start |-> Max(Len(base), ReformFloor)]
+    /\ used' = [used EXCEPT !.reforms = @ + 1]
+    /\ UNCHANGED <<election, raft, wrote, acked, lost, gone, kept, reserve, cpFloor>>
+
+\* After the re-form the old epoch is over, and the model stops there.
 Next ==
-    \/ \E s \in Servers :
-        \/ Campaign(s) \/ BecomeLeader(s)
-        \/ AppendRecord(s) \/ EnterJoint(s) \/ LeaveJoint(s)
-        \/ Flush(s) \/ AckWritten(s) \/ AdvanceCommit(s)
-        \/ Crash(s) \/ PowerCut(s)
-    \/ \E i, j \in Servers :
-        \/ GrantVote(i, j)
-        \/ Replicate(i, j) \/ Ack(i, j) \/ Report(i, j)
+    \/ Reform
+    \/ /\ reform = NoReform
+       /\ \/ \E s \in Servers :
+                \/ Campaign(s) \/ BecomeLeader(s)
+                \/ AppendRecord(s) \/ EnterJoint(s) \/ LeaveJoint(s)
+                \/ Flush(s) \/ AckWritten(s) \/ AdvanceCommit(s)
+                \/ Crash(s) \/ PowerCut(s)
+                \/ ReserveTo(s) \/ ReportFloor(s)
+          \/ \E i, j \in Servers :
+                \/ GrantVote(i, j)
+                \/ Replicate(i, j) \/ Ack(i, j) \/ Report(i, j)
 
 Spec == Init /\ [][Next]_vars
 
@@ -421,15 +509,6 @@ IsCommitted(v) ==
 \* No power cut took the record from a copy.
 Untouched(v) == \A s \in Servers : v \notin lost[s]
 
-\* With the logs as they stand, a later term could elect this broker: it
-\* is a voter of the configuration it holds, and the brokers whose logs are
-\* not ahead of its own make a majority of each voter set. A broker a power
-\* cut rotated neither stands nor votes.
-Electable(s) ==
-    /\ s \notin gone
-    /\ s \in Voters(Cfg(s))
-    /\ Quorum({t \in Servers \ gone : UpToDate(s, t)}, Cfg(s))
-
 CommittedHeld ==
     \A s \in Servers : Electable(s) =>
         \A i \in 1..Len(committed) : i <= LastIdx(s) /\ log[s][i] = committed[i].e
@@ -440,6 +519,14 @@ AckedHeld ==
 
 AckedNeverLost ==
     \A s \in Servers : Electable(s) => \A v \in AckedVals : Holds(s, v)
+
+\* A committed offset after a re-form is the same record in the base, or a
+\* gap below where the new epoch starts. Never another record.
+OffsetNeverReused ==
+    reform # NoReform =>
+        \A k \in 1..Len(committed) :
+            IF k <= Len(reform.base) THEN reform.base[k] = committed[k].e
+            ELSE k <= reform.start
 
 ----------------------------------------------------------------------------
 \* Witnesses. Each says something never happens, and TLC must find it does.
@@ -457,5 +544,12 @@ NeverCommitsAfterFailover ==
         \E i \in 1..Len(committed) :
             /\ committed[i].e.kind = "record" /\ committed[i].e.val = a.val
             /\ committed[i].by > committed[i].e.term
+
+
+\* A re-form keeps every committed record. Holds when the commit counts
+\* fsynced copies. With WrittenCommits a power cut of a majority loses a
+\* committed, delivered record, and TLC must find it.
+NeverLosesCommitted ==
+    reform # NoReform => Len(committed) <= Len(reform.base)
 
 =============================================================================
