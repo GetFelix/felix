@@ -2954,11 +2954,15 @@ costs an offset: the leader's log stores a blank there, and the answer is
 The floor comes from the log on every member. A Raft log applies a trim
 record's floor once the record is below its commit offset, and rebuilds it
 at open from the trim records and the `head` file, as the hybrid does
-(`docs/durable-storage.md`, "Conditional head trim"). So a follower, a new
-leader and a restarted member hide the same records. The difference from
-the hybrid is deletion: a Raft log never deletes a segment below a floor,
-because only openraft's purge may move a Raft log's start. The records stay
-on disk, unreadable, until a purge passes them. No snapshot carries a
+(`docs/durable-storage.md`, "Conditional head trim"). So once a member's
+commit passes the trim it hides the same records as every other member.
+Until then it does not: a follower that has not heard the commit yet, or a
+member restarted with its saved commit offset behind the trim, can still
+serve records below the floor after the leader answered `trim_ok`, for
+about one commit round. The other difference from the hybrid is deletion:
+a Raft log never deletes a segment below a floor, because only openraft's
+purge may move a Raft log's start, and stream shards are never purged
+today. So a trim on Raft hides records but frees no disk. No snapshot carries a
 floor: a stream shard's snapshot holds no records, and the trim's own index
 is at or below any snapshot that covers it, so the log above the snapshot
 is already past the floor.

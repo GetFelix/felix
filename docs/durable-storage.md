@@ -1950,8 +1950,8 @@ trim record is cut like any other torn record.
 A Raft log (`LogConfig::raft_log`) applies a trim's floor only once the trim
 record is below its commit offset, since an entry above it may still be cut
 by a later leader, and it deletes no segment below a floor: only openraft's
-purge may move a Raft log's start. The records stay on disk, unreadable,
-until a purge passes them. See `docs/per-shard-raft.md`, "Head trims".
+purge may move a Raft log's start, and stream shards are never purged
+today. The records stay on disk, unreadable. See `docs/per-shard-raft.md`, "Head trims".
 
 > `crates/server/felix-storage/src/raft_log/tests.rs`,
 > `a_trim_entry_applies_once_it_is_committed`;

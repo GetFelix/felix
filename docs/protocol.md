@@ -223,7 +223,8 @@ a writer fenced by a newer trim can tell who trimmed past it.
 
 Answered with `trim_ok` once the trim is committed (on a `Quorum` stream,
 once the committed mark passes it), after which no read is served below the
-floor. A trim with `before` at or below the current floor writes nothing and
+floor (on a shard that runs on Raft, by the leader; a follower hides it
+once it hears the commit). A trim with `before` at or below the current floor writes nothing and
 answers with the floor, but only when its tail matches: a stale no-op is
 refused like any other trim. Refusals:
 
