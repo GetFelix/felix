@@ -2702,11 +2702,13 @@ and nothing writes those all or none:
   written, not only its first (#2472), and the re-send could not be matched
   to them.
 
-So the leader refuses a new batch of several records before it takes the
-producer's turn or writes anything: `invalid_request`, not retryable, "a
-stream on Raft does not take idempotent batches of more than one record".
-The sequence is not used up, and the producer can send the records as
-batches of one.
+So the leader refuses a new batch of several records before it writes
+anything: `invalid_request`, not retryable, "a stream on Raft does not take
+idempotent batches of more than one record". The sequence is not used up,
+and the producer can send the records as batches of one. The refusal comes
+at the producer's turn, after the look at the log. Only the log can tell a new batch
+from a re-send of one it holds whole or in part, and a re-send is still
+answered, as below.
 
 The first of the two cases is already handled underneath the refusal, so
 that lifting it later is a small step (#2524). Every record of a batch is
@@ -2811,10 +2813,16 @@ refused.
 > `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
 > `queued_idempotent_publishes_to_a_raft_shard_are_written_once`,
-> `a_batch_waiting_for_its_producers_turn_holds_up_only_its_own_connection` and
-> `an_idempotent_batch_of_several_records_is_refused_on_raft`;
+> `a_batch_waiting_for_its_producers_turn_holds_up_only_its_own_connection`,
+> `an_idempotent_batch_of_several_records_is_refused_on_raft`,
+> `a_batch_of_several_records_is_checked_at_its_producers_turn`,
+> `a_resent_cut_batch_is_finished_and_answered_from_its_start`,
+> `a_resent_batch_the_log_holds_whole_is_answered_as_a_duplicate` and
+> `a_resent_forgotten_batch_is_refused_as_expired`;
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
-> `a_forward_to_a_raft_leader_commits_through_its_group`.
+> `a_forward_to_a_raft_leader_commits_through_its_group`,
+> `a_forwarded_resend_of_a_cut_batch_is_finished_on_the_owner` and
+> `a_forwarded_resend_of_a_forgotten_batch_is_refused_as_expired`.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on

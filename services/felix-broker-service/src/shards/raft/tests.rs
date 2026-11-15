@@ -958,6 +958,48 @@ pub(crate) fn engine(shards: &Arc<RaftShards>) -> crate::shards::routing::Stream
     engine
 }
 
+/// Write `payloads` to `shard`'s group as records `position..` of
+/// `producer_id`'s batch `sequence`, `len` records long, with no check
+/// against the log: what a leader that stops partway leaves. Returns the
+/// first record's offset.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_batch(
+    shards: &RaftShards,
+    shard: &ShardKey,
+    producer_id: u64,
+    sequence: u64,
+    position: u32,
+    len: u32,
+    payloads: &[&'static [u8]],
+) -> u64 {
+    let records = payloads
+        .iter()
+        .zip(position..)
+        .map(|(payload, at)| {
+            let mark = (producer_id, sequence, at, len);
+            (bytes::Bytes::from_static(payload), Some(mark))
+        })
+        .collect();
+    let written = shards.runtime.write_unchecked(shard, records).await;
+    written.expect("written")[0]
+}
+
+/// Leave `producer_id`'s batch `sequence` cut and then forgotten: its
+/// first record, then the first records of one more cut batch than a log
+/// keeps, each another producer's, so the oldest cut is kept by name only.
+pub(crate) async fn forget_cut(
+    shards: &RaftShards,
+    shard: &ShardKey,
+    producer_id: u64,
+    sequence: u64,
+) {
+    write_batch(shards, shard, producer_id, sequence, 0, 2, &[b"cut"]).await;
+    // The log keeps 4096 cut batches, and the last of these is still open.
+    let others = (1..=4097u64)
+        .map(|other| write_batch(shards, shard, producer_id + other, 0, 0, 2, &[b"other"]));
+    futures::future::join_all(others).await;
+}
+
 /// Routes that ask `shards` first and know every broker's address, with a
 /// broker lease that was never granted: a Raft shard must not need it.
 pub(crate) fn ingress(shards: &Arc<RaftShards>) -> Arc<crate::shards::routing::IngressRouter> {
@@ -1348,8 +1390,8 @@ impl Member {
             Duration::from_secs(10),
         );
         let proposed = proposed.expect("a Raft shard").expect("proposed");
-        let first = proposed.complete().await.expect("committed");
-        first.expect("an offset")
+        let offsets = proposed.complete().await.expect("committed");
+        offsets.expect("an offset").0
     }
 }
 
