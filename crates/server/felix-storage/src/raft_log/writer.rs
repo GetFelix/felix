@@ -148,11 +148,16 @@ where
         let record_header = record_header_len(GENERATION_VERSION);
         // Only an append larger than a segment fills `earlier`.
         let mut earlier: Vec<Batch> = Vec::new();
-        let mut batch = Batch::default();
+        let entries = entries.into_iter();
+        let expected = entries.size_hint().0;
+        let mut batch = Batch {
+            records: Vec::with_capacity(expected),
+            ..Batch::default()
+        };
         let mut next = None;
         let mut last = None;
         // Proposers waiting to hear where their entry was written.
-        let mut tokens = Vec::new();
+        let mut tokens = Vec::with_capacity(expected);
         for entry in entries {
             let index = entry.index();
             let point = LogPoint {
@@ -232,11 +237,11 @@ where
         // Read before the write: see `TailCache`.
         let cuts = log.cuts();
         let mut pending = None;
-        for batch in earlier.into_iter().chain([batch]) {
-            let appended = log
-                .append_pending_at(
+        for mut batch in earlier.into_iter().chain([batch]) {
+            let (appended, records) = log
+                .append_pending_at_keeping(
                     batch.first,
-                    &batch.records,
+                    std::mem::take(&mut batch.records),
                     WrittenBy::Writers(batch.writers.clone()),
                 )
                 .await
@@ -248,6 +253,7 @@ where
                         batch.first
                     ))
                 })?;
+            batch.records = records;
             shared.tail.extend(cuts, batch.into_log_records());
             pending = Some(appended);
         }

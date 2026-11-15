@@ -57,7 +57,7 @@ async fn write(log: &DiskLog, payloads: &[&str]) {
     }]);
     let records: Vec<_> = payloads.iter().map(|p| record(p)).collect();
     let pending = log
-        .append_pending_at(tail, &records, writers)
+        .append_pending_at(tail, records, writers)
         .await
         .expect("append")
         .expect("at the tail");
@@ -651,7 +651,7 @@ async fn store_unchecked(log: &DiskLog, seal: &LogRecord) {
         headers: None,
     };
     let pending = log
-        .append_pending_at(seal.offset, std::slice::from_ref(&sent), writers)
+        .append_pending_at(seal.offset, vec![sent], writers)
         .await
         .expect("append")
         .expect("at the tail");

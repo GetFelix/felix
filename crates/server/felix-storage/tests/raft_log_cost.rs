@@ -1,5 +1,6 @@
-//! A measurement, not a test: what the Raft log adapter adds to an append
-//! and to a replication read. Ignored by default.
+//! What the Raft log adapter adds to an append and to a replication read.
+//! The timed measurements are ignored by default; the allocation bound on a
+//! batched append is not.
 //!
 //! ```text
 //! cargo test -p felix-storage --release --test raft_log_cost -- --ignored --nocapture
@@ -15,7 +16,9 @@ use std::time::Instant;
 
 use bytes::Bytes;
 use felix_storage::DiskLog;
-use felix_storage::log::{AppendRecord, FsyncMode, LogConfig, LogRecord, RecordMark};
+use felix_storage::log::{
+    AppendRecord, Epoch, FsyncMode, LogConfig, LogRecord, RecordMark, WrittenBy,
+};
 use felix_storage::raft_log::{EntryCodec, RaftLog};
 use openraft::entry::{Entry, EntryPayload, RaftEntry};
 use openraft::storage::{IOFlushed, RaftLogReader, RaftLogStorage};
@@ -26,11 +29,14 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 struct Counting;
 
 static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 
-// SAFETY: every call goes to the system allocator unchanged.
+// SAFETY: every call goes to the system allocator unchanged. A realloc goes
+// through `alloc`, so a growing Vec counts once per growth.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATED_BYTES.fetch_add(layout.size() as u64, Ordering::Relaxed);
         unsafe { System.alloc(layout) }
     }
 
@@ -219,4 +225,106 @@ async fn read_the_newest_entries() {
         assert_eq!(entries.len() as u64, PER_READ);
     }
     report("read of 64 entries", READS, started, allocations);
+}
+
+/// Allocations and bytes allocated per record over `records` records since
+/// `(allocations, bytes)` was read.
+fn per_record(since: (u64, u64), records: u64) -> (f64, f64) {
+    let allocations = ALLOCATIONS.load(Ordering::Relaxed) - since.0;
+    let bytes = ALLOCATED_BYTES.load(Ordering::Relaxed) - since.1;
+    (
+        allocations as f64 / records as f64,
+        bytes as f64 / records as f64,
+    )
+}
+
+fn counters() -> (u64, u64) {
+    (
+        ALLOCATIONS.load(Ordering::Relaxed),
+        ALLOCATED_BYTES.load(Ordering::Relaxed),
+    )
+}
+
+/// What a batched append costs in allocations per record, through a Raft
+/// log and through a plain log storing a leader's batch at its offsets, as
+/// a hybrid follower does. Both run in this one test so no other test's
+/// allocations land in the counts.
+///
+/// The bounds hold the per-record work to what the record itself needs: the
+/// log copies no record list per append, and a batch's vectors are sized
+/// once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_batched_append_allocates_little_per_record() {
+    const PER_APPEND: u64 = 64;
+    const WARM: u64 = 8;
+    const APPENDS: u64 = 200;
+    let payload = Bytes::from(vec![7u8; PAYLOAD_BYTES]);
+    let records = APPENDS * PER_APPEND;
+
+    let dir = tempfile::tempdir().expect("dir");
+    let mut raft = open(&dir, FsyncMode::OnCommit);
+    let mut since = counters();
+    for append in 0..WARM + APPENDS {
+        if append == WARM {
+            since = counters();
+        }
+        let first = append * PER_APPEND;
+        let entries: Vec<_> = (first..first + PER_APPEND)
+            .map(|i| entry(i, &payload))
+            .collect();
+        let (tx, rx) = Types::oneshot();
+        raft.append(entries, IOFlushed::signal(tx))
+            .await
+            .expect("append");
+        rx.await.expect("callback").expect("flush");
+    }
+    let (raft_allocations, raft_bytes) = per_record(since, records);
+
+    let dir = tempfile::tempdir().expect("dir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..LogConfig::default()
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/plain/0", config).expect("open");
+    let mut since = counters();
+    for append in 0..WARM + APPENDS {
+        if append == WARM {
+            since = counters();
+        }
+        let first = append * PER_APPEND;
+        let batch: Vec<_> = (0..PER_APPEND)
+            .map(|_| AppendRecord {
+                payload: payload.clone(),
+                timestamp_micros: 0,
+                mark: RecordMark::None,
+                publisher: None,
+                headers: None,
+            })
+            .collect();
+        let writers = WrittenBy::Writers(vec![Epoch {
+            generation: 1,
+            start_offset: first,
+        }]);
+        log.append_pending_at(first, batch, writers)
+            .await
+            .expect("append")
+            .expect("at the tail");
+    }
+    let (copy_allocations, copy_bytes) = per_record(since, records);
+
+    println!(
+        "raft append: {raft_allocations:.2} allocations, {raft_bytes:.0} bytes per record; \
+         copy append: {copy_allocations:.2} allocations, {copy_bytes:.0} bytes per record"
+    );
+    // Measured at 0.23 and 337 for the Raft log, 0.09 and 160 for the copy.
+    // A copy of the record list per append adds about 110 bytes a record,
+    // and a record vector grown by doubling about 80.
+    assert!(
+        raft_allocations < 0.27 && raft_bytes < 400.0,
+        "a Raft append allocates {raft_allocations:.2} times and {raft_bytes:.0} bytes a record"
+    );
+    assert!(
+        copy_allocations < 0.12 && copy_bytes < 220.0,
+        "a copy append allocates {copy_allocations:.2} times and {copy_bytes:.0} bytes a record"
+    );
 }

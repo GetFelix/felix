@@ -563,7 +563,7 @@ impl StreamLog {
             }
         }
         self.log
-            .append_pending_at(first_offset, &records, writers)
+            .append_pending_at(first_offset, records, writers)
             .await
             .map_err(BrokerError::from)
     }
