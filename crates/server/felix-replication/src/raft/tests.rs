@@ -1959,6 +1959,7 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             payload: Bytes::from_static(b"while b and c are down"),
             producer: None,
             written: None,
+            expected: None,
         })
         .await
     });
