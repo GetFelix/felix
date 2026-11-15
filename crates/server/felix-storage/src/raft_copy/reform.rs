@@ -6,11 +6,14 @@
 //! way an open would read them, and nothing is written. See
 //! `docs/per-shard-raft.md`, "Keeping the re-form floor".
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use super::epoch_file::{self, EpochFile};
 use super::judge::{KeptCopy, highest_reserved, kept_copies};
-use crate::raft_log::held;
+use super::rotated_by::{self, RotatedBy};
+use crate::raft_log::{LogPoint, held, reserved};
 
 /// One kept copy as a re-form reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,4 +93,133 @@ pub fn first_free_index(dir: &Path, base_last: Option<u64>, floor: Option<u64>) 
             .checked_add(1)
             .ok_or_else(|| io::Error::other("every index is reserved"))
     })
+}
+
+/// One copy of a shard as a re-form plan reads it: the current copy or a
+/// kept one, read without opening. Every file it reads that does not decode
+/// fails the read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyRead {
+    pub path: PathBuf,
+    /// Its copy id, if it has one.
+    pub copy: Option<u64>,
+    /// Its `raft-epoch`, `None` at epoch 0.
+    pub epoch: Option<EpochFile>,
+    /// Its last log id as a term and an index: the last entry, or the purged
+    /// id if that is higher. The epoch is derived by the plan.
+    pub last: Option<LogPoint>,
+    /// Its saved commit's last index, cut as an open cuts it ([`KeptLog`]).
+    pub committed: Option<u64>,
+    /// The term of the vote it saved, `None` when it never voted.
+    pub vote: Option<u64>,
+    /// Its `raft-reserved`.
+    pub reserved: Option<u64>,
+    /// Why it was rotated; `None` for the current copy.
+    pub rotated_by: Option<RotatedBy>,
+    /// The term of the entry at each index the plan asked about, `None`
+    /// where it holds none or the entry is purged.
+    pub terms: BTreeMap<u64, Option<u64>>,
+}
+
+/// A broker's copies of one shard: the current one and every kept one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokerCopies {
+    pub current: CopyRead,
+    pub kept: Vec<CopyRead>,
+}
+
+/// Read the current copy in `dir` and every kept copy beside it, with the
+/// term of each at `probes`.
+pub fn read_copies(
+    dir: &Path,
+    index_spacing_bytes: u64,
+    probes: &BTreeSet<u64>,
+) -> io::Result<BrokerCopies> {
+    let mut current = read_copy(dir, index_spacing_bytes, probes)?;
+    current.copy = super::copy_file::load(dir)?.map(|found| found.copy);
+    let kept = kept_copies(dir)?
+        .into_iter()
+        .map(|KeptCopy { path, copy }| {
+            let mut read = read_copy(&path, index_spacing_bytes, probes)?;
+            read.copy = copy;
+            read.rotated_by = Some(rotated_by::load(&path)?);
+            Ok(read)
+        })
+        .collect::<io::Result<_>>()?;
+    Ok(BrokerCopies { current, kept })
+}
+
+/// [`CopyRead`] for one directory, with its copy id and rotation reason
+/// left `None`. A missing directory reads as an empty copy.
+pub fn read_copy(
+    path: &Path,
+    index_spacing_bytes: u64,
+    probes: &BTreeSet<u64>,
+) -> io::Result<CopyRead> {
+    let label = path.display().to_string();
+    let named = |err: io::Error| io::Error::new(err.kind(), format!("{label}: {err}"));
+    if !crate::fs::try_exists(path)? {
+        return Ok(CopyRead {
+            path: path.to_path_buf(),
+            copy: None,
+            epoch: None,
+            last: None,
+            committed: None,
+            vote: None,
+            reserved: None,
+            rotated_by: None,
+            terms: probes.iter().map(|index| (*index, None)).collect(),
+        });
+    }
+    let kept = read_kept(path, index_spacing_bytes)?;
+    let held = held::read(path, &label, index_spacing_bytes)?;
+    let purged = crate::raft_log::purged_point(path).map_err(named)?;
+    let last = match held.last_record {
+        Some((index, generation)) if purged.is_none_or(|purged| index > purged.index) => {
+            Some(LogPoint {
+                index,
+                term: term_of(generation, index, &label)?,
+            })
+        }
+        _ => purged,
+    };
+    let vote = crate::disk_log::saved_vote_generation(path)
+        .map_err(io::Error::other)?
+        .checked_sub(1);
+    let mut terms = BTreeMap::new();
+    for &index in probes {
+        let term = match purged {
+            Some(purged) if index == purged.index => Some(purged.term),
+            Some(purged) if index < purged.index => None,
+            _ => match held::generation_at(path, &label, index_spacing_bytes, index)? {
+                Some(generation) => Some(term_of(generation, index, &label)?),
+                None => None,
+            },
+        };
+        terms.insert(index, term);
+    }
+    Ok(CopyRead {
+        path: path.to_path_buf(),
+        copy: None,
+        epoch: epoch_file::load(path)?,
+        last,
+        committed: kept.committed,
+        vote,
+        reserved: reserved::load(path)?,
+        rotated_by: None,
+        terms,
+    })
+}
+
+/// A record's term; one with no generation, or an unknown writer, has none
+/// and fails the read.
+fn term_of(generation: Option<u64>, index: u64, label: &str) -> io::Result<u64> {
+    generation
+        .and_then(crate::raft_log::term_of_generation)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{label}: the record at index {index} has no term"),
+            )
+        })
 }

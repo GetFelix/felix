@@ -224,6 +224,11 @@ async fn a_directory_restored_to_a_shorter_log_rotates() {
         assert_ne!(restored.copy, old);
         let kept = rotation.kept.expect("kept");
         assert_eq!(
+            rotated_by::load(&kept).expect("by"),
+            RotatedBy::PowerCut,
+            "batched {batched}"
+        );
+        assert_eq!(
             kept_copies(&root.shard_dir()).expect("kept"),
             vec![KeptCopy {
                 path: kept,

@@ -4924,6 +4924,25 @@ not move.
   without opening it, its last index and the commit it can vouch for, its
   saved commit cut to the last entry that decodes as an open cuts it, or
   its purged id if that is higher.
+- The re-form rule, pure and not yet called (`raft_copy::plan_reform`, with
+  `read_copies` for the survey and `probes` for the indexes it needs): per
+  copy, current and kept, it reads the epoch (`raft-epoch`), last log id,
+  vote, saved commit, reservation and `rotated-by`, which every rotation
+  now writes. It keys log ids by (epoch, term), takes T as the highest key
+  of any vote or entry read and of the floor, and vouches each copy for
+  its saved commit, the floor's index if it holds the floor's entry, and
+  its whole log if its last key is T and the group is unmarked, capped at
+  the lowest base end of the later epochs. The base is the longest
+  vouched prefix; the voters are the brokers with a copy that holds its
+  last log id; the first index is above the base, the floor and every
+  reservation read. It marks the group when a broker placed in the epoch
+  is dead, has no vote of the epoch read or has a copy of the epoch a
+  restore rotated, and flags a cut by a vote above every entry. Either
+  needs the operator to accept the loss. It refuses on an unanswered
+  placed broker, a leader, a voter off the record, a copy ahead of the
+  record's epoch or whose bases differ from it, a record inside a gap, and
+  an index nobody was asked about. This is `ReformKept` in
+  `docs/formal/FelixRaftReform.tla`.
 
 Not built: the re-form command and the RF 1 restore themselves (item 8
 under "Every start that must rotate first"), and with them the offset

@@ -1700,6 +1700,15 @@ pub(crate) fn saved_commit(dir: &std::path::Path) -> Result<(Offset, u64)> {
     Ok((replica.commit_offset, replica.committed_generation))
 }
 
+/// The generation of the vote `dir` saved, as an open reads it from its
+/// `replica` state and its ballot, read without opening the log. Zero for a
+/// directory that never voted.
+#[cfg(feature = "raft")]
+pub(crate) fn saved_vote_generation(dir: &std::path::Path) -> Result<u64> {
+    let replica = replica_state::load(dir)?;
+    Ok(ballot::reconcile(dir, &replica)?.generation)
+}
+
 /// The generation of the record below a Raft log's saved commit offset, or
 /// `None` when that record is some other entry than the one that was
 /// committed: its generation is not the one saved with the offset.

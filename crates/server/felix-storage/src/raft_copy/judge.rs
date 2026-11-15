@@ -7,6 +7,7 @@ use std::sync::Arc;
 use super::copy_file::{self, CopyFile};
 use super::gate::GatePassed;
 use super::marks::{CopyMarks, MarkLog};
+use super::rotated_by::{self, RotatedBy};
 use super::{VoteMark, log_below};
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::disk_log::{crash_point, engine_marker};
@@ -159,7 +160,7 @@ impl CopyRoot {
             (None, None) => unreachable!("a directory with no copy file has a reason"),
         };
         let replaced = copy_file::load(dir).ok().flatten().map(|found| found.copy);
-        let (copy, kept) = self.rotate(&shard, dir, replaced).await?;
+        let (copy, kept) = self.rotate(&shard, dir, replaced, reason).await?;
         tracing::info!(
             %shard,
             dir = %dir.display(),
@@ -215,6 +216,7 @@ impl CopyRoot {
         shard: &Arc<str>,
         dir: &Path,
         replaced: Option<u64>,
+        reason: RotateReason,
     ) -> io::Result<(u64, Option<PathBuf>)> {
         let parent = parent_of(dir)?;
         let step = || crash_point::reached(&parent);
@@ -233,6 +235,10 @@ impl CopyRoot {
             step()?;
             crate::io::sync_dir(&parent.join(KEPT_DIR))?;
             crate::io::sync_dir(&parent)?;
+            // After the rename, so a crash leaves a kept copy without it,
+            // which reads as a restore, never a live directory with one.
+            rotated_by::store(&kept, RotatedBy::of(reason))?;
+            step()?;
             crate::incarnation::kept_gauges::refresh(&parent);
             Some(kept)
         };

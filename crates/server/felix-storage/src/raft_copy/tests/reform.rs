@@ -1,6 +1,8 @@
 //! What a re-form reads: kept copies' commits and the pad above every
 //! reservation.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use openraft::storage::RaftLogStorage;
 use tempfile::TempDir;
 
@@ -9,7 +11,7 @@ use super::*;
 use crate::DiskLog;
 use crate::raft_log::tests::writes::append_flushed;
 use crate::raft_log::tests::{Codec, Types, log_id, normal};
-use crate::raft_log::{RaftLog, reserved};
+use crate::raft_log::{LogPoint, RaftLog, reserved};
 
 type Log = RaftLog<Types, Codec>;
 
@@ -239,4 +241,83 @@ async fn a_damaged_reservation_fails_the_first_free_index() {
     std::fs::write(dir.join("raft-reserved"), b"garbage").expect("damage");
 
     assert!(first_free_index(&dir, Some(2), None).is_err());
+}
+
+/// A rotation writes why into the kept directory, and the survey reads the
+/// current copy and the kept one with their terms, votes and reservations.
+#[tokio::test]
+async fn a_survey_reads_every_copy_with_its_reason_and_terms() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let (_copies, old, new) = rotated(&root, 3).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    assert_eq!(rotated_by::load(&kept).expect("by"), RotatedBy::Restore);
+    reserved::store(&kept, 9).expect("reserve");
+    new.log.close().await.expect("close");
+
+    let probes = BTreeSet::from([1, 3, 8]);
+    let read = read_copies(&dir, SPACING, &probes).expect("read");
+    assert_eq!(read.current.copy, Some(new.copy));
+    assert_eq!((read.current.last, read.current.rotated_by), (None, None));
+    let [kept_read] = &read.kept[..] else {
+        panic!("one kept copy: {:?}", read.kept);
+    };
+    assert_eq!(kept_read.copy, Some(old));
+    assert_eq!(kept_read.last, Some(LogPoint { term: 1, index: 3 }));
+    assert_eq!(kept_read.rotated_by, Some(RotatedBy::Restore));
+    assert_eq!(kept_read.reserved, Some(9));
+    assert_eq!(kept_read.epoch, None);
+    assert_eq!(
+        kept_read.terms,
+        BTreeMap::from([(1, Some(1)), (3, Some(1)), (8, None)])
+    );
+
+    let file = EpochFile {
+        incarnation: 3,
+        bases: vec![EpochBase {
+            base_last: Some(EpochLogId {
+                index: 2,
+                epoch: 0,
+                term: 1,
+            }),
+            first_index: 6,
+        }],
+    };
+    epoch_file::store(&kept, &file).expect("epoch");
+    let read = read_copies(&dir, SPACING, &probes).expect("read");
+    assert_eq!(read.kept[0].epoch, Some(file));
+}
+
+/// Fail closed: a kept `rotated-by` or `raft-epoch` that does not decode
+/// fails the survey, never reads as a default.
+#[tokio::test]
+async fn a_survey_fails_on_any_file_that_does_not_decode() {
+    for name in ["rotated-by", "raft-epoch"] {
+        let root = Root::new();
+        let dir = root.shard_dir();
+        let (_copies, old, new) = rotated(&root, 1).await;
+        new.log.close().await.expect("close");
+        let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+        std::fs::write(kept.join(name), b"garbage").expect("damage");
+        let err = read_copies(&dir, SPACING, &BTreeSet::new()).expect_err(name);
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{name}: {err}");
+    }
+}
+
+/// Every reason but a log below its mark is a restore.
+#[test]
+fn only_a_log_below_its_mark_is_a_power_cut() {
+    use RotateReason::*;
+    for reason in [
+        Empty,
+        NoCopyFile,
+        StorageId,
+        NoMarks,
+        OtherCopy,
+        VoteBelowMark,
+        Poisoned,
+    ] {
+        assert_eq!(RotatedBy::of(reason), RotatedBy::Restore, "{reason:?}");
+    }
+    assert_eq!(RotatedBy::of(LogBelowMark), RotatedBy::PowerCut);
 }

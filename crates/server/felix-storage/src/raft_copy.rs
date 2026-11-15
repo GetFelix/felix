@@ -22,16 +22,20 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod copy_file;
+pub mod epoch_file;
 mod gate;
 mod judge;
 mod marks;
 mod placement_ack;
 mod reclaim;
 mod reform;
+pub mod rotated_by;
 #[cfg(test)]
 pub(crate) mod tests;
+mod vouch;
 
 pub use copy_file::CopyFile;
+pub use epoch_file::{EpochAt, EpochBase, EpochFile, EpochLogId};
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
@@ -44,7 +48,13 @@ pub use placement_ack::{
     restored_placement_incarnation,
 };
 pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
-pub use reform::{KeptLog, first_free_index, kept_logs, read_kept};
+pub use reform::{
+    BrokerCopies, CopyRead, KeptLog, first_free_index, kept_logs, read_copies, read_copy, read_kept,
+};
+pub use rotated_by::RotatedBy;
+pub use vouch::{
+    BrokerReport, GroupRecord, Key, ReformPlan, Refused, Source, Voter, plan_reform, probes,
+};
 
 use std::sync::Arc;
 use std::time::Duration;
