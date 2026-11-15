@@ -26,6 +26,7 @@ mod cache;
 mod change;
 mod commit;
 mod deliver;
+mod driver;
 mod idempotent;
 mod identity;
 mod lease;

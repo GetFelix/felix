@@ -20,7 +20,9 @@ use openraft::raft::{VoteRequest, VoteResponse};
 use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
+use super::group::driver::MembershipProgress;
 use super::group::{self, Group, Timers};
+use super::membership::Target;
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::propose::Clock;
 use super::reach::Reach;
@@ -326,6 +328,8 @@ pub struct GroupStatus {
     /// was queued when it was made, so under load this is well below the
     /// number of batches.
     pub client_writes: u64,
+    /// Where the membership stands against the control plane's target.
+    pub membership: MembershipProgress,
 }
 
 enum Slot {
@@ -725,6 +729,7 @@ impl GroupRuntime {
         .await?;
         let group = Arc::new(group);
         group.start_expiry();
+        group.drive();
         let placed = {
             let mut slots = registry.slots.write();
             let placed = !slots.closed;
@@ -807,7 +812,8 @@ impl GroupRuntime {
     /// group asks for each: a question to a copy id the broker does not
     /// hold is refused with the one it does, and is asked again of that
     /// one. If a copy rotates after it answered, the set names its old id:
-    /// the new copy joins no group until membership changes are built.
+    /// the new copy joins only when a target names it
+    /// ([`Self::target_members`]).
     pub async fn first_members(
         &self,
         shard: &ShardKey,
@@ -845,6 +851,65 @@ impl GroupRuntime {
             .into_iter()
             .collect();
         members.insert(group.member.clone());
+        Ok(members)
+    }
+
+    /// The members a target on `brokers` names: this broker's member, and
+    /// for every other broker the copy it holds now, asked as
+    /// [`Self::first_members`] asks. Pass the result to [`Self::retarget`].
+    ///
+    /// A broker joins a group as a learner only through the copy its
+    /// directory holds, opened with [`Self::open_copy`], so its id is asked
+    /// for, never guessed. A broker that refuses any other way (silence, an
+    /// error, an answer with no copy id) keeps the member the group's
+    /// membership already names on it, which leaves that member as it is. One
+    /// the membership does not name stops the call. This broker's own member
+    /// is in the result only when `brokers` names this broker, so a target can
+    /// drain the leader's broker.
+    pub async fn target_members(
+        &self,
+        shard: &ShardKey,
+        brokers: impl IntoIterator<Item = &str>,
+        within: Duration,
+    ) -> Result<BTreeSet<MemberId>, NotBlank> {
+        let group = self
+            .inner
+            .registry
+            .get(shard)
+            .ok_or(NotBlank::NoSuchGroup)?;
+        let known = group.members();
+        let brokers: Vec<&str> = brokers.into_iter().collect();
+        let names_self = brokers
+            .iter()
+            .any(|broker| **broker == *group.member.broker);
+        let asks = brokers
+            .into_iter()
+            .filter(|broker| **broker != *group.member.broker)
+            .map(|broker| {
+                let (group, known) = (&group, &known);
+                async move {
+                    let unknown = MemberId::new(broker, 0);
+                    let refused = match self.ask(group, unknown.clone(), within).await {
+                        Err(Refused::OtherCopy(_, copy)) => {
+                            return Ok(MemberId::new(broker, copy));
+                        }
+                        Err(refused) => refused.to_string(),
+                        Ok(_) => "answered as a copy with no copy id".into(),
+                    };
+                    let mut held = known.iter().filter(|member| *member.broker == *broker);
+                    match (held.next(), held.next()) {
+                        (Some(member), None) => Ok(member.clone()),
+                        _ => Err(NotBlank::Unanswered(unknown, refused)),
+                    }
+                }
+            });
+        let mut members: BTreeSet<MemberId> = futures::future::try_join_all(asks)
+            .await?
+            .into_iter()
+            .collect();
+        if names_self {
+            members.insert(group.member.clone());
+        }
         Ok(members)
     }
 
@@ -943,6 +1008,21 @@ impl GroupRuntime {
         });
         let _ = stopped.await;
         true
+    }
+
+    /// Tell `shard`'s member here the control plane's target: the voters
+    /// the group should have, and the target's version. The member that
+    /// leads takes the steps: it adds each new member as a learner,
+    /// changes the voters once the learners have caught up, and hands the
+    /// leadership over first if the target leaves it out. Every member can
+    /// be told; one that does not lead keeps the target for when it does.
+    ///
+    /// Only a target newer than the one held is kept, and the leader acts
+    /// only on one at least as new as its membership. False if the target
+    /// is not newer, or the shard has no group here.
+    pub fn retarget(&self, shard: &ShardKey, target: Target) -> bool {
+        self.group(shard)
+            .is_some_and(|group| group.retarget(target))
     }
 
     /// Stop the ticker and every group, then write the batched log marks

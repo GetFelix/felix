@@ -210,6 +210,30 @@ impl RaftEngine {
         self.runtime.group(shard)?.transfer(to).await
     }
 
+    /// Tell this broker's member of `shard` the control plane's target.
+    /// See [`GroupRuntime::retarget`].
+    pub fn retarget(&self, shard: &ShardKey, target: super::Target) -> bool {
+        self.runtime.retarget(shard, target)
+    }
+
+    /// The members a target on `brokers` names, by the copy each broker
+    /// holds. See [`GroupRuntime::target_members`].
+    pub async fn target_members(
+        &self,
+        shard: &ShardKey,
+        brokers: impl IntoIterator<Item = &str>,
+        within: Duration,
+    ) -> Result<std::collections::BTreeSet<super::MemberId>, super::NotBlank> {
+        self.runtime.target_members(shard, brokers, within).await
+    }
+
+    /// Where `shard`'s membership stands against its target, as this
+    /// broker's member last saw. Only the leader's answer says anything:
+    /// every other member is idle.
+    pub fn membership(&self, shard: &ShardKey) -> Option<super::MembershipProgress> {
+        Some(self.runtime.group(shard)?.membership_progress())
+    }
+
     /// `shard`'s commit table on this broker, if it holds a member.
     pub(crate) fn commits(
         &self,

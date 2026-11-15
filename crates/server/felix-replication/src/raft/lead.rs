@@ -37,6 +37,12 @@ pub(crate) struct Lead {
     gone: bool,
 }
 
+impl Lead {
+    pub(crate) fn gone(&self) -> bool {
+        self.gone
+    }
+}
+
 pub(crate) struct Leadership {
     shard: Arc<ShardKey>,
     host: Option<Arc<dyn EngineHost>>,

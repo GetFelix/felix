@@ -29,6 +29,7 @@ use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
 use super::machine::{self, Cache, Machine, SnapshotData};
+use super::membership::Target;
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
@@ -43,7 +44,10 @@ use super::written::Reports;
 use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
 
+pub(crate) mod driver;
 pub(crate) mod membership;
+
+use driver::MembershipProgress;
 
 pub(crate) struct Group {
     pub(crate) id: GroupId,
@@ -91,6 +95,14 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
+    /// The newest target this member was told, kept in memory only: after
+    /// a restart nothing changes until the control plane speaks again.
+    target: tokio::sync::watch::Sender<Option<Target>>,
+    /// Where the membership stands against the target, as the driver
+    /// reports it.
+    progress: Arc<tokio::sync::watch::Sender<MembershipProgress>>,
+    /// How far behind a learner may be when it is promoted.
+    lag_threshold: u64,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -514,6 +526,7 @@ impl Group {
             ),
             group: id.clone(),
         };
+        let lag_threshold = config.replication_lag_threshold;
         let raft = Raft::new(member.clone(), config, network, log, machine)
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
@@ -575,6 +588,9 @@ impl Group {
             gate: Arc::default(),
             #[cfg(test)]
             apply_hold,
+            target: tokio::sync::watch::Sender::default(),
+            progress: Arc::default(),
+            lag_threshold,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -584,6 +600,42 @@ impl Group {
             reads: Arc::default(),
             runtime: tokio::runtime::Handle::current(),
         })
+    }
+
+    /// Start the task that makes this group's membership match its
+    /// target while this member leads. It ends on `stop`, or when the
+    /// group's core is gone.
+    pub(crate) fn drive(self: &Arc<Self>) {
+        let driver = driver::Driver::new(
+            Arc::clone(self),
+            self.lag_threshold,
+            driver::Retry::default(),
+            Arc::clone(&self.progress),
+        );
+        self.runtime.spawn(driver::run(
+            driver,
+            self.target.subscribe(),
+            self.leadership.changes(),
+            self.stop.clone(),
+        ));
+    }
+
+    /// The control plane's target for this group. Only a target newer than
+    /// the one held replaces it. Returns whether it did.
+    pub(crate) fn retarget(&self, target: Target) -> bool {
+        self.target.send_if_modified(|held| {
+            let newer = held
+                .as_ref()
+                .is_none_or(|held| target.version > held.version);
+            if newer {
+                *held = Some(target);
+            }
+            newer
+        })
+    }
+
+    pub(crate) fn membership_progress(&self) -> MembershipProgress {
+        self.progress.borrow().clone()
     }
 
     /// Form the group from its first member set. Every member of the set
@@ -1255,10 +1307,17 @@ impl Group {
     /// this member leads, before it returns that term. `None` if it leads
     /// none.
     pub(crate) async fn transfer_starting(&self) -> Option<u64> {
+        self.transfer_starting_in(None).await
+    }
+
+    /// [`Self::transfer_starting`], and nothing is given up unless the
+    /// term this member leads is `only`, when one is named.
+    pub(super) async fn transfer_starting_in(&self, only: Option<u64>) -> Option<u64> {
         // Asked of the core, in the queue a transfer request goes through.
-        let leads = self.raft.with_raft_state(|state| {
+        let leads = self.raft.with_raft_state(move |state| {
             let leads = state.server_state == ServerState::Leader;
-            leads.then(|| state.vote_ref().leader_id().term())
+            let term = state.vote_ref().leader_id().term();
+            (leads && only.is_none_or(|only| only == term)).then_some(term)
         });
         let leads = leads.await.ok().flatten();
         if let Some(term) = leads {
@@ -1597,6 +1656,7 @@ impl Group {
             ticks: self.ticks.load(Ordering::Relaxed),
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
             client_writes: self.client_writes.load(Ordering::Relaxed),
+            membership: self.membership_progress(),
         }
     }
 
@@ -1605,6 +1665,19 @@ impl Group {
         let metrics = self.raft.metrics();
         let metrics = metrics.borrow_watched();
         metrics.membership_config.membership().voter_ids().collect()
+    }
+
+    /// Every member of the latest membership this member holds, voters and
+    /// learners.
+    pub(crate) fn members(&self) -> BTreeSet<MemberId> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let membership = metrics.membership_config.membership();
+        membership
+            .voter_ids()
+            .chain(membership.learner_ids())
+            .collect()
     }
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {

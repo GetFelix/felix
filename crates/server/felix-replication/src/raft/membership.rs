@@ -6,9 +6,6 @@
 //! The decision reads only the leader's log and the newest target, so a new
 //! leader, a restart or a retry resumes with nothing to reconcile.
 
-// The driver that runs these steps against openraft is not built yet.
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
@@ -139,6 +136,13 @@ pub(crate) fn next_step(view: &View, target: Option<&Target>) -> Step {
     if view.transferring {
         return Step::Wait(Wait::Transferring);
     }
+    // A target with no voters would shrink the group to this leader alone.
+    let target = target.filter(|target| !target.voters.is_empty());
+    // With nothing to do, a fresh leader whose barrier has not committed yet
+    // is idle, not converging.
+    if target.is_none() && !config.joint() {
+        return Step::Wait(Wait::NoTarget);
+    }
     if !view.own_term_committed {
         return Step::Wait(Wait::Barrier);
     }
@@ -152,10 +156,16 @@ pub(crate) fn next_step(view: &View, target: Option<&Target>) -> Step {
         if config.new.contains(&view.me) {
             return Step::LeaveJoint;
         }
+        // A successor a newer target removes would only hand over again.
+        if let Some(target) = target.filter(|target| target.version > config.version) {
+            let kept = &config.new & &target.voters;
+            if let step @ Step::Transfer(_) = successor(view, &kept) {
+                return step;
+            }
+        }
         return successor(view, &config.new);
     }
-    // A target with no voters would shrink the group to this leader alone.
-    let Some(target) = target.filter(|target| !target.voters.is_empty()) else {
+    let Some(target) = target else {
         return Step::Wait(Wait::NoTarget);
     };
     // An incarnation only the log has seen is covered by the first test:
