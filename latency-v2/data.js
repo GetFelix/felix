@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794709422648,
+  "lastUpdate": 1794713179656,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73260,6 +73260,72 @@ window.BENCHMARK_DATA = {
             "range": "72.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 392.00\nmean: 422.20\nstdev: 72.83\ncv: 17.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ab43db71bbd7b8cf40e24229e39ca856bce6973b",
+          "message": "fix(wire): a sequenced forward with no header block reaches a Raft owner (#2570) (#2583)\n\n* fix(wire): a sequenced forward with no header block reaches a Raft owner (#2570)\n\nSequencedForwardPublish has no encoding without a block, and a Raft owner\nrefuses any forward with headers, so no idempotent batch could reach a Raft\nshard through a forward. A sequenced batch with no block now travels as\nPlainSequencedForwardPublish (64): the authorized body plus the producer id\nand sequence, no block section, gated on the new PLAIN_SEQUENCED_FORWARDS\ncapability. It decodes with no headers, so the Raft owner takes it. A batch\nwith a block still travels as kind 52, byte for byte.\n\n* docs(wire): name both capabilities a plain sequenced forward needs\n\n* docs(wire): LeadershipLost and the capability rule cover both sequenced forward kinds; test the no-legacy-retry guard\n\n* chore(forward): spec pairing for the plain sequenced forward (#2570)\n\nSpec-Unaffected: kind 64 is a wire encoding of a sequenced forward without a header block. It carries the same producer id, sequence, credential and fence fields as kind 52 and goes only to a peer that offers the new capability bit. The TLA+ models describe forwards and their dedup by producer and sequence, not frame kinds or capability bits, so no modelled behaviour changes.",
+          "timestamp": "2026-11-15T03:12:56Z",
+          "tree_id": "51ca7dbd84bfe0c16cb5f2ddd547018a022ffda0",
+          "url": "https://github.com/GetFelix/felix/commit/ab43db71bbd7b8cf40e24229e39ca856bce6973b"
+        },
+        "date": 1794713167403,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "5.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 109.60\nstdev: 5.50\ncv: 5.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 157,
+            "range": "8.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 160.00\nstdev: 8.86\ncv: 5.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 190,
+            "range": "33.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 190.00\nmean: 204.00\nstdev: 33.65\ncv: 16.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 125,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 125.40\nstdev: 1.14\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 269,
+            "range": "4.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 270.00\nstdev: 4.36\ncv: 1.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 446,
+            "range": "50.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 446.00\nmean: 418.20\nstdev: 50.47\ncv: 12.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
