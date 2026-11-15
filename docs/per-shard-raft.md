@@ -4166,13 +4166,25 @@ one: the root's log mark (an unsynced id would read as a restore after a
 power cut), a `Leader` write on a stream that fsyncs, and the snapshot
 rule below.
 
-On a relaxed broker the written report (`await_quorum_ack`,
-`Request::Written`) has nothing left to do: a follower's answer to an
-append now comes at the write, so the report can be dropped there.
+Each follower answers an append by its own mode, and the leader's mode
+decides whether it asks for the written report (`await_quorum_ack`,
+`Request::Written`):
 
-A group can have members on both kinds of broker. That is safe by the
-same argument, member by member: a strict copy answers after its fsync,
-and a relaxed copy rotates if it loses what it answered for.
+- **A relaxed follower** answers at the write, so a written report would
+  say nothing its answer has not.
+- **A strict follower** answers after its fsync, and still sends the
+  written report when its leader asks for one.
+- **A relaxed leader** does not ask: its followers' answers are what
+  commits. Without the report, a `Quorum` write on a stream that does not
+  fsync would wait for a strict follower's fsync where today it does not,
+  so a relaxed leader with strict followers keeps asking them and counts
+  their reports toward the acknowledgement, as today. A strict leader
+  asks as today.
+
+A group can have members on both kinds of broker. The argument is meant
+to hold member by member: a strict copy answers after its fsync, and a
+relaxed copy rotates if it loses what it answered for. The model does not
+check a mixed group yet (below).
 
 ### What readers and subscribers see
 
@@ -4236,7 +4248,7 @@ the bound is stored before the count, and stores the bound on the copy:
   the old directory or a new one that carries it. A kept directory is
   reclaimed only after the new copy's reservation is synced.
 - **The re-form pads up to the highest reservation it reads.** The new
-  epoch starts at or above the stored floor and above the highest
+  epoch starts above the stored floor and above the highest
   reservation of every copy the command reads, current or kept. Every
   committed offset was counted by a majority, so at least one of those
   copies reserved past it.
@@ -4291,7 +4303,8 @@ answers. These are the starts, and what each relies on:
    Rotate today. Built.
 6. **A broker moving from `periodic` to `on_commit`.** The run record
    names the run that crashed, so a crash under the relaxed run still
-   rotates at the next start, whatever the new mode. A test should pin it.
+   rotates at the next start, whatever the new mode. A test pins it (the
+   code-change table).
 7. **The switch from the hybrid.** A relaxed broker's switched member
    opens on the gate like any other copy, and the hybrid log it starts
    from was already judged by the same storage id. Its Raft log opens
@@ -4322,7 +4335,10 @@ not move.
 | Batched log mark on relaxed roots, fed by `flushed` | `felix-replication/src/raft/runtime.rs:111`, `felix-storage/src/raft_copy/marks.rs:314-323` | the mark never names an unsynced id |
 | The reservation: a synced file per shard directory, raised before the callback, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
 | Open the shard's Raft log with the broker's own fsync mode instead of `OnCommit` | `felix-broker-service/src/shards/raft.rs:227` | a relaxed broker's shard commits before any fsync |
-| The written report: skip the ask and the leader's marker sync on relaxed logs | `felix-replication/src/raft/group.rs:740-775`, `group.rs:1025-1050`, `raft/engine.rs:152` | no `Request::Written` on a relaxed group |
+| The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | `felix-replication/src/raft/group.rs:740-775`, `group.rs:1025-1050`, `raft/engine.rs:152` | no `Request::Written` from a relaxed leader to a relaxed follower; a relaxed leader with strict followers acknowledges a `Quorum` write on their written reports, before their fsync |
+| A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (start 6) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
+| A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (start 8) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
+| A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | the re-form, not built | a kept directory whose saved commit is past its last synced entry is cut at the entry, not at the saved index |
 | Snapshot waits for the durable bound | `felix-replication/src/raft/machine.rs:286` | a snapshot never covers an entry above `flushed` |
 | The periodic flusher's failure poisons a Raft log and rotates the copy | `felix-storage/src/disk_log/sync.rs:239` | a failed tick rotates, as a failed commit flush does |
 | The re-form reads every reservation and pads above the highest (with the re-form command) | the re-form, not built | `FelixRaftWrittenCommitsReform.cfg` as a cluster test |
@@ -4340,7 +4356,10 @@ re-form's cut to the saved commit index ("Re-forming a group") keeps the
 base right. Every re-form configuration of `FelixRaftWritten.tla` has one
 term. Nor does it model a rotated copy coming back, so the inherited
 reservation and the reclaim of a kept directory are argued, not
-checked. Both are
+checked. Nor does it check a group with members on both kinds of
+broker: `CutRotates` is one switch for the whole model, so no
+configuration has a strict copy that keeps its log through a power cut
+beside relaxed copies that rotate. All three are
 [#2592](https://github.com/GetFelix/felix/issues/2592).
 
 ## Deferred: sleep and wake

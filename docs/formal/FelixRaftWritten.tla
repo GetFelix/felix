@@ -486,6 +486,16 @@ TypeOK ==
     /\ AckedVals \subseteq 1..MaxWrites
     /\ gone \subseteq Servers
     /\ \A a, b \in acked : a.val = b.val => a = b
+    /\ DOMAIN kept = Servers /\ DOMAIN reserve = Servers
+    /\ \A s \in Servers :
+        /\ DOMAIN kept[s] = 1..Len(kept[s])
+        /\ reserve[s] \in Nat
+    /\ cpFloor \in Nat
+    /\ DOMAIN reform = {"on", "base", "start"}
+    /\ reform.on \in BOOLEAN
+    /\ DOMAIN reform.base = 1..Len(reform.base)
+    /\ reform.start \in Nat
+    /\ ~reform.on => reform = NoReform
 
 OneLeaderPerTerm == \A a, b \in elected : a[1] = b[1] => a[2] = b[2]
 
