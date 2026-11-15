@@ -1141,6 +1141,25 @@ impl GroupRuntime {
         self.inner.registry.get(shard).map(|group| group.status())
     }
 
+    /// Whether this broker holds a member of `shard` that does not lead it
+    /// now.
+    pub fn follows(&self, shard: &ShardKey) -> bool {
+        self.group(shard).is_some_and(|group| !group.leads())
+    }
+
+    /// Before this broker serves a read of `shard` that could start below
+    /// a head trim's floor: if its member follows, ask the leader for a
+    /// read index and wait until the member has applied it, so every trim
+    /// answered before the read is in its log. Ok at once on the leader,
+    /// or when the shard has no member here. An error is retryable and
+    /// says why.
+    pub async fn follower_read(&self, shard: &ShardKey) -> Result<(), &'static str> {
+        match self.group(shard) {
+            Some(group) => group.follower_read().await,
+            None => Ok(()),
+        }
+    }
+
     /// The committed log id of every group this broker leads.
     pub fn led_commits(&self) -> Vec<(GroupId, LogPoint)> {
         self.inner

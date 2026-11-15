@@ -232,6 +232,10 @@ pub enum NotReadable {
     /// The lease lapsed or the shard is led elsewhere.
     #[error("this broker is not serving the shard")]
     Refused,
+    /// This read is served by the shard's leader: a follower here could
+    /// start it below a head trim it has not heard of yet.
+    #[error("this read is served by the shard's leader")]
+    OnLeader,
 }
 
 /// Shorthand for results carrying a [`BrokerError`].

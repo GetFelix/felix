@@ -167,6 +167,7 @@ fn sender(request: &Request) -> Option<&str> {
         Request::Snapshot { vote, .. } => vote,
         Request::TransferLeader(_) => return None,
         Request::Written { from, .. } => return Some(&from.broker),
+        Request::ReadIndex => return None,
     };
     Some(&vote.leader_id().node_id().broker)
 }

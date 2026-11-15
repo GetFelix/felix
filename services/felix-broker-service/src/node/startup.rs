@@ -212,6 +212,12 @@ pub(super) async fn wire_broker(
             raft_trims.supports(felix_common::fleet::HEAD_TRIM)
                 && raft_trims.supports(felix_common::fleet::RAFT_HEAD_TRIM)
         });
+        // A follower's read index is a Raft message an older leader does
+        // not know, so until then such reads go to the leader.
+        let raft_reads = Arc::clone(fleet);
+        broker.allow_raft_follower_reads_when(move || {
+            raft_reads.supports(felix_common::fleet::RAFT_FOLLOWER_READ)
+        });
         // A Raft entry with a publisher or headers is one an older member
         // refuses whole, as a trim entry is.
         let raft_headers = Arc::clone(fleet);
@@ -222,6 +228,7 @@ pub(super) async fn wire_broker(
     } else {
         broker.allow_head_trims_when(|| true);
         broker.allow_raft_head_trims_when(|| true);
+        broker.allow_raft_follower_reads_when(|| true);
         broker.allow_raft_record_headers_when(|| true);
     }
     // A cursor that carries its dependency is a value an older build refuses,

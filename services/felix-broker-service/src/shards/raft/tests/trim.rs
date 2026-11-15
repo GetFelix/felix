@@ -288,24 +288,17 @@ async fn a_follower_holding_the_trim_is_not_read_below_it_after_the_answer() {
         log.commit_offset() <= tail,
         "the holder never heard the commit"
     );
-    // Reads at or above the pending floor are not held. Checked first: the
-    // trim can commit on the holder during the 5 s hold of the read below.
+    // A tail read is not held. A read from an offset waits for the
+    // leader's read index, which the holder cannot apply while cut off.
     let started = tokio::time::Instant::now();
-    for start in [StartPosition::Offset(floor), StartPosition::Latest] {
-        holder
-            .broker
-            .subscribe_from("t1", "ns", "orders", 0, start)
-            .await
-            .expect("a read above the pending floor is served");
-    }
     holder
         .broker
-        .read_committed("t1", "ns", "orders", 0, floor, 1 << 16)
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Latest)
         .await
-        .expect("a page above the pending floor is served");
+        .expect("a tail read is served");
     assert!(
         started.elapsed() < Duration::from_secs(2),
-        "a read above the pending floor waited for the trim"
+        "a tail read waited for the trim"
     );
     let resumed = holder
         .broker
@@ -333,9 +326,10 @@ async fn a_follower_holding_the_trim_is_not_read_below_it_after_the_answer() {
 
 /// **A follower that never got the trim's entry is not read below its floor
 /// after `trim_ok`.** The leader commits the trim with the other member, so
-/// the lagging follower's log has no trim to wait for.
+/// the lagging follower's log has no trim to wait for. It still hears the
+/// leader, so it asks for a read index it cannot apply and refuses the read
+/// as retryable; once entries reach it again the resume is too old.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "#2603: a follower read needs a read index from the leader"]
 async fn a_follower_without_the_trim_is_not_read_below_it_after_the_answer() {
     let (net, members, leader) = trio().await;
     let orders = key("orders", 0);
@@ -352,7 +346,7 @@ async fn a_follower_without_the_trim_is_not_read_below_it_after_the_answer() {
     })
     .await;
 
-    net.cut.lock().insert(lagger.name.to_string());
+    net.starved.lock().insert(lagger.name.to_string());
     trim(&lead.broker, &lead.engine, term, floor, tail)
         .await
         .expect("trimmed");
@@ -366,16 +360,220 @@ async fn a_follower_without_the_trim_is_not_read_below_it_after_the_answer() {
         .broker
         .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
         .await;
-    let served_below = match &resumed {
-        Ok(resumed) => {
-            resumed.history.is_some() || resumed.backlog.iter().any(|r| r.offset < floor)
-        }
-        Err(_) => false,
-    };
     assert!(
-        !served_below,
-        "the lagger served a resume below the floor after trim_ok"
+        matches!(
+            resumed,
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            })
+        ),
+        "the lagger served a resume below the floor after trim_ok: {:?}",
+        resumed.map(|resumed| resumed.history)
+    );
+    let page = lagger
+        .broker
+        .read_committed("t1", "ns", "orders", 0, first, 1 << 16)
+        .await;
+    assert!(
+        matches!(
+            page,
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            })
+        ),
+        "the lagger served a page below the floor after trim_ok: {page:?}"
+    );
+
+    net.starved.lock().clear();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match lagger
+            .broker
+            .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+            .await
+        {
+            Err(BrokerError::CursorTooOld { oldest, .. }) => {
+                assert_eq!(oldest, floor);
+                break;
+            }
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            }) => {}
+            other => panic!(
+                "the lagger answered a resume below the floor with {:?}",
+                other.map(|resumed| resumed.history)
+            ),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the lagger never caught up"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    stop(&members).await;
+}
+
+/// **Until the fleet finalizes `raft_follower_read`, a follower leaves a
+/// read that could start below a floor to the leader.** The leader that
+/// would answer its read index may predate the message. A tail read and the
+/// leader's own reads are served as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_leaves_offset_reads_to_the_leader_until_raft_follower_read() {
+    let (net, members, leader) = trio().await;
+    net.follower_reads_off
+        .store(true, std::sync::atomic::Ordering::Release);
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = &members[leader];
+    let follower = &members[(leader + 1) % 3];
+    let first = lead.publish(term, b"r0").await;
+    let tail = lead.publish(term, b"r1").await + 1;
+    let log = follower.shards.log_of(&orders).await.expect("log");
+    until("the follower has the publishes", || {
+        log.commit_offset() == tail
+    })
+    .await;
+
+    for start in [StartPosition::Offset(first), StartPosition::Earliest] {
+        let resumed = follower
+            .broker
+            .subscribe_from("t1", "ns", "orders", 0, start)
+            .await;
+        assert!(
+            matches!(
+                resumed,
+                Err(BrokerError::NotReadable {
+                    reason: felix_broker::NotReadable::OnLeader,
+                    ..
+                })
+            ),
+            "the follower served {start:?} before the finalize"
+        );
+    }
+    let page = follower
+        .broker
+        .read_committed("t1", "ns", "orders", 0, first, 1 << 16)
+        .await;
+    assert!(
+        matches!(
+            page,
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::OnLeader,
+                ..
+            })
+        ),
+        "the follower served a page before the finalize"
+    );
+    follower
+        .broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Latest)
+        .await
+        .expect("a tail read is served");
+    lead.broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+        .await
+        .expect("the leader serves the resume");
+    stop(&members).await;
+}
+
+/// **A follower that cannot reach its leader refuses a read that could
+/// start below a floor as retryable.** It cannot learn whether a trim was
+/// answered, so it serves nothing from its own log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_cut_off_from_its_leader_refuses_offset_reads_as_retryable() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = &members[leader];
+    let follower = &members[(leader + 1) % 3];
+    let first = lead.publish(term, b"r0").await;
+    let tail = lead.publish(term, b"r1").await + 1;
+    let log = follower.shards.log_of(&orders).await.expect("log");
+    until("the follower has the publishes", || {
+        log.commit_offset() == tail
+    })
+    .await;
+    follower
+        .broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+        .await
+        .expect("a follower that reaches its leader serves the resume");
+
+    super::cut_all(&net);
+    let resumed = follower
+        .broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+        .await;
+    assert!(
+        matches!(
+            resumed,
+            Err(BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            })
+        ),
+        "a follower cut off from its leader served a resume: {:?}",
+        resumed.map(|resumed| resumed.history)
     );
     net.cut.lock().clear();
+    stop(&members).await;
+}
+
+/// What a follower's read index adds to a resume and a history page, next
+/// to the leader serving the same reads. Prints p50 and p99; a rough look,
+/// not a benchmark.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "prints timings; run by hand"]
+async fn follower_read_latency() {
+    const ROUNDS: usize = 500;
+    let (_net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = &members[leader];
+    let follower = &members[(leader + 1) % 3];
+    let first = lead.publish(term, b"r0").await;
+    let mut tail = first;
+    for _ in 0..16 {
+        tail = lead.publish(term, b"rn").await + 1;
+    }
+    let log = follower.shards.log_of(&orders).await.expect("log");
+    until("the follower has the publishes", || {
+        log.commit_offset() == tail
+    })
+    .await;
+
+    let pct = |mut times: Vec<Duration>| {
+        times.sort();
+        (times[times.len() / 2], times[times.len() * 99 / 100])
+    };
+    for (role, member) in [("leader", lead), ("follower", follower)] {
+        let mut resumes = Vec::with_capacity(ROUNDS);
+        let mut pages = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            let started = std::time::Instant::now();
+            let resumed = member
+                .broker
+                .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+                .await
+                .expect("resumed");
+            resumes.push(started.elapsed());
+            drop(resumed);
+            let started = std::time::Instant::now();
+            member
+                .broker
+                .read_committed("t1", "ns", "orders", 0, first, 1 << 16)
+                .await
+                .expect("a page");
+            pages.push(started.elapsed());
+        }
+        let (resume_p50, resume_p99) = pct(resumes);
+        let (page_p50, page_p99) = pct(pages);
+        println!(
+            "{role}: resume p50 {resume_p50:?} p99 {resume_p99:?}; page p50 {page_p50:?} p99 {page_p99:?}"
+        );
+    }
     stop(&members).await;
 }

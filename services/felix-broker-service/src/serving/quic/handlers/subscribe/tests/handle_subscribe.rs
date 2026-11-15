@@ -1542,6 +1542,57 @@ mod on_raft {
         fixture::stop(&members).await;
     }
 
+    /// **Until the fleet finalizes `raft_follower_read`, a follower's resume
+    /// from an offset is answered with a redirect to the leader.** The
+    /// follower's log may lack a trim the leader already answered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_follower_resume_before_raft_follower_read_redirects_to_its_leader() {
+        let (net, members, leader) = fixture::trio().await;
+        net.follower_reads_off
+            .store(true, std::sync::atomic::Ordering::Release);
+        let orders = fixture::key("orders", 0);
+        let term = members[leader].shards.leading(&orders).expect("term");
+        let follower = &members[(leader + 1) % 3];
+        let ingress = fixture::ingress(&follower.shards);
+        fixture::until("the follower serves the shard's readers", || {
+            redirected(&ingress).is_none()
+        })
+        .await;
+        let endpoints = crate::cluster::client_endpoints::ClientEndpoints::new();
+        let leader_endpoint = felix_wire::BrokerEndpoint {
+            node_id: members[leader].name.to_string(),
+            addr: "10.0.0.4:5000".to_string(),
+        };
+        endpoints.refresh(&crate::cluster::node_catalog::NodeCatalog {
+            nodes: Default::default(),
+            client_endpoints: vec![leader_endpoint.clone()],
+            redirect_endpoints: vec![leader_endpoint],
+            kafka_endpoints: Vec::new(),
+        });
+
+        let refused = follower
+            .broker
+            .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(0))
+            .await
+            .expect_err("a follower resume before the finalize");
+        let refusal = subscribe_refusal(
+            refused,
+            Some(&ingress),
+            Some(&endpoints),
+            ("t1", "ns", "orders", 0),
+            felix_wire::FEATURE_REDIRECT,
+        );
+        assert_eq!(
+            refusal,
+            Message::NotLeader {
+                node_id: members[leader].name.to_string(),
+                addr: Some("10.0.0.4:5000".to_string()),
+                generation: term,
+            }
+        );
+        fixture::stop(&members).await;
+    }
+
     /// **A member that knows no leader serves no reader.** Its commit index
     /// has stopped, so a subscriber there would wait and be told nothing:
     /// a new one is refused and those registered are ended.

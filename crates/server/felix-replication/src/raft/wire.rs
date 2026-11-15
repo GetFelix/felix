@@ -44,6 +44,9 @@ const PRE_VOTE: u8 = 4;
 const SNAPSHOT: u8 = 5;
 const TRANSFER_LEADER: u8 = 6;
 const WRITTEN: u8 = 7;
+/// Sent only once the fleet finalized `raft_follower_read`, so a peer that
+/// predates it is never asked.
+const READ_INDEX: u8 = 8;
 
 /// The second byte of an answer.
 const APPENDED: u8 = 1;
@@ -51,6 +54,7 @@ const VOTED: u8 = 2;
 const SNAPSHOT_TAKEN: u8 = 3;
 const TRANSFERRED: u8 = 4;
 const WRITTEN_TAKEN: u8 = 5;
+const READ_INDEX_TAKEN: u8 = 6;
 const UNREACHABLE: u8 = 16;
 const NO_SUCH_MEMBER: u8 = 17;
 const STOPPED: u8 = 18;
@@ -142,6 +146,7 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
         Request::Snapshot { .. } => SNAPSHOT,
         Request::TransferLeader(_) => TRANSFER_LEADER,
         Request::Written { .. } => WRITTEN,
+        Request::ReadIndex => READ_INDEX,
     });
     // At a fixed place, so a listener reads it without reading the rest.
     buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
@@ -198,6 +203,7 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
             buf.put_u64(at.term);
             buf.put_u64(at.index);
         }
+        Request::ReadIndex => {}
     }
     Ok(buf.freeze())
 }
@@ -289,6 +295,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
                 at: LogPoint { term, index },
             }
         }
+        READ_INDEX => Request::ReadIndex,
         other => return Err(invalid(format!("{other} is not a Raft request"))),
     };
     expect_empty(&buf)?;
@@ -348,6 +355,16 @@ fn put_reply(buf: &mut BytesMut, reply: &Result<RaftReply, Refused>) -> io::Resu
             }
         }
         Ok(RaftReply(Reply::Written)) => buf.put_u8(WRITTEN_TAKEN),
+        Ok(RaftReply(Reply::ReadIndex { index })) => {
+            buf.put_u8(READ_INDEX_TAKEN);
+            match index {
+                Some(index) => {
+                    buf.put_u8(1);
+                    buf.put_u64(*index);
+                }
+                None => buf.put_u8(0),
+            }
+        }
         Err(Refused::Unreachable(reason)) => {
             buf.put_u8(UNREACHABLE);
             put_reason(buf, reason);
@@ -398,6 +415,13 @@ pub(crate) fn decode_reply(mut buf: Bytes) -> io::Result<Result<RaftReply, Refus
             other => return Err(invalid(format!("{other} is not a transfer outcome"))),
         })),
         WRITTEN_TAKEN => Ok(Reply::Written),
+        READ_INDEX_TAKEN => Ok(Reply::ReadIndex {
+            index: match take_u8(&mut buf)? {
+                0 => None,
+                1 => Some(take_u64(&mut buf)?),
+                other => return Err(invalid(format!("{other} is not an option tag"))),
+            },
+        }),
         UNREACHABLE => Err(Refused::Unreachable(take_str(&mut buf, MAX_REASON_BYTES)?)),
         NO_SUCH_MEMBER => Err(Refused::NoSuchMember(take_addressee(&mut buf)?)),
         STOPPED => {

@@ -306,7 +306,11 @@ impl ClientError {
             E::NotReadable { reason, .. } | E::StateNotReadable(reason) => {
                 use felix_wire::shard_unavailable_reason as wire;
                 let why = match reason {
-                    felix_broker::NotReadable::Settling => wire::NOT_READY,
+                    // The subscribe handler redirects to the leader when
+                    // it knows one; otherwise the client retries.
+                    felix_broker::NotReadable::Settling | felix_broker::NotReadable::OnLeader => {
+                        wire::NOT_READY
+                    }
                     felix_broker::NotReadable::Refused => wire::FENCED,
                 };
                 Self::new(ErrorCode::ShardUnavailable, message).with_reason(why)

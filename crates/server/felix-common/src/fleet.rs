@@ -83,6 +83,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_RECORD_HEADERS,
     RECORD_GENERATIONS,
     RAFT_ATOMIC_COMMIT,
+    RAFT_FOLLOWER_READ,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -166,6 +167,13 @@ pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 /// replication to it at that entry. So it waits for the whole fleet, and for
 /// [`HEAD_TRIM`]. See `docs/per-shard-raft.md` ("Head trims").
 pub const RAFT_HEAD_TRIM: FleetFeature = FleetFeature::new("raft_head_trim");
+
+/// A follower of a stream shard on the Raft engine serves a read that could
+/// start below a head trim's floor once it has applied the leader's read
+/// index, asked with a Raft message a build that predates this does not
+/// know. Until the fleet finalizes it such a read goes to the leader. See
+/// `docs/per-shard-raft.md` ("Head trims").
+pub const RAFT_FOLLOWER_READ: FleetFeature = FleetFeature::new("raft_follower_read");
 
 /// A durable stream stores each record's headers and key, and replication and
 /// forwarding carry them. A record with them needs storage format v8, which an

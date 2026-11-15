@@ -1470,6 +1470,12 @@ pub(crate) struct Loopback {
     /// Brokers cut off right after the next append with entries reaches
     /// them, so they hold the entries but never hear them committed.
     cut_after_entries: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Brokers sent no append that carries entries. Everything else reaches
+    /// them, and they reach everyone.
+    pub(crate) starved: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// The fleet has not finalized `raft_follower_read`: followers leave
+    /// reads that could start below a floor to the leader.
+    pub(crate) follower_reads_off: std::sync::atomic::AtomicBool,
 }
 
 impl Loopback {
@@ -1485,6 +1491,9 @@ impl RaftTransport for Loopback {
         let to = request.to().broker.to_string();
         if self.cut.lock().contains(&to) {
             return Err(Refused::Unreachable(format!("broker {to} is cut off")));
+        }
+        if request.carries_entries() && self.starved.lock().contains(&to) {
+            return Err(Refused::Unreachable(format!("broker {to} gets no entries")));
         }
         let cut_after = request.carries_entries() && self.cut_after_entries.lock().remove(&to);
         if cut_after {
@@ -1585,6 +1594,13 @@ impl Member {
             .lock()
             .insert(name.to_string(), runtime.clone());
         let shards = RaftShards::new(Arc::clone(&broker), runtime, name.to_string(), fleet);
+        let reads = Arc::downgrade(net);
+        broker.allow_raft_follower_reads_when(move || {
+            reads.upgrade().is_some_and(|net| {
+                !net.follower_reads_off
+                    .load(std::sync::atomic::Ordering::Acquire)
+            })
+        });
         open_root(&broker, &shards);
         let engine = Arc::new(engine(&shards));
         broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(

@@ -206,6 +206,9 @@ impl RaftShards {
             .broker
             .set_engine_logs(Arc::clone(&shards) as Arc<dyn felix_broker::EngineLogs>);
         shards
+            .broker
+            .set_follower_reads(Arc::clone(&shards) as Arc<dyn felix_broker::FollowerReads>);
+        shards
     }
 
     /// Let members open on `root`, which passed the restore gate. Only the
@@ -893,6 +896,40 @@ impl felix_broker::EngineLogs for RaftShards {
                     self.close_member(&key, member).await;
                 }
             }
+        })
+    }
+}
+
+/// A follower's log may lack a head trim the leader already answered, so
+/// a read that could start below a floor waits for the leader's read index
+/// first. Before the fleet can send that message, the leader serves it.
+/// See `docs/per-shard-raft.md`, "Head trims".
+impl felix_broker::FollowerReads for RaftShards {
+    fn before_read<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        shard: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<(), felix_broker::NotReadable>> + Send + 'a>> {
+        Box::pin(async move {
+            let key = ShardKey {
+                tenant_id: tenant_id.to_string(),
+                namespace: namespace.to_string(),
+                stream: stream.to_string(),
+                shard,
+                kind: ShardKind::Stream,
+            };
+            if !self.runtime.follows(&key) {
+                return Ok(());
+            }
+            if !self.broker.raft_follower_reads_allowed() {
+                return Err(felix_broker::NotReadable::OnLeader);
+            }
+            self.runtime.follower_read(&key).await.map_err(|why| {
+                tracing::debug!(stream, shard, why, "a follower read was refused");
+                felix_broker::NotReadable::Settling
+            })
         })
     }
 }

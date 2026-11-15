@@ -2434,6 +2434,12 @@ Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
 page, "openraft version").
 
+A follower serves a read that starts at an offset or at `earliest` only
+after it has applied a read index asked of the leader, so it is never
+served below a head trim the leader already answered ("Head trims").
+Tail subscribes and live delivery are served from the follower's bound
+with no round.
+
 A broker that restarts answers reads again once its member has caught up
 and a leader is known. It needs the restore check once per start ("Group
 and member identity"), and nothing per shard: no assignment has to be
@@ -3201,19 +3207,39 @@ commit passes the trim it hides the same records as every other member.
 
 On the hybrid only the leader serves readers, so once a trim is answered
 no reader on any broker is served below its floor. A Raft follower serves
-from its own log, so a member whose log holds a trim its commit has not
-passed yet (a follower that has not heard the commit, or a member
-restarted with its saved commit offset behind the trim) holds a resume,
-cursor subscribe or history page that starts below the trim's floor (or at
-`earliest`) until it has, for at most 5 s, then refuses it as retryable
-(`NotReadable::Settling`). Reads at or above the floor, and tail
-subscribes, are served at once. The refusal repeats on every retry for as
-long as the trim stays uncommitted, for example on a leader without a
-quorum or on a partitioned follower. A follower that
-does not hold the trim's entry at all yet can still serve below the floor
-after `trim_ok` until the entry reaches it, about one append round.
-Closing that needs a read index asked of the leader
-([#2603](https://github.com/GetFelix/felix/issues/2603)).
+from its own log, which may not hold a trim the leader has already
+answered. So before a follower serves a resume from an offset or from
+`earliest`, a cursor subscribe, or a history page, it asks the leader for a
+read index (the `ReadIndex` peer message) and waits until it has applied
+that index. The leader answers with its commit index once a majority has
+confirmed it still leads, or past it the furthest write it answered on a
+written majority: the same value `confirm_read` waits for. Every trim
+answered before the read began is then committed in the follower's log,
+so its floor applies there. A tail subscribe and live delivery do not ask,
+and nor does the leader, whose reads are unchanged.
+
+The wait is bounded by the longest election timeout from when the read
+began. A follower that knows no leader, gets no answer, or does not apply
+the index in time refuses the read as retryable
+(`NotReadable::Settling`), so a follower cut off from its leader serves no
+read from an offset. The follower still waits as before for a trim its log
+holds but its commit has not passed (at most 5 s), which matters for a
+member restarted with its saved commit offset behind the trim.
+
+The read index is a peer message a build that predates it does not know,
+so it waits for the fleet feature `raft_follower_read` (a lone broker has
+it from the start). Until then a follower refuses such a read with
+`NotReadable::OnLeader`, which the subscribe handler answers with a
+redirect to the leader when it knows one and with `shard_unavailable`
+(`not_ready`) otherwise.
+
+> `services/felix-broker-service/src/shards/raft/tests/trim.rs`,
+> `a_follower_without_the_trim_is_not_read_below_it_after_the_answer`,
+> `a_follower_holding_the_trim_is_not_read_below_it_after_the_answer`,
+> `a_follower_cut_off_from_its_leader_refuses_offset_reads_as_retryable` and
+> `a_follower_leaves_offset_reads_to_the_leader_until_raft_follower_read`;
+> `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
+> `a_follower_resume_before_raft_follower_read_redirects_to_its_leader`.
 
 A Raft trim that does not commit and reach the leader's ring within 30 s
 of its proposal (one budget for both) is answered as on the hybrid: `unacknowledged` with `detail.reason` = `trim_timed_out`, and it

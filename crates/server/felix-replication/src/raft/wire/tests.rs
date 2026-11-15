@@ -203,6 +203,7 @@ fn every_request() -> Vec<RaftRequest> {
                 leader_commit: None,
             }))
         },
+        request(Request::ReadIndex),
     ]
 }
 
@@ -250,6 +251,8 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
             },
         )))),
         Ok(RaftReply(Reply::Written)),
+        Ok(RaftReply(Reply::ReadIndex { index: Some(42) })),
+        Ok(RaftReply(Reply::ReadIndex { index: None })),
         Err(Refused::Unreachable("down".into())),
         Err(Refused::NoSuchMember(addressee())),
         Err(Refused::Stopped(addressee(), "fatal".into())),
@@ -318,10 +321,38 @@ fn every_reply_reads_back_as_written() {
                 assert_eq!(a, b)
             }
             (Ok(RaftReply(Reply::Written)), Ok(RaftReply(Reply::Written))) => {}
+            (
+                Ok(RaftReply(Reply::ReadIndex { index: a })),
+                Ok(RaftReply(Reply::ReadIndex { index: b })),
+            ) => assert_eq!(a, b),
             (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
             _ => panic!("an answer read back as another kind"),
         }
     }
+}
+
+/// A read index goes as request tag 8 with no body, and its answer as tag
+/// 6 with an optional index. A tag this build does not know is refused.
+#[test]
+fn a_read_index_reads_back_under_its_tags() {
+    let asked = encode_request(&request(Request::ReadIndex)).expect("encode");
+    assert_eq!(&asked[..2], &[LAYOUT, 8]);
+    assert!(matches!(
+        decode_request(asked).expect("decode").body,
+        Request::ReadIndex
+    ));
+
+    let answer = encode_reply(&Ok(RaftReply(Reply::ReadIndex { index: Some(7) })));
+    assert_eq!(&answer[..], &[LAYOUT, 6, 1, 0, 0, 0, 0, 0, 0, 0, 7]);
+    let none = encode_reply(&Ok(RaftReply(Reply::ReadIndex { index: None })));
+    assert_eq!(&none[..], &[LAYOUT, 6, 0]);
+    assert!(decode_reply(Bytes::from_static(&[LAYOUT, 6, 2])).is_err());
+
+    let mut unknown = encode_request(&request(Request::ReadIndex))
+        .expect("encode")
+        .to_vec();
+    unknown[1] = 9;
+    assert!(decode_request(Bytes::from(unknown)).is_err());
 }
 
 /// The layout is pinned: a vote, byte by byte.

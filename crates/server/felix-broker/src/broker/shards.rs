@@ -9,7 +9,7 @@ use super::keys::{StreamKeyRef, TopicKey, TopicKeyRef};
 use super::metadata::{ConsistencyLevel, StreamMetadata};
 use super::publish::LogDelivery;
 use crate::durable::StreamLog;
-use crate::error::{BrokerError, Result};
+use crate::error::{BrokerError, NotReadable, Result};
 use crate::stream::{ReadBound, StreamState};
 
 /// Byte ceiling on the replay ring refill at startup.
@@ -39,6 +39,22 @@ pub trait EngineLogs: Send + Sync + std::fmt::Debug {
         stream: &'a str,
         through: u64,
     ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
+}
+
+/// Asked before a read of a stream on its engine's log that could start
+/// below a head trim's floor. A follower's log may not hold a trim the
+/// leader has already answered, so the engine first brings the follower up
+/// to the leader's read index, or refuses the read.
+pub trait FollowerReads: Send + Sync + std::fmt::Debug {
+    /// Ok when this broker may serve the read now. Tail reads and live
+    /// delivery are never asked.
+    fn before_read<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        shard: u32,
+    ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<(), NotReadable>> + Send + 'a>>;
 }
 
 /// A record's payload and headers block, the bytes the replay ring holds for it.
