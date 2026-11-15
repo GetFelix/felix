@@ -106,6 +106,7 @@ pub(crate) async fn commit(
         publish_ctx,
         &key,
         "commit not served",
+        "commits",
         |handle| async move {
             broker
                 .commit_to_handle_at(&handle, event, ops, expected_offset, publisher)
@@ -217,6 +218,7 @@ pub(crate) async fn publish_at(
         publish_ctx,
         &shard,
         "publish not served",
+        "conditional publishes",
         |handle| async move {
             broker
                 .publish_batch_at(&handle, &payloads, expected_offset, publisher)
@@ -397,12 +399,18 @@ async fn leader_write<W, F>(
     publish_ctx: &PublishContext,
     key: &ShardKey,
     context: &str,
+    // What the write is, for a shard on Raft that reached the hybrid path.
+    what: &'static str,
     write: W,
 ) -> Result<u64, NotWritten>
 where
     W: FnOnce(StreamHandle) -> F,
     F: Future<Output = felix_broker::Result<PublishOutcome>>,
 {
+    publish_ctx
+        .engine
+        .refuse_on_raft(key, what)
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
     let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
     let generation = owned(dispatched, key)?;
     let handle = broker
@@ -458,7 +466,10 @@ pub(crate) async fn state_get(
         Some(entity_key),
         named,
     )?;
-    owned(dispatch(publish_ctx.ingress.as_deref(), &shard), &shard)?;
+    let term = owned(dispatch(publish_ctx.ingress.as_deref(), &shard), &shard)?;
+    if publish_ctx.engine.on_raft(&shard) {
+        return state_get_on_raft(broker, publish_ctx, &shard, term, key).await;
+    }
     // The view holds only what the ring holds, which on a `Quorum` stream is
     // what the committed mark covers, so the answer is never one a failover
     // takes back.
@@ -473,6 +484,41 @@ pub(crate) async fn state_get(
         .map_err(|err| ClientError::from_broker(&err, "state read not served"))?;
     confirm_read_leader(publish_ctx, &shard).await?;
     Ok(read)
+}
+
+/// [`state_get`] on a shard a Raft group runs here. A read-index round
+/// confirms the term before the value is taken, and the view holds every
+/// commit answered before then: a Raft commit is answered only once its
+/// state updates are in the view.
+async fn state_get_on_raft(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    shard: &ShardKey,
+    term: u64,
+    key: &str,
+) -> Result<StateRead, ClientError> {
+    publish_ctx
+        .engine
+        .confirm_raft_read(shard, term)
+        .await
+        .unwrap_or(Err(CommitError::LeadershipLost {
+            what: "read",
+            detail: "the shard is not on Raft here",
+        }))
+        .map_err(|err| ClientError::from_anyhow(&err.into()))?;
+    let handle = broker
+        .resolve_stream_handle(
+            &shard.tenant_id,
+            &shard.namespace,
+            &shard.stream,
+            shard.shard,
+        )
+        .await
+        .map_err(|err| ClientError::from_broker(&err, "state read not served"))?;
+    broker
+        .state_get(&handle, key)
+        .await
+        .map_err(|err| ClientError::from_broker(&err, "state read not served"))
 }
 
 /// Refuse a read of shard-local state up front when the lease decides

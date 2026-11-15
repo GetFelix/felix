@@ -49,7 +49,7 @@ pub(super) struct Completion {
     /// A trim record's floor. Its one record is applied to the ring in its
     /// turn instead of appended and fanned out.
     trim: Option<u64>,
-    trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+    ring_applied: Option<tokio::sync::oneshot::Sender<()>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
     sample: bool,
@@ -95,7 +95,7 @@ impl Delivery {
 impl Completion {
     pub(super) fn new(
         claimed: ClaimedPublish,
-        trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+        ring_applied: Option<tokio::sync::oneshot::Sender<()>>,
         log_capacity: usize,
         replication: Arc<AppendedShards>,
     ) -> Self {
@@ -118,7 +118,7 @@ impl Completion {
             timestamp_micros,
             commit,
             trim,
-            trim_applied,
+            ring_applied,
             durable,
             sample,
             log_capacity,
@@ -140,7 +140,7 @@ impl Completion {
             timestamp_micros: batch.timestamp_micros,
             commit: batch.commit,
             trim: batch.trim,
-            trim_applied: batch.trim_applied,
+            ring_applied: batch.ring_applied,
             durable: None,
             sample: false,
             log_capacity,
@@ -223,7 +223,7 @@ impl Completion {
             first_offset,
             commit: self.commit.take(),
             trim: self.trim,
-            trim_applied: self.trim_applied.take(),
+            ring_applied: self.ring_applied.take(),
             skipped_before: 0,
             gap: false,
             gap_end: None,
@@ -253,7 +253,7 @@ impl Completion {
         if !self.handle.state.apply_trim(first_offset, floor, turn) {
             return Err(BrokerError::PublishSuperseded { first_offset });
         }
-        if let Some(applied) = self.trim_applied.take() {
+        if let Some(applied) = self.ring_applied.take() {
             let _ = applied.send(());
         }
         Ok(PublishOutcome {
@@ -375,6 +375,10 @@ impl Completion {
                 first_offset: first_offset.unwrap_or_default(),
             })?;
         let skipped_before = skipped_before.max(self.skipped_before);
+        // A commit's state updates are in the view now.
+        if let Some(applied) = self.ring_applied.take() {
+            let _ = applied.send(());
+        }
         if let Some(start) = append_start {
             let append_ns = start.elapsed().as_nanos() as u64;
             timings::record_append_ns(append_ns);
@@ -753,7 +757,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
                 first_offset: first.offset,
                 commit,
                 trim: None,
-                trim_applied: None,
+                ring_applied: None,
                 skipped_before: first.offset.saturating_sub(next),
                 gap: false,
                 gap_end: None,

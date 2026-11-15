@@ -38,7 +38,9 @@ fn answer(messages: &[Outgoing], id: u64) -> &Message {
             Outgoing::Message(
                 message @ (Message::PublishOk { request_id, .. }
                 | Message::PublishRefused { request_id, .. }
-                | Message::TrimOk { request_id, .. }),
+                | Message::TrimOk { request_id, .. }
+                | Message::CommitOk { request_id, .. }
+                | Message::StateValue { request_id, .. }),
             ) if *request_id == id => Some(message),
             _ => None,
         })
@@ -231,6 +233,126 @@ async fn a_trim_before_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<
         matches!(below, Err(felix_broker::BrokerError::CursorTooOld { .. })),
         "read below the floor"
     );
+    EngineShards::shutdown(&*shards).await;
+    Ok(())
+}
+
+fn commit(
+    request_id: u64,
+    value: &'static [u8],
+    expected_offset: Option<u64>,
+) -> Result<Option<Frame>> {
+    Ok(Some(frame_from_message(Message::Commit {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        entity_key: Bytes::from_static(b"order-42"),
+        event: Bytes::from_static(b"placed"),
+        changes: vec![felix_wire::StateChange::Put {
+            key: "status".to_string(),
+            value: Bytes::from_static(value),
+        }],
+        request_id,
+        expected_offset,
+        shard: Some(0),
+    })))
+}
+
+fn state_get(request_id: u64) -> Result<Option<Frame>> {
+    Ok(Some(frame_from_message(Message::StateGet {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        entity_key: Bytes::from_static(b"order-42"),
+        key: "status".to_string(),
+        request_id,
+        shard: Some(0),
+    })))
+}
+
+/// **A commit to a Raft shard is written whole, read back by `state_get`,
+/// and refused off its expected offset, once the fleet takes commits on
+/// Raft.** Before the fleet finalizes `raft_atomic_commit` it is refused by
+/// name, since an older member would refuse the entry.
+#[tokio::test]
+async fn a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<()> {
+    use felix_common::fleet::{ATOMIC_COMMIT, FleetGate, RAFT_ATOMIC_COMMIT};
+
+    let root = tempfile::tempdir()?;
+    let broker = fixture::broker_at(
+        root.path(),
+        1,
+        fixture::INCARNATION,
+        felix_broker::ConsistencyLevel::Quorum,
+        felix_storage::log::FsyncMode::None,
+    )
+    .await;
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let gate = Arc::new(FleetGate::new([
+        ATOMIC_COMMIT.name(),
+        RAFT_ATOMIC_COMMIT.name(),
+    ]));
+    gate.observe([ATOMIC_COMMIT.name()]);
+    let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(
+        Arc::clone(&gate),
+    ));
+    let engine = Arc::new(StreamEngine::new(
+        Some(marks),
+        Some(fixture::ingress(&shards)),
+    ));
+    engine.set_raft(Arc::clone(&shards));
+    let config = BrokerConfig::default();
+    let cluster = ClusterContext {
+        engine,
+        ..ClusterContext::default()
+    };
+    let auth = auth_fixture("t1", default_perms());
+    let run = |frames: Vec<Result<Option<Frame>>>| {
+        let mut frames_with_auth = vec![Ok(Some(frame_from_message(auth_message(&auth))))];
+        frames_with_auth.extend(frames);
+        run_control_loop_on(
+            Arc::clone(&broker),
+            Arc::clone(&auth.auth),
+            frames_with_auth,
+            config.clone(),
+            crate::serving::quic::handlers::publish::build_publish_context(
+                Arc::clone(&broker),
+                &config,
+                cluster.clone(),
+            ),
+            Default::default(),
+        )
+    };
+
+    let (_, gated) = run(vec![commit(1, b"early", None)]).await?;
+    assert!(
+        format!("{gated:?}").contains("raft_atomic_commit"),
+        "not refused by name: {gated:?}"
+    );
+
+    gate.observe([ATOMIC_COMMIT.name(), RAFT_ATOMIC_COMMIT.name()]);
+    let (_, written) = run(vec![commit(2, b"placed", None)]).await?;
+    let Message::CommitOk { offset, .. } = answer(&written, 2) else {
+        panic!("the commit was not written: {written:?}");
+    };
+    let at = *offset;
+    let (_, read) = run(vec![commit(3, b"stale", Some(at)), state_get(4)]).await?;
+    assert_eq!(
+        refused_tail(answer(&read, 3)),
+        at + 2,
+        "a refusal on Raft takes one offset"
+    );
+    match answer(&read, 4) {
+        Message::StateValue { value, version, .. } => {
+            assert_eq!(value.as_deref(), Some(&b"placed"[..]));
+            assert_eq!(*version, Some(at));
+        }
+        other => panic!("no state: {other:?}"),
+    }
     EngineShards::shutdown(&*shards).await;
     Ok(())
 }

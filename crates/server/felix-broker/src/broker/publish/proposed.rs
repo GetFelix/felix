@@ -704,13 +704,23 @@ async fn finish<E>(
     // Never reset, so a wait cannot be refused.
     let _ = turn.wait().await;
     let state = &handle.state;
+    // A commit is answered once its state updates are in the view, so the
+    // writer's next state read has them. Dropped unsent if a reset took the
+    // view, which a read then rebuilds from the log.
+    let (applied, in_view) = match commit {
+        Some(_) => {
+            let (applied, in_view) = oneshot::channel();
+            (Some(applied), Some(in_view))
+        }
+        None => (None, None),
+    };
     let batch = match (&committed, first_offset) {
         (Ok(_), Some(first_offset)) if missed.is_some() => HeldBatch::blank(first_offset),
         (Ok(at), Some(first_offset)) if let Some(trim) = trim => HeldBatch {
             payloads,
             first_offset,
             trim: Some(trim.before),
-            trim_applied: Some(trim.applied),
+            ring_applied: Some(trim.applied),
             skipped_before: at.skipped_before,
             gap: false,
             ..HeldBatch::gap(None)
@@ -723,7 +733,7 @@ async fn finish<E>(
             first_offset,
             commit,
             trim: None,
-            trim_applied: None,
+            ring_applied: applied,
             skipped_before: at.skipped_before,
             gap: false,
             gap_end: None,
@@ -741,6 +751,9 @@ async fn finish<E>(
     committed.map_err(|failed| failed.error)?;
     if let (Some(tail), Some(expected)) = (missed, expected) {
         return Err((expected.mismatch)(tail));
+    }
+    if let Some(in_view) = in_view {
+        let _ = in_view.await;
     }
     Ok(PublishOutcome {
         subscribers: 0,

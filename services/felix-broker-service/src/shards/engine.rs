@@ -61,6 +61,28 @@ impl StreamEngine {
     }
 }
 
+impl StreamEngine {
+    /// Confirm by a read-index round that this broker still leads `shard`'s
+    /// Raft group in `term`, before a read of the shard's state takes its
+    /// value. `None` when the hybrid runs the shard.
+    pub async fn confirm_raft_read(
+        &self,
+        shard: &ShardKey,
+        term: u64,
+    ) -> Option<Result<(), CommitError>> {
+        #[cfg(feature = "raft")]
+        {
+            let raft = self.raft(shard)?;
+            Some(raft.confirm_read(shard, term).await)
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = (shard, term);
+            None
+        }
+    }
+}
+
 /// A publish to a Raft shard refused with nothing proposed.
 #[derive(Debug, thiserror::Error)]
 pub enum RaftRefusal {

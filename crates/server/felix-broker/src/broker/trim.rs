@@ -132,8 +132,8 @@ impl Broker {
             )
             .await?
             .expect("a trim claims or is refused");
-        let (trim_applied, applied) = tokio::sync::oneshot::channel();
-        let outcome = self.complete_claimed(claimed, Some(trim_applied)).await?;
+        let (ring_applied, applied) = tokio::sync::oneshot::channel();
+        let outcome = self.complete_claimed(claimed, Some(ring_applied)).await?;
         Ok(TrimStep(Step::Written {
             before,
             expected,

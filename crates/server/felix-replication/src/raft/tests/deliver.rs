@@ -1506,6 +1506,9 @@ async fn an_atomic_commit_applies_whole_on_every_member() {
     };
     let landed = commit(b"placed", b"placed", None).await.expect("joined");
     assert_eq!(landed.expect("committed").offsets, Some((at, at)));
+    // Answered once the leader's view has it, so its writer reads it back.
+    let placed = (Some(Bytes::from_static(b"placed")), Some(at));
+    assert_eq!(state_of(members[0], "order-42").await, placed);
     let refused = commit(b"stale", b"stale", Some(at)).await.expect("joined");
     assert_eq!(refused, Err(CommitError::OffsetMismatch { tail: at + 2 }));
 
@@ -1525,7 +1528,6 @@ async fn an_atomic_commit_applies_whole_on_every_member() {
         assert!(page.records[0].mark.is_commit(), "{member:?}");
         assert_eq!(page.records[0].offset, at, "{member:?}");
     }
-    let placed = (Some(Bytes::from_static(b"placed")), Some(at));
     // The follower's view moves once its member applies the commit.
     for (index, member) in members.into_iter().enumerate() {
         let deadline = tokio::time::Instant::now() + PATIENCE;

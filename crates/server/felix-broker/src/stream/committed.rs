@@ -289,8 +289,9 @@ pub(crate) struct HeldBatch {
     /// The floor of a trim record, which is the batch's one record and is
     /// applied to the ring rather than appended to it.
     pub(crate) trim: Option<u64>,
-    /// Told once the trim's floor reaches the ring.
-    pub(crate) trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Told once the batch reaches the ring: a trim's floor, or a commit's
+    /// state updates.
+    pub(crate) ring_applied: Option<tokio::sync::oneshot::Sender<()>>,
     /// Offsets just below the batch that hold no record, which subscribers
     /// are told were skipped.
     pub(crate) skipped_before: u64,
@@ -319,7 +320,7 @@ impl HeldBatch {
             first_offset: 0,
             commit: None,
             trim: None,
-            trim_applied: None,
+            ring_applied: None,
             skipped_before: 0,
             gap: true,
             gap_end: written_end,
