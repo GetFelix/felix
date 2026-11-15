@@ -305,3 +305,35 @@ async fn a_drain_on_a_raft_cluster_finishes_through_the_store() {
         assert_eq!(assignment.successor, None);
     }
 }
+
+/// Leaders a stream cannot move off a broker keep its total high. Evening
+/// the totals out by unbalancing another stream would only be moved back by
+/// that stream's own rule on the next pass, forever.
+#[test]
+fn the_totals_never_unbalance_a_raft_stream() {
+    let ab = ["broker-a", "broker-b"];
+    let streams = vec![
+        replicated_stream("orders", 2, 2),
+        replicated_stream("pinned", 2, 1),
+    ];
+    let mut existing = Vec::new();
+    for (shard, leader, replica) in [(0, "broker-a", "broker-b"), (1, "broker-b", "broker-a")] {
+        let mut assignment = member_of(shard, leader);
+        assignment.replicas = vec![replica.to_string()];
+        existing.push(assignment);
+    }
+    for shard in 0..2 {
+        existing.push(pinned("pinned", shard, "broker-a"));
+    }
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &live(&ab),
+        &existing,
+        &NothingCaughtUp,
+        raft(),
+    );
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+}

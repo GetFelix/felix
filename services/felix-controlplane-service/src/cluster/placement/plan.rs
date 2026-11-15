@@ -433,6 +433,7 @@ fn plan_once(
                 replication_factor,
                 &is_live,
                 &is_serving,
+                &counted,
                 &mut leaders,
                 &mut moves,
             );

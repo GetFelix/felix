@@ -2,8 +2,8 @@
 //!
 //! The group elects its own leader and keeps its own members, so none of the
 //! hybrid's steps apply: there is no fence to wait on, no drained report, and
-//! no failover to decide. Placement only names the member it wants leading,
-//! and the brokers hand leadership to it. Moving a leader is one write that
+//! no failover to decide. Placement only names the member it wants leading;
+//! once brokers follow placement (#2649) the group's leader moves there. Moving a leader is one write that
 //! changes `leader` to another member of the set; the set itself never
 //! changes here. `docs/control-plane.md`, "Raft shards".
 use super::leadership::{Leadership, Owner};
@@ -12,9 +12,9 @@ use super::rendezvous::score;
 use super::{Blocked, Decision, MoveStep};
 use crate::model::{ShardAssignment, ShardKind, ShardState};
 
-/// Most Raft shards one pass names a new leader for. Each write starts a
-/// leadership transfer, which closes the shard for an election; the brokers
-/// pace those too, and this keeps one pass from asking for thousands.
+/// Most Raft shards one pass names a new leader for. Once brokers follow
+/// placement each write asks for a leadership transfer, which closes the
+/// shard for an election, so one pass does not ask for thousands.
 pub(super) const RAFT_LEADERS_PER_PASS: usize = 64;
 
 /// Whether placement treats `existing` as a shard a Raft group runs: a
@@ -42,6 +42,7 @@ pub(super) fn raft_step<'a>(
     replication_factor: u32,
     is_live: &dyn Fn(&str) -> bool,
     is_serving: &dyn Fn(&str) -> bool,
+    counted: &dyn Fn(&str) -> bool,
     leaders: &mut Leadership<'a>,
     moves: &mut Moves,
 ) -> Decision {
@@ -74,11 +75,14 @@ pub(super) fn raft_step<'a>(
         };
         let for_stream = over(&|node| leaders.of(key, node));
         moves.stream_wanted |= for_stream.is_some();
+        // For the totals only where the stream's own spread does not get
+        // worse, or the next pass's stream rule moves it straight back.
         let to = for_stream.or_else(|| {
             moves
                 .cluster_moves
                 .then(|| over(&|node| leaders.total(node)))
                 .flatten()
+                .filter(|to| leaders.of(key, to) < leaders.of(key, leader))
         });
         match to {
             None => return Decision::Kept,
@@ -98,8 +102,8 @@ pub(super) fn raft_step<'a>(
         return Decision::Waiting(Blocked::MoveLimit);
     }
     moves.raft_leaders += 1;
-    // The tally counts a leader only on a live broker.
-    if leader_live {
+    // The tally counts a leader on any live broker, region aside.
+    if counted(leader) {
         leaders.remove(Owner::of(key), leader);
     }
     leaders.add(Owner::of(key), to);

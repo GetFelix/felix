@@ -297,8 +297,7 @@ pub fn start_move(
 }
 
 /// Name `destination`, a member of a Raft shard's set, its leader: one write
-/// that changes nothing else. The group hands leadership over; nothing is
-/// copied, so no move slot is taken. A leader that is down may be moved too,
+/// that changes nothing else. Nothing is copied, so no move slot is taken. A leader that is down may be moved too,
 /// since this only says which member placement wants leading.
 fn raft_leader_move(
     catalog: &Catalog<'_>,

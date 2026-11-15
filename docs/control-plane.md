@@ -1769,8 +1769,11 @@ only says which member it wants leading:
 | Follower on a draining broker | Replaced | Stays |
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
-at most 64 new Raft leaders, since each starts a leadership transfer that
-closes the shard for an election. Pausing placement holds them, and balance
+at most 64 new Raft leaders: once brokers follow placement
+([#2649](https://github.com/GetFelix/felix/issues/2649)) each asks for a
+leadership transfer, which closes the shard for an election. Until then the
+group's leader stays where it was elected, so a drained broker's shutdown
+costs its groups an election rather than a hand-off. Pausing placement holds them, and balance
 waits while a broker is down, as for the hybrid. The set changes only
 through the group's membership target
 ([#2235](https://github.com/GetFelix/felix/issues/2235)). A shard switched
