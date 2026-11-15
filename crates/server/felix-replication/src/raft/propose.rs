@@ -14,6 +14,7 @@ use std::time::Duration;
 use bytes::Bytes;
 use felix_storage::log::FsyncMode;
 use felix_storage::raft_log::{LogPoint, LogPositions, WrittenAt, WrittenToken};
+use felix_storage::waiters::Waiters;
 use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
@@ -776,7 +777,8 @@ fn unled(why: Lost, unwritten: bool) -> CommitError {
 /// error says how far.
 pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     waiting: Waiting<W>,
-    mut positions: watch::Receiver<LogPositions>,
+    positions: watch::Receiver<LogPositions>,
+    flush_waiters: Waiters<(u64, u64)>,
     mut leading: impl Leading,
     stop: CancellationToken,
 ) -> Result<Written, Unacknowledged> {
@@ -843,13 +845,17 @@ pub(crate) async fn acknowledged<W: Future<Output = Option<LogPoint>> + Send>(
     let last = span.last;
     let flushed = async {
         let reached = |at: &LogPositions| {
-            at.flushed.is_some_and(|flushed| {
+            at.flushed.filter(|flushed| {
                 flushed.term > last.term
                     || (flushed.term == last.term && flushed.index >= last.index)
             })
         };
-        let at = positions.wait_for(reached).await.ok()?;
-        at.flushed.map(|flushed| flushed.term)
+        let key = (last.term, last.index);
+        let at = flush_waiters
+            .wait_for(&positions, key, reached)
+            .await
+            .ok()?;
+        Some(at.term)
     };
     let flushed = tokio::select! {
         biased;

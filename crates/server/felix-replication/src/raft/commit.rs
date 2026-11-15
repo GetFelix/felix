@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use felix_storage::raft_log::LogPoint;
+use felix_storage::waiters::Waiters;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
@@ -135,7 +136,8 @@ impl Commits {
 /// leader's entry. An error is an unknown outcome, never "not written".
 pub(crate) async fn committed(
     written: Written,
-    mut commits: watch::Receiver<Commits>,
+    commits: watch::Receiver<Commits>,
+    applied: Waiters<u64>,
     mut leading: impl Leading,
     stop: CancellationToken,
     timeout: Duration,
@@ -145,11 +147,9 @@ pub(crate) async fn committed(
     };
     let term = written.generation;
     let reached = async {
-        let commits = commits
-            .wait_for(|commits| commits.term_at(index) != TermAt::Pending)
-            .await
-            .ok()?;
-        Some(commits.term_at(index))
+        let term_at =
+            |commits: &Commits| Some(commits.term_at(index)).filter(|at| *at != TermAt::Pending);
+        applied.wait_for(&commits, index, term_at).await.ok()
     };
     tokio::select! {
         biased;

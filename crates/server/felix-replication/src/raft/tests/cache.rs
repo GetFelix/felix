@@ -447,7 +447,7 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
     let dir = tempdir().expect("dir");
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
     let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
-    let (mut machine, _, cache) = opened.expect("open");
+    let (mut machine, _, _, cache) = opened.expect("open");
     let cache = cache.expect("a cache group");
     let entry = |index: u64, command: CacheCommand| {
         let command = Command {
@@ -481,7 +481,7 @@ async fn cache_machine(
 ) -> (super::super::machine::Machine, super::super::machine::Cache) {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
     let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
-    let (machine, _, cache) = opened.expect("open");
+    let (machine, _, _, cache) = opened.expect("open");
     (machine, cache.expect("a cache group"))
 }
 

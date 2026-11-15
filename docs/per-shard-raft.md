@@ -1829,10 +1829,22 @@ leading the term it wrote in, and with a timeout when the caller's budget
 runs out. Each is an unknown outcome. A commit that is already visible
 wins over all of them.
 
+The wait is not woken by every apply. It sits in a queue under its offset
+(`felix_storage::waiters`), beside the commit table, and only the apply that
+reaches the offset wakes it to read the table. With hundreds of writes in
+flight, each wait is woken about once instead of once per applied run. An
+`AckAt::Flushed` publish waits for the log's flushed position the same way,
+and so does a follower's report of what it has written.
+
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_write_waits_for_its_commit`,
-> `a_write_whose_index_commits_under_another_term_is_refused` and
-> `the_commit_table_knows_the_term_at_every_applied_index`.
+> `a_write_whose_index_commits_under_another_term_is_refused`,
+> `the_commit_table_knows_the_term_at_every_applied_index`,
+> `a_commit_wait_is_answered_by_the_apply_that_reaches_it` and
+> `a_commit_wait_ends_on_a_lost_term_with_nothing_applied`;
+> `crates/server/felix-storage/src/waiters/tests.rs`,
+> `an_advance_between_the_look_and_the_sleep_is_not_lost` and
+> `an_advance_wakes_the_waiters_it_satisfies_not_the_whole_queue`.
 
 A `Leader` write is acknowledged on local durability if `admit_local_ack`
 passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
