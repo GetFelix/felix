@@ -326,6 +326,18 @@ impl DiskLog {
         self.inner.head_trim()
     }
 
+    /// The highest floor among trim records the apply bound has not passed
+    /// yet, below which [`Self::readable_base`] may still rise without a new
+    /// write. `None` when no trim waits.
+    pub fn pending_trim_floor(&self) -> Option<Offset> {
+        if !self.inner.head_pending.load(Ordering::Acquire) {
+            return None;
+        }
+        let mut head = self.inner.head.lock();
+        self.inner.apply_head(&mut head);
+        head.pending_floor()
+    }
+
     /// Exclusive bound on durable offsets: everything below it survives a crash.
     pub fn durable_offset(&self) -> Offset {
         self.inner.durability.durable_upto()
@@ -2319,7 +2331,9 @@ impl LogInner {
     /// asked to hide.
     fn head_apply_bound(&self) -> Offset {
         let durable = self.durability.durable_upto();
-        if self.hold_at_commit.load(Ordering::Acquire) {
+        // A Raft log's entries above the commit may still be cut by a later
+        // leader, so its trims apply at the commit whatever the hold says.
+        if self.config.raft_log || self.hold_at_commit.load(Ordering::Acquire) {
             durable.min(self.commit_offset.load(Ordering::Acquire))
         } else {
             durable

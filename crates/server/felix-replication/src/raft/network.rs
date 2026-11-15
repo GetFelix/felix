@@ -84,6 +84,13 @@ impl RaftRequest {
     pub fn to(&self) -> &MemberId {
         &self.to
     }
+
+    /// Whether this is a leader's append carrying entries, for a test
+    /// network that delays or drops those.
+    #[cfg(feature = "testing")]
+    pub fn carries_entries(&self) -> bool {
+        matches!(&self.body, Request::Append(append) if !append.entries.is_empty())
+    }
 }
 
 impl fmt::Debug for RaftRequest {

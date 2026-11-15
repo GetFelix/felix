@@ -261,6 +261,7 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "stream_incarnations"
         | "cache_incarnations" => Off::ElectionPrerequisite,
         "head_trim"
+        | "raft_head_trim"
         | "atomic_commit"
         | "publisher_principal"
         | "group_cursor_dependencies"

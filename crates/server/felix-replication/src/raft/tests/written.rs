@@ -395,6 +395,7 @@ impl Led {
         };
         let batch = Batch {
             expected: None,
+            trim: None,
             records: vec![record],
             ack: AckAt::Written,
             term: None,

@@ -11,7 +11,7 @@ use std::future::Future;
 
 use bytes::Bytes;
 use felix_broker::{
-    Broker, BrokerError, PublishOutcome, StateOp, StateRead, StreamHandle, TrimOutcome,
+    Broker, BrokerError, PublishOutcome, StateOp, StateRead, StreamHandle, TrimFailed, TrimOutcome,
 };
 use felix_replication::engine::{CommitError, Engine};
 use felix_wire::StateChange;
@@ -212,10 +212,9 @@ pub(crate) async fn trim_at(
     headers: Bytes,
 ) -> Result<TrimOutcome, NotWritten> {
     let key = shard_key(publish_ctx, tenant_id, namespace, stream, None, Some(shard))?;
-    publish_ctx
-        .engine
-        .refuse_on_raft(&key, "trims")
-        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
+    if publish_ctx.engine.on_raft(&key) {
+        return trim_at_on_raft(broker, publish_ctx, &key, before, expected_offset, headers).await;
+    }
     let (dispatched, mut fenced) = dispatch_write(publish_ctx.ingress.as_deref(), &key).await;
     let generation = owned(dispatched, &key)?;
     let handle = broker
@@ -241,6 +240,69 @@ pub(crate) async fn trim_at(
         .finish_trim(&handle, step)
         .await
         .map_err(|err| NotWritten::from_broker(&err, &err.to_string()))
+}
+
+/// [`trim_at`] on a shard a Raft group runs here. Checked as on the hybrid;
+/// a trim the leader's log refuses at its final index still takes an
+/// offset. See `docs/per-shard-raft.md`, "Head trims".
+async fn trim_at_on_raft(
+    broker: &Broker,
+    publish_ctx: &PublishContext,
+    key: &ShardKey,
+    before: u64,
+    expected_offset: u64,
+    headers: Bytes,
+) -> Result<TrimOutcome, NotWritten> {
+    let (dispatched, _) = dispatch_write(publish_ctx.ingress.as_deref(), key).await;
+    let term = owned(dispatched, key)?;
+    let handle = broker
+        .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        .await
+        .map_err(|err| ClientError::from_broker(&err, err.to_string()))?;
+    let proposed = publish_ctx
+        .engine
+        .trim_at_on_raft(
+            broker,
+            &handle,
+            key,
+            term,
+            before,
+            expected_offset,
+            headers,
+            // The hybrid's wait, so a stalled trim is answered after it.
+            broker.trim_wait(),
+        )
+        .await
+        .unwrap_or(Err(RaftRefusal::NotLeading { term }));
+    let proposed = match proposed {
+        Ok(proposed) => proposed,
+        // The broker's own text, as on the hybrid.
+        Err(RaftRefusal::Broker(err)) => {
+            return Err(NotWritten::from_broker(&err, &err.to_string()));
+        }
+        Err(refused) => return Err(ClientError::from_anyhow(&refused.into_anyhow()).into()),
+    };
+    proposed
+        .complete()
+        .await
+        .map_err(|failed| raft_trim_failed(failed, expected_offset))
+}
+
+/// A Raft trim's failure as the hybrid answers it. One that does not commit
+/// in time is the hybrid's `TrimTimedOut` at the offset it was proposed at,
+/// not a quorum timeout.
+fn raft_trim_failed(failed: TrimFailed<CommitError>, expected_offset: u64) -> NotWritten {
+    let err = match failed {
+        TrimFailed::Engine(CommitError::OffsetMismatch { tail }) => {
+            return NotWritten::OffsetMismatch { tail };
+        }
+        TrimFailed::Engine(CommitError::TimedOut { .. }) => BrokerError::TrimTimedOut {
+            offset: expected_offset,
+        },
+        TrimFailed::Engine(err) => return ClientError::from_anyhow(&err.into()).into(),
+        TrimFailed::Broker(err) => err,
+    };
+    NotWritten::from_broker(&err, &err.to_string())
 }
 
 /// Make `write` on the shard `key` names, if this broker leads it, inside the

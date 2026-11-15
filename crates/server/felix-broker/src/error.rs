@@ -176,8 +176,12 @@ pub enum BrokerError {
     /// Head trims are not enabled here: the broker is in a cluster whose
     /// fleet has not finalized `head_trim`, or has not said yet whether it
     /// runs alone. Nothing was written.
-    #[error("head trims are not enabled on this broker (finalize `head_trim`)")]
-    HeadTrimNotEnabled,
+    #[error("head trims are not enabled on this broker (finalize `{feature}`)")]
+    HeadTrimNotEnabled {
+        /// The fleet feature still to finalize: `head_trim`, or
+        /// `raft_head_trim` for a shard on Raft.
+        feature: &'static str,
+    },
     /// A publish carried record headers and this broker does not accept
     /// them: the operator turned them off, or the broker is in a cluster
     /// whose fleet has not finalized `record_headers`. Nothing was written.

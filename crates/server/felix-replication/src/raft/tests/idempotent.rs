@@ -390,6 +390,7 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
                 len: 4,
             }),
             expected: None,
+            trim: None,
             written: None,
         };
         group.raft().client_write(command).await.expect("written");
@@ -559,6 +560,7 @@ async fn a_member_installed_past_a_cut_batch_refuses_its_resend() {
                 len: 4,
             }),
             expected: None,
+            trim: None,
             written: None,
         };
         group.raft().client_write(command).await.expect("written");

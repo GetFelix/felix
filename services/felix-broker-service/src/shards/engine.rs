@@ -105,6 +105,18 @@ impl RaftPublish {
     }
 }
 
+/// A head trim on its way to an answer from a Raft shard.
+pub struct RaftTrim(felix_broker::ProposedTrim<CommitError>);
+
+impl RaftTrim {
+    /// Wait for the trim's commit and its floor in the replay ring.
+    pub async fn complete(
+        self,
+    ) -> Result<felix_broker::TrimOutcome, felix_broker::TrimFailed<CommitError>> {
+        self.0.complete().await
+    }
+}
+
 /// An idempotent batch on its way to an answer from a Raft shard.
 #[cfg(feature = "raft")]
 pub struct RaftIdempotentPublish(felix_replication::raft::IdempotentPublish);
@@ -280,6 +292,62 @@ impl StreamEngine {
         #[cfg(not(feature = "raft"))]
         {
             let _ = (broker, handle, shard, term, payloads, expected, timeout);
+            None
+        }
+    }
+}
+
+impl StreamEngine {
+    /// Propose a head trim to `shard`'s Raft group, at the `term` routing
+    /// answered: hide the shard below `before`, only if its next offset is
+    /// `expected`. `None` when the hybrid runs the shard.
+    ///
+    /// Checked and answered as on the hybrid, except that a trim the
+    /// leader's log refuses at its final index still takes an offset, as a
+    /// conditional publish does. The answer waits for the commit and for
+    /// the floor to reach this broker's replay ring.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn trim_at_on_raft(
+        &self,
+        broker: &felix_broker::Broker,
+        handle: &felix_broker::StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        before: u64,
+        expected: u64,
+        headers: bytes::Bytes,
+        timeout: Duration,
+    ) -> Option<Result<RaftTrim, RaftRefusal>> {
+        #[cfg(feature = "raft")]
+        {
+            use felix_replication::raft::AckAt;
+            let raft = self.raft(shard)?;
+            if self.raft_term(shard) != Some(term) {
+                return Some(Err(RaftRefusal::NotLeading { term }));
+            }
+            let ack = broker.durable_storage().map_or(AckAt::Flushed, |storage| {
+                AckAt::for_fsync(&storage.config().fsync_mode)
+            });
+            let proposed = raft
+                .trim_at(
+                    broker,
+                    handle,
+                    shard,
+                    Some(term),
+                    before,
+                    expected,
+                    headers,
+                    ack,
+                    timeout,
+                )
+                .await;
+            Some(proposed.map(RaftTrim).map_err(RaftRefusal::Broker))
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = (
+                broker, handle, shard, term, before, expected, headers, timeout,
+            );
             None
         }
     }

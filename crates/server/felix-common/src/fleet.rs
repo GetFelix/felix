@@ -78,6 +78,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     GROUP_CURSOR_DEPENDENCIES,
     CACHE_INCARNATIONS,
     HEAD_TRIM,
+    RAFT_HEAD_TRIM,
     RECORD_HEADERS,
     RECORD_GENERATIONS,
 ];
@@ -157,6 +158,12 @@ pub const CACHE_INCARNATIONS: FleetFeature = FleetFeature::new("cache_incarnatio
 /// refuses and stored in storage format v7. So it waits for the whole fleet.
 /// See `docs/durable-storage.md` ("Conditional head trim").
 pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
+
+/// A stream shard on the Raft engine accepts head trims: the trim is a Raft
+/// entry of its own kind, which a build that predates this refuses, holding
+/// replication to it at that entry. So it waits for the whole fleet, and for
+/// [`HEAD_TRIM`]. See `docs/per-shard-raft.md` ("Head trims").
+pub const RAFT_HEAD_TRIM: FleetFeature = FleetFeature::new("raft_head_trim");
 
 /// A durable stream stores each record's headers and key, and replication and
 /// forwarding carry them. A record with them needs storage format v8, which an
@@ -306,6 +313,8 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         FOR_JOINT_FENCE
     } else if feature == MAJORITY_ACK.name() || feature == RECORD_GENERATIONS.name() {
         &[GENERATION_START]
+    } else if feature == RAFT_HEAD_TRIM.name() {
+        &[HEAD_TRIM]
     } else if feature == SHARD_RAFT.name() {
         // The switch reads each record's term from its header.
         &[GENERATION_START, RECORD_GENERATIONS]

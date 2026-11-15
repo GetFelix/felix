@@ -229,7 +229,9 @@ impl LogInner {
     /// trims below the apply bound, so a trim a crash or a truncation could
     /// still take away deletes nothing.
     pub(super) fn delete_below_floor(&self) -> Result<Vec<crate::log::SegmentDescriptor>> {
-        if self.head_floor() == 0 || self.holds_seal() {
+        // A Raft log's floor stays logical: its entries leave only through
+        // openraft's purge, which knows the log starts there.
+        if self.config.raft_log || self.head_floor() == 0 || self.holds_seal() {
             return Ok(Vec::new());
         }
         // Before the floor is read: a truncation, which can lower it, takes
