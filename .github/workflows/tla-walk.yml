@@ -203,6 +203,9 @@ jobs:
           - FelixRaftPlacementFull
           - FelixRaftPlacementRewindSpare
           - FelixRaftWrittenFailover
+          - FelixRaftWrittenCommitsReformTerms
+          - FelixRaftReformTwoReformsOldRestore
+          - FelixRaftReformKeptTerms
     steps:
       - name: Checkout
         uses: actions/checkout@v7

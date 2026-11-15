@@ -75,8 +75,9 @@
 (* openraft hears an append is flushed once it is written, so the commit   *)
 (* index, apply and delivery move on a written majority. With it go:       *)
 (*                                                                         *)
-(*   Reserve    -- a copy counts (or reports) an entry only below an index *)
-(*                 it has reserved in a synced file that a rotation keeps. *)
+(*   Reserve    -- a copy counts a written entry (its report, or the       *)
+(*                 leader's own unsynced copy) only below an index it has  *)
+(*                 reserved in a synced file that a rotation keeps.        *)
 (*   MaxReforms -- 1 lets the operator re-form a group that lost a         *)
 (*                 majority to power cuts (Reform). The new epoch starts   *)
 (*                 above the longest log any copy kept, padded up to the   *)
@@ -343,13 +344,14 @@ Flush(s) ==
     /\ UNCHANGED <<election, log, commitIdx, match, committed, wrote, acked, lost, gone, used, floor>>
 
 \* The follower's answer to an append: how far its log matches the
-\* leader's and is fsynced.
+\* leader's and is fsynced. A fsynced entry survives a power cut, so the
+\* re-form's base covers it and it needs no reservation.
 Ack(i, j) ==
     /\ i # j
     /\ j \notin gone
     /\ role[i] = "leader"
     /\ term[j] = term[i]
-    /\ LET p == Min(Min(Common(i, j), synced[j]), IF Reserve THEN reserve[j] ELSE synced[j])
+    /\ LET p == Min(Common(i, j), synced[j])
        IN /\ p > match[i][j]
           /\ match' = [match EXCEPT ![i][j] = p]
     /\ UNCHANGED <<election, log, synced, commitIdx, committed, wrote, acked, lost, gone, used, floor>>
@@ -380,9 +382,10 @@ AckWritten(i) ==
     /\ UNCHANGED <<election, raft, wrote, lost, gone, used, floor>>
 
 \* The commit index counts fsynced copies only, the leader's own included.
+\* Only a written count needs a reservation.
 Agree(i, n) ==
     {j \in Servers :
-        IF j = i THEN (synced[i] >= n /\ SelfWrote(i, n)) \/ (WrittenCommits /\ SelfWrote(i, n))
+        IF j = i THEN synced[i] >= n \/ (WrittenCommits /\ SelfWrote(i, n))
         ELSE match[i][j] >= n \/ (WrittenCommits /\ Reported(i, j, n))}
 
 \* An entry of the leader's own term on a majority's disks commits it and
