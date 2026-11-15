@@ -375,8 +375,9 @@ block.
 This is what lets the ingress broker send a batch again after its answer was
 lost (see "Retrying a forwarded publish"). The sequences live in the log and
 are replicated with it, so a promoted replica answers a re-send exactly as the
-old leader would have. The frame goes only to an owner that offered
-`SEQUENCED_FORWARDS` and `RECORD_HEADERS`. To any other the pool refuses to
+old leader would have. Kind 52 goes only to an owner that offered
+`SEQUENCED_FORWARDS` and `RECORD_HEADERS`; kind 64 needs `SEQUENCED_FORWARDS`
+and `PLAIN_SEQUENCED_FORWARDS`, not `RECORD_HEADERS`. To any other the pool refuses to
 send it, and the MQTT listener refuses the message as `not_owner`, which is
 what it did before this kind existed.
 
@@ -1359,7 +1360,7 @@ Typed, because they need different responses:
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 | `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
-| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to that kind | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
+| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to a sequenced forward (kind 52 or 64) | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
 
 ### Refusal reasons
 
@@ -1450,8 +1451,8 @@ produced inside the broker is invisible to the client, which holds the
 `request_id` and is the only layer that could deduplicate. A client that wants
 the retry can reissue and know that it did.
 
-The exception is a `SequencedForwardPublish`. Its owner recognises a batch it
-already holds, so the MQTT listener sends it again after a lost answer, under
+The exception is a sequenced forward (`SequencedForwardPublish` or
+`PlainSequencedForwardPublish`). Its owner recognises a batch it already holds, so the MQTT listener sends it again after a lost answer, under
 the same producer id and sequence, to whichever broker owns the shard by then,
 this one included. It keeps trying within the forward budget
 (`BrokerConfig::forward_budget`). Once an answer was lost, only a later success
