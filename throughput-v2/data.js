@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794730240128,
+  "lastUpdate": 1794730493596,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58240,6 +58240,58 @@ window.BENCHMARK_DATA = {
             "range": "45356.60",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 790006.82\nmean: 772751.48\nstdev: 45356.60\ncv: 5.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1ada6368b18a9f4dc9a36f29ad1023d11eb929ca",
+          "message": "fix(raft): an idle answer counts only with no short-gap append in flight (#2595) (#2597)\n\n* fix(raft): an idle answer counts only with no short-gap append in flight (#2595)\n\nA resend naming the 200 ms gap and a heartbeat naming 2 s can be answered\nin that order at the leader while the follower stores the short gap last,\nonce the resend's fsync ends. The leader then slowed to 2 s while the\nfollower waited 1 s, and it stood for election.\n\nThe leader now counts short-gap appends on their way to each peer, and an\nidle answer marks the peer patient only if none was in flight when it left.\nA send dropped before its answer settles as unanswered.\n\nSpec-Unaffected: heartbeat pacing only; time is abstract in the FelixRaft models, so when a heartbeat is sent or which gap it names changes no modelled step.\n\n* fix(raft): a follower keeps its gap when an append outlasts its deadline (#2595)\n\nThe leader counts a timed-out append unanswered and can slow down on the\nnext idle heartbeat, so the follower must not store the late append's\nshort gap afterwards. The transit-time window that remains is #2600.\n\nAlso reads now and wrote under the peers lock in Pace::sending, asserts\nshort_out before settling, and tests that a dropped append settles.\n\n* fix(raft): only a late short-gap append keeps the follower's gap (#2595)\n\nA late append naming the idle gap is stored as before: a fast leader\nwith a patient follower is the safe pairing. Test\na_late_idle_gap_is_still_stored fails with the old rule.\n\nSpec-Unaffected: heartbeat gaps are liveness timing, not in any model.",
+          "timestamp": "2026-11-15T08:07:44Z",
+          "tree_id": "ee5152cf2e67375cb919f835c1230ecb4efa0deb",
+          "url": "https://github.com/GetFelix/felix/commit/1ada6368b18a9f4dc9a36f29ad1023d11eb929ca"
+        },
+        "date": 1794730492927,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 723640.86,
+            "range": "35648.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 723640.86\nmean: 712420.85\nstdev: 35648.89\ncv: 5.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 723640.86,
+            "range": "35648.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 723640.86\nmean: 712420.85\nstdev: 35648.89\ncv: 5.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 167065.7,
+            "range": "1700.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 167065.70\nmean: 167495.32\nstdev: 1700.40\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1670657.01,
+            "range": "17004.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1670657.01\nmean: 1674953.23\nstdev: 17004.06\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
