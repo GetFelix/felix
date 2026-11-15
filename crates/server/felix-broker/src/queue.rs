@@ -10,13 +10,18 @@
 //! keeps each group's durable cursor, the in-memory tracker holds what is
 //! currently handed out, and [`DeadLetters`] records the offsets a group gave
 //! up on.
+//!
+//! On a Raft stream shard a group's writes are entries in the shard's own
+//! log instead ([`GroupEntry`]).
 
 mod cursors;
 mod dead_letters;
+mod entry;
 mod reader;
 mod tracker;
 
 pub use cursors::ConsumerGroups;
 pub use dead_letters::DeadLetters;
+pub use entry::{CreatedBy, CreationToken, GroupEntry, GroupOp};
 pub use reader::{Claimed, GroupKey, GroupReader, GroupSnapshot, Seek};
 pub use tracker::GroupConsumer;

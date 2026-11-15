@@ -1218,6 +1218,12 @@ After the report byte comes the message:
   inside 7 `8 is not a record a publisher names`), so a
   leader writes one only once the fleet has finalized `raft_atomic_commit`.
   A commit with an expected offset or a producer is refused to encode.
+  9 is a consumer group's write, laid out as 1 with the encoded group entry
+  as its record (`docs/per-shard-raft.md`, "Consumer groups"). It never sits
+  inside 7, and one with an expected offset, a producer, a publisher or
+  headers is refused to encode. A build without 9 refuses the whole append
+  (`9 is not an entry payload`), so a leader writes one only once the fleet
+  has finalized `raft_consumer_groups`.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.

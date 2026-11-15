@@ -38,6 +38,7 @@ impl GroupRuntime {
                 expected: None,
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,

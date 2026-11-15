@@ -85,12 +85,24 @@ impl EntryCodec<ShardTypes> for ShardCodec {
         if data.commit && (data.trim.is_some() || data.producer.is_some()) {
             return Err(invalid("a commit names a trim or a producer".into()));
         }
+        if data.group
+            && (data.commit
+                || data.trim.is_some()
+                || data.producer.is_some()
+                || data.publisher.is_some()
+                || data.headers.is_some())
+        {
+            return Err(invalid(
+                "a group write names a commit, a trim, a producer, a publisher or headers".into(),
+            ));
+        }
         Ok(AppendRecord {
             payload: data.payload.clone(),
             timestamp_micros: data.timestamp_micros,
             mark: match data.trim {
                 Some(floor) => RecordMark::Trim { floor },
                 None if data.commit => RecordMark::Commit,
+                None if data.group => RecordMark::Group,
                 None => ProducerMark::record_mark(data.producer),
             },
             publisher: data.publisher.clone(),
@@ -110,6 +122,7 @@ impl EntryCodec<ShardTypes> for ShardCodec {
             expected: None,
             trim,
             commit: record.mark.is_commit(),
+            group: record.mark.is_group(),
             publisher: record.publisher,
             headers: record.headers,
             written: None,

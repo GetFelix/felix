@@ -1,14 +1,16 @@
-//! Membership and counter records: v9 only, refused by a normal append, and
+//! Membership, counter and group records: v9 only, refused by a stream log's
+//! append, and
 //! read back at their own offsets so a reader skipping them sees a gap.
 
 use super::*;
 use crate::log::RecordMark;
 use crate::segment::{GENERATION_VERSION, read_segment_header, segment_file_name};
 
-const V9_KINDS: [RecordMark; 3] = [
+const V9_KINDS: [RecordMark; 4] = [
     RecordMark::Membership,
     RecordMark::CounterDelta,
     RecordMark::CounterCheckpoint,
+    RecordMark::Group,
 ];
 
 fn versions(dir: &TempDir, log: &DiskLog) -> Vec<u16> {
@@ -26,7 +28,7 @@ fn versions(dir: &TempDir, log: &DiskLog) -> Vec<u16> {
         .collect()
 }
 
-/// Nothing writes the v9 kinds yet. An append holding one is refused before
+/// A stream log writes none of the v9 kinds. An append holding one is refused before
 /// it can roll the log onto v9, alone or behind other records, and the log
 /// takes ordinary appends afterwards.
 #[tokio::test]
@@ -79,7 +81,7 @@ async fn the_v9_kinds_keep_their_offsets_and_survive_a_reopen() {
     }));
     batch.push(record("c"));
     let appended = log.append_v9_for_tests(&batch, 2).await.expect("v9 append");
-    assert_eq!((appended.first_offset, appended.last_offset), (1, 5));
+    assert_eq!((appended.first_offset, appended.last_offset), (1, 6));
     assert_eq!(versions(&dir, &log).last(), Some(&GENERATION_VERSION));
 
     let expected = vec![
@@ -88,7 +90,8 @@ async fn the_v9_kinds_keep_their_offsets_and_survive_a_reopen() {
         (2, RecordMark::Membership),
         (3, RecordMark::CounterDelta),
         (4, RecordMark::CounterCheckpoint),
-        (5, RecordMark::None),
+        (5, RecordMark::Group),
+        (6, RecordMark::None),
     ];
     let marks = |records: Vec<LogRecord>| -> Vec<(Offset, RecordMark)> {
         records.into_iter().map(|r| (r.offset, r.mark)).collect()
@@ -100,12 +103,12 @@ async fn the_v9_kinds_keep_their_offsets_and_survive_a_reopen() {
         })
         .await
         .expect("read");
-    assert_eq!(page.next, 6);
+    assert_eq!(page.next, 7);
     assert_eq!(marks(page.records), expected);
     drop(log);
 
     let log = open(&dir, FsyncMode::OnCommit);
-    assert_eq!(log.tail_offset().await.expect("tail"), 6);
+    assert_eq!(log.tail_offset().await.expect("tail"), 7);
     let page = log
         .read_range(ReadRange {
             start: 0,
@@ -114,4 +117,41 @@ async fn the_v9_kinds_keep_their_offsets_and_survive_a_reopen() {
         .await
         .expect("read");
     assert_eq!(marks(page.records), expected);
+}
+
+/// A Raft log takes a consumer group's record, which a stream log refuses:
+/// on a Raft stream shard a group's writes are entries in the shard's log.
+#[tokio::test]
+async fn a_raft_log_takes_a_group_record() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(
+        dir.path(),
+        "t/ns/s/0",
+        LogConfig {
+            raft_log: true,
+            ..config(FsyncMode::OnCommit)
+        },
+    )
+    .expect("open");
+    let generation = log.accepted_generation() + 1;
+    log.accept_generation(generation, Some("a"))
+        .await
+        .expect("accept");
+    log.record_generation(generation, 0).expect("record");
+    log.lead_at(generation);
+    let group = AppendRecord {
+        mark: RecordMark::Group,
+        ..record("g")
+    };
+    log.append(&[record("a"), group]).await.expect("append");
+    let page = log
+        .read_range(ReadRange {
+            start: 0,
+            max_bytes: usize::MAX,
+        })
+        .await
+        .expect("read");
+    let marks: Vec<_> = page.records.iter().map(|r| (r.offset, r.mark)).collect();
+    assert_eq!(marks, [(0, RecordMark::None), (1, RecordMark::Group)]);
+    assert_eq!(versions(&dir, &log), [GENERATION_VERSION]);
 }
