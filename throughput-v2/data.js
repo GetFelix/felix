@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794776911089,
+  "lastUpdate": 1794777225771,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59072,6 +59072,58 @@ window.BENCHMARK_DATA = {
             "range": "2604.24",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 953013.40\nmean: 952789.19\nstdev: 2604.24\ncv: 0.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a00a8e0bbfd8df239a9a7349e37c66f1a36ad52",
+          "message": "perf: re-runnable Raft vs hybrid parity matrix (#2646) (#2648)\n\n* perf: re-runnable Raft vs hybrid parity matrix (#2646)\n\ntask perf:raft-parity builds one binary and runs single node and RF 3 cells\n(on_commit, Quorum periodic, Leader periodic; batch 1 latency and batched\nthroughput), leader-kill recovery, Kafka produce, MQTT publish and consumer\nfanout on both shard engines, then writes markdown and JSON with a per-cell\nPASS/FAIL against the measured noise. felix-loadgen gains failover and\nmqtt-publish scenarios.\n\n* perf: parity gate fails on dropped rounds, caps noise, gates failed sends\n\n* perf: parity harness stops its own processes, measures failover from the kill, waits for a writable disk",
+          "timestamp": "2026-11-15T21:01:44Z",
+          "tree_id": "d4c9248a48fbdc9377349f1d83735c889029be31",
+          "url": "https://github.com/GetFelix/felix/commit/6a00a8e0bbfd8df239a9a7349e37c66f1a36ad52"
+        },
+        "date": 1794777225157,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 497242.08,
+            "range": "28366.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497242.08\nmean: 503958.61\nstdev: 28366.99\ncv: 5.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 497242.08,
+            "range": "28366.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 497242.08\nmean: 503958.61\nstdev: 28366.99\ncv: 5.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120561.41,
+            "range": "1727.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120561.41\nmean: 121163.19\nstdev: 1727.10\ncv: 1.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1205614.13,
+            "range": "17271.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1205614.13\nmean: 1211631.87\nstdev: 17271.00\ncv: 1.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
