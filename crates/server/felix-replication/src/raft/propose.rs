@@ -83,8 +83,9 @@ pub struct Batch {
     /// Set when the batch is an idempotent producer's.
     pub producer: Option<Sequenced>,
     /// Set on a conditional publish: the offset its one record must be
-    /// written at. Written anywhere else, every member stores a blank entry
-    /// there and the record is never delivered. Never set with `producer`.
+    /// written at. Written anywhere else, the leader's log stores a blank
+    /// entry there, followers copy it, and the record is never delivered.
+    /// Never set with `producer`.
     pub expected: Option<u64>,
 }
 

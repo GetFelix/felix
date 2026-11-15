@@ -1022,8 +1022,8 @@ pub enum QuorumError {
         detail: &'static str,
     },
     /// A conditional publish on a Raft shard did not land at its expected
-    /// offset. Unlike the others this outcome is known: every member holds
-    /// a blank entry there, and `tail` is the shard's next offset after it.
+    /// offset. Unlike the others this outcome is known: the committed entry
+    /// there is a blank, and `tail` is the shard's next offset after it.
     #[error("the shard's next offset was not the expected one; it is now {tail}")]
     OffsetMismatch { tail: u64 },
 }

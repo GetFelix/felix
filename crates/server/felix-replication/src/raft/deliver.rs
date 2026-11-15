@@ -107,12 +107,12 @@ impl RaftEngine {
     /// only if it lands at offset `expected`. Anything but one record is
     /// refused with nothing proposed.
     ///
-    /// The condition is decided where the entry is written, on every
-    /// member, from the entry's own index: off `expected`, each member
-    /// stores a blank entry there instead of the record. Nothing a leader
-    /// decides alone goes into it, so a leader deposed after its look
-    /// writes nothing different, and a membership entry openraft puts
-    /// ahead of the record cannot move it off its offset unnoticed. A
+    /// The condition is decided where the leader's log appends the entry,
+    /// at its final index and from that index alone: off `expected`, it
+    /// stores a blank entry there instead of the record, and followers copy
+    /// what it stored. So an entry openraft or another writer puts ahead of
+    /// the record cannot move it off its offset unnoticed, and a deposed
+    /// leader or a re-proposal cannot store it elsewhere. A
     /// refused publish still takes an offset, which readers skip, and is
     /// answered with [`CommitError::OffsetMismatch`] once committed,
     /// carrying the offset after it. The answer always waits for the

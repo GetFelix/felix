@@ -42,8 +42,8 @@ fn refused_tail(message: &Message) -> u64 {
 }
 
 /// **A `publish_if` to a Raft shard is written at its expected offset and
-/// refused off it, with the tail.** Every member decides from the entry's
-/// index, so a refusal still takes an offset: the tail it answers is one
+/// refused off it, with the tail.** The leader's log decides at the entry's
+/// final index, so a refusal still takes an offset: the tail it answers is one
 /// past the blank written in its place, and only the accepted record is
 /// delivered.
 #[tokio::test]

@@ -2797,19 +2797,24 @@ offset or `publish_refused` with `offset_mismatch` and the shard's tail.
 The difference is what a refusal costs. The hybrid checks the tail under
 its append lock and writes nothing when it misses. A Raft leader cannot
 check that way: the entry's index is fixed only when openraft appends it,
-and openraft can put a membership entry ahead of it after the leader
-looked. So the condition is decided where the entry is written, on every
-member, from the entry's own index:
+and another writer's entry, or the blank a new leader appends when its
+term starts, can land ahead of it after the leader looked. So the
+condition is decided by the leader's log append, at the entry's final
+index, from that index alone:
 
-- At the expected offset, the member stores the record.
+- At the expected offset, the leader stores the record.
 - Anywhere else, it stores a blank entry in its place. Readers skip it like
   any other blank (`skipped_before`), and subscribers are never sent it.
 
-Each member decides from the same index and the same entry, so all of them
-store the same thing, and an entry a later leader cuts takes its decision
-with it. The leader answers once the entry commits, whatever the stream's
-consistency level: `publish_ok` when the record was kept, `offset_mismatch`
-otherwise, with the offset after the blank as the tail.
+Followers do not decide. openraft sends them entries read back from the
+leader's log, which holds only the outcome, so they copy the record or the
+blank the leader stored. Because the decision is made at the final index
+and from nothing else, a deposed leader or a re-proposal cannot store the
+record anywhere but its expected offset, and an entry a later leader cuts
+takes its decision with it. The leader answers once the entry commits,
+whatever the stream's consistency level: `publish_ok` when the record was
+kept, `offset_mismatch` otherwise, with the offset after the blank as the
+tail.
 
 So on a Raft shard **a refused `publish_if` consumes one offset**. A client
 that retries at the tail it was given asks for the offset right after the
@@ -2818,37 +2823,46 @@ blank. On the hybrid a refusal consumes none.
 ```mermaid
 sequenceDiagram
     participant C as Client
+    participant O as Other client
     participant L as Leader
     participant F as Follower
     C->>L: publish_if at 12
-    Note over L: openraft appends a membership entry at 12
-    L->>F: membership at 12, conditional entry at 13
-    Note over L,F: each member: 13 is not 12, store a blank
+    O->>L: publish
+    Note over L: the other publish is appended at 12
+    Note over L: conditional entry at 13: 13 is not 12, store a blank
+    L->>F: record at 12, blank at 13
     L-->>C: offset_mismatch, tail 14
     C->>L: publish_if at 14
-    L->>F: conditional entry at 14
-    Note over L,F: each member: store the record
+    Note over L: conditional entry at 14: store the record
+    L->>F: record at 14
     L-->>C: publish_ok at 14
 ```
 
 A conditional publish carries one record. A batch of several is refused by
 name, because each record is its own entry and only the first would be at
 the expected offset (#2524). A batch with no record is refused as on the
-hybrid.
+hybrid. Like a plain Raft publish, a `publish_if` on Raft does not keep the
+publisher id.
 
-There is no fleet setting to turn this on. The conditional entry travels as
-its own tag in Raft wire layout 6 (`docs/internal-protocol.md`), and a
-member built before it reads only layout 5. It refuses the leader's
-appends by layout, so it can never store a conditional record as a plain
-one at whatever offset it lands. On disk a member writes only a plain
-record or a blank, so a downgraded broker reads the log.
+There is no fleet setting to turn this on. On disk the leader writes only
+a plain record or a blank, and followers copy that, so a member on an older
+build replicates a conditional publish's outcome like any other entry and a
+downgraded broker reads the log. The conditional entry also has its own tag
+in Raft wire layout 6 (`docs/internal-protocol.md`). openraft never sends
+it at this pin, since it replicates from storage, so the tag is
+defence-in-depth: should a leader ever send the command itself, a member
+built before it refuses the append by layout instead of storing the record
+unconditionally at whatever offset it lands.
 
 `FelixRaftCond.tla` checks the rule: a kept record is always at its
 expected offset, at most one publish naming an offset is kept, members
-agree, and each answer matches what every member committed. Its twin
-`FelixRaftCondLeaderDecides`, where the leader decides from its guess of
-the index and followers copy it, keeps a record off its offset once a
-membership entry lands between the guess and the append.
+agree, and each answer matches what every member committed. The model lets
+every member decide at the entry's index; that has the same outcomes as the
+leader deciding and followers copying, because the decision is a function
+of the index. Its twin `FelixRaftCondLeaderDecides`, where the leader
+decides from its guess of the index before the append, keeps a record off
+its offset once an entry openraft writes itself (a membership entry in the
+model) lands between the guess and the append.
 
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_conditional_publish_off_its_offset_is_a_blank_on_every_member` and

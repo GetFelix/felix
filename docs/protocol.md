@@ -178,9 +178,9 @@ with no log are refused with `error` (`invalid_request`).
 On a stream shard that runs on Raft (`docs/per-shard-raft.md`, "Conditional
 publishes") two things differ. The batch must hold exactly one record; a
 batch of several is refused with `error` (`invalid_request`). And a refused
-`publish_if` consumes one offset: each replica stores a blank entry in its
-place, which readers skip and subscribers are never sent, and the tail in
-`offset_mismatch` is the offset after it. Either answer comes once the entry
+`publish_if` consumes one offset. The leader's log stores a blank entry in
+its place and followers copy it. Readers skip the blank, subscribers are
+never sent it, and the tail in `offset_mismatch` is the offset after it. Either answer comes once the entry
 is committed, whatever the stream's consistency level.
 
 Not forwarded: a broker that does not lead the shard answers `not_leader` to a

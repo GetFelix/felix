@@ -227,6 +227,7 @@ impl Completion {
             skipped_before: 0,
             gap: false,
             gap_end: None,
+            blank: false,
         };
         let start = state.held.push(batch);
         drop(ring);
@@ -615,6 +616,10 @@ async fn release(handle: StreamHandle) {
                 state.restart_ring(gap_end(state, batch.gap_end));
                 continue;
             }
+            if batch.blank {
+                state.pass_blank(batch.first_offset);
+                continue;
+            }
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
             if let Some(floor) = completion.trim {
                 let _ = completion.apply_trim(floor);
@@ -739,6 +744,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
                 skipped_before: first.offset.saturating_sub(next),
                 gap: false,
                 gap_end: None,
+                blank: false,
             };
             next = first.offset + 1;
             while let Some(more) = records

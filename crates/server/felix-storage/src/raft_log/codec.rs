@@ -29,8 +29,9 @@ pub trait EntryCodec<C: RaftTypeConfig>: Send + Sync + 'static {
     fn decode_data(&self, record: LogRecord) -> io::Result<C::D>;
 
     /// Whether `data`, written at `index`, is stored as a blank entry instead
-    /// of its record. It must depend on `data` and `index` alone, so every
-    /// member that writes the entry stores the same thing.
+    /// of its record. It must depend on `data` and `index` alone: the
+    /// leader's append decides at the entry's final index, and followers
+    /// copy what it stored.
     fn blank_at(&self, _data: &C::D, _index: Offset) -> bool {
         false
     }

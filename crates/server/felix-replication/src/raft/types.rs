@@ -180,8 +180,9 @@ pub(crate) struct Command {
     /// Set on the records of an idempotent producer's batch.
     pub(crate) producer: Option<ProducerMark>,
     /// Set on a conditional publish: the offset the record must be written
-    /// at. Written at any other index, every member stores a blank entry
-    /// there instead ([`Self::blank_at`]). Never set on a command read back
+    /// at. Written at any other index, the leader's log stores a blank entry
+    /// there instead ([`Self::blank_at`]) and followers copy it. Never set
+    /// on a command read back
     /// from the log, which holds only the outcome.
     pub(crate) expected: Option<u64>,
     /// Set by a proposer that waits to hear where the record was written.
@@ -215,8 +216,9 @@ impl Eq for Command {}
 impl Command {
     /// Whether the command, written at `index`, holds no record: a
     /// conditional publish that did not land at its expected offset. It
-    /// depends on the entry and its index alone, so every member decides
-    /// the same, and an entry a later leader cuts takes its outcome with it.
+    /// depends on the entry and its final index alone, so the leader's
+    /// append cannot store the record elsewhere, and an entry a later
+    /// leader cuts takes its outcome with it.
     pub(crate) fn blank_at(&self, index: u64) -> bool {
         self.expected.is_some_and(|expected| expected != index)
     }

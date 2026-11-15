@@ -464,7 +464,10 @@ const ENTRY_SEQUENCED: u8 = 3;
 /// the ones a build without this tag reads.
 const ENTRY_PIECE: u8 = 4;
 /// A conditional publish's record: the offset it must be written at comes
-/// before the record. Never an idempotent producer's.
+/// before the record. Never an idempotent producer's. openraft replicates
+/// entries read back from the log, which hold only the outcome, so none is
+/// sent today. Kept so a member on an older layout refuses one by name
+/// rather than store the record unconditionally if one ever is.
 const ENTRY_CONDITIONAL: u8 = 5;
 
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {

@@ -964,8 +964,9 @@ async fn a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused() {
 
 /// **A conditional publish lands only at its expected offset, and one that
 /// does not is a blank on every member: refused with the offset after it,
-/// delivered by no member, and counted as skipped.** Decided by the leader
-/// alone, a follower that wrote the record would deliver it.
+/// delivered by no member, and counted as skipped.** The leader's log
+/// decides and followers copy it; a follower holding the record would
+/// deliver it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_conditional_publish_off_its_offset_is_a_blank_on_every_member() {
     let mut led = led().await;

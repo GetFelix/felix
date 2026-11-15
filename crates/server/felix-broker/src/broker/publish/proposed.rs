@@ -73,7 +73,8 @@ impl Broker {
     ///
     /// The engine writes the record wherever its turn falls, and `propose`
     /// must have it store a blank entry in place of the record when that is
-    /// not `expected`, as every member of its group does. Such a batch is
+    /// not `expected`, decided where the leader appends it, at the entry's
+    /// final index, and copied by followers. Such a batch is
     /// never delivered, and [`ProposedPublish::complete`] answers it with
     /// `mismatch` given the offset after it, the shard's next offset once
     /// the blank is written. It is answered only once committed, so the
@@ -562,8 +563,9 @@ async fn finish<E>(
         Ok(at) => at.end.checked_sub(count),
         Err(_) => None,
     };
-    // Off its offset, the record is a blank on every member's log. Delivered
-    // as a gap, so the replay ring restarts above it and nothing is sent.
+    // Off its offset, the leader's log stored a blank, which followers copy.
+    // Its outcome is known, so it is held as a blank, not a gap: nothing is
+    // sent and the replay ring stays.
     let missed = match (&committed, &expected) {
         (Ok(at), Some(expected)) if first_offset != Some(expected.offset) => Some(at.end),
         _ => None,
@@ -579,7 +581,7 @@ async fn finish<E>(
     let _ = turn.wait().await;
     let state = &handle.state;
     let batch = match (&committed, first_offset) {
-        (Ok(at), _) if missed.is_some() => HeldBatch::gap(Some(at.end)),
+        (Ok(_), Some(first_offset)) if missed.is_some() => HeldBatch::blank(first_offset),
         (Ok(at), Some(first_offset)) => HeldBatch {
             payloads,
             publisher: None,
@@ -592,6 +594,7 @@ async fn finish<E>(
             skipped_before: at.skipped_before,
             gap: false,
             gap_end: None,
+            blank: false,
         },
         (Err(failed), _) => HeldBatch::gap(failed.written_end),
         (Ok(at), None) => HeldBatch::gap(Some(at.end)),

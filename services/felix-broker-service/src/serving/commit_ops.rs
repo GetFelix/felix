@@ -147,9 +147,9 @@ pub(crate) async fn publish_at(
     .await
 }
 
-/// [`publish_at`] on a shard a Raft group runs here. The group decides the
-/// condition at each member's write, so a refusal is known only at the
-/// commit, and it took an offset. See `docs/per-shard-raft.md`,
+/// [`publish_at`] on a shard a Raft group runs here. The leader's log
+/// decides the condition at the entry's final index, so a refusal is known
+/// only at the commit, and it took an offset. See `docs/per-shard-raft.md`,
 /// "Conditional publishes".
 async fn publish_at_on_raft(
     broker: &Broker,

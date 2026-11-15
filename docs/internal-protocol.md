@@ -1181,7 +1181,10 @@ After the report byte comes the message:
   `u32`, batch length `u32`, then the record), 5 for a conditional
   publish's record (the offset it must be written at, `u64`, then the
   record). A member writes entry 5 as the record only when the entry's
-  index is that offset, and as a blank entry otherwise.
+  index is that offset, and as a blank entry otherwise. A leader replicates
+  entries read back from its log, which hold only that outcome, so it sends
+  entry 5 to no one today; the tag and layout 6 make an older member refuse
+  a conditional entry by name if one is ever sent.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.

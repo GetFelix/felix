@@ -230,8 +230,8 @@ impl StreamEngine {
     /// routing answered: one record, written only at offset `expected`.
     /// `None` when the hybrid runs the shard.
     ///
-    /// Every member decides the condition from the entry's own index, so a
-    /// refused publish still takes an offset (a blank readers skip) and is
+    /// The leader's log decides the condition at the entry's final index and
+    /// followers copy it, so a refused publish still takes an offset (a blank readers skip) and is
     /// answered [`CommitError::OffsetMismatch`] with the offset after it.
     /// Either answer waits for the commit, whatever the stream's level.
     #[allow(clippy::too_many_arguments)]

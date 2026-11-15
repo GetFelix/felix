@@ -387,8 +387,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     .apply(entry.log_id.index, command.0, &command.1);
                 written += 1;
             }
-            // A conditional publish off its offset is a blank on disk. It
-            // may reach apply as the command, from memory.
+            // openraft applies entries read back from the log, where a
+            // conditional publish off its offset is already a blank. Checked
+            // again in case one ever reaches apply as the command.
             let record = match &entry.payload {
                 EntryPayload::Normal(command) => !command.blank_at(entry.log_id.index),
                 _ => false,
