@@ -8,7 +8,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use felix_storage::DiskLog;
-use felix_storage::raft_copy::{CopyMarks, LogMarkMode};
+use felix_storage::raft_copy::{CopyMarks, LogMarkMode, MarkLog};
 use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::raft::SnapshotResponse;
@@ -56,6 +56,10 @@ pub(crate) struct Group {
     transport: Arc<dyn RaftTransport>,
     /// The written positions other members told this one.
     reports: Arc<Reports>,
+    /// The data root's mark log, when the member has one. Its
+    /// vouched-unsynced marker is synced before this member's unsynced write
+    /// is told to a leader or counted here, so a power cut rotates the copy.
+    root: Option<MarkLog>,
     /// The brokers on which this group's member refused this one's calls.
     refusals: Arc<Refusals>,
     /// What the log holds written and flushed, as the adapter reports it.
@@ -451,6 +455,7 @@ impl Group {
         // what a purge past the snapshot would drop.
         log.purge_within(&snapshots)?;
         let copy_id = marks.as_ref().map(|(marks, _)| marks.copy());
+        let root = marks.as_ref().map(|(marks, _)| marks.mark_log().clone());
         if let Some((marks, mode)) = marks {
             log.mark_with(marks, mode)?;
         }
@@ -522,6 +527,7 @@ impl Group {
             hold,
             transport,
             reports,
+            root,
             refusals,
             positions,
             commits,
@@ -745,6 +751,15 @@ impl Group {
         else {
             return;
         };
+        // Before the report leaves. Without the marker a power cut here would
+        // keep the storage id, and the leader would go on counting a record
+        // this copy lost.
+        if let Some(root) = &self.root
+            && let Err(err) = root.vouch_unsynced().await
+        {
+            tracing::debug!(group = %self.id, error = %err, "no written report: its marker did not sync");
+            return;
+        }
         let deadline = Duration::from_millis(self.pace.timers.heartbeat);
         let request = RaftRequest {
             group: self.id.clone(),
@@ -1012,16 +1027,28 @@ impl Group {
         let reports = Arc::clone(&self.reports);
         let raft = self.raft.clone();
         let me = self.member.clone();
+        let root = self.root.clone();
         async move {
             let Some(at) = early else {
                 return commit.await;
+            };
+            // The written count includes this leader's own unsynced write,
+            // so the marker syncs before the count is read. In this arm, so
+            // a slow sync holds up neither the commit nor the timeout.
+            let majority = async {
+                if let Some(root) = &root
+                    && root.vouch_unsynced().await.is_err()
+                {
+                    std::future::pending::<()>().await;
+                }
+                reports.majority(&raft, &me, at).await;
             };
             tokio::select! {
                 biased;
                 // First, so a member that no longer leads is refused even
                 // with a majority's reports in hand.
                 committed = commit => committed,
-                () = reports.majority(&raft, &me, at) => Ok(()),
+                () = majority => Ok(()),
             }
         }
     }
