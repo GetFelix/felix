@@ -3414,6 +3414,32 @@ index that only lags is not a loss: the twin that cuts every log to it
 (`CutToCommit`, `FelixRaftReformTwoRotatedOffsetsCutToCommit.cfg`) violates
 `AckedSurvive` with no disk lost beyond the tails.
 
+**Kept copies and two re-forms (#2250).** With `Kept`, a rotation renames
+the whole copy into a kept copy that holds its log, saved commit, vote, why
+it rotated and its reservation. `PowerCutRotate` loses only the unsynced tail
+and keeps the vote; `Rotate` is a restore that can bring back any prefix and
+an older vote; `Return` brings a broker declared dead back under a new copy
+id with its kept copies. The re-form reads every current and kept copy of the
+brokers it reads. A copy vouches for its saved commit, for the floor's index
+if it holds the floor's entry, and for its whole log when its last key equals
+T, the highest (epoch, term) of any vote, entry or floor read. An epoch-e copy
+is capped at the lowest base end of the epochs after e. The group is marked,
+and the whole-log clause dropped, when a broker placed in the epoch being
+closed is dead, has no vote of that epoch read, or has a restore kept copy of
+that epoch. The new epoch starts above the base, the floor and every
+reservation read, and with `Reserve = "every"` each copy reserves before its
+write counts.
+
+`FelixRaftReformTwoReformsTrailingFloor.cfg` passes: an epoch-1 record
+committed by a leader and one follower and then cut from both, with the
+floor trailing and the leader dead, keeps its offset through the follower's
+kept reservation. With only the leader reserving
+(`...TrailingFloorLeaderReserve.cfg`), or with both copies dead
+(`...TrailingFloorAllDead.cfg`, the documented residual), the offset is given
+out again. `FelixRaftReformTwoReformsEpochMark.cfg` shows that an epoch-0
+restore and a dead epoch-0 voter leave the second re-form unmarked, and
+`FelixRaftReformTwoReformsOldRestore.cfg` checks that case reuses nothing.
+
 One finding of this module is open. The design does not say how a copy
 comes back after an apply stopped it, did not finish, and the group
 elected without it (#2403). The model has it rotate and rejoin as a
