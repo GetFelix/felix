@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794704649055,
+  "lastUpdate": 1794708631457,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57564,6 +57564,58 @@ window.BENCHMARK_DATA = {
             "range": "3777.93",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 806781.00\nmean: 805582.27\nstdev: 3777.93\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "65ef05898db2a4abbdb24a79d889d0295a2f8857",
+          "message": "refactor(raft): one openraft batch write per publish drain (#2578)\n\n* perf(raft): one openraft batch write per publish drain\n\nA term-bound drain went to openraft as one write().with_leader() per\nrecord. It now goes as one client_write_many with\nWriteOption::expect_leader(term), which openraft admits or refuses whole\nand appends at consecutive indexes. A lapsed lease can no longer leave a\nhole in a batch, and no other write lands between a drain's records.\n\nSpec-Unaffected: FelixRaftBatch.tla already models one message per batch (TermBoundBatch = TRUE); the code now matches it.\n\n* docs(raft): the lease-hole half of #2472 is done; note the TermBoundBatch twin",
+          "timestamp": "2026-11-15T02:02:34Z",
+          "tree_id": "eabb5cfa39c1b9e90c9c0684b5bdfe6cda0cdc77",
+          "url": "https://github.com/GetFelix/felix/commit/65ef05898db2a4abbdb24a79d889d0295a2f8857"
+        },
+        "date": 1794708630539,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360886.46,
+            "range": "7284.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360886.46\nmean: 359493.34\nstdev: 7284.44\ncv: 2.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360886.46,
+            "range": "7284.44",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360886.46\nmean: 359493.34\nstdev: 7284.44\ncv: 2.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81641.27,
+            "range": "3602.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81641.27\nmean: 80413.73\nstdev: 3602.94\ncv: 4.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816412.73,
+            "range": "36029.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816412.73\nmean: 804137.34\nstdev: 36029.37\ncv: 4.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
