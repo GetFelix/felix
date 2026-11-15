@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794754877066,
+  "lastUpdate": 1794761583925,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74580,6 +74580,72 @@ window.BENCHMARK_DATA = {
             "range": "1206.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 523.00\nmean: 1322.60\nstdev: 1206.81\ncv: 91.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed120c1a5999030362ea97b96648e76b96f4ce9b",
+          "message": "fix(controlplane): a node delete clears its replica report stamps (#2619) (#2624)\n\n* fix(controlplane): a node delete clears its replica report stamps (#2619)\n\nA node deleted and registered again starts at incarnation 0, so a held\nreplica report stamped at the old process's incarnation 0 could count the\nnew registration as caught up when it registered no storage identity.\n\nDeleting a node now removes it from node_incarnations in every held report\n(the rest of the report stays), and the API stamps only the nodes the\nshard's assignment names, so a report in flight across the delete cannot\nre-add a stamp for it. Under Raft the delete clears stamps from metadata\nlevel 37 (DeleteNode.forget_reports, set by settle_for_level and stripped\nbelow it).\n\nSpec-Unaffected: the shard models (FelixShard wipe configs) have no node delete; a restart there always raises the incarnation, which this change makes true for a delete and re-registration too. No modelled rule changes.\n\n* fix(controlplane): review fixes for the delete stamp clearing (#2619)\n\nRaft test that a group below level 37 keeps the stamps on delete, the\nlevel 37 row in the field-level table, and the replication-design wording\nfor groups below it.\n\nSpec-Unaffected: tests, docs and a comment only.\n\n* docs(controlplane): a stamp left by a delete below level 37 stays until the next delete or report\n\nSpec-Unaffected: docs only.",
+          "timestamp": "2026-11-15T16:48:37Z",
+          "tree_id": "37b27a9b4a55a777ccc5b90235c9997fcab5196c",
+          "url": "https://github.com/GetFelix/felix/commit/ed120c1a5999030362ea97b96648e76b96f4ce9b"
+        },
+        "date": 1794761575939,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 65,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 65.00\nmean: 65.20\nstdev: 0.84\ncv: 1.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 101,
+            "range": "249.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 101.00\nmean: 210.20\nstdev: 249.48\ncv: 118.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 1243,
+            "range": "1083.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1243.00\nmean: 1203.20\nstdev: 1083.13\ncv: 90.02%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 84,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 83.80\nstdev: 1.92\ncv: 2.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 216,
+            "range": "94.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 250.20\nstdev: 94.66\ncv: 37.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 527,
+            "range": "917.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 527.00\nmean: 898.80\nstdev: 917.55\ncv: 102.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
