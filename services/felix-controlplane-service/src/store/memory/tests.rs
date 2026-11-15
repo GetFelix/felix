@@ -24,6 +24,13 @@ async fn satisfies_the_placement_ack_contract() {
     crate::store::contract::placement_acks::run_placement_ack_contract(store).await;
 }
 
+/// On a store of its own: the last case leaves the incarnation raised.
+#[tokio::test]
+async fn satisfies_the_raft_target_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::raft_targets::run_raft_target_contract(store).await;
+}
+
 /// The contract allows a backend to leave a future stamp; this one must not,
 /// or a broker dying after a clock step back stays live for the step.
 #[tokio::test]
@@ -539,6 +546,8 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     readmitted: Default::default(),
                     placed: None,
                     switch: None,
+                    raft_copy_ids: Default::default(),
+                    raft_target: None,
                 })
                 .await
                 .expect("assign")
@@ -607,4 +616,63 @@ async fn a_store_at_the_top_generation_refuses_to_issue() {
             top
         );
     }
+}
+
+/// A reader that sees an import's restored shard records sees its
+/// placement incarnation too: the feed stamps targets with the incarnation
+/// read around the records, and restored records under the old one would
+/// go out as newer than they are.
+#[tokio::test]
+async fn an_import_shows_its_records_only_with_its_incarnation() {
+    let store = Arc::new(store_with_limits(100, 1000));
+    let shared: &dyn ControlPlaneStore = store.as_ref();
+    crate::store::contract::shards::on_streams_of_its_own(shared, async {
+        let assignment = crate::store::contract::shards::assignment(0, "broker-x");
+        let first = shared
+            .put_shard_assignment(assignment.clone())
+            .await
+            .expect("assign");
+        let mut backup = crate::store::export::export_state_from(
+            store.as_ref() as &(dyn crate::store::ControlPlaneAuthStore + Send + Sync)
+        )
+        .await
+        .expect("export");
+        backup.placement_incarnation = 5;
+        shared
+            .put_shard_assignment(assignment)
+            .await
+            .expect("assign again");
+
+        let (reached, reached_rx) = tokio::sync::oneshot::channel();
+        let (resume, resume_rx) = tokio::sync::oneshot::channel();
+        *store.faults.import_pause.lock().expect("pause") = Some(ShardWritePause {
+            reached,
+            resume: resume_rx,
+        });
+        let importer = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move { store.import_state(backup).await })
+        };
+        reached_rx.await.expect("import paused");
+        let reader = {
+            let store = Arc::clone(&store);
+            tokio::spawn(async move {
+                let snapshot = store.shard_assignment_snapshot().await.expect("snapshot");
+                let incarnation = store.placement_incarnation().await.expect("read");
+                (snapshot.items, incarnation)
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let _ = resume.send(());
+        importer.await.expect("join").expect("import");
+        let (items, incarnation) = reader.await.expect("join");
+        let restored = items
+            .iter()
+            .any(|item| item.key == first.key && item.generation == first.generation);
+        assert!(
+            !restored || incarnation == 5,
+            "restored records read under incarnation {incarnation}"
+        );
+    })
+    .await;
 }

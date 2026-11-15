@@ -445,6 +445,8 @@ async fn a_first_assignment_is_listed_and_a_later_write_is_not(store: &dyn Contr
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     };
     let first = store
         .put_shard_assignment(assigned.clone())

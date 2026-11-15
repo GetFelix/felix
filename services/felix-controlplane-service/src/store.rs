@@ -623,6 +623,50 @@ pub trait ControlPlaneStore: Send + Sync {
         ))
     }
 
+    /// [`Self::placement_acked_by`] over every registered broker, serving or
+    /// not. A Raft target goes out on the assignment feed only while this
+    /// holds.
+    async fn placement_acked_by_all(&self) -> StoreResult<bool> {
+        let brokers: Vec<String> = self
+            .list_nodes()
+            .await?
+            .into_iter()
+            .map(|node| node.node_id)
+            .collect();
+        self.placement_acked_by(&brokers).await
+    }
+    /// Keep `copy_id` as the Raft copy `node_id` holds for the shard at
+    /// `key`, and write the shard's next target if that completes or
+    /// changes it ([`crate::model::ShardAssignment::raft_target`]). Returns
+    /// whether anything changed; the id already held is a no-op.
+    ///
+    /// [`StoreError::Conflict`] when the shard has not switched to Raft,
+    /// `node_id` is not in its set, or the write would move the target while
+    /// some registered broker has not acknowledged the current placement
+    /// incarnation, or `node_registered_at_millis` and `node_incarnation`
+    /// are not `node_id`'s current registration. Both, because a node
+    /// registered again after a delete restarts at incarnation 0. Decided
+    /// against the record it lands on. Level 36.
+    async fn record_raft_copy_id(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        node_registered_at_millis: u64,
+        node_incarnation: u64,
+        copy_id: u64,
+    ) -> StoreResult<bool> {
+        let _ = (
+            key,
+            node_id,
+            node_registered_at_millis,
+            node_incarnation,
+            copy_id,
+        );
+        Err(StoreError::Conflict(
+            "this store keeps no Raft copy ids".to_string(),
+        ))
+    }
+
     /// The identity the metadata group recorded at formation. The default is
     /// a backend with no group, which forgets everything at restart.
     async fn group_identity(&self) -> StoreResult<identity::GroupIdentity> {

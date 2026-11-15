@@ -455,6 +455,8 @@ async fn seed_shards(store: &InMemoryStore) {
                 readmitted: Default::default(),
                 placed: None,
                 switch: None,
+                raft_copy_ids: Default::default(),
+                raft_target: None,
             })
             .await
             .expect("assign");
@@ -588,6 +590,8 @@ async fn shard_assignments_carry_the_streams_routing() {
                 readmitted: Default::default(),
                 placed: None,
                 switch: None,
+                raft_copy_ids: Default::default(),
+                raft_target: None,
             })
             .await
             .expect("assign");
