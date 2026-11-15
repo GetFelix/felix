@@ -321,3 +321,56 @@ fn only_a_log_below_its_mark_is_a_power_cut() {
     }
     assert_eq!(RotatedBy::of(LogBelowMark), RotatedBy::PowerCut);
 }
+
+/// `raft-epoch` refuses what no start writes: nonzero reserved bytes, a
+/// first index below its base's end, a base ending in a later epoch.
+#[test]
+fn an_epoch_file_that_breaks_its_rules_does_not_decode() {
+    let dir = tempfile::tempdir().expect("dir");
+    let base = |index, epoch, first_index| EpochBase {
+        base_last: Some(EpochLogId {
+            index,
+            epoch,
+            term: 1,
+        }),
+        first_index,
+    };
+    let store = |bases: Vec<EpochBase>| {
+        epoch_file::store(
+            dir.path(),
+            &EpochFile {
+                incarnation: 1,
+                bases,
+            },
+        )
+        .expect("store")
+    };
+    let fails = || {
+        let err = epoch_file::load(dir.path()).expect_err("decodes");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    };
+
+    store(vec![base(3, 0, 5), base(6, 1, 9)]);
+    assert_eq!(
+        epoch_file::load(dir.path())
+            .expect("load")
+            .expect("file")
+            .epoch(),
+        2
+    );
+
+    store(vec![base(3, 0, 3)]);
+    fails();
+    store(vec![base(3, 1, 5)]);
+    fails();
+
+    store(vec![base(3, 0, 5)]);
+    let path = dir.path().join("raft-epoch");
+    let mut bytes = std::fs::read(&path).expect("read");
+    bytes[17] = 1;
+    let body = bytes.len() - 4;
+    let crc = crate::segment::format::crc32(&[&bytes[..body]]);
+    bytes[body..].copy_from_slice(&crc.to_be_bytes());
+    std::fs::write(&path, &bytes).expect("write");
+    fails();
+}

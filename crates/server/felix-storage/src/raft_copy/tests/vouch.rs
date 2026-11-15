@@ -213,25 +213,25 @@ fn an_older_epochs_copy_is_capped_and_never_marks() {
         "R is in the base"
     );
     assert_eq!(plan.source, ("a", Source::Kept(PathBuf::from("a-kept"))));
-    assert_eq!(plan.first_index, 12);
+    assert_eq!(plan.first_index, 15, "above B's epoch-0 records too");
     assert_eq!(plan.voters.len(), 1);
     assert_eq!(plan.learners, vec!["b"]);
 }
 
 /// `FelixRaftWritten.tla`'s counterexample to counting a fsynced write with
 /// no reservation: `a` led t2 and committed its blank at index 0 on `b`'s
-/// fsync, then was declared dead; `b` never learned the commit and `c`
-/// power-cut rotated empty. Nothing vouches for the entry, so the base is
-/// empty, and only `b`'s reservation keeps index 0 from being given out
-/// again.
+/// write, then was declared dead; `b` never learned the commit, and `b`
+/// and `c` power-cut rotated, `b` losing the unsynced entry. Nothing holds
+/// it, so the base is empty, and only `b`'s kept reservation keeps index 0
+/// from being given out again.
 #[test]
 fn the_reservation_pads_above_an_entry_nothing_vouches_for() {
     let rec = record(&["a", "b", "c"], &["a"], &[], None);
     let reports = |b_reserved: Option<u64>| {
-        let mut b = copy("b", &[2], None, Some(2));
+        let mut b = copy("b", &[], None, Some(2));
         b.reserved = b_reserved;
         vec![
-            ("b", report(b, vec![])),
+            ("b", report(blank(), vec![kept(b, RotatedBy::PowerCut)])),
             (
                 "c",
                 report(
@@ -509,7 +509,7 @@ fn a_base_never_ends_inside_a_gap() {
             term: 1
         })
     );
-    assert_eq!(plan.first_index, 4);
+    assert_eq!(plan.first_index, 6, "above the epoch-1 record at 5");
 }
 
 /// A vote above every entry flags a loss only when it cuts a copy: here the
@@ -525,4 +525,53 @@ fn a_vote_above_every_entry_that_cuts_nothing_needs_no_sign_off() {
     assert_eq!(plan.base_end(), 2);
     assert!(!plan.cut_by_vote);
     assert!(!plan.needs_accept_loss());
+}
+
+/// Epoch 0, placed {a, b, c}: `a` wrote X at 5 alone; `b`, elected by `b`
+/// and `c`, committed W at 5, delivered, floor at 4; then `b` and `c` lost
+/// their disks, which keeps no copy. Their empty currents never voted, so
+/// the group is marked and `a` is cut to the floor, never served whole.
+#[test]
+fn a_wiped_copy_at_epoch_zero_marks_the_group() {
+    let rec = record(&["a", "b", "c"], &[], &[], floor(4, 0, 1));
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", report(copy("a", &[1; 6], Some(3), Some(1)), vec![])),
+            ("b", report(blank(), vec![])),
+            ("c", report(blank(), vec![])),
+        ],
+    );
+    assert!(plan.marked);
+    assert!(plan.needs_accept_loss());
+    assert_eq!(plan.base_end(), 5, "X is not in the base");
+    assert_eq!(plan.first_index, 6);
+}
+
+/// A re-form never gives out an index below an earlier epoch's first one,
+/// even when no copy holds a record past that epoch's gap.
+#[test]
+fn the_first_index_never_goes_below_an_earlier_epochs() {
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 1,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: 5,
+    }];
+    let rec = record(&["a"], &[], &bases, None);
+    let a = at_epoch(copy("a", &[1, 1], Some(1), Some(2)), &bases);
+    let plan = plan(&rec, vec![("a", report(a, vec![]))]);
+    assert_eq!(plan.base_end(), 2);
+    assert_eq!(plan.first_index, 5);
+}
+
+#[test]
+fn a_plan_with_no_voter_refuses() {
+    let rec = record(&["a"], &[], &[], None);
+    let mut a = copy("a", &[1, 1], Some(1), Some(1));
+    a.copy = None;
+    let reports = BTreeMap::from([("a", report(a, vec![]))]);
+    assert_eq!(plan_reform(&rec, &reports), Err(Refused::NoVoters));
 }

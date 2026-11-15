@@ -122,6 +122,9 @@ pub(crate) enum Refused<B> {
     NoIndexLeft,
     /// No copy was read.
     NothingRead,
+    /// No broker with a copy id holds the base, so the epoch would have no
+    /// voter.
+    NoVoters,
 }
 
 /// One copy as the rule sees it.
@@ -224,7 +227,11 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
                 .iter()
                 .any(|read| read.rotated_by == Some(by) && rule.copy_epoch(read) == Some(epoch))
         };
-        (rule.copy_epoch(&report.copies.current) != Some(epoch)
+        // At epoch 0 no `raft-epoch` proves the copy went through a start,
+        // and a wiped disk or an empty rotation leaves no kept copy, so a
+        // copy that never voted could be one that lost its votes.
+        let lost_votes = epoch == 0 && report.copies.current.vote.is_none();
+        ((rule.copy_epoch(&report.copies.current) != Some(epoch) || lost_votes)
             && !kept_of_epoch(RotatedBy::PowerCut))
             || kept_of_epoch(RotatedBy::Restore)
     });
@@ -317,6 +324,10 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         }
     }
 
+    if voters.is_empty() {
+        return Err(Refused::NoVoters);
+    }
+
     let reserved = copies
         .iter()
         .filter_map(|c| c.read.reserved)
@@ -324,9 +335,19 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .map(|r| r.checked_add(1).ok_or(Refused::NoIndexLeft))
         .transpose()?;
     let floor_end = record.floor.map(|floor| floor.index + 1);
+    // Never below an index an earlier epoch gave out: its first index, or
+    // a record any copy of the incarnation holds.
+    let earlier = record.bases.iter().map(|base| base.first_index).max();
+    let held = copies
+        .iter()
+        .filter(|c| c.epoch.is_some())
+        .map(|c| c.end)
+        .max();
     let first_index = base_end
         .max(floor_end.unwrap_or(0))
-        .max(reserved.unwrap_or(0));
+        .max(reserved.unwrap_or(0))
+        .max(earlier.unwrap_or(0))
+        .max(held.unwrap_or(0));
 
     Ok(ReformPlan {
         epoch: epoch + 1,
@@ -442,7 +463,9 @@ impl<B: Clone> Rule<'_, B> {
 
     /// Whether the copy holds the entry with `key` at `index`. For the floor
     /// (`gap_counts`), a later epoch's gap there stands for it: everything
-    /// below that epoch's first index was its committed base.
+    /// below that epoch's first index was its committed base. Only for a
+    /// copy with a record past the gap: the start must save each voter's
+    /// commit at or above the base end (#2640).
     fn holds(
         &self,
         copy: &Copy<'_, B>,

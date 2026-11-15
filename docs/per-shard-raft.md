@@ -4942,7 +4942,15 @@ not move.
   placed broker, a leader, a voter off the record, a copy ahead of the
   record's epoch or whose bases differ from it, a record inside a gap, and
   an index nobody was asked about, and a base that ends below what its
-  source purged. A broker with no copy id is never a voter. This is `ReformKept` in
+  source purged. A broker with no copy id is never a voter, and a plan
+  with no voter refuses. At epoch 0, a placed broker whose current copy
+  never voted marks the group unless it has a power-cut kept copy: a wiped
+  disk or an empty rotation leaves nothing kept. The first index is also
+  never below an earlier epoch's first index or any record a copy of the
+  incarnation holds. A later epoch's gap counts as holding the floor's
+  entry only on a copy with a record past the gap, so the start, not
+  built, must save each voter's commit at or above the base end and
+  reserve through the first index minus one (#2640). This is `ReformKept` in
   `docs/formal/FelixRaftReform.tla`.
 
 Not built: the re-form command and the RF 1 restore themselves (item 8

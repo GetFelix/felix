@@ -1336,7 +1336,9 @@ of an earlier one.
 
 Written through a temporary, an fsync, a rename and a directory sync. A
 rotation moves it into the kept directory with the rest of the copy. One
-that does not decode fails the re-form's reads. A kept copy whose file
+that does not decode fails the re-form's reads, and so does one whose
+reserved bytes are not zero, whose first index is below its base's end,
+or whose base n + 1 ends on an entry of an epoch above n. A kept copy whose file
 names another incarnation vouches for nothing in a re-form; its
 reservation still counts.
 

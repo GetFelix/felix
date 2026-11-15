@@ -45,7 +45,8 @@ pub(crate) struct EpochBase {
 impl EpochBase {
     /// One past the base's last index.
     pub(crate) fn base_end(&self) -> u64 {
-        self.base_last.map_or(0, |last| last.index + 1)
+        self.base_last
+            .map_or(0, |last| last.index.saturating_add(1))
     }
 }
 
@@ -139,6 +140,11 @@ impl EpochFile {
         let mut bases = Vec::with_capacity(count);
         for n in 0..count {
             let at = HEADER_LEN + n * BASE_LEN;
+            // The base of epoch n + 1 ends on an entry of epoch n or
+            // earlier, and its first index is at or above its end.
+            if bytes[at + 1..at + 8].iter().any(|byte| *byte != 0) {
+                return None;
+            }
             let base_last = match bytes[at] {
                 0 => None,
                 HAS_BASE => Some(EpochLogId {
@@ -148,10 +154,16 @@ impl EpochFile {
                 }),
                 _ => return None,
             };
-            bases.push(EpochBase {
+            let base = EpochBase {
                 base_last,
                 first_index: u64_at(at + 32)?,
-            });
+            };
+            if base_last.is_some_and(|last| last.epoch > n as u64)
+                || base.first_index < base.base_end()
+            {
+                return None;
+            }
+            bases.push(base);
         }
         Some(Self {
             incarnation: u64_at(8)?,
