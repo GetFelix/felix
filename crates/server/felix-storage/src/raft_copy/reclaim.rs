@@ -191,6 +191,14 @@ async fn judge(
             let (dir, path) = (dir.to_path_buf(), path.clone());
             off_runtime(move || Ok(reserved::load(&path)? > reserved::load(&dir)?)).await
         };
+        if let Err(err) = &uncovered {
+            tracing::warn!(
+                path = %path.display(),
+                // Names the file that failed, which can be the current copy's.
+                error = %err,
+                "a reservation cannot be read, so the kept shard copy is held"
+            );
+        }
         if !matches!(uncovered, Ok(false)) {
             report.held.push(HeldCopy {
                 path,

@@ -51,13 +51,18 @@ fn decode(bytes: &[u8]) -> Option<u64> {
 
 /// The reservation in `dir`, or `None` when the copy never took one.
 pub(crate) fn load(dir: &Path) -> io::Result<Option<u64>> {
-    let Some(bytes) = state_file::load(dir, FILE_NAME)? else {
+    // Named in every error, since a caller reading several copies' files
+    // cannot otherwise say which one failed.
+    let file = dir.join(FILE_NAME);
+    let Some(bytes) = state_file::load(dir, FILE_NAME)
+        .map_err(|err| io::Error::new(err.kind(), format!("{}: {err}", file.display())))?
+    else {
         return Ok(None);
     };
     decode(&bytes).map(Some).ok_or_else(|| {
         invalid(format!(
             "{} does not decode; it holds the copy's reserved Raft index and cannot be rebuilt",
-            dir.join(FILE_NAME).display()
+            file.display()
         ))
     })
 }

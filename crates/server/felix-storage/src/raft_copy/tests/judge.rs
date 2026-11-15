@@ -390,7 +390,8 @@ async fn a_damaged_copy_file_is_an_error() {
 
 /// A rotation stopped at each of its steps, as a crash stops it, leaves the
 /// old directory or one the next open rotates again. Nothing passes under
-/// the old copy id.
+/// the old copy id. The steps include those inside the reservation and
+/// copy file writes, which are keyed on the shard directory.
 #[tokio::test]
 async fn a_rotation_stopped_at_any_step_rotates_again() {
     let mut stop = 0;
@@ -414,7 +415,7 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
 
         let copies = root.open();
         let parent = dir.parent().expect("parent").to_path_buf();
-        crash_point::watch(&parent, Some(stop));
+        crash_point::watch_under(&parent, Some(stop));
         let stopped = copies
             .open_copy(SHARD, &dir, "t/ns/orders/0", config())
             .await;
