@@ -12,6 +12,7 @@
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_wire::AckMode;
 use serial_test::serial;
 
 const STREAM: &str = "orders";
@@ -34,24 +35,41 @@ fn engine(name: &str) -> (String, String) {
 
 /// Three brokers, one shard, each broker a member of its group.
 fn raft_cluster() -> ClusterConfig {
+    raft_cluster_with(StreamSpec::quorum(STREAM, 1, 3))
+}
+
+fn raft_cluster_with(stream: StreamSpec) -> ClusterConfig {
     ClusterConfig {
         nodes: 3,
-        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        streams: vec![stream],
         broker_env: vec![engine("raft")],
         ..Default::default()
     }
 }
 
-/// The broker that serves the shard: the one whose subscribe is not answered
-/// with a redirect. Only brokers in `among` are asked.
+/// How many times `held` has `payload`.
+fn copies(held: &[Vec<u8>], payload: &[u8]) -> usize {
+    held.iter().filter(|have| *have == payload).count()
+}
+
+/// The broker that leads the shard: the one that reports serving its Raft
+/// term. A follower accepts subscribes too, so a subscribe cannot tell them
+/// apart. Waits until exactly one broker in `among` says so, since a deposed
+/// leader's gauge trails by one feed pass. Only brokers in `among` are asked.
 async fn leader_among(cluster: &Cluster, among: &[String]) -> String {
     felix_cluster::wait::until_some(ELECTED_WITHIN, "a broker to lead the shard", || async {
+        let mut leading = Vec::new();
         for node in among {
-            if cluster.subscribe_on(node, STREAM).await.is_ok() {
-                return Some(node.clone());
+            let led = cluster
+                .metric(node, "felix_broker_raft_shards_led")
+                .await
+                .ok()
+                .flatten();
+            if led.is_some_and(|led| led >= 1.0) {
+                leading.push(node.clone());
             }
         }
-        None
+        (leading.len() == 1).then(|| leading.remove(0))
     })
     .await
     .expect("a leader")
@@ -91,9 +109,9 @@ async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<
     payloads
 }
 
-/// **A record published through any broker reaches a subscriber.** The
-/// subscriber connects to a follower, which names the leader, and the client
-/// follows it there.
+/// **A record published through any broker reaches a subscriber, whether
+/// or not its publisher asked for an answer.** The subscriber connects to a
+/// follower, which serves it from its own log.
 #[tokio::test]
 #[serial]
 async fn a_publish_through_any_broker_reaches_a_subscriber() {
@@ -139,6 +157,32 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
         "acknowledged offsets are not in publish order: {acked:?}"
     );
 
+    // A batch nobody waits on is committed and delivered all the same.
+    let writer = felix_cluster::client::connect(
+        cluster.node(&leader).expect("node").client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("writer");
+    let unacked: Vec<Vec<u8>> = (0..16)
+        .map(|i| format!("unacked-{i}").into_bytes())
+        .collect();
+    writer
+        .publisher()
+        .await
+        .expect("publisher")
+        .publish_batch(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            unacked.clone(),
+            felix_wire::AckMode::None,
+        )
+        .await
+        .expect("an unacknowledged batch");
+    owed.extend(unacked);
+
     let mut seen = Vec::new();
     let mut offsets = Vec::new();
     while !owed.iter().all(|payload| seen.contains(payload)) {
@@ -154,6 +198,123 @@ async fn a_publish_through_any_broker_reaches_a_subscriber() {
         offsets.windows(2).all(|pair| pair[0] < pair[1]),
         "delivered out of order: {offsets:?}"
     );
+}
+
+/// Whether every acknowledged offset has reached the subscriber. A publish
+/// retried after an unknown outcome can leave a record the test never saw
+/// acknowledged, so the counts are not compared.
+fn arrived(acked: &[(u64, Vec<u8>)], seen: &[(u64, Vec<u8>)]) -> bool {
+    acked
+        .iter()
+        .all(|(offset, _)| seen.iter().any(|(got, _)| got == offset))
+}
+
+/// **A follower serves a subscriber, and the subscriber keeps every
+/// acknowledged record across the leader's death.** The reader connects only
+/// to a follower, reads from offset 0, and sees each record at the offset the
+/// leader acknowledged. When the leader is killed and a survivor takes over,
+/// the subscription resumes (or is resumed by offset) with no record missing
+/// and none twice.
+#[tokio::test]
+#[serial]
+async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies() {
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let follower = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .expect("follower")
+        .clone();
+
+    // One connection to the follower alone: it does not follow a redirect, so
+    // a follower that sent the reader to the leader fails the subscribe.
+    let reader = felix_cluster::client::connect(
+        cluster.node(&follower).expect("node").client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("reader");
+    let mut subscription = reader
+        .subscribe_from(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            Some(felix_client::StartPosition::Offset(0)),
+        )
+        .await
+        .expect("subscribe on a follower");
+
+    let mut acked: Vec<(u64, Vec<u8>)> = Vec::new();
+    for i in 0..10 {
+        let payload = format!("before-{i}").into_bytes();
+        acked.push((publish_acked(&cluster, &leader, &payload).await, payload));
+    }
+    let mut seen: Vec<(u64, Vec<u8>)> = Vec::new();
+    while !arrived(&acked, &seen) {
+        let event = tokio::time::timeout(Duration::from_secs(30), subscription.next_event())
+            .await
+            .expect("an event within 30s")
+            .expect("delivery")
+            .expect("the subscription stays open while the leader lives");
+        seen.push((event.offset.expect("offset"), event.payload.to_vec()));
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    leader_among(&cluster, &survivors).await;
+    for i in 0..10 {
+        let payload = format!("after-{i}").into_bytes();
+        acked.push((publish_acked(&cluster, &follower, &payload).await, payload));
+    }
+
+    while !arrived(&acked, &seen) {
+        let next = tokio::time::timeout(Duration::from_secs(30), subscription.next_event())
+            .await
+            .expect("an event within 30s");
+        match next {
+            Ok(Some(event)) => seen.push((event.offset.expect("offset"), event.payload.to_vec())),
+            // The subscription ended with its member's term: resume by offset.
+            Ok(None) | Err(_) => {
+                let from = seen.last().map_or(0, |(offset, _)| offset + 1);
+                subscription = felix_cluster::wait::until_some(
+                    ELECTED_WITHIN,
+                    "a resubscribe to be accepted",
+                    || async {
+                        reader
+                            .subscribe_from(
+                                &cluster.tenant_id,
+                                &cluster.namespace,
+                                STREAM,
+                                Some(felix_client::StartPosition::Offset(from)),
+                            )
+                            .await
+                            .ok()
+                    },
+                )
+                .await
+                .expect("resubscribe");
+            }
+        }
+    }
+
+    assert!(
+        seen.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "a record repeated or arrived out of order: {:?}",
+        seen.iter().map(|(offset, _)| offset).collect::<Vec<_>>()
+    );
+    for (offset, payload) in &acked {
+        assert!(
+            seen.iter()
+                .any(|(got, body)| got == offset && body == payload),
+            "acknowledged record {:?} at offset {offset} never arrived",
+            String::from_utf8_lossy(payload)
+        );
+    }
 }
 
 /// **The leader dies while the control plane is down, and nothing
@@ -209,6 +370,139 @@ async fn a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged() 
             "{elected} holds {:?} other than once",
             String::from_utf8_lossy(payload)
         );
+    }
+}
+
+/// **A `Leader` stream keeps acknowledging across a lost leader, and loses
+/// at most the tail its old leader acknowledged alone.** A publisher keeps
+/// publishing while the leader is cut off from its followers, so what the
+/// leader answers on its lease from then on is on its log alone and goes
+/// with it. What the next leader keeps of the acknowledged sequence is a
+/// prefix of it, once and in order, and the next leader's acknowledgements
+/// are all in its log.
+#[tokio::test]
+#[serial]
+async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowledged() {
+    if !opted_in() {
+        return;
+    }
+    let stream = StreamSpec::replicated(STREAM, 1, 3);
+    let config = raft_cluster_with(stream);
+    let mut cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    publish_acked(&cluster, &leader, b"first").await;
+
+    // One connection, publishing in order until a publish is not answered:
+    // the first one left waiting for a commit that cannot come.
+    let client = cluster.client_on(&leader).await.expect("client");
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let publishing = tokio::spawn(async move {
+        let publisher = client.publisher().await.expect("publisher");
+        let mut acked = vec![b"first".to_vec()];
+        for i in 0..100_000 {
+            let payload = format!("run-{i}").into_bytes();
+            let publish = publisher.publish(
+                &tenant,
+                &namespace,
+                STREAM,
+                payload.clone(),
+                AckMode::PerMessage,
+            );
+            match tokio::time::timeout(Duration::from_secs(1), publish).await {
+                Ok(Ok(_)) => acked.push(payload),
+                _ => break,
+            }
+        }
+        acked
+    });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    cluster.partition_node(&leader).expect("partition");
+    let acked = tokio::time::timeout(Duration::from_secs(30), publishing)
+        .await
+        .expect("the publisher stopped being answered")
+        .expect("publisher task");
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    cluster.heal_partitions().expect("heal");
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+    let mut after = Vec::new();
+    for i in 0..20 {
+        let payload = format!("after-{i}").into_bytes();
+        publish_acked(&cluster, &elected, &payload).await;
+        after.push(payload);
+    }
+
+    let held = replay_holding(&cluster, &elected, &after).await;
+    for payload in &after {
+        assert_eq!(copies(&held, payload), 1, "{elected} acknowledged it");
+    }
+    let kept: Vec<&Vec<u8>> = held.iter().filter(|have| acked.contains(have)).collect();
+    assert!(
+        kept.len() < acked.len(),
+        "{elected} kept all {} acknowledged records: nothing was answered on the lease alone",
+        acked.len()
+    );
+    assert!(
+        kept.first().is_some_and(|have| have.as_slice() == b"first"),
+        "{elected} lost `first`, acknowledged before the partition with its followers reachable"
+    );
+    assert_eq!(
+        kept,
+        acked[..kept.len()].iter().collect::<Vec<_>>(),
+        "what {elected} kept is not a prefix of what was acknowledged"
+    );
+}
+
+/// **A leader of a `Leader` stream that its followers cannot reach
+/// acknowledges nothing the group loses once its lease is over.** The
+/// broker keeps running and still says it leads, while the others elect.
+/// Whatever is acknowledged from then on, by either side, is in the log the
+/// group agrees on after the partition heals. This late the group takes no
+/// write from the old leader, so this is the whole path and not the lease
+/// check alone, which felix-replication's `raft/tests/deliver.rs` covers.
+#[tokio::test]
+#[serial]
+async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease() {
+    if !opted_in() {
+        return;
+    }
+    let stream = StreamSpec::replicated(STREAM, 1, 3);
+    let config = raft_cluster_with(stream);
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let mut owed = vec![b"before".to_vec()];
+    publish_acked(&cluster, &leader, &owed[0]).await;
+
+    cluster.partition_node(&leader).expect("partition");
+    // Longer than the lease (1.5 s) and the longest election timeout (2 s).
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for i in 0..3 {
+        let payload = format!("cut-off-{i}").into_bytes();
+        let publish = cluster.publish_via_at(&leader, STREAM, payload.clone());
+        let answered = tokio::time::timeout(Duration::from_secs(3), publish).await;
+        if matches!(answered, Ok(Ok(_))) {
+            owed.push(payload);
+        }
+    }
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let elected = leader_among(&cluster, &survivors).await;
+    for i in 0..5 {
+        let payload = format!("theirs-{i}").into_bytes();
+        publish_acked(&cluster, &elected, &payload).await;
+        owed.push(payload);
+    }
+
+    cluster.heal_partitions().expect("heal");
+    let healed = b"healed".to_vec();
+    publish_acked(&cluster, &leader, &healed).await;
+    owed.push(healed);
+    let held = replay_holding(&cluster, &elected, &owed).await;
+    for payload in &owed {
+        let text = String::from_utf8_lossy(payload);
+        assert_eq!(copies(&held, payload), 1, "{elected} holds {text:?}");
     }
 }
 
@@ -295,6 +589,104 @@ async fn a_consumer_group_on_a_raft_shard_is_refused() {
     }
 }
 
+/// **An idempotent producer keeps its sequence when its Raft leader dies.**
+/// The producer's id and sequences are in the entries, so the member
+/// elected next answers a re-send of the last batch from its own log
+/// without writing it, and takes the producer's next batch as the next in
+/// sequence. Kept in the dead leader's memory, the re-send would be written
+/// again and the producer told it is unknown.
+#[tokio::test]
+#[serial]
+async fn a_producer_keeps_its_sequence_when_its_raft_leader_dies() {
+    if !opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let addrs: Vec<std::net::SocketAddr> = survivors
+        .iter()
+        .map(|node| cluster.node(node).expect("node").client_addr)
+        .collect();
+    let client =
+        felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &cluster.client_token())
+            .await
+            .expect("connect");
+    let producer = std::sync::Arc::new(client)
+        .idempotent_producer()
+        .await
+        .expect("a producer id");
+    let record = |i: u32| format!("record-{i}").into_bytes();
+    let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+    let publish = |i: u32| {
+        let (producer, payload) = (&producer, record(i));
+        let (tenant, namespace) = (&tenant, &namespace);
+        async move { producer.publish(tenant, namespace, STREAM, payload).await }
+    };
+    // Acknowledged at the commit, so a majority holds each batch.
+    for i in 0..5 {
+        publish(i).await.expect("published before the failover");
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let elected = leader_among(&cluster, &survivors).await;
+
+    // What a producer does when the answer to its last batch never came:
+    // the same batch under the same sequence, to whoever leads now.
+    let node = cluster.node(&elected).expect("node");
+    let direct = felix_cluster::client::connect(
+        node.client_addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("connect to the new leader");
+    let publisher = direct.publisher().await.expect("publisher");
+    felix_cluster::wait::until(
+        ELECTED_WITHIN,
+        "the new leader to take the re-send",
+        || async {
+            publisher
+                .publish_idempotent_batch(
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    vec![record(4)],
+                    producer.producer_id(),
+                    4,
+                )
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the re-send is answered");
+    for i in 5..8 {
+        publish(i).await.expect("published after the failover");
+    }
+
+    // A batch of several records is refused, and none of it is written.
+    let several = publisher.publish_idempotent_batch(
+        &cluster.tenant_id,
+        &cluster.namespace,
+        STREAM,
+        vec![record(8), record(9)],
+        producer.producer_id(),
+        8,
+    );
+    let refused = several.await.expect_err("a batch of several was taken");
+    let refused = format!("{refused:#}");
+    assert!(refused.contains("more than one record"), "{refused}");
+
+    let owed: Vec<Vec<u8>> = (0..8).map(record).collect();
+    let mut held = replay_holding(&cluster, &elected, &owed).await;
+    // The harness's own readiness probe may be on the stream too.
+    held.retain(|payload| payload != b"harness-probe");
+    assert_eq!(held, owed, "a batch landed twice, or out of order");
+    cluster.shutdown().await;
+}
+
 /// The sum of `node`'s samples of the metric whose line starts with
 /// `series`, read from its own metrics.
 async fn metric(cluster: &Cluster, node: &str, series: &str) -> f64 {
@@ -377,5 +769,60 @@ async fn brokers_on_different_engines_refuse_their_shared_shard() {
         metric(&cluster, &hybrid, "felix_storage_append_records_total").await,
         0.0,
         "the hybrid broker appended to a log of its own"
+    );
+}
+
+/// Publish latency on three brokers, one publisher, one record at a time:
+/// a report for the Raft reports workflow, which sets the level and the
+/// lease. `RAFT_LATENCY_LEASE_MS=0` turns the lease off, so a `Leader`
+/// publish waits for its commit as a `Quorum` one does.
+#[tokio::test]
+#[serial]
+#[ignore = "a measurement; run by .github/workflows/raft-idle.yml"]
+async fn report_publish_latency() {
+    if !opted_in() {
+        return;
+    }
+    let var = |name: &str| std::env::var(name).ok();
+    let level = var("RAFT_LATENCY_LEVEL").unwrap_or_else(|| "Leader".into());
+    let lease = var("RAFT_LATENCY_LEASE_MS");
+    let publishes = var("RAFT_LATENCY_PUBLISHES").map_or(2000, |n| n.parse().expect("a count"));
+    let stream = match level.as_str() {
+        "Leader" => StreamSpec::replicated(STREAM, 1, 3),
+        "Quorum" => StreamSpec::quorum(STREAM, 1, 3),
+        other => panic!("RAFT_LATENCY_LEVEL is Leader or Quorum, not {other}"),
+    };
+    let mut config = raft_cluster_with(stream);
+    if let Some(lease) = &lease {
+        let lease = ("FELIX_SHARD_RAFT_LEASE_MS".to_string(), lease.clone());
+        config.broker_env.push(lease);
+    }
+    let (tenant, namespace) = (config.tenant_id.clone(), config.namespace.clone());
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    let leader = leader_among(&cluster, &cluster.node_ids()).await;
+    publish_acked(&cluster, &leader, b"first").await;
+
+    let client = cluster.client_on(&leader).await.expect("client");
+    let publisher = client.publisher().await.expect("publisher");
+    let mut micros = Vec::with_capacity(publishes);
+    // The first tenth warms the connection and the group and is not kept.
+    for i in 0..publishes + publishes / 10 {
+        let payload = vec![0u8; 256];
+        let sent = std::time::Instant::now();
+        publisher
+            .publish(&tenant, &namespace, STREAM, payload, AckMode::PerMessage)
+            .await
+            .expect("acknowledged");
+        if i >= publishes / 10 {
+            micros.push(sent.elapsed().as_micros());
+        }
+    }
+    micros.sort_unstable();
+    let at = |percent: usize| micros[(micros.len() * percent / 100).min(micros.len() - 1)];
+    let lease = lease.as_deref().unwrap_or("default");
+    println!(
+        "raft publish latency: level={level} lease_ms={lease} publishes={publishes} p50_us={} p99_us={}",
+        at(50),
+        at(99)
     );
 }

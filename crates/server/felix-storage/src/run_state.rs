@@ -22,6 +22,10 @@
 //! removes it, so a broker can refuse to join a fleet that has not finalized
 //! `head_trim` without opening every log. See [`record_head_trimmed`].
 //!
+//! `<durable root>/vouched-unsynced` says a Raft copy here told a leader it
+//! had written a record before syncing it, so a machine crash rotates the id
+//! whatever the fsync mode. See [`record_vouched_unsynced`].
+//!
 //! `<durable root>/record-headers` says the same of a record with a key or
 //! headers block (storage format v8) and `record_headers`. See
 //! [`record_headers_stored`].
@@ -90,6 +94,15 @@ const RELAXED: u8 = 1;
 /// process is poisoned. See [`watch_poison`].
 static WATCHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
+/// The boot each directory's run began in, which [`record_vouched_unsynced`]
+/// names in the record of a run that began strict.
+static BEGAN_IN: Mutex<Vec<(PathBuf, Option<BootId>)>> = Mutex::new(Vec::new());
+
+/// Held across a read and rewrite of the record of a run under way, so
+/// [`forget_boot`] or [`mark_clean`] is never undone by a boot written from
+/// an older read. Also keeps writers of the shared temporary file apart.
+static REWRITE: Mutex<()> = Mutex::new(());
+
 /// What the record says about the run before this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LastRun {
@@ -147,6 +160,15 @@ pub struct Begun {
     pub rotated: bool,
 }
 
+/// Whether a run under `fsync_mode` acknowledges records before they are
+/// synced, so that a machine crash of it must rotate the storage id. True
+/// under `Periodic` and `None`. A run under `OnCommit` is relaxed too once a
+/// Raft copy in the directory has vouched for an unsynced record, which
+/// [`begin`] reads from [`vouched_unsynced`] itself.
+pub fn relaxed(fsync_mode: &crate::log::FsyncMode) -> bool {
+    !matches!(fsync_mode, crate::log::FsyncMode::OnCommit)
+}
+
 /// Start a run on the directory at `root`: read its storage id, give it a new
 /// one when the last run may have lost records it acknowledged or the
 /// directory is older than the node's last registration, then record that a
@@ -176,9 +198,29 @@ pub fn begin(
     repair_pending: impl FnOnce() -> bool,
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
+    // A deleted storage-id is a rotation too: start the Raft mark log over
+    // before the new id exists, as `copy_trust::rotate_storage_id` does.
+    if storage_identity::load(root)?.is_none() {
+        copy_trust::forget_raft_marks(root)?;
+    }
     let (loaded, origin) = storage_identity::load_or_create(root, &mut fresh)?;
     copy_trust::ensure(root, origin == Origin::Created)?;
-    let last_run = read(root, loaded)?;
+    // A copy that vouched for unsynced records did so after the run's record
+    // was written, so the marker speaks for the last run and for this one.
+    // That run's record gets its boot right after the marker. A record still
+    // without one is a crash in between, which rotates.
+    let vouched = vouched_unsynced(root)?;
+    let relaxed = relaxed || vouched;
+    let last_run = match read(root, loaded)? {
+        LastRun::Crashed {
+            relaxed: false,
+            boot,
+        } if vouched => LastRun::Crashed {
+            relaxed: true,
+            boot,
+        },
+        last_run => last_run,
+    };
     let recorded = read_registration(root)?;
     let restored = origin == Origin::Loaded && recorded.behind(registered);
     // A new id already tells peers to start over. `||` order matters: the
@@ -235,6 +277,11 @@ pub fn begin(
         (false, _) => encode(RUNNING, 0, id).to_vec(),
     };
     write(root, &record, true)?;
+    {
+        let mut began = BEGAN_IN.lock();
+        began.retain(|(began, _)| began != root);
+        began.push((root.to_path_buf(), boot));
+    }
     Ok(Begun {
         id,
         origin,
@@ -305,6 +352,74 @@ pub fn record_head_trimmed(root: &Path) -> Result<()> {
 /// counts: it is renamed into place whole, and it is never removed.
 pub fn head_trimmed(root: &Path) -> Result<bool> {
     crate::fs::try_exists(root.join(HEAD_TRIMMED_FILE_NAME)).map_err(StorageError::Io)
+}
+
+/// The name, under the durable root, of the marker a Raft copy leaves before
+/// it vouches for a record it has not synced. Not a directory, so shard
+/// discovery passes over it.
+pub const VOUCHED_UNSYNCED_FILE_NAME: &str = "vouched-unsynced";
+
+/// Record, durably, that a Raft copy under `root` is about to tell a leader
+/// it has written a record it has not synced, or to count its own such
+/// write toward an acknowledgement. Call before the first one leaves. Always
+/// written and synced, even over a marker already there: one a crashed
+/// process left may be in the page cache only.
+///
+/// Then the run's record, if it began strict, becomes a relaxed one naming
+/// the boot [`begin`] was given, so a process crash from here on keeps the
+/// id as it does for a run that began relaxed.
+pub fn record_vouched_unsynced(root: &Path) -> Result<()> {
+    write_atomically(root, VOUCHED_UNSYNCED_FILE_NAME, b"written\n", true)?;
+    if let Err(err) = name_boot(root) {
+        tracing::warn!(
+            root = %root.display(),
+            error = %err,
+            "could not name the boot in the run record; a process crash of this run \
+             takes a new storage id"
+        );
+    }
+    Ok(())
+}
+
+/// Make the strict record of the run under way on `root` a relaxed one with
+/// its boot. Only after the marker is synced: the strict record with the
+/// marker rotates on any crash, and without it a machine crash would keep
+/// the id. Not synced, as in [`forget_boot`]: a machine crash rotates under
+/// either record.
+fn name_boot(root: &Path) -> Result<()> {
+    let began = BEGAN_IN
+        .lock()
+        .iter()
+        .find(|(began, _)| began == root)
+        .map(|(_, boot)| *boot);
+    let Some(Some(boot)) = began else {
+        return Ok(());
+    };
+    let _rewrite = REWRITE.lock();
+    let bytes = match crate::fs::read(path_in(root)) {
+        Ok(bytes) => bytes,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(StorageError::Io(err)),
+    };
+    #[cfg(test)]
+    tests::name_boot_read(root);
+    // A record that already lost its boot is relaxed, and keeps none.
+    match decode(&bytes) {
+        Some(Record {
+            state: RUNNING,
+            flags: 0,
+            id,
+            boot: None,
+        }) => write(root, &encode_boot(id, boot), false),
+        _ => Ok(()),
+    }
+}
+
+/// Whether a copy under `root` may have vouched for an unsynced record. The
+/// marker is never removed: a copy that vouched once may have a leader still
+/// counting it, and only a rotation ends that.
+pub fn vouched_unsynced(root: &Path) -> Result<bool> {
+    crate::fs::try_exists(root.join(VOUCHED_UNSYNCED_FILE_NAME)).map_err(StorageError::Io)
 }
 
 /// The record-headers marker's name under the durable root. Not a directory,
@@ -437,6 +552,145 @@ pub fn rotated_ids(root: &Path) -> Result<Vec<StorageId>> {
     Ok(decode_rotated_ids(&bytes).unwrap_or_default())
 }
 
+/// The rotation record's name under the durable root: the id the last
+/// rotation gave the directory, the one it had before, and the registration
+/// the directory held then.
+pub const ROTATION_FILE_NAME: &str = "last-rotation";
+const ROTATION_HEADER: &str = "last_rotation\n";
+
+/// The registered-at record's name under the durable root: the node's
+/// registration time beside the incarnation it was read with.
+pub const REGISTERED_AT_FILE_NAME: &str = "registered-at";
+const REGISTERED_AT_HEADER: &str = "registered_at\n";
+
+/// One registration of the node, as the control plane names it. Deleting and
+/// adding the node again starts `incarnation` over under a new
+/// `registered_at_millis`, so only the pair names a registration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Binding {
+    pub registered_at_millis: u64,
+    pub incarnation: u64,
+}
+
+impl Binding {
+    fn encode(self) -> String {
+        format!(
+            "registered_at={}\nincarnation={}\n",
+            self.registered_at_millis, self.incarnation
+        )
+    }
+
+    /// The two lines [`Self::encode`] writes, and nothing after them.
+    fn decode<'a>(mut lines: impl Iterator<Item = &'a str>) -> Option<Self> {
+        let registered_at_millis = lines.next()?.strip_prefix("registered_at=")?.parse().ok()?;
+        let incarnation = lines.next()?.strip_prefix("incarnation=")?.parse().ok()?;
+        lines.next().is_none().then_some(Self {
+            registered_at_millis,
+            incarnation,
+        })
+    }
+}
+
+/// The directory's last rotation: [`copy_trust::rotate_storage_id`] gave it
+/// `to` in place of `from` while the directory's registration was `bound`.
+/// `None` when the directory held no registration it could name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rotation {
+    pub to: StorageId,
+    pub from: StorageId,
+    pub bound: Option<Binding>,
+}
+
+/// Record, durably, that the directory is about to rotate from `from` to
+/// `to`. Written before the new id, so a crash in between leaves a record
+/// naming an id the directory never took.
+pub(crate) fn record_rotation(root: &Path, rotation: Rotation) -> Result<()> {
+    let body = format!(
+        "{ROTATION_HEADER}{}\n{}\n{}",
+        rotation.to.to_hex(),
+        rotation.from.to_hex(),
+        rotation.bound.map(Binding::encode).unwrap_or_default()
+    );
+    write_atomically(root, ROTATION_FILE_NAME, body.as_bytes(), true)
+}
+
+/// What [`record_rotation`] recorded under `root`. `None` without the file
+/// or for one that does not decode.
+pub fn last_rotation(root: &Path) -> Result<Option<Rotation>> {
+    let Some(body) = read_text(root, ROTATION_FILE_NAME)? else {
+        return Ok(None);
+    };
+    Ok(body.strip_prefix(ROTATION_HEADER).and_then(|body| {
+        let mut lines = body.lines();
+        let to = StorageId::from_hex(lines.next()?)?;
+        let from = StorageId::from_hex(lines.next()?)?;
+        let mut rest = lines.peekable();
+        let bound = match rest.peek() {
+            None => None,
+            Some(_) => Some(Binding::decode(rest)?),
+        };
+        Some(Rotation { to, from, bound })
+    }))
+}
+
+/// Remove the rotation record under `root`, durably.
+pub fn forget_rotation(root: &Path) -> Result<()> {
+    remove_record(root, ROTATION_FILE_NAME)
+}
+
+/// [`record_registration`] for a registration the control plane dated, which
+/// a rotation can then be bound to ([`registration_binding`]).
+///
+/// The rotation record moves first: one bound to the registration just
+/// before this one, under the id the directory has now, is bound to this
+/// one. A crash before the registration record leaves the directory reading
+/// as older than its registration, which rotates it again.
+pub fn record_dated_registration(root: &Path, registration: Binding) -> Result<()> {
+    if let Some(rotation) = last_rotation(root)?
+        && storage_identity::load(root)? == Some(rotation.to)
+        && rotation.bound.is_some_and(|bound| {
+            bound.registered_at_millis == registration.registered_at_millis
+                && bound.incarnation.checked_add(1) == Some(registration.incarnation)
+        })
+    {
+        record_rotation(
+            root,
+            Rotation {
+                bound: Some(registration),
+                ..rotation
+            },
+        )?;
+    }
+    let body = format!("{REGISTERED_AT_HEADER}{}", registration.encode());
+    write_atomically(root, REGISTERED_AT_FILE_NAME, body.as_bytes(), true)?;
+    record_registration(root, registration.incarnation)
+}
+
+/// The registration the directory under `root` last recorded, if the control
+/// plane dated it. `None` when the registration record names another
+/// incarnation than the registered-at record: a build or a control plane
+/// that does not date registrations registered since.
+pub fn registration_binding(root: &Path) -> Result<Option<Binding>> {
+    let Some(body) = read_text(root, REGISTERED_AT_FILE_NAME)? else {
+        return Ok(None);
+    };
+    let dated = body
+        .strip_prefix(REGISTERED_AT_HEADER)
+        .and_then(|body| Binding::decode(body.lines()));
+    let recorded = read_registration(root)?;
+    Ok(dated.filter(|dated| matches!(recorded, Recorded::At(at) if at == dated.incarnation)))
+}
+
+/// The record `name` under `root` as text. `None` without the file or for
+/// one that is not UTF-8.
+fn read_text(root: &Path, name: &str) -> Result<Option<String>> {
+    match crate::fs::read(root.join(name)) {
+        Ok(bytes) => Ok(String::from_utf8(bytes).ok()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(StorageError::Io(err)),
+    }
+}
+
 pub(crate) fn decode_rotated_ids(bytes: &[u8]) -> Option<Vec<StorageId>> {
     let body = std::str::from_utf8(bytes)
         .ok()?
@@ -550,7 +804,12 @@ pub(crate) fn decode_registration(bytes: &[u8]) -> Option<u64> {
 /// Record that the run under `id` stopped with everything it acknowledged
 /// synced. Only once nothing will write to the directory again.
 pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
-    write(root, &encode(STOPPED, 0, id), true)
+    // A detached vouch may still be naming the boot of this run. The lock is
+    // let go before a failed sync runs `forget_watched`, which takes it too.
+    durable_change(root, FILE_NAME, || {
+        let _rewrite = REWRITE.lock();
+        replace_file(root, FILE_NAME, &encode(STOPPED, 0, id), true)
+    })
 }
 
 /// Record that the run under way on `root` may have lost records it
@@ -566,6 +825,7 @@ pub fn mark_clean(root: &Path, id: StorageId) -> Result<()> {
 /// keeps it for that; a crash of the machine rotates anyway. Syncing could
 /// also fail on the very device that just failed a sync.
 pub fn forget_boot(root: &Path) -> Result<()> {
+    let _rewrite = REWRITE.lock();
     let bytes = match crate::fs::read(path_in(root)) {
         Ok(bytes) => bytes,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -589,9 +849,15 @@ pub fn forget_boot(root: &Path) -> Result<()> {
 }
 
 /// Call [`forget_boot`] for `root` as soon as any log in this process is
-/// poisoned, or now if one already is.
+/// poisoned, or now if one already is. Watching a root twice is the same as
+/// once.
 pub fn watch_poison(root: &Path) {
-    WATCHED.lock().push(root.to_path_buf());
+    {
+        let mut watched = WATCHED.lock();
+        if !watched.iter().any(|watched| watched == root) {
+            watched.push(root.to_path_buf());
+        }
+    }
     if crate::disk_log::any_log_poisoned() {
         forget_watched();
     }

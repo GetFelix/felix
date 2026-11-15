@@ -7,9 +7,10 @@
 //! never asked, and a leader is asked once per heartbeat. See
 //! `docs/per-shard-raft.md`, "One timer for every group".
 
+use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::stream::FuturesUnordered;
@@ -18,6 +19,7 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tokio_util::sync::CancellationToken;
 
 use super::group::{Group, Timers};
+use super::reach::CEILING;
 use super::runtime::Registry;
 
 /// Times the ticker ended on a panic and was started again. Any increase
@@ -63,6 +65,7 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
     let mut interval = tokio::time::interval(every);
     interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut looks = Looks::default();
+    let mut back = Back::default();
     loop {
         tokio::select! {
             biased;
@@ -73,12 +76,89 @@ async fn run(registry: Arc<Registry>, every: Duration, timers: Timers, stop: Can
         if registry.trip_ticker.swap(false, Ordering::Relaxed) {
             panic!("tripped by a test");
         }
+        registry.tail_budget.report();
+        back.retry(&registry);
         let due = looks.due(registry.ticked(), &timers);
         tokio::select! {
             biased;
             () = stop.cancelled() => return,
             () = tick_all(&due, Instant::now() + every) => {}
         }
+    }
+}
+
+/// Retries peer members that answer again, ahead of openraft's backoff.
+///
+/// A broker back from an outage gets one walk of every group here that
+/// leads a member on it, except the groups whose member there still
+/// refuses: those are not open yet, and each is retried on its own member's
+/// first answer instead. A broker is walked at most once per `CEILING` and
+/// never twice at once, so a flapping or struggling peer is not called more
+/// often than openraft's backoff would call it at its ceiling.
+#[derive(Default)]
+struct Back {
+    walks: HashMap<Arc<str>, Walk>,
+}
+
+#[derive(Default)]
+struct Walk {
+    last: Option<Instant>,
+    busy: Arc<AtomicBool>,
+}
+
+/// Retry commands sent to the groups' cores at once.
+const RESETS_AT_ONCE: usize = 64;
+
+impl Back {
+    fn retry(&mut self, registry: &Registry) {
+        let reach = &registry.reach;
+        #[cfg(test)]
+        if reach.no_wake.load(Ordering::Relaxed) {
+            return;
+        }
+        let peers = reach.peers();
+        self.walks.retain(|broker, _| peers.contains_key(broker));
+        let now = Instant::now();
+        for (broker, peer) in peers.iter() {
+            let walk = self.walks.entry(Arc::clone(broker)).or_default();
+            if walk.busy.load(Ordering::Acquire) {
+                continue;
+            }
+            let whole = walk.last.is_none_or(|at| now - at >= CEILING) && peer.take_back();
+            let opened = peer.take_opened();
+            let groups: Vec<Arc<Group>> = if whole {
+                walk.last = Some(now);
+                #[cfg(test)]
+                reach.walks.fetch_add(1, Ordering::Relaxed);
+                registry
+                    .ticked()
+                    .iter()
+                    .filter(|group| !group.refused_on(broker))
+                    .cloned()
+                    .collect()
+            } else {
+                opened
+                    .iter()
+                    .filter_map(|id| registry.get(&id.shard).filter(|group| group.id == *id))
+                    .collect()
+            };
+            if groups.is_empty() {
+                continue;
+            }
+            walk.busy.store(true, Ordering::Release);
+            let busy = Arc::clone(&walk.busy);
+            let broker = Arc::clone(broker);
+            tokio::spawn(async move {
+                futures::stream::iter(groups)
+                    .for_each_concurrent(RESETS_AT_ONCE, |group| {
+                        let broker = Arc::clone(&broker);
+                        async move { group.retry_now(&broker).await }
+                    })
+                    .await;
+                busy.store(false, Ordering::Release);
+            });
+        }
+        reach.forget_idle();
     }
 }
 

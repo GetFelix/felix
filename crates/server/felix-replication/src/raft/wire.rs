@@ -25,13 +25,14 @@ use openraft::{EntryPayload, LogId, StoredMembership, Vote};
 use super::codec::invalid;
 use super::membership::TargetVersion;
 use super::network::{Addressee, RaftReply, RaftRequest, Refused, Reply, Request};
-use super::types::{Command, GroupId, MemberId, Membership, ShardTypes};
+use super::types::{Command, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
 /// The first byte of every body. A reader refuses any other, so a peer
 /// on another layout is refused by name rather than misread. 2 added the
-/// report byte to the request header, 3 the target version to a membership.
-const LAYOUT: u8 = 3;
+/// report byte to the request header, 3 the data of a snapshot, 4 the target
+/// version to a membership, 5 the piece entry.
+const LAYOUT: u8 = 5;
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;
@@ -54,6 +55,7 @@ const UNREACHABLE: u8 = 16;
 const NO_SUCH_MEMBER: u8 = 17;
 const STOPPED: u8 = 18;
 const NO_SNAPSHOTS: u8 = 19;
+const OTHER_COPY: u8 = 20;
 
 /// Most members one voter set or the learners may name. Far more than a
 /// shard's copies; it bounds what a peer can make this broker allocate.
@@ -156,11 +158,21 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
                 None => buf.put_u8(0),
             }
         }
-        Request::Snapshot { vote, meta } => {
+        Request::Snapshot {
+            vote,
+            meta,
+            data_len,
+            offset,
+            data,
+        } => {
             put_vote(&mut buf, vote)?;
             put_opt_log_id(&mut buf, meta.last_log_id.as_ref());
             put_opt_log_id(&mut buf, meta.last_membership.log_id().as_ref());
             put_membership(&mut buf, meta.last_membership.membership())?;
+            buf.put_u64(*data_len);
+            buf.put_u64(*offset);
+            buf.put_u32(len_u32(data.len())?);
+            buf.extend_from_slice(data);
         }
         Request::TransferLeader(rpc) => {
             put_vote(&mut buf, rpc.from_leader())?;
@@ -231,12 +243,21 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
             let last_log_id = take_opt_log_id(&mut buf)?;
             let membership_log_id = take_opt_log_id(&mut buf)?;
             let membership = take_membership(&mut buf)?;
+            let data_len = take_u64(&mut buf)?;
+            let offset = take_u64(&mut buf)?;
+            let len = take_u32(&mut buf)? as usize;
+            if buf.remaining() < len {
+                return Err(short());
+            }
             Request::Snapshot {
                 vote,
                 meta: SnapshotMetaOf::<ShardTypes> {
                     last_log_id,
                     last_membership: StoredMembership::new(membership_log_id, membership),
                 },
+                data_len,
+                offset,
+                data: buf.split_to(len),
             }
         }
         TRANSFER_LEADER => {
@@ -330,6 +351,11 @@ fn put_reply(buf: &mut BytesMut, reply: &Result<RaftReply, Refused>) -> io::Resu
             buf.put_u8(NO_SNAPSHOTS);
             put_addressee(buf, to)?;
         }
+        Err(Refused::OtherCopy(to, copy)) => {
+            buf.put_u8(OTHER_COPY);
+            put_addressee(buf, to)?;
+            buf.put_u64(*copy);
+        }
     }
     Ok(())
 }
@@ -365,6 +391,10 @@ pub(crate) fn decode_reply(mut buf: Bytes) -> io::Result<Result<RaftReply, Refus
             Err(Refused::Stopped(to, take_str(&mut buf, MAX_REASON_BYTES)?))
         }
         NO_SNAPSHOTS => Err(Refused::NoSnapshots(take_addressee(&mut buf)?)),
+        OTHER_COPY => {
+            let to = take_addressee(&mut buf)?;
+            Err(Refused::OtherCopy(to, take_u64(&mut buf)?))
+        }
         other => return Err(invalid(format!("{other} is not a Raft answer"))),
     };
     expect_empty(&buf)?;
@@ -423,12 +453,48 @@ fn take_append_result(buf: &mut Bytes) -> io::Result<AppendResult<ShardTypes>> {
     })
 }
 
+/// Entry payload tags. 0 is a blank entry and 2 a membership.
+const ENTRY_RECORD: u8 = 1;
+/// A record that is an idempotent producer's batch: the producer id and the
+/// sequence come before the record.
+const ENTRY_SEQUENCED: u8 = 3;
+/// A record of an idempotent producer's batch of several: the producer id,
+/// the sequence, the record's position and the batch's length come before
+/// the record. A batch of one keeps [`ENTRY_SEQUENCED`], so its frames are
+/// the ones a build without this tag reads.
+const ENTRY_PIECE: u8 = 4;
+
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {
     put_log_id(buf, &entry.log_id);
     match &entry.payload {
         EntryPayload::Blank => buf.put_u8(0),
         EntryPayload::Normal(command) => {
-            buf.put_u8(1);
+            // A record of no producer's batch keeps the layout it always had.
+            match command.producer {
+                None => buf.put_u8(ENTRY_RECORD),
+                Some(ProducerMark {
+                    producer_id,
+                    sequence,
+                    position: 0,
+                    len: 1,
+                }) => {
+                    buf.put_u8(ENTRY_SEQUENCED);
+                    buf.put_u64(producer_id);
+                    buf.put_u64(sequence);
+                }
+                Some(ProducerMark {
+                    producer_id,
+                    sequence,
+                    position,
+                    len,
+                }) => {
+                    buf.put_u8(ENTRY_PIECE);
+                    buf.put_u64(producer_id);
+                    buf.put_u64(sequence);
+                    buf.put_u32(position);
+                    buf.put_u32(len);
+                }
+            }
             buf.put_u64(command.timestamp_micros);
             buf.put_u32(len_u32(command.payload.len())?);
             buf.extend_from_slice(&command.payload);
@@ -445,7 +511,22 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
     let log_id = take_log_id(buf)?;
     Ok(match take_u8(buf)? {
         0 => EntryOf::<ShardTypes>::new_blank(log_id),
-        1 => {
+        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE) => {
+            let producer = match tag {
+                ENTRY_SEQUENCED => Some(ProducerMark {
+                    producer_id: take_u64(buf)?,
+                    sequence: take_u64(buf)?,
+                    position: 0,
+                    len: 1,
+                }),
+                ENTRY_PIECE => Some(ProducerMark {
+                    producer_id: take_u64(buf)?,
+                    sequence: take_u64(buf)?,
+                    position: take_u32(buf)?,
+                    len: take_u32(buf)?,
+                }),
+                _ => None,
+            };
             let timestamp_micros = take_u64(buf)?;
             let len = take_u32(buf)? as usize;
             if buf.remaining() < len {
@@ -458,6 +539,7 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
                 Command {
                     timestamp_micros,
                     payload,
+                    producer,
                     written: None,
                 },
             )

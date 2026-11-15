@@ -283,3 +283,57 @@ async fn a_truncation_is_refused_once_a_flush_failed_a_pending_seal() {
     let log = DiskLog::open(dir.path(), "t/ns/s/0", config).expect("reopen");
     assert_eq!(read_all(&log, 0).await.len(), 10);
 }
+
+/// A read planned before a segment is forgotten opens it afterwards. It may
+/// use what it opened, but the cache must not keep it: nothing would ever
+/// remove it, and with a shared cache it pins a deleted file's space.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_in_flight_does_not_cache_a_segment_closed_or_truncated_under_it() {
+    for truncate in [false, true] {
+        let dir = tempdir().expect("dir");
+        let config = LogConfig {
+            segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 120,
+            ..config(FsyncMode::None)
+        };
+        {
+            let log = DiskLog::open(dir.path(), "t/ns/s/0", config.clone()).expect("open");
+            for i in 0..30 {
+                log.append(&records(&[&format!("value-{i:03}")]))
+                    .await
+                    .expect("append");
+            }
+            log.shutdown().await.expect("shutdown");
+        }
+        // Reopened, so no sealed segment is cached yet.
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", config).expect("reopen");
+        assert!(log.segments().len() > 3);
+        assert_eq!(log.open_sealed_segments(), 0);
+
+        let pause = std::sync::Arc::new(std::sync::Barrier::new(2));
+        *log.inner.pause_next_read.lock() = Some(std::sync::Arc::clone(&pause));
+        let reader = {
+            let log = log.clone();
+            tokio::spawn(async move { read_all(&log, 0).await })
+        };
+        let wait = std::sync::Arc::clone(&pause);
+        tokio::task::spawn_blocking(move || wait.wait())
+            .await
+            .expect("planned");
+
+        if truncate {
+            log.truncate(0).await.expect("truncate");
+        } else {
+            log.close().await.expect("close");
+        }
+
+        tokio::task::spawn_blocking(move || pause.wait())
+            .await
+            .expect("resumed");
+        let _ = reader.await.expect("read");
+        assert_eq!(
+            log.open_sealed_segments(),
+            0,
+            "truncate={truncate}: a forgotten segment was cached"
+        );
+    }
+}

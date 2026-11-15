@@ -26,7 +26,10 @@ println!("written at {offset:?}");
 
 An acknowledged publish returns `Option<u64>`: the log offset of the first
 record in the batch. The rest of a batch follow it with no gaps, so record `i`
-is at `offset + i`. It is `None` when the broker acknowledged the batch as soon
+is at `offset + i`. The one exception is a re-sent batch on a Raft shard that a
+leader change cut short: its ack carries the first record's original offset,
+and the later records can lie elsewhere, so do not compute offsets from it. No
+client can start a multi-record batch on Raft yet, so this does not occur today. It is `None` when the broker acknowledged the batch as soon
 as it was queued instead of once it was written (an in-memory stream, or a
 broker run with `FELIX_ACK_ON_COMMIT=0`), when the stream has no log, and against a broker older
 than the offset flag. An unacknowledged publish always returns `None`. On a

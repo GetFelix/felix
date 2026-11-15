@@ -4,12 +4,12 @@ use std::collections::BTreeSet;
 use std::io;
 
 use bytes::Bytes;
-use felix_storage::log::{AppendRecord, LogRecord, RecordMark};
+use felix_storage::log::{AppendRecord, LogRecord};
 use felix_storage::raft_log::{EntryCodec, WrittenToken};
 use serde::{Deserialize, Serialize};
 
 use super::membership::TargetVersion;
-use super::types::{Command, MemberId, Membership, ShardTypes};
+use super::types::{Command, MemberId, Membership, ProducerMark, ShardTypes};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ShardCodec;
@@ -31,7 +31,7 @@ pub(crate) struct StoredMembership {
     pub(crate) target: Option<TargetVersion>,
 }
 
-const MEMBERSHIP_VERSION: u32 = 2;
+pub(crate) const MEMBERSHIP_VERSION: u32 = 2;
 /// The layout without a target version.
 const UNVERSIONED: u32 = 1;
 
@@ -78,7 +78,7 @@ impl EntryCodec<ShardTypes> for ShardCodec {
         Ok(AppendRecord {
             payload: data.payload.clone(),
             timestamp_micros: data.timestamp_micros,
-            mark: RecordMark::None,
+            mark: ProducerMark::record_mark(data.producer),
             publisher: None,
             headers: None,
         })
@@ -88,6 +88,7 @@ impl EntryCodec<ShardTypes> for ShardCodec {
         Ok(Command {
             timestamp_micros: record.timestamp_micros,
             payload: record.payload,
+            producer: ProducerMark::of_record(record.mark)?,
             written: None,
         })
     }

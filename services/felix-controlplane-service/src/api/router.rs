@@ -176,6 +176,18 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(api::nodes::reports::report_replica_status),
         )
         .route(
+            "/v1/nodes/{node_id}/seal-report",
+            axum::routing::post(api::nodes::seals::report_seal),
+        )
+        .route(
+            "/v1/nodes/{node_id}/seal-give-up",
+            axum::routing::post(api::nodes::seals::give_up_seal),
+        )
+        .route(
+            "/v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}",
+            axum::routing::post(api::nodes::seals::seal_shard),
+        )
+        .route(
             "/v1/nodes/{node_id}/drain",
             axum::routing::post(api::nodes::drain_node),
         )

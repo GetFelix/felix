@@ -24,12 +24,13 @@ pub use namespace::{Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey}
 pub(crate) use node::validate_storage_id;
 pub use node::{
     Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest, NodeSpec,
-    NodeStatus, NodeSuspicion, NodeValidationError,
+    NodeStatus, NodeSuspicion, NodeValidationError, RootSequence,
 };
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, Readmitted, ReplicaReport,
-    ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind,
-    ShardState, ShardValidationError,
+    SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
+    ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch,
+    ShardValidationError,
 };
 pub(crate) use shard::{
     Learning, ShardOwner, check_elected_generation, first_generation, generation_at_least,

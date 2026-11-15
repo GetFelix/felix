@@ -83,3 +83,20 @@ async fn a_store_of_another_cluster_takes_no_waiver() {
         .await
         .expect("the same cluster, no state");
 }
+
+/// A data directory an older release wrote holds a group this build cannot
+/// read. It is not a first start, and nothing is written into it.
+#[tokio::test]
+async fn a_redb_store_takes_no_waiver_and_is_left_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::write(dir.path().join("raft.redb"), b"an older release's store").expect("write");
+    let err = form_without(dir.path(), "staging", &BTreeSet::from([2]))
+        .await
+        .expect_err("a redb store");
+    assert!(format!("{err:#}").contains("raft.redb"), "{err:#}");
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .expect("read_dir")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(names, ["raft.redb"]);
+}

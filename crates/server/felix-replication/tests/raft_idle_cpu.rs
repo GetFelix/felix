@@ -25,6 +25,21 @@
 //! three. `RAFT_IDLE_PEERS=none` opens the same logs with no Raft member on
 //! them and writes two records to each, as a new member does, which is the
 //! figure to take off: what is left is what Raft adds.
+//!
+//! `RAFT_IDLE_BURST_SECS` adds a write burst after the idle window: every
+//! leader takes pipelined writes for that long (`RAFT_IDLE_BURST_DEPTH` in
+//! flight per group, 32), then the groups go idle again. The run prints
+//! resident memory at the end of the burst and again after a settle delay,
+//! which is what a member keeps after it has been busy. Both are RSS, not
+//! live heap: pages the allocator freed and has not handed back still count.
+//! Use fewer groups for it: every log then holds its newest records in
+//! memory.
+//!
+//! `RAFT_IDLE_DEAD=1` (with `real` peers) stops broker `c` after the idle
+//! window and writes one record to every group, so each leader has a
+//! follower it cannot reach and entries to send it. It then measures the
+//! CPU of the two that are left and the calls a second they make to `c`,
+//! which is what openraft's retry delays cost.
 
 use std::collections::{BTreeSet, HashMap};
 use std::net::SocketAddr;
@@ -32,14 +47,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use felix_replication::peer::{PeerPool, PeerServer, PeerTransportConfig, UnavailableHandler};
 use felix_replication::raft::{
-    AgreeingPeers, GroupId, GroupRuntime, MemberId, PeerAddresses, PeerTransport, RaftReply,
-    RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
+    AckAt, AgreeingPeers, Batch, GroupId, GroupRuntime, MemberId, PeerAddresses, PeerTransport,
+    RaftEngine, RaftReply, RaftRequest, RaftTransport, Record, Refused, Role, RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::DiskLog;
 use felix_storage::log::{AppendOnlyLog, AppendRecord, FsyncMode, LogConfig, RecordMark};
+use futures::StreamExt;
+use futures::stream::FuturesUnordered;
 use tokio_util::sync::CancellationToken;
 
 fn shard(n: u32) -> ShardKey {
@@ -110,6 +128,8 @@ async fn logs_alone(groups: u32, config: LogConfig) {
 #[derive(Default)]
 struct Net {
     brokers: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
+    /// Calls to a broker that is not in `brokers`.
+    refused: std::sync::atomic::AtomicU64,
 }
 
 #[async_trait]
@@ -118,7 +138,11 @@ impl RaftTransport for Net {
         let runtime = self.brokers.lock().get(&*request.to().broker).cloned();
         match runtime {
             Some(runtime) => runtime.handle(request).await,
-            None => Err(Refused::Unreachable("no such broker".into())),
+            None => {
+                self.refused
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Err(Refused::Unreachable("no such broker".into()))
+            }
         }
     }
 }
@@ -148,6 +172,123 @@ async fn over_the_transport(timers: &RuntimeConfig, stop: &CancellationToken) ->
         runtimes.push(runtime);
     }
     runtimes
+}
+
+/// How long one burst write may take. A write that never answers would
+/// otherwise hold the burst open past its deadline.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How long the groups get to elect leaders again after a burst.
+const LEADERS_SETTLE: Duration = Duration::from_secs(60);
+
+/// Keep `depth` writes in flight on every group `runtime` leads until
+/// `length` has passed. Returns the writes that were acknowledged.
+async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Duration) -> u64 {
+    let engine = RaftEngine::new(runtime.clone());
+    let deadline = tokio::time::Instant::now() + length;
+    let led =
+        (0..groups).filter(|n| runtime.status(&shard(*n)).map(|s| s.role) == Some(Role::Leader));
+    let writers: Vec<_> = led
+        .map(|n| {
+            let engine = engine.clone();
+            tokio::spawn(async move {
+                let write = || {
+                    tokio::time::timeout(
+                        WRITE_TIMEOUT,
+                        engine.propose(
+                            &shard(n),
+                            Batch {
+                                records: vec![Record {
+                                    timestamp_micros: 1_700_000_000,
+                                    payload: Bytes::from_static(&[7; 100]),
+                                }],
+                                ack: AckAt::Written,
+                                term: None,
+                                producer: None,
+                            },
+                        ),
+                    )
+                };
+                let mut flying: FuturesUnordered<_> = (0..depth).map(|_| write()).collect();
+                let mut written = 0u64;
+                while let Some(result) = flying.next().await {
+                    // A leader too loaded to hear a majority in time refuses
+                    // the write, answers late, or loses the group. Each is
+                    // part of a burst on a small machine; give it a moment.
+                    match result {
+                        Ok(Ok(_)) => written += 1,
+                        _ => tokio::time::sleep(Duration::from_millis(50)).await,
+                    }
+                    if tokio::time::Instant::now() < deadline {
+                        flying.push(write());
+                    }
+                }
+                written
+            })
+        })
+        .collect();
+    let mut written = 0;
+    for writer in writers {
+        written += writer.await.expect("writer");
+    }
+    written
+}
+
+/// Stops `c`, writes one record to every group and measures what the two
+/// brokers left spend retrying it.
+async fn with_a_dead_peer(
+    net: &Net,
+    runtimes: &[GroupRuntime],
+    groups: u32,
+    timers: &RuntimeConfig,
+    window: Duration,
+) {
+    use std::sync::atomic::Ordering;
+    let dead = runtimes.last().expect("c").clone();
+    net.brokers.lock().remove(BROKERS[2]);
+    dead.shutdown().await;
+    let alive = &runtimes[..2];
+    let leader = |n: u32| {
+        alive
+            .iter()
+            .find(|runtime| runtime.status(&shard(n)).map(|s| s.role) == Some(Role::Leader))
+    };
+    let settled = tokio::time::Instant::now() + LEADERS_SETTLE;
+    while (0..groups).any(|n| leader(n).is_none()) && tokio::time::Instant::now() < settled {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let mut written = 0u32;
+    for n in 0..groups {
+        let Some(runtime) = leader(n) else { continue };
+        let batch = Batch {
+            records: vec![Record {
+                timestamp_micros: 1_700_000_000,
+                payload: Bytes::from_static(&[7; 100]),
+            }],
+            ack: AckAt::Written,
+            term: None,
+            producer: None,
+        };
+        let write = RaftEngine::new(runtime.clone()).propose(&shard(n), batch);
+        if let Ok(Ok(_)) = tokio::time::timeout(WRITE_TIMEOUT, write).await {
+            written += 1;
+        }
+    }
+    tokio::time::sleep(timers.idle_after + Duration::from_secs(10)).await;
+    let (cpu_before, calls_before) = (cpu(), net.refused.load(Ordering::Relaxed));
+    tokio::time::sleep(window).await;
+    let used = cpu() - cpu_before;
+    let calls = net.refused.load(Ordering::Relaxed) - calls_before;
+    println!(
+        "{groups} groups, {written} written, broker c down, heartbeat {:?}: \
+         {:.2}% of one core per live broker, {:.0} calls a second to c",
+        timers.heartbeat,
+        100.0 * used.as_secs_f64() / window.as_secs_f64() / 2.0,
+        calls as f64 / window.as_secs_f64(),
+    );
+    for runtime in alive {
+        runtime.shutdown().await;
+    }
 }
 
 fn env<T: std::str::FromStr>(name: &str) -> Option<T> {
@@ -288,6 +429,60 @@ async fn idle_groups_cost_little_cpu() {
     assert_eq!(leading(), before, "a group changed leader while idle");
     assert_eq!(terms(), terms_before, "an election ran while idle");
     assert_eq!(before.iter().sum::<u32>(), groups, "a group has no leader");
+
+    if real && !transport && env::<u8>("RAFT_IDLE_DEAD") == Some(1) {
+        return with_a_dead_peer(&net, &runtimes, groups, &timers, window).await;
+    }
+    if let Some(secs) = env::<u64>("RAFT_IDLE_BURST_SECS") {
+        let depth = env("RAFT_IDLE_BURST_DEPTH").unwrap_or(32);
+        let idle = resident_mb();
+        let calls = || -> u64 {
+            runtimes
+                .iter()
+                .flat_map(|runtime| (0..groups).filter_map(|n| runtime.status(&shard(n))))
+                .map(|status| status.client_writes)
+                .sum()
+        };
+        let calls_before = calls();
+        let length = Duration::from_secs(secs);
+        let written: u64 = futures::future::join_all(
+            runtimes
+                .iter()
+                .map(|runtime| burst(runtime, groups, depth, length)),
+        )
+        .await
+        .into_iter()
+        .sum();
+        let busy = resident_mb();
+        let calls = calls() - calls_before;
+        let settle = timers.idle_after + Duration::from_secs(20);
+        tokio::time::sleep(settle).await;
+        let members = f64::from(groups) * each;
+        if let (Some(idle), Some(busy), Some(after)) = (idle, busy, resident_mb()) {
+            println!(
+                "{groups} groups after a {length:?} burst, {} writes in {} calls per group: \
+                 {:.0} MB resident (RSS, not live heap) per broker at its end and \
+                 {:.0} MB {settle:?} later, {:.0} KB per member over the {:.0} MB before it",
+                written / u64::from(groups),
+                calls / u64::from(groups),
+                busy / each,
+                after / each,
+                1024.0 * (after - idle) / members,
+                idle / each,
+            );
+        }
+        // A loaded leader can lose its group during the burst, and the
+        // election that follows may still be running.
+        let settled = tokio::time::Instant::now() + LEADERS_SETTLE;
+        while leading().iter().sum::<u32>() != groups && tokio::time::Instant::now() < settled {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            leading().iter().sum::<u32>(),
+            groups,
+            "a group has no leader {LEADERS_SETTLE:?} after the burst"
+        );
+    }
     for runtime in &runtimes {
         runtime.shutdown().await;
     }

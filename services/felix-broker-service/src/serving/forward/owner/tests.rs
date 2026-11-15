@@ -1464,35 +1464,47 @@ mod quorum_waits {
         let marks = Arc::new(QuorumMarks::new());
         let handler = owner(&leader, &credentials, &marks);
 
+        // The bound is generous on purpose: a loaded runner can stall the
+        // storage write for seconds, but a wait that re-arms its deadline
+        // would still print the configured timeout and must not pass.
+        let loose = (TIMEOUT * 100).min(Duration::from_secs(30));
         for (what, forwarded) in ops(&credentials) {
             let started = std::time::Instant::now();
             let answer = handler.apply_cache_op(forwarded).await;
             let waited = started.elapsed();
+            assert!(waited < loose, "{what} waited {waited:?}, past {loose:?}");
+            let InternalMessage::ForwardCacheError(error) = &answer else {
+                panic!("{what}: {:?}", answer.kind());
+            };
             assert!(
-                matches!(answer, InternalMessage::ForwardCacheError(_)),
-                "{what}: {:?}",
-                answer.kind()
+                error.detail.contains(&format!("within {TIMEOUT:?}")),
+                "{what} did not time out its quorum wait: {}",
+                error.detail
             );
             assert!(waited >= TIMEOUT, "{what} ended early after {waited:?}");
-            assert!(waited < TIMEOUT * 6, "{what} ended late after {waited:?}");
         }
 
+        // Nothing publishes past this mark, so an op still waiting on it
+        // could only time out: an Ok is the release.
         let cache = leader::quorum_cache_key();
         marks.publish(&cache, GENERATION, 1 << 20);
         marks.counters().publish(&cache, GENERATION, 1 << 20);
+        // Together and within the loose bound: a mark seen only by the 50 ms
+        // recheck, or a re-armed deadline, would blow it.
+        let released = std::time::Instant::now();
         for (what, forwarded) in ops(&credentials) {
-            let started = std::time::Instant::now();
             let answer = handler.apply_cache_op(forwarded).await;
             assert!(
                 matches!(answer, InternalMessage::ForwardCacheOk(_)),
                 "{what}: {:?}",
                 answer.kind()
             );
-            assert!(
-                started.elapsed() < TIMEOUT,
-                "{what} waited though the mark passed"
-            );
         }
+        let released_in = released.elapsed();
+        assert!(
+            released_in < loose,
+            "the released ops took {released_in:?}, past {loose:?}"
+        );
     }
 
     /// Where the fleet reads by round, a read does not need the lease before
@@ -1593,19 +1605,204 @@ mod on_raft {
             other => panic!("expected an acknowledgement, got {other:?}"),
         }
 
-        // What a Raft stream cannot carry is refused by name.
-        match handler.apply(sequenced(b"sequenced")).await {
+        // A sequenced forward is written once however often it arrives.
+        let plain = |payload| ForwardPublish {
+            headers: None,
+            ..sequenced(payload)
+        };
+        let third = match handler.apply(plain(b"sequenced")).await {
+            InternalMessage::ForwardPublishOk(ok) => ok.offsets().expect("offsets"),
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        };
+        assert_eq!(third, (first.0 + 2, first.0 + 2));
+        match handler.apply(plain(b"sequenced")).await {
+            InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(third)),
+            other => panic!("expected the first send's answer, got {other:?}"),
+        }
+        // A different batch under the sequence is refused, as on the hybrid.
+        match handler.apply(plain(b"another")).await {
             InternalMessage::ForwardPublishError(err) => {
-                assert_eq!(err.code, ErrorCode::UnsupportedKind);
-                assert!(
-                    err.detail.contains("idempotent publishes"),
-                    "{}",
-                    err.detail
-                );
+                assert_eq!(err.code, ErrorCode::StorageFailed);
+                assert!(err.detail.contains("sequence"), "{}", err.detail);
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => {
+                assert_eq!(ok.offsets(), Some((third.0 + 1, third.0 + 1)));
+            }
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
+
+        // What a Raft stream cannot carry is refused by name.
+        match handler.apply(sequenced(b"headered")).await {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::UnsupportedKind);
+                assert!(err.detail.contains("record headers"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        // So is a sequenced batch of several records, with nothing written.
+        let mut several = plain(b"several");
+        several.payloads.push(Bytes::from_static(b"records"));
+        if let Some(producer) = several.producer.as_mut() {
+            producer.sequence += 1;
+        }
+        match handler.apply(several).await {
+            InternalMessage::ForwardPublishError(err) => {
+                // Not `UnsupportedKind`, which the requester answers by
+                // sending the batch again in the older form.
+                assert_eq!(err.code, ErrorCode::StorageFailed);
+                assert!(err.detail.contains("more than one"), "{}", err.detail);
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+        match handler.apply(forwarded()).await {
+            InternalMessage::ForwardPublishOk(ok) => {
+                assert_eq!(ok.offsets(), Some((third.0 + 2, third.0 + 2)));
+            }
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
         EngineShards::shutdown(&*shards).await;
+    }
+
+    /// A forwarding handler on a broker that leads `orders` on its own.
+    struct Owner {
+        _root: tempfile::TempDir,
+        broker: Arc<Broker>,
+        shards: Arc<crate::shards::raft::RaftShards>,
+        orders: crate::shards::ShardKey,
+        handler: ForwardingHandler,
+    }
+
+    impl Owner {
+        async fn new() -> Self {
+            let root = tempfile::tempdir().expect("tempdir");
+            let broker = fixture::broker(root.path()).await;
+            let shards = fixture::shards(&broker);
+            let orders = fixture::key(STREAM, 0);
+            let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+            shards.take(&mut fixture::assignments([assigned])).await;
+            fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+            let (router, ingress) = fixture::routes(&shards);
+            let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+            engine.set_raft(Arc::clone(&shards));
+            let handler = ForwardingHandler::new(
+                Arc::clone(&broker),
+                engine,
+                router,
+                "10.0.0.1:7001".to_string(),
+                Duration::from_secs(10),
+                Credentials::new().auth,
+            );
+            Self {
+                _root: root,
+                broker,
+                shards,
+                orders,
+                handler,
+            }
+        }
+
+        /// Producer 77's batch `sequence` of `payloads`, forwarded with no
+        /// header block. The wire cannot carry that shape yet (#2570), so
+        /// the owner is handed it directly.
+        async fn send(&self, sequence: u64, payloads: &[&'static [u8]]) -> InternalMessage {
+            let publish = ForwardPublish {
+                payloads: payloads.iter().map(|p| Bytes::from_static(p)).collect(),
+                headers: None,
+                producer: Some(ForwardProducer {
+                    producer_id: 77,
+                    sequence,
+                }),
+                ..forwarded()
+            };
+            self.handler.apply(publish).await
+        }
+
+        async fn plain(&self) -> u64 {
+            match self.handler.apply(forwarded()).await {
+                InternalMessage::ForwardPublishOk(ok) => ok.offsets().expect("offsets").0,
+                other => panic!("expected an acknowledgement, got {other:?}"),
+            }
+        }
+
+        async fn log_from(&self, from: u64) -> Vec<Bytes> {
+            let read = self
+                .broker
+                .read_durable(TENANT, NAMESPACE, STREAM, 0, from, 1 << 20);
+            let read = read.await.expect("read");
+            read.into_iter().map(|record| record.payload).collect()
+        }
+    }
+
+    fn offsets(answer: InternalMessage) -> (u64, u64) {
+        match answer {
+            InternalMessage::ForwardPublishOk(ok) => ok.offsets().expect("offsets"),
+            other => panic!("expected an acknowledgement, got {other:?}"),
+        }
+    }
+
+    /// The detail of a refused sequence. `StorageFailed`, which the
+    /// requester passes on and does not send again.
+    fn refused(answer: InternalMessage) -> String {
+        match answer {
+            InternalMessage::ForwardPublishError(err) => {
+                assert_eq!(err.code, ErrorCode::StorageFailed, "{}", err.detail);
+                err.detail
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        }
+    }
+
+    /// **A forwarded re-send of a batch a leader change cut is finished on
+    /// the owner's group, and answered with the start's first offset and
+    /// the last record's.** Other records lie between them, so the last is
+    /// not the first plus the batch's length. A forwarded batch of several
+    /// records the log holds whole is answered as held, and nothing is
+    /// written again.
+    #[tokio::test]
+    async fn a_forwarded_resend_of_a_cut_batch_is_finished_on_the_owner() {
+        let owner = Owner::new().await;
+        let (zero, _) = offsets(owner.send(0, &[b"a"]).await);
+        let start =
+            fixture::write_batch(&owner.shards, &owner.orders, 77, 1, 0, 4, &[b"b", b"c"]).await;
+        let theirs = owner.plain().await;
+
+        let other = refused(owner.send(1, &[b"w", b"x", b"y", b"z"]).await);
+        assert!(other.contains("different payloads"), "{other}");
+        let shorter = refused(owner.send(1, &[b"b", b"c", b"d"]).await);
+        assert!(shorter.contains("older than the window"), "{shorter}");
+        let finished = offsets(owner.send(1, &[b"b", b"c", b"d", b"e"]).await);
+        assert_eq!(finished, (start, theirs + 2));
+        let again = offsets(owner.send(1, &[b"b", b"c", b"d", b"e"]).await);
+        assert_eq!(again, finished, "a finished batch is answered as held");
+
+        let whole =
+            fixture::write_batch(&owner.shards, &owner.orders, 77, 2, 0, 2, &[b"f", b"g"]).await;
+        let held = offsets(owner.send(2, &[b"f", b"g"]).await);
+        assert_eq!(held, (whole, whole + 1));
+        let reused = refused(owner.send(2, &[b"x", b"y"]).await);
+        assert!(reused.contains("different payloads"), "{reused}");
+        assert_eq!(
+            owner.log_from(zero).await,
+            ["a", "b", "c", "forwarded", "d", "e", "f", "g"]
+        );
+        EngineShards::shutdown(&*owner.shards).await;
+    }
+
+    /// **A forwarded re-send of a cut batch the owner's log keeps only by
+    /// name is refused with `sequence_expired`**, as a refused sequence the
+    /// requester does not send again.
+    #[tokio::test]
+    async fn a_forwarded_resend_of_a_forgotten_batch_is_refused_as_expired() {
+        let owner = Owner::new().await;
+        fixture::forget_cut(&owner.shards, &owner.orders, 77, 0).await;
+        let tail = owner.plain().await;
+        let expired = refused(owner.send(0, &[b"cut", b"rest"]).await);
+        assert!(expired.contains("older than the window"), "{expired}");
+        assert_eq!(owner.plain().await, tail + 1, "a refusal took an offset");
+        EngineShards::shutdown(&*owner.shards).await;
     }
 
     use felix_replication::peer::pool::{PeerError, PeerRequester};

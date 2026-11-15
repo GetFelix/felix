@@ -799,6 +799,7 @@ pub(super) fn move_step<'a>(
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         };
         return Decision::Move(
             MoveStep::CutOver {
@@ -1176,6 +1177,7 @@ pub(super) fn start(
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.

@@ -84,8 +84,8 @@ impl Leadership {
         *self.lead.borrow()
     }
 
-    /// Every change of this member's hold, for the membership driver.
-    pub(crate) fn subscribe(&self) -> watch::Receiver<Lead> {
+    /// Wakes on every change of this member's hold on its shard.
+    pub(crate) fn changes(&self) -> watch::Receiver<Lead> {
         self.lead.subscribe()
     }
 

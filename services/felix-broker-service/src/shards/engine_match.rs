@@ -239,6 +239,14 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
         })
     }
 
+    fn serves_reads(&self, key: &ShardKey) -> bool {
+        !(self.any_refused.load(Ordering::Acquire) && self.refused.lock().contains_key(key))
+            && self
+                .inner
+                .as_ref()
+                .is_some_and(|inner| inner.serves_reads(key))
+    }
+
     fn dispatch(
         &self,
         key: &ShardKey,
@@ -257,6 +265,9 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
+        if let Some(inner) = &self.inner {
+            inner.wake_with(Arc::clone(&wake));
+        }
         let _ = self.wake.set(wake);
     }
 

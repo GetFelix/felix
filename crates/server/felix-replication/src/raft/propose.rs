@@ -18,14 +18,16 @@ use futures::stream::{BoxStream, FuturesUnordered};
 use futures::{Future, StreamExt};
 use openraft::error::{ClientWriteError, Fatal, ForwardReason};
 use openraft::impls::ProgressResponder;
-use openraft::raft::WriteResult;
+use openraft::raft::{WriteOption, WriteResult};
 use openraft::{Raft, ServerState};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
+use super::cache::{self, CacheCommand};
 use super::group::Pace;
-use super::machine::Machine;
-use super::types::{Command, ShardTypes};
+use super::lead::Leadership;
+use super::machine::{Cache, Machine};
+use super::types::{Command, ProducerMark, ShardTypes};
 use crate::engine::{CommitError, Written};
 
 /// One record of a batch to write.
@@ -56,6 +58,20 @@ impl AckAt {
     }
 }
 
+/// When [`super::RaftEngine::publish`] answers the publisher. Subscribers
+/// get the batch at its commit either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnswerAt {
+    /// When the batch is committed. A `Quorum` stream.
+    Commit,
+    /// Once the batch is on this leader's log as far as its [`AckAt`]
+    /// asks, if the leader lease holds then
+    /// ([`super::RaftEngine::admit_local_ack`]), and at the commit if it
+    /// does not. A `Leader` stream: the batch can still be lost if this
+    /// broker stops leading before it commits.
+    Lease,
+}
+
 /// A publish batch for [`super::RaftEngine::propose`]. It must hold a record.
 #[derive(Debug, Clone)]
 pub struct Batch {
@@ -64,6 +80,25 @@ pub struct Batch {
     /// The term the caller was admitted at. The batch is written only
     /// while this member leads that term. `None` takes any term.
     pub term: Option<u64>,
+    /// Set when the batch is an idempotent producer's.
+    pub producer: Option<Sequenced>,
+}
+
+/// An idempotent producer's batch: whose it is and its sequence. The
+/// records are stored with both, so every member's log can answer a
+/// re-send of the batch. The caller checks the sequence against the
+/// leader's log before proposing, and proposes the producer's next batch
+/// only once this one is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sequenced {
+    pub producer_id: u64,
+    pub sequence: u64,
+    /// The place in the producer's batch of the first record handed over.
+    /// Zero for a whole batch. Above zero the records are the rest of a
+    /// batch the log already holds up to there.
+    pub position: u32,
+    /// Records in the producer's whole batch.
+    pub len: u32,
 }
 
 /// A drain takes no batch that would bring it past this many payload bytes
@@ -83,6 +118,11 @@ const DISCARDED: &str = "a newer leader discarded the entry";
 const STOPPED: &str = "the shard's group stopped";
 const UNKNOWN: &str = "the entry was not reported written";
 const EMPTY: &str = "the batch held no record";
+const WRONG_KIND: &str = "the shard's group does not take this kind of write";
+const NOT_THE_REST: &str =
+    "the records are not the rest of the producer's batch, so nothing was written";
+const SEVERAL: &str =
+    "an idempotent batch of several records is not written on Raft, so nothing was written";
 
 pub(crate) fn lost(detail: &'static str) -> CommitError {
     CommitError::LeadershipLost {
@@ -93,6 +133,12 @@ pub(crate) fn lost(detail: &'static str) -> CommitError {
 
 pub(crate) fn stopped() -> CommitError {
     lost(STOPPED)
+}
+
+/// A stream's batch sent to a cache shard's group, or a cache write to a
+/// stream's. Nothing was written.
+pub(crate) fn not_a_stream() -> CommitError {
+    lost(WRONG_KIND)
 }
 
 /// Why a publisher has no acknowledgement. Like any error from the
@@ -151,9 +197,89 @@ impl Span {
     }
 }
 
+/// A cache shard's clock, in microseconds. The wall clock outside tests.
+pub(crate) type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// A cache write that has no stamp yet. It gets one when the publish task
+/// hands it to the group, not when it is queued: see [`Stamper`].
+#[derive(Debug, Clone)]
+pub(crate) struct Unstamped {
+    pub(crate) command: CacheCommand,
+    /// How long after its stamp a put expires, in microseconds. Zero is
+    /// never.
+    pub(crate) ttl: u64,
+}
+
+impl Unstamped {
+    fn encode(mut self, at: u64) -> Bytes {
+        if let CacheCommand::Put { expires_at, .. } = &mut self.command
+            && self.ttl > 0
+        {
+            *expires_at = at.saturating_add(self.ttl);
+        }
+        self.command.encode()
+    }
+}
+
+/// Stamps a cache shard's entries as the publish task writes them.
+///
+/// A stamp is the leader's clock held up to a floor, so stamps never go
+/// back along the log. The floor is the log's time as this member has
+/// applied it, or the last stamp issued here if that is later. A term opens
+/// only once one of its entries is applied, so by then every entry the
+/// leader inherited is applied too, its uncommitted tail included, and
+/// what it wrote since was stamped here.
+///
+/// The write then names the term the floor was read in, and openraft
+/// appends it only if this member still leads that term. A member deposed
+/// and elected again while a write waited would otherwise append a stamp
+/// from below the tail of the leader in between.
+pub(crate) struct Stamper {
+    #[cfg(test)]
+    pub(crate) gate: Arc<Gate>,
+    pub(crate) cache: Cache,
+    pub(crate) leadership: Arc<Leadership>,
+    pub(crate) clock: Clock,
+    /// The last stamp issued. It never goes back, whatever term it was for.
+    pub(crate) last: u64,
+}
+
+/// Where a test holds a stamped write back before openraft is handed it.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct Gate {
+    pub(crate) shut: tokio::sync::Mutex<()>,
+    /// Drains stamped so far.
+    pub(crate) stamped: AtomicU64,
+}
+
+impl Stamper {
+    /// Stamp `commands` for the term this member has open and return that
+    /// term. `None` if it has none open: nothing may be written.
+    pub(super) fn stamp(
+        &mut self,
+        commands: &mut [Command],
+        unstamped: Vec<Unstamped>,
+    ) -> Option<u64> {
+        let lead = self.leadership.lead();
+        let term = lead.term.filter(|_| lead.open)?;
+        let mut at = self.last.max(self.cache.read().time());
+        for (command, unstamped) in commands.iter_mut().zip(unstamped) {
+            at = cache::stamp((self.clock)(), at);
+            command.timestamp_micros = at;
+            command.payload = unstamped.encode(at);
+        }
+        self.last = at;
+        Some(term)
+    }
+}
+
 /// A batch on its way to the group.
 pub(crate) struct Proposal {
     commands: Vec<Command>,
+    /// A cache shard's batch: what each command is once it is stamped.
+    /// Empty for a stream's.
+    unstamped: Vec<Unstamped>,
     /// [`Batch::term`].
     term: Option<u64>,
     bytes: usize,
@@ -178,23 +304,86 @@ pub(crate) struct Waiting<W = WrittenAt> {
 /// last record each carry one, because one record's index says nothing
 /// certain about another's.
 pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
-    let Batch { records, ack, term } = batch;
+    let Batch {
+        records,
+        ack,
+        term,
+        producer,
+    } = batch;
     let count = records.len();
     if count == 0 {
         return Err(lost(EMPTY));
     }
+    let first = match producer {
+        None => None,
+        // Several records would be several entries, and nothing writes
+        // those all or none. The rest of a batch the log holds the start
+        // of is let through: each piece names its place, so a log that
+        // gets only some of them knows it and refuses the next re-send.
+        Some(Sequenced { position: 0, .. }) if count != 1 => return Err(lost(SEVERAL)),
+        Some(Sequenced { position, len, .. })
+            if u64::from(position) + count as u64 != u64::from(len) =>
+        {
+            return Err(lost(NOT_THE_REST));
+        }
+        Some(Sequenced {
+            producer_id,
+            sequence,
+            position,
+            len,
+        }) => Some(ProducerMark {
+            producer_id,
+            sequence,
+            position,
+            len,
+        }),
+    };
     let mut bytes = 0;
-    let mut commands: Vec<Command> = records
+    let commands = records
         .into_iter()
-        .map(|record| {
+        .zip(0u32..)
+        .map(|(record, index)| {
             bytes += record.payload.len();
             Command {
                 timestamp_micros: record.timestamp_micros,
                 payload: record.payload,
+                producer: first.map(|first| ProducerMark {
+                    position: first.position + index,
+                    ..first
+                }),
                 written: None,
             }
         })
         .collect();
+    queued(commands, Vec::new(), term, bytes, ack)
+}
+
+/// The same for a cache shard's writes. Each is one entry, and the batch
+/// is acknowledged once written: its caller waits for the commit.
+pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting), CommitError> {
+    let commands = writes
+        .iter()
+        .map(|_| Command {
+            timestamp_micros: 0,
+            payload: Bytes::new(),
+            producer: None,
+            written: None,
+        })
+        .collect();
+    queued(commands, writes, None, 0, AckAt::Written)
+}
+
+fn queued(
+    mut commands: Vec<Command>,
+    unstamped: Vec<Unstamped>,
+    term: Option<u64>,
+    bytes: usize,
+    ack: AckAt,
+) -> Result<(Proposal, Waiting), CommitError> {
+    let count = commands.len();
+    if count == 0 {
+        return Err(lost(EMPTY));
+    }
     let token = |command: &mut Command| {
         let (token, at) = WrittenToken::channel();
         command.written = Some(token);
@@ -206,6 +395,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     Ok((
         Proposal {
             commands,
+            unstamped,
             term,
             bytes,
             answer,
@@ -223,6 +413,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
 /// The batches of one call, in queue order.
 pub(super) struct Drain {
     pub(super) commands: Vec<Command>,
+    pub(super) unstamped: Vec<Unstamped>,
     /// The term every batch of the call was admitted at.
     pub(super) term: Option<u64>,
     /// Each batch's record count and where its answer goes.
@@ -241,6 +432,7 @@ pub(super) fn drain(
     let term = first.term;
     let mut bytes = first.bytes;
     let mut commands = first.commands;
+    let mut unstamped = first.unstamped;
     let mut answers = vec![(commands.len(), first.answer)];
     while let Ok(next) = queue.try_recv() {
         if next.term != term
@@ -253,9 +445,11 @@ pub(super) fn drain(
         bytes += next.bytes;
         answers.push((next.commands.len(), next.answer));
         commands.extend(next.commands);
+        unstamped.extend(next.unstamped);
     }
     Drain {
         commands,
+        unstamped,
         term,
         answers,
     }
@@ -276,6 +470,7 @@ pub(crate) async fn run(
     stop: CancellationToken,
     calls: Arc<AtomicU64>,
     lease: Lease,
+    mut stamper: Option<Stamper>,
 ) {
     let mut answering = FuturesUnordered::new();
     let mut held = None;
@@ -293,10 +488,27 @@ pub(crate) async fn run(
             },
         };
         let Drain {
-            commands,
+            mut commands,
+            unstamped,
             term,
             answers,
         } = drain(first, &mut queue, &mut held);
+        // Every entry of a cache shard is a stamped command, and a stream's
+        // are raw records. A mix would stamp the wrong entries and append
+        // ones no member can apply. A cache write names no term: it is
+        // written in the one its stamp is for.
+        let stamped = if stamper.is_some() { commands.len() } else { 0 };
+        if unstamped.len() != stamped || (stamper.is_some() && term.is_some()) {
+            tracing::error!(
+                entries = commands.len(),
+                cache_writes = unstamped.len(),
+                "a drain mixed stream and cache writes"
+            );
+            for (_, to) in answers {
+                let _ = to.send(Err(not_a_stream().into()));
+            }
+            continue;
+        }
         if leads(&raft) {
             pace.wrote();
         }
@@ -305,6 +517,24 @@ pub(crate) async fn run(
             .is_none()
         {
             return;
+        }
+        // Stamped after the renewal, which can take a whole lease.
+        let term = match &mut stamper {
+            None => term,
+            Some(stamper) => match stamper.stamp(&mut commands, unstamped) {
+                Some(term) => Some(term),
+                None => {
+                    for (_, to) in answers {
+                        let _ = to.send(Err(lost(NOT_LEADING).into()));
+                    }
+                    continue;
+                }
+            },
+        };
+        #[cfg(test)]
+        if let Some(stamper) = &stamper {
+            stamper.gate.stamped.fetch_add(1, Ordering::Relaxed);
+            drop(stamper.gate.shut.lock().await);
         }
         calls.fetch_add(1, Ordering::Relaxed);
         let sent = alongside(write(&raft, commands, term), &mut answering, &stop).await;
@@ -325,7 +555,7 @@ pub(crate) async fn run(
 
 /// Hand `commands` to openraft, in order. With a term, each is appended
 /// only if this member still leads that term, which openraft checks as it
-/// appends: what was admitted at one term never lands in another.
+/// appends: what was stamped or admitted at one term never lands in another.
 pub(super) async fn write(
     raft: &Raft<ShardTypes, Machine>,
     commands: Vec<Command>,
@@ -333,7 +563,9 @@ pub(super) async fn write(
 ) -> Result<BoxStream<'static, Result<WriteResult<ShardTypes>, Fatal<ShardTypes>>>, Fatal<ShardTypes>>
 {
     let Some(term) = term else {
-        return raft.client_write_many(commands).await;
+        return raft
+            .client_write_many(commands, WriteOption::default())
+            .await;
     };
     let mut answers = Vec::with_capacity(commands.len());
     for command in commands {

@@ -680,6 +680,7 @@ async fn a_move_off_the_leader_grows_transfers_and_shrinks() {
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"before the move"),
         written: None,
+        producer: None,
     };
     let written = leader.raft().client_write(record).await.expect("write");
     let before = written.log_id.index;

@@ -5,7 +5,9 @@ mod config;
 #[cfg(test)]
 mod tests;
 
-pub use config::{FsyncMode, GenerationGate, LogConfig, OffloadTarget, Retention, RetentionHold};
+pub use config::{
+    FsyncMode, GenerationGate, LogConfig, OffloadTarget, Retention, RetentionHold, SealedFileCache,
+};
 
 use std::future::Future;
 use std::pin::Pin;
@@ -101,6 +103,12 @@ pub enum RecordMark {
     Opens(ProducerBatch),
     /// A later record of the batch the record before it belongs to.
     Continues,
+    /// A later record of a producer's batch that names the batch and its
+    /// own place in it, so it belongs to the batch wherever it lies. A Raft
+    /// log writes it in place of [`Self::Continues`]: its batches are an
+    /// entry per record, and a leader change can put other records between
+    /// them. v9 only.
+    Piece(BatchPiece),
     /// A leader's first record at its generation, written before it serves.
     /// It is what lets the leader's quorum mark cover records it inherited;
     /// no reader outside replication ever sees it. The payload is the
@@ -144,6 +152,18 @@ pub struct ProducerBatch {
     pub len: u32,
 }
 
+/// A record of an idempotent producer's batch that is not its first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BatchPiece {
+    pub producer_id: u64,
+    pub sequence: u64,
+    /// The record's place in the batch, from zero. Never zero: the first
+    /// record is [`RecordMark::Opens`].
+    pub position: u32,
+    /// Records in the whole batch.
+    pub len: u32,
+}
+
 impl RecordMark {
     /// Whether a client reads the record: an event or cache entry, or a
     /// commit record holding one. Generation-start, trim, membership and
@@ -153,7 +173,7 @@ impl RecordMark {
     /// "Record kinds".
     pub fn is_data(&self) -> bool {
         match self {
-            Self::None | Self::Opens(_) | Self::Continues | Self::Commit => true,
+            Self::None | Self::Opens(_) | Self::Continues | Self::Piece(_) | Self::Commit => true,
             Self::GenerationStart
             | Self::Trim { .. }
             | Self::Membership
@@ -166,7 +186,7 @@ impl RecordMark {
     pub fn needs_generation(&self) -> bool {
         matches!(
             self,
-            Self::Membership | Self::CounterDelta | Self::CounterCheckpoint
+            Self::Piece(_) | Self::Membership | Self::CounterDelta | Self::CounterCheckpoint
         )
     }
 
@@ -292,6 +312,16 @@ pub struct LogRecord {
     /// segment.
     pub generation: Option<u64>,
 }
+
+/// The files a shard's log keeps open while it is not being read: the active
+/// segment three times, its index, the durable mark, and, for a Raft log,
+/// its directory, which holds the lock that refuses a second open. A log
+/// without Raft holds one fewer; the budget is the larger. A Raft member
+/// adds none of its own. Sealed segments that were read stay open in a cache shared by every
+/// log opened with one `LogConfig::sealed_cache`, which the broker bounds
+/// for every log it opens, so they are a fixed amount per broker and not a
+/// cost per shard. The broker's open-file check counts this for each shard.
+pub const FDS_PER_SHARD_LOG: usize = 6;
 
 /// The generation a v9 segment stamps on a record whose writer nobody knows:
 /// one a sender held in an older segment, where no generation was kept. It

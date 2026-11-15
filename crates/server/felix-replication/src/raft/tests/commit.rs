@@ -43,7 +43,11 @@ impl EngineHost for Told {
 
 /// Three brokers, each reporting to its own host.
 fn hosted() -> (Cluster, HashMap<&'static str, Arc<Told>>) {
-    let cluster = Cluster::new(true);
+    hosted_with(timers())
+}
+
+fn hosted_with(timers: RuntimeConfig) -> (Cluster, HashMap<&'static str, Arc<Told>>) {
+    let cluster = Cluster::with(timers, true);
     let hosts = BROKERS.map(|broker| {
         let told = Arc::new(Told::default());
         cluster.runtime(broker).set_host(told.clone());
@@ -64,7 +68,11 @@ pub(super) struct Led {
 
 /// A formed group with one committed record, and an engine on its leader.
 pub(super) async fn led() -> Led {
-    let (mut cluster, hosts) = hosted();
+    led_with(timers()).await
+}
+
+pub(super) async fn led_with(timers: RuntimeConfig) -> Led {
+    let (mut cluster, hosts) = hosted_with(timers);
     cluster.form(0).await;
     let committed = cluster.write(0, b"committed").await;
     cluster.committed_everywhere(0, committed).await;
@@ -133,6 +141,7 @@ impl Led {
             records: vec![record; records],
             ack: AckAt::Flushed,
             term: None,
+            producer: None,
         };
         let written = self.engine.propose(&shard(0), batch).await;
         written.expect("written")
@@ -459,6 +468,7 @@ async fn a_group_that_stops_on_a_storage_error_closes_the_shard() {
         }],
         ack: AckAt::Written,
         term: None,
+        producer: None,
     };
     let refused = led.engine.propose(&shard(0), batch).await;
     assert!(refused.is_err(), "written to a closed log: {refused:?}");
@@ -491,6 +501,7 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
         }],
         ack: AckAt::Written,
         term: Some(led.term),
+        producer: None,
     };
     let refused = led.engine.propose(&shard(0), batch).await;
     assert_eq!(

@@ -11,15 +11,28 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{
-    Broker, BrokerError, ProposalCommitted, ProposalFailed, ProposedPublish, ReadBound,
+    Broker, BrokerError, IdempotentOutcome, IdempotentProposal, LogDelivery, ProducerTurn,
+    ProposalCommitted, ProposalFailed, ProposedPublish, PublishOutcome, ReadBound, SequenceReuse,
     StreamHandle,
 };
+use futures::future::BoxFuture;
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::engine::RaftEngine;
-use super::propose::{AckAt, Batch, Record, Unacknowledged};
+use super::propose::{AckAt, AnswerAt, Batch, Record, Sequenced, Unacknowledged};
 use crate::engine::{CommitError, Written};
 use crate::{ShardKey, ShardKind};
+
+/// How soon a follower's delivery from the log that had to wait looks again.
+const LOG_RECHECK: Duration = Duration::from_millis(100);
+
+/// The longest a failing delivery from the log waits before trying again.
+const LOG_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Failed deliveries from the log in a row after which the stream's
+/// subscribers are ended, so their clients resubscribe where the log reads.
+const LOG_FAILURES_TO_END: u32 = 5;
 
 const OTHER_TERM: &str = "the batch was written at a later term than it was admitted at";
 
@@ -31,6 +44,12 @@ impl RaftEngine {
     ///
     /// [`ProposedPublish::complete`] returns at that point, with the
     /// engine's error, or with [`CommitError::TimedOut`] after `timeout`.
+    /// With [`AnswerAt::Lease`] it returns earlier, once the batch is on
+    /// this leader's log, if the leader lease holds then and the stream had
+    /// fewer than [`felix_broker::ANSWERED_AHEAD`] batches waiting for a
+    /// commit, none of them for a quarter of `timeout`. Delivery does not
+    /// move: such a batch is acknowledged before its commit is known, and
+    /// is lost if this broker stops leading before it commits.
     /// A timeout leaves the batch in its place: it is still delivered if it
     /// commits, and the batches behind it wait for it. Only a lost
     /// leadership or a stopped group gives the place up. Such a batch may
@@ -54,9 +73,12 @@ impl RaftEngine {
         term: Option<u64>,
         payloads: Vec<Bytes>,
         ack: AckAt,
+        answer: AnswerAt,
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let records = payloads.clone();
+        let (on_lease, answered) = oneshot::channel();
+        let on_lease = (answer == AnswerAt::Lease).then_some(on_lease);
         // A leader cut off from its majority is not deposed, and every batch
         // it is handed waits, payload in hand, until the partition heals.
         // Refusing once the oldest has waited out its timeout bounds them.
@@ -69,10 +91,26 @@ impl RaftEngine {
                     payload,
                 })
                 .collect();
-            let batch = Batch { records, ack, term };
+            let batch = Batch {
+                records,
+                ack,
+                term,
+                producer: None,
+            };
             let written = self.propose_reaching(shard, batch);
-            settled(self.clone(), shard.clone(), term, count, timeout, written)
+            let batch = Proposed {
+                shard: shard.clone(),
+                term,
+                count,
+                timeout,
+                on_lease,
+            };
+            settled(self.clone(), batch, written)
         })?;
+        let proposed = match answer {
+            AnswerAt::Lease => proposed.answer_at(answered),
+            AnswerAt::Commit => proposed,
+        };
         Ok(
             proposed.answer_within(timeout, move || CommitError::TimedOut {
                 what: "batch",
@@ -81,18 +119,184 @@ impl RaftEngine {
         )
     }
 
-    /// Kick `stream`'s readers each time `shard`'s commit index moves here:
-    /// held batches the bound now covers are released, and readers waiting
-    /// at the bound for the log (a follower's subscribers, history reads)
-    /// look again. Ends when the group stops or the stream closes. `None`
-    /// when this broker holds no member of the shard.
+    /// [`Self::publish`] for an idempotent producer's batch, which is
+    /// written once however many times it arrives, on whichever member
+    /// leads when it does.
+    ///
+    /// The records are stored with the producer's id and sequence, so each
+    /// member's log knows every producer's place, and a leader elected
+    /// later answers a re-send from its own log. The sequence is checked
+    /// against this broker's log as the hybrid checks it
+    /// ([`Broker::claim_batch_idempotent`]), with the same refusals. A
+    /// batch the log holds is answered with where it landed, once that is
+    /// committed, and nothing is written.
+    ///
+    /// The producer's batches go in one at a time. `turn` is the
+    /// producer's ([`Broker::producer_turn`]), and it is held until the
+    /// batch is on this broker's log, which is when the log can answer for
+    /// it. `term` is required. A batch that could still be written after
+    /// the broker stopped leading the term would be missed by the check of
+    /// its own re-send.
+    ///
+    /// A batch is one record. A new one of several is refused with nothing
+    /// written ([`Broker::engine_takes_idempotent`]). One the log already
+    /// holds the start of, which only a leader that stopped partway
+    /// leaves, is finished: the records the log does not hold are written
+    /// as pieces of it, and the answer runs from the start's first offset.
+    /// It is answered at its commit, on a `Leader` stream too: never on
+    /// the lease.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_idempotent(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        turn: ProducerTurn,
+        sequence: u64,
+        payloads: Vec<Bytes>,
+        reuse: SequenceReuse,
+        timeout: Duration,
+    ) -> Result<IdempotentPublish, BrokerError> {
+        let producer_id = turn.producer_id();
+        let proposal = broker.propose_idempotent(
+            stream,
+            turn,
+            sequence,
+            payloads,
+            reuse,
+            timeout,
+            |timestamp_micros, turn, owed| {
+                let producer = Sequenced {
+                    producer_id,
+                    sequence,
+                    position: owed.position,
+                    len: owed.len,
+                };
+                let count = owed.payloads.len() as u64;
+                let records = owed
+                    .payloads
+                    .into_iter()
+                    .map(|payload| Record {
+                        timestamp_micros,
+                        payload,
+                    })
+                    .collect();
+                // The answer waits for the commit whatever this says.
+                // Written is when the log knows the batch, so the
+                // producer's next one is not held for the fsync.
+                let batch = Batch {
+                    records,
+                    ack: AckAt::Written,
+                    term: Some(term),
+                    producer: Some(producer),
+                };
+                let written = self.propose_reaching(shard, batch);
+                // On a task of its own, so the turn is given up when
+                // the batch is written whether or not its publisher
+                // has started waiting.
+                let written = tokio::spawn(async move {
+                    let written = written.await;
+                    drop(turn);
+                    written
+                });
+                let written = async move {
+                    let stopped = |_| Err(super::propose::stopped().into());
+                    written.await.unwrap_or_else(stopped)
+                };
+                let batch = Proposed {
+                    shard: shard.clone(),
+                    term: Some(term),
+                    count,
+                    timeout,
+                    on_lease: None,
+                };
+                settled(self.clone(), batch, written)
+            },
+        )?;
+        let timed_out = move || CommitError::TimedOut {
+            what: "batch",
+            timeout,
+        };
+        Ok(IdempotentPublish(match proposal {
+            IdempotentProposal::Proposed(proposed) => {
+                Answer::Proposed(proposed.answer_within(timeout, timed_out))
+            }
+            IdempotentProposal::Held { first, last } => {
+                // Below the bound it is committed, whoever wrote it.
+                // Above, this term wrote it: a term is served only once
+                // every earlier entry is applied.
+                let committed = match self.read_bound(shard) {
+                    Ok(bound) if bound > last => None,
+                    _ => {
+                        let written = Written {
+                            end: last + 1,
+                            generation: term,
+                        };
+                        Some(self.await_commit(shard, written, timeout))
+                    }
+                };
+                Answer::Held {
+                    offsets: (first, last),
+                    committed: Box::pin(async move {
+                        match committed {
+                            Some(committed) => committed.await,
+                            None => Ok(()),
+                        }
+                    }),
+                }
+            }
+        }))
+    }
+
+    /// Serve `stream`'s readers each time `shard`'s commit index moves here:
+    /// held batches the bound now covers are released, a broker that does
+    /// not lead the shard delivers the newly committed records to its
+    /// subscribers from the log, and readers waiting at the bound (history
+    /// reads) look again. Ends when the group stops or the stream closes.
+    /// `None` when this broker holds no member of the shard.
     pub fn follow_commits(&self, shard: &ShardKey, stream: StreamHandle) -> Option<JoinHandle<()>> {
         let mut commits = self.commits(shard)?;
         Some(tokio::spawn(async move {
+            let mut failures = 0u32;
             loop {
                 stream.release_committed();
                 stream.appended().notify_waiters();
-                if !stream.is_active() || commits.changed().await.is_err() {
+                let recheck = match stream.deliver_from_log().await {
+                    Ok(LogDelivery::CaughtUp) => {
+                        failures = 0;
+                        None
+                    }
+                    Ok(LogDelivery::Waiting) => Some(LOG_RECHECK),
+                    Err(err) => {
+                        failures = failures.saturating_add(1);
+                        tracing::warn!(error = %err, failures, "could not deliver a shard's committed records from its log");
+                        // Subscribers left here would wait, told nothing.
+                        if failures == LOG_FAILURES_TO_END {
+                            stream.end_subscribers();
+                        }
+                        if !stream.is_active() {
+                            return;
+                        }
+                        // Not woken early by commits: they keep moving.
+                        let backoff = LOG_RECHECK.saturating_mul(1 << failures.min(6));
+                        tokio::time::sleep(backoff.min(LOG_RETRY_MAX)).await;
+                        continue;
+                    }
+                };
+                if !stream.is_active() {
+                    return;
+                }
+                // A pass that had to wait is not told when it may go on: a
+                // deposed term's batches settle without the commit index
+                // moving.
+                let moved = match recheck {
+                    None => commits.changed().await,
+                    Some(after) => tokio::time::timeout(after, commits.changed())
+                        .await
+                        .unwrap_or(Ok(())),
+                };
+                if moved.is_err() {
                     return;
                 }
             }
@@ -100,16 +304,68 @@ impl RaftEngine {
     }
 }
 
-/// What the broker is told of a proposed batch of `count` records:
-/// committed and where, or why not and how far it is known written.
+/// An idempotent batch on its way to an answer. See
+/// [`RaftEngine::publish_idempotent`].
+#[must_use = "an idempotent publish reports its outcome only through `complete`"]
+pub struct IdempotentPublish(Answer);
+
+enum Answer {
+    Proposed(ProposedPublish<CommitError>),
+    Held {
+        offsets: (u64, u64),
+        committed: BoxFuture<'static, Result<(), CommitError>>,
+    },
+}
+
+impl IdempotentPublish {
+    /// Wait until the batch is committed: the one just proposed, or the
+    /// one the log held. A duplicate reports the offsets its first arrival
+    /// was given. Reports no subscribers: the fanout runs after this.
+    pub async fn complete(self) -> Result<IdempotentOutcome, CommitError> {
+        match self.0 {
+            Answer::Proposed(proposed) => Ok(IdempotentOutcome {
+                outcome: proposed.complete().await?,
+                duplicate: false,
+            }),
+            Answer::Held { offsets, committed } => {
+                committed.await?;
+                Ok(IdempotentOutcome {
+                    outcome: PublishOutcome {
+                        subscribers: 0,
+                        offsets: Some(offsets),
+                    },
+                    duplicate: true,
+                })
+            }
+        }
+    }
+}
+
+/// A batch handed to the group, as [`settled`] follows it.
+pub(super) struct Proposed {
+    pub(super) shard: ShardKey,
+    pub(super) term: Option<u64>,
+    /// How many records it holds.
+    pub(super) count: u64,
+    pub(super) timeout: Duration,
+    /// Told the batch's end if it may be acknowledged on the lease.
+    pub(super) on_lease: Option<oneshot::Sender<u64>>,
+}
+
+/// What the broker is told of a proposed batch: committed and where, or
+/// why not and how far it is known written.
 pub(super) async fn settled(
     engine: RaftEngine,
-    shard: ShardKey,
-    term: Option<u64>,
-    count: u64,
-    timeout: Duration,
+    batch: Proposed,
     written: impl Future<Output = Result<Written, Unacknowledged>>,
 ) -> Result<ProposalCommitted, ProposalFailed<CommitError>> {
+    let Proposed {
+        shard,
+        term,
+        count,
+        timeout,
+        on_lease,
+    } = batch;
     // A batch written in part or in whole may commit. Readers resuming
     // below its end go to the log, or they would join live above records
     // that are in it.
@@ -122,6 +378,14 @@ pub(super) async fn settled(
     if term.is_some_and(|term| term != written.generation) {
         let moved = super::propose::lost(OTHER_TERM);
         return Err(ProposalFailed::written(moved, written.end));
+    }
+    // The lease is asked only now, with the batch on this log under the
+    // term it names. A refusal leaves the publisher waiting for the commit
+    // below, like a `Quorum` one.
+    if let Some(on_lease) = on_lease
+        && engine.admit_local_ack(&shard, written.generation).is_ok()
+    {
+        let _ = on_lease.send(written.end);
     }
     // The publisher's own wait is bounded by `answer_within`. Delivery is
     // not: a batch skipped here and committed later would reach no live

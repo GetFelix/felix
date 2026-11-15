@@ -131,6 +131,15 @@ const PLACED_LEVEL: u16 = 31;
 /// stream and cache creates until it is recorded.
 const IDENTITY_LEVEL: u16 = 32;
 
+/// The metadata level whose members keep each broker's root sequence
+/// (`ControlPlaneStore::root_sequence`).
+const ROOT_SEQUENCE_LEVEL: u16 = 33;
+
+/// The metadata level whose members record a shard's switch to Raft
+/// (`ShardAssignment::switch`): the seal order, the one report accepted for
+/// it, and the give-up.
+const SWITCH_LEVEL: u16 = 34;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -146,6 +155,23 @@ pub struct RaftStore {
     handle: RaftHandle,
     machine: Arc<MetadataStateMachine>,
     soft: Arc<SoftState>,
+    /// Heartbeats carry a root sequence every time, so a group that keeps
+    /// none is logged once per level.
+    root_sequence_unkept: OncePerLevel,
+}
+
+/// Whether a condition seen on every request has already been logged at
+/// this metadata level.
+#[derive(Debug, Default)]
+struct OncePerLevel(std::sync::atomic::AtomicU32);
+
+impl OncePerLevel {
+    /// True the first time it is called at `level`, and again after a call
+    /// at another level.
+    fn first_at(&self, level: u16) -> bool {
+        let marked = u32::from(level) + 1;
+        self.0.swap(marked, std::sync::atomic::Ordering::Relaxed) != marked
+    }
 }
 
 impl RaftStore {
@@ -157,12 +183,17 @@ impl RaftStore {
             handle,
             machine,
             soft,
+            root_sequence_unkept: OncePerLevel::default(),
         }
     }
 
-    /// The local applied state, for reads.
-    fn local(&self) -> &InMemoryStore {
-        self.machine.store()
+    /// The applied state, once this member has caught up after a restart
+    /// ([`RaftHandle::caught_up`]): unavailable beats stale.
+    fn local(&self) -> StoreResult<&InMemoryStore> {
+        self.handle
+            .caught_up()
+            .map_err(|reason| StoreError::Unexpected(crate::raft::Replaying(reason).into()))?;
+        Ok(self.machine.store())
     }
 
     /// The metadata level the group can apply, for gating what is proposed.
@@ -188,7 +219,7 @@ impl RaftStore {
     /// and one is below [`IDENTITY_LEVEL`]: a member that has not answered
     /// may be new, and `level` counts it at the join floor.
     async fn needs_identity(&self, level: u16) -> StoreResult<bool> {
-        if self.local().recorded_identity().await.is_some() {
+        if self.local()?.recorded_identity().await.is_some() {
             return Ok(level >= IDENTITY_LEVEL);
         }
         let older = level < IDENTITY_LEVEL
@@ -245,12 +276,16 @@ impl RaftStore {
         assignment.previous_generation = None;
         assignment.readmitted.clear();
         assignment.placed = None;
+        assignment.switch = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
     /// no [`crate::model::Readmitted`] entry for.
     async fn may_readmit(&self, report: &ReplicaReport) -> bool {
-        let Ok(assignment) = self.local().get_shard_assignment(&report.key).await else {
+        let Ok(local) = self.local() else {
+            return false;
+        };
+        let Ok(assignment) = local.get_shard_assignment(&report.key).await else {
             return false;
         };
         assignment
@@ -268,7 +303,7 @@ impl RaftStore {
     /// Whether the fleet has finalized `joint_fence`.
     async fn joint_fence(&self) -> StoreResult<bool> {
         Ok(self
-            .local()
+            .local()?
             .enabled_fleet_features()
             .await?
             .contains(felix_common::fleet::JOINT_FENCE.name()))
@@ -341,6 +376,20 @@ impl RaftStore {
         result.map_err(StoreError::from)
     }
 
+    /// Propose a switch command. Refused below [`SWITCH_LEVEL`], before it
+    /// reaches the log: a member that could not apply it would keep a
+    /// hybrid shard where the others hold a sealed or switched one.
+    async fn propose_switch(&self, command: MetaCommand) -> StoreResult<AssignmentWrite> {
+        debug_assert_eq!(command.version(), SWITCH_LEVEL);
+        match self.propose(command).await? {
+            MetaResponse::Assignment { assignment } => Ok(AssignmentWrite::Written(assignment)),
+            MetaResponse::StaleAssignment { current_generation } => Ok(AssignmentWrite::Stale {
+                current: current_generation,
+            }),
+            _ => Err(unexpected_shape("assignment")),
+        }
+    }
+
     async fn propose_for_keys(&self, command: MetaCommand) -> StoreResult<TenantSigningKeys> {
         match self.propose(command).await? {
             MetaResponse::SigningKeys { keys } => Ok(keys),
@@ -369,11 +418,11 @@ impl RaftStore {
 #[async_trait]
 impl ControlPlaneStore for RaftStore {
     async fn list_tenants(&self) -> StoreResult<Vec<Tenant>> {
-        self.local().list_tenants().await
+        self.local()?.list_tenants().await
     }
 
     async fn list_tenants_page(&self, page: PageRequest<String>) -> StoreResult<Page<Tenant>> {
-        self.local().list_tenants_page(page).await
+        self.local()?.list_tenants_page(page).await
     }
 
     async fn create_tenant(&self, tenant: Tenant) -> StoreResult<Tenant> {
@@ -400,15 +449,15 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn tenant_snapshot(&self) -> StoreResult<Snapshot<Tenant>> {
-        self.local().tenant_snapshot().await
+        self.local()?.tenant_snapshot().await
     }
 
     async fn tenant_changes(&self, since: u64) -> StoreResult<ChangeSet<TenantChange>> {
-        self.local().tenant_changes(since).await
+        self.local()?.tenant_changes(since).await
     }
 
     async fn list_namespaces(&self, tenant_id: &str) -> StoreResult<Vec<Namespace>> {
-        self.local().list_namespaces(tenant_id).await
+        self.local()?.list_namespaces(tenant_id).await
     }
 
     async fn list_namespaces_page(
@@ -416,7 +465,7 @@ impl ControlPlaneStore for RaftStore {
         tenant_id: &str,
         page: PageRequest<String>,
     ) -> StoreResult<Page<Namespace>> {
-        self.local().list_namespaces_page(tenant_id, page).await
+        self.local()?.list_namespaces_page(tenant_id, page).await
     }
 
     async fn create_namespace(&self, namespace: Namespace) -> StoreResult<Namespace> {
@@ -446,15 +495,15 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn namespace_snapshot(&self) -> StoreResult<Snapshot<Namespace>> {
-        self.local().namespace_snapshot().await
+        self.local()?.namespace_snapshot().await
     }
 
     async fn namespace_changes(&self, since: u64) -> StoreResult<ChangeSet<NamespaceChange>> {
-        self.local().namespace_changes(since).await
+        self.local()?.namespace_changes(since).await
     }
 
     async fn list_streams(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Stream>> {
-        self.local().list_streams(tenant_id, namespace).await
+        self.local()?.list_streams(tenant_id, namespace).await
     }
 
     async fn list_streams_page(
@@ -463,13 +512,13 @@ impl ControlPlaneStore for RaftStore {
         namespace: &str,
         page: PageRequest<String>,
     ) -> StoreResult<Page<Stream>> {
-        self.local()
+        self.local()?
             .list_streams_page(tenant_id, namespace, page)
             .await
     }
 
     async fn get_stream(&self, key: &StreamKey) -> StoreResult<Stream> {
-        self.local().get_stream(key).await
+        self.local()?.get_stream(key).await
     }
 
     async fn create_stream(&self, mut stream: Stream) -> StoreResult<Stream> {
@@ -540,19 +589,19 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn stream_snapshot(&self) -> StoreResult<Snapshot<Stream>> {
-        self.local().stream_snapshot().await
+        self.local()?.stream_snapshot().await
     }
 
     async fn stream_tombstones(&self) -> StoreResult<Vec<crate::model::StreamTombstone>> {
-        self.local().stream_tombstones().await
+        self.local()?.stream_tombstones().await
     }
 
     async fn stream_changes(&self, since: u64) -> StoreResult<ChangeSet<StreamChange>> {
-        self.local().stream_changes(since).await
+        self.local()?.stream_changes(since).await
     }
 
     async fn list_caches(&self, tenant_id: &str, namespace: &str) -> StoreResult<Vec<Cache>> {
-        self.local().list_caches(tenant_id, namespace).await
+        self.local()?.list_caches(tenant_id, namespace).await
     }
 
     async fn list_caches_page(
@@ -561,13 +610,13 @@ impl ControlPlaneStore for RaftStore {
         namespace: &str,
         page: PageRequest<String>,
     ) -> StoreResult<Page<Cache>> {
-        self.local()
+        self.local()?
             .list_caches_page(tenant_id, namespace, page)
             .await
     }
 
     async fn get_cache(&self, key: &CacheKey) -> StoreResult<Cache> {
-        self.local().get_cache(key).await
+        self.local()?.get_cache(key).await
     }
 
     async fn create_cache(&self, mut cache: Cache) -> StoreResult<Cache> {
@@ -624,23 +673,23 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn cache_snapshot(&self) -> StoreResult<Snapshot<Cache>> {
-        self.local().cache_snapshot().await
+        self.local()?.cache_snapshot().await
     }
 
     async fn cache_tombstones(&self) -> StoreResult<Vec<crate::model::CacheTombstone>> {
-        self.local().cache_tombstones().await
+        self.local()?.cache_tombstones().await
     }
 
     async fn deleted_stream_names(&self) -> StoreResult<Vec<StreamKey>> {
-        self.local().deleted_stream_names().await
+        self.local()?.deleted_stream_names().await
     }
 
     async fn deleted_cache_names(&self) -> StoreResult<Vec<CacheKey>> {
-        self.local().deleted_cache_names().await
+        self.local()?.deleted_cache_names().await
     }
 
     async fn cache_changes(&self, since: u64) -> StoreResult<ChangeSet<CacheChange>> {
-        self.local().cache_changes(since).await
+        self.local()?.cache_changes(since).await
     }
 
     async fn create_resources(
@@ -773,7 +822,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn enabled_fleet_features(&self) -> StoreResult<std::collections::BTreeSet<String>> {
-        self.local().enabled_fleet_features().await
+        self.local()?.enabled_fleet_features().await
     }
 
     async fn finalize_fleet_feature(
@@ -798,7 +847,7 @@ impl ControlPlaneStore for RaftStore {
     /// On the leader, with the latest heartbeat it has seen; elsewhere, as
     /// last checkpointed into the log.
     async fn get_node(&self, node_id: &str) -> StoreResult<Node> {
-        self.local()
+        self.local()?
             .get_node(node_id)
             .await
             .map(|node| self.soft.overlay(node))
@@ -806,7 +855,7 @@ impl ControlPlaneStore for RaftStore {
 
     async fn list_nodes(&self) -> StoreResult<Vec<Node>> {
         Ok(self
-            .local()
+            .local()?
             .list_nodes()
             .await?
             .into_iter()
@@ -816,7 +865,7 @@ impl ControlPlaneStore for RaftStore {
 
     /// With the leader's latest heartbeats, as [`Self::list_nodes`].
     async fn list_nodes_page(&self, page: PageRequest<String>) -> StoreResult<Page<Node>> {
-        let page = self.local().list_nodes_page(page).await?;
+        let page = self.local()?.list_nodes_page(page).await?;
         Ok(Page {
             items: page
                 .items
@@ -929,11 +978,11 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn node_snapshot(&self) -> StoreResult<Snapshot<Node>> {
-        self.local().node_snapshot().await
+        self.local()?.node_snapshot().await
     }
 
     async fn node_changes(&self, since: u64) -> StoreResult<ChangeSet<NodeChange>> {
-        self.local().node_changes(since).await
+        self.local()?.node_changes(since).await
     }
 
     async fn put_shard_assignment(
@@ -1034,8 +1083,48 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
+    async fn seal_shard(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::SealShard {
+            key: key.clone(),
+            expected_generation,
+        })
+        .await
+    }
+
+    async fn accept_seal_report(
+        &self,
+        key: &ShardKey,
+        report: crate::model::SealReport,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::AcceptSealReport {
+            key: key.clone(),
+            report,
+            sealer: sealer.to_string(),
+        })
+        .await
+    }
+
+    async fn give_up_seal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite> {
+        self.propose_switch(MetaCommand::GiveUpSeal {
+            key: key.clone(),
+            generation,
+            sealer: sealer.to_string(),
+        })
+        .await
+    }
+
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
-        self.local().get_shard_assignment(key).await
+        self.local()?.get_shard_assignment(key).await
     }
 
     /// Read on the leader after a read-index. Never from local state: the
@@ -1097,7 +1186,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn list_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
-        self.local().list_shard_assignments().await
+        self.local()?.list_shard_assignments().await
     }
 
     async fn list_shard_assignments_page(
@@ -1105,14 +1194,16 @@ impl ControlPlaneStore for RaftStore {
         leader: Option<&str>,
         page: PageRequest<ShardKey>,
     ) -> StoreResult<Page<ShardAssignment>> {
-        self.local().list_shard_assignments_page(leader, page).await
+        self.local()?
+            .list_shard_assignments_page(leader, page)
+            .await
     }
 
     async fn list_shard_assignments_for_node(
         &self,
         node_id: &str,
     ) -> StoreResult<Vec<ShardAssignment>> {
-        self.local().list_shard_assignments_for_node(node_id).await
+        self.local()?.list_shard_assignments_for_node(node_id).await
     }
 
     async fn delete_shard_assignment(&self, key: &ShardKey) -> StoreResult<()> {
@@ -1122,22 +1213,22 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>> {
-        self.local().shard_assignment_snapshot().await
+        self.local()?.shard_assignment_snapshot().await
     }
 
     async fn first_shard_assignments(&self) -> StoreResult<Vec<(ShardKey, u64, u64)>> {
-        self.local().first_shard_assignments().await
+        self.local()?.first_shard_assignments().await
     }
 
     async fn previous_shard_assignments(&self) -> StoreResult<Vec<ShardAssignment>> {
-        self.local().previous_shard_assignments().await
+        self.local()?.previous_shard_assignments().await
     }
 
     async fn shard_assignment_changes(
         &self,
         since: u64,
     ) -> StoreResult<ChangeSet<ShardAssignmentChange>> {
-        self.local().shard_assignment_changes(since).await
+        self.local()?.shard_assignment_changes(since).await
     }
 
     async fn record_replica_report_with(
@@ -1283,11 +1374,11 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {
-        self.local().list_replica_reports().await
+        self.local()?.list_replica_reports().await
     }
 
     async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
-        self.local().get_replica_report(key).await
+        self.local()?.get_replica_report(key).await
     }
 
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
@@ -1306,11 +1397,60 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
-        Ok(self.identity().await)
+        self.identity().await
+    }
+
+    async fn root_sequence(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<crate::model::RootSequence>> {
+        self.local()?.root_sequence(node_id).await
+    }
+
+    /// One entry per heartbeat in which the sequence moved: what the local
+    /// copy already holds is not proposed again. Below level 33 nothing is
+    /// kept, and the broker's gate then has no control-plane copy, which
+    /// holds rather than passes a root nothing else vouches for.
+    async fn record_root_sequence(
+        &self,
+        node_id: &str,
+        heard: crate::model::RootSequence,
+    ) -> StoreResult<bool> {
+        let held = self.local()?.root_sequence(node_id).await?;
+        if !crate::model::RootSequence::moved_by(held.as_ref(), &heard) {
+            return Ok(false);
+        }
+        let level = self.group_level().await;
+        if level < ROOT_SEQUENCE_LEVEL {
+            if self.root_sequence_unkept.first_at(level) {
+                tracing::warn!(
+                    level,
+                    needed = ROOT_SEQUENCE_LEVEL,
+                    "the metadata group is below the level that keeps brokers' root \
+                     sequences, so none is kept; a broker restarted with a Raft data root \
+                     and no run witness holds its Raft members until the group is upgraded",
+                );
+            }
+            return Ok(false);
+        }
+        match self
+            .propose(MetaCommand::RecordRootSequence {
+                node_id: node_id.to_string(),
+                heard,
+            })
+            .await?
+        {
+            MetaResponse::Unit => Ok(true),
+            _ => Err(unexpected_shape("unit")),
+        }
+    }
+
+    async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
+        self.local()?.root_sequences().await
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {
-        self.local().moves_paused().await
+        self.local()?.moves_paused().await
     }
 
     async fn set_moves_paused(&self, paused: bool) -> StoreResult<()> {
@@ -1321,7 +1461,7 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn placement_token(&self) -> StoreResult<u64> {
-        self.local().placement_token().await
+        self.local()?.placement_token().await
     }
 
     /// Expires like the other backends' lease, by the leader's clock, but a
@@ -1349,9 +1489,9 @@ impl ControlPlaneStore for RaftStore {
         }
         // A leader from before leader-only requests: it takes the lease at
         // once, as that build did.
-        if self.local().placement_holder().await.as_deref() == Some(holder) {
+        if self.local()?.placement_holder().await.as_deref() == Some(holder) {
             return Ok(Some(PlacementLease {
-                token: self.local().placement_token().await?,
+                token: self.local()?.placement_token().await?,
                 taken: false,
             }));
         }
@@ -1377,11 +1517,11 @@ impl ControlPlaneStore for RaftStore {
     }
 
     async fn tenant_exists(&self, tenant_id: &str) -> StoreResult<bool> {
-        self.local().tenant_exists(tenant_id).await
+        self.local()?.tenant_exists(tenant_id).await
     }
 
     async fn namespace_exists(&self, key: &NamespaceKey) -> StoreResult<bool> {
-        self.local().namespace_exists(key).await
+        self.local()?.namespace_exists(key).await
     }
 
     /// Ready when this member can serve — the question readiness asks,
@@ -1407,7 +1547,7 @@ impl ControlPlaneStore for RaftStore {
 #[async_trait]
 impl AuthStore for RaftStore {
     async fn list_idp_issuers(&self, tenant_id: &str) -> StoreResult<Vec<IdpIssuerConfig>> {
-        self.local().list_idp_issuers(tenant_id).await
+        self.local()?.list_idp_issuers(tenant_id).await
     }
 
     async fn upsert_idp_issuer(&self, tenant_id: &str, issuer: IdpIssuerConfig) -> StoreResult<()> {
@@ -1429,11 +1569,11 @@ impl AuthStore for RaftStore {
     }
 
     async fn list_rbac_policies(&self, tenant_id: &str) -> StoreResult<Vec<PolicyRule>> {
-        self.local().list_rbac_policies(tenant_id).await
+        self.local()?.list_rbac_policies(tenant_id).await
     }
 
     async fn list_rbac_groupings(&self, tenant_id: &str) -> StoreResult<Vec<GroupingRule>> {
-        self.local().list_rbac_groupings(tenant_id).await
+        self.local()?.list_rbac_groupings(tenant_id).await
     }
 
     async fn list_rbac_policies_page(
@@ -1441,7 +1581,7 @@ impl AuthStore for RaftStore {
         tenant_id: &str,
         page: PageRequest<PolicyRule>,
     ) -> StoreResult<Page<PolicyRule>> {
-        self.local().list_rbac_policies_page(tenant_id, page).await
+        self.local()?.list_rbac_policies_page(tenant_id, page).await
     }
 
     async fn list_rbac_groupings_page(
@@ -1449,7 +1589,9 @@ impl AuthStore for RaftStore {
         tenant_id: &str,
         page: PageRequest<GroupingRule>,
     ) -> StoreResult<Page<GroupingRule>> {
-        self.local().list_rbac_groupings_page(tenant_id, page).await
+        self.local()?
+            .list_rbac_groupings_page(tenant_id, page)
+            .await
     }
 
     async fn add_rbac_policy(&self, tenant_id: &str, policy: PolicyRule) -> StoreResult<()> {
@@ -1551,7 +1693,7 @@ impl AuthStore for RaftStore {
     }
 
     async fn get_tenant_signing_keys(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys> {
-        self.local().get_tenant_signing_keys(tenant_id).await
+        self.local()?.get_tenant_signing_keys(tenant_id).await
     }
 
     async fn stage_signing_key(
@@ -1604,7 +1746,7 @@ impl AuthStore for RaftStore {
     }
 
     async fn tenant_auth_is_bootstrapped(&self, tenant_id: &str) -> StoreResult<bool> {
-        self.local().tenant_auth_is_bootstrapped(tenant_id).await
+        self.local()?.tenant_auth_is_bootstrapped(tenant_id).await
     }
 
     async fn set_tenant_auth_bootstrapped(
@@ -1625,7 +1767,7 @@ impl AuthStore for RaftStore {
     /// stays deterministic, and a candidate proposed off a stale local read
     /// cannot clobber keys that committed in between.
     async fn ensure_signing_key_current(&self, tenant_id: &str) -> StoreResult<TenantSigningKeys> {
-        if let Ok(existing) = self.local().get_tenant_signing_keys(tenant_id).await {
+        if let Ok(existing) = self.local()?.get_tenant_signing_keys(tenant_id).await {
             return Ok(existing);
         }
         let candidate = crate::auth::keys::generate_signing_keys()?;
@@ -1717,7 +1859,7 @@ impl AuthStore for RaftStore {
         {
             Some(MetaResponse::RefreshToken { token }) => Ok(token),
             Some(_) => Err(unexpected_shape("refresh token")),
-            None => self.local().peek_refresh_token(tenant_id, token_id).await,
+            None => self.local()?.peek_refresh_token(tenant_id, token_id).await,
         }
     }
 
@@ -1813,7 +1955,7 @@ impl AuthStore for RaftStore {
         &self,
         since: u64,
     ) -> StoreResult<ChangeSet<crate::auth::revocation::PrincipalRevocation>> {
-        self.local().principal_revocations(since).await
+        self.local()?.principal_revocations(since).await
     }
 
     async fn principal_revoked_at(
@@ -1848,7 +1990,7 @@ impl AuthStore for RaftStore {
             }
             Some(_) => Err(unexpected_shape("revocation cutoffs")),
             None => {
-                self.local()
+                self.local()?
                     .principals_revoked_at(tenant_id, principal_ids)
                     .await
             }

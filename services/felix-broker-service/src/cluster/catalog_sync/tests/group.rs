@@ -5,7 +5,7 @@
 use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::cluster::controlplane_group::{Guard, Mismatch, Unclaimed};
+use crate::cluster::controlplane_group::{self, Grouped, Guard, Mismatch, Unclaimed};
 
 /// What the control plane claims, per answer.
 #[derive(Clone, Copy)]
@@ -126,14 +126,23 @@ async fn pass(
     claims: Claims,
     stored: Option<&str>,
 ) -> Result<(Result<()>, Arc<Broker>, SyncState, CancellationToken)> {
-    let (addr, stop, handle) = serve_router(control_plane(claims)).await?;
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let refused = CancellationToken::new();
     let mut state = SyncState::new();
     state.group = stored.map(|stored| Guard {
-        stored: stored.to_owned(),
+        stored: Some(stored.to_owned()),
         refused: refused.clone(),
     });
+    pass_with(claims, state, broker, refused).await
+}
+
+async fn pass_with(
+    claims: Claims,
+    mut state: SyncState,
+    broker: Arc<Broker>,
+    refused: CancellationToken,
+) -> Result<(Result<()>, Arc<Broker>, SyncState, CancellationToken)> {
+    let (addr, stop, handle) = serve_router(control_plane(claims)).await?;
     let source = HttpSource::new(build_test_client()?, format!("http://{addr}"));
     let result = sync_into(&broker, &source, None, &mut state).await;
     let _ = stop.send(());
@@ -237,12 +246,58 @@ async fn without_a_recorded_group_no_claim_is_applied() -> Result<()> {
     Ok(())
 }
 
+/// A broker started from its view on a directory checked against a control
+/// plane with no group, then served by one with a group (the operator moved
+/// to a Raft control plane formed on an empty catalog): nothing that group
+/// says is applied, and the broker stops so its next start is judged.
+#[tokio::test]
+async fn a_group_is_not_applied_over_a_directory_checked_without_one() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    felix_storage::storage_identity::load_or_create(dir.path(), || [1; 16])?;
+    std::fs::write(dir.path().join(controlplane_group::NO_GROUP_FILE), "")?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let refused = CancellationToken::new();
+    let mut state = SyncState::new();
+    // What a start from the view holds: its record, which under the mark is none.
+    state.group = controlplane_group::guard(
+        dir.path(),
+        controlplane_group::read(dir.path())?,
+        refused.clone(),
+    );
+    let (result, broker, state, refused) =
+        pass_with(Claims::all(Some("g-1")), state, broker, refused).await?;
+    assert!(result.expect_err("refused").is::<Grouped>());
+    assert!(refused.is_cancelled(), "the broker is told to stop");
+    assert!(!broker.tenant_exists("t1").await);
+    assert!(!broker.stream_exists("t1", "ns", "s").await);
+    assert!(!state.is_seeded());
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_directory_checked_without_a_group_applies_answers_without_one() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    std::fs::write(dir.path().join(controlplane_group::NO_GROUP_FILE), "")?;
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let refused = CancellationToken::new();
+    let mut state = SyncState::new();
+    state.group = controlplane_group::guard(dir.path(), None, refused.clone());
+    assert!(state.group.is_some());
+    let (result, broker, state, refused) =
+        pass_with(Claims::all(None), state, broker, refused).await?;
+    result?;
+    assert!(!refused.is_cancelled());
+    assert!(broker.stream_exists("t1", "ns", "s2").await);
+    assert!(state.is_seeded());
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_sync_loop_ends_on_a_refusal_instead_of_retrying() -> Result<()> {
     let (addr, stop, handle) = serve_router(control_plane(Claims::all(Some("g-2")))).await?;
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let guard = Guard {
-        stored: "g-1".to_owned(),
+        stored: Some("g-1".to_owned()),
         refused: CancellationToken::new(),
     };
     let source = HttpSource::new(build_test_client()?, format!("http://{addr}"));

@@ -421,6 +421,13 @@ fn kind(mark: &RecordMark) -> String {
         RecordMark::None => "plain".to_string(),
         RecordMark::Opens(_) => "producer-batch-start".to_string(),
         RecordMark::Continues => "producer-batch-continue".to_string(),
+        RecordMark::Piece(piece) => {
+            format!(
+                "producer-batch-piece ({} of {})",
+                piece.position.saturating_add(1),
+                piece.len
+            )
+        }
         RecordMark::GenerationStart => "generation-start".to_string(),
         RecordMark::Commit => "commit".to_string(),
         RecordMark::Trim { floor } => format!("trim (floor {floor})"),

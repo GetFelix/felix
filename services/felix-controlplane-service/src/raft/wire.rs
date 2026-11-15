@@ -1,31 +1,111 @@
 //! What this member sends to its peers and writes to its store, as JSON.
 //!
-//! These are Felix's types, not the library's. On redb they have the field
-//! names openraft 0.9 serialized, so a member on a release that ran 0.9 reads
-//! what this one sends and stores, and the reverse. That is what lets a group
-//! be upgraded one member at a time and a member be rolled back. The bytes
-//! are pinned by the fixtures in `fixtures/openraft-0.9`
-//! (`docs/metadata-raft-design.md`, "openraft 0.9 to 0.10").
-//!
-//! A member on the segment store names a log id by its term alone and sends
-//! a snapshot in one piece (`segment_form`). The two kinds of member serve
-//! different routes ([`super::PEER_PREFIX`]) and never read each other's
-//! form.
+//! These are Felix's types, not the library's, so an openraft upgrade does
+//! not change what members exchange or keep. A log id is a term and an
+//! index, and a snapshot travels as one streamed request whose head is
+//! [`SnapshotHead`].
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use super::types;
 
-#[cfg(not(felix_segment_store))]
-mod redb_form;
-#[cfg(felix_segment_store)]
-mod segment_form;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct Vote {
+    pub(super) term: u64,
+    pub(super) voted_for: u64,
+    pub(super) committed: bool,
+}
 
-#[cfg(not(felix_segment_store))]
-pub(super) use redb_form::*;
-#[cfg(felix_segment_store)]
-pub(super) use segment_form::*;
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct LogId {
+    pub(super) term: u64,
+    pub(super) index: u64,
+}
+
+/// A snapshot's descriptor, as sent and as kept beside the snapshot's data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SnapshotMeta {
+    pub(super) last_log_id: Option<LogId>,
+    pub(super) last_membership: StoredMembership,
+}
+
+/// The head of a snapshot request, before its data. The body around it is
+/// `felix_storage::raft_log::transfer`'s framing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) struct SnapshotHead {
+    pub(super) vote: Vote,
+    pub(super) meta: SnapshotMeta,
+}
+
+impl SnapshotHead {
+    pub(super) fn encode(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("a snapshot head is plain data")
+    }
+
+    /// `None` when `bytes` is not a head.
+    pub(super) fn decode(bytes: &[u8]) -> Option<Self> {
+        serde_json::from_slice(bytes).ok()
+    }
+}
+
+impl From<&types::Vote> for Vote {
+    fn from(vote: &types::Vote) -> Self {
+        Self {
+            term: vote.leader_id.term,
+            voted_for: vote.leader_id.voted_for,
+            committed: vote.committed,
+        }
+    }
+}
+
+impl From<Vote> for types::Vote {
+    fn from(vote: Vote) -> Self {
+        Self {
+            leader_id: types::LeaderId {
+                term: vote.term,
+                voted_for: vote.voted_for,
+            },
+            committed: vote.committed,
+        }
+    }
+}
+
+impl From<&types::LogId> for LogId {
+    fn from(id: &types::LogId) -> Self {
+        Self {
+            term: *id.leader_id,
+            index: id.index,
+        }
+    }
+}
+
+impl From<LogId> for types::LogId {
+    fn from(id: LogId) -> Self {
+        Self {
+            leader_id: id.term.into(),
+            index: id.index,
+        }
+    }
+}
+
+impl From<&types::SnapshotMeta> for SnapshotMeta {
+    fn from(meta: &types::SnapshotMeta) -> Self {
+        Self {
+            last_log_id: log_id(&meta.last_log_id),
+            last_membership: (&meta.last_membership).into(),
+        }
+    }
+}
+
+impl From<SnapshotMeta> for types::SnapshotMeta {
+    fn from(meta: SnapshotMeta) -> Self {
+        Self {
+            last_log_id: lib_log_id(meta.last_log_id),
+            last_membership: meta.last_membership.into(),
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct Node {
@@ -91,8 +171,8 @@ pub(super) struct InstallSnapshotResponse {
     pub(super) vote: Vote,
 }
 
-/// A peer's answer: 0.9 sent its whole `Result`. The error half differs
-/// between library versions, so it is read as text and treated like an
+/// A peer's answer, the whole `Result`. The error half is the library's
+/// shape, which can change, so it is read as text and treated like an
 /// unreachable member.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum Reply<T> {
@@ -188,7 +268,5 @@ impl From<StoredMembership> for types::StoredMembership {
     }
 }
 
-// The fixtures are what openraft 0.9 wrote, which only a member on redb
-// reads.
-#[cfg(all(test, not(felix_segment_store)))]
-pub(crate) mod tests;
+#[cfg(test)]
+mod tests;

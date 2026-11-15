@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use felix_broker::StreamMetadata;
+use felix_broker::{ConsistencyLevel, StreamMetadata};
 use felix_replication::raft::{
     AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
 };
@@ -55,11 +55,16 @@ pub(crate) async fn broker(root: &Path) -> Arc<Broker> {
 
 /// [`broker`], with `orders` asking for `replicas` brokers a shard.
 pub(crate) async fn broker_of(root: &Path, replicas: u32) -> Arc<Broker> {
-    broker_at(root, replicas, INCARNATION).await
+    broker_at(root, replicas, INCARNATION, ConsistencyLevel::Leader).await
 }
 
-/// [`broker_of`], with `orders` at `incarnation`.
-async fn broker_at(root: &Path, replicas: u32, incarnation: u64) -> Arc<Broker> {
+/// [`broker_of`], with `orders` at `incarnation` and `consistency`.
+pub(crate) async fn broker_at(
+    root: &Path,
+    replicas: u32,
+    incarnation: u64,
+    consistency: ConsistencyLevel,
+) -> Arc<Broker> {
     let config = LogConfig {
         fsync_mode: FsyncMode::None,
         preallocate_segments: false,
@@ -81,6 +86,7 @@ async fn broker_at(root: &Path, replicas: u32, incarnation: u64) -> Arc<Broker> 
                 durable: true,
                 incarnation,
                 replication_factor: Some(replicas),
+                consistency,
                 ..StreamMetadata::default()
             },
         )
@@ -112,9 +118,195 @@ pub(crate) fn shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
 
 /// [`shards`] on a broker nothing tells what its groups committed.
 fn unbound_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
+    let shards = held_shards(broker);
+    open_root(broker, &shards);
+    shards
+}
+
+/// [`unbound_shards`] whose data root has not passed the restore gate.
+pub(crate) fn held_shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     let runtime =
         GroupRuntime::start("broker-a", timers(), Arc::new(AgreeingPeers)).expect("runtime");
     RaftShards::new(Arc::clone(broker), runtime, "broker-a".to_string())
+}
+
+/// Pass `broker`'s data root through the restore gate and let `shards` open
+/// members on it, as a start does. The control plane's copy is one from
+/// before any mark, so a root a test opens a second time passes too.
+pub(crate) fn open_root(broker: &Arc<Broker>, shards: &RaftShards) {
+    use felix_storage::raft_copy::{ControlPlaneCopy, Evidence, Gate, check, random_copy_id};
+    let root = broker
+        .durable_storage()
+        .expect("storage")
+        .root()
+        .to_path_buf();
+    let (storage_id, _) = felix_storage::storage_identity::load_or_create(&root, || {
+        felix_common::random::uuid_v4().into_bytes()
+    })
+    .expect("storage id");
+    let gate = check(
+        &root,
+        Evidence {
+            witness_dir: None,
+            control_plane: Some(ControlPlaneCopy {
+                storage_id,
+                sequence: 0,
+            }),
+            restored: false,
+        },
+    )
+    .expect("gate");
+    let Gate::Passed(passed) = gate else {
+        panic!("the root did not pass the gate: {gate:?}");
+    };
+    shards.set_root(Arc::new(CopyRoot::open(root, passed, random_copy_id)));
+}
+
+/// The directory `orders` shard 0 opens on.
+fn orders_dir(broker: &Arc<Broker>) -> std::path::PathBuf {
+    let storage = broker.durable_storage().expect("storage");
+    storage
+        .claim_for_raft("t1", "ns", "orders", 0, INCARNATION)
+        .expect("directory")
+        .0
+}
+
+/// Take `orders` and wait until its group of one is led and served.
+async fn lead_orders(shards: &Arc<RaftShards>) {
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the led term to be served", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+}
+
+/// **No member opens on a data root the restore gate has not passed.** A
+/// held root may be a restored one, whose copies would vote a second time
+/// in a term they already voted in. The shard answers "not ready", and the
+/// pass after the gate passes the root opens the member.
+#[tokio::test]
+async fn no_member_opens_before_the_restore_gate_passes_the_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = held_shards(&broker);
+    let orders = key("orders", 0);
+    let fed = || assignments([assigned(orders.clone(), INCARNATION)]);
+
+    let mut left = fed();
+    shards.take(&mut left).await;
+    assert!(left.is_empty(), "a held Raft shard was left to the hybrid");
+    assert!(shards.engine_for(&orders).is_none());
+    assert!(matches!(
+        shards.dispatch(&orders, &|_| None),
+        Some(Dispatch::Unavailable(Reason::NotReady))
+    ));
+
+    // The feed is woken, so the members do not wait for a placement change.
+    let wake = Arc::new(tokio::sync::Notify::new());
+    shards.wake_with(Arc::clone(&wake));
+    open_root(&broker, &shards);
+    tokio::time::timeout(Duration::from_secs(5), wake.notified())
+        .await
+        .expect("the feed was not woken");
+    shards.take(&mut fed()).await;
+    assert!(shards.engine_for(&orders).is_some());
+    shards.runtime.shutdown().await;
+}
+
+/// **A copy the restore check refuses does not open as the member it was.**
+/// A data root that got a new storage id (a restore, an unsafe crash, the
+/// operator command) may hold older votes and logs than its copies gave
+/// out. The directory is moved aside and the shard opens as a member with
+/// a new copy id, no vote and no entry, which the old group does not know.
+#[tokio::test]
+async fn a_copy_the_restore_check_refuses_opens_as_a_new_member() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let orders = key("orders", 0);
+    let (old, dir) = {
+        let broker = broker(root.path()).await;
+        let shards = shards(&broker);
+        lead_orders(&shards).await;
+        let old = shards.runtime.status(&orders).expect("status").member;
+        assert_ne!(old.copy, 0);
+        shards.shutdown().await;
+        (old, orders_dir(&broker))
+    };
+
+    felix_storage::run_state::copy_trust::rotate_storage_id(
+        root.path(),
+        felix_common::random::uuid_v4().into_bytes(),
+    )
+    .expect("rotate");
+    let broker = broker(root.path()).await;
+    // Held, so the new member forms no group before it is looked at.
+    let shards = held_shards(&broker);
+    open_root(&broker, &shards);
+    let mut alone = assigned(orders.clone(), INCARNATION);
+    alone.replicas.push("broker-b".to_string());
+    shards.take(&mut assignments([alone])).await;
+
+    let status = shards.runtime.status(&orders).expect("a member");
+    assert_eq!(status.member.broker, old.broker);
+    assert_ne!(status.member.copy, old.copy);
+    assert_eq!((status.term, status.last_index), (0, None));
+    let kept = felix_storage::raft_copy::kept_copies(&dir).expect("kept");
+    assert_eq!(
+        kept.iter().map(|kept| kept.copy).collect::<Vec<_>>(),
+        vec![Some(old.copy)],
+        "the refused copy's records are kept"
+    );
+    shards.shutdown().await;
+}
+
+/// **A shard directory written before members had copy ids is refused.**
+/// It holds a Raft log and no copy file. Opened as a copy it would rotate,
+/// on every broker of its group, and the brokers would then form the group
+/// again on empty logs. It stays closed and untouched until an operator
+/// removes it.
+#[tokio::test]
+async fn a_directory_from_before_copy_ids_is_not_opened() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let orders = key("orders", 0);
+    let dir = {
+        let broker = broker(root.path()).await;
+        let shards = shards(&broker);
+        lead_orders(&shards).await;
+        shards.shutdown().await;
+        orders_dir(&broker)
+    };
+    std::fs::remove_file(dir.join("raft-copy")).expect("no copy file");
+    let listing = || {
+        let mut names: Vec<_> = std::fs::read_dir(&dir)
+            .expect("directory")
+            .map(|entry| entry.expect("entry").file_name())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = listing();
+
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let mut left = assignments([assigned(orders.clone(), INCARNATION)]);
+    shards.take(&mut left).await;
+    assert!(left.is_empty(), "the refused shard was left to the hybrid");
+    assert!(shards.engine_for(&orders).is_none());
+    assert_eq!(listing(), before);
+    assert_eq!(
+        felix_storage::raft_copy::kept_copies(&dir).expect("kept"),
+        Vec::new()
+    );
+
+    // Removed by the operator, the shard opens as a new member.
+    std::fs::remove_dir_all(&dir).expect("remove");
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    assert!(shards.engine_for(&orders).is_some());
+    shards.shutdown().await;
 }
 
 fn timers() -> RuntimeConfig {
@@ -127,6 +319,12 @@ fn timers() -> RuntimeConfig {
         lease: Duration::from_millis(100),
         ..RuntimeConfig::default()
     }
+}
+
+/// The index of the last entry `shard`'s log on `shards` has written.
+pub(crate) fn written(shards: &RaftShards, shard: &ShardKey) -> u64 {
+    let status = shards.runtime.status(shard).expect("a member");
+    status.written.map_or(0, |point| point.index)
 }
 
 pub(crate) async fn until(what: &str, mut check: impl FnMut() -> bool) {
@@ -361,6 +559,201 @@ async fn a_dropped_member_reopens_after_a_failed_read() {
     shards.runtime.shutdown().await;
 }
 
+/// **A slow marker read holds up no other shard.** A pass reads markers
+/// before it takes the lock that other passes and a deleted stream's close
+/// wait on.
+#[tokio::test]
+async fn a_slow_marker_read_does_not_hold_up_other_shards() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "invoices",
+            StreamMetadata {
+                durable: true,
+                incarnation: INCARNATION,
+                replication_factor: Some(1),
+                ..StreamMetadata::default()
+            },
+        )
+        .await
+        .expect("invoices");
+    let shards = shards(&broker);
+    let (orders, invoices) = (key("orders", 0), key("invoices", 0));
+    let mut elsewhere = assigned(orders.clone(), INCARNATION);
+    elsewhere.leader = "broker-b".to_string();
+    elsewhere.replicas = vec!["broker-b".to_string()];
+
+    shards.stall_reads(true);
+    let slow = tokio::spawn({
+        let shards = Arc::clone(&shards);
+        async move {
+            shards.take(&mut assignments([elsewhere])).await;
+        }
+    });
+    until("the marker read to start", || {
+        shards.stall_reads.receiver_count() > 0
+    })
+    .await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        shards.take(&mut assignments([assigned(invoices.clone(), INCARNATION)])),
+    )
+    .await
+    .expect("a pass waited on another shard's marker read");
+    assert!(shards.runtime.status(&invoices).is_some());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        felix_broker::EngineLogs::close_through(&*shards, "t1", "ns", "invoices", INCARNATION),
+    )
+    .await
+    .expect("a close waited on another shard's marker read");
+    assert!(shards.runtime.status(&invoices).is_none());
+    assert!(!slow.is_finished());
+
+    shards.stall_reads(false);
+    slow.await.expect("the slow pass");
+    assert!(shards.runtime.status(&orders).is_none());
+    shards.runtime.shutdown().await;
+}
+
+/// **A pass's own opens keep its marker reads.** Otherwise a restart that
+/// opens members placed here reads every other marker under the lock.
+#[tokio::test]
+async fn a_pass_that_opens_members_reads_no_marker_under_the_lock() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    // Several on each side, so the pass's map order almost always puts an
+    // open before a check of a shard placed elsewhere.
+    let here: Vec<String> = (0..4).map(|n| format!("here-{n}")).collect();
+    let away: Vec<String> = (0..8).map(|n| format!("away-{n}")).collect();
+    for stream in here.iter().chain(&away) {
+        broker
+            .register_stream(
+                "t1",
+                "ns",
+                stream,
+                StreamMetadata {
+                    durable: true,
+                    incarnation: INCARNATION,
+                    replication_factor: Some(1),
+                    ..StreamMetadata::default()
+                },
+            )
+            .await
+            .expect("stream");
+    }
+    let shards = shards(&broker);
+    let placed = here
+        .iter()
+        .map(|stream| assigned(key(stream, 0), INCARNATION))
+        .chain(away.iter().map(|stream| {
+            let mut elsewhere = assigned(key(stream, 0), INCARNATION);
+            elsewhere.leader = "broker-b".to_string();
+            elsewhere.replicas = vec!["broker-b".to_string()];
+            elsewhere
+        }));
+
+    shards.take(&mut assignments(placed)).await;
+    for stream in &here {
+        assert!(shards.runtime.status(&key(stream, 0)).is_some());
+    }
+    for stream in &away {
+        assert!(shards.runtime.status(&key(stream, 0)).is_none());
+    }
+    assert_eq!(shards.reads_under_lock.load(Ordering::Relaxed), 0);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **Only a durable registered stream's marker is read.** No other shard
+/// reaches the check, so its read would be made again on every pass.
+#[tokio::test]
+async fn no_marker_is_read_for_a_stream_that_cannot_be_a_member() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "memory",
+            StreamMetadata {
+                durable: false,
+                incarnation: INCARNATION,
+                ..StreamMetadata::default()
+            },
+        )
+        .await
+        .expect("memory");
+    let shards = shards(&broker);
+    let elsewhere = |stream: &str| {
+        let mut assignment = assigned(key(stream, 0), INCARNATION);
+        assignment.leader = "broker-b".to_string();
+        assignment.replicas = vec!["broker-b".to_string()];
+        assignment
+    };
+
+    for _ in 0..2 {
+        shards
+            .take(&mut assignments([
+                elsewhere("memory"),
+                elsewhere("unknown"),
+            ]))
+            .await;
+    }
+    assert_eq!(shards.marker_reads.load(Ordering::Relaxed), 0);
+    assert_eq!(shards.reads_under_lock.load(Ordering::Relaxed), 0);
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **A marker read as unmarked before a claim is not trusted after it.**
+/// Remembered, it would keep the claimed member closed for good once its
+/// placement dropped this broker.
+#[tokio::test]
+async fn a_marker_claimed_during_a_read_is_read_again() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut elsewhere = assigned(orders.clone(), INCARNATION);
+    elsewhere.leader = "broker-b".to_string();
+    elsewhere.replicas = vec!["broker-b".to_string()];
+
+    shards.stall_reads(true);
+    let slow = tokio::spawn({
+        let shards = Arc::clone(&shards);
+        async move {
+            shards.take(&mut assignments([elsewhere])).await;
+        }
+    });
+    // Read as unmarked; held there while another pass claims the directory.
+    until("the marker to be read", || {
+        shards.stall_reads.receiver_count() > 0
+    })
+    .await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        shards.take(&mut assignments([assigned(orders.clone(), INCARNATION)])),
+    )
+    .await
+    .expect("a pass waited on another pass's marker read");
+    felix_broker::EngineLogs::close_through(&*shards, "t1", "ns", "orders", INCARNATION).await;
+    broker
+        .close_stream_shard("t1", "ns", "orders", 0, None)
+        .await
+        .expect("close the stream");
+    assert!(shards.runtime.status(&orders).is_none());
+
+    shards.stall_reads(false);
+    slow.await.expect("the slow pass");
+    assert!(
+        shards.runtime.status(&orders).is_some(),
+        "a stale unmarked read kept the claimed member closed"
+    );
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// **A led term is not served while the stream could not be moved to the
 /// committed tail.** Here nothing tells the broker what the group committed,
 /// so the move does nothing, and that is not taken for a stream at its tail.
@@ -556,6 +949,48 @@ pub(crate) fn engine(shards: &Arc<RaftShards>) -> crate::shards::routing::Stream
     engine
 }
 
+/// Write `payloads` to `shard`'s group as records `position..` of
+/// `producer_id`'s batch `sequence`, `len` records long, with no check
+/// against the log: what a leader that stops partway leaves. Returns the
+/// first record's offset.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn write_batch(
+    shards: &RaftShards,
+    shard: &ShardKey,
+    producer_id: u64,
+    sequence: u64,
+    position: u32,
+    len: u32,
+    payloads: &[&'static [u8]],
+) -> u64 {
+    let records = payloads
+        .iter()
+        .zip(position..)
+        .map(|(payload, at)| {
+            let mark = (producer_id, sequence, at, len);
+            (bytes::Bytes::from_static(payload), Some(mark))
+        })
+        .collect();
+    let written = shards.runtime.write_unchecked(shard, records).await;
+    written.expect("written")[0]
+}
+
+/// Leave `producer_id`'s batch `sequence` cut and then forgotten: its
+/// first record, then the first records of one more cut batch than a log
+/// keeps, each another producer's, so the oldest cut is kept by name only.
+pub(crate) async fn forget_cut(
+    shards: &RaftShards,
+    shard: &ShardKey,
+    producer_id: u64,
+    sequence: u64,
+) {
+    write_batch(shards, shard, producer_id, sequence, 0, 2, &[b"cut"]).await;
+    // The log keeps 4096 cut batches, and the last of these is still open.
+    let others = (1..=4097u64)
+        .map(|other| write_batch(shards, shard, producer_id + other, 0, 0, 2, &[b"other"]));
+    futures::future::join_all(others).await;
+}
+
 /// Routes that ask `shards` first and know every broker's address, with a
 /// broker lease that was never granted: a Raft shard must not need it.
 pub(crate) fn ingress(shards: &Arc<RaftShards>) -> Arc<crate::shards::routing::IngressRouter> {
@@ -712,10 +1147,12 @@ async fn a_publish_on_a_raft_shard_commits_through_its_group() {
     .await
     .expect("published")
     .expect("an offset");
-    assert_eq!(
-        engine.committed_bound(&orders),
-        felix_broker::ReadBound::Committed(first + 2)
-    );
+    // `orders` is a `Leader` stream here, answered inside the lease before
+    // the commit shows.
+    until("the batch commits", || {
+        engine.committed_bound(&orders) == felix_broker::ReadBound::Committed(first + 2)
+    })
+    .await;
     assert_eq!(engine.read_bound(None, &orders).ok(), Some(Some(first + 2)));
 
     // Routed at a term this broker does not serve: nothing is proposed.
@@ -757,17 +1194,63 @@ async fn shutdown_stops_the_members_and_closes_their_logs() {
     assert_eq!(route(&shards, &orders), None);
 }
 
+/// **A member's log directory is locked while the member is open**, so a
+/// second broker started on the same data directory cannot recover and
+/// write a log this one is writing. Closing the member lets it go.
+#[tokio::test]
+async fn an_open_member_holds_its_log_directory() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    assert!(shards.log_of(&orders).await.is_some());
+    let storage = broker.durable_storage().expect("storage");
+    let (dir, label) = storage
+        .claim_for_raft("t1", "ns", "orders", 0, INCARNATION)
+        .expect("claimed");
+    let config = LogConfig {
+        raft_log: true,
+        fsync_mode: FsyncMode::OnCommit,
+        ..storage.config().clone()
+    };
+
+    let second = DiskLog::open(&dir, label.clone(), config.clone());
+    assert!(
+        matches!(second, Err(felix_storage::StorageError::Io(ref err))
+            if err.kind() == std::io::ErrorKind::ResourceBusy),
+        "a second open of an open member's directory was let in"
+    );
+
+    EngineShards::shutdown(&*shards).await;
+    let reopened = DiskLog::open(&dir, label, config).expect("open after the member closed");
+    reopened.close().await.expect("close");
+}
+
 /// Carries Raft messages between the runtimes of one process. A broker
-/// taken out of it is unreachable.
+/// taken out of it, or in `cut`, is unreachable.
 #[derive(Default)]
 pub(crate) struct Loopback {
     runtimes: parking_lot::Mutex<HashMap<String, GroupRuntime>>,
+    cut: parking_lot::Mutex<std::collections::HashSet<String>>,
+}
+
+impl Loopback {
+    /// Take `broker` out: nothing reaches it from now on.
+    pub(crate) fn forget(&self, broker: &str) {
+        self.runtimes.lock().remove(broker);
+    }
 }
 
 #[async_trait::async_trait]
 impl RaftTransport for Loopback {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
         let to = request.to().broker.to_string();
+        if self.cut.lock().contains(&to) {
+            return Err(Refused::Unreachable(format!("broker {to} is cut off")));
+        }
         let runtime = self.runtimes.lock().get(&to).cloned();
         match runtime {
             Some(runtime) => runtime.handle(request).await,
@@ -788,14 +1271,24 @@ pub(crate) struct Member {
 
 impl Member {
     /// A broker on `net` whose readers are bound the way startup binds them.
+    /// `orders` is a `Quorum` stream.
     async fn start(net: &Arc<Loopback>, name: &'static str) -> Self {
         Self::start_at(net, name, INCARNATION).await
     }
 
     /// [`Self::start`], with `orders` at `incarnation`.
     async fn start_at(net: &Arc<Loopback>, name: &'static str, incarnation: u64) -> Self {
+        Self::start_with(net, name, incarnation, ConsistencyLevel::Quorum).await
+    }
+
+    async fn start_with(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        incarnation: u64,
+        consistency: ConsistencyLevel,
+    ) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
-        let broker = broker_at(root.path(), 3, incarnation).await;
+        let broker = broker_at(root.path(), 3, incarnation, consistency).await;
         let runtime =
             GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
                 .expect("runtime");
@@ -803,6 +1296,7 @@ impl Member {
             .lock()
             .insert(name.to_string(), runtime.clone());
         let shards = RaftShards::new(Arc::clone(&broker), runtime, name.to_string());
+        open_root(&broker, &shards);
         let engine = Arc::new(engine(&shards));
         broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
             Arc::clone(&engine),
@@ -817,6 +1311,17 @@ impl Member {
     }
 
     pub(crate) async fn publish(&self, term: u64, payload: &'static [u8]) -> u64 {
+        let published = self.publish_within(term, payload, Duration::from_secs(10));
+        published.await.expect("published")
+    }
+
+    /// The offset, or `None` when no answer came within `timeout`.
+    async fn publish_within(
+        &self,
+        term: u64,
+        payload: &'static [u8],
+        timeout: Duration,
+    ) -> Option<u64> {
         use crate::serving::direct_publish::publish_direct;
         let orders = key("orders", 0);
         let handle = self
@@ -831,28 +1336,67 @@ impl Member {
             target(handle, &orders, term),
             &[bytes::Bytes::from_static(payload)],
             None,
-            Duration::from_secs(10),
+            timeout,
         )
         .await
-        .expect("published")
-        .expect("an offset")
+        .ok()?
+    }
+
+    /// One past the last offset this member knows committed.
+    fn bound(&self) -> u64 {
+        use felix_replication::engine::Engine;
+        match self.engine.committed_bound(&key("orders", 0)) {
+            felix_broker::ReadBound::Committed(bound) => bound,
+            other => panic!("no bound: {other:?}"),
+        }
+    }
+
+    /// Publish `payload` as batch `sequence` of producer 5 and return its
+    /// offset: where it was written, or where the batch it repeats was.
+    async fn publish_idempotent(&self, term: u64, sequence: u64, payload: &'static [u8]) -> u64 {
+        let orders = key("orders", 0);
+        let handle = self
+            .broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await
+            .expect("handle");
+        let turn = self.broker.producer_turn(&handle, 5).await;
+        let proposed = self.engine.publish_idempotent_on_raft(
+            &self.broker,
+            &handle,
+            &orders,
+            term,
+            turn,
+            sequence,
+            felix_broker::SequenceReuse::Refuse,
+            vec![bytes::Bytes::from_static(payload)],
+            Duration::from_secs(10),
+        );
+        let proposed = proposed.expect("a Raft shard").expect("proposed");
+        let offsets = proposed.complete().await.expect("committed");
+        offsets.expect("an offset").0
     }
 }
 
 /// `orders` on three brokers, placed with `broker-a` as leader.
-fn replicated() -> ShardAssignment {
+pub(crate) fn replicated() -> ShardAssignment {
     let mut assignment = assigned(key("orders", 0), INCARNATION);
     assignment.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
     assignment
 }
 
 /// Three brokers holding a member each, and the one whose term is served.
+/// `orders` is a `Quorum` stream: a publish is answered at its commit.
 pub(crate) async fn trio() -> (Arc<Loopback>, Vec<Member>, usize) {
+    trio_at(ConsistencyLevel::Quorum).await
+}
+
+async fn trio_at(consistency: ConsistencyLevel) -> (Arc<Loopback>, Vec<Member>, usize) {
     let net = Arc::new(Loopback::default());
     let mut members = Vec::new();
     // The broker that forms the group last, so every member it asks is up.
     for name in BROKERS.iter().rev() {
-        let member = Member::start(&net, name).await;
+        let member = Member::start_with(&net, name, INCARNATION, consistency).await;
         member.shards.take(&mut assignments([replicated()])).await;
         members.push(member);
     }
@@ -1073,9 +1617,44 @@ async fn a_stopped_leader_is_replaced_and_no_acked_record_is_lost() {
     stop(&members).await;
 }
 
-/// **A leader that is deposed lets its subscribers go, and takes none
-/// after.** Fanout comes from the leader's publishes, so a subscriber left
-/// on a deposed broker would wait there and get nothing.
+/// **An idempotent batch sent again after its leader stopped is answered by
+/// the next leader with the offset it first got, and the producer carries
+/// on in sequence.** The next leader knows the producer from the entries in
+/// its own log. Known only to the leader that took it, the batch would be
+/// written twice, or the producer refused as unknown.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once() {
+    let (net, mut members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let zero = members[leader].publish_idempotent(term, 0, b"zero").await;
+    let one = members[leader].publish_idempotent(term, 1, b"one").await;
+    assert_eq!(one, zero + 1);
+
+    let old = members.remove(leader);
+    net.runtimes.lock().remove(old.name);
+    EngineShards::shutdown(&*old.shards).await;
+    let next = served(&members).await;
+    let next_term = members[next].shards.leading(&orders).expect("term");
+    assert!(next_term > term);
+
+    let again = members[next].publish_idempotent(next_term, 1, b"one").await;
+    assert_eq!(again, one, "the re-send was written again");
+    let two = members[next].publish_idempotent(next_term, 2, b"two").await;
+    assert!(two > one);
+    let read = members[next]
+        .broker
+        .read_durable("t1", "ns", "orders", 0, zero, 1 << 20)
+        .await
+        .expect("read");
+    let payloads: Vec<&[u8]> = read.iter().map(|record| &record.payload[..]).collect();
+    assert_eq!(payloads, [&b"zero"[..], b"one", b"two"]);
+    stop(&members).await;
+}
+
+/// **A leader that is deposed lets its term's subscribers go.** A batch
+/// the term was handed may settle as a gap, which they would read as a
+/// drop. One registering after is served from the log, as a follower's.
 #[tokio::test]
 async fn a_deposed_leader_lets_its_subscribers_go() {
     use crate::serving::quic::handlers::redirect::stopped_serving;
@@ -1104,9 +1683,20 @@ async fn a_deposed_leader_lets_its_subscribers_go() {
         ended.expect("ended in time").is_none(),
         "a record reached a deposed leader's subscriber"
     );
+    // The member still follows a leader, so a reader registering now is
+    // served from the log.
     assert!(
-        stopped_serving(Some(&ingress), &orders).is_some(),
-        "a subscriber registered after the deposal was kept"
+        stopped_serving(Some(&ingress), &orders).is_none(),
+        "a subscriber registered after the deposal was refused"
+    );
+    let (mut later, _later_guard) = {
+        let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+        subscription.expect("subscribe").into_parts()
+    };
+    let kept = tokio::time::timeout(Duration::from_millis(300), later.recv()).await;
+    assert!(
+        kept.is_err(),
+        "a subscriber registered after the deposal was ended"
     );
     EngineShards::shutdown(&*shards).await;
 }
@@ -1154,4 +1744,169 @@ async fn a_term_led_again_keeps_its_subscribers() {
     let kept = tokio::time::timeout(Duration::from_millis(300), new.recv()).await;
     assert!(kept.is_err(), "the next term's subscriber was ended");
     EngineShards::shutdown(&*shards).await;
+}
+
+/// How long a publish that must wait for a commit nobody can give is
+/// watched before it counts as not answered.
+const UNANSWERED: Duration = Duration::from_millis(400);
+
+/// No member reaches another. A leader stays one, since it hears of no
+/// election, and the others can elect nobody.
+fn cut_all(net: &Loopback) {
+    net.cut.lock().extend(BROKERS.map(String::from));
+}
+
+/// Publish on the leader while no member reaches another, until one is
+/// answered. Returns the leader, its term, the offset and the payload
+/// answered, with everyone still cut off. An attempt that falls outside the
+/// lease is not answered, and may cost the leader its term once the others
+/// are back. It can still commit then, so each attempt has its own payload.
+async fn answered_alone(
+    net: &Loopback,
+    members: &[Member],
+    name: &str,
+) -> (usize, u64, u64, &'static [u8]) {
+    let orders = key("orders", 0);
+    for attempt in 0..40 {
+        let payload: &'static [u8] = format!("{name}-{attempt}").into_bytes().leak();
+        net.cut.lock().clear();
+        // A heartbeat or two, so a majority has answered inside the lease.
+        tokio::time::sleep(timers().heartbeat * 2).await;
+        let leader = served(members).await;
+        let Some(term) = members[leader].shards.leading(&orders) else {
+            continue;
+        };
+        cut_all(net);
+        let answered = members[leader].publish_within(term, payload, UNANSWERED);
+        if let Some(offset) = answered.await {
+            return (leader, term, offset, payload);
+        }
+    }
+    panic!("no publish was answered while the leader reached nobody");
+}
+
+/// The shard takes a publish again on whichever member leads now. Until
+/// the batches held through the cut settle, or a new leader is elected, a
+/// publish is refused at once, so attempts are spread over a deadline
+/// rather than counted.
+async fn publishes_again(members: &[Member]) {
+    let orders = key("orders", 0);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while tokio::time::Instant::now() < deadline {
+        let leader = served(members).await;
+        if let Some(term) = members[leader].shards.leading(&orders) {
+            let answered = members[leader].publish_within(term, b"again", Duration::from_secs(2));
+            if answered.await.is_some() {
+                return;
+            }
+        }
+        tokio::time::sleep(timers().heartbeat).await;
+    }
+    panic!("the shard took no publish once its members were back");
+}
+
+/// **A publish to a `Leader` stream is answered on its leader's log inside
+/// the group's lease, before any follower holds it, and its subscribers
+/// get it once it commits.** Mapped to the commit, the level would cost a
+/// round to the followers on every publish.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_stream_is_answered_on_its_leaders_log() {
+    let (net, members, _) = trio_at(ConsistencyLevel::Leader).await;
+    let (leader, _, offset, payload) = answered_alone(&net, &members, "l1").await;
+    let leader = &members[leader];
+    assert!(leader.bound() <= offset, "committed with nobody reachable");
+    let subscription = leader.broker.subscribe("t1", "ns", "orders", 0);
+    let (mut receiver, _guard) = subscription.await.expect("subscribe").into_parts();
+    let early = tokio::time::timeout(Duration::from_millis(20), receiver.recv()).await;
+    assert!(early.is_err(), "delivered before its commit: {early:?}");
+
+    // Back before a follower's election timeout, so the leader keeps its
+    // term and commits the record.
+    net.cut.lock().clear();
+    let got = delivered(&mut receiver).await;
+    assert_eq!(got, (offset, bytes::Bytes::from_static(payload)));
+    assert!(leader.bound() > offset);
+    stop(&members).await;
+}
+
+/// **A publish to a `Quorum` stream is not answered while no follower
+/// holds it, lease or no lease.** Answered on the leader's log, a `Quorum`
+/// acknowledgement could be lost with one broker.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quorum_stream_is_answered_only_at_its_commit() {
+    let (net, members, leader) = trio().await;
+    let term = members[leader].shards.leading(&key("orders", 0));
+    let term = term.expect("term");
+    members[leader].publish(term, b"q0").await;
+
+    // Straight after a commit, so the lease holds.
+    cut_all(&net);
+    for _ in 0..3 {
+        let answered = members[leader].publish_within(term, b"q1", UNANSWERED);
+        assert_eq!(answered.await, None, "answered with nobody reachable");
+    }
+    net.cut.lock().clear();
+    publishes_again(&members).await;
+    stop(&members).await;
+}
+
+/// **A leader nobody has answered for several leases answers no publish
+/// to a `Leader` stream, and the shard stays open.** The others may have
+/// elected by then. The group takes no write this late, so the lease is
+/// not what refuses here: its own rules are tested where a write can be
+/// held on the log, in felix-replication's `raft/tests/deliver.rs`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_cut_off_past_its_lease_answers_no_leader_publish() {
+    let (net, members, leader) = trio_at(ConsistencyLevel::Leader).await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    members[leader].publish(term, b"l0").await;
+
+    cut_all(&net);
+    tokio::time::sleep(timers().lease * 4).await;
+    let answered = members[leader].publish_within(term, b"l1", UNANSWERED);
+    assert_eq!(answered.await, None, "answered outside the lease");
+    assert_eq!(members[leader].shards.leading(&orders), Some(term));
+
+    net.cut.lock().clear();
+    publishes_again(&members).await;
+    stop(&members).await;
+}
+
+/// **A record acknowledged on the lease is lost with its leader if no
+/// follower held it, and the next leader answers on a lease of its own.**
+/// The loss is what the `Leader` level allows. The next leader must not
+/// inherit a lease: its own starts with its term.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_acknowledgement_does_not_outlive_its_leader() {
+    let (net, mut members, _) = trio_at(ConsistencyLevel::Leader).await;
+    let (leader, term, lost, lost_payload) = answered_alone(&net, &members, "lost").await;
+
+    let old = members.remove(leader);
+    net.runtimes.lock().remove(old.name);
+    EngineShards::shutdown(&*old.shards).await;
+    net.cut.lock().clear();
+
+    let (next, next_term, kept, kept_payload) = answered_alone(&net, &members, "kept").await;
+    assert!(next_term > term);
+    net.cut.lock().clear();
+    until("the new leader's record commits", || {
+        members[next].bound() > kept
+    })
+    .await;
+    let read = members[next]
+        .broker
+        .read_durable("t1", "ns", "orders", 0, 0, 1 << 20)
+        .await
+        .expect("read");
+    assert!(
+        read.iter()
+            .any(|record| &record.payload[..] == kept_payload)
+    );
+    assert!(
+        read.iter()
+            .all(|record| &record.payload[..] != lost_payload),
+        "offset {lost} was acknowledged by the old leader alone"
+    );
+    stop(&members).await;
 }

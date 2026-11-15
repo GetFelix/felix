@@ -1,11 +1,18 @@
-//! The state machine of a shard group. A shard's state is its log, so this
-//! keeps only what openraft asks every state machine for: the last applied
-//! entry and the membership in force.
+//! The state machine of a shard group. A stream shard's state is its log,
+//! so this keeps only what openraft asks every state machine for: the last
+//! applied entry and the membership in force. A cache shard's group also
+//! folds its entries into a [`CacheState`].
 //!
-//! Both are kept in memory and rebuilt from the log on start. The snapshot
-//! is the same two values in the group's [`SnapshotStore`], with no data.
+//! All of it is kept in memory. A member starts from the snapshot in the
+//! group's [`SnapshotStore`] and openraft applies the log above it again.
+//! A stream shard's snapshot has no data; a cache shard's is its
+//! projection as of the snapshot's last entry.
 
 use std::io;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, LazyLock};
+
+use bytes::Bytes;
 
 use felix_storage::raft_log::{LogPoint, SnapshotId, SnapshotStore, StoredSnapshot};
 use futures::{Stream, StreamExt};
@@ -13,11 +20,17 @@ use openraft::storage::{EntryResponder, RaftSnapshotBuilder, RaftStateMachine};
 use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf};
 use openraft::{EntryPayload, OptionalSend};
 use serde::{Deserialize, Serialize};
-use tokio::sync::watch;
+use tokio::sync::{Semaphore, watch};
 
+use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{StoredMembership, invalid};
 use super::commit::Commits;
 use super::types::{Applied, ShardTypes};
+use crate::ShardKind;
+
+/// A cache group's projection, shared by its state machine, which writes
+/// it, and the member's read and answer paths.
+pub(crate) type Cache = Arc<parking_lot::RwLock<CacheState>>;
 
 #[derive(Clone, Default)]
 struct State {
@@ -33,6 +46,14 @@ pub(crate) struct Machine {
     /// `commits` as the read bound and the commit waits see it, moved once
     /// per run of applied entries.
     published: watch::Sender<Commits>,
+    /// `None` in a stream shard's group.
+    cache: Option<Cache>,
+    /// Held by a test to keep this member from applying.
+    #[cfg(test)]
+    pub(crate) hold: Arc<tokio::sync::Mutex<()>>,
+    /// Held by a test to keep apply from folding.
+    #[cfg(test)]
+    pub(crate) fold_hold: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl Machine {
@@ -40,10 +61,20 @@ impl Machine {
     /// what it has applied as that changes.
     pub(crate) async fn open(
         snapshots: SnapshotStore,
-    ) -> io::Result<(Self, watch::Receiver<Commits>)> {
-        let state = match snapshots.current().await? {
+        kind: ShardKind,
+    ) -> io::Result<(Self, watch::Receiver<Commits>, Option<Cache>)> {
+        let stored = snapshots.current().await?;
+        let state = match &stored {
             Some(stored) => StoredMeta::state(&stored.meta)?,
             None => State::default(),
+        };
+        let cache = match kind {
+            ShardKind::Stream => None,
+            ShardKind::Cache => {
+                let data = stored.map(|stored| stored.data).unwrap_or_default();
+                let restored = restore(data, state.last_applied.is_some()).await?;
+                Some(Arc::new(parking_lot::RwLock::new(restored)))
+            }
         };
         let commits = Commits::resumed(state.last_applied.as_ref().map(point));
         let (published, applied) = watch::channel(commits.clone());
@@ -52,8 +83,13 @@ impl Machine {
             state,
             commits,
             published,
+            cache: cache.clone(),
+            #[cfg(test)]
+            hold: Arc::default(),
+            #[cfg(test)]
+            fold_hold: Arc::default(),
         };
-        Ok((machine, applied))
+        Ok((machine, applied, cache))
     }
 
     fn publish(&self) {
@@ -65,6 +101,67 @@ impl Machine {
             moved
         });
     }
+}
+
+/// A snapshot's data as openraft carries it.
+pub(crate) struct SnapshotData {
+    pub(crate) bytes: Bytes,
+    /// The state `bytes` hold, when a receiver has already parsed them.
+    /// Install takes it instead of parsing a second time.
+    pub(crate) restored: Option<CacheState>,
+}
+
+impl SnapshotData {
+    fn bytes(bytes: Bytes) -> Self {
+        Self {
+            bytes,
+            restored: None,
+        }
+    }
+}
+
+/// Parse a cache snapshot on the blocking pool: near the size cap it is
+/// seconds of work that would otherwise hold a runtime thread.
+pub(crate) async fn restore(data: Bytes, applied: bool) -> io::Result<CacheState> {
+    cpu(move || CacheState::restore(&data, applied)).await?
+}
+
+/// How many snapshot encodes and parses run at once, across every group.
+#[cfg(test)]
+pub(crate) fn cpu_jobs() -> usize {
+    CPU_JOBS.1
+}
+
+static CPU_JOBS: LazyLock<(Arc<Semaphore>, usize)> = LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+    let jobs = (cores / 2).max(1);
+    (Arc::new(Semaphore::new(jobs)), jobs)
+});
+
+/// Run CPU-bound snapshot work on the blocking pool, at most
+/// [`cpu_jobs`] at a time. Hundreds of groups restarting or snapshotting
+/// together would otherwise fill the pool that disk flushes wait on.
+pub(crate) async fn cpu<F, R>(work: F) -> io::Result<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    // Under the simulator the work runs on the runtime, and a bound taken
+    // from this machine's core count would change a seed's schedule.
+    let permit = if felix_common::blocking::on_runtime() {
+        None
+    } else {
+        let jobs = Arc::clone(&CPU_JOBS.0);
+        Some(jobs.acquire_owned().await.map_err(io::Error::other)?)
+    };
+    // The permit goes with the work, so a caller that stops waiting does
+    // not free a slot the work still uses.
+    felix_common::blocking::spawn(move || {
+        let _permit = permit;
+        work()
+    })
+    .await
+    .map_err(io::Error::other)
 }
 
 fn point(id: &LogIdOf<ShardTypes>) -> LogPoint {
@@ -112,7 +209,11 @@ impl StoredMeta {
     }
 }
 
-async fn store(snapshots: &SnapshotStore, meta: &SnapshotMetaOf<ShardTypes>) -> io::Result<()> {
+async fn store(
+    snapshots: &SnapshotStore,
+    meta: &SnapshotMetaOf<ShardTypes>,
+    data: Bytes,
+) -> io::Result<()> {
     let stored = StoredSnapshot {
         last: meta.last_log_id.as_ref().map(|id| {
             let (term, index) = term_index(id);
@@ -121,10 +222,38 @@ async fn store(snapshots: &SnapshotStore, meta: &SnapshotMetaOf<ShardTypes>) -> 
         meta: serde_json::to_vec(&StoredMeta::of(meta))
             .map_err(io::Error::other)?
             .into(),
-        data: bytes::Bytes::new(),
+        data,
     };
     // False means a later snapshot is already stored, which is fine.
     snapshots.install(stored).await.map(|_| ())
+}
+
+/// The snapshot a voter of a switch from the hybrid starts from: everything
+/// up to the base's entry applied, and `voters` as the membership, held at
+/// that entry.
+pub(crate) fn base_snapshot(
+    base: LogPoint,
+    voters: &std::collections::BTreeSet<super::types::MemberId>,
+) -> io::Result<StoredSnapshot> {
+    let at = Some((base.term, base.index));
+    let meta = StoredMeta {
+        last_applied: at,
+        membership_at: at,
+        membership: StoredMembership {
+            version: super::codec::MEMBERSHIP_VERSION,
+            voters: vec![voters.clone()],
+            learners: std::collections::BTreeSet::new(),
+            target: Some(super::membership::TargetVersion::default()),
+        },
+    };
+    Ok(StoredSnapshot {
+        last: Some(SnapshotId {
+            term: base.term,
+            index: base.index,
+        }),
+        meta: serde_json::to_vec(&meta).map_err(io::Error::other)?.into(),
+        data: bytes::Bytes::new(),
+    })
 }
 
 fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
@@ -137,23 +266,86 @@ fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {
 pub(crate) struct Builder {
     snapshots: SnapshotStore,
     state: State,
+    /// The projection as of `state.last_applied`. Let go, the apply task
+    /// folds the writes made since back into the live maps.
+    cut: Option<Cut>,
 }
 
-impl RaftSnapshotBuilder<ShardTypes> for Builder {
-    type SnapshotData = Vec<u8>;
+/// Overlay writes folded per hold of the cache lock, so apply and reads
+/// wait out at most one chunk.
+const FOLD_CHUNK: usize = 256;
 
-    async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<ShardTypes, Vec<u8>>> {
+/// Overlay writes folded per entry applied. A write adds at most four
+/// (value, expiry added and removed, producer answer), so the overlay
+/// shrinks under any write rate.
+const FOLD_PER_ENTRY: usize = 8;
+
+impl RaftSnapshotBuilder<ShardTypes> for Builder {
+    type SnapshotData = SnapshotData;
+
+    async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<ShardTypes, SnapshotData>> {
         let meta = meta(&self.state);
-        store(&self.snapshots, &meta).await?;
-        Ok(SnapshotOf::<ShardTypes, Vec<u8>> {
+        // A panic or JoinError in the encode fails the build, which stops
+        // the member. A receiver whose parse fails in `Group::dispatch`
+        // refuses the snapshot and keeps running.
+        let data = match self.cut.take() {
+            Some(cut) => cpu(move || cut.snapshot()).await?,
+            None => Bytes::new(),
+        };
+        store(&self.snapshots, &meta, data.clone()).await?;
+        Ok(SnapshotOf::<ShardTypes, SnapshotData> {
             meta,
-            snapshot: Vec::new(),
+            snapshot: SnapshotData::bytes(data),
         })
     }
 }
 
+impl Machine {
+    /// A builder for the state as of the last applied entry, `cut` being
+    /// the projection's.
+    ///
+    /// The state and the id it is as of are taken in one step, where no
+    /// entry is being applied. Taken when the snapshot is built, the state
+    /// could hold entries past the id, and a member that restored it would
+    /// apply them twice. The cut copies nothing; encoding it is the cost,
+    /// and happens in the build, off this task.
+    fn builder(&self, cut: Option<Cut>) -> Builder {
+        Builder {
+            snapshots: self.snapshots.clone(),
+            state: self.state.clone(),
+            cut,
+        }
+    }
+
+    /// Fold part of the overlay a released cut left back into the live
+    /// maps, after a run that applied `written` cache entries. On this task rather than a
+    /// thread of its own: the overlay's nodes are freed where they were
+    /// made, and no second thread competes with apply for the lock or a
+    /// core. A cut still held, or no overlay, makes this a no-op.
+    fn fold_back(&self, written: usize) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        #[cfg(test)]
+        let Ok(_held) = self.fold_hold.try_lock() else {
+            return;
+        };
+        let mut budget = FOLD_CHUNK.max(written.saturating_mul(FOLD_PER_ENTRY));
+        while budget > 0 {
+            let chunk = budget.min(FOLD_CHUNK);
+            let mut state = cache.write();
+            let more = state.fold(chunk);
+            parking_lot::RwLockWriteGuard::unlock_fair(state);
+            if !more {
+                return;
+            }
+            budget -= chunk;
+        }
+    }
+}
+
 impl RaftStateMachine<ShardTypes> for Machine {
-    type SnapshotData = Vec<u8>;
+    type SnapshotData = SnapshotData;
     type SnapshotBuilder = Builder;
 
     async fn applied_state(
@@ -166,7 +358,10 @@ impl RaftStateMachine<ShardTypes> for Machine {
     where
         Strm: Stream<Item = io::Result<EntryResponder<ShardTypes>>> + Unpin + OptionalSend,
     {
+        #[cfg(test)]
+        let _held = Arc::clone(&self.hold).lock_owned().await;
         let mut applied = Ok(());
+        let mut written = 0;
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {
                 Ok(next) => next,
@@ -175,6 +370,23 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     break;
                 }
             };
+            if let (Some(cache), EntryPayload::Normal(command)) = (&self.cache, &entry.payload) {
+                // An entry this build cannot read stops the member. Skipping
+                // it would leave this member's state unlike the others'.
+                let command = match CacheCommand::decode(&command.payload) {
+                    Ok(decoded) => (command.timestamp_micros, decoded),
+                    Err(err) => {
+                        applied = Err(err);
+                        break;
+                    }
+                };
+                // Before the commit table moves, so a write that waits on
+                // its commit finds its answer.
+                cache
+                    .write()
+                    .apply(entry.log_id.index, command.0, &command.1);
+                written += 1;
+            }
             let record = matches!(entry.payload, EntryPayload::Normal(_));
             if let EntryPayload::Membership(membership) = entry.payload {
                 self.state.membership =
@@ -192,22 +404,55 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
         self.publish();
+        // After the publish, so the run's waiters are not held by it.
+        self.fold_back(written);
         applied
     }
 
+    async fn try_create_snapshot_builder(&mut self, force: bool) -> Option<Self::SnapshotBuilder> {
+        // While the last build's overlay is still folding back, a cut would
+        // have to finish the fold on this task, holding apply and reads.
+        // Deferring is safe: openraft asks again `cache_snapshot_every`
+        // entries later and the log is purged later. Only a forced build
+        // (one a follower or a restart needs) takes the cut regardless.
+        let cut = match &self.cache {
+            Some(cache) => {
+                let mut state = cache.write();
+                if !force && state.layered() {
+                    return None;
+                }
+                Some(state.cut())
+            }
+            None => None,
+        };
+        Some(self.builder(cut))
+    }
+
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {
-        Builder {
-            snapshots: self.snapshots.clone(),
-            state: self.state.clone(),
-        }
+        let cut = self.cache.as_ref().map(|cache| cache.write().cut());
+        self.builder(cut)
     }
 
     async fn install_snapshot(
         &mut self,
         meta: &SnapshotMetaOf<ShardTypes>,
-        _snapshot: Vec<u8>,
+        snapshot: SnapshotData,
     ) -> io::Result<()> {
-        store(&self.snapshots, meta).await?;
+        let SnapshotData {
+            bytes: data,
+            restored,
+        } = snapshot;
+        // Read before it is stored: a snapshot that does not parse must not
+        // become the one this member restarts from.
+        let restored = match (&self.cache, restored) {
+            (Some(_), Some(restored)) => Some(restored),
+            (Some(_), None) => Some(restore(data.clone(), meta.last_log_id.is_some()).await?),
+            (None, _) => None,
+        };
+        store(&self.snapshots, meta, data).await?;
+        if let (Some(cache), Some(restored)) = (&self.cache, restored) {
+            *cache.write() = restored;
+        }
         self.state = State {
             last_applied: meta.last_log_id,
             membership: meta.last_membership.clone(),
@@ -223,14 +468,14 @@ impl RaftStateMachine<ShardTypes> for Machine {
 
     async fn get_current_snapshot(
         &mut self,
-    ) -> io::Result<Option<SnapshotOf<ShardTypes, Vec<u8>>>> {
+    ) -> io::Result<Option<SnapshotOf<ShardTypes, SnapshotData>>> {
         let Some(stored) = self.snapshots.current().await? else {
             return Ok(None);
         };
         let state = StoredMeta::state(&stored.meta)?;
-        Ok(Some(SnapshotOf::<ShardTypes, Vec<u8>> {
+        Ok(Some(SnapshotOf::<ShardTypes, SnapshotData> {
             meta: meta(&state),
-            snapshot: Vec::new(),
+            snapshot: SnapshotData::bytes(stored.data),
         }))
     }
 }

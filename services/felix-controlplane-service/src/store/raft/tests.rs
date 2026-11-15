@@ -17,6 +17,7 @@ pub(super) async fn single_node_store(dir: &std::path::Path) -> Arc<RaftStore> {
     let store = unrecorded_store(dir).await;
     store
         .local()
+        .expect("caught up")
         .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
         .await;
     store
@@ -67,7 +68,8 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
-    crate::store::contract::suspicions::run_suspicion_contract(store).await;
+    crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
+    crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
 }
 
 #[tokio::test]
@@ -793,6 +795,7 @@ async fn shard_renewal_waits_for_every_member() {
                     previous_generation: None,
                     readmitted: Default::default(),
                     placed: None,
+                    switch: None,
                 })
                 .await
                 .expect("assign");
@@ -882,6 +885,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     previous_generation: None,
                     readmitted: Default::default(),
                     placed: None,
+                    switch: None,
                 })
                 .await
                 .expect("assign");
@@ -1083,6 +1087,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -1204,6 +1209,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1339,6 +1345,7 @@ async fn a_previous_generation_waits_for_every_member() {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1435,6 +1442,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -1567,6 +1575,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     let first = |shard: u32| {
         let store = Arc::clone(&store);
@@ -1810,6 +1819,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1921,6 +1931,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
 
     let written = store
@@ -2001,6 +2012,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -2132,6 +2144,7 @@ async fn pending_sets_wait_for_every_member() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -2302,6 +2315,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -2406,6 +2420,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -2511,6 +2526,7 @@ async fn inherited_storage_waits_for_every_member() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -2629,6 +2645,7 @@ async fn learners_wait_for_every_member() {
         previous_generation: None,
         readmitted: Default::default(),
         placed: None,
+        switch: None,
     };
     let assigned = store
         .put_shard_assignment(learning.clone())
@@ -2777,6 +2794,7 @@ async fn a_refusal_waits_for_every_member() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -2914,6 +2932,7 @@ async fn storage_ids_wait_for_every_member() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -3241,6 +3260,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -3286,6 +3306,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
     // that reach it, so a lagging member's head would bring back #1955.
     let head = leader
         .local()
+        .expect("caught up")
         .shard_assignment_changes(0)
         .await
         .expect("feed");
@@ -3293,6 +3314,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
     assert_eq!(
         behind
             .local()
+            .expect("caught up")
             .shard_assignment_changes(0)
             .await
             .expect("feed")
@@ -4154,6 +4176,7 @@ async fn adoption_waits_for_every_member() {
             previous_generation: None,
             readmitted: Default::default(),
             placed: None,
+            switch: None,
         })
         .await
         .expect("assign");
@@ -4407,7 +4430,186 @@ async fn creates_wait_while_a_member_level_is_unknown() {
     version.store(SILENT, std::sync::atomic::Ordering::SeqCst);
     store
         .local()
+        .expect("caught up")
         .apply_record_identity(crate::store::identity::ClusterIdentity::generate("hybrid"))
         .await;
     store.create_stream(stream("audit")).await.expect("created");
+}
+
+/// A member below level 33 could not apply the entry, so nothing is kept
+/// and the read stays empty: a broker's gate then has no control-plane copy,
+/// which holds a root rather than passes it. Kept once the member is there.
+#[tokio::test]
+async fn a_root_sequence_is_kept_only_at_level_33() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), ROOT_SEQUENCE_LEVEL - 1).await;
+    let heard = crate::model::RootSequence {
+        storage_id: "a".repeat(32),
+        sequence: 4,
+        incarnation: 1,
+    };
+    assert!(
+        !store
+            .record_root_sequence("broker-a", heard.clone())
+            .await
+            .expect("record")
+    );
+    assert_eq!(store.root_sequence("broker-a").await.expect("read"), None);
+
+    version.store(ROOT_SEQUENCE_LEVEL, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !store
+        .record_root_sequence("broker-a", heard.clone())
+        .await
+        .expect("record")
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never kept at level 33"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        store.root_sequence("broker-a").await.expect("read"),
+        Some(heard)
+    );
+}
+
+/// The root sequence a group below its level does not keep is logged once
+/// per level, not once per heartbeat.
+#[test]
+fn an_unkept_root_sequence_is_logged_once_per_level() {
+    let logged = OncePerLevel::default();
+    assert!(logged.first_at(32));
+    assert!(!logged.first_at(32));
+    assert!(logged.first_at(31));
+    assert!(logged.first_at(32));
+    assert!(!logged.first_at(32));
+}
+
+/// A member below level 34 would refuse a seal order and keep a hybrid
+/// shard where the others hold a sealed one. So the order, the report and
+/// the give-up are refused before the log while such a member is in the
+/// group, and an entry that reaches the log anyway is refused as it applies.
+#[tokio::test]
+async fn a_switch_waits_for_every_member_at_its_level() {
+    use crate::model::ShardState;
+    use crate::store::contract::shards::{assignment, seed};
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), SWITCH_LEVEL - 1).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await != SWITCH_LEVEL - 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    seed(store.as_ref()).await;
+    let mut wanted = assignment(0, "broker-x");
+    wanted.member_storage_ids = BTreeMap::from([(
+        "broker-x".to_string(),
+        "000102030405060708090a0b0c0d0e0f".to_string(),
+    )]);
+    store
+        .put_shard_assignment(wanted.clone())
+        .await
+        .expect("assign");
+    wanted.state = ShardState::Active;
+    // A switch record a caller copied in is dropped before the log, so the
+    // put is not raised to a level the group lacks.
+    wanted.switch = Some(crate::model::ShardSwitch {
+        generation: 1,
+        sealer: "broker-x".to_string(),
+        sealer_copy: None,
+        report: None,
+    });
+    let active = store.put_shard_assignment(wanted).await.expect("activate");
+    assert!(active.switch.is_none());
+    let key = active.key.clone();
+
+    let refused = store.seal_shard(&key, active.generation).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("version 34")),
+        "{refused:?}"
+    );
+    let report = crate::model::SealReport {
+        generation: active.generation,
+        offset: 1,
+        start: 0,
+        digest: "ab".repeat(32),
+        dead_letters: crate::model::SealedSideLog {
+            start: 0,
+            end: 0,
+            digest: "ab".repeat(32),
+        },
+        cursors: crate::model::SealedSideLog {
+            start: 0,
+            end: 0,
+            digest: "ab".repeat(32),
+        },
+        voters: BTreeMap::from([(
+            "broker-x".to_string(),
+            "000102030405060708090a0b0c0d0e0f".to_string(),
+        )]),
+    };
+    let refused = store
+        .accept_seal_report(&key, report.clone(), "broker-x")
+        .await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    let refused = store
+        .give_up_seal(&key, active.generation, "broker-x")
+        .await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    // Past the proposer's check, the entry is still refused.
+    for command in [
+        MetaCommand::SealShard {
+            key: key.clone(),
+            expected_generation: active.generation,
+        },
+        MetaCommand::AcceptSealReport {
+            key: key.clone(),
+            report,
+            sealer: "broker-x".to_string(),
+        },
+        MetaCommand::GiveUpSeal {
+            key: key.clone(),
+            generation: active.generation,
+            sealer: "broker-x".to_string(),
+        },
+    ] {
+        let raw = crate::store::raft::command::encode_command(&command);
+        let answer = store.handle.write(raw).await.expect("answered");
+        let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
+        assert!(
+            matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 34")),
+            "{command:?}: {result:?}"
+        );
+    }
+    assert_eq!(
+        store.get_shard_assignment(&key).await.expect("assignment"),
+        active
+    );
+
+    version.store(SWITCH_LEVEL, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let sealed = loop {
+        match store.seal_shard(&key, active.generation).await {
+            Ok(AssignmentWrite::Written(sealed)) => break sealed,
+            other => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "not sealed after every member reported the level: {other:?}"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    };
+    assert!(sealed.sealing().is_some());
 }

@@ -78,6 +78,7 @@ pub mod node;
 pub use node::sim;
 pub mod observability;
 pub mod restore;
+pub mod rotate_storage;
 
 // HTTP helpers shared by the unit tests of several modules.
 #[cfg(test)]

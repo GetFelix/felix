@@ -184,9 +184,10 @@ pub(crate) async fn verify(args: VerifyArgs) -> Result<(), Failure> {
 }
 
 /// The generation a generation-start record names, or `None` when its payload
-/// is not the eight bytes it should be.
+/// is shorter than the eight bytes it opens with. A switch seal's record
+/// carries more after them.
 pub(crate) fn generation_of(payload: &[u8]) -> Option<u64> {
-    Some(u64::from_be_bytes(payload.try_into().ok()?))
+    Some(u64::from_be_bytes(payload.get(..8)?.try_into().ok()?))
 }
 
 /// Measure append latency and throughput under one durability policy.

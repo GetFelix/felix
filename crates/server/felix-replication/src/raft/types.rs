@@ -4,9 +4,11 @@
 use std::collections::BTreeSet;
 use std::convert::Infallible;
 use std::fmt;
+use std::io;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use felix_storage::log::{BatchPiece, ProducerBatch, RecordMark};
 use felix_storage::raft_log::WrittenToken;
 use openraft::errors::MembershipError;
 use openraft::impls::{ChangeMembers, EmptyNode};
@@ -87,11 +89,96 @@ impl fmt::Display for MemberId {
     }
 }
 
+/// The idempotent producer's batch a record belongs to, and its place in
+/// it. Stored as the record's mark, so every member's log knows the
+/// producer's place the way the leader's does.
+///
+/// Each record of a batch is an entry of its own and names the whole
+/// batch, so a member tells which records of it are in its log even when a
+/// leader change has put other entries between them. The broker still
+/// refuses a new batch of several records; only the rest of one a log
+/// already holds part of is written.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ProducerMark {
+    pub(crate) producer_id: u64,
+    pub(crate) sequence: u64,
+    /// The record's place in the batch, from zero.
+    pub(crate) position: u32,
+    /// Records in the batch.
+    pub(crate) len: u32,
+}
+
+impl ProducerMark {
+    pub(crate) fn record_mark(mark: Option<Self>) -> RecordMark {
+        match mark {
+            None => RecordMark::None,
+            Some(Self {
+                producer_id,
+                sequence,
+                position: 0,
+                len,
+            }) => RecordMark::Opens(ProducerBatch {
+                producer_id,
+                sequence,
+                len,
+            }),
+            Some(Self {
+                producer_id,
+                sequence,
+                position,
+                len,
+            }) => RecordMark::Piece(BatchPiece {
+                producer_id,
+                sequence,
+                position,
+                len,
+            }),
+        }
+    }
+
+    /// The producer mark a stored record carries, if it carries one. A
+    /// record that continues the one before it without naming its batch is
+    /// refused: no Raft log is written one, and an entry cannot be told
+    /// from its neighbours.
+    pub(crate) fn of_record(mark: RecordMark) -> io::Result<Option<Self>> {
+        match mark {
+            RecordMark::Opens(ProducerBatch {
+                producer_id,
+                sequence,
+                len,
+            }) => Ok(Some(Self {
+                producer_id,
+                sequence,
+                position: 0,
+                len,
+            })),
+            RecordMark::Piece(BatchPiece {
+                producer_id,
+                sequence,
+                position,
+                len,
+            }) => Ok(Some(Self {
+                producer_id,
+                sequence,
+                position,
+                len,
+            })),
+            RecordMark::Continues => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "a Raft log holds a record that continues a batch without naming it",
+            )),
+            _ => Ok(None),
+        }
+    }
+}
+
 /// One record of a shard, as an entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Command {
     pub(crate) timestamp_micros: u64,
     pub(crate) payload: Bytes,
+    /// Set on the records of an idempotent producer's batch.
+    pub(crate) producer: Option<ProducerMark>,
     /// Set by a proposer that waits to hear where the record was written.
     /// It rides on the entry from `client_write` to the leader's own append
     /// and nowhere else: it is not in the record and not in a message, so a
@@ -107,9 +194,12 @@ impl PartialEq for Command {
         let Self {
             timestamp_micros,
             payload,
+            producer,
             written: _,
         } = self;
-        *timestamp_micros == other.timestamp_micros && *payload == other.payload
+        *timestamp_micros == other.timestamp_micros
+            && *payload == other.payload
+            && *producer == other.producer
     }
 }
 
@@ -310,6 +400,7 @@ openraft::declare_raft_types!(
         NodeId = MemberId,
         Node = EmptyNode,
         LeaderId = openraft::impls::leader_id_std::LeaderId<u64, MemberId>,
+        AsyncRuntime = super::draws::ShardRuntime,
         Membership = Membership,
         MembershipEdit = MembershipEdit,
 );

@@ -53,18 +53,15 @@ pub struct RaftHandle {
     /// Set by [`RaftHandle::shutdown`]. openraft's metrics keep the last
     /// leader after a stop, so leadership checks read this first.
     pub(super) stopped: Arc<AtomicBool>,
-    /// The snapshot transfer this member is receiving, chunk by chunk
-    /// ([`super::chunks`]).
-    #[cfg(not(felix_segment_store))]
-    pub(super) receiving: Arc<tokio::sync::Mutex<Option<super::chunks::Receiving>>>,
     /// The one snapshot install this member runs at a time, ranked by the
     /// sender's vote.
-    #[cfg(felix_segment_store)]
     pub(super) install_slot:
         Arc<felix_storage::raft_log::transfer::InstallSlot<super::types::Vote>>,
     /// The largest snapshot this member accepts.
-    #[cfg(felix_segment_store)]
     pub(super) snapshot_max_bytes: u64,
+    /// Holds reads and readiness after a restart until the node has applied
+    /// its whole log tail ([`RaftHandle::caught_up`]).
+    pub(super) replay_gate: Arc<super::health::ReplayGate>,
 }
 
 /// How long a failed start waits for the node to stop. Short under test so
@@ -134,6 +131,7 @@ impl RaftHandle {
             state_machine,
             may_vote,
             committed_floor,
+            log_tail,
             member,
         } = opened;
         let config = openraft::Config {
@@ -182,13 +180,10 @@ impl RaftHandle {
         .await
         .context("start raft node")?;
 
-        // A restart is a rejoin, and a rejoin is not done until the state
-        // machine holds everything this node had already acknowledged as
-        // committed. Without this wait, a restarted member reports ready —
-        // it knows a leader within a heartbeat — while its store is still
-        // missing entries it committed in its previous life, and requests
-        // routed to it read a world that never existed. The chaos suite
-        // caught exactly that.
+        // Replays locally up to the committed index this node last saved.
+        // That index is saved at most once a second, so the node may have
+        // applied more before it stopped; the replay gate holds reads and
+        // readiness until a leader has committed the rest of the log tail.
         let replayed = Self::replayed(&raft, committed_floor).await;
         #[cfg(test)]
         let replayed = match settings.faults.fail_after_node_start {
@@ -241,19 +236,16 @@ impl RaftHandle {
             versions,
             hold,
             stopped: Arc::default(),
-            #[cfg(not(felix_segment_store))]
-            receiving: Arc::default(),
-            #[cfg(felix_segment_store)]
             install_slot: Arc::default(),
-            #[cfg(felix_segment_store)]
             snapshot_max_bytes: settings.snapshot_max_bytes,
+            replay_gate: Arc::new(super::health::ReplayGate::new(committed_floor, log_tail)),
         };
         tokio::spawn(handle.clone().watch_versions());
         Ok(handle)
     }
 
-    /// Wait until the state machine is back to `committed_floor`, what this
-    /// node had committed before it stopped.
+    /// Wait until the state machine is back to `committed_floor`, the
+    /// committed index this node last saved.
     async fn replayed(raft: &Raft, committed_floor: Option<u64>) -> Result<()> {
         if let Some(floor) = committed_floor {
             let deadline = tokio::time::Instant::now() + Duration::from_secs(30);

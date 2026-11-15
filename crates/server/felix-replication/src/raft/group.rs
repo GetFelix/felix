@@ -8,29 +8,39 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use felix_storage::DiskLog;
-use felix_storage::raft_copy::{CopyMarks, LogMarkMode};
-use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore};
+use felix_storage::raft_copy::{CopyMarks, LogMarkMode, MarkLog};
+use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
-use openraft::storage::RaftLogReader;
+use openraft::raft::SnapshotResponse;
+use openraft::storage::{RaftLogReader, Snapshot};
 use openraft::type_config::alias::VoteOf;
 use openraft::vote::RaftLeaderId;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use bytes::Bytes;
+
+use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
 use super::commit::{self, Commits};
+use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
-use super::machine::Machine;
+use super::machine::{self, Cache, Machine, SnapshotData};
 use super::membership::Target;
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
-use super::propose::{self, AckAt, Batch, Proposal, Unacknowledged};
+use super::propose::{
+    self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
+};
+use super::reach::{Reach, Refusals};
+use super::read_rounds::ReadRounds;
 use super::runtime::{GroupStatus, OpenError, Role};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
+use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
 
 pub(crate) mod driver;
@@ -50,6 +60,12 @@ pub(crate) struct Group {
     transport: Arc<dyn RaftTransport>,
     /// The written positions other members told this one.
     reports: Arc<Reports>,
+    /// The data root's mark log, when the member has one. Its
+    /// vouched-unsynced marker is synced before this member's unsynced write
+    /// is told to a leader or counted here, so a power cut rotates the copy.
+    root: Option<MarkLog>,
+    /// The brokers on which this group's member refused this one's calls.
+    refusals: Arc<Refusals>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// What this member has applied, as its state machine reports it.
@@ -59,6 +75,16 @@ pub(crate) struct Group {
     copy: felix_storage::raft_copy::CurrentCopy,
     /// Whether this member leads and the shard is open.
     leadership: Arc<Leadership>,
+    /// A cache shard's projection, as this member has applied it.
+    cache: Option<Cache>,
+    /// The snapshot a cache shard's member is being sent.
+    incoming: Arc<Incoming>,
+    /// What a cache shard's leader stamps entries and judges expiry by.
+    clock: Clock,
+    #[cfg(test)]
+    pub(crate) gate: Arc<propose::Gate>,
+    #[cfg(test)]
+    pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
     /// The newest target this member was told, kept in memory only: after
     /// a restart nothing changes until the control plane speaks again.
     target: tokio::sync::watch::Sender<Option<Target>>,
@@ -83,6 +109,8 @@ pub(crate) struct Group {
     /// Cancelled when the member is told to stop. Ends the publish task and
     /// every publisher's wait.
     stop: CancellationToken,
+    /// The read-index rounds the shard's reads share.
+    reads: Arc<ReadRounds<Round>>,
     /// The runtime the group was opened on, where its openraft core runs.
     /// The publish task starts there, not on the first publisher's runtime,
     /// which may end while the group lives on.
@@ -340,7 +368,8 @@ impl Hold {
     }
 
     /// openraft is about to take a message that can replace the stored
-    /// vote: an append under `vote`, or one that has this member stand.
+    /// vote: an append or a snapshot under `vote`, or one that has this
+    /// member stand.
     fn vote_may_change(&self, vote: Option<&VoteOf<ShardTypes>>) {
         let mut follows = self.follows.lock();
         if follows.as_ref() != vote {
@@ -366,6 +395,34 @@ impl Drop for Dropped<'_> {
     }
 }
 
+/// What one read-index round answered, shared by the reads that joined it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Round {
+    /// A majority answered this member as leader of this term.
+    Leads {
+        term: u64,
+        /// One past the commit index a majority confirmed.
+        index: u64,
+    },
+    /// This member leads but its lease lapsed: ask again after a heartbeat.
+    /// The pinned openraft says this to writes only.
+    LeaseExpired,
+    NotLeader,
+    /// No majority answered in time.
+    QuorumNotEnough,
+    Stopped,
+}
+
+/// What a member is told and asks of the broker it runs on.
+pub(crate) struct Host {
+    /// Who is told when the shard opens and closes here.
+    pub(crate) engine: Option<Arc<dyn EngineHost>>,
+    pub(crate) clock: Clock,
+}
+
+/// Expired values deleted by one pass of the expiry task.
+const EXPIRE_AT_ONCE: usize = 256;
+
 impl Group {
     /// Start `member` on `log`. The log decides where the member resumes: an
     /// empty one is a member that has never voted.
@@ -378,10 +435,17 @@ impl Group {
         config: Arc<Config>,
         transport: Arc<dyn RaftTransport>,
         timers: Timers,
-        host: Option<Arc<dyn EngineHost>>,
+        host: Host,
+        tail_budget: Arc<TailBudget>,
+        reach: Arc<Reach>,
     ) -> Result<Self, OpenError> {
+        let Host {
+            engine: host,
+            clock,
+        } = host;
         let snapshots = SnapshotStore::open(log.dir())?;
-        let log = RaftLog::<ShardTypes, ShardCodec>::new(log, ShardCodec)?;
+        let log =
+            RaftLog::<ShardTypes, ShardCodec>::with_tail_budget(log, ShardCodec, tail_budget)?;
         // A member that has voted may have promised a leader not to vote
         // again for one election timeout, and that promise was in memory.
         // It started after the last message it took, so waiting the
@@ -398,10 +462,12 @@ impl Group {
         let led = stored
             .as_ref()
             .is_some_and(|vote| vote.is_committed() && vote.leader_id().node_id() == &member);
-        // A shard's state is its log, so nothing can rebuild what a purge
-        // past the snapshot would drop.
+        // A stream shard's state is its log, and a cache shard's is its
+        // snapshot plus the log above it. Either way nothing can rebuild
+        // what a purge past the snapshot would drop.
         log.purge_within(&snapshots)?;
         let copy_id = marks.as_ref().map(|(marks, _)| marks.copy());
+        let root = marks.as_ref().map(|(marks, _)| marks.mark_log().clone());
         if let Some((marks, mode)) = marks {
             log.mark_with(marks, mode)?;
         }
@@ -411,16 +477,21 @@ impl Group {
             copy_id,
             log.first_index_reader(),
         );
-        let (machine, commits) = Machine::open(snapshots).await?;
+        let (machine, commits, cache) = Machine::open(snapshots, id.shard.kind).await?;
+        #[cfg(test)]
+        let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new());
+        let refusals = Arc::new(Refusals::new(id.clone()));
         let network = Network {
             router: Router::new(
                 Arc::clone(&transport),
                 Arc::clone(&pace),
                 Arc::clone(&lease),
                 Arc::clone(&reports),
+                reach,
+                Arc::clone(&refusals),
             ),
             group: id.clone(),
         };
@@ -469,10 +540,19 @@ impl Group {
             hold,
             transport,
             reports,
+            root,
+            refusals,
             positions,
             commits,
             copy,
             leadership,
+            cache,
+            incoming: Arc::default(),
+            clock,
+            #[cfg(test)]
+            gate: Arc::default(),
+            #[cfg(test)]
+            apply_hold,
             target: tokio::sync::watch::Sender::default(),
             progress: Arc::default(),
             lag_threshold,
@@ -482,6 +562,7 @@ impl Group {
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
             stop,
+            reads: Arc::default(),
             runtime: tokio::runtime::Handle::current(),
         })
     }
@@ -499,7 +580,7 @@ impl Group {
         self.runtime.spawn(driver::run(
             driver,
             self.target.subscribe(),
-            self.leadership.subscribe(),
+            self.leadership.changes(),
             self.stop.clone(),
         ));
     }
@@ -571,6 +652,28 @@ impl Group {
     /// grants no vote at first".
     pub(super) fn holds_votes(&self) -> bool {
         self.pace.timers.now() < self.hold.until
+    }
+
+    /// Whether this group's member on `broker` refused the last call to it.
+    pub(crate) fn refused_on(&self, broker: &str) -> bool {
+        self.refusals.holds(broker)
+    }
+
+    /// If this member leads, retry its members on `broker` now rather than
+    /// after openraft's next backoff delay. That broker just answered.
+    pub(crate) async fn retry_now(&self, broker: &str) {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let to: Vec<MemberId> = match &self.raft.metrics().borrow_watched().replication {
+            Some(followers) => followers
+                .keys()
+                .filter(|member| &*member.broker == broker)
+                .cloned()
+                .collect(),
+            None => return,
+        };
+        if !to.is_empty() {
+            let _ = self.raft.trigger().reset_backoff(to).await;
+        }
     }
 
     fn leads(&self) -> bool {
@@ -700,6 +803,15 @@ impl Group {
         else {
             return;
         };
+        // Before the report leaves. Without the marker a power cut here would
+        // keep the storage id, and the leader would go on counting a record
+        // this copy lost.
+        if let Some(root) = &self.root
+            && let Err(err) = root.vouch_unsynced().await
+        {
+            tracing::debug!(group = %self.id, error = %err, "no written report: its marker did not sync");
+            return;
+        }
         let deadline = Duration::from_millis(self.pace.timers.heartbeat);
         let request = RaftRequest {
             group: self.id.clone(),
@@ -729,7 +841,8 @@ impl Group {
         let asks = match &body {
             Request::Vote(rpc) => !(held && self.hold.lets_through(&rpc.vote)),
             Request::PreVote(_) => true,
-            // Anything else openraft takes may replace the stored vote.
+            // Anything else openraft takes may replace the stored vote. A
+            // cache snapshot is handed over at its last piece, below.
             Request::Append(rpc) => {
                 self.hold.vote_may_change(Some(&rpc.vote));
                 false
@@ -774,11 +887,73 @@ impl Group {
                 .await
                 .map(Reply::Vote)
                 .map_err(|err| stopped(err.to_string())),
-            // A snapshot carries no records, and installing one purges the
-            // log up to it: the member would drop records it was never
-            // sent. Refused until retention says how a member that far
-            // behind gets them.
-            Request::Snapshot { vote, meta } => {
+            Request::Snapshot {
+                vote,
+                meta,
+                data_len,
+                offset,
+                data,
+            } if self.id.shard.kind == ShardKind::Cache => {
+                use openraft::async_runtime::watch::WatchReceiver;
+                // Before the outvoted check: the sender's term ends the
+                // ones below it either way, and an outvoted sender's term
+                // is never above this member's, so its lease is untouched.
+                self.lease.named(term_of(&vote));
+                // A sender this member has outvoted is told so before any
+                // of its snapshot is kept.
+                let mine = self.raft.metrics().borrow_watched().vote.clone();
+                if vote < mine {
+                    return Ok(Reply::Snapshot(SnapshotResponse::new(mine)));
+                }
+                let piece = self.incoming.take(&vote, &meta, data_len, offset, &data);
+                match piece.map_err(Refused::Unreachable)? {
+                    Piece::More => {
+                        if offset == 0 && self.incoming.watch() {
+                            self.drop_incoming_when_idle();
+                        }
+                        Ok(Reply::Snapshot(SnapshotResponse::new(vote)))
+                    }
+                    Piece::Whole(snapshot) => {
+                        // openraft takes a snapshot the state machine cannot
+                        // restore as a storage failure and stops the member,
+                        // so one this build cannot read (a newer format, a
+                        // bad sender) is refused here and the member keeps
+                        // running behind.
+                        // The state parsed here is the one installed, so
+                        // the bytes are read once.
+                        let bytes = Bytes::from(snapshot);
+                        let restored = match machine::restore(
+                            bytes.clone(),
+                            meta.last_log_id.is_some(),
+                        )
+                        .await
+                        {
+                            Ok(restored) => restored,
+                            Err(err) => {
+                                tracing::warn!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, error = %err, "refused a snapshot this member cannot read");
+                                return Err(Refused::Unreachable(format!(
+                                    "a snapshot this member cannot read: {err}"
+                                )));
+                            }
+                        };
+                        let snapshot = SnapshotData {
+                            bytes,
+                            restored: Some(restored),
+                        };
+                        self.hold.vote_may_change(Some(&vote));
+                        self.raft
+                            .install_full_snapshot(vote, Snapshot { meta, snapshot })
+                            .await
+                            .map(Reply::Snapshot)
+                            .map_err(|err| stopped(err.to_string()))
+                    }
+                }
+            }
+            // A stream group's snapshot carries no records, and installing
+            // one purges the log up to it: the member would drop records it
+            // was never sent. Refused until retention says how a member
+            // that far behind gets them.
+            Request::Snapshot { vote, meta, .. } => {
                 self.lease.named(term_of(&vote));
                 let member = Box::new(Addressee {
                     group: self.id.clone(),
@@ -810,14 +985,29 @@ impl Group {
     /// written if this member leads, and the batches behind it keep their
     /// place. An error is an unknown outcome and must not be retried as if
     /// nothing was written.
+    ///
+    /// A cache shard takes no batch: its entries are commands stamped by
+    /// its publish task, and a raw record would fail to apply on every
+    /// member.
     pub(crate) fn propose(
         &self,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+        let split = match self.cache {
+            Some(_) => Err(propose::not_a_stream()),
+            None => propose::split(batch),
+        };
+        self.queue(split)
+    }
+
+    fn queue(
+        &self,
+        split: Result<(Proposal, Waiting), CommitError>,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
         let waiting = if self.stop.is_cancelled() {
             Err(propose::stopped())
         } else {
-            propose::split(batch).and_then(|(proposal, waiting)| {
+            split.and_then(|(proposal, waiting)| {
                 let queued = self.proposer().send(proposal);
                 queued.map(|()| waiting).map_err(|_| propose::stopped())
             })
@@ -889,16 +1079,28 @@ impl Group {
         let reports = Arc::clone(&self.reports);
         let raft = self.raft.clone();
         let me = self.member.clone();
+        let root = self.root.clone();
         async move {
             let Some(at) = early else {
                 return commit.await;
+            };
+            // The written count includes this leader's own unsynced write,
+            // so the marker syncs before the count is read. In this arm, so
+            // a slow sync holds up neither the commit nor the timeout.
+            let majority = async {
+                if let Some(root) = &root
+                    && root.vouch_unsynced().await.is_err()
+                {
+                    std::future::pending::<()>().await;
+                }
+                reports.majority(&raft, &me, at).await;
             };
             tokio::select! {
                 biased;
                 // First, so a member that no longer leads is refused even
                 // with a majority's reports in hand.
                 committed = commit => committed,
-                () = reports.majority(&raft, &me, at) => Ok(()),
+                () = majority => Ok(()),
             }
         }
     }
@@ -911,8 +1113,25 @@ impl Group {
     ///
     /// A majority that does not answer is a timeout, and so is a lapsed
     /// lease: neither says another leader exists, and neither closes the
-    /// shard.
+    /// shard. Ok only once this member has applied the read index, so a
+    /// value the reader takes after this returns has every answered write.
     pub(crate) async fn confirm_read(&self, term: u64) -> Result<(), CommitError> {
+        let patience = Duration::from_millis(self.pace.timers.election_max);
+        let deadline = tokio::time::Instant::now() + patience;
+        let bound = self.read_index(term).await?;
+        let unanswered = CommitError::TimedOut {
+            what: "read",
+            timeout: patience,
+        };
+        self.applied_through(bound - 1, deadline, unanswered).await
+    }
+
+    /// One past the index a reader must have applied before it reads: the
+    /// leader's commit index when a majority confirmed that this member
+    /// still leads `term`. `confirm_read` then waits for the apply, bounded
+    /// by `election_max` from its start; the cache read waits under the
+    /// caller's deadline.
+    async fn read_index(&self, term: u64) -> Result<u64, CommitError> {
         let lost = |detail| CommitError::LeadershipLost {
             what: "read",
             detail,
@@ -930,28 +1149,40 @@ impl Group {
         };
         let deadline = tokio::time::Instant::now() + patience;
         loop {
+            let raft = self.raft.clone();
+            let stop = self.stop.clone();
+            let entered =
+                self.reads
+                    .enter(&self.runtime, patience, Round::QuorumNotEnough, move || {
+                        read_round(raft.clone(), stop.clone())
+                    });
+            // A read that arrives during a round waits for the next one too,
+            // so the bound is on the wait, not on one round.
             let round = tokio::select! {
                 biased;
                 () = self.stop.cancelled() => return Err(propose::stopped()),
-                round = self.raft.get_read_log_id(ReadPolicy::ReadIndex) => round,
+                round = tokio::time::timeout_at(deadline, entered.answer()) => match round {
+                    Ok(Some(round)) => round,
+                    // The task asking rounds ended without an answer. A new
+                    // read starts a new task.
+                    Ok(None) => {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    }
+                    Err(_) => return Err(unanswered),
+                },
             };
-            let forward = match round {
-                Ok((read, _)) if **read.committed_leader_id() == term => return Ok(()),
-                Ok(_) => {
+            match round {
+                Round::Leads { term: leads, index } if leads == term => return Ok(index),
+                Round::Leads { .. } => {
                     return Err(lost(
                         "this broker leads a later term than the read began in",
                     ));
                 }
-                Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(forward))) => {
-                    forward
-                }
-                Err(RaftError::APIError(LinearizableReadError::QuorumNotEnough(_))) => {
-                    return Err(unanswered);
-                }
-                Err(RaftError::Fatal(_)) => return Err(propose::stopped()),
-            };
-            if forward.reason != ForwardReason::LeaseExpired {
-                return Err(lost("this broker does not lead the shard"));
+                Round::LeaseExpired => {}
+                Round::NotLeader => return Err(lost("this broker does not lead the shard")),
+                Round::QuorumNotEnough => return Err(unanswered),
+                Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for
             // a majority to answer it, and ask again.
@@ -962,6 +1193,34 @@ impl Group {
             let answered = lead::quorum_answered(&self.raft);
             let again = Duration::from_millis(timers.heartbeat);
             let _ = tokio::time::timeout(again, answered).await;
+        }
+    }
+
+    /// Wait until this member has applied `index`. A write can be answered
+    /// after it commits but before it is applied here, and a value taken
+    /// from below the read index would miss it. `timed_out` once `deadline`
+    /// passes.
+    async fn applied_through(
+        &self,
+        index: u64,
+        deadline: tokio::time::Instant,
+        timed_out: CommitError,
+    ) -> Result<(), CommitError> {
+        let mut commits = self.commits.clone();
+        let applied = commits.wait_for(|commits| {
+            commits
+                .applied()
+                .is_some_and(|applied| applied.index >= index)
+        });
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => Err(propose::stopped()),
+            waited = tokio::time::timeout_at(deadline, applied) => match waited {
+                Ok(Ok(_)) => Ok(()),
+                // The state machine is gone with the member.
+                Ok(Err(_)) => Err(propose::stopped()),
+                Err(_) => Err(timed_out),
+            },
         }
     }
 
@@ -1044,9 +1303,232 @@ impl Group {
                     length: Duration::from_millis(timers.election_max),
                     again: Duration::from_millis(timers.heartbeat),
                 },
+                self.cache.clone().map(|cache| Stamper {
+                    #[cfg(test)]
+                    gate: Arc::clone(&self.gate),
+                    cache,
+                    leadership: Arc::clone(&self.leadership),
+                    clock: Arc::clone(&self.clock),
+                    last: 0,
+                }),
             ));
             queue
         })
+    }
+
+    fn cache_group(&self) -> Result<&Cache, CommitError> {
+        self.cache.as_ref().ok_or(CommitError::LeadershipLost {
+            what: "cache request",
+            detail: "the shard is not a cache shard",
+        })
+    }
+
+    /// Stamp `writes`, commit them in order and return once this member
+    /// has applied them. Nothing is written unless it has the shard open.
+    async fn cache_commit(
+        &self,
+        writes: Vec<Unstamped>,
+        timeout: Duration,
+    ) -> Result<(), CommitError> {
+        self.cache_group()?;
+        let queued = self.queue(propose::split_cache(writes)).await;
+        let written = queued.map_err(|unacked| unacked.error)?;
+        // The state machine folds an entry in before it publishes it.
+        self.await_commit(written, timeout).await
+    }
+
+    /// Commit `command` and return what it answered when it was first
+    /// applied, so a retry gets the first answer. A put with a `ttl`
+    /// (microseconds, zero for none) expires that long after its stamp.
+    ///
+    /// [`Answer::Forgotten`] means the request is below its producer's
+    /// floor and its answer is gone: it was applied by an earlier entry, or
+    /// a later entry of the same producer (a higher floor, a retire) dropped
+    /// the answer before this read. Either way it was applied once, provided
+    /// the caller follows the floor rule: a request's `floor` is the lowest
+    /// sequence the producer has no answer for, never higher, and a retire's
+    /// is one past the producer's last sequence once every request has its
+    /// answer. A floor past an unanswered request turns that request into
+    /// Forgotten without applying it.
+    pub(crate) async fn cache_write(
+        &self,
+        command: CacheCommand,
+        ttl: u64,
+        timeout: Duration,
+    ) -> Result<Answer, CommitError> {
+        let cache = self.cache_group()?;
+        let request = match &command {
+            CacheCommand::Put { request, .. }
+            | CacheCommand::Delete { request, .. }
+            | CacheCommand::Add { request, .. } => Some(*request),
+            CacheCommand::Expire { .. } | CacheCommand::Retire { .. } => None,
+        };
+        self.cache_commit(vec![Unstamped { command, ttl }], timeout)
+            .await?;
+        let answer = request.and_then(|request| {
+            let cache = cache.read();
+            cache.answer(request.producer, request.sequence)
+        });
+        Ok(answer.unwrap_or(Answer::Forgotten))
+    }
+
+    /// Returns once this member is known to lead and has applied
+    /// everything committed when a majority said so. A read of its state
+    /// taken then misses no acknowledged write.
+    async fn cache_fresh(
+        &self,
+        deadline: tokio::time::Instant,
+        timeout: Duration,
+    ) -> Result<&Cache, CommitError> {
+        let cache = self.cache_group()?;
+        let lost = CommitError::LeadershipLost {
+            what: "read",
+            detail: "this broker does not have the shard open",
+        };
+        let term = self.open_term().ok_or(lost)?;
+        let bound = self.read_index(term).await?;
+        let mut commits = self.commits.clone();
+        let applied = commits.wait_for(|commits| commits.read_bound() >= bound);
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => Err(propose::stopped()),
+            applied = applied => applied.map(|_| cache).map_err(|_| propose::stopped()),
+            () = tokio::time::sleep_until(deadline) => Err(CommitError::TimedOut {
+                what: "read",
+                timeout,
+            }),
+        }
+    }
+
+    /// `key`'s value and version, if it has an unexpired one.
+    ///
+    /// Expiry is judged at the later of this leader's clock and the log's
+    /// time. When only the clock says the value expired, the delete is
+    /// committed before the reader is told it is gone, so no later leader
+    /// with a slower clock finds the key again.
+    pub(crate) async fn cache_read(
+        &self,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<(Bytes, u64)>, CommitError> {
+        use super::cache::Read;
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let cache = self.cache_fresh(deadline, timeout).await?;
+            let read = cache.read().read(key, (self.clock)());
+            let version = match read {
+                Read::Value { value, version } => return Ok(Some((value, version))),
+                Read::Absent => return Ok(None),
+                Read::Expire { version } => version,
+            };
+            let expire = CacheCommand::Expire {
+                key: key.to_owned(),
+                version,
+            };
+            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+            let writes = vec![Unstamped {
+                command: expire,
+                ttl: 0,
+            }];
+            self.cache_commit(writes, left).await?;
+        }
+    }
+
+    /// A counter's sum, if it was ever added to.
+    pub(crate) async fn counter_read(
+        &self,
+        key: &str,
+        timeout: Duration,
+    ) -> Result<Option<i64>, CommitError> {
+        let deadline = tokio::time::Instant::now() + timeout;
+        let cache = self.cache_fresh(deadline, timeout).await?;
+        Ok(cache.read().sum(key))
+    }
+
+    /// Delete what has expired by this leader's clock, and say how long
+    /// until the next value does. `None` if nothing is waiting to expire
+    /// or this member does not have the shard open.
+    async fn expire(&self) -> Option<Duration> {
+        let cache = self.cache.as_ref()?;
+        self.open_term()?;
+        let timers = self.pace.timers;
+        let due = cache.read().due((self.clock)(), EXPIRE_AT_ONCE);
+        if !due.is_empty() {
+            let writes = due
+                .into_iter()
+                .map(|(key, version)| Unstamped {
+                    command: CacheCommand::Expire { key, version },
+                    ttl: 0,
+                })
+                .collect();
+            let patience = Duration::from_millis(timers.election_max);
+            if self.cache_commit(writes, patience).await.is_err() {
+                // Deposed, or no majority in reach. Look again later.
+                return Some(Duration::from_millis(timers.heartbeat));
+            }
+        }
+        let cache = cache.read();
+        let now = (self.clock)().max(cache.time());
+        let next = cache.next_expiry()?;
+        Some(Duration::from_micros(next.saturating_sub(now)))
+    }
+
+    /// Start a cache shard's expiry task: on the leader, it deletes each
+    /// value when it expires. It wakes when leadership changes, when an
+    /// entry is applied and when the next value is due, so an idle group
+    /// with nothing to expire costs nothing. A stream shard has none.
+    pub(crate) fn start_expiry(self: &Arc<Self>) {
+        if self.cache.is_none() {
+            return;
+        }
+        let group = Arc::downgrade(self);
+        let mut lead = self.leadership.changes();
+        let mut commits = self.commits.clone();
+        let stop = self.stop.clone();
+        self.runtime.spawn(async move {
+            loop {
+                let wait = match group.upgrade() {
+                    Some(group) => group.expire().await,
+                    None => return,
+                };
+                let due = async {
+                    match wait {
+                        Some(wait) => tokio::time::sleep(wait).await,
+                        None => std::future::pending().await,
+                    }
+                };
+                tokio::select! {
+                    biased;
+                    () = stop.cancelled() => return,
+                    changed = lead.changed() => if changed.is_err() { return },
+                    changed = commits.changed() => if changed.is_err() { return },
+                    () = due => {}
+                }
+            }
+        });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn incoming(&self) -> &Incoming {
+        &self.incoming
+    }
+
+    /// A sender that goes away part way must not leave its pieces held.
+    /// One task at a time, however often senders start again.
+    fn drop_incoming_when_idle(&self) {
+        let incoming = Arc::clone(&self.incoming);
+        let stop = self.stop.clone();
+        self.runtime.spawn(async move {
+            loop {
+                tokio::select! {
+                    () = stop.cancelled() => return,
+                    () = tokio::time::sleep(install::IDLE) => {}
+                }
+                if incoming.settled() {
+                    return;
+                }
+            }
+        });
     }
 
     /// Stop the member's tasks. Entries and the vote it acknowledged are
@@ -1110,6 +1592,36 @@ impl Group {
     }
 
     #[cfg(test)]
+    pub(crate) fn write_in_term(
+        &self,
+        command: super::types::Command,
+        term: u64,
+    ) -> impl Future<Output = bool> + use<> {
+        use futures::StreamExt;
+        let raft = self.raft.clone();
+        async move {
+            let sent = propose::write(&raft, vec![command], Some(term)).await;
+            let mut results = sent.expect("running");
+            matches!(results.next().await, Some(Ok(Ok(_))))
+        }
+    }
+
+    /// Queue `batch` as [`Self::propose`] does, without its check of the
+    /// shard's kind, to reach the publish task's own check.
+    #[cfg(test)]
+    pub(crate) fn propose_unchecked(
+        &self,
+        batch: Batch,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+        self.queue(propose::split(batch))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn cache(&self) -> &Cache {
+        self.cache.as_ref().expect("a cache group")
+    }
+
+    #[cfg(test)]
     pub(crate) fn lease(&self) -> &Lease {
         &self.lease
     }
@@ -1120,7 +1632,38 @@ impl Group {
     }
 
     #[cfg(test)]
+    pub(crate) fn read_rounds_asked(&self) -> u64 {
+        self.reads.asked()
+    }
+
+    #[cfg(any(test, feature = "testing"))]
     pub(crate) fn raft(&self) -> &Raft<ShardTypes, Machine> {
         &self.raft
+    }
+}
+
+/// One read-index round, asked of the core after every read that shares it
+/// arrived.
+async fn read_round(raft: Raft<ShardTypes, Machine>, stop: CancellationToken) -> Round {
+    let round = tokio::select! {
+        biased;
+        () = stop.cancelled() => return Round::Stopped,
+        round = raft.get_read_log_id(ReadPolicy::ReadIndex) => round,
+    };
+    match round {
+        Ok((read, _)) => Round::Leads {
+            term: **read.committed_leader_id(),
+            index: read.index() + 1,
+        },
+        Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(forward)))
+            if forward.reason == ForwardReason::LeaseExpired =>
+        {
+            Round::LeaseExpired
+        }
+        Err(RaftError::APIError(LinearizableReadError::ForwardToLeader(_))) => Round::NotLeader,
+        Err(RaftError::APIError(LinearizableReadError::QuorumNotEnough(_))) => {
+            Round::QuorumNotEnough
+        }
+        Err(RaftError::Fatal(_)) => Round::Stopped,
     }
 }

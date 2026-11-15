@@ -130,6 +130,25 @@ latest report says `by_round` (`docs/replication-design.md`, "Failover on the
 followers' word").
 A record that cannot be stored is logged and does not fail the heartbeat.
 
+A broker whose per-shard Raft data root is open also sends
+`"root": {"storage_id": "...", "sequence": 42}`, the root's storage id and
+its last synced root sequence. The control plane keeps the highest sequence
+per broker for that storage id; a report under another storage id replaces
+it. It proposes a metadata write only when the value moved, so a steady
+broker costs none. `GET /v1/nodes/{node_id}` returns what it holds as
+`root_sequence`, which the broker's Raft restore gate compares its root
+against at start (`docs/per-shard-raft.md`, "The root sequence"). Keeping
+it needs every member at metadata level 33; below that nothing is stored,
+`root_sequence` stays absent, and the control plane logs a warning once per
+level. A value that cannot be stored is logged and
+does not fail the heartbeat either. A report under another storage id
+replaces the record only from a later incarnation, so a late beat of a
+process from before a rotation is ignored. It is part of the Raft snapshot
+and of an export. An import replaces every record with the export's: an
+older export lowers them, and one from before level 33 removes them, so a
+broker that reboots before its next heartbeat holds its Raft groups until
+an operator runs `felix-broker rotate-storage-id` on it.
+
 Four rules, each of which exists for a reason:
 
 - **The recorded time is the control plane's own clock.** A broker that could
@@ -528,7 +547,14 @@ hold:
    (`controlplane_group`), or, for a backend with no group such as the
    in-memory one, that it had none (`controlplane_group_none`). A directory
    never checked, such as one from before the check existed, cannot tell a
-   recreated control plane, so it waits. See "Cluster identity" below.
+   recreated control plane, so it waits. Once the control plane answers, and
+   before its catalog is applied, the broker checks the directory against
+   `GET /v1/cluster/identity` as a start that asked would. A snapshot is not
+   enough: a Raft group that has not recorded its id yet answers without one,
+   like the in-memory backend. A directory that holds data under the mark is
+   refused by a group formed on an empty catalog, and the broker stops. After
+   that, under `controlplane_group_none`, any snapshot or page that names a
+   group stops the broker too. See "Cluster identity" below.
 
 Otherwise it waits for the control plane, as without the switch. A 401,
 another 4xx, or an answer that does not decode is a control plane that is
@@ -2183,6 +2209,9 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move or replacement; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
+| `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
+| `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 
 A listed move has a `step` (`staged`, `fenced`, `replacing` or `restoring`),
 the `reason` it started (`drain`, `balance`, `operator`, `replace` or
@@ -2214,7 +2243,9 @@ where placement would not make it: the destination not registered (404
 `unknown_node`), not live (409 `destination_not_live`), already the leader
 (`already_leader`) or at its `max_shards` cap (`at_capacity`); the shard
 already moving (`already_moving`); its leader down (`leader_unavailable`,
-failover places it); or a move limit reached (`move_limit`). It is held to
+failover places it); or a move limit reached (`move_limit`). A start, a
+cancel and an abandon on a shard that switched to Raft are all refused (409
+`switched`): the control plane no longer places it. It is held to
 the move limits but not to a pause. From there it runs like any other move,
 through the fence and the cut-over, and a timeout abandons it the same way.
 

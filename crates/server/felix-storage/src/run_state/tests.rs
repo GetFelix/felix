@@ -284,6 +284,100 @@ fn a_clean_stop_keeps_the_id_under_every_fsync_mode() {
     }
 }
 
+/// A Raft copy that told a leader it had written a record before syncing it
+/// is counted for that record, so a machine crash rotates the id under
+/// `OnCommit` too (#2423). The run it first vouched in names its boot once
+/// the marker is synced, so a process crash of it keeps the id as a later
+/// run's does. The marker outlives the rotation.
+#[test]
+fn a_crash_after_vouching_for_an_unsynced_record_rotates_under_on_commit() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!vouched_unsynced(dir.path()).expect("read"));
+    let kept = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!kept.rotated, "nothing was vouched for");
+    assert_eq!(kept.id, first.id);
+
+    record_vouched_unsynced(dir.path()).expect("record");
+    assert_eq!(
+        read(dir.path(), first.id).expect("read"),
+        relaxed_crash(BOOT),
+        "the run that vouched is relaxed from then on, in its boot"
+    );
+    let synced = syncs();
+    let same_boot = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!same_boot.rotated, "a process crash of the vouching run");
+    assert_eq!(same_boot.id, first.id);
+    assert_eq!(
+        syncs(),
+        synced + 1,
+        "the page cache was pushed to the device"
+    );
+
+    let second = begin_in(dir.path(), ON_COMMIT, REBOOTED, &mut fresh);
+    assert_eq!(second.last_run, relaxed_crash(BOOT));
+    assert!(second.rotated);
+    assert_ne!(second.id, first.id);
+    assert!(vouched_unsynced(dir.path()).expect("read"));
+    assert_eq!(
+        read(dir.path(), second.id).expect("read"),
+        relaxed_crash(REBOOTED),
+        "a run on a directory that vouched is recorded as relaxed"
+    );
+
+    let elsewhere = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(elsewhere.rotated, "a crash in another boot");
+    mark_clean(dir.path(), elsewhere.id).expect("clean stop");
+    let clean = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(!clean.rotated, "a clean stop keeps the id");
+}
+
+/// The vouching run's record keeps the id only through a process crash that
+/// nothing else made unsafe. A crash between the marker and the record, a
+/// run whose boot is unknown, and a poisoned log on either side of the
+/// marker all rotate.
+#[test]
+fn a_vouching_run_names_its_boot_only_while_that_is_safe() {
+    let rotates = |vouch: &dyn Fn(&Path), boot: Option<BootId>| {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut fresh = counter(0);
+        let first = begin_in(dir.path(), ON_COMMIT, boot, &mut fresh);
+        vouch(dir.path());
+        let next = begin_in(dir.path(), ON_COMMIT, boot, &mut fresh);
+        assert_eq!(next.rotated, next.id != first.id);
+        next.rotated
+    };
+    let record = |root: &Path| record_vouched_unsynced(root).expect("record");
+    let forget = |root: &Path| forget_boot(root).expect("forget");
+    assert!(!rotates(&record, BOOT));
+    assert!(rotates(&record, None), "no boot to name");
+    let marker_only = |root: &Path| {
+        write_atomically(root, VOUCHED_UNSYNCED_FILE_NAME, b"written\n", true).expect("marker");
+    };
+    assert!(rotates(&marker_only, BOOT), "a crash before the record");
+    assert!(
+        rotates(
+            &|root| {
+                forget(root);
+                record(root);
+            },
+            BOOT
+        ),
+        "a log was poisoned before the marker"
+    );
+    assert!(
+        rotates(
+            &|root| {
+                record(root);
+                forget(root);
+            },
+            BOOT
+        ),
+        "a log was poisoned after the marker"
+    );
+}
+
 /// Under `OnCommit` nothing acknowledged was unsynced, so a crash loses
 /// nothing peers counted.
 #[test]
@@ -667,4 +761,176 @@ fn an_unreadable_rotated_ids_record_claims_no_id() {
             "{body:?}"
         );
     }
+}
+
+/// **A deleted `storage-id` starts the Raft mark log over.** Kept, the marks'
+/// sequence would have no copy outside the root under the new id, and the
+/// Raft restore gate would hold the root after the next reboot. A start that
+/// keeps its id keeps the marks.
+#[test]
+fn a_deleted_storage_id_starts_the_raft_marks_over() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let marks = dir.path().join(copy_trust::RAFT_MARKS);
+    begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    std::fs::write(&marks, b"marks").expect("marks");
+    mark_clean(
+        dir.path(),
+        storage_identity::load(dir.path())
+            .expect("id")
+            .expect("an id"),
+    )
+    .expect("clean");
+    begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(marks.exists(), "a start that kept its id dropped the marks");
+
+    std::fs::remove_file(dir.path().join(storage_identity::FILE_NAME)).expect("delete id");
+    let begun = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert_eq!(begun.origin, Origin::Created);
+    assert!(!marks.exists());
+}
+
+/// Lets a test hold [`name_boot`] between its read and its rewrite.
+static NAME_BOOT_PAUSE: Mutex<Option<(PathBuf, std::sync::mpsc::SyncSender<()>)>> =
+    Mutex::new(None);
+
+pub(super) fn name_boot_read(root: &Path) {
+    let paused = NAME_BOOT_PAUSE.lock().take_if(|(dir, _)| dir == root);
+    if let Some((_, read)) = paused {
+        read.send(()).expect("test waits");
+        // Long enough for an unlocked `mark_clean` to land in between.
+        std::thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
+/// A clean stop while a detached vouch names the boot stays a clean stop.
+#[test]
+fn a_clean_stop_is_not_undone_by_a_late_boot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+    let mut fresh = counter(0);
+    let first = begin_on(&root, ON_COMMIT, &mut fresh);
+    let (paused, reached) = std::sync::mpsc::sync_channel(1);
+    *NAME_BOOT_PAUSE.lock() = Some((root.clone(), paused));
+    let vouch = {
+        let root = root.clone();
+        std::thread::spawn(move || record_vouched_unsynced(&root).expect("record"))
+    };
+    reached.recv().expect("name_boot read the record");
+    mark_clean(&root, first.id).expect("mark clean");
+    vouch.join().expect("vouch");
+    assert_eq!(read(&root, first.id).expect("read"), LastRun::Clean);
+    let next = begin_on(&root, ON_COMMIT, &mut fresh);
+    assert!(!next.rotated);
+    assert_eq!(next.id, first.id);
+}
+
+fn dated(registered_at_millis: u64, incarnation: u64) -> Binding {
+    Binding {
+        registered_at_millis,
+        incarnation,
+    }
+}
+
+fn rotate(root: &Path, fresh: u8) -> StorageId {
+    copy_trust::rotate_storage_id(root, [fresh; 16]).expect("rotate")
+}
+
+/// **A rotation is bound to the registration the directory held then, and a
+/// directory with none it can name records it unbound.** The pair is read
+/// only while the registration record names the same incarnation: a build
+/// that does not date registrations moves that record alone.
+#[test]
+fn a_rotation_is_bound_to_the_directorys_registration() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let first = storage_identity::load_or_create(root, || [1; 16])
+        .expect("id")
+        .0;
+
+    let second = rotate(root, 2);
+    let unbound = Rotation {
+        to: second,
+        from: first,
+        bound: None,
+    };
+    assert_eq!(last_rotation(root).expect("read"), Some(unbound));
+
+    record_dated_registration(root, dated(70, 4)).expect("register");
+    let third = rotate(root, 3);
+    let bound = Rotation {
+        to: third,
+        from: second,
+        bound: Some(dated(70, 4)),
+    };
+    assert_eq!(last_rotation(root).expect("read"), Some(bound));
+
+    record_registration(root, 5).expect("an undated registration");
+    assert_eq!(registration_binding(root).expect("read"), None);
+    rotate(root, 4);
+    assert_eq!(
+        last_rotation(root).expect("read").expect("record").bound,
+        None
+    );
+}
+
+/// **Only the registration right after the bound one moves the binding.**
+/// One further on means some registration was not recorded here, as one
+/// from an older release is; another registration time is another node
+/// record; a record under another id is not this directory's rotation.
+#[test]
+fn only_the_next_registration_rebinds_a_rotation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    storage_identity::load_or_create(root, || [1; 16]).expect("id");
+    record_dated_registration(root, dated(70, 4)).expect("register");
+    rotate(root, 2);
+    let bound = || last_rotation(root).expect("read").expect("record").bound;
+
+    record_dated_registration(root, dated(70, 5)).expect("the next one");
+    assert_eq!(bound(), Some(dated(70, 5)));
+    record_dated_registration(root, dated(70, 7)).expect("skips one");
+    assert_eq!(bound(), Some(dated(70, 5)));
+    record_dated_registration(root, dated(71, 6)).expect("another node record");
+    assert_eq!(bound(), Some(dated(70, 5)));
+
+    // The id moved without a record, as a crash between the two leaves it.
+    storage_identity::replace(root, [9; 16]).expect("replace");
+    record_dated_registration(root, dated(70, 6)).expect("under another id");
+    assert_eq!(bound(), Some(dated(70, 5)));
+}
+
+/// **A rotation record that does not decode reads as none**, whichever part
+/// is damaged, so nothing is credited from it.
+#[test]
+fn an_undecodable_rotation_record_reads_as_none() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    let (to, from) = (
+        StorageId::from_bytes([2; 16]),
+        StorageId::from_bytes([1; 16]),
+    );
+    let ids = format!("last_rotation\n{}\n{}\n", to.to_hex(), from.to_hex());
+    let read = |body: &str| {
+        std::fs::write(root.join(ROTATION_FILE_NAME), body).expect("write");
+        last_rotation(root).expect("read")
+    };
+
+    let whole = format!("{ids}registered_at=70\nincarnation=4\n");
+    let bound = Some(dated(70, 4));
+    assert_eq!(read(&whole), Some(Rotation { to, from, bound }));
+    assert_eq!(read(&ids).expect("from before bindings").bound, None);
+    for damaged in [
+        String::new(),
+        "last_rotation\n".to_owned(),
+        format!("last_rotation\n{}\n", to.to_hex()),
+        format!("{ids}registered_at=70\n"),
+        format!("{ids}registered_at=70\nincarnation=x\n"),
+        format!("{whole}more\n"),
+        whole.replacen("last_rotation", "rotation", 1),
+    ] {
+        assert_eq!(read(&damaged), None, "{damaged:?}");
+    }
+    std::fs::write(root.join(ROTATION_FILE_NAME), [0xff, 0xfe]).expect("write");
+    assert_eq!(last_rotation(root).expect("read"), None);
 }

@@ -22,6 +22,7 @@ fn heartbeat_body(incarnation: u64) -> NodeHeartbeatRequest {
         incarnation,
         suspects: Default::default(),
         want_assignment_seq: false,
+        root: None,
     }
 }
 

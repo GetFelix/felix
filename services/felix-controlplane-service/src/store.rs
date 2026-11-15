@@ -370,6 +370,57 @@ pub trait ControlPlaneStore: Send + Sync {
         expected_generation: u64,
         elected: crate::model::ElectedLeader,
     ) -> StoreResult<AssignmentWrite>;
+    /// Order the seal that starts a stream shard's switch to Raft, if the
+    /// shard is still at `expected_generation`: its leader and set are
+    /// named again at the next generation with a seal order
+    /// ([`crate::model::ShardSwitch`]). The leader fences as for any
+    /// promotion but leaves the shard closed, and reports the seal.
+    ///
+    /// [`StoreError::Conflict`] when the shard cannot be sealed
+    /// ([`ShardAssignment::can_seal`]). Not fenced by the placement token:
+    /// it starts no move, and a placement write planned from an older read
+    /// is stale. Under Raft it needs metadata level 34 on every member, and
+    /// is refused below it.
+    async fn seal_shard(
+        &self,
+        key: &ShardKey,
+        expected_generation: u64,
+    ) -> StoreResult<AssignmentWrite>;
+    /// Record `report` as the shard's switch to Raft: its engine, its base
+    /// and its voters, in one write. A compare-and-swap on the seal order:
+    /// it lands only while the order of `report.generation` stands at the
+    /// shard's generation with no report recorded, so one report wins a
+    /// generation and a seal that was given up never switches the shard.
+    /// The write keeps the generation, the seal's.
+    ///
+    /// `sealer` is the node reporting, and is part of the compare: a report
+    /// from any node but the one the order names is a
+    /// [`StoreError::Conflict`], whatever the caller read before.
+    ///
+    /// [`AssignmentWrite::Stale`] when the seal no longer stands. The report
+    /// already recorded, sent again, is answered as written.
+    /// [`StoreError::Conflict`] for a report whose voters cannot be the
+    /// shard's ([`crate::model::SealReport::names_voters_of`]). Level 34,
+    /// as for [`Self::seal_shard`].
+    async fn accept_seal_report(
+        &self,
+        key: &ShardKey,
+        report: crate::model::SealReport,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite>;
+    /// Give up the seal standing at `generation`: the shard's leader and
+    /// set are named again at the next generation without a seal order,
+    /// which opens the hybrid again. The same compare as
+    /// [`Self::accept_seal_report`], so a give-up never lands beside a
+    /// recorded report. [`AssignmentWrite::Stale`] when no seal stands at
+    /// `generation`, [`StoreError::Conflict`] when `sealer` is not the node
+    /// the order names. Level 34.
+    async fn give_up_seal(
+        &self,
+        key: &ShardKey,
+        generation: u64,
+        sealer: &str,
+    ) -> StoreResult<AssignmentWrite>;
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
     /// The assignment for `key`, read no earlier than every write
     /// acknowledged before the call. [`Self::get_shard_assignment`] on a
@@ -406,7 +457,9 @@ pub trait ControlPlaneStore: Send + Sync {
         &self,
         node_id: &str,
     ) -> StoreResult<Vec<ShardAssignment>>;
-    /// Remove one assignment, leaving the shard unowned.
+    /// Remove one assignment, leaving the shard unowned. Refused with
+    /// [`StoreError::Conflict`] for a shard that switched to Raft, which only
+    /// deleting its stream removes.
     async fn delete_shard_assignment(&self, key: &ShardKey) -> StoreResult<()>;
     async fn shard_assignment_snapshot(&self) -> StoreResult<Snapshot<ShardAssignment>>;
     /// Each shard's first assignment still in the retained change log, as
@@ -488,6 +541,33 @@ pub trait ControlPlaneStore: Send + Sync {
     async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()>;
     /// Every suspicion held, fresh or not; the reader judges freshness.
     async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>>;
+
+    /// The highest root sequence `node_id`'s heartbeats carried, under the
+    /// storage id they carried it for. `None` when none is held, which the
+    /// broker's gate reads as no copy at all, never as a zero.
+    async fn root_sequence(
+        &self,
+        node_id: &str,
+    ) -> StoreResult<Option<crate::model::RootSequence>> {
+        let _ = node_id;
+        Ok(None)
+    }
+    /// Keep `heard` for `node_id` if it moves what is held
+    /// ([`crate::model::RootSequence::moved_by`]). Returns whether it did.
+    /// The default keeps nothing, which leaves a broker that cannot vouch
+    /// for its root by other means holding its Raft groups.
+    async fn record_root_sequence(
+        &self,
+        node_id: &str,
+        heard: crate::model::RootSequence,
+    ) -> StoreResult<bool> {
+        let _ = (node_id, heard);
+        Ok(false)
+    }
+    /// Every root sequence held, by node, for an export.
+    async fn root_sequences(&self) -> StoreResult<Vec<(String, crate::model::RootSequence)>> {
+        Ok(Vec::new())
+    }
 
     /// The identity the metadata group recorded at formation. The default is
     /// a backend with no group, which forgets everything at restart.

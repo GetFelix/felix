@@ -2,8 +2,8 @@
 //! retention leave behind, and how much of the log an open has to read.
 
 use super::*;
-use crate::disk_log::ProducerSequence;
-use crate::log::{PayloadDigest, RecordMark};
+use crate::disk_log::{ProducerSequence, UnfinishedBatch};
+use crate::log::{BatchPiece, PayloadDigest, ProducerBatch, RecordMark};
 
 /// One idempotent batch, marked as the broker marks it.
 fn marked(producer: u64, sequence: u64, payloads: &[&str]) -> Vec<AppendRecord> {
@@ -387,4 +387,483 @@ async fn a_log_written_before_marks_is_not_read_to_rebuild_producer_state() {
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(log.producer_sequence(1, 0), ProducerSequence::Unknown);
     assert_eq!(log.tail_offset().await.expect("tail"), 20);
+}
+
+/// The record at `position` of producer 9's batch `sequence` of `len`,
+/// marked as a Raft log marks it.
+fn piece(sequence: u64, position: u32, len: u32, payload: &str) -> AppendRecord {
+    let mark = match position {
+        0 => RecordMark::Opens(ProducerBatch {
+            producer_id: 9,
+            sequence,
+            len,
+        }),
+        _ => RecordMark::Piece(BatchPiece {
+            producer_id: 9,
+            sequence,
+            position,
+            len,
+        }),
+    };
+    AppendRecord {
+        mark,
+        ..record(payload)
+    }
+}
+
+fn raft_config() -> LogConfig {
+    LogConfig {
+        raft_log: true,
+        ..config(FsyncMode::OnCommit)
+    }
+}
+
+/// Lead the log at a new generation, as a Raft leader does before it serves:
+/// a Raft log refuses an append from a writer it does not know.
+async fn lead(log: &DiskLog) {
+    let generation = log.accepted_generation() + 1;
+    log.accept_generation(generation, Some("a"))
+        .await
+        .expect("accept");
+    let tail = log.tail_offset().await.expect("tail");
+    log.record_generation(generation, tail).expect("record");
+    log.lead_at(generation);
+}
+
+/// The producer state the snapshot file holds and the offset it is as of.
+fn saved(dir: &TempDir) -> (crate::disk_log::producers::ProducerState, Offset) {
+    crate::disk_log::producers::load(dir.path()).expect("a snapshot")
+}
+
+/// A batch another record cut is still known after a restart, whether the
+/// open reads it from the snapshot or from the records, and the pieces it
+/// was owed then finish it.
+#[tokio::test]
+async fn a_cut_batch_is_known_again_after_a_restart() {
+    let dir = tempdir().expect("dir");
+    let cut = Some(UnfinishedBatch {
+        first: Some(0),
+        held: 2,
+        len: 3,
+        digest: digest(&["a", "b"]),
+    });
+    {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        lead(&log).await;
+        log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+            .await
+            .expect("append");
+        // Enough after the cut to roll, so a snapshot is saved past it.
+        for _ in 0..6 {
+            log.append(&records(FILLED)).await.expect("append");
+        }
+        assert_eq!(log.producer_unfinished(9, 0), cut);
+        log.shutdown().await.expect("shutdown");
+    }
+    let (snapshot, as_of) = saved(&dir);
+    assert!(as_of > 2, "as of {as_of}");
+    assert_eq!(snapshot.unfinished(9, 0), cut);
+    for snapshot in [true, false] {
+        if !snapshot {
+            std::fs::remove_file(snapshot_path(&dir)).expect("remove");
+        }
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+        lead(&log).await;
+        assert_eq!(log.producer_unfinished(9, 0), cut, "snapshot: {snapshot}");
+        assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Unknown);
+        log.shutdown().await.expect("shutdown");
+    }
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    lead(&log).await;
+    let last = log.append(&[piece(0, 2, 3, "c")]).await.expect("append");
+    assert_eq!(log.producer_unfinished(9, 0), None);
+    assert_eq!(
+        log.producer_sequence(9, 0),
+        ProducerSequence::Held {
+            first: 0,
+            last: last.last_offset,
+            digest: digest(&["a", "b", "c"]),
+        }
+    );
+}
+
+/// A log whose head was removed past a cut batch's first record, with a
+/// later record of the batch still in it, knows the batch as one it cannot
+/// finish: a purge, or a copy that starts inside the batch. Forgotten, the
+/// re-send would be taken as a new batch and the records still here
+/// written again. A reopen reads the same from what is left.
+#[tokio::test]
+async fn a_cut_batch_whose_first_record_is_removed_cannot_be_finished() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    log.append(&[piece(0, 0, 3, "a")]).await.expect("append");
+    // Enough to seal the segment the first record is in.
+    let mut tail = 0;
+    for _ in 0..12 {
+        tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset;
+    }
+    // Written by a leader that held the first record, as the rest of it.
+    let second = log.append(&[piece(0, 1, 3, "b")]).await.expect("append");
+    // Enough after it to roll, so a snapshot is saved with the piece in it.
+    for _ in 0..6 {
+        log.append(&records(FILLED)).await.expect("append");
+    }
+    assert_eq!(
+        log.producer_unfinished(9, 0),
+        Some(UnfinishedBatch {
+            first: Some(0),
+            held: 2,
+            len: 3,
+            digest: digest(&["a", "b"]),
+        })
+    );
+
+    let removed = log.trim_before(tail).await.expect("trim");
+    assert!(!removed.is_empty());
+    let base = log.base_offset();
+    assert!(0 < base && base <= second.first_offset, "base {base}");
+    let headless = Some(UnfinishedBatch {
+        first: None,
+        held: 2,
+        len: 3,
+        digest: None,
+    });
+    assert_eq!(log.producer_unfinished(9, 0), headless);
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    // The snapshot was saved with the piece, before or after the trim.
+    let (snapshot, as_of) = saved(&dir);
+    assert!(as_of > second.first_offset, "as of {as_of}");
+    assert_eq!(snapshot.unfinished(9, 0).map(|cut| cut.held), Some(2));
+    for snapshot in [true, false] {
+        if !snapshot {
+            std::fs::remove_file(snapshot_path(&dir)).expect("remove");
+        }
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+        lead(&log).await;
+        assert_eq!(
+            log.producer_unfinished(9, 0),
+            headless,
+            "snapshot: {snapshot}"
+        );
+        log.shutdown().await.expect("shutdown");
+    }
+}
+
+/// A purge past every record of a cut first batch leaves its producer
+/// unknown. The re-send of sequence 0 is refused, not taken as new, and a
+/// reopen from the snapshot still refuses it.
+#[tokio::test]
+async fn a_purge_past_a_cut_batch_refuses_its_resend() {
+    let dir = tempdir().expect("dir");
+    let refused = Some(UnfinishedBatch {
+        first: None,
+        held: 0,
+        len: 0,
+        digest: None,
+    });
+    {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        lead(&log).await;
+        log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+            .await
+            .expect("append");
+        let mut tail = 0;
+        for _ in 0..12 {
+            tail = log
+                .append(&records(FILLED))
+                .await
+                .expect("append")
+                .last_offset;
+        }
+        let removed = log.trim_before(tail).await.expect("trim");
+        assert!(!removed.is_empty());
+        assert!(log.base_offset() > 1, "base {}", log.base_offset());
+        assert_eq!(log.producer_unfinished(9, 0), refused);
+        assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+        // Enough after the trim to roll, so a snapshot is saved past it.
+        for _ in 0..6 {
+            log.append(&records(FILLED)).await.expect("append");
+        }
+        log.shutdown().await.expect("shutdown");
+    }
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    lead(&log).await;
+    assert_eq!(log.producer_unfinished(9, 0), refused);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
+}
+
+const REFUSED: Option<UnfinishedBatch> = Some(UnfinishedBatch {
+    first: None,
+    held: 0,
+    len: 0,
+    digest: None,
+});
+
+/// A Raft log holding two of the three records of producer 9's batch 0,
+/// purged past both.
+async fn purged_past_a_cut_batch(dir: &TempDir) -> DiskLog {
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+        .await
+        .expect("append");
+    let mut tail = 0;
+    for _ in 0..12 {
+        tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset;
+    }
+    assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+    assert!(log.base_offset() > 1, "base {}", log.base_offset());
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log
+}
+
+/// A truncation discards the snapshot and reads the records again. None of
+/// them has the purged batch, and its re-send is still refused, also when
+/// the producer's next batch was among the records cut.
+#[tokio::test]
+async fn a_truncation_after_a_purge_still_refuses_the_cut_batch() {
+    let dir = tempdir().expect("dir");
+    let log = purged_past_a_cut_batch(&dir).await;
+    let next = log
+        .append(&[piece(1, 0, 2, "c")])
+        .await
+        .expect("append")
+        .last_offset;
+    log.truncate(next).await.expect("truncate");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.truncate(next - 1).await.expect("truncate");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// A reset drops every record, the cut batch's with them. Its re-send is
+/// refused after it, and after a reopen.
+#[tokio::test]
+async fn a_reset_still_refuses_a_cut_batch() {
+    let dir = tempdir().expect("dir");
+    {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        lead(&log).await;
+        log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+            .await
+            .expect("append");
+        let tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset
+            + 1;
+        assert!(
+            log.producer_unfinished(9, 0)
+                .is_some_and(|cut| cut.held == 2)
+        );
+        log.reset_to(tail + 10).await.expect("reset");
+        assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+        assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+        log.shutdown().await.expect("shutdown");
+    }
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// The snapshot cannot be saved, so a reopen reads the records. The purged
+/// batch is in none of them and is refused all the same.
+#[tokio::test]
+async fn a_purge_refuses_the_cut_batch_without_a_snapshot() {
+    let dir = tempdir().expect("dir");
+    // In the way of the snapshot's temporary file.
+    std::fs::create_dir(snapshot_path(&dir).with_extension("tmp")).expect("blocker");
+    let log = purged_past_a_cut_batch(&dir).await;
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+    assert!(!snapshot_path(&dir).exists());
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// Appends a cut batch and enough records after it for a purge to pass it.
+/// Returns the log and the last offset written.
+async fn cut_then_filled(dir: &TempDir) -> (DiskLog, Offset) {
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    log.append(&[piece(0, 0, 3, "a"), piece(0, 1, 3, "b")])
+        .await
+        .expect("append");
+    let mut tail = 0;
+    for _ in 0..12 {
+        tail = log
+            .append(&records(FILLED))
+            .await
+            .expect("append")
+            .last_offset;
+    }
+    (log, tail)
+}
+
+async fn reads_from(log: &DiskLog, start: Offset) -> usize {
+    log.read_range(ReadRange {
+        start,
+        max_bytes: 1 << 20,
+    })
+    .await
+    .expect("read")
+    .records
+    .len()
+}
+
+/// A purge that cannot save the batches it forgets changes nothing, and
+/// succeeds once it can.
+#[tokio::test]
+async fn a_purge_that_cannot_save_what_it_forgets_fails() {
+    let dir = tempdir().expect("dir");
+    let (log, tail) = cut_then_filled(&dir).await;
+    let temporary = dir
+        .path()
+        .join(crate::disk_log::producers::forgotten_temporary_name());
+    std::fs::create_dir(&temporary).expect("blocker");
+    let segments = std::fs::read_dir(dir.path()).expect("dir").count();
+    let base = log.base_offset();
+    log.trim_before(tail).await.expect_err("the purge fails");
+    assert_eq!(
+        std::fs::read_dir(dir.path()).expect("dir").count(),
+        segments
+    );
+    assert_eq!(log.base_offset(), base);
+    assert!(reads_from(&log, base).await > 0);
+    assert!(
+        log.producer_unfinished(9, 0)
+            .is_some_and(|cut| cut.held == 2)
+    );
+
+    std::fs::remove_dir(&temporary).expect("remove blocker");
+    assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+    assert!(log.base_offset() > base);
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// A purge that forgets nothing new leaves the forgotten file alone, on a
+/// Raft log and a hybrid one. A directory in its place fails any read.
+#[tokio::test]
+async fn a_purge_that_forgets_nothing_does_not_read_the_forgotten_file() {
+    for raft in [true, false] {
+        let dir = tempdir().expect("dir");
+        let log = if raft {
+            let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+            lead(&log).await;
+            log
+        } else {
+            open(&dir, FsyncMode::OnCommit)
+        };
+        let mut tail = 0;
+        for sequence in 0..12 {
+            tail = log
+                .append(&marked(9, sequence, FILLED))
+                .await
+                .expect("append")
+                .last_offset;
+        }
+        std::fs::create_dir(
+            dir.path()
+                .join(crate::disk_log::producers::forgotten_file_name()),
+        )
+        .expect("blocker");
+        assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+        log.shutdown().await.expect("shutdown");
+    }
+}
+
+/// A power loss after the forgotten batches are saved and before the files
+/// go leaves a longer log. The cut batch is still not taken as new, and the
+/// next purge finishes the job.
+#[tokio::test]
+async fn a_power_loss_between_the_save_and_the_unlinks_keeps_the_refusal() {
+    let dir = tempdir().expect("dir");
+    let (log, tail) = cut_then_filled(&dir).await;
+    let base = log.base_offset();
+    log.stop_after_unlinks(0);
+    log.trim_before(tail).await.expect_err("stopped");
+    drop(log);
+    assert!(
+        dir.path()
+            .join(crate::disk_log::producers::forgotten_file_name())
+            .exists()
+    );
+
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.base_offset(), base);
+    let after = log.producer_sequence(9, 0);
+    assert!(
+        !matches!(after, ProducerSequence::Unknown | ProducerSequence::Next),
+        "{after:?}"
+    );
+    lead(&log).await;
+    assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// An open and a truncation's rebuild both refuse a damaged forgotten file:
+/// without it a purged cut batch's re-send would be taken as new.
+#[tokio::test]
+async fn a_damaged_forgotten_file_fails_the_open_and_the_rebuild() {
+    let dir = tempdir().expect("dir");
+    let log = purged_past_a_cut_batch(&dir).await;
+    let forgotten = dir
+        .path()
+        .join(crate::disk_log::producers::forgotten_file_name());
+    let saved = std::fs::read(&forgotten).expect("read");
+    let mut damaged = saved.clone();
+    *damaged.last_mut().expect("not empty") ^= 0xFF;
+    std::fs::write(&forgotten, &damaged).expect("damage");
+    let next = log
+        .append(&records(&["c"]))
+        .await
+        .expect("append")
+        .last_offset;
+    log.truncate(next).await.expect_err("the rebuild fails");
+    drop(log);
+
+    DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect_err("the open fails");
+    std::fs::write(&forgotten, &saved).expect("restore");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_unfinished(9, 0), REFUSED);
+    log.shutdown().await.expect("shutdown");
+}
+
+/// Only a Raft log writes batch pieces: the hybrid's replication cannot
+/// carry one.
+#[tokio::test]
+async fn a_batch_piece_is_refused_outside_a_raft_log() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::OnCommit);
+    let refused = log.append(&[piece(0, 1, 3, "b")]).await;
+    assert!(
+        matches!(refused, Err(StorageError::Unsupported(_))),
+        "{refused:?}"
+    );
 }

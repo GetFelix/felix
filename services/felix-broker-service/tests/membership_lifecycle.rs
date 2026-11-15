@@ -324,6 +324,7 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
         None,
         None,
         None,
+        Default::default(),
     );
 
     // Wait for registration to land.
@@ -452,9 +453,12 @@ async fn the_startup_lookup_reads_what_registration_gave() {
         .await
         .expect("register");
         assert_eq!(registration.incarnation, expected);
+        assert!(registration.registered_at_millis.is_some());
         assert_eq!(
             lookup().await.expect("lookup"),
             Some(membership::Registered {
+                registered_at_millis: registration.registered_at_millis,
+                root_sequence: None,
                 incarnation: expected,
                 storage_id: storage_id.map(|id| id.to_hex()),
             })

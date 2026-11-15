@@ -207,6 +207,63 @@ fn the_no_group_mark_is_not_data() {
             .as_deref(),
         Some("g-1")
     );
+    assert!(
+        !checked_without_group(dir.path()),
+        "the record replaces the mark"
+    );
+}
+
+/// Data written under a control plane with no group, which a group formed on
+/// an empty catalog never saw: the mark does not make it this group's.
+#[test]
+fn a_marked_directory_with_data_is_refused_by_a_new_group() {
+    let dir = used();
+    admit(dir.path(), &identity(None, "hybrid")).expect("admit");
+    let err = admit(dir.path(), &identity(Some("g-1"), "hybrid")).expect_err("refused");
+    assert!(
+        err.to_string().contains("records no control-plane"),
+        "{err:#}"
+    );
+    assert_eq!(read(dir.path()).expect("read"), None, "nothing is recorded");
+    assert!(checked_without_group(dir.path()), "the mark stays");
+}
+
+#[test]
+fn an_upgraded_group_adopts_a_marked_directory_and_drops_the_mark() {
+    let dir = used();
+    admit(dir.path(), &identity(None, "hybrid")).expect("admit");
+    assert_eq!(
+        admit(dir.path(), &upgraded("g-1"))
+            .expect("admit")
+            .as_deref(),
+        Some("g-1")
+    );
+    assert!(!checked_without_group(dir.path()));
+}
+
+/// A directory checked without a group gets a guard that expects none, so
+/// any answer that names a group stops the broker.
+#[test]
+fn a_marked_directory_guards_against_any_group() {
+    let dir = used();
+    admit(dir.path(), &identity(None, "hybrid")).expect("admit");
+    let guard = guard(
+        dir.path(),
+        read(dir.path()).expect("read"),
+        CancellationToken::new(),
+    )
+    .expect("a checked directory is guarded");
+    assert!(guard.check(None, "page").is_ok());
+    assert!(matches!(
+        guard.check(Some("g-1"), "page"),
+        Err(Refusal::Grouped(_))
+    ));
+}
+
+#[test]
+fn a_directory_never_checked_has_no_guard() {
+    let dir = used();
+    assert!(guard(dir.path(), None, CancellationToken::new()).is_none());
 }
 
 #[test]
@@ -223,7 +280,7 @@ fn another_shard_engine_is_refused_whatever_the_group() {
 #[test]
 fn the_guard_takes_only_its_own_group() {
     let guard = Guard {
-        stored: "g-1".to_owned(),
+        stored: Some("g-1".to_owned()),
         refused: CancellationToken::new(),
     };
     assert!(guard.check(Some("g-1"), "page").is_ok());

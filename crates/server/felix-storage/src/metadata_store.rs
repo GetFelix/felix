@@ -87,9 +87,11 @@ pub fn decide_start(data_dir: &Path) -> io::Result<Start> {
     Err(io::Error::new(
         io::ErrorKind::InvalidData,
         format!(
-            "{} holds a redb store that was not converted. Stop the member and convert its \
-             data directory with the conversion tool (docs/metadata-raft-design.md, \
-             \"Upgrading an existing cluster\")",
+            "{} holds a control-plane store from Felix 0.7 or earlier, which this build \
+             cannot read. Nothing was changed. Keep the cluster on 0.7, or start every \
+             control-plane member and every broker on an empty data directory, which drops \
+             the group's metadata (docs-site deployment/upgrades, \"Control plane metadata \
+             in 0.8\")",
             redb.display()
         ),
     ))

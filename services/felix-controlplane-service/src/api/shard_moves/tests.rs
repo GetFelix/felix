@@ -85,9 +85,51 @@ impl Fixture {
                 previous_generation: None,
                 readmitted: Default::default(),
                 placed: None,
+                switch: None,
             })
             .await
             .expect("assign")
+    }
+}
+
+impl Fixture {
+    /// Shard zero led by broker-x alone, switched to Raft.
+    async fn switched(&self) {
+        const COPY: &str = "000102030405060708090a0b0c0d0e0f";
+        let mut active = self.assign(ShardState::Active, None).await;
+        active.member_storage_ids =
+            std::collections::BTreeMap::from([("broker-x".to_string(), COPY.to_string())]);
+        let active = self
+            .store
+            .put_shard_assignment(active)
+            .await
+            .expect("copy id");
+        let crate::store::AssignmentWrite::Written(order) = self
+            .store
+            .seal_shard(&active.key, active.generation)
+            .await
+            .expect("seal")
+        else {
+            panic!("seal not written");
+        };
+        let side = crate::model::SealedSideLog {
+            start: 0,
+            end: 0,
+            digest: "cd".repeat(32),
+        };
+        let report = crate::model::SealReport {
+            generation: order.generation,
+            offset: 0,
+            start: 0,
+            digest: "ab".repeat(32),
+            dead_letters: side.clone(),
+            cursors: side,
+            voters: std::collections::BTreeMap::from([("broker-x".to_string(), COPY.to_string())]),
+        };
+        self.store
+            .accept_seal_report(&order.key, report, "broker-x")
+            .await
+            .expect("report");
     }
 }
 
@@ -407,4 +449,43 @@ async fn replication_shows_current_against_desired_copies() {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body, json!({"under_replicated": 0, "items": []}));
+}
+
+/// A switched shard is no longer placed here, so every operator step on it is
+/// refused up front rather than failing in the store.
+#[tokio::test]
+async fn a_switched_shard_refuses_every_operator_step() {
+    let fx = fixture().await;
+    fx.switched().await;
+    let before = fx
+        .store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+
+    let (status, body) = fx
+        .operator("POST", "/v1/shard-moves", start_body("broker-y"))
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "switched");
+
+    let (status, body) = fx.operator("DELETE", CANCEL, Value::Null).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "switched");
+
+    // Stranded as far as placement can tell, which is what abandon looks for.
+    fx.store
+        .set_node_lifecycle("broker-x", crate::model::NodeLifecycle::Down)
+        .await
+        .expect("down");
+    let (status, body) = fx.operator("POST", ABANDON, Value::Null).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "switched");
+
+    let after = fx
+        .store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assert_eq!(after, before);
 }

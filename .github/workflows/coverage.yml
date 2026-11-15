@@ -91,9 +91,9 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: cargo llvm-cov clean --workspace
 
-      # The mixed-version test (felix-controlplane-service, tests/raft_runtime.rs)
-      # runs this build next to the last release that ran openraft 0.9. It
-      # skips without the binary, so the second variable makes that a failure.
+      # tests/raft_runtime.rs (felix-controlplane-service) starts this build on
+      # a data directory a released control plane wrote and expects a refusal.
+      # It skips without the binary, so the second variable makes that a failure.
       - name: Fetch the released control plane
         run: |
           set -euo pipefail

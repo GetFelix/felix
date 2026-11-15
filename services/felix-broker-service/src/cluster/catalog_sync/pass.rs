@@ -565,10 +565,10 @@ pub(super) async fn sync_into(
     Ok(())
 }
 
-/// Check an answer's group before any of it is applied. Another group stops
-/// the broker: the group's `refused` token is what the node waits on. No
-/// group, while this directory has one, ends the pass, which the next one
-/// asks again.
+/// Check an answer's group before any of it is applied. Another group, or
+/// any group for a directory checked without one, stops the broker: the
+/// guard's `refused` token is what the node waits on. No group, while this
+/// directory has one, ends the pass, which the next one asks again.
 fn admit_group(state: &SyncState, claim: Option<&str>, what: &'static str) -> Result<()> {
     let Some(guard) = &state.group else {
         return Ok(());
@@ -579,6 +579,12 @@ fn admit_group(state: &SyncState, claim: Option<&str>, what: &'static str) -> Re
             tracing::error!(what, error = %mismatch, "refused a control-plane answer");
             guard.refused.cancel();
             mismatch.into()
+        }
+        Refusal::Grouped(grouped) => {
+            metrics::counter!(GROUP_MISMATCH_TOTAL).increment(1);
+            tracing::error!(what, error = %grouped, "refused a control-plane answer");
+            guard.refused.cancel();
+            grouped.into()
         }
         Refusal::Unclaimed(unclaimed) => unclaimed.into(),
     })

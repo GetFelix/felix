@@ -388,6 +388,11 @@ kubectl -n felix exec felix-broker-0 -- wget -qO- http://127.0.0.1:8080/replicat
 `[]` is the answer to want. A release that changes `INTERNAL_VERSION` is not
 rolling: scale brokers to zero, upgrade, scale back.
 
+From 0.7 to 0.8 nothing rolls. A 0.8 control-plane pod refuses its 0.7
+volume and restarts in a loop while the others keep the group. Follow
+[Control plane metadata in 0.8](/deployment/upgrades/#control-plane-metadata-in-08)
+instead: scale everything to zero, start on new volumes.
+
 ### Scaling out
 
 ```bash
@@ -459,6 +464,14 @@ metadata, and a leader's copy can hold records no majority acknowledged. Take a
 backup point with `felixctl backup-point`, copy each leader's
 shard directories against it, and cut them back with `felix-broker
 restore-point` on restore. See [Backup and restore](/deployment/backup-and-restore/).
+
+## Open files
+
+A broker keeps up to six files open for every shard it holds and raises its soft
+open-file limit to the hard one at start. The hard limit comes from the
+container runtime, usually 524,288 or more, which is room for over 80,000
+shards, so the chart sets nothing. If a pod logs a warning about the
+open-file limit, the node's runtime sets a lower one. See [Open files](/deployment/production/#open-files).
 
 ## Troubleshooting
 
