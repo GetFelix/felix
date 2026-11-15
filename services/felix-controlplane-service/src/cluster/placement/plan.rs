@@ -840,6 +840,8 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     }
 }
 

@@ -111,6 +111,70 @@ pub(super) async fn accept_seal_report(
     Ok(AssignmentWrite::Written(stored))
 }
 
+/// [`crate::store::ControlPlaneStore::record_raft_copy_id`]. Deterministic,
+/// as a Raft apply must be: decided from the record and acknowledgements
+/// this store holds.
+pub(super) async fn record_raft_copy_id(
+    store: &InMemoryStore,
+    key: &ShardKey,
+    node_id: &str,
+    node_registered_at_millis: u64,
+    node_incarnation: u64,
+    copy_id: u64,
+) -> StoreResult<bool> {
+    // Nodes, then shards, then acknowledgements, the order a node delete
+    // takes them in. Held to the write, so no registration or ack lands
+    // between the gate and the target.
+    let nodes = store.nodes.read().await;
+    let mut state = store.shards.write().await;
+    let placement = store.placement.read().await;
+    let Some(existing) = state.records.get(key) else {
+        return Err(StoreError::NotFound("shard assignment".into()));
+    };
+    if !existing.switched() {
+        return Err(StoreError::Conflict(
+            "the shard has not switched to Raft".into(),
+        ));
+    }
+    if existing.leader != node_id && !existing.replicas.iter().any(|r| r == node_id) {
+        return Err(StoreError::Conflict(format!(
+            "{node_id} is not in the shard's set"
+        )));
+    }
+    // Under the nodes lock, so no registration lands between this and the
+    // write: a wiped copy's old id, retried late, never replaces the id its
+    // successor process reported. The registration time too, since a node
+    // registered again after a delete restarts at incarnation 0.
+    if nodes.records.get(node_id).is_none_or(|node| {
+        node.status.registered_at_millis != node_registered_at_millis
+            || node.status.incarnation != node_incarnation
+    }) {
+        return Err(StoreError::Conflict(format!(
+            "the report is not from {node_id}'s registered process"
+        )));
+    }
+    if existing.raft_copy_ids.get(node_id) == Some(&copy_id) {
+        return Ok(false);
+    }
+    let mut stored = existing.clone();
+    stored.raft_copy_ids.insert(node_id.to_string(), copy_id);
+    let moved = stored
+        .settle_raft_target()
+        .map_err(|err| StoreError::Conflict(err.to_string()))?;
+    if moved && !super::all_registered_acked(&nodes, &placement) {
+        return Err(StoreError::Conflict(
+            "a registered broker has not acknowledged the placement incarnation; \
+             the shard's Raft target waits for it"
+                .into(),
+        ));
+    }
+    // In place: a switched shard's generation is the base its voters
+    // started from.
+    state.records.insert(key.clone(), stored.clone());
+    state.record(ShardAssignmentChangeOp::Updated, key, Some(stored));
+    Ok(true)
+}
+
 /// Only the node a seal was ordered from reports it or gives it up.
 pub(super) fn not_sealer(node: &str) -> StoreError {
     StoreError::Conflict(format!("the seal was not ordered from {node}"))
@@ -123,6 +187,25 @@ impl InMemoryStore {
         expected_generation: u64,
     ) -> StoreResult<AssignmentWrite> {
         seal_shard(self, key, expected_generation).await
+    }
+
+    pub(crate) async fn apply_record_raft_copy_id(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        node_registered_at_millis: u64,
+        node_incarnation: u64,
+        copy_id: u64,
+    ) -> StoreResult<bool> {
+        record_raft_copy_id(
+            self,
+            key,
+            node_id,
+            node_registered_at_millis,
+            node_incarnation,
+            copy_id,
+        )
+        .await
     }
 
     pub(crate) async fn apply_accept_seal_report(

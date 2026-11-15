@@ -212,9 +212,17 @@ pub(super) async fn wire_broker(
             raft_trims.supports(felix_common::fleet::HEAD_TRIM)
                 && raft_trims.supports(felix_common::fleet::RAFT_HEAD_TRIM)
         });
+        // A Raft entry with a publisher or headers is one an older member
+        // refuses whole, as a trim entry is.
+        let raft_headers = Arc::clone(fleet);
+        broker.allow_raft_record_headers_when(move || {
+            raft_headers.supports(felix_common::fleet::RECORD_HEADERS)
+                && raft_headers.supports(felix_common::fleet::RAFT_RECORD_HEADERS)
+        });
     } else {
         broker.allow_head_trims_when(|| true);
         broker.allow_raft_head_trims_when(|| true);
+        broker.allow_raft_record_headers_when(|| true);
     }
     // A cursor that carries its dependency is a value an older build refuses,
     // so a cluster waits for its fleet. A lone broker writes them from the

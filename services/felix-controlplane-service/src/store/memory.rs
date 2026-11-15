@@ -188,6 +188,27 @@ struct PlacementIncarnation {
     acks: std::collections::BTreeMap<String, crate::model::PlacementAck>,
 }
 
+/// `placement_acked_by` over every registered broker, from guards already
+/// held.
+fn all_registered_acked(nodes: &NodeState, placement: &PlacementIncarnation) -> bool {
+    let acked = placement
+        .acks
+        .iter()
+        .filter(|(node, ack)| {
+            nodes
+                .records
+                .get(*node)
+                .is_some_and(|record| record.status.incarnation == ack.node_incarnation)
+        })
+        .map(|(node, ack)| (node.clone(), ack.incarnation))
+        .collect();
+    felix_storage::raft_copy::all_acked_placement_incarnation(
+        placement.current,
+        nodes.records.keys(),
+        &acked,
+    )
+}
+
 /// Heartbeats repeat a refused acknowledgement, so the warning is limited to
 /// once per node per minute.
 fn out_of_bound_warning_due(node_id: &str) -> bool {
@@ -806,6 +827,24 @@ impl ControlPlaneStore for InMemoryStore {
         self.apply_accept_seal_report(key, report, sealer).await
     }
 
+    async fn record_raft_copy_id(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        node_registered_at_millis: u64,
+        node_incarnation: u64,
+        copy_id: u64,
+    ) -> StoreResult<bool> {
+        self.apply_record_raft_copy_id(
+            key,
+            node_id,
+            node_registered_at_millis,
+            node_incarnation,
+            copy_id,
+        )
+        .await
+    }
+
     async fn give_up_seal(
         &self,
         key: &ShardKey,
@@ -970,6 +1009,14 @@ impl ControlPlaneStore for InMemoryStore {
         }
         placement.acks.insert(node_id.to_string(), heard);
         Ok(true)
+    }
+
+    /// From one view of the nodes and acknowledgements, so a registration
+    /// or a restore cannot land between the two reads.
+    async fn placement_acked_by_all(&self) -> StoreResult<bool> {
+        let nodes = self.nodes.read().await;
+        let placement = self.placement.read().await;
+        Ok(all_registered_acked(&nodes, &placement))
     }
 
     async fn placement_acks(&self) -> StoreResult<Vec<(String, crate::model::PlacementAck)>> {
@@ -1431,6 +1478,10 @@ pub(crate) struct Faults {
     /// Once set, the next shard write says it has read its stream or cache,
     /// then waits to be resumed (or 300 ms) before it writes.
     pub(crate) shard_write_pause: std::sync::Mutex<Option<ShardWritePause>>,
+    /// Once set, the next import says it has replaced the shard records,
+    /// then waits to be resumed (or 300 ms) before it writes the placement
+    /// incarnation.
+    pub(crate) import_pause: std::sync::Mutex<Option<ShardWritePause>>,
 }
 
 #[cfg(test)]
@@ -1442,7 +1493,15 @@ pub(crate) struct ShardWritePause {
 #[cfg(test)]
 impl Faults {
     async fn pause_shard_write(&self) {
-        let pause = self.shard_write_pause.lock().expect("pause").take();
+        Self::pause(&self.shard_write_pause).await;
+    }
+
+    async fn pause_import(&self) {
+        Self::pause(&self.import_pause).await;
+    }
+
+    async fn pause(slot: &std::sync::Mutex<Option<ShardWritePause>>) {
+        let pause = slot.lock().expect("pause").take();
         if let Some(pause) = pause {
             let _ = pause.reached.send(());
             let _ = tokio::time::timeout(std::time::Duration::from_millis(300), pause.resume).await;

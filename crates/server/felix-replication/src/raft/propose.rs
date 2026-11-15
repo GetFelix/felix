@@ -35,6 +35,8 @@ use crate::engine::{CommitError, Written};
 pub struct Record {
     pub timestamp_micros: u64,
     pub payload: Bytes,
+    /// The record's encoded key and headers block.
+    pub headers: Option<Bytes>,
 }
 
 /// What a publisher's acknowledgement waits for on the leader's own log.
@@ -98,6 +100,8 @@ pub struct Batch {
     /// Set on a head trim: the floor below which reads stop once its one
     /// record, the trim's headers, is committed. Always with `expected`.
     pub trim: Option<u64>,
+    /// The principal publishing the batch, stored with each record.
+    pub publisher: Option<Bytes>,
 }
 
 /// An idempotent producer's batch: whose it is and its sequence. The
@@ -329,6 +333,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         producer,
         expected,
         trim,
+        publisher,
     } = batch;
     let count = records.len();
     if count == 0 {
@@ -369,7 +374,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         .into_iter()
         .zip(0u32..)
         .map(|(record, index)| {
-            bytes += record.payload.len();
+            bytes += record.payload.len() + record.headers.as_ref().map_or(0, Bytes::len);
             Command {
                 timestamp_micros: record.timestamp_micros,
                 payload: record.payload,
@@ -379,6 +384,8 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                 }),
                 expected,
                 trim,
+                publisher: publisher.clone(),
+                headers: record.headers.map(Box::new),
                 written: None,
             }
         })
@@ -397,6 +404,8 @@ pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting),
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         })
         .collect();

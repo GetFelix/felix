@@ -46,6 +46,8 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
         producer: None,
         expected: None,
         trim: None,
+        publisher: None,
+        headers: None,
         written: None,
     };
     let written = member.raft().client_write(command).await.expect("write");
@@ -206,6 +208,8 @@ async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
         producer: None,
         expected: None,
         trim: None,
+        publisher: None,
+        headers: None,
         written: None,
     };
     assert!(!group.write_in_term(command(1), term - 1).await);
@@ -385,6 +389,8 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
         producer: None,
         expected: None,
         trim: None,
+        publisher: None,
+        headers: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -421,6 +427,8 @@ async fn a_read_whose_apply_lags_past_the_election_timeout_waits_out_its_own_dea
         producer: None,
         expected: None,
         trim: None,
+        publisher: None,
+        headers: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -464,6 +472,8 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         };
         let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -513,6 +523,8 @@ fn entries(
                 producer: None,
                 expected: None,
                 trim: None,
+                publisher: None,
+                headers: None,
                 written: None,
             };
             let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -1303,10 +1315,12 @@ async fn a_cache_shard_takes_no_stream_batch_and_a_stream_shard_no_cache_write()
         records: vec![Record {
             timestamp_micros: 10,
             payload: Bytes::from_static(b"a stream record"),
+            headers: None,
         }],
         ack: AckAt::Written,
         term: None,
         producer: None,
+        publisher: None,
     };
     // Refused at the call: nothing is queued.
     let refused = futures::FutureExt::now_or_never(engine.propose(&shard(N), batch()));
@@ -1416,6 +1430,8 @@ async fn what_a_write_call_per_entry_costs() {
                     producer: None,
                     expected: None,
                     trim: None,
+                    publisher: None,
+                    headers: None,
                     written: None,
                 });
                 let commands = commands.collect();

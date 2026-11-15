@@ -80,6 +80,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     HEAD_TRIM,
     RAFT_HEAD_TRIM,
     RECORD_HEADERS,
+    RAFT_RECORD_HEADERS,
     RECORD_GENERATIONS,
 ];
 
@@ -172,6 +173,13 @@ pub const RAFT_HEAD_TRIM: FleetFeature = FleetFeature::new("raft_head_trim");
 /// them from the start. See `docs/protocol.md` ("Extended frames and record
 /// headers").
 pub const RECORD_HEADERS: FleetFeature = FleetFeature::new("record_headers");
+
+/// A stream shard on the Raft engine stores each record's publisher and its
+/// headers and key: such a record is a Raft entry of its own kind, which a
+/// build that predates this refuses, holding replication to it at that
+/// entry. So it waits for the whole fleet, and for [`RECORD_HEADERS`]. See
+/// `docs/per-shard-raft.md` ("Publishers and record headers").
+pub const RAFT_RECORD_HEADERS: FleetFeature = FleetFeature::new("raft_record_headers");
 
 /// A stream log starts its next segment in storage format v9, whose record
 /// headers carry a generation, and stamps each record with the generation it
@@ -315,6 +323,8 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         &[GENERATION_START]
     } else if feature == RAFT_HEAD_TRIM.name() {
         &[HEAD_TRIM]
+    } else if feature == RAFT_RECORD_HEADERS.name() {
+        &[RECORD_HEADERS]
     } else if feature == SHARD_RAFT.name() {
         // The switch reads each record's term from its header.
         &[GENERATION_START, RECORD_GENERATIONS]

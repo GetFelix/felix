@@ -283,6 +283,8 @@ async fn an_election_on_another_set_is_named_on_it(store: &dyn ControlPlaneStore
             generation: at,
             placed: Some(placed),
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
             ..current
         }
     );

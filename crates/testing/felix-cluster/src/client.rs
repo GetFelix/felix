@@ -22,6 +22,20 @@ pub async fn connect(addr: SocketAddr, tenant_id: &str, token: &str) -> Result<C
         .with_context(|| format!("connect to broker at {addr}"))
 }
 
+/// [`connect`] with the client's configuration adjusted by `tune`.
+pub async fn connect_with(
+    addr: SocketAddr,
+    tenant_id: &str,
+    token: &str,
+    tune: impl FnOnce(&mut ClientConfig),
+) -> Result<Connection> {
+    let mut config = client_config(tenant_id, token)?;
+    tune(&mut config);
+    Connection::connect(addr, "localhost", config)
+        .await
+        .with_context(|| format!("connect to broker at {addr}"))
+}
+
 /// Connect to whichever of `addrs` answers, the way an application with a seed
 /// list would.
 ///

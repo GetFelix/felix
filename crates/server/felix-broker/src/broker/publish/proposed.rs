@@ -65,7 +65,73 @@ impl Broker {
             + 'static,
         E: Send + 'static,
     {
-        self.propose(handle, payloads, None, None, stalled_after, propose)
+        self.propose_publish_with(
+            handle,
+            payloads,
+            Attribution::default(),
+            stalled_after,
+            propose,
+        )
+    }
+
+    /// [`Self::propose_publish`] for records with a publisher or headers,
+    /// as [`Self::admit_attribution`] let them through. They are delivered
+    /// with the batch, so `propose` must store the same on every record.
+    pub fn propose_publish_with<F, E>(
+        &self,
+        handle: &StreamHandle,
+        payloads: Vec<Bytes>,
+        attribution: Attribution,
+        stalled_after: Duration,
+        propose: impl FnOnce(u64) -> F,
+    ) -> Result<ProposedPublish<E>>
+    where
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
+        E: Send + 'static,
+    {
+        self.propose(
+            handle,
+            payloads,
+            attribution,
+            None,
+            None,
+            stalled_after,
+            propose,
+        )
+    }
+
+    /// What a batch on an engine log may store of its publisher and
+    /// headers, as the hybrid's [`Self::claim_publish`] decides it: the
+    /// publisher only when [`Self::records_publishers`] says so, and
+    /// headers refused with [`BrokerError::RecordHeadersNotEnabled`] rather
+    /// than dropped. Both also wait for [`Self::allow_raft_record_headers_when`]:
+    /// a member that predates them would refuse the entry.
+    pub fn admit_attribution(
+        &self,
+        payloads: &[Bytes],
+        attribution: Attribution,
+    ) -> Result<Attribution> {
+        let Attribution { publisher, headers } = attribution;
+        let headers = super::usable_headers(payloads, headers.as_deref())?.map(<[_]>::to_vec);
+        let raft = self.raft_record_headers_allowed();
+        if headers.is_some() {
+            if !self.records_headers() {
+                return Err(BrokerError::RecordHeadersNotEnabled {
+                    feature: felix_common::fleet::RECORD_HEADERS.name(),
+                });
+            }
+            if !raft {
+                return Err(BrokerError::RecordHeadersNotEnabled {
+                    feature: felix_common::fleet::RAFT_RECORD_HEADERS.name(),
+                });
+            }
+        }
+        Ok(Attribution {
+            publisher: publisher.filter(|_| raft && self.records_publishers()),
+            headers,
+        })
     }
 
     /// [`Self::propose_publish`] for a conditional publish: one record that
@@ -83,10 +149,12 @@ impl Broker {
     ///
     /// No record is [`BrokerError::EmptyConditionalPublish`] and more than
     /// one is [`BrokerError::NotOnEngineStream`], with `propose` not called.
+    #[allow(clippy::too_many_arguments)]
     pub fn propose_publish_at<F, E>(
         &self,
         handle: &StreamHandle,
         payload: Vec<Bytes>,
+        attribution: Attribution,
         expected: u64,
         stalled_after: Duration,
         mismatch: impl FnOnce(u64) -> E + Send + 'static,
@@ -113,6 +181,7 @@ impl Broker {
         self.propose(
             handle,
             payload,
+            attribution,
             Some(expected),
             None,
             stalled_after,
@@ -120,10 +189,12 @@ impl Broker {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::broker) fn propose<F, E>(
         &self,
         handle: &StreamHandle,
         payloads: Vec<Bytes>,
+        attribution: Attribution,
         expected: Option<Expected<E>>,
         trim: Option<HeldTrim>,
         stalled_after: Duration,
@@ -166,6 +237,7 @@ impl Broker {
             finishing: Some(Box::pin(finish(
                 handle.clone(),
                 payloads,
+                attribution,
                 timestamp_micros,
                 expected,
                 trim,
@@ -253,6 +325,7 @@ impl Broker {
         turn: ProducerTurn,
         sequence: u64,
         mut payloads: Vec<Bytes>,
+        mut attribution: Attribution,
         reuse: SequenceReuse,
         stalled_after: Duration,
         propose: impl FnOnce(u64, ProducerTurn, OwedRecords) -> F,
@@ -290,6 +363,17 @@ impl Broker {
                 None => return Err(BrokerError::SequenceExpired { sequence }),
             }
             payloads.drain(..held);
+            if let Some(headers) = &mut attribution.headers {
+                headers.drain(..held.min(headers.len()));
+            }
+            // A rest with no block is stored, and so read back, without any.
+            if attribution
+                .headers
+                .as_ref()
+                .is_some_and(|headers| headers.iter().all(Option::is_none))
+            {
+                attribution.headers = None;
+            }
             position = unfinished.held;
             batch_first = Some(first);
         } else {
@@ -321,13 +405,17 @@ impl Broker {
         }
         let owed = OwedRecords {
             payloads: payloads.clone(),
+            headers: attribution.headers.clone(),
             position,
             len: len as u32,
         };
-        let mut proposed =
-            self.propose_publish(handle, payloads, stalled_after, |timestamp_micros| {
-                propose(timestamp_micros, turn, owed)
-            })?;
+        let mut proposed = self.propose_publish_with(
+            handle,
+            payloads,
+            attribution,
+            stalled_after,
+            |timestamp_micros| propose(timestamp_micros, turn, owed),
+        )?;
         proposed.batch_first = batch_first;
         Ok(IdempotentProposal::Proposed(proposed))
     }
@@ -337,11 +425,22 @@ impl Broker {
 /// batch, or the rest of one the log holds the start of.
 pub struct OwedRecords {
     pub payloads: Vec<Bytes>,
+    /// Each record's headers block, when any has one.
+    pub headers: Option<Vec<Option<Bytes>>>,
     /// The first record's place in the producer's batch. Zero for a whole
     /// batch.
     pub position: u32,
     /// Records in the producer's whole batch.
     pub len: u32,
+}
+
+/// A batch's publisher and each record's key and headers block, for a
+/// shard whose engine stores them in its own entries.
+#[derive(Debug, Clone, Default)]
+pub struct Attribution {
+    pub publisher: Option<Bytes>,
+    /// One per record when set.
+    pub headers: Option<Vec<Option<Bytes>>>,
 }
 
 /// What [`Broker::propose_idempotent`] refuses, as
@@ -564,9 +663,11 @@ pub(in crate::broker) struct HeldTrim {
     pub(in crate::broker) applied: oneshot::Sender<()>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn finish<E>(
     handle: StreamHandle,
     payloads: Vec<Bytes>,
+    attribution: Attribution,
     timestamp_micros: u64,
     expected: Option<Expected<E>>,
     trim: Option<HeldTrim>,
@@ -609,8 +710,8 @@ async fn finish<E>(
         },
         (Ok(at), Some(first_offset)) => HeldBatch {
             payloads,
-            publisher: None,
-            record_headers: None,
+            publisher: attribution.publisher,
+            record_headers: attribution.headers.map(Into::into),
             timestamp_micros: Some(timestamp_micros),
             first_offset,
             commit: None,

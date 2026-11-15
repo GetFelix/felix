@@ -496,6 +496,25 @@ impl MetadataStateMachine {
                 .await
                 .map(|_| MetaResponse::Unit)
                 .map_err(Into::into),
+            MetaCommand::RecordRaftCopyId {
+                key,
+                node_id,
+                node_registered_at_millis,
+                node_incarnation,
+                copy_id,
+            } => store
+                .apply_record_raft_copy_id(
+                    &key,
+                    &node_id,
+                    node_registered_at_millis,
+                    node_incarnation,
+                    copy_id,
+                )
+                .await
+                .map(|changed| MetaResponse::Count {
+                    count: u64::from(changed),
+                })
+                .map_err(Into::into),
             MetaCommand::RecordPlacementAck { node_id, heard } => store
                 .record_placement_ack(&node_id, heard)
                 .await

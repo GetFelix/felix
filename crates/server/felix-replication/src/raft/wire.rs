@@ -79,6 +79,8 @@ const WIRE_SHARE_OF_DEADLINE: u128 = 4;
 const MIN_APPEND_BYTES: usize = 256 * 1024;
 /// What an entry costs on the wire besides its record.
 const ENTRY_OVERHEAD: usize = 64;
+/// The tag and flags byte that wrap a record with a publisher or headers.
+const ATTRIBUTED_WRAPPER: usize = 2;
 
 /// Smallest encoded log id in a conflict hint.
 const LOG_ID_BYTES: usize = 16;
@@ -107,7 +109,19 @@ pub(crate) fn fit(request: &mut RaftRequest) {
         .position(|entry| {
             bytes += ENTRY_OVERHEAD
                 + match &entry.payload {
-                    EntryPayload::Normal(command) => command.payload.len(),
+                    EntryPayload::Normal(command) => {
+                        // The attributed wrapper: a tag, a flags byte, and a
+                        // length for each block it holds.
+                        let wrapper = match (&command.headers, &command.publisher) {
+                            (None, None) => 0,
+                            (Some(_), Some(_)) => ATTRIBUTED_WRAPPER + 8,
+                            _ => ATTRIBUTED_WRAPPER + 4,
+                        };
+                        command.payload.len()
+                            + command.headers.as_ref().map_or(0, |headers| headers.len())
+                            + command.publisher.as_ref().map_or(0, Bytes::len)
+                            + wrapper
+                    }
                     _ => 0,
                 };
             bytes > budget
@@ -475,12 +489,42 @@ const ENTRY_CONDITIONAL: u8 = 5;
 /// for the same reason as [`ENTRY_CONDITIONAL`]: a build without it refuses
 /// the entry by its tag rather than store the headers as a client record.
 const ENTRY_TRIM: u8 = 6;
+/// A record with its publisher, its headers block, or both: a flags byte
+/// says which follow, each as a length and its bytes, and then the record
+/// as one of the tags above lays it out. A wrapper, so a record without
+/// either keeps its frame, and a build without it refuses the entry by its
+/// tag rather than store the record without them.
+const ENTRY_ATTRIBUTED: u8 = 7;
+/// [`ENTRY_ATTRIBUTED`] flags.
+const HAS_PUBLISHER: u8 = 1;
+const HAS_HEADERS: u8 = 2;
 
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {
     put_log_id(buf, &entry.log_id);
     match &entry.payload {
         EntryPayload::Blank => buf.put_u8(0),
         EntryPayload::Normal(command) => {
+            if command.publisher.is_some() || command.headers.is_some() {
+                if command.trim.is_some() {
+                    return Err(invalid("a trim names a publisher or headers".to_string()));
+                }
+                buf.put_u8(ENTRY_ATTRIBUTED);
+                let mut flags = 0;
+                if command.publisher.is_some() {
+                    flags |= HAS_PUBLISHER;
+                }
+                if command.headers.is_some() {
+                    flags |= HAS_HEADERS;
+                }
+                buf.put_u8(flags);
+                for block in [command.publisher.as_ref(), command.headers.as_deref()]
+                    .into_iter()
+                    .flatten()
+                {
+                    buf.put_u32(len_u32(block.len())?);
+                    buf.extend_from_slice(block);
+                }
+            }
             // A record of no producer's batch keeps the layout it always had.
             match (command.producer, command.expected) {
                 _ if command.trim.is_some() && command.expected.is_some() => {
@@ -548,48 +592,33 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
     let log_id = take_log_id(buf)?;
     Ok(match take_u8(buf)? {
         0 => EntryOf::<ShardTypes>::new_blank(log_id),
-        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_TRIM) => {
-            let expected = match tag {
-                ENTRY_CONDITIONAL => Some(take_u64(buf)?),
-                _ => None,
-            };
-            let trim = match tag {
-                ENTRY_TRIM => Some(take_u64(buf)?),
-                _ => None,
-            };
-            let producer = match tag {
-                ENTRY_SEQUENCED => Some(ProducerMark {
-                    producer_id: take_u64(buf)?,
-                    sequence: take_u64(buf)?,
-                    position: 0,
-                    len: 1,
-                }),
-                ENTRY_PIECE => Some(ProducerMark {
-                    producer_id: take_u64(buf)?,
-                    sequence: take_u64(buf)?,
-                    position: take_u32(buf)?,
-                    len: take_u32(buf)?,
-                }),
-                _ => None,
-            };
-            let timestamp_micros = take_u64(buf)?;
-            let len = take_u32(buf)? as usize;
-            if buf.remaining() < len {
-                return Err(short());
+        ENTRY_ATTRIBUTED => {
+            let flags = take_u8(buf)?;
+            if flags == 0 || flags & !(HAS_PUBLISHER | HAS_HEADERS) != 0 {
+                return Err(invalid(format!("{flags:#x} is not a record's attributes")));
             }
-            // A slice of the frame: the record is not copied.
-            let payload = buf.split_to(len);
-            EntryOf::<ShardTypes>::new_normal(
-                log_id,
-                Command {
-                    timestamp_micros,
-                    payload,
-                    producer,
-                    expected,
-                    trim,
-                    written: None,
-                },
-            )
+            let publisher = match flags & HAS_PUBLISHER {
+                0 => None,
+                _ => Some(take_block(buf)?),
+            };
+            let headers = match flags & HAS_HEADERS {
+                0 => None,
+                _ => Some(Box::new(take_block(buf)?)),
+            };
+            let tag = take_u8(buf)?;
+            if !matches!(
+                tag,
+                ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL
+            ) {
+                return Err(invalid(format!("{tag} is not a record a publisher names")));
+            }
+            let mut command = take_command(buf, tag)?;
+            command.publisher = publisher;
+            command.headers = headers;
+            EntryOf::<ShardTypes>::new_normal(log_id, command)
+        }
+        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL | ENTRY_TRIM) => {
+            EntryOf::<ShardTypes>::new_normal(log_id, take_command(buf, tag)?)
         }
         2 => {
             // A config with no voters would let a joint quorum pass with no
@@ -603,6 +632,59 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
         }
         other => return Err(invalid(format!("{other} is not an entry payload"))),
     })
+}
+
+/// A record entry's body after its tag `tag`.
+fn take_command(buf: &mut Bytes, tag: u8) -> io::Result<Command> {
+    let expected = match tag {
+        ENTRY_CONDITIONAL => Some(take_u64(buf)?),
+        _ => None,
+    };
+    let trim = match tag {
+        ENTRY_TRIM => Some(take_u64(buf)?),
+        _ => None,
+    };
+    let producer = match tag {
+        ENTRY_SEQUENCED => Some(ProducerMark {
+            producer_id: take_u64(buf)?,
+            sequence: take_u64(buf)?,
+            position: 0,
+            len: 1,
+        }),
+        ENTRY_PIECE => Some(ProducerMark {
+            producer_id: take_u64(buf)?,
+            sequence: take_u64(buf)?,
+            position: take_u32(buf)?,
+            len: take_u32(buf)?,
+        }),
+        _ => None,
+    };
+    let timestamp_micros = take_u64(buf)?;
+    let len = take_u32(buf)? as usize;
+    if buf.remaining() < len {
+        return Err(short());
+    }
+    // A slice of the frame: the record is not copied.
+    let payload = buf.split_to(len);
+    Ok(Command {
+        timestamp_micros,
+        payload,
+        producer,
+        expected,
+        trim,
+        publisher: None,
+        headers: None,
+        written: None,
+    })
+}
+
+/// A length, then that many bytes: a slice of the frame, not a copy.
+fn take_block(buf: &mut Bytes) -> io::Result<Bytes> {
+    let len = take_u32(buf)? as usize;
+    if buf.remaining() < len {
+        return Err(short());
+    }
+    Ok(buf.split_to(len))
 }
 
 /// The voter sets, the members that are not voters, then the target

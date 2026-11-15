@@ -181,6 +181,7 @@ impl StreamEngine {
     /// and at the commit while it does not. Subscribers get the batch at
     /// its commit either way. No write waits on the hybrid's marks or this
     /// broker's lease.
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_on_raft(
         &self,
         broker: &felix_broker::Broker,
@@ -188,6 +189,7 @@ impl StreamEngine {
         shard: &ShardKey,
         term: u64,
         payloads: Vec<bytes::Bytes>,
+        attribution: felix_broker::Attribution,
         timeout: Duration,
     ) -> Option<Result<RaftPublish, RaftRefusal>> {
         #[cfg(feature = "raft")]
@@ -218,12 +220,13 @@ impl StreamEngine {
                 (felix_broker::ConsistencyLevel::Quorum, AckAt::Written) => AnswerAt::Majority,
                 (felix_broker::ConsistencyLevel::Quorum, AckAt::Flushed) => AnswerAt::Commit,
             };
-            let proposed = raft.publish(
+            let proposed = raft.publish_with(
                 broker,
                 handle,
                 shard,
                 Some(term),
                 payloads,
+                attribution,
                 ack,
                 answer,
                 timeout,
@@ -236,7 +239,7 @@ impl StreamEngine {
         }
         #[cfg(not(feature = "raft"))]
         {
-            let _ = (broker, handle, shard, term, payloads, timeout);
+            let _ = (broker, handle, shard, term, payloads, attribution, timeout);
             None
         }
     }
@@ -259,6 +262,7 @@ impl StreamEngine {
         shard: &ShardKey,
         term: u64,
         payloads: Vec<bytes::Bytes>,
+        attribution: felix_broker::Attribution,
         expected: u64,
         timeout: Duration,
     ) -> Option<Result<RaftPublish, RaftRefusal>> {
@@ -279,6 +283,7 @@ impl StreamEngine {
                 shard,
                 Some(term),
                 payloads,
+                attribution,
                 expected,
                 ack,
                 timeout,
@@ -291,7 +296,16 @@ impl StreamEngine {
         }
         #[cfg(not(feature = "raft"))]
         {
-            let _ = (broker, handle, shard, term, payloads, expected, timeout);
+            let _ = (
+                broker,
+                handle,
+                shard,
+                term,
+                payloads,
+                attribution,
+                expected,
+                timeout,
+            );
             None
         }
     }
@@ -372,6 +386,7 @@ impl StreamEngine {
         sequence: u64,
         reuse: felix_broker::SequenceReuse,
         payloads: Vec<bytes::Bytes>,
+        attribution: felix_broker::Attribution,
         timeout: Duration,
     ) -> Option<Result<RaftIdempotentPublish, RaftRefusal>> {
         #[cfg(feature = "raft")]
@@ -382,7 +397,16 @@ impl StreamEngine {
                 return Some(Err(RaftRefusal::NotLeading { term }));
             }
             let proposed = raft.publish_idempotent(
-                broker, handle, shard, term, turn, sequence, payloads, reuse, timeout,
+                broker,
+                handle,
+                shard,
+                term,
+                turn,
+                sequence,
+                payloads,
+                attribution,
+                reuse,
+                timeout,
             );
             Some(
                 proposed
@@ -393,7 +417,16 @@ impl StreamEngine {
         #[cfg(not(feature = "raft"))]
         {
             let _ = (
-                broker, handle, shard, term, turn, sequence, reuse, payloads, timeout,
+                broker,
+                handle,
+                shard,
+                term,
+                turn,
+                sequence,
+                reuse,
+                payloads,
+                attribution,
+                timeout,
             );
             None
         }

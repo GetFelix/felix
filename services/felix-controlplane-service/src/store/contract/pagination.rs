@@ -138,6 +138,8 @@ fn assignment(kind: ShardKind, shard: u32, leader: &str) -> ShardAssignment {
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     }
 }
 
