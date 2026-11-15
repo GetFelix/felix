@@ -870,9 +870,10 @@ and the plan refuses with a record in the gap.
 A voter whose base is in a kept directory, the records a rotation moved
 aside, rebuilds its log from there: each segment and the durable mark are
 copied in under a temporary name and synced, then renamed into place. The
-kept directory is only read. A voter holding records past the base cuts
-them. When its saved commit covers any of them (the kept directory's
-commit, for a copy rebuilt from one), those records were acknowledged, and
+kept directory is only read, and read whole before the voter's own log is
+touched, so a missing or damaged one fails the start with that log intact. A voter holding records past the base cuts
+them. When its saved commit covers any of them (for a copy rebuilt from a kept
+directory, the higher of its own and the kept one's), those records were acknowledged, and
 only a re-form that accepts the loss may cut them. Either way the log must
 then end at the base's last index in the base's term, or the start fails.
 
@@ -882,7 +883,7 @@ a re-form that accepts the loss, and the start refuses otherwise.
 
 A learner keeps its log only when all of it is a prefix of the base: no
 record past the base's last index, no purged id, and every record in the
-base's term at its index. Anything else empties it, rather than cutting it
+base's term at its index, none in a gap an earlier re-form left. Anything else empties it, rather than cutting it
 to the part that agrees, and it catches up from the leader by snapshot. An
 empty learner's saved commit is set to zero, so it never counts entries it
 does not hold.

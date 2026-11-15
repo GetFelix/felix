@@ -99,6 +99,7 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
         Role::Learner => {
             let keeps = record_last <= base_last
                 && held.purged.is_none()
+                && !in_a_gap(&held, &start.epoch)
                 && prefix_matches(dir, &label, index_spacing_bytes, &held, &start.base_terms)?;
             if !keeps {
                 empty_log(dir)?;
@@ -120,8 +121,24 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
         Role::Voter => {
             // The commit the voter's log claims: the kept directory's when
             // the log comes from there. Read before anything here moves it.
-            let claims = start.kept.as_deref().unwrap_or(dir);
-            let (commit, _) = crate::disk_log::saved_commit(claims).map_err(io::Error::other)?;
+            // Both logs' claims count: the voter's own log is replaced too.
+            // A kept directory is read whole before anything here is touched,
+            // so a missing or damaged one fails with the voter's log intact.
+            let (mut commit, _) = crate::disk_log::saved_commit(dir).map_err(io::Error::other)?;
+            if let Some(kept) = &start.kept {
+                if !crate::fs::try_exists(kept)? {
+                    return Err(invalid(format!(
+                        "{label}: kept directory {} is gone",
+                        kept.display()
+                    )));
+                }
+                held::read(kept, &label, index_spacing_bytes)?;
+                commit = commit.max(
+                    crate::disk_log::saved_commit(kept)
+                        .map_err(io::Error::other)?
+                        .0,
+                );
+            }
             if commit > base.first_index && !start.accept_loss {
                 return Err(invalid(format!(
                     "{label}: its saved commit {commit} is past the first index {}; only a \
@@ -131,6 +148,22 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
             }
             let mut record_last = record_last;
             if let Some(kept) = &start.kept {
+                // Rebuilding drops what either log holds past the base. The
+                // own log's commit counts only for records it holds there:
+                // a rerun finds its commit at the first index, over the base.
+                let (own, _) = crate::disk_log::saved_commit(dir).map_err(io::Error::other)?;
+                let own = if record_last > base_last { own } else { 0 };
+                let kept_commit = crate::disk_log::saved_commit(kept)
+                    .map_err(io::Error::other)?
+                    .0;
+                if own.max(kept_commit) > base.base_end() && !start.accept_loss {
+                    return Err(invalid(format!(
+                        "{label}: records committed through {} are past the base's end {}",
+                        commit - 1,
+                        base.base_end()
+                    )));
+                }
+                commit = own.max(kept_commit);
                 copy_kept(kept, dir, &step)?;
                 record_last = held::read(dir, &label, index_spacing_bytes)?
                     .last_record
@@ -230,6 +263,17 @@ pub(super) fn check_started(dir: &Path, start: &Start) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Whether any record `held` has sits in a gap some re-form left: no
+/// record is ever written there, so such a log is not a prefix of the base.
+fn in_a_gap(held: &held::Held, epoch: &EpochFile) -> bool {
+    let (Some(lowest), Some((last, _))) = (held.lowest, held.last_record) else {
+        return false;
+    };
+    epoch.bases.iter().any(|base| {
+        base.base_end() < base.first_index && lowest < base.first_index && last >= base.base_end()
+    })
 }
 
 /// Whether every record `held` has carries the base's term at its index.

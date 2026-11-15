@@ -464,3 +464,73 @@ async fn a_voter_commit_past_the_first_index_is_lowered_only_on_accepted_loss() 
         8
     );
 }
+
+/// A learner holding records in a gap an earlier re-form left is emptied,
+/// though each record's term matches the stretch around it.
+#[tokio::test]
+async fn a_learner_with_records_in_an_earlier_gap_is_emptied() {
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 7).await;
+    let mut later = start(Role::Learner);
+    // Epoch 1 kept 0..=2 and left a gap through 7; epoch 2's base ends at 8.
+    later.epoch.bases = vec![
+        EpochBase {
+            base_last: Some(EpochLogId {
+                index: 2,
+                epoch: 0,
+                term: 1,
+            }),
+            first_index: 8,
+        },
+        EpochBase {
+            base_last: Some(EpochLogId {
+                index: 8,
+                epoch: 1,
+                term: 1,
+            }),
+            first_index: 9,
+        },
+    ];
+    start_copy(dir.path(), &later, &config())
+        .await
+        .expect("start");
+    let read = read_copy(dir.path(), SPACING, &BTreeSet::new()).expect("read");
+    assert_eq!((read.last, read.purged), (None, None));
+}
+
+/// A kept directory that is gone fails the start before the voter's own
+/// log is touched.
+#[tokio::test]
+async fn a_missing_kept_copy_leaves_the_voter_log_alone() {
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 7).await;
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(dir.path().join("gone"));
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect_err("no kept copy");
+    let last = held::read(dir.path(), "t", SPACING)
+        .expect("held")
+        .last_record;
+    assert_eq!(last.map(|(index, _)| index), Some(6));
+}
+
+/// A voter rebuilt from a kept copy whose own log is committed past the
+/// base needs an accepted loss too: its own log is replaced.
+#[tokio::test]
+async fn a_voters_own_commit_past_the_base_counts_when_rebuilt_from_a_kept_copy() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 5).await;
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 7).await;
+    crate::disk_log::store_saved_commit(dir.path(), 7, 2).expect("commit");
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect_err("would cut acked records");
+    from_kept.accept_loss = true;
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect("start");
+}
