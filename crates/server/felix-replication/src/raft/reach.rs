@@ -9,12 +9,12 @@
 //! members' waits grow past that second ([`Waits`]). See
 //! `docs/per-shard-raft.md`, "Group runtime".
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use arc_swap::ArcSwap;
+use felix_common::random::HashMap;
 use openraft::network::Backoff;
 use tokio::time::Instant;
 

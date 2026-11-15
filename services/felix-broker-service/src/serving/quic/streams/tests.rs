@@ -27,6 +27,8 @@ mod idempotent_producer;
 mod ingress_wait;
 mod inspect;
 mod pipeline;
+#[cfg(feature = "raft")]
+mod raft_publish_if;
 mod uni;
 mod writer;
 
@@ -287,6 +289,18 @@ async fn run_control_loop_with_codes(
     error_codes: Arc<crate::serving::quic::client_error::ErrorCodeSupport>,
 ) -> Result<(bool, Vec<Outgoing>)> {
     let publish_ctx = build_publish_context(Arc::clone(&broker)).await;
+    run_control_loop_on(broker, auth, frames, config, publish_ctx, error_codes).await
+}
+
+/// As `run_control_loop_with_codes`, over `publish_ctx`.
+async fn run_control_loop_on(
+    broker: Arc<Broker>,
+    auth: Arc<BrokerAuth>,
+    frames: Vec<Result<Option<Frame>>>,
+    config: BrokerConfig,
+    publish_ctx: PublishContext,
+    error_codes: Arc<crate::serving::quic::client_error::ErrorCodeSupport>,
+) -> Result<(bool, Vec<Outgoing>)> {
     let (server_config, cert) = build_server_config()?;
     let server = QuicServer::bind(
         "127.0.0.1:0".parse()?,

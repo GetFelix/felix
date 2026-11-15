@@ -1,0 +1,2 @@
+- A Raft simulation seed runs the same twice again (#2567).
+  The Raft ticker walks its map of peer brokers to start each broker's retries and heartbeats, and that map was hashed with std's random keys, so the walk order changed from run to run. It now uses the seeded maps the rest of replication uses, and the Raft simulation now seeds them: before, it never did, so even those maps took random keys there. Raft copy ids also draw from the seed under a simulator.

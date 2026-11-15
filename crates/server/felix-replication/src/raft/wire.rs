@@ -469,6 +469,13 @@ const ENTRY_SEQUENCED: u8 = 3;
 /// the record. A batch of one keeps [`ENTRY_SEQUENCED`], so its frames are
 /// the ones a build without this tag reads.
 const ENTRY_PIECE: u8 = 4;
+/// A conditional publish's record: the offset it must be written at comes
+/// before the record. Never an idempotent producer's. openraft replicates
+/// entries read back from the log, which hold only the outcome, so none is
+/// sent today. A new tag rather than a new layout: a build without it
+/// refuses the entry by its tag rather than store the record
+/// unconditionally, and every other frame stays byte-identical.
+const ENTRY_CONDITIONAL: u8 = 5;
 
 fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> {
     put_log_id(buf, &entry.log_id);
@@ -476,24 +483,39 @@ fn put_entry(buf: &mut BytesMut, entry: &EntryOf<ShardTypes>) -> io::Result<()> 
         EntryPayload::Blank => buf.put_u8(0),
         EntryPayload::Normal(command) => {
             // A record of no producer's batch keeps the layout it always had.
-            match command.producer {
-                None => buf.put_u8(ENTRY_RECORD),
-                Some(ProducerMark {
-                    producer_id,
-                    sequence,
-                    position: 0,
-                    len: 1,
-                }) => {
+            match (command.producer, command.expected) {
+                (None, None) => buf.put_u8(ENTRY_RECORD),
+                (None, Some(expected)) => {
+                    buf.put_u8(ENTRY_CONDITIONAL);
+                    buf.put_u64(expected);
+                }
+                (Some(_), Some(_)) => {
+                    return Err(invalid(
+                        "a conditional publish names a producer".to_string(),
+                    ));
+                }
+                (
+                    Some(ProducerMark {
+                        producer_id,
+                        sequence,
+                        position: 0,
+                        len: 1,
+                    }),
+                    None,
+                ) => {
                     buf.put_u8(ENTRY_SEQUENCED);
                     buf.put_u64(producer_id);
                     buf.put_u64(sequence);
                 }
-                Some(ProducerMark {
-                    producer_id,
-                    sequence,
-                    position,
-                    len,
-                }) => {
+                (
+                    Some(ProducerMark {
+                        producer_id,
+                        sequence,
+                        position,
+                        len,
+                    }),
+                    None,
+                ) => {
                     buf.put_u8(ENTRY_PIECE);
                     buf.put_u64(producer_id);
                     buf.put_u64(sequence);
@@ -517,7 +539,11 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
     let log_id = take_log_id(buf)?;
     Ok(match take_u8(buf)? {
         0 => EntryOf::<ShardTypes>::new_blank(log_id),
-        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE) => {
+        tag @ (ENTRY_RECORD | ENTRY_SEQUENCED | ENTRY_PIECE | ENTRY_CONDITIONAL) => {
+            let expected = match tag {
+                ENTRY_CONDITIONAL => Some(take_u64(buf)?),
+                _ => None,
+            };
             let producer = match tag {
                 ENTRY_SEQUENCED => Some(ProducerMark {
                     producer_id: take_u64(buf)?,
@@ -546,6 +572,7 @@ fn take_entry(buf: &mut Bytes) -> io::Result<EntryOf<ShardTypes>> {
                     timestamp_micros,
                     payload,
                     producer,
+                    expected,
                     written: None,
                 },
             )

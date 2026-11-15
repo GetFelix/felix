@@ -300,6 +300,10 @@ pub(crate) struct HeldBatch {
     /// One past the last offset of the batch a gap stands for, when its
     /// engine wrote it.
     pub(crate) gap_end: Option<u64>,
+    /// Holds no records: a conditional publish stored as a blank at
+    /// `first_offset`. The ring stays, and the stream moves past the offset
+    /// as past a generation-start record.
+    pub(crate) blank: bool,
 }
 
 impl HeldBatch {
@@ -319,6 +323,20 @@ impl HeldBatch {
             skipped_before: 0,
             gap: true,
             gap_end: written_end,
+            blank: false,
+        }
+    }
+
+    /// Stands in the order for a conditional publish the engine stored as
+    /// a blank at `offset`. Its outcome is known, so unlike a gap it keeps
+    /// the replay ring.
+    pub(crate) fn blank(offset: u64) -> Self {
+        Self {
+            first_offset: offset,
+            gap: false,
+            gap_end: None,
+            blank: true,
+            ..Self::gap(None)
         }
     }
 
