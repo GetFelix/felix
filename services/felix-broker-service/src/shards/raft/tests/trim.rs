@@ -330,3 +330,52 @@ async fn a_follower_holding_the_trim_is_not_read_below_it_after_the_answer() {
     assert!(too_old(&holder.broker, first).await, "read below the floor");
     stop(&members).await;
 }
+
+/// **A follower that never got the trim's entry is not read below its floor
+/// after `trim_ok`.** The leader commits the trim with the other member, so
+/// the lagging follower's log has no trim to wait for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "#2603: a follower read needs a read index from the leader"]
+async fn a_follower_without_the_trim_is_not_read_below_it_after_the_answer() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = &members[leader];
+    let lagger = &members[(leader + 1) % 3];
+    lead.broker.allow_raft_head_trims_when(|| true);
+    let first = lead.publish(term, b"r0").await;
+    let floor = lead.publish(term, b"r1").await;
+    let tail = lead.publish(term, b"r2").await + 1;
+    let log = lagger.shards.log_of(&orders).await.expect("log");
+    until("the lagger has the publishes", || {
+        log.commit_offset() == tail
+    })
+    .await;
+
+    net.cut.lock().insert(lagger.name.to_string());
+    trim(&lead.broker, &lead.engine, term, floor, tail)
+        .await
+        .expect("trimmed");
+    assert_eq!(
+        log.tail_offset().await.expect("tail"),
+        tail,
+        "the lagger got the trim"
+    );
+
+    let resumed = lagger
+        .broker
+        .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
+        .await;
+    let served_below = match &resumed {
+        Ok(resumed) => {
+            resumed.history.is_some() || resumed.backlog.iter().any(|r| r.offset < floor)
+        }
+        Err(_) => false,
+    };
+    assert!(
+        !served_below,
+        "the lagger served a resume below the floor after trim_ok"
+    );
+    net.cut.lock().clear();
+    stop(&members).await;
+}
