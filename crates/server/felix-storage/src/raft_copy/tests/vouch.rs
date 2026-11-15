@@ -115,7 +115,7 @@ fn a_kept_vote_above_every_entry_cuts_to_the_floor() {
     let cut = |name| {
         kept(
             reserved(copy(name, &[1], Some(0), Some(2)), 1),
-            RotatedBy::PowerCut,
+            RotatedBy::PowerCut { to: 1 },
         )
     };
     let plan = plan(
@@ -180,7 +180,7 @@ fn an_older_epochs_copy_is_capped_and_never_marks() {
         a_log.terms.insert(index, Some(3));
     }
     a_log.last = Some(LogPoint { term: 3, index: 11 });
-    let a_kept = kept(at_epoch(a_log, &bases), RotatedBy::PowerCut);
+    let a_kept = kept(at_epoch(a_log, &bases), RotatedBy::PowerCut { to: 1 });
     let b_old = kept(
         copy(
             "b-kept",
@@ -192,7 +192,7 @@ fn an_older_epochs_copy_is_capped_and_never_marks() {
     );
     let b_learner = kept(
         at_epoch(copy("b-kept1", &[1; 5], Some(4), Some(3)), &bases),
-        RotatedBy::PowerCut,
+        RotatedBy::PowerCut { to: 1 },
     );
     let plan = plan(
         &rec,
@@ -218,7 +218,7 @@ fn an_older_epochs_copy_is_capped_and_never_marks() {
     assert_eq!(plan.learners, vec!["b"]);
 }
 
-/// `FelixRaftWritten.tla`'s counterexample to counting a fsynced write with
+/// `FelixRaftWritten.tla`'s counterexample to counting a written entry with
 /// no reservation: `a` led t2 and committed its blank at index 0 on `b`'s
 /// write, then was declared dead; `b` never learned the commit, and `b`
 /// and `c` power-cut rotated, `b` losing the unsynced entry. Nothing holds
@@ -231,12 +231,18 @@ fn the_reservation_pads_above_an_entry_nothing_vouches_for() {
         let mut b = copy("b", &[], None, Some(2));
         b.reserved = b_reserved;
         vec![
-            ("b", report(blank(), vec![kept(b, RotatedBy::PowerCut)])),
+            (
+                "b",
+                report(blank(), vec![kept(b, RotatedBy::PowerCut { to: 1 })]),
+            ),
             (
                 "c",
                 report(
                     blank(),
-                    vec![kept(copy("c", &[], None, Some(2)), RotatedBy::PowerCut)],
+                    vec![kept(
+                        copy("c", &[], None, Some(2)),
+                        RotatedBy::PowerCut { to: 1 },
+                    )],
                 ),
             ),
         ]
@@ -378,7 +384,7 @@ fn another_incarnations_copy_only_pads() {
             "a",
             report(
                 copy("a", &[1, 1], Some(0), Some(1)),
-                vec![kept(foreign, RotatedBy::PowerCut)],
+                vec![kept(foreign, RotatedBy::PowerCut { to: 1 })],
             ),
         )],
     );
@@ -574,4 +580,41 @@ fn a_plan_with_no_voter_refuses() {
     a.copy = None;
     let reports = BTreeMap::from([("a", report(a, vec![]))]);
     assert_eq!(plan_reform(&rec, &reports), Err(Refused::NoVoters));
+}
+
+/// `b` and `c` power-cut rotated in t1, and their kept copies (vote t1)
+/// stay. Then `b` led t2 and committed W at 5 over `a`'s lone X at 5, and
+/// only `b`'s and `c`'s shard directories were lost: the empty rotation
+/// keeps nothing. The old power cuts name the copies they rotated into, not
+/// the empty ones now current, so the group is marked and X is never
+/// served whole. At epoch 0 and at a later epoch.
+#[test]
+fn an_older_power_cut_never_vouches_for_a_later_copy() {
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 0,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: 1,
+    }];
+    for epoch in [0, 1] {
+        let bases = &bases[..epoch];
+        let rec = record(&["a", "b", "c"], &[], bases, floor(4, epoch as u64, 1));
+        let lost = |name| {
+            let old = copy(name, &[1; 5], Some(3), Some(1));
+            let old = kept(at_epoch(old, bases), RotatedBy::PowerCut { to: 9 });
+            let mut wiped = blank();
+            wiped.copy = Some(10);
+            report(wiped, vec![old])
+        };
+        let a = at_epoch(copy("a", &[1; 6], Some(3), Some(1)), bases);
+        let plan = plan(
+            &rec,
+            vec![("a", report(a, vec![])), ("b", lost("b")), ("c", lost("c"))],
+        );
+        assert!(plan.marked, "epoch {epoch}");
+        assert!(plan.needs_accept_loss(), "epoch {epoch}");
+        assert_eq!(plan.base_end(), 5, "epoch {epoch}: X is not in the base");
+    }
 }

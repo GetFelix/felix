@@ -225,7 +225,7 @@ async fn a_directory_restored_to_a_shorter_log_rotates() {
         let kept = rotation.kept.expect("kept");
         assert_eq!(
             rotated_by::load(&kept).expect("by"),
-            RotatedBy::PowerCut,
+            RotatedBy::PowerCut { to: restored.copy },
             "batched {batched}"
         );
         assert_eq!(

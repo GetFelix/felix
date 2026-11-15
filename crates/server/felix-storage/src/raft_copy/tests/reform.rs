@@ -317,9 +317,12 @@ fn only_a_log_below_its_mark_is_a_power_cut() {
         VoteBelowMark,
         Poisoned,
     ] {
-        assert_eq!(RotatedBy::of(reason), RotatedBy::Restore, "{reason:?}");
+        assert_eq!(RotatedBy::of(reason, 1), RotatedBy::Restore, "{reason:?}");
     }
-    assert_eq!(RotatedBy::of(LogBelowMark), RotatedBy::PowerCut);
+    assert_eq!(
+        RotatedBy::of(LogBelowMark, 1),
+        RotatedBy::PowerCut { to: 1 }
+    );
 }
 
 /// `raft-epoch` refuses what no start writes: nonzero reserved bytes, a

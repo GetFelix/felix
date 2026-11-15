@@ -220,20 +220,29 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         let Some(report) = live.get(broker) else {
             return true;
         };
-        let kept_of_epoch = |by: RotatedBy| {
+        let current = &report.copies.current;
+        let of_epoch = |read: &&CopyRead| rule.copy_epoch(read) == Some(epoch);
+        let restored = report
+            .copies
+            .kept
+            .iter()
+            .filter(of_epoch)
+            .any(|read| read.rotated_by == Some(RotatedBy::Restore));
+        // A power cut speaks for the copy it rotated into and no later one:
+        // a wiped directory or an empty rotation leaves no kept copy, so
+        // an older power cut would otherwise vouch for the copy after it.
+        let cut_into_current = current.copy.is_some_and(|copy| {
             report
                 .copies
                 .kept
                 .iter()
-                .any(|read| read.rotated_by == Some(by) && rule.copy_epoch(read) == Some(epoch))
-        };
-        // At epoch 0 no `raft-epoch` proves the copy went through a start,
-        // and a wiped disk or an empty rotation leaves no kept copy, so a
-        // copy that never voted could be one that lost its votes.
-        let lost_votes = epoch == 0 && report.copies.current.vote.is_none();
-        ((rule.copy_epoch(&report.copies.current) != Some(epoch) || lost_votes)
-            && !kept_of_epoch(RotatedBy::PowerCut))
-            || kept_of_epoch(RotatedBy::Restore)
+                .filter(of_epoch)
+                .any(|read| read.rotated_by == Some(RotatedBy::PowerCut { to: copy }))
+        });
+        // A copy that never voted, or one without a copy file, could be one
+        // that lost its votes.
+        let lost_votes = current.vote.is_none() || current.copy.is_none();
+        ((rule.copy_epoch(current) != Some(epoch) || lost_votes) && !cut_into_current) || restored
     });
 
     let mut vouched = Vec::with_capacity(copies.len());

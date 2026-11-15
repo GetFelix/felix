@@ -227,6 +227,13 @@ impl CopyRoot {
         // The engine marker goes into `.kept` with the directory, and the
         // new directory is as much a Raft member's as the old one.
         let marked = engine_marker::claimed_for_raft(dir, shard).map_err(io::Error::other)?;
+        // Minted first, so the kept copy can name the copy it speaks for.
+        let copy = loop {
+            let copy = (self.mint)();
+            if copy != 0 && Some(copy) != replaced {
+                break copy;
+            }
+        };
         let kept = if holds_no_records(dir)? {
             None
         } else {
@@ -237,7 +244,7 @@ impl CopyRoot {
             crate::io::sync_dir(&parent)?;
             // After the rename, so a crash leaves a kept copy without it,
             // which reads as a restore, never a live directory with one.
-            rotated_by::store(&kept, RotatedBy::of(reason))?;
+            rotated_by::store(&kept, RotatedBy::of(reason, copy))?;
             step()?;
             crate::incarnation::kept_gauges::refresh(&parent);
             Some(kept)
@@ -257,12 +264,6 @@ impl CopyRoot {
             reserved::store(dir, index)?;
             step()?;
         }
-        let copy = loop {
-            let copy = (self.mint)();
-            if copy != 0 && Some(copy) != replaced {
-                break copy;
-            }
-        };
         copy_file::store(
             dir,
             &CopyFile {

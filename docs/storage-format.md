@@ -1345,8 +1345,11 @@ reservation still counts.
 ## `rotated-by`: why a kept copy was rotated
 
 A rotation that moves a shard directory into `.kept/` writes one word into
-it: `power-cut\n` or `restore\n`. Only a log below its log mark is
-`power-cut`. The vote mark is checked first, so such a copy still holds
+it: `power-cut <copy>\n`, where `<copy>` is the copy id the rotation
+minted in 16 hex digits, or `restore\n`. Only a log below its log mark is
+`power-cut`, and it speaks only for the copy it names: a later rotation
+of an empty or wiped directory keeps nothing, so a re-form must not let
+an older power cut vouch for the copy after it. The vote mark is checked first, so such a copy still holds
 the newest vote it took, and a re-form may read it to learn how high the
 group's terms went. Every other reason (no copy file, another storage id,
 no marks or another copy's, a vote below its mark, a poisoned log) is

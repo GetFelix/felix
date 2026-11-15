@@ -4943,9 +4943,11 @@ not move.
   record's epoch or whose bases differ from it, a record inside a gap, and
   an index nobody was asked about, and a base that ends below what its
   source purged. A broker with no copy id is never a voter, and a plan
-  with no voter refuses. At epoch 0, a placed broker whose current copy
-  never voted marks the group unless it has a power-cut kept copy: a wiped
-  disk or an empty rotation leaves nothing kept. The first index is also
+  with no voter refuses. A placed broker whose current copy never voted
+  or has no copy file marks the group unless a power-cut kept copy names
+  that current copy as the one it rotated into: a wiped directory or an
+  empty rotation leaves nothing kept, so an older power cut does not
+  count. The first index is also
   never below an earlier epoch's first index or any record a copy of the
   incarnation holds. A later epoch's gap counts as holding the floor's
   entry only on a copy with a record past the gap, so the start, not

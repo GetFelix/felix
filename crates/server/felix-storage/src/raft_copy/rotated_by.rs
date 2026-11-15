@@ -18,8 +18,9 @@ pub(crate) const FILE_NAME: &str = "rotated-by";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RotatedBy {
     /// The log was below its mark, so it lost an unsynced tail and kept its
-    /// newest vote.
-    PowerCut,
+    /// newest vote. `to` is the copy id the rotation minted: the copy it
+    /// speaks for, and no later one.
+    PowerCut { to: u64 },
     /// Anything else: a restore, a lost disk, a poisoned log. Its vote can
     /// be older than one it gave.
     Restore,
@@ -29,9 +30,9 @@ impl RotatedBy {
     /// The word for each reason. Only a log below its mark is a power cut:
     /// a poisoned log can hold less than it reported, and every other
     /// reason can bring back an older disk or vote.
-    pub(crate) fn of(reason: RotateReason) -> Self {
+    pub(crate) fn of(reason: RotateReason, to: u64) -> Self {
         match reason {
-            RotateReason::LogBelowMark => Self::PowerCut,
+            RotateReason::LogBelowMark => Self::PowerCut { to },
             RotateReason::Empty
             | RotateReason::NoCopyFile
             | RotateReason::StorageId
@@ -42,11 +43,24 @@ impl RotatedBy {
         }
     }
 
-    fn word(self) -> &'static str {
+    fn encode(self) -> String {
         match self {
-            Self::PowerCut => "power-cut",
-            Self::Restore => "restore",
+            Self::PowerCut { to } => format!("power-cut {to:016x}\n"),
+            Self::Restore => "restore\n".to_owned(),
         }
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes == b"restore\n" {
+            return Some(Self::Restore);
+        }
+        let hex =
+            std::str::from_utf8(bytes.strip_prefix(b"power-cut ")?.strip_suffix(b"\n")?).ok()?;
+        if hex.len() != 16 {
+            return None;
+        }
+        let to = u64::from_str_radix(hex, 16).ok().filter(|to| *to != 0)?;
+        Some(Self::PowerCut { to })
     }
 }
 
@@ -57,17 +71,15 @@ pub(crate) fn load(dir: &Path) -> io::Result<RotatedBy> {
     let Some(bytes) = state_file::load(dir, FILE_NAME)? else {
         return Ok(RotatedBy::Restore);
     };
-    match bytes.as_slice() {
-        b"power-cut\n" => Ok(RotatedBy::PowerCut),
-        b"restore\n" => Ok(RotatedBy::Restore),
-        _ => Err(io::Error::new(
+    RotatedBy::decode(&bytes).ok_or_else(|| {
+        io::Error::new(
             io::ErrorKind::InvalidData,
             format!("{} does not decode", dir.join(FILE_NAME).display()),
-        )),
-    }
+        )
+    })
 }
 
 /// Write `by` into the kept directory `dir`, synced.
 pub(crate) fn store(dir: &Path, by: RotatedBy) -> io::Result<()> {
-    state_file::store(dir, FILE_NAME, &[by.word().as_bytes(), b"\n"])
+    state_file::store(dir, FILE_NAME, &[by.encode().as_bytes()])
 }
