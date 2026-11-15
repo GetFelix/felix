@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794704248701,
+  "lastUpdate": 1794704649055,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57512,6 +57512,58 @@ window.BENCHMARK_DATA = {
             "range": "4679.32",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 794980.26\nmean: 796588.12\nstdev: 4679.32\ncv: 0.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "06ac0313e83b37b33c8fd8bcaa525babb32d6b8a",
+          "message": "perf(replication): a nothing-due cache expiry tick no longer walks the expiring set (#2565) (#2573)\n\n* perf(replication): no expiry-set walk on a nothing-due tick, cheaper layered puts (#2461)\n\nThe cache keeps when its first value expires, so `next_expiry` and a\nnothing-due `due` no longer descend the expiring set (std's BTreeSet is\ndeeper than imbl's at 1M keys, which cost 2 ns on that cell).\n\nDuring a snapshot build a put finds its delta slot in one lookup and\ntells base expiring members from delta ones by the base's value, not a\nlookup in the set. The fold moves a key's value and its members together\nso that holds between fold chunks.\n\n* test(replication): first expiry kept when one of two sharing it is removed; changelog (#2565)\n\nSpec-Unaffected: the cache projection's contents and the order of expiry deletes are unchanged; only how the first expiry is found and how a fold moves members.\n\n* docs(replication): note the fold_into entry branch invariant (#2461)\n\nSpec-Unaffected: comment only",
+          "timestamp": "2026-11-14T16:58:00-08:00",
+          "tree_id": "e7fbb5e557a95d94431e69d4aaef35100bf4cb36",
+          "url": "https://github.com/GetFelix/felix/commit/06ac0313e83b37b33c8fd8bcaa525babb32d6b8a"
+        },
+        "date": 1794704648118,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 347448.86,
+            "range": "17010.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347448.86\nmean: 350726.79\nstdev: 17010.63\ncv: 4.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 347448.86,
+            "range": "17010.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 347448.86\nmean: 350726.79\nstdev: 17010.63\ncv: 4.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80678.1,
+            "range": "377.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80678.10\nmean: 80558.23\nstdev: 377.79\ncv: 0.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 806781,
+            "range": "3777.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 806781.00\nmean: 805582.27\nstdev: 3777.93\ncv: 0.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
