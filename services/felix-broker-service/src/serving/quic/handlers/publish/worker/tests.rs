@@ -1051,8 +1051,8 @@ mod on_raft {
 
     /// **A queued publish to a Raft shard is proposed to its group and
     /// answered with the offset it committed at**, in lane order. One
-    /// admitted at a term this broker no longer serves, or carrying what a
-    /// Raft stream cannot store, is refused with nothing proposed.
+    /// admitted at a term this broker no longer serves, or carrying headers
+    /// this broker does not take, is refused with nothing proposed.
     #[tokio::test]
     async fn a_queued_publish_to_a_raft_shard_commits_through_its_group() -> Result<()> {
         let root = tempfile::tempdir()?;
@@ -1099,7 +1099,10 @@ mod on_raft {
         let err = refused_term.await?.expect_err("a stale term was written");
         assert!(err.to_string().contains("does not serve"), "{err}");
         let err = refused_headers.await?.expect_err("headers were dropped");
-        assert!(err.to_string().contains("record headers"), "{err}");
+        assert!(
+            err.to_string().contains("record headers are not enabled"),
+            "{err}"
+        );
         let second = second.await?.expect("acknowledged").expect("an offset");
         assert_eq!(second, first + 1, "a refused publish took an offset");
         assert_eq!(
@@ -1110,6 +1113,68 @@ mod on_raft {
             fixture::delivered(&mut receiver).await,
             (second, Bytes::from_static(b"two"))
         );
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+
+    /// **A queued publish to a Raft shard keeps its publisher and headers**
+    /// once the fleet stores them on Raft: the subscriber gets both, as on
+    /// the hybrid.
+    #[tokio::test]
+    async fn a_queued_publish_to_a_raft_shard_keeps_its_publisher_and_headers() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        broker.record_headers_when(|| true);
+        broker.record_publishers_when(|| true);
+        broker.allow_raft_record_headers_when(|| true);
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            Arc::clone(&engine),
+        )));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let (mut receiver, _guard) = broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await?
+            .into_parts();
+
+        let headers = Bytes::from_static(b"\x00\x01k\x00\x01v");
+        let publisher = Bytes::from_static(b"svc-orders");
+        let (mut headered, answer) = job(
+            &handle,
+            &orders,
+            term,
+            b"headered",
+            Some(vec![Some(headers.clone())]),
+        );
+        headered.publisher = Some(publisher.clone());
+        publish_ctx.scheduler.send(headered).await;
+        let offset = answer.await?.expect("acknowledged").expect("an offset");
+
+        let delivered = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+            .await
+            .expect("delivered in time")
+            .expect("subscription open");
+        assert_eq!(delivered.base_offset(), Some(offset));
+        assert_eq!(delivered.publisher(), Some(&publisher));
+        assert_eq!(delivered.record_headers(), Some(&[Some(headers)][..]));
         EngineShards::shutdown(&*shards).await;
         Ok(())
     }
