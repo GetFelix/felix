@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794784546956,
+  "lastUpdate": 1794784928878,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75174,6 +75174,72 @@ window.BENCHMARK_DATA = {
             "range": "1080.01",
             "unit": "us",
             "extra": "trials: 5\nmedian: 392.00\nmean: 1154.40\nstdev: 1080.01\ncv: 93.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14e1750171f7dae34f1517d44e672750a17899d5",
+          "message": "fix(controlplane): Raft shards move only their placement leader (#2650) (#2651)\n\n* fix(controlplane): Raft shards move only their placement leader (#2650)\n\nOn a cluster whose identity records shard_engine raft, placement no\nlonger runs the hybrid's moves or failover on a durable stream's shard.\nA balance pass, a drain and an operator move write only `leader`, to a\nlive member of the set; a down leader stays named and the group elects;\na hybrid move left on such a shard is dropped. An operator move to a\nbroker outside the set is refused with not_a_member. Hybrid shards,\nin-memory streams and switched shards plan as before.\n\n* fix(controlplane): Raft balance keeps each stream's spread; tally and docs per review\n\nThe cluster rule moved a Raft leader for the totals even where that\nunbalanced its stream, which the stream rule undid on the next pass.\nThe old leader is now uncounted on any live broker, region aside, and\nthe docs say the group's leader follows placement only once #2649 lands.\n\n* fix(controlplane): leader moves keep the Raft target; rename a dead Raft leader\n\nA placement write that names the same brokers keeps the shard's raft_target\nand copy ids, so a leader move does not cancel a membership change in flight.\nA set change still drops them.\n\nA down Raft leader is renamed to a live member, even while paused, since\nbrokers with no member forward to the placement leader.\n\n* chore: spec pairing note for #2650\n\nSpec-Unaffected: control-plane placement writes only choose which voter leads a Raft shard. The voter set, raft_target and copy ids are unchanged by a leader move, and the hybrid placement paths FelixShard models are untouched. FelixRaftPlacement covers set changes, which this does not make.",
+          "timestamp": "2026-11-15T23:17:49Z",
+          "tree_id": "ba54009c5e7631206dd2c9d78e6776353abc1301",
+          "url": "https://github.com/GetFelix/felix/commit/14e1750171f7dae34f1517d44e672750a17899d5"
+        },
+        "date": 1794784921005,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 66.40\nstdev: 1.52\ncv: 2.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 99,
+            "range": "33.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 99.00\nmean: 115.40\nstdev: 33.83\ncv: 29.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 390,
+            "range": "224.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 390.00\nmean: 342.60\nstdev: 224.12\ncv: 65.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 85.40\nstdev: 1.95\ncv: 2.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 227,
+            "range": "42.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 227.00\nmean: 234.80\nstdev: 42.38\ncv: 18.05%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1012.9999999999999,
+            "range": "945.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1013.00\nmean: 1355.00\nstdev: 945.76\ncv: 69.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
