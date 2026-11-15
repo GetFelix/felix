@@ -29,6 +29,7 @@ use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
 use super::machine::{self, Cache, Machine, SnapshotData};
+use super::membership::Target;
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
@@ -43,7 +44,10 @@ use super::written::Reports;
 use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
 
+pub(crate) mod driver;
 pub(crate) mod membership;
+
+use driver::MembershipProgress;
 
 pub(crate) struct Group {
     pub(crate) id: GroupId,
@@ -91,6 +95,14 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
+    /// The newest target this member was told, kept in memory only: after
+    /// a restart nothing changes until the control plane speaks again.
+    target: tokio::sync::watch::Sender<Option<Target>>,
+    /// Where the membership stands against the target, as the driver
+    /// reports it.
+    progress: Arc<tokio::sync::watch::Sender<MembershipProgress>>,
+    /// How far behind a learner may be when it is promoted.
+    lag_threshold: u64,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -155,7 +167,10 @@ impl Timers {
 /// every follower has answered a message that named the idle gap. A lost
 /// message leaves the leader fast or the follower patient, never a patient
 /// leader with an impatient follower. A follower that restarts forgets the
-/// gap it was told, so an append it does not take voids its answer. See
+/// gap it was told, so an append it does not take voids its answer. One
+/// exception remains: an append that reaches the follower late and still
+/// finishes inside its deadline there, but past the leader's, can store the
+/// short gap after a later heartbeat's idle one (#2600). See
 /// `docs/per-shard-raft.md`, "Idle groups".
 pub(crate) struct Pace {
     timers: Timers,
@@ -183,12 +198,27 @@ struct Peer {
     /// only while `wrote` is still that, so any later entry voids it.
     idle_under: Option<u64>,
     answered: u64,
+    /// Appends naming the short gap that are on their way to this peer.
+    short_out: u32,
 }
 
-/// An append on its way to a peer, for [`Pace::answered`].
+impl Peer {
+    fn settled(&mut self, sent: &Sent, timers: &Timers) {
+        if sent.gap <= timers.heartbeat {
+            debug_assert!(self.short_out > 0, "settled an append never sent");
+            self.short_out = self.short_out.saturating_sub(1);
+        }
+    }
+}
+
+/// An append on its way to a peer, for [`Pace::answered`] or
+/// [`Pace::unanswered`]. Exactly one of them must be called for it.
 pub(crate) struct Sent {
     pub(crate) gap: u64,
     wrote: u64,
+    /// Whether no append naming the short gap was on its way to the peer
+    /// when this one left.
+    clean: bool,
 }
 
 impl Pace {
@@ -230,21 +260,33 @@ impl Pace {
             // The followers hear the short gap in this message.
             self.wrote();
         }
+        // Read under the lock, so the sends to a peer name their gaps in the
+        // order they count in `short_out`: a later send never names an older
+        // `wrote` than one already counted.
+        let mut peers = self.peers.lock();
         let now = timers.now();
         let wrote = self.wrote.load(Ordering::Relaxed);
-        let mut peers = self.peers.lock();
         if !peers.iter().any(|peer| &peer.id == to) {
             peers.push(Peer {
                 id: to.clone(),
                 idle_under: None,
                 answered: now,
+                short_out: 0,
             });
         }
+        let peer = peers
+            .iter_mut()
+            .find(|peer| &peer.id == to)
+            .expect("just added");
         let gap = match now >= wrote + timers.idle_after {
             true => timers.idle_heartbeat,
             false => timers.heartbeat,
         };
-        Sent { gap, wrote }
+        let clean = peer.short_out == 0;
+        if gap <= timers.heartbeat {
+            peer.short_out += 1;
+        }
+        Sent { gap, wrote, clean }
     }
 
     /// The leader has an entry to send. An idle group is busy again: the
@@ -260,11 +302,18 @@ impl Pace {
     }
 
     /// `to` took the append: it now waits by the gap the append named.
+    ///
+    /// An idle answer counts only if no short-gap append was on its way when
+    /// it left. The follower stores each gap once it has handled the append,
+    /// and an entry append it took first can finish its fsync after the
+    /// heartbeat's answer, leaving it at the short gap.
     pub(crate) fn answered(&self, to: &MemberId, sent: &Sent) {
-        let now = self.timers.now();
+        let timers = &self.timers;
+        let now = timers.now();
         if let Some(peer) = self.peers.lock().iter_mut().find(|peer| &peer.id == to) {
+            peer.settled(sent, timers);
             peer.answered = now;
-            if sent.gap > self.timers.heartbeat {
+            if sent.gap > timers.heartbeat && sent.clean {
                 peer.idle_under = Some(sent.wrote);
             }
         }
@@ -273,13 +322,14 @@ impl Pace {
     /// `to` did not take the append: it was lost, refused or rejected. The
     /// peer may have restarted and forgotten the idle gap, so the leader
     /// goes back to the short one until it answers again.
-    pub(crate) fn unanswered(&self, to: &MemberId) {
+    pub(crate) fn unanswered(&self, to: &MemberId, sent: &Sent) {
         let timers = &self.timers;
         let now = timers.now();
         let mut peers = self.peers.lock();
         let Some(peer) = peers.iter_mut().find(|peer| &peer.id == to) else {
             return;
         };
+        peer.settled(sent, timers);
         peer.idle_under = None;
         // A peer long silent is not waited for (`leader_gap`), so a broker
         // that is down does not keep its groups' leaders fast.
@@ -337,6 +387,19 @@ impl Pace {
         self.heard.store(now, Ordering::Relaxed);
         self.due
             .store(now.saturating_add(self.follower_wait()), Ordering::Relaxed);
+    }
+
+    /// This member took an append that named `gap` and reached it at
+    /// `arrived`. If handling it outlasted `deadline` the leader has stopped
+    /// waiting and counts it unanswered, and may already have had a later
+    /// heartbeat's idle gap answered. Storing a short gap could then leave
+    /// the follower at the short gap under a slow leader, so it keeps the one
+    /// it has. A late idle gap is still stored: a fast leader with a patient
+    /// follower is the safe pairing.
+    pub(super) fn took(&self, gap: u64, arrived: u64, deadline: Duration) {
+        let late = self.timers.now().saturating_sub(arrived) >= deadline.as_millis() as u64;
+        let short = gap <= self.timers.heartbeat;
+        self.followed((!(late && short)).then_some(gap));
     }
 
     /// This member granted a vote. Whoever wins starts at the short gap.
@@ -514,6 +577,7 @@ impl Group {
             ),
             group: id.clone(),
         };
+        let lag_threshold = config.replication_lag_threshold;
         let raft = Raft::new(member.clone(), config, network, log, machine)
             .await
             .map_err(|err| OpenError::Raft(err.to_string()))?;
@@ -575,6 +639,9 @@ impl Group {
             gate: Arc::default(),
             #[cfg(test)]
             apply_hold,
+            target: tokio::sync::watch::Sender::default(),
+            progress: Arc::default(),
+            lag_threshold,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             stopped: AtomicBool::new(false),
@@ -584,6 +651,42 @@ impl Group {
             reads: Arc::default(),
             runtime: tokio::runtime::Handle::current(),
         })
+    }
+
+    /// Start the task that makes this group's membership match its
+    /// target while this member leads. It ends on `stop`, or when the
+    /// group's core is gone.
+    pub(crate) fn drive(self: &Arc<Self>) {
+        let driver = driver::Driver::new(
+            Arc::clone(self),
+            self.lag_threshold,
+            driver::Retry::default(),
+            Arc::clone(&self.progress),
+        );
+        self.runtime.spawn(driver::run(
+            driver,
+            self.target.subscribe(),
+            self.leadership.changes(),
+            self.stop.clone(),
+        ));
+    }
+
+    /// The control plane's target for this group. Only a target newer than
+    /// the one held replaces it. Returns whether it did.
+    pub(crate) fn retarget(&self, target: Target) -> bool {
+        self.target.send_if_modified(|held| {
+            let newer = held
+                .as_ref()
+                .is_none_or(|held| target.version > held.version);
+            if newer {
+                *held = Some(target);
+            }
+            newer
+        })
+    }
+
+    pub(crate) fn membership_progress(&self) -> MembershipProgress {
+        self.progress.borrow().clone()
     }
 
     /// Form the group from its first member set. Every member of the set
@@ -723,18 +826,21 @@ impl Group {
     /// The timer restarts even if the caller stops waiting: openraft
     /// persists the append or vote either way, and a follower that keeps
     /// answering past the sender's deadline would otherwise stand for
-    /// election while it still hears its leader.
+    /// election while it still hears its leader. Past `deadline` it keeps
+    /// its gap ([`Pace::took`]).
     pub(crate) async fn handle(
         self: &Arc<Self>,
         body: Request,
         beat: u64,
         report: bool,
+        deadline: Duration,
     ) -> Result<Reply, Refused> {
         let group = Arc::clone(self);
+        let arrived = self.pace.timers.now();
         let handled = tokio::spawn(async move {
             let reply = group.answer(body, report).await?;
             match &reply {
-                Reply::Append(Ok(_)) => group.pace.followed(Some(beat)),
+                Reply::Append(Ok(_)) => group.pace.took(beat, arrived, deadline),
                 Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
                 _ => {}
             }
@@ -1255,10 +1361,17 @@ impl Group {
     /// this member leads, before it returns that term. `None` if it leads
     /// none.
     pub(crate) async fn transfer_starting(&self) -> Option<u64> {
+        self.transfer_starting_in(None).await
+    }
+
+    /// [`Self::transfer_starting`], and nothing is given up unless the
+    /// term this member leads is `only`, when one is named.
+    pub(super) async fn transfer_starting_in(&self, only: Option<u64>) -> Option<u64> {
         // Asked of the core, in the queue a transfer request goes through.
-        let leads = self.raft.with_raft_state(|state| {
+        let leads = self.raft.with_raft_state(move |state| {
             let leads = state.server_state == ServerState::Leader;
-            leads.then(|| state.vote_ref().leader_id().term())
+            let term = state.vote_ref().leader_id().term();
+            (leads && only.is_none_or(|only| only == term)).then_some(term)
         });
         let leads = leads.await.ok().flatten();
         if let Some(term) = leads {
@@ -1597,6 +1710,7 @@ impl Group {
             ticks: self.ticks.load(Ordering::Relaxed),
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
             client_writes: self.client_writes.load(Ordering::Relaxed),
+            membership: self.membership_progress(),
         }
     }
 
@@ -1605,6 +1719,19 @@ impl Group {
         let metrics = self.raft.metrics();
         let metrics = metrics.borrow_watched();
         metrics.membership_config.membership().voter_ids().collect()
+    }
+
+    /// Every member of the latest membership this member holds, voters and
+    /// learners.
+    pub(crate) fn members(&self) -> BTreeSet<MemberId> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let membership = metrics.membership_config.membership();
+        membership
+            .voter_ids()
+            .chain(membership.learner_ids())
+            .collect()
     }
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {

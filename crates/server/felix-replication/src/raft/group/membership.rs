@@ -3,12 +3,9 @@
 //! that has moved writes nothing. See `docs/per-shard-raft.md`,
 //! "Membership".
 
-// The driver that decides and calls these steps is not built yet.
-#![cfg_attr(not(test), allow(dead_code))]
+use std::collections::{BTreeMap, BTreeSet};
 
-use std::collections::BTreeSet;
-
-use openraft::error::{ClientWriteError, RaftError};
+use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
 use openraft::raft::Precondition;
 use openraft::type_config::alias::LogIdOf;
 use openraft::vote::RaftLeaderId;
@@ -29,6 +26,17 @@ pub(crate) struct Basis {
     pub(crate) membership: Membership,
     /// Whether the entry at `at` is committed.
     pub(crate) committed: bool,
+    /// Whether an entry of `term` is committed.
+    pub(crate) own_term_committed: bool,
+    pub(crate) commit_index: u64,
+}
+
+/// How far each other member's log is known to reach, with the leader's
+/// own last index from the same look.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Replication {
+    pub(crate) last_index: u64,
+    pub(crate) matched: BTreeMap<MemberId, u64>,
 }
 
 impl Basis {
@@ -59,12 +67,16 @@ pub(crate) enum StepError {
     /// The membership is joint. Only leaving it is written on a joint: any
     /// other edit would flatten it, and could drop this leader on the way.
     Joint,
+    /// openraft cannot take a change yet: one is in progress, or nothing
+    /// of this term is committed. The same step can go through later.
+    Busy(String),
+    /// openraft refused the membership itself. Asking again changes
+    /// nothing.
+    Refused(String),
     /// The membership is not joint, so there is nothing to leave.
     NotJoint,
     /// The step would write a version below the one the membership has.
     OlderVersion,
-    /// openraft refused the membership.
-    Refused(String),
     /// The group's core has stopped.
     Closed,
 }
@@ -79,16 +91,46 @@ impl Group {
             leads.then(|| {
                 let latest = state.membership_state.effective();
                 let at = *latest.log_id();
+                let term = vote.leader_id().term();
+                let committed = state.local_committed();
                 Basis {
-                    term: vote.leader_id().term(),
+                    term,
                     at,
                     membership: latest.membership().clone(),
                     // What openraft itself asks before it takes a change.
                     committed: state.membership_state.committed().log_id() == &at,
+                    own_term_committed: committed
+                        .is_some_and(|at| **at.committed_leader_id() == term),
+                    commit_index: committed.map_or(0, |at| at.index),
                 }
             })
         });
         read.await.ok().flatten()
+    }
+
+    /// What this leader knows of the other members' logs.
+    pub(crate) fn replication(&self) -> Replication {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let matched = metrics.replication.iter().flatten();
+        Replication {
+            last_index: metrics.last_log_index.unwrap_or(0),
+            matched: matched
+                .filter_map(|(member, at)| Some((member.clone(), at.as_ref()?.index)))
+                .collect(),
+        }
+    }
+
+    /// Hand the leadership of `term` to `to`. Nothing is asked if this
+    /// member no longer leads that term: the successor was picked from
+    /// that term's log.
+    pub(crate) async fn transfer_in(&self, term: u64, to: MemberId) -> Option<u64> {
+        // The term is checked in the read that gives up the lease, so a
+        // later term this member won meanwhile is never closed.
+        let term = self.transfer_starting_in(Some(term)).await?;
+        let _ = self.raft.trigger().transfer_leader(to).await;
+        Some(term)
     }
 
     /// Add `member` as a learner. It takes no vote.
@@ -193,6 +235,10 @@ fn outcome(
         Err(RaftError::APIError(
             ClientWriteError::ForwardToLeader(_) | ClientWriteError::LogEntryDiscarded(_),
         )) => Err(StepError::NotLeader),
+        Err(RaftError::APIError(ClientWriteError::ChangeMembershipError(
+            err @ (ChangeMembershipError::InProgress(_)
+            | ChangeMembershipError::UncommittedLeaderLog(_)),
+        ))) => Err(StepError::Busy(err.to_string())),
         Err(RaftError::APIError(ClientWriteError::ChangeMembershipError(err))) => {
             Err(StepError::Refused(err.to_string()))
         }

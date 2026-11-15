@@ -57,6 +57,7 @@ pub use deliver::{IdempotentPublish, RaftReads};
 #[cfg(any(test, feature = "testing"))]
 pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
+pub use group::driver::MembershipProgress;
 pub use membership::{Target, TargetVersion};
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};

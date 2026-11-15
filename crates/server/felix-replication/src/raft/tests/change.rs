@@ -276,6 +276,39 @@ async fn a_step_decided_on_an_older_membership_writes_nothing() {
     cluster.stop().await;
 }
 
+/// The driver tries a busy step again and reports a refused one, so the
+/// two must not be told as one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_change_in_progress_is_busy_and_an_unknown_member_is_refused() {
+    let (mut cluster, leader) = pair().await;
+    let held = basis(&leader).await;
+    let unknown = leader
+        .change_voters(&held, set(&["a", "b", "d"]), v(2))
+        .await;
+    assert!(matches!(unknown, Err(StepError::Refused(_))), "{unknown:?}");
+
+    // The learner's entry cannot commit while no append arrives.
+    let lost = &cluster.net.lose_appends;
+    lost.store(true, std::sync::atomic::Ordering::Relaxed);
+    let learner = Arc::clone(&leader);
+    let adding = tokio::spawn(async move { learner.add_learner(&held, m("c")).await });
+    let uncommitted = loop {
+        let now = basis(&leader).await;
+        if !now.committed {
+            break now;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    let busy = leader
+        .change_voters(&uncommitted, set(&["a", "b", "c"]), v(2))
+        .await;
+    assert!(matches!(busy, Err(StepError::Busy(_))), "{busy:?}");
+
+    lost.store(false, std::sync::atomic::Ordering::Relaxed);
+    adding.await.expect("the step").expect("learner");
+    cluster.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_step_writes_a_membership_without_its_leader() {
     let (mut cluster, leader) = pair().await;
@@ -388,9 +421,15 @@ async fn a_change_through_a_joint_keeps_its_version_in_both_entries() {
     let (change, at) = stalled_in_the_joint(&cluster, &leader).await;
     assert_eq!(at.expect("an entry").index, before + 1);
 
-    // Answers are heard again: the joint commits, and openraft leaves it.
+    // Answers are heard again: the joint commits and is left, by openraft's
+    // second step or by the leader's driver, whichever is first. The other
+    // finds the log moved and writes nothing.
     cluster.net.lose_answers.store(false, Relaxed);
-    change.await.expect("joined").expect("change");
+    let changed = change.await.expect("joined");
+    assert!(
+        matches!(changed, Ok(()) | Err(StepError::Moved)),
+        "{changed:?}"
+    );
     let want = settled(&BROKERS, &[], 2);
     everywhere(&cluster, &want).await;
     let after = basis(&leader).await;
@@ -401,7 +440,8 @@ async fn a_change_through_a_joint_keeps_its_version_in_both_entries() {
 }
 
 /// The leader that wrote the joint is replaced before it commits. The new
-/// leader reads the joint, and its version, from its own log and leaves it.
+/// leader reads the joint, and its version, from its own log and leaves it
+/// before it is told any target.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_new_leader_leaves_the_joint_it_finds() {
     let (mut cluster, old) = one_voter().await;
@@ -419,14 +459,12 @@ async fn a_new_leader_leaves_the_joint_it_finds() {
     assert_eq!(change.await.expect("joined"), Err(StepError::NotLeader));
     assert!(old.membership_basis().await.is_none());
 
-    let found = basis(&new).await;
-    assert!(found.committed && found.term > term);
-    assert_eq!((found.at, &found.membership), (at, &joint()));
-
-    new.leave_joint(&found).await.expect("leave");
+    // Nobody asks: the new leader's driver leaves the joint, with no
+    // target told.
     let want = settled(&BROKERS, &[], 2);
     everywhere(&cluster, &want).await;
     let after = basis(&new).await;
+    assert!(after.term > term);
     assert_eq!(after.membership, want);
     assert_eq!(
         after.at.expect("an entry").index,

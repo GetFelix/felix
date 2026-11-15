@@ -616,6 +616,7 @@ fn start_group() -> Group {
         state: Box::new(exported),
         overwrite: false,
         mark_unplaced: false,
+        raise_incarnation: false,
     });
     let (status, body) = http(
         peer_addrs[0],

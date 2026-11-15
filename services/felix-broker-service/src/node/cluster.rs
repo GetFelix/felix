@@ -307,6 +307,25 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
                 }
             }
         };
+        // A file that does not decode is not read as 0: that would report
+        // an acknowledgement this root may never have made.
+        let placement_root = on.root.clone();
+        match felix_common::blocking::spawn(move || {
+            felix_storage::raft_copy::acked_placement_incarnation(&placement_root)
+        })
+        .await
+        {
+            Ok(Ok(acked)) => {
+                on.slot.set_placement_root(on.root.clone(), acked);
+            }
+            Ok(Err(err)) => tracing::error!(
+                root = %on.root.display(),
+                error = %err,
+                "could not read the placement incarnation this root acknowledged; not \
+                 reporting one",
+            ),
+            Err(err) => tracing::error!(error = %err, "the placement incarnation read panicked"),
+        }
         let reported = Arc::clone(&root);
         on.slot.set(move || {
             let report = RootReport::of(reported.mark_log());

@@ -60,8 +60,13 @@ pub mod sim {
     }
 
     /// Whether this thread draws from a seeded generator.
-    pub(crate) fn is_seeded() -> bool {
+    pub fn is_seeded() -> bool {
         STATE.with(|state| state.get().is_some())
+    }
+
+    /// The seed this thread was last seeded with, if any.
+    pub fn seed_of() -> Option<u64> {
+        SEED.with(Cell::get)
     }
 
     /// The next draw of this thread's generator, if it has been seeded.

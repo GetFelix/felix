@@ -166,6 +166,10 @@ pub(super) async fn delete_node(store: &InMemoryStore, node_id: &str) -> StoreRe
     if state.records.remove(node_id).is_none() {
         return Err(StoreError::NotFound("node".into()));
     }
+    // A re-registration starts at incarnation 0 again, so a kept
+    // acknowledgement would match the new process and count a wiped broker
+    // at its predecessor's value. Under the node lock, as a record is.
+    store.placement.write().await.acks.remove(node_id);
     state.record(NodeChangeOp::Deregistered, node_id, None);
     metrics::counter!("felix_node_changes_total", "op" => "deregistered").increment(1);
     Ok(())
