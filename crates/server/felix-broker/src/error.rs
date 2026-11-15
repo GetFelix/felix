@@ -184,9 +184,13 @@ pub enum BrokerError {
     },
     /// A publish carried record headers and this broker does not accept
     /// them: the operator turned them off, or the broker is in a cluster
-    /// whose fleet has not finalized `record_headers`. Nothing was written.
-    #[error("record headers are not enabled on this broker")]
-    RecordHeadersNotEnabled,
+    /// whose fleet has not finalized `record_headers`, or, for a shard on
+    /// Raft, `raft_record_headers`. Nothing was written.
+    #[error("record headers are not enabled on this broker (finalize `{feature}`)")]
+    RecordHeadersNotEnabled {
+        /// The fleet feature still to finalize.
+        feature: &'static str,
+    },
     /// A head trim waited too long for the committed mark or the replay ring.
     /// A trim already claimed may still land; re-read the tail before retrying.
     #[error("the head trim at offset {offset} was not acknowledged in time")]

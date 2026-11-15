@@ -293,6 +293,21 @@ pub struct ShardAssignment {
     /// passes is replaced. Under Raft it needs metadata level 34.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch: Option<ShardSwitch>,
+    /// The Raft copy id each broker in the set last reported for this shard,
+    /// by node id. Only on a shard that switched to Raft; a broker that
+    /// leaves the set loses its entry. Store-owned like `generation`: only a
+    /// copy-id report writes it, and whatever a caller passes is replaced.
+    /// Under Raft it needs metadata level 36.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub raft_copy_ids: BTreeMap<String, u64>,
+    /// The voters the shard's Raft group should have: see [`RaftTarget`].
+    /// Today only a copy-id report moves it; a set change will too once Raft
+    /// shards are placed. Its counter counts within this record, at the
+    /// stream's `incarnation`: a stream created again starts a new group and
+    /// a new count. Store-owned like `generation`. Under Raft it needs
+    /// metadata level 36.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_target: Option<RaftTarget>,
 }
 
 /// A stream or cache at one incarnation. An import marks every one it
@@ -1349,6 +1364,8 @@ pub(crate) fn check_elected_generation(current: u64, elected: u64) -> Result<(),
     Ok(())
 }
 
+mod raft_target;
+pub use raft_target::{RaftTarget, RaftTargetError};
 mod switch;
 pub use switch::{SealOrderError, SealReport, SealReportError, SealedSideLog, ShardSwitch};
 

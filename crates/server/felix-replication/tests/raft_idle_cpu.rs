@@ -203,10 +203,12 @@ async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Durati
                                 records: vec![Record {
                                     timestamp_micros: 1_700_000_000,
                                     payload: Bytes::from_static(&[7; 100]),
+                                    headers: None,
                                 }],
                                 ack: AckAt::Written,
                                 term: None,
                                 producer: None,
+                                publisher: None,
                             },
                         ),
                     )
@@ -268,10 +270,12 @@ async fn with_a_dead_peer(
             records: vec![Record {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(&[7; 100]),
+                headers: None,
             }],
             ack: AckAt::Written,
             term: None,
             producer: None,
+            publisher: None,
         };
         let write = RaftEngine::new(runtime.clone()).propose(&shard(n), batch);
         if let Ok(Ok(_)) = tokio::time::timeout(WRITE_TIMEOUT, write).await {

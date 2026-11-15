@@ -574,7 +574,7 @@ impl LaneWork {
             } => (handle, shard, *generation),
             PublishTarget::Idempotent {
                 handle,
-                shard: Some(shard),
+                shard: Some(_),
                 producer_id,
                 ..
             } => {
@@ -582,19 +582,6 @@ impl LaneWork {
                 // written waits for nothing and holds nothing up. The
                 // number of records is the engine's to check: a batch of
                 // several may be one the log already holds.
-                if job.headers.is_some() {
-                    let err = felix_broker::BrokerError::NotOnEngineStream {
-                        what: "record headers",
-                    };
-                    let shard = shard.clone();
-                    settle(
-                        job.response,
-                        job.acked_on_enqueue,
-                        Some(&shard),
-                        Err(err.into()),
-                    );
-                    return None;
-                }
                 let mut turn: Turn = Box::pin(self.broker.producer_turn(handle, *producer_id));
                 // The first poll takes the place in the producer's line.
                 return match futures::FutureExt::now_or_never(turn.as_mut()) {
@@ -607,26 +594,25 @@ impl LaneWork {
             }
             _ => unreachable!("only local publishes with a shard are proposed"),
         };
-        let proposed = match job.headers.as_ref() {
-            Some(_) => Err(felix_broker::BrokerError::NotOnEngineStream {
-                what: "record headers",
-            }
-            .into()),
-            None => self
-                .engine
-                .publish_on_raft(
-                    &self.broker,
-                    handle,
-                    shard,
-                    term,
-                    std::mem::take(&mut job.payloads),
-                    self.quorum_timeout,
-                )
-                .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
-                    term,
-                }))
-                .map_err(crate::shards::routing::RaftRefusal::into_anyhow),
+        let attribution = felix_broker::Attribution {
+            publisher: job.publisher.take(),
+            headers: job.headers.take(),
         };
+        let proposed = self
+            .engine
+            .publish_on_raft(
+                &self.broker,
+                handle,
+                shard,
+                term,
+                std::mem::take(&mut job.payloads),
+                attribution,
+                self.quorum_timeout,
+            )
+            .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
+                term,
+            }))
+            .map_err(crate::shards::routing::RaftRefusal::into_anyhow);
         let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
@@ -666,6 +652,10 @@ impl LaneWork {
                 *sequence,
                 *reuse,
                 std::mem::take(&mut job.payloads),
+                felix_broker::Attribution {
+                    publisher: job.publisher.take(),
+                    headers: job.headers.take(),
+                },
                 self.quorum_timeout,
             )
             .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
@@ -1049,12 +1039,30 @@ fn headers_unsupported(
     match &err {
         ForwardError::Refused {
             code: Some(felix_wire::internal::ErrorCode::UnsupportedKind),
+            detail,
             ..
-        } if has_headers => ClientError::from_broker(
-            &felix_broker::BrokerError::RecordHeadersNotEnabled,
-            "the shard's owner does not accept record headers yet; publish without them or to the owner",
-        )
-        .into(),
+        } if has_headers => {
+            // The owner's refusal only travels as text; its message names the
+            // feature it still waits on, so name that one to the client.
+            let (feature, message) = if detail
+                .contains(felix_common::fleet::RAFT_RECORD_HEADERS.name())
+            {
+                (
+                    felix_common::fleet::RAFT_RECORD_HEADERS.name(),
+                    "the shard's owner has not finalized `raft_record_headers`; publish without headers or retry once it has",
+                )
+            } else {
+                (
+                    felix_common::fleet::RECORD_HEADERS.name(),
+                    "the shard's owner does not accept record headers yet; publish without them or to the owner",
+                )
+            };
+            ClientError::from_broker(
+                &felix_broker::BrokerError::RecordHeadersNotEnabled { feature },
+                message,
+            )
+            .into()
+        }
         _ => err.into(),
     }
 }

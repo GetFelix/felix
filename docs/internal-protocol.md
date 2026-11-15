@@ -366,7 +366,8 @@ encoding as kind 52, whose section must hold one. It travels as
 `PlainSequencedForwardPublish` (64) instead: the `AuthorizedForwardPublish`
 body followed by the same two `u64`s, with no block section, and it decodes
 with no headers. That is the form a Raft shard's owner can take, since it
-refuses any forward with headers until Raft stores them. It goes only to an
+refuses a forward with headers until the fleet finalizes
+`raft_record_headers`. It goes only to an
 owner that offered `PLAIN_SEQUENCED_FORWARDS` and `SEQUENCED_FORWARDS`. A
 batch with a block still travels as kind 52, byte for byte as before. The
 MQTT listener, today's only sender of a sequenced forward, always attaches a
@@ -1203,7 +1204,15 @@ After the report byte comes the message:
   Unlike 5 it is sent, since the log holds the trim mark, and a build
   without it refuses the whole append (`6 is not an entry payload`), so a
   leader writes one only once the fleet has finalized `raft_head_trim`. A
-  trim with an expected offset or a producer is refused to encode.
+  trim with an expected offset or a producer is refused to encode. 7 is a
+  record with its publisher id, its key-and-headers block, or both: a flags
+  byte (1 publisher, 2 headers; any other value is refused), each present
+  one as a `u32` length and its bytes, publisher first, then the record
+  under its own tag (1, 3, 4 or 5). A record with neither is never wrapped,
+  so its frame is unchanged. A build without 7 refuses the whole append
+  (`7 is not an entry payload`), so a leader writes one only once the fleet
+  has finalized `raft_record_headers`. A trim with either is refused to
+  encode.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.

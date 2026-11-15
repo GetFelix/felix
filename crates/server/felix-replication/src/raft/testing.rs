@@ -37,6 +37,8 @@ impl GroupRuntime {
                 producer,
                 expected: None,
                 trim: None,
+                publisher: None,
+                headers: None,
                 written: None,
             };
             let written = group.raft().client_write(command).await.ok()?;

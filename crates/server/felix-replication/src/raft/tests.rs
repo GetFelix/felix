@@ -445,6 +445,8 @@ impl Cluster {
                 producer: None,
                 expected: None,
                 trim: None,
+                publisher: None,
+                headers: None,
                 written: None,
             };
             match member.raft().client_write(command).await {
@@ -476,6 +478,8 @@ impl Cluster {
                     producer: None,
                     expected: None,
                     trim: None,
+                    publisher: None,
+                    headers: None,
                     written: None,
                 })
             });
@@ -1300,6 +1304,8 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
         payload: Bytes::from_static(b"proposed"),
         producer: None,
         written: Some(token),
+        headers: None,
+        publisher: None,
     };
     let raft = member.raft().clone();
     let mut write = tokio::spawn(async move { raft.client_write(command).await });
@@ -1346,14 +1352,18 @@ fn a_commands_token_is_not_serialized() {
         payload: Bytes::from_static(b"p"),
         producer: None,
         written: Some(token),
+        headers: None,
+        publisher: None,
     };
     let sent = serde_json::to_value(&command).expect("json");
     assert_eq!(
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
         [
             "expected",
+            "headers",
             "payload",
             "producer",
+            "publisher",
             "timestamp_micros",
             "trim"
         ]
@@ -1623,6 +1633,59 @@ async fn restarted_brokers_resume_from_their_logs() {
     cluster.stop().await;
 }
 
+/// **A restarted member's log still holds each record's publisher and
+/// headers.** They live in the entry itself, so a member that reopens its log
+/// serves them to a history read as it did before the restart.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_member_reads_back_publisher_and_headers() {
+    use felix_storage::log::ReadRange;
+
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let member = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let publisher = Bytes::from_static(b"svc-orders");
+    let headers = Bytes::from_static(b"\x00\x01k\x00\x01v");
+    let command = Command {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(b"headered"),
+        producer: None,
+        expected: None,
+        trim: None,
+        publisher: Some(publisher.clone()),
+        headers: Some(Box::new(headers.clone())),
+        written: None,
+    };
+    let at = member
+        .raft()
+        .client_write(command)
+        .await
+        .expect("write")
+        .log_id
+        .index;
+    cluster.committed_everywhere(0, at).await;
+
+    cluster.stop().await;
+    cluster.start(true);
+    cluster.open(0).await;
+    cluster.elected(0).await;
+    for ((broker, _), log) in &cluster.logs {
+        let range = ReadRange {
+            start: at,
+            max_bytes: 1 << 20,
+        };
+        let page = log.read_range(range).await.expect("read");
+        let record = &page.records[0];
+        assert_eq!(record.offset, at, "{broker}");
+        assert_eq!(record.publisher.as_ref(), Some(&publisher), "{broker}");
+        assert_eq!(record.headers.as_deref(), Some(&headers), "{broker}");
+    }
+    cluster.stop().await;
+}
+
 /// A snapshot holds the applied id and the membership and takes nothing
 /// from the log, however long the log is. A member that restarts on one
 /// still has its entries.
@@ -1754,6 +1817,8 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         };
         last = member
@@ -1969,6 +2034,8 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         })
         .await
@@ -2145,6 +2212,8 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             producer: None,
             expected: None,
             trim: None,
+            publisher: None,
+            headers: None,
             written: None,
         })
         .await
@@ -2265,6 +2334,8 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
                     producer: None,
                     expected: None,
                     trim: None,
+                    publisher: None,
+                    headers: None,
                     written: None,
                 })
                 .await

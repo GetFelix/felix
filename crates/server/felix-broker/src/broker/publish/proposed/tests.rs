@@ -381,6 +381,7 @@ async fn a_refused_conditional_publish_keeps_the_ring() {
             .propose_publish_at(
                 &handle,
                 vec![Bytes::from_static(b"if")],
+                crate::Attribution::default(),
                 0,
                 Duration::MAX,
                 move |tail| {

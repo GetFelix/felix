@@ -423,6 +423,8 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("assign the new shard");

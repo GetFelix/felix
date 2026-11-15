@@ -130,7 +130,16 @@ pub(crate) async fn publish_at(
             .await?;
     let shard = shard_key(publish_ctx, tenant_id, namespace, stream, key, named)?;
     if publish_ctx.engine.on_raft(&shard) {
-        return publish_at_on_raft(broker, publish_ctx, &shard, payloads, expected_offset).await;
+        let publisher = publisher.cloned();
+        return publish_at_on_raft(
+            broker,
+            publish_ctx,
+            &shard,
+            payloads,
+            publisher,
+            expected_offset,
+        )
+        .await;
     }
     leader_write(
         broker,
@@ -156,6 +165,7 @@ async fn publish_at_on_raft(
     publish_ctx: &PublishContext,
     shard: &ShardKey,
     payloads: Vec<Bytes>,
+    publisher: Option<Bytes>,
     expected_offset: u64,
 ) -> Result<u64, NotWritten> {
     let (dispatched, _) = dispatch_write(publish_ctx.ingress.as_deref(), shard).await;
@@ -177,6 +187,10 @@ async fn publish_at_on_raft(
             shard,
             term,
             payloads,
+            felix_broker::Attribution {
+                publisher,
+                headers: None,
+            },
             expected_offset,
             publish_ctx.quorum_timeout,
         )

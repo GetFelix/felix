@@ -75,6 +75,8 @@ impl Fixture {
                 readmitted: Default::default(),
                 placed: None,
                 switch: None,
+                raft_copy_ids: Default::default(),
+                raft_target: None,
             })
             .await
             .expect("assign");
@@ -353,4 +355,103 @@ async fn the_snapshot_marks_only_a_first_assignment() {
     let later = snapshot().await;
     assert_eq!(later["leader"], "broker-y");
     assert_eq!(later.get("first_assignment"), None, "{later}");
+}
+
+/// The feed carries a Raft target with its version only while every
+/// registered broker has acknowledged the placement incarnation, and never
+/// the record's own field.
+#[tokio::test]
+async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
+    let fixture = fixture().await;
+    fixture.assign("broker-x").await;
+    let state = crate::store::export::export_state_from(
+        fixture.store.as_ref() as &(dyn crate::store::ControlPlaneAuthStore + Send + Sync)
+    )
+    .await
+    .expect("export");
+    // Written into the record directly: the store writes one only on a
+    // switched shard, and the feed is what is under test.
+    let mut state = serde_json::to_value(state).expect("json");
+    for entry in state["shards"].as_array_mut().expect("shards") {
+        entry[1]["raft_target"] = serde_json::json!({"counter": 3, "members": {"broker-x": 7}});
+        entry[1]["raft_copy_ids"] = serde_json::json!({"broker-x": 7});
+    }
+    let state = serde_json::from_value(state).expect("state");
+    fixture.store.import_state(state).await.expect("import");
+
+    let snapshot = || async {
+        let request = Request::builder()
+            .uri("/v1/shard-assignments/snapshot")
+            .header("authorization", format!("Bearer {}", fixture.bearer))
+            .body(Body::empty())
+            .expect("request");
+        let response = fixture
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+    };
+    let item = snapshot().await["items"][0].clone();
+    assert_eq!(
+        item["target"],
+        serde_json::json!({"version": {"incarnation": 0, "counter": 3}, "members": {"broker-x": 7}})
+    );
+    assert!(item.get("raft_target").is_none(), "{item}");
+    assert!(item.get("raft_copy_ids").is_none(), "{item}");
+
+    // A broker holds an incarnation this store never issued: the store
+    // moves past it, and nobody has acknowledged the new one.
+    let nodes = fixture.store.list_nodes().await.expect("nodes");
+    let ack = |node: &crate::model::Node, incarnation| crate::model::PlacementAck {
+        incarnation,
+        node_incarnation: node.status.incarnation,
+    };
+    assert!(
+        fixture
+            .store
+            .record_placement_ack(&nodes[0].node_id, ack(&nodes[0], 1))
+            .await
+            .expect("ack")
+    );
+    let current = fixture.store.placement_incarnation().await.expect("read");
+    assert_eq!(
+        snapshot().await["items"][0]["target"],
+        serde_json::Value::Null
+    );
+    let changes = fixture.changes("since=0".to_string()).await;
+    for change in changes["items"].as_array().expect("items") {
+        assert_eq!(change["assignment"]["target"], serde_json::Value::Null);
+    }
+
+    for node in &nodes {
+        fixture
+            .store
+            .record_placement_ack(&node.node_id, ack(node, current))
+            .await
+            .expect("ack");
+    }
+    assert_eq!(
+        snapshot().await["items"][0]["target"]["version"],
+        serde_json::json!({"incarnation": current, "counter": 3})
+    );
+    // Records read before a restore that landed during the read go out
+    // without their target, even once everyone has acknowledged.
+    assert_eq!(
+        super::target_incarnation(&fixture.state, current)
+            .await
+            .expect("gate"),
+        Some(current)
+    );
+    assert_eq!(
+        super::target_incarnation(&fixture.state, current - 1)
+            .await
+            .expect("gate"),
+        None
+    );
 }

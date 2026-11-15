@@ -511,6 +511,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
         let record = Record {
             timestamp_micros: at,
             payload,
+            headers: None,
         };
         let batch = Batch {
             expected: None,
@@ -519,6 +520,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             ack: AckAt::Flushed,
             term,
             producer: None,
+            publisher: None,
         };
         let written = engine.propose_reaching(&shard(0), batch);
         let written = async move {
@@ -1028,6 +1030,7 @@ async fn a_conditional_publish_off_its_offset_is_a_blank_on_every_member() {
             &shard(0),
             None,
             vec![Bytes::from_static(payload)],
+            Default::default(),
             at,
             AckAt::Flushed,
             PATIENCE,
@@ -1201,6 +1204,7 @@ async fn a_conditional_publish_of_other_than_one_record_is_refused() {
             &shard(0),
             None,
             payloads,
+            Default::default(),
             led.committed + 1,
             AckAt::Flushed,
             PATIENCE,
@@ -1300,5 +1304,148 @@ async fn a_trim_entry_is_counted_as_skipped() {
     let envelope = next(&mut receiver).await;
     assert_eq!(envelope.base_offset(), Some(at + 2));
     assert_eq!(envelope.skipped_before(), 1, "the trim's offset was a drop");
+    led.cluster.stop().await;
+}
+
+/// A publish carrying `publisher` and `headers` for its one record.
+fn publish_attributed(
+    led: &Led,
+    broker: &Broker,
+    handle: &StreamHandle,
+    payload: Bytes,
+    publisher: Option<Bytes>,
+    headers: Option<Bytes>,
+) -> Result<Publishing, BrokerError> {
+    let attribution = felix_broker::Attribution {
+        publisher,
+        headers: headers.map(|headers| vec![Some(headers)]),
+    };
+    let proposed = led.engine.publish_with(
+        broker,
+        handle,
+        &shard(0),
+        None,
+        vec![payload],
+        attribution,
+        AckAt::Flushed,
+        AnswerAt::Commit,
+        PATIENCE,
+    )?;
+    Ok(tokio::spawn(proposed.complete()))
+}
+
+/// **A record's publisher and headers are stored in every member's log and
+/// reach subscribers on the leader and on a follower.** Dropped from the
+/// entry, a follower, a restart or a history read would hand out the record
+/// without them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_records_publisher_and_headers_reach_every_member() {
+    use felix_storage::log::{AppendOnlyLog, ReadRange};
+
+    let mut led = led().await;
+    let leader = led.leader.broker.to_string();
+    let follower = led.followers().next().expect("a follower");
+    let (broker, handle) = broker_on_log_of(&led, &leader).await;
+    broker.record_headers_when(|| true);
+    broker.record_publishers_when(|| true);
+    broker.allow_raft_record_headers_when(|| true);
+    let (on_follower, _follower_handle) = broker_on_log_of(&led, &follower).await;
+    let (mut from_leader, _guard) = subscriber(&broker).await;
+    let (mut from_follower, _follower_guard) = subscriber(&on_follower).await;
+
+    let publisher = Bytes::from_static(b"svc-orders");
+    let headers = Bytes::from_static(b"\x00\x01k\x00\x01v");
+    let at = led.committed + 1;
+    let published = publish_attributed(
+        &led,
+        &broker,
+        &handle,
+        Bytes::from_static(b"one"),
+        Some(publisher.clone()),
+        Some(headers.clone()),
+    );
+    let outcome = published.expect("admitted").await.expect("joined");
+    assert_eq!(outcome.expect("committed").offsets, Some((at, at)));
+
+    for receiver in [&mut from_leader, &mut from_follower] {
+        let envelope = next(receiver).await;
+        assert_eq!(envelope.base_offset(), Some(at));
+        assert_eq!(envelope.publisher(), Some(&publisher));
+        assert_eq!(
+            envelope.record_headers(),
+            Some(&[Some(headers.clone())][..])
+        );
+    }
+    for (member, log) in &led.cluster.logs {
+        eventually(|| (log.durable_offset() > at).then_some(())).await;
+        let read = ReadRange {
+            start: at,
+            max_bytes: 1 << 20,
+        };
+        let page = log.read_range(read).await.expect("read");
+        let record = &page.records[0];
+        assert_eq!(record.offset, at, "{member:?}");
+        assert_eq!(record.publisher.as_ref(), Some(&publisher), "{member:?}");
+        assert_eq!(record.headers.as_deref(), Some(&headers), "{member:?}");
+    }
+    led.cluster.stop().await;
+}
+
+/// **Headers on a Raft shard wait for the fleet to store them.** A member
+/// that cannot read them must not be handed an entry holding them, so the
+/// publish is refused, naming the feature, before anything is proposed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn headers_are_refused_until_the_fleet_stores_them_on_raft() {
+    let mut led = led().await;
+    let leader = led.leader.broker.to_string();
+    let (broker, handle) = broker_on_log_of(&led, &leader).await;
+    broker.record_headers_when(|| true);
+    let headers = Bytes::from_static(b"\x00\x01k\x00\x01v");
+    let tail = led.cluster.logs[&(leader.clone(), 0)].tail_offset().await;
+    let refused = publish_attributed(
+        &led,
+        &broker,
+        &handle,
+        Bytes::from_static(b"one"),
+        None,
+        Some(headers),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(BrokerError::RecordHeadersNotEnabled { feature })
+                if feature == felix_common::fleet::RAFT_RECORD_HEADERS.name()
+        ),
+        "{:?}",
+        refused.map(|_| ())
+    );
+    // Nothing was proposed: the next publish takes the next offset.
+    let at = led.committed + 1;
+    let after = publish(&led, &broker, &handle, Bytes::from_static(b"after"));
+    let outcome = after.await.expect("joined").expect("committed");
+    assert_eq!(outcome.offsets, Some((at, at)));
+    let now = led.cluster.logs[&(leader.clone(), 0)].tail_offset().await;
+    assert_eq!(now.expect("tail"), tail.expect("tail") + 1);
+
+    // A publisher is not refused but is not stored either: a member that
+    // cannot read the entry must not be sent one.
+    broker.record_publishers_when(|| true);
+    let named = publish_attributed(
+        &led,
+        &broker,
+        &handle,
+        Bytes::from_static(b"named"),
+        Some(Bytes::from_static(b"svc-orders")),
+        None,
+    );
+    let outcome = named.expect("admitted").await.expect("joined");
+    assert_eq!(outcome.expect("committed").offsets, Some((at + 1, at + 1)));
+    let read = felix_storage::log::ReadRange {
+        start: at + 1,
+        max_bytes: 1 << 20,
+    };
+    let log = &led.cluster.logs[&(leader, 0)];
+    let page = felix_storage::log::AppendOnlyLog::read_range(log, read).await;
+    assert_eq!(page.expect("read").records[0].publisher, None);
     led.cluster.stop().await;
 }

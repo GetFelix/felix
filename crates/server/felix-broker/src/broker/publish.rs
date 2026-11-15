@@ -13,11 +13,11 @@ pub use completion::LogDelivery;
 pub(crate) use completion::{deliver_from_log, spawn_release};
 
 pub use per_record::RECORD_SEQUENCE_WRAP;
-pub(in crate::broker) use proposed::{Expected, HeldTrim};
 pub use proposed::{
-    IdempotentProposal, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed,
+    Attribution, IdempotentProposal, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed,
     ProposedPublish,
 };
+pub(in crate::broker) use proposed::{Expected, HeldTrim};
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -204,7 +204,9 @@ impl Broker {
         // Refused, not dropped: the client would think they were kept. An
         // in-memory stream stores nothing, so it has nothing to gate.
         if headers.is_some() && handle.state.durable.is_some() && !self.records_headers() {
-            return Err(BrokerError::RecordHeadersNotEnabled);
+            return Err(BrokerError::RecordHeadersNotEnabled {
+                feature: felix_common::fleet::RECORD_HEADERS.name(),
+            });
         }
         // Before the offsets are consumed, so a crash cannot leave a v8
         // record in a directory that does not say so.

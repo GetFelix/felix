@@ -629,6 +629,19 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
 - **What clients see.** Nothing changes for a client that never sends headers.
   One that does learns at connect time whether the cluster accepts them.
 
+#### `raft_record_headers`
+
+Once finalized, a stream shard that runs on Raft stores record keys and
+headers, and the publisher id when `publisher_principal` is finalized, in its
+log entries, so every member holds them. It needs `record_headers`. Until then
+a broker in a cluster refuses a publish with headers to a Raft shard with
+`feature_not_enabled` and `detail.reason` `record_headers`, and proposes
+nothing; a publisher id is not stored. Such a record is an entry of its own
+kind that a broker built before it refuses, and replication to that broker
+would stop at the entry. A single broker allows them from the start.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_generations`
 
 Groundwork for running each shard on Raft, which needs the term of every

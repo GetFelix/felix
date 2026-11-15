@@ -145,6 +145,11 @@ const SWITCH_LEVEL: u16 = 34;
 /// (`ControlPlaneStore::placement_incarnation`).
 const PLACEMENT_INCARNATION_LEVEL: u16 = 35;
 
+/// The metadata level whose members keep each broker's Raft copy id on a
+/// switched shard and write the shard's target from them
+/// (`ShardAssignment::raft_target`).
+const RAFT_TARGET_LEVEL: u16 = 36;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -282,6 +287,8 @@ impl RaftStore {
         assignment.readmitted.clear();
         assignment.placed = None;
         assignment.switch = None;
+        assignment.raft_copy_ids.clear();
+        assignment.raft_target = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -1114,6 +1121,43 @@ impl ControlPlaneStore for RaftStore {
         .await
     }
 
+    /// `propose` already refuses the entry below the group's level. This
+    /// also refuses it while some member's level is unknown, rather than
+    /// counting it at the join floor. The apply decides the rest against
+    /// the record it lands on.
+    async fn record_raft_copy_id(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        node_registered_at_millis: u64,
+        node_incarnation: u64,
+        copy_id: u64,
+    ) -> StoreResult<bool> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < RAFT_TARGET_LEVEL)
+        {
+            return Err(StoreError::Conflict(format!(
+                "a control-plane member is below metadata version {RAFT_TARGET_LEVEL}"
+            )));
+        }
+        match self
+            .propose(MetaCommand::RecordRaftCopyId {
+                key: key.clone(),
+                node_id: node_id.to_string(),
+                node_registered_at_millis,
+                node_incarnation,
+                copy_id,
+            })
+            .await?
+        {
+            MetaResponse::Count { count } => Ok(count > 0),
+            _ => Err(unexpected_shape("count")),
+        }
+    }
+
     async fn give_up_seal(
         &self,
         key: &ShardKey,
@@ -1516,6 +1560,22 @@ impl ControlPlaneStore for RaftStore {
             return Ok(false);
         }
         self.local()?.placement_acked_by(brokers).await
+    }
+
+    /// As [`Self::placement_acked_by`]: false until every member is known
+    /// to be at level 35. That level is enough: the acks and incarnation
+    /// read here are level-35 records every such member holds alike, and a
+    /// level-36 write that acts on the answer carries its own level gate.
+    async fn placement_acked_by_all(&self) -> StoreResult<bool> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < PLACEMENT_INCARNATION_LEVEL)
+        {
+            return Ok(false);
+        }
+        self.local()?.placement_acked_by_all().await
     }
 
     async fn moves_paused(&self) -> StoreResult<bool> {

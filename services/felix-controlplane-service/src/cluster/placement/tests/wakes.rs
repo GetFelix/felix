@@ -32,6 +32,8 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("fenced move");

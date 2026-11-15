@@ -1766,8 +1766,8 @@ no version is refused, not read as zero.
 Two things are left for the pull request that puts stream shards on Raft
 (#2233):
 
-- An entry carries a record's payload and timestamp only. The publisher,
-  headers and marks come with adoption.
+- An entry carries a record's payload, timestamp,
+  publisher and headers. Marks come with adoption.
 - The state machine keeps nothing on disk, so a restarted member applies
   its committed entries again, which reads them. That is fine for the
   tests here and too slow for a real shard.
@@ -2706,8 +2706,7 @@ shard's engine ("Head trims", above).
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
 A Kafka produce and an MQTT publish to a Raft shard are refused by name
-too, before anything is claimed. Both write with a producer's sequence, and
-every MQTT message carries headers. A Kafka client gets `INVALID_REQUEST`,
+too, before anything is claimed. Both write with a producer's sequence. A Kafka client gets `INVALID_REQUEST`,
 which it does not retry; an MQTT client gets `PUBACK` 0x83 with the reason
 string `raft_stream`.
 
@@ -2924,16 +2923,14 @@ itself is #2524, and it has to land before a stream
 that holds data can move from the hybrid to Raft, because the hybrid takes
 these batches.
 
-The publisher id (the principal that published a record, which is not the
-producer id) is still not stored, and a batch with record headers is still
-refused.
+An idempotent batch keeps its publisher and its records' headers as any
+other publish does ("Publishers and record headers", below).
 
 An idempotent batch can also reach the leader as a forward from another
 broker. One whose records carry no key-and-headers block travels as
-`PlainSequencedForwardPublish`, so the leader takes it. One with a block
-travels as `SequencedForwardPublish` and is refused `UnsupportedKind`, the
-same as a direct publish with headers (`docs/internal-protocol.md`, "A
-forward that names its producer").
+`PlainSequencedForwardPublish`. One with a block travels as
+`SequencedForwardPublish` (`docs/internal-protocol.md`, "A forward that
+names its producer"). The leader takes both.
 
 > `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
 > `a_batch_sent_again_is_answered_and_not_written_again`,
@@ -3154,6 +3151,59 @@ condition is `FelixRaftCond.tla`'s, decided at the entry's final index.
 > `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
 > `a_trim_entry_deletes_no_segment`.
 
+**Publishers and record headers.** A record on a Raft shard keeps what it
+keeps on the hybrid: the publisher id (the principal that published it,
+which is not the producer id) and its key-and-headers block
+(`docs/protocol.md`, "Record headers"). Both are stored in the record's own
+entry, so every member's log holds them, and a follower's subscriber, a
+restarted member and a history read get them back.
+
+The rules for using them are the hybrid's, plus one fleet feature:
+
+- The publisher id is stored only when `publisher_principal` and
+  `raft_record_headers` are both finalized. Without them the record is
+  stored with no publisher, and the publish is not refused.
+- Headers need `record_headers` and then `raft_record_headers`. A publish
+  with headers before both are finalized is refused with
+  `feature_not_enabled`, naming the missing feature, and nothing is
+  proposed. A lone broker takes them from the start.
+- A conditional publish (`publish_if`) carries no headers, the same as on
+  the hybrid.
+
+`Broker::admit_attribution` applies these rules before the batch is
+proposed, so a refused batch takes no offset.
+
+On the wire a record with either one is wrapped in entry tag 7: a flags
+byte says which follow, each is a length and its bytes, and then comes the
+record laid out under its own tag (1, 3, 4 or 5). A record with neither
+keeps the frame it always had, and the layout stays 5. A member built
+before tag 7 refuses the whole append by that tag rather than store the
+record without them, so `raft_record_headers` waits for every broker to
+report it. A trim never names a publisher or headers.
+
+Every member writes the data directory's `record-headers` marker before its
+log stores a record with headers, so a copy holding one refuses a fleet
+that has not finalized `record_headers`
+(`felix_storage::run_state::has_record_headers`).
+
+A follower builds its batches from its log, and a batch names one
+publisher. So two publishes stamped at the same time by different
+publishers are delivered as two batches, as the leader delivers them.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_records_publisher_and_headers_reach_every_member` and
+> `headers_are_refused_until_the_fleet_stores_them_on_raft`;
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
+> `crates/server/felix-broker/src/broker/shards/tests.rs`,
+> `a_follower_starts_a_batch_where_the_publisher_changes`;
+> `crates/server/felix-storage/src/raft_log/tests/marks.rs`,
+> `a_record_with_headers_marks_the_root`;
+> `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
+> `a_queued_publish_to_a_raft_shard_keeps_its_publisher_and_headers`;
+> `crates/testing/felix-cluster/tests/raft_shards.rs`,
+> `record_headers_on_a_raft_shard_replay_from_every_member`.
+
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
 every broker: a shard that already holds data cannot change engines yet.
@@ -3307,8 +3357,8 @@ with the leader, and the requester sends it there.
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
 > `a_forward_to_a_member_that_does_not_lead_is_followed_to_the_leader`.
 
-The records a Raft stream stores carry no publisher or headers, so its
-subscribers are told neither. The state machine remembers the last 64 runs
+A follower's subscriber gets each record's publisher and headers from its
+log ("Publishers and record headers", above). The state machine remembers the last 64 runs
 of entries that hold no record; a batch committed after more runs than
 that, or on a member that resumed from a snapshot above its run, reports
 none skipped.
@@ -3336,11 +3386,15 @@ one real loss on top of it loses an acknowledged record
 again has the same end (`FelixRaftPlacementPlaceDoomed.cfg`); the broker
 comes back under its next copy id.
 
-**Known gap (#2385).** The check is made once and the deletion happens
-later. A leader acting on a target the control plane has replaced can give
-the id its vote back in between, and the deletion is then a lost disk again
-(`FelixRaftPlacementStaleWipe.cfg`, pinned). The driver needs a rule that
-stops a leader going back to an older target before it is built.
+**A leader never goes back to an older target (#2385).** The check is made
+once and the deletion happens later, so a leader acting on a target the
+control plane has replaced could give the id its vote back in between.
+The driver refuses that: it takes no step from a target older than the
+membership in its log (`Wait::StaleTarget`), and a step whose version is
+older than the leader's membership fails with `StepError::OlderVersion`.
+With that rule the model passes with stale targets and a deleted copy
+(`FelixRaftPlacementStaleWipe.cfg`); without it a stale target loses the
+disk (`FelixRaftPlacementStaleWipeNoVersion.cfg`).
 
 #### What a membership holds, and how a step is written
 
@@ -3410,9 +3464,8 @@ whose copy was wiped answers with its new id, so the target names the new
 copy: the driver adds it as a learner and drops the old id once the new
 copy has caught up.
 
-The control plane does not send targets yet, so no broker changes a
-group's membership in a running cluster today. The driver is exercised by
-tests that tell it a target directly.
+Where a broker's targets come from is in "Where a target comes from"
+below.
 
 The driver works in looks. On each look it reads, from the leader's own
 log, the latest membership, whether that entry is committed, whether an
@@ -3454,30 +3507,14 @@ removes itself. A leader that a joint membership leaves out prefers a
 successor its own newer target keeps, so the next leader is not one that
 target moves out again.
 
-**What the control plane must guarantee (not yet wired).** The grown set
-keeps the membership's version, so a successor holding a different target
-does not see it as stale. Two members holding targets that each leave the
-other's seat out hand leadership back and forth, paced by the transfer
-count above. Members do not report the target version they hold, so the
-leader cannot check its successor's.
-
-A leader steps as soon as it holds a target, so the control plane's only
-lever is the order it delivers in. When a target removes the leader's
-broker, the control plane must first have the new target acknowledged by
-every voter the target keeps (the possible successors), and only then send
-it to the leader. A voter the target drops, or one that is down, does not
-need it: a down voter cannot be chosen as successor, because a successor
-must have matched the leader's last index. Members do not acknowledge
-targets yet, so this needs a target acknowledgement in the protocol
-(#2591).
-
-Two weaker cases cost liveness only, never safety, because every set the
-driver writes contains its leader and passes the same checks:
-
-- A successor still holding an older target whose version equals the
-  membership's shrinks the grown set back to that older target.
-- A successor holding no target parks on the grown set, with the old
-  leader's seat still a voter, and reports Idle until a target arrives.
+**A target lasts one term.** A member acts on a target only in the
+term its broker read it for, and a new leader waits for a fresh one
+("Where a target comes from"). Without that, two members holding targets
+that each leave the other's seat out would hand leadership back and forth:
+the grown set keeps the membership's version, so neither sees the other's
+step as stale. With it, every leader acts on a target at least as new as
+the one its predecessor acted on, so no successor shrinks the grown set
+back to an older target or parks on it holding none (#2591).
 
 **Refusals.** A step can fail in two ways, and the driver treats them
 differently:
@@ -3535,13 +3572,177 @@ publishes both get their index from openraft. A copy with a new copy id is
 handled by the same loop: the set names the broker, the member id differs,
 so the old member is swapped for a learner with the new id.
 
-The control plane no longer assigns leaders. Brokers report who leads each
-shard, the committed membership and the commit offset. The routing table
+The control plane no longer assigns leaders. The design has brokers
+report who leads each shard, the committed membership and the commit
+offset; those reports are not built yet. The routing table
 uses the leader as a hint, and the offset is the floor a re-form starts
 from. A broker that gets a write
 for a shard it does not lead answers with the leader it knows. To balance
 leaders the control plane asks the current leader for a transfer.
 
+#### Where a target comes from
+
+The control plane writes each Raft shard's target on its shard record: the
+member ids that should vote, and a version. The member ids are the brokers
+placement names, each with the copy id its broker last reported for the
+shard. The version is the restore incarnation followed by the record's
+target counter (metadata level 36):
+
+- **The counter rises only when the target set changes.** A move, a drain,
+  a removal, or a placed broker reporting a new copy id writes the next
+  counter value in the same CAS as the new set. A placement write that
+  keeps the set, a leader report and a doomed-set write leave it alone. So
+  within one incarnation a version names exactly one member set.
+- **It counts within one stream incarnation.** A stream deleted and
+  created again gets a new shard record under the same key, and its counter
+  starts at 1 again. The feed sends the stream incarnation beside the
+  target, and a broker keys a target by shard key and stream incarnation,
+  so a recreated stream is a new group, never a newer target for the old
+  one.
+- **It survives a control-plane leader change.** The counter is part of the
+  shard record, written through the metadata Raft log by CAS, so a new
+  control-plane leader starts from the last committed value and the next
+  write takes the one after it.
+- **A restore raises the incarnation (#2529).** A backup brings back an
+  older counter, which may name a set different from what the counter later
+  named. Versions compare by incarnation first, and a restore raises it
+  (metadata level 35), so every target written after the restore, including
+  the restored record's own, is newer than anything a group took before.
+- **Nothing moves until all brokers have acknowledged the incarnation.**
+  "All brokers" here means every broker registered with the control plane,
+  serving or not, as `AllAcked` counts them in the model. The control plane
+  refuses a target write, a copy-id report that would rewrite a target, and
+  a doom write, and the feed leaves out the current target, while any of
+  them has not acknowledged the current incarnation (#2529). A restored
+  record's target is never written again, so the gate has to be on
+  delivery as well as on writes. The acks and the incarnation are in the
+  same metadata log, so a follower's answer is consistent with itself.
+
+  A broker that never acknowledges, one that died after the restore, stops
+  all of it, the move that would take its seat included. That costs
+  liveness only. The way out is to deregister it, which takes it out of
+  all brokers, and targets resume.
+
+A wiped copy reopens under a new copy id ("Group and member identity"). Its
+broker reports the id, and the control plane writes the target again with
+that id in place of the old one at the next counter value. The leader keeps
+only a target strictly newer than the one it holds, or an equal one told
+in a newer term (`Group::retarget`), so this write is what makes it act: it adds the new id
+as a learner and drops the old one once it has caught up. The control plane
+must own copy ids this way before it dooms any, because the doomed set
+names member ids.
+
+#### A target lasts one term
+
+The broker hands a target to its member only while that member leads, and
+only for the term it leads in. The driver acts on a target only when it was
+told in the current term, and a new term needs it told again. A tell of
+the same version in a new term is accepted: the group holds the target
+with the term it was told in (`Told { target, term }`), and a newer term
+replaces it even at an equal version.
+
+A view taken after the term began is not enough on its own. The shard feed
+can be answered by a control-plane follower that has not applied the latest
+write, so a request that started late can still return an old target. The
+broker therefore waits for two things before it hands a target to a member
+that started leading at time `since`:
+
+1. **A head from the control-plane leader.** A heartbeat sent at or after
+   `since` asks for `assignment_seq`; one already in flight when the term
+   began does not count. The control plane reads it with
+   `confirmed_shard_assignment_head` after it accepted the heartbeat, so
+   every target written before then has a lower sequence. This is the bar
+   `RoutesWanted` sets for a broker that serves again after a surrender
+   (`cluster/lease.rs`), with one difference: an answer with no head (a
+   control plane that predates it, or a leader that cannot answer) means no
+   handover, where a lease falls back to time alone. A linearizable read of
+   the feed head would do as well.
+2. **A view that reaches it.** A feed answer whose request started after
+   `since` and whose checkpoint is at or past that head.
+
+A target write is a shard-record change, so it is on the assignment feed
+with its own sequence. A restore brings the feed's sequence back with the
+backup, so a head taken before it can sit above every sequence the new
+feed reaches. When the broker acknowledges a new incarnation it drops
+every bar and moves each `since` to that moment, so it takes a new head
+and a view of the restored feed.
+
+Moving `since` does not let an old target through. A control-plane
+follower that has not applied the restore can still answer with
+checkpoint 41, past a new head of 12, and with target (0, 9). The driver
+refuses a target whose incarnation is below the one its broker has
+acknowledged or its log holds (`Wait::StaleTarget`), so (0, 9) is never
+acted on, and the restored feed's (1, 0) replaces it.
+
+Why the versions leaders act on never go back: a leader acts on a target
+only after the control plane committed it. It hands leadership over after
+that, and its successor's term begins after the handover. The successor's
+head is read after that, so it is at or past the target's write, and the
+view that reaches the head holds that target or a newer one. Whatever the
+old leader did, the new one is told a version at least as new.
+
+The driver's own rule covers the rest. A target older than the membership
+in the leader's log, or from an incarnation below one the leader has seen,
+is refused (`Wait::StaleTarget`, `StepError::OlderVersion`),
+so even a target that slipped past the delivery rule cannot undo a change.
+Delivery makes that refusal rare: a new leader is not left parked on a
+target older than its log while a newer one exists. A group can still
+grow and then shrink, but only because the control plane wrote two sets in
+that order, so the number of direction changes is bounded by the number
+of target writes.
+
+```mermaid
+sequenceDiagram
+    participant CP as Control plane leader
+    participant A as Broker A (leads)
+    participant B as Broker B
+    CP->>CP: write target {B, C} at (0, 7)
+    A->>CP: heartbeat, wants the feed head
+    CP-->>A: head 41
+    A->>A: view at 41 or later: grow to {A, B, C}
+    A->>B: transfer leadership
+    B->>CP: heartbeat, wants the feed head
+    CP-->>B: head 41 or later
+    B->>B: view at that head: target (0, 7) or newer, shrink to {B, C}
+```
+
+While the control plane is down a new leader gets no head, so it takes no
+step: the group keeps serving with the membership it has, a grown set
+included, and moves on once the control plane answers. That costs liveness
+only. The placement model checks safety with a leader acting on any target
+ever written (`StaleTargets`), and with the current target delivered and
+written only once all brokers have acknowledged the incarnation
+(`AllAcked`), the same gate as above. Together they cover every target
+this rule lets through.
+
+The doomed set and its reports are metadata level 36 and are enabled only
+once the control plane knows that level is in force
+(`cluster_version_if_known`, so an unknown level enables nothing). The
+level in force is the lowest any control-plane member can apply, and a
+build that applies 36 applies 35, so 36 in force means the restore
+incarnation is too. Each doom write, like each target write, also checks
+that all brokers have acknowledged the current incarnation. A doom written
+before the incarnation existed could be undone by a restore that brings
+the id back as a voter.
+
+What placement does not do yet for a Raft shard:
+
+- **Brokers do not report copy ids or read targets yet.** The control
+  plane keeps the records and the route (`raft_copy_ids`, `raft_target`,
+  `POST /v1/nodes/{node_id}/raft-copy-id`) and the feed carries the target
+  as `target`, but no broker sends an id or hands a target to its leader.
+- **A dropped copy keeps its directory.** Deleting it needs the control
+  plane's doomed set and the leaders' membership reports ("Membership"
+  above, `DoomGuard` in the model), which are new metadata.
+- **A move waits on a report Raft shards do not send.** Placement's move
+  adds the new broker and drops the old one once the leader reports the
+  new copy caught up. A Raft leader reports nothing to placement yet, and
+  a shard that switched to Raft is not placed at all.
+- **A short set forms nothing.** A group forms only once placement names
+  as many brokers as the stream's replica count ("Forming a group").
+- **Requests to a broker with no member go by placement.** A broker with
+  a member routes by its group's leader hint. One without a member still
+  sends to the leader placement names, which can be wrong mid-move.
 #### The restore incarnation
 
 A control-plane restore puts back an older store, and with it an older
@@ -3591,8 +3792,9 @@ what stops that.
   plane it also waits until every member is known to apply level 35, and it
   answers from the member's own copy, so a caller asks it on the leader. A
   restore made while the group was below level 35 raised nothing and is not
-  fenced by it. Target writes, their
-  delivery and copy deletes are to wait for it; none of them is built yet
+  fenced by it. Target writes and their delivery wait for it, over every
+  registered broker (metadata level 36). Copy deletes are to wait for it
+  too; they are not built yet
   (`FelixRaftPlacementStaleWipeRewindNoAck.cfg` is what happens without it).
 
 A broker is to refuse a delete told at an incarnation below the highest it

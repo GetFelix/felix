@@ -138,6 +138,10 @@ pub async fn publish_direct(
             shard,
             generation,
             payloads.to_vec(),
+            felix_broker::Attribution {
+                publisher: publisher.cloned(),
+                headers: None,
+            },
             quorum_timeout,
         )
     {

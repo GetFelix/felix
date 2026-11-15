@@ -206,6 +206,11 @@ fn assignment() -> ShardAssignment {
             sealer_copy: Some(s("0123456789abcdef0123456789abcdef")),
             report: Some(seal_report()),
         }),
+        raft_copy_ids: any_map(1),
+        raft_target: Some(crate::model::RaftTarget {
+            counter: 1,
+            members: any_map(1),
+        }),
     }
 }
 
@@ -580,6 +585,13 @@ fn commands() -> Vec<MetaCommand> {
             node_id: s("b"),
             heard: placement_ack(),
         },
+        MetaCommand::RecordRaftCopyId {
+            key: shard_key(),
+            node_id: s("b"),
+            node_registered_at_millis: 1,
+            node_incarnation: 1,
+            copy_id: 1,
+        },
         MetaCommand::SealShard {
             key: shard_key(),
             expected_generation: 1,
@@ -776,6 +788,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordClusterIdentity { .. } => "record_cluster_identity",
         MetaCommand::RecordRootSequence { .. } => "record_root_sequence",
         MetaCommand::RecordPlacementAck { .. } => "record_placement_ack",
+        MetaCommand::RecordRaftCopyId { .. } => "record_raft_copy_id",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",

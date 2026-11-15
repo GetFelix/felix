@@ -251,6 +251,14 @@ where
         {
             shared.mark_head_trimmed().await?;
         }
+        if earlier
+            .iter()
+            .chain([&batch])
+            .flat_map(|batch| &batch.records)
+            .any(|record| record.headers.is_some())
+        {
+            shared.mark_headers_stored().await?;
+        }
         // Read before the write: see `TailCache`.
         let cuts = log.cuts();
         let mut pending = None;

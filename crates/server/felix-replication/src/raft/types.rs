@@ -190,6 +190,12 @@ pub(crate) struct Command {
     /// conditional, so it is proposed with `expected` set, and read back
     /// from the log it holds `trim` alone.
     pub(crate) trim: Option<u64>,
+    /// The principal that published the record, stored with it.
+    pub(crate) publisher: Option<Bytes>,
+    /// The record's encoded key and headers block, stored as given. Boxed
+    /// as the log's own record boxes it, so a command without one stays as
+    /// small as before.
+    pub(crate) headers: Option<Box<Bytes>>,
     /// Set by a proposer that waits to hear where the record was written.
     /// It rides on the entry from `client_write` to the leader's own append
     /// and nowhere else: it is not in the record and not in a message, so a
@@ -208,6 +214,8 @@ impl PartialEq for Command {
             producer,
             expected,
             trim,
+            publisher,
+            headers,
             written: _,
         } = self;
         *timestamp_micros == other.timestamp_micros
@@ -215,6 +223,8 @@ impl PartialEq for Command {
             && *producer == other.producer
             && *expected == other.expected
             && *trim == other.trim
+            && *publisher == other.publisher
+            && *headers == other.headers
     }
 }
 

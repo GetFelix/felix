@@ -171,7 +171,7 @@ impl ForwardingHandler {
         };
 
         if on_raft {
-            return self.apply_on_raft(&key, &handle, publish).await;
+            return self.apply_on_raft(&key, &handle, publish, publisher).await;
         }
         let fenced = match self.ingress.fence().admit(&key, publish.shard.generation) {
             Ok(fenced) => fenced,
@@ -242,7 +242,7 @@ impl ForwardingHandler {
             }
             // The ingress broker saw the finalize before this one did. Nothing
             // was written; it answers the client with `feature_not_enabled`.
-            Err(err @ felix_broker::BrokerError::RecordHeadersNotEnabled) => {
+            Err(err @ felix_broker::BrokerError::RecordHeadersNotEnabled { .. }) => {
                 metrics::record_served(metrics::OUTCOME_REFUSED);
                 error(correlation_id, ErrorCode::UnsupportedKind, err.to_string())
             }
@@ -264,14 +264,13 @@ impl ForwardingHandler {
         key: &ShardKey,
         handle: &felix_broker::StreamHandle,
         publish: ForwardPublish,
+        publisher: Option<bytes::Bytes>,
     ) -> InternalMessage {
         let correlation_id = publish.correlation_id;
-        if publish.headers.is_some() {
-            metrics::record_served(metrics::OUTCOME_REFUSED);
-            let what = "record headers";
-            let err = felix_broker::BrokerError::NotOnEngineStream { what };
-            return error(correlation_id, ErrorCode::UnsupportedKind, err.to_string());
-        }
+        let attribution = felix_broker::Attribution {
+            publisher,
+            headers: publish.headers,
+        };
         let records = publish.payloads.len() as u64;
         let Some(term) = self.engine.raft_term(key) else {
             metrics::record_served(metrics::OUTCOME_REFUSED);
@@ -282,7 +281,15 @@ impl ForwardingHandler {
         // more. Nothing was written, so the requester may send it again.
         let not_taken = |refused: RaftRefusal| {
             metrics::record_served(metrics::OUTCOME_REFUSED);
-            error(correlation_id, ErrorCode::Unavailable, refused.to_string())
+            // As on the hybrid: the requester saw a finalize this broker
+            // has not, and answers `feature_not_enabled`.
+            let code = match refused {
+                RaftRefusal::Broker(felix_broker::BrokerError::RecordHeadersNotEnabled {
+                    ..
+                }) => ErrorCode::UnsupportedKind,
+                _ => ErrorCode::Unavailable,
+            };
+            error(correlation_id, code, refused.to_string())
         };
         let committed = match publish.producer {
             Some(producer) => {
@@ -299,6 +306,7 @@ impl ForwardingHandler {
                     producer.sequence,
                     SequenceReuse::Refuse,
                     publish.payloads,
+                    attribution,
                     self.quorum_timeout,
                 );
                 match proposed {
@@ -337,6 +345,7 @@ impl ForwardingHandler {
                     key,
                     term,
                     publish.payloads,
+                    attribution,
                     self.quorum_timeout,
                 );
                 match proposed {

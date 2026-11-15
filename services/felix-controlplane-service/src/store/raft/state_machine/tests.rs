@@ -3,6 +3,7 @@
 mod commands;
 mod determinism;
 mod identity;
+mod raft_targets;
 mod retries;
 
 use std::collections::BTreeMap;
@@ -143,6 +144,8 @@ fn shard_assignment(
         readmitted: Default::default(),
         placed: None,
         switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target: None,
     }
 }
 

@@ -78,6 +78,10 @@ impl EntryCodec<ShardTypes> for ShardCodec {
         if data.trim.is_some() && data.producer.is_some() {
             return Err(invalid("a trim names a producer".into()));
         }
+        // A trim's record is its headers; it has no block of its own.
+        if data.trim.is_some() && (data.publisher.is_some() || data.headers.is_some()) {
+            return Err(invalid("a trim names a publisher or headers".into()));
+        }
         Ok(AppendRecord {
             payload: data.payload.clone(),
             timestamp_micros: data.timestamp_micros,
@@ -85,8 +89,8 @@ impl EntryCodec<ShardTypes> for ShardCodec {
                 Some(floor) => RecordMark::Trim { floor },
                 None => ProducerMark::record_mark(data.producer),
             },
-            publisher: None,
-            headers: None,
+            publisher: data.publisher.clone(),
+            headers: data.headers.clone(),
         })
     }
 
@@ -101,6 +105,8 @@ impl EntryCodec<ShardTypes> for ShardCodec {
             producer: ProducerMark::of_record(record.mark)?,
             expected: None,
             trim,
+            publisher: record.publisher,
+            headers: record.headers,
             written: None,
         })
     }

@@ -181,6 +181,8 @@ async fn fenced_in_store() -> (crate::store::memory::InMemoryStore, u64) {
             readmitted: Default::default(),
             placed: None,
             switch: None,
+            raft_copy_ids: Default::default(),
+            raft_target: None,
         })
         .await
         .expect("fenced");

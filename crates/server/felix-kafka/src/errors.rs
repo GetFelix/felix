@@ -59,7 +59,7 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::TrimNeedsDurableStream
         | BrokerError::TrimOnCommitStream
         | BrokerError::HeadTrimNotEnabled { .. }
-        | BrokerError::RecordHeadersNotEnabled
+        | BrokerError::RecordHeadersNotEnabled { .. }
         | BrokerError::TrimTimedOut { .. }
         | BrokerError::StateViewBusy
         | BrokerError::StateNotReadable(_)
