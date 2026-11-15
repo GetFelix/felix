@@ -1765,7 +1765,7 @@ no version is refused, not read as zero.
 Two things are left for the pull request that puts stream shards on Raft
 (#2233):
 
-- An entry carries a record's payload, timestamp and, since #2446, its
+- An entry carries a record's payload, timestamp,
   publisher and headers. Marks come with adoption.
 - The state machine keeps nothing on disk, so a restarted member applies
   its committed entries again, which reads them. That is fine for the

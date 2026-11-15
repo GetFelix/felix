@@ -244,7 +244,11 @@ async fn record_headers_on_a_raft_shard_replay_from_every_member() {
     let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
     cluster
         .finalize_fleet_features(
-            &["record_headers", "raft_record_headers"],
+            &[
+                "publisher_principal",
+                "record_headers",
+                "raft_record_headers",
+            ],
             Duration::from_secs(30),
         )
         .await
@@ -257,7 +261,24 @@ async fn record_headers_on_a_raft_shard_replay_from_every_member() {
         published.push((offset, trace));
     }
     for node in &nodes {
-        let (_client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
+        let addr = cluster.node(node).expect("node").client_addr;
+        let client = felix_cluster::client::connect_with(
+            addr,
+            &cluster.tenant_id,
+            &cluster.client_token(),
+            |config| config.publishers = true,
+        )
+        .await
+        .expect("connect");
+        let mut subscription = client
+            .subscribe_from(
+                &cluster.tenant_id,
+                &cluster.namespace,
+                STREAM,
+                Some(felix_client::StartPosition::Earliest),
+            )
+            .await
+            .expect("replay");
         let mut held = Vec::new();
         while held.len() < published.len() {
             let event = tokio::time::timeout(Duration::from_secs(10), subscription.next_event())
@@ -275,6 +296,11 @@ async fn record_headers_on_a_raft_shard_replay_from_every_member() {
                 "{node} at {offset}"
             );
             assert_eq!(event.headers, Some(headers(trace)), "{node} at {offset}");
+            let publisher = event.publisher.as_deref().unwrap_or_default();
+            assert!(
+                publisher.contains("harness-client"),
+                "{node} at {offset}: {publisher:?}"
+            );
             held.push(offset);
         }
     }

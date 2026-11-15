@@ -79,6 +79,8 @@ const WIRE_SHARE_OF_DEADLINE: u128 = 4;
 const MIN_APPEND_BYTES: usize = 256 * 1024;
 /// What an entry costs on the wire besides its record.
 const ENTRY_OVERHEAD: usize = 64;
+/// The tag and flags byte that wrap a record with a publisher or headers.
+const ATTRIBUTED_WRAPPER: usize = 2;
 
 /// Smallest encoded log id in a conflict hint.
 const LOG_ID_BYTES: usize = 16;
@@ -108,9 +110,17 @@ pub(crate) fn fit(request: &mut RaftRequest) {
             bytes += ENTRY_OVERHEAD
                 + match &entry.payload {
                     EntryPayload::Normal(command) => {
+                        // The attributed wrapper: a tag, a flags byte, and a
+                        // length for each block it holds.
+                        let wrapper = match (&command.headers, &command.publisher) {
+                            (None, None) => 0,
+                            (Some(_), Some(_)) => ATTRIBUTED_WRAPPER + 8,
+                            _ => ATTRIBUTED_WRAPPER + 4,
+                        };
                         command.payload.len()
                             + command.headers.as_ref().map_or(0, |headers| headers.len())
                             + command.publisher.as_ref().map_or(0, Bytes::len)
+                            + wrapper
                     }
                     _ => 0,
                 };

@@ -1039,14 +1039,30 @@ fn headers_unsupported(
     match &err {
         ForwardError::Refused {
             code: Some(felix_wire::internal::ErrorCode::UnsupportedKind),
+            detail,
             ..
-        } if has_headers => ClientError::from_broker(
-            &felix_broker::BrokerError::RecordHeadersNotEnabled {
-                feature: felix_common::fleet::RECORD_HEADERS.name(),
-            },
-            "the shard's owner does not accept record headers yet; publish without them or to the owner",
-        )
-        .into(),
+        } if has_headers => {
+            // The owner's refusal only travels as text; its message names the
+            // feature it still waits on, so name that one to the client.
+            let (feature, message) = if detail
+                .contains(felix_common::fleet::RAFT_RECORD_HEADERS.name())
+            {
+                (
+                    felix_common::fleet::RAFT_RECORD_HEADERS.name(),
+                    "the shard's owner has not finalized `raft_record_headers`; publish without headers or retry once it has",
+                )
+            } else {
+                (
+                    felix_common::fleet::RECORD_HEADERS.name(),
+                    "the shard's owner does not accept record headers yet; publish without them or to the owner",
+                )
+            };
+            ClientError::from_broker(
+                &felix_broker::BrokerError::RecordHeadersNotEnabled { feature },
+                message,
+            )
+            .into()
+        }
         _ => err.into(),
     }
 }

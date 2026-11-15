@@ -892,6 +892,30 @@ async fn a_headered_forward_to_an_owner_without_the_capability_is_not_enabled() 
     assert!(plain.downcast_ref::<ClientError>().is_none(), "{plain}");
 }
 
+/// **An owner whose Raft headers gate is closed is named in the refusal.** Its
+/// `UnsupportedKind` reaches this broker as text, and the client message must
+/// say `raft_record_headers`, not just `record_headers`.
+#[test]
+fn an_owner_refusal_naming_the_raft_gate_is_passed_on() {
+    use crate::serving::forward::ForwardError;
+    let refused = |detail: &str| ForwardError::Refused {
+        stream: "demo".to_string(),
+        detail: detail.to_string(),
+        code: Some(felix_wire::internal::ErrorCode::UnsupportedKind),
+    };
+    let owner = felix_broker::BrokerError::RecordHeadersNotEnabled {
+        feature: felix_common::fleet::RAFT_RECORD_HEADERS.name(),
+    };
+    let err = headers_unsupported(refused(&format!("UnsupportedKind: {owner}")), true);
+    let client = err.downcast_ref::<ClientError>().expect("a client error");
+    assert_eq!(client.code(), &felix_wire::ErrorCode::FeatureNotEnabled);
+    assert!(client.message().contains("raft_record_headers"), "{err}");
+
+    let err = headers_unsupported(refused("UnsupportedKind: too old"), true);
+    let client = err.downcast_ref::<ClientError>().expect("a client error");
+    assert!(!client.message().contains("raft_record_headers"), "{err}");
+}
+
 /// The wait on a `Quorum` stream, from each place the worker makes it: held
 /// to the mark at the generation the publish was admitted at, for the
 /// configured time.
