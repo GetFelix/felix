@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use rumqttc::Outgoing;
 use rumqttc::v5::mqttbytes::QoS;
 use rumqttc::v5::mqttbytes::v5::{Packet, PubAckReason};
 use rumqttc::v5::{AsyncClient, Event, MqttOptions};
@@ -273,6 +274,212 @@ async fn qos1_on_a_raft_shard_survives_its_leader_without_duplicates() {
         assert!(copies <= 1, "m{i}, sent once, is stored {copies} times");
     }
     cluster.shutdown().await;
+}
+
+/// **On a Raft shard, a connection with many QoS 1 messages in flight keeps
+/// their order and stores each once across its leader's death.** One
+/// connection publishes through the leader, whose MQTT listener proposes a
+/// connection's queued messages without waiting for each commit, and one
+/// through a follower, which forwards them. Both publish as fast as they
+/// are answered while the leader is killed. Neither client sends anything
+/// twice: the first error ends its connection. So each acknowledged
+/// message is stored exactly once, no message more than once, and each
+/// connection's messages in the order it sent them.
+#[serial]
+#[tokio::test]
+async fn pipelined_qos1_on_a_raft_shard_survives_its_leader_in_order() {
+    if !super::raft::opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3).mounted_at("plant/")],
+        tcp_listeners: vec![(
+            "FELIX_MQTT_LISTEN".to_string(),
+            "127.0.0.1:{port}".to_string(),
+        )],
+        broker_env: vec![
+            ("FELIX_MQTT_TLS".to_string(), "false".to_string()),
+            super::raft::engine(),
+        ],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["record_headers", "raft_record_headers"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("finalize the headers features");
+    let nodes = cluster.node_ids();
+    let leader = super::raft::leader_among(&cluster, &nodes).await;
+    let follower = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .cloned()
+        .expect("a follower");
+    let port = |node: &str| {
+        cluster
+            .node(node)
+            .and_then(|node| node.tcp_port("FELIX_MQTT_LISTEN"))
+            .expect("an MQTT port")
+    };
+    let (tenant, token) = (cluster.tenant_id.clone(), cluster.client_token());
+    let stop = Arc::new(AtomicBool::new(false));
+    let publish = |label: char, port: u16| {
+        let (tenant, token, stop) = (tenant.clone(), token.clone(), Arc::clone(&stop));
+        let acked = Arc::new(AtomicU32::new(0));
+        let progress = Arc::clone(&acked);
+        let task = tokio::spawn(async move {
+            publish_pipelined(&tenant, &token, port, label, stop, progress).await
+        });
+        (task, acked)
+    };
+    let (through_leader, leader_acked) = publish('L', port(&leader));
+    let (through_follower, follower_acked) = publish('F', port(&follower));
+
+    felix_cluster::wait::until(Duration::from_secs(30), "publishing under way", || {
+        let (l, f) = (Arc::clone(&leader_acked), Arc::clone(&follower_acked));
+        async move { l.load(Ordering::Acquire) >= 200 && f.load(Ordering::Acquire) >= 20 }
+    })
+    .await
+    .expect("publishing");
+    cluster.stop_node(&leader).await.expect("kill the leader");
+    let at_kill = follower_acked.load(Ordering::Acquire);
+    // The follower's connection may be closed by a message whose outcome
+    // the election left unknown, so this is not required.
+    let _ =
+        felix_cluster::wait::until(Duration::from_secs(30), "publishing after the kill", || {
+            let f = Arc::clone(&follower_acked);
+            async move { f.load(Ordering::Acquire) >= at_kill + 20 }
+        })
+        .await;
+    stop.store(true, Ordering::Release);
+    let through_leader = through_leader.await.expect("publisher through the leader");
+    let through_follower = through_follower
+        .await
+        .expect("publisher through the follower");
+    assert!(
+        through_leader.most_in_flight > 1,
+        "never more than one message in flight through the leader"
+    );
+
+    let live: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
+    let next = super::raft::leader_among(&cluster, &live).await;
+    let stored = read_back(&cluster, &next).await;
+    for (label, published) in [('L', &through_leader), ('F', &through_follower)] {
+        assert!(
+            published.refused.is_empty(),
+            "{label}: refused {:?}",
+            published.refused
+        );
+        for i in &published.acked {
+            let copies = stored
+                .iter()
+                .filter(|p| **p == format!("m{label}{i}"))
+                .count();
+            assert_eq!(
+                copies, 1,
+                "acknowledged m{label}{i} is stored {copies} times"
+            );
+        }
+        let order: Vec<u32> = stored
+            .iter()
+            .filter_map(|p| p.strip_prefix(&format!("m{label}"))?.parse().ok())
+            .collect();
+        assert!(
+            order.windows(2).all(|pair| pair[0] < pair[1]),
+            "m{label} stored out of order or twice: {order:?}"
+        );
+        assert!(
+            order.iter().all(|i| *i < published.sent),
+            "m{label} stored a message never sent"
+        );
+    }
+    cluster.shutdown().await;
+}
+
+/// What one pipelined connection sent and was told.
+struct Pipelined {
+    /// Messages handed to the socket, `0..sent`.
+    sent: u32,
+    acked: Vec<u32>,
+    refused: Vec<u32>,
+    most_in_flight: usize,
+}
+
+/// Publish `m{label}0`, `m{label}1`, ... at QoS 1 on one connection with up
+/// to 64 in flight, until `stop` and every message is answered, or until
+/// the connection ends. Never reconnects, so nothing is sent twice.
+async fn publish_pipelined(
+    tenant: &str,
+    token: &str,
+    port: u16,
+    label: char,
+    stop: Arc<AtomicBool>,
+    progress: Arc<AtomicU32>,
+) -> Pipelined {
+    let mut options = MqttOptions::new(format!("pipelined-{label}-{port}"), "127.0.0.1", port);
+    options.set_credentials(tenant, token);
+    options.set_outgoing_inflight_upper_limit(64);
+    let (client, mut events) = AsyncClient::new(options, 64);
+    let fed = Arc::new(AtomicU32::new(0));
+    let feeding = {
+        let (fed, stop) = (Arc::clone(&fed), Arc::clone(&stop));
+        tokio::spawn(async move {
+            let mut i = 0u32;
+            while !stop.load(Ordering::Acquire) {
+                let topic = format!("plant/line/{label}{i}");
+                let sent = client.publish(topic, QoS::AtLeastOnce, false, format!("m{label}{i}"));
+                if sent.await.is_err() {
+                    break;
+                }
+                i += 1;
+                fed.store(i, Ordering::Release);
+            }
+            client
+        })
+    };
+    let mut published = Pipelined {
+        sent: 0,
+        acked: Vec::new(),
+        refused: Vec::new(),
+        most_in_flight: 0,
+    };
+    let mut in_flight: HashMap<u16, u32> = HashMap::new();
+    loop {
+        if feeding.is_finished()
+            && published.sent == fed.load(Ordering::Acquire)
+            && in_flight.is_empty()
+        {
+            break;
+        }
+        match tokio::time::timeout(Duration::from_secs(20), events.poll()).await {
+            Ok(Ok(Event::Outgoing(Outgoing::Publish(pkid)))) => {
+                in_flight.insert(pkid, published.sent);
+                published.sent += 1;
+                published.most_in_flight = published.most_in_flight.max(in_flight.len());
+            }
+            Ok(Ok(Event::Incoming(Packet::PubAck(ack)))) => {
+                if let Some(i) = in_flight.remove(&ack.pkid) {
+                    if ack.reason == PubAckReason::Success {
+                        published.acked.push(i);
+                        progress.fetch_add(1, Ordering::AcqRel);
+                    } else {
+                        published.refused.push(i);
+                    }
+                }
+            }
+            Ok(Ok(_)) => {}
+            // Polling again would reconnect and send the unanswered ones
+            // again.
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    feeding.abort();
+    published
 }
 
 /// How a single try at a QoS 1 publish ended.

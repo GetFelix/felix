@@ -229,7 +229,7 @@ async fn a_message_for_a_raft_shard_lands_once_with_its_headers() {
         message
     };
 
-    assert_eq!(writes.max_batch_records(), 1);
+    assert!(writes.sequence_per_record());
     writes.write(message(0, "plant/a")).await.expect("written");
     writes
         .write(message(0, "plant/a"))
@@ -254,6 +254,67 @@ async fn a_message_for_a_raft_shard_lands_once_with_its_headers() {
             Some(Bytes::from_static(b"plant/b"))
         ]
     );
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **A batch of several MQTT messages for a Raft shard is written whole**,
+/// each record at its own sequence, and sent again it writes nothing. The
+/// next batch starts at the sequence after its last record.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    broker.record_headers_when(|| true);
+    broker.read_record_headers_when(|| true);
+    broker.allow_raft_record_headers_when(|| true);
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(fixture::engine(&shards)),
+        Duration::from_secs(1),
+    );
+    let producer = writes.new_producer_id();
+    let message = |sequence, topics: &[&str]| {
+        let mut message = batch(sequence, producer, topics);
+        message.tenant_id = "t1".into();
+        message.target.stream = "orders".into();
+        message
+    };
+
+    let first = ["plant/a", "plant/b", "plant/c"];
+    writes.write(message(0, &first)).await.expect("written");
+    writes
+        .write(message(0, &first))
+        .await
+        .expect("answered from the log");
+    writes
+        .write(message(3, &["plant/d", "plant/e"]))
+        .await
+        .expect("written");
+
+    let stored: Vec<_> = broker
+        .read_durable("t1", "ns", "orders", 0, 0, 1 << 20)
+        .await
+        .expect("read")
+        .into_iter()
+        .map(|record| {
+            let block = record.headers.expect("headers stored");
+            RecordHeaders::decode((*block).clone()).expect("block").key
+        })
+        .collect();
+    let topics: Vec<_> = ["plant/a", "plant/b", "plant/c", "plant/d", "plant/e"]
+        .into_iter()
+        .map(|topic| Some(Bytes::from_static(topic.as_bytes())))
+        .collect();
+    assert_eq!(stored, topics);
     EngineShards::shutdown(&*shards).await;
 }
 

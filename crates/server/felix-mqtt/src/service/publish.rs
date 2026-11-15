@@ -10,7 +10,9 @@
 //! arrive meanwhile queue, and when the batch returns the leading run of
 //! them for one shard goes out as the next one: group commit with no timer.
 //! One batch at a time also keeps the producer's sequences in order without
-//! any coordination.
+//! any coordination. A broker that numbers each record
+//! ([`Writes::sequence_per_record`]) is handed the same batches and pipelines
+//! their records itself.
 
 use std::collections::{HashMap, VecDeque};
 use std::future::Future;
@@ -45,8 +47,8 @@ pub(super) struct Publishing<'a> {
     producer_id: u64,
     max_inflight: usize,
     reason_strings: bool,
-    /// Batches written so far to each shard, which is the next batch's
-    /// sequence.
+    /// Each shard's next sequence: batches written so far, or records when
+    /// the broker numbers each one.
     sequences: HashMap<ShardKey, u64>,
     /// `PUBACK`s owed, in arrival order.
     owed: VecDeque<Owed>,
@@ -78,6 +80,8 @@ struct InFlight<'a> {
     key: ShardKey,
     /// The owed position of each record, `None` for QoS 0.
     owed: Vec<Option<u64>>,
+    /// The sequences the batch takes once written.
+    sequences: u64,
 }
 
 impl<'a> Publishing<'a> {
@@ -127,19 +131,18 @@ impl<'a> Publishing<'a> {
         let mut records = Vec::new();
         let mut owed = Vec::new();
         let mut bytes = 0u64;
-        let most = writes.max_batch_records().max(1);
-        while records.len() < most
-            && self
-                .queue
-                .front()
-                .is_some_and(|next| shard_key(&next.target) == key)
+        while self
+            .queue
+            .front()
+            .is_some_and(|next| shard_key(&next.target) == key)
         {
             let next = self.queue.pop_front().expect("front was just seen");
             bytes += next.record.payload.len() as u64;
             records.push(next.record);
             owed.push(next.owed);
         }
-        let hold = writes.admit_produce(&self.tenant, records.len() as u64, bytes);
+        let records_len = records.len() as u64;
+        let hold = writes.admit_produce(&self.tenant, records_len, bytes);
         let batch = WriteBatch {
             tenant_id: Arc::clone(&self.tenant),
             credential: self.credential.clone(),
@@ -149,10 +152,16 @@ impl<'a> Publishing<'a> {
             acknowledged: owed.iter().any(Option::is_some),
             records,
         };
+        let sequences = if writes.sequence_per_record() {
+            records_len
+        } else {
+            1
+        };
         self.in_flight = Some(InFlight {
             future: writes.write(batch),
             key,
             owed,
+            sequences,
         });
         Some(hold)
     }
@@ -318,7 +327,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             .expect("a result comes from a batch in flight");
         match result {
             Ok(()) => {
-                *publishing.sequences.entry(batch.key).or_insert(0) += 1;
+                *publishing.sequences.entry(batch.key).or_insert(0) += batch.sequences;
                 let acknowledged = batch.owed.iter().flatten().count();
                 metrics::published("1", acknowledged as u64);
                 metrics::published("0", (batch.owed.len() - acknowledged) as u64);

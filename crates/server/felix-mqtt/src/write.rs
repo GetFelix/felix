@@ -35,7 +35,10 @@ pub struct WriteBatch {
     pub target: MountedTopic,
     /// The connection's producer id.
     pub producer_id: u64,
-    /// This producer's count of batches written to this shard, from zero.
+    /// The batch's producer sequence on this shard: the count of batches
+    /// written to it so far, from zero, or of records when
+    /// [`Writes::sequence_per_record`] says so. Then each record is its own
+    /// sequence, this one and the ones after it.
     pub sequence: u64,
     pub records: Vec<Record>,
     /// Whether to wait for the stream's consistency level after the write: a
@@ -83,11 +86,14 @@ pub trait Writes: Send + Sync {
     /// it. MQTT has no throttle field, so the delay is the only answer.
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> Duration;
 
-    /// The most records one batch may carry. A broker whose shards take an
-    /// idempotent batch of one record only (Raft) says 1, and each message
-    /// is then its own batch.
-    fn max_batch_records(&self) -> usize {
-        usize::MAX
+    /// Whether each record of a batch takes a producer sequence of its own,
+    /// so a written batch moves the shard's next sequence on by its record
+    /// count rather than by one. A broker whose shards take an idempotent
+    /// batch of one record only (Raft) says so and writes a batch as that
+    /// many one-record batches, the way a Kafka producer's records are
+    /// numbered.
+    fn sequence_per_record(&self) -> bool {
+        false
     }
 
     /// Write the batch and return once it has what the stream's consistency

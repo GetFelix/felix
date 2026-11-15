@@ -12,8 +12,11 @@
 //! then, including this one: a log that already holds it answers with its
 //! offsets and writes nothing. `docs/mqtt-design.md`, "Publishing".
 //!
-//! A shard a Raft group runs here is proposed to the group as the same
-//! idempotent batch, one record long, and answered at its commit.
+//! A Raft shard takes an idempotent batch of one record only, and a shard
+//! another broker owns may be on Raft too. So on a broker that runs Raft each
+//! record is a batch of its own at its own sequence, as a Kafka producer's
+//! are. On a Raft group led here they are proposed one after another without
+//! waiting for each commit, and answered once all are committed.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,7 +34,9 @@ use crate::observability::tenants;
 use crate::serving::forward::{ForwardError, ForwardKey, ForwardTarget, forward_publish};
 use crate::serving::limits::TenantRates;
 use crate::shards::lifecycle::fence;
-use crate::shards::routing::{Dispatch, RaftRefusal, StreamEngine, dispatch_write};
+use crate::shards::routing::{
+    Dispatch, RaftIdempotentPublish, RaftRefusal, StreamEngine, dispatch_write,
+};
 use crate::shards::{ShardKey, ShardKind};
 
 /// Longest wait between two sends of a batch whose answer was lost. A
@@ -127,14 +132,8 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
         hold
     }
 
-    fn max_batch_records(&self) -> usize {
-        // A Raft shard takes an idempotent batch of one record, and a shard
-        // another broker owns may be on Raft too. Batching on Raft: #2638.
-        if self.engine.runs_raft() {
-            1
-        } else {
-            usize::MAX
-        }
+    fn sequence_per_record(&self) -> bool {
+        self.engine.runs_raft()
     }
 
     async fn write(&self, batch: WriteBatch) -> Result<(), WriteError> {
@@ -165,6 +164,83 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
             return Err(WriteError::Refused(Refusal::StreamUnavailable));
         }
 
+        if self.engine.runs_raft() {
+            self.write_records(&batch, &key, &handle).await
+        } else {
+            self.write_batch(&batch, &key, &handle, None).await
+        }
+    }
+}
+
+impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
+    /// Write each record of `batch` as a one-record batch at its own
+    /// sequence, from `batch.sequence` on.
+    ///
+    /// On a Raft group led here, each is proposed once the one before it is
+    /// on this broker's log (the producer's turn), not once it commits, so
+    /// the batch costs about one commit round trip. A record proposed after
+    /// one that was never written is refused as a gap, so the log never
+    /// holds a record without the ones before it. The records are settled
+    /// in order: one whose proposal failed, and every one that was never
+    /// proposed, is sent again on its own, which answers it from whatever
+    /// log holds it by then.
+    async fn write_records(
+        &self,
+        batch: &WriteBatch,
+        key: &ShardKey,
+        handle: &StreamHandle,
+    ) -> Result<(), WriteError> {
+        let deadline = self.forwarding.as_ref().map(|f| Instant::now() + f.budget);
+        let mut proposed = Vec::with_capacity(batch.records.len());
+        if self.engine.on_raft(key)
+            && let Some(term) = self.engine.raft_term(key)
+        {
+            for at in 0..batch.records.len() {
+                let record = record_batch(batch, at);
+                match self
+                    .propose_on_raft(&record, key, handle, term, deadline)
+                    .await
+                {
+                    Ok(record) => proposed.push(record),
+                    Err(_) => break,
+                }
+            }
+        }
+        let mut proposed = proposed.into_iter();
+        for at in 0..batch.records.len() {
+            let unanswered = match proposed.next() {
+                Some(record) => match committed(record.complete().await) {
+                    Sent::Written => continue,
+                    Sent::Unknown(reason) => return Err(WriteError::OutcomeUnknown(reason)),
+                    Sent::Unanswered(reason) => Some(reason),
+                    Sent::Refused(_) | Sent::Leaderless => None,
+                },
+                None => None,
+            };
+            let record = record_batch(batch, at);
+            match self.write_batch(&record, key, handle, unanswered).await {
+                Ok(()) => {}
+                // The records before it are written, so the client cannot
+                // be told the batch was not.
+                Err(WriteError::Refused(_)) if at > 0 => {
+                    return Err(WriteError::OutcomeUnknown("partly_written"));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(())
+    }
+
+    /// Write `batch` whole, sending it again until its outcome is known or
+    /// the budget ends. `unanswered` is set when an earlier send of it was
+    /// not answered.
+    async fn write_batch(
+        &self,
+        batch: &WriteBatch,
+        key: &ShardKey,
+        handle: &StreamHandle,
+        mut unanswered: Option<&'static str>,
+    ) -> Result<(), WriteError> {
         let payloads: Vec<Bytes> = batch.records.iter().map(|r| r.payload.clone()).collect();
         let headers: Vec<Option<Bytes>> = batch
             .records
@@ -176,11 +252,10 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
         // Once a send's answer is lost, nothing short of a later send's
         // success says what happened to the batch, so every other ending is
         // an unknown outcome rather than a refusal.
-        let mut unanswered: Option<&'static str> = None;
         let mut resends = 0u32;
         loop {
             let sent = self
-                .send(&batch, &key, &handle, &payloads, &headers, deadline)
+                .send(batch, key, handle, &payloads, &headers, deadline)
                 .await;
             let delay = Duration::from_millis(50u64 << resends.min(4)).min(MAX_RESEND_DELAY);
             let reason = match sent {
@@ -220,9 +295,7 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
             }
         }
     }
-}
 
-impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
     /// Send the batch once, to wherever the shard is served right now.
     async fn send(
         &self,
@@ -235,9 +308,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
     ) -> Sent {
         let on_raft = self.engine.on_raft(key);
         if on_raft && let Some(term) = self.engine.raft_term(key) {
-            return self
-                .send_on_raft(batch, key, handle, term, payloads, headers, deadline)
-                .await;
+            return self.send_on_raft(batch, key, handle, term, deadline).await;
         }
         let ingress = self.engine.serving().map(|ingress| &**ingress);
         let (permit, generation) = match dispatch_write(ingress, key).await {
@@ -324,17 +395,34 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
     /// Propose the batch to the shard's Raft group, which this broker leads
     /// at `term`, as the producer's idempotent batch. Answered at its
     /// commit, whatever the stream's level.
-    #[allow(clippy::too_many_arguments)]
     async fn send_on_raft(
         &self,
         batch: &WriteBatch,
         key: &ShardKey,
         handle: &StreamHandle,
         term: u64,
-        payloads: &[Bytes],
-        headers: &[Option<Bytes>],
         deadline: Option<Instant>,
     ) -> Sent {
+        match self
+            .propose_on_raft(batch, key, handle, term, deadline)
+            .await
+        {
+            Ok(proposed) => committed(proposed.complete().await),
+            Err(sent) => sent,
+        }
+    }
+
+    /// Hand the batch to the shard's Raft group once the producer's
+    /// earlier batches are on this broker's log. `Err` when nothing was
+    /// handed over.
+    async fn propose_on_raft(
+        &self,
+        batch: &WriteBatch,
+        key: &ShardKey,
+        handle: &StreamHandle,
+        term: u64,
+        deadline: Option<Instant>,
+    ) -> Result<RaftIdempotentPublish, Sent> {
         let turn = self.broker.producer_turn(handle, batch.producer_id).await;
         let wait = self.wait_within(deadline);
         let proposed = self.engine.publish_idempotent_on_raft(
@@ -345,25 +433,24 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
             turn,
             batch.sequence,
             SequenceReuse::Refuse,
-            payloads.to_vec(),
+            batch.records.iter().map(|r| r.payload.clone()).collect(),
             Attribution {
                 publisher: None,
-                headers: Some(headers.to_vec()),
+                headers: Some(
+                    batch
+                        .records
+                        .iter()
+                        .map(|r| Some(r.headers.clone()))
+                        .collect(),
+                ),
             },
             wait,
         );
-        let proposed = match proposed.unwrap_or(Err(RaftRefusal::NotLeading { term })) {
-            Ok(proposed) => proposed,
+        match proposed.unwrap_or(Err(RaftRefusal::NotLeading { term })) {
+            Ok(proposed) => Ok(proposed),
             // Deposed since the check: nothing was written.
-            Err(RaftRefusal::NotLeading { .. }) => return Sent::Leaderless,
-            Err(RaftRefusal::Broker(err)) => return claim_failure(err),
-        };
-        match proposed.complete().await {
-            Ok(_) => Sent::Written,
-            Err(CommitError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),
-            // As on the hybrid: whoever leads now answers a re-send from
-            // the log.
-            Err(_) => Sent::Unanswered("leadership_lost"),
+            Err(RaftRefusal::NotLeading { .. }) => Err(Sent::Leaderless),
+            Err(RaftRefusal::Broker(err)) => Err(claim_failure(err)),
         }
     }
 
@@ -439,6 +526,30 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 }
             }
         }
+    }
+}
+
+/// Record `at` of `batch` as a batch of its own, at its own sequence.
+fn record_batch(batch: &WriteBatch, at: usize) -> WriteBatch {
+    WriteBatch {
+        tenant_id: Arc::clone(&batch.tenant_id),
+        credential: batch.credential.clone(),
+        target: batch.target.clone(),
+        producer_id: batch.producer_id,
+        sequence: batch.sequence + at as u64,
+        records: vec![batch.records[at].clone()],
+        acknowledged: batch.acknowledged,
+    }
+}
+
+/// How a batch proposed to a Raft group ended.
+fn committed(result: Result<Option<(u64, u64)>, CommitError>) -> Sent {
+    match result {
+        Ok(_) => Sent::Written,
+        Err(CommitError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),
+        // As on the hybrid: whoever leads now answers a re-send from the
+        // log.
+        Err(_) => Sent::Unanswered("leadership_lost"),
     }
 }
 
