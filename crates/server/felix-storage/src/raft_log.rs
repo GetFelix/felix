@@ -295,8 +295,10 @@ where
     /// so a copy that loses a counted entry no longer votes. See
     /// `docs/per-shard-raft.md`, "Proposal: commit on a written majority".
     ///
-    /// Refused when the copy's `raft-reserved` does not decode, on every
-    /// open: nothing can rebuild it.
+    /// In every mode no callback fires for an entry above the copy's
+    /// `raft-reserved`, which an append raises (synced) before its write and
+    /// an open raises over the entries already on disk. Refused when that
+    /// file does not decode or the raise fails: nothing can rebuild it.
     pub fn new(log: DiskLog, codec: K) -> io::Result<Self> {
         Self::with_tail_budget(log, codec, TailBudget::process())
     }
@@ -320,20 +322,18 @@ where
         }
         let purged = purged::load(log.dir())?;
         let mut reserved = reserved::load(log.dir())?;
-        if written_commit {
-            // Raft counts every entry it finds at start as flushed, so the
-            // reservation covers them before the log is handed over. A copy
-            // opened on commit before, or one whose last raise failed after
-            // its write, can hold entries above it.
-            let tail = log.tail_now();
-            if tail > 0 && reserved.is_none_or(|reserved| reserved < tail - 1) {
-                let next = (tail - 1).saturating_add(reserved::STEP);
-                // A blocking synced write, like the loads above: this
-                // constructor is not async and runs once per open, before
-                // the log takes any traffic.
-                reserved::store(log.dir(), next)?;
-                reserved = Some(next);
-            }
+        // Raft counts every entry it finds at start as flushed, so the
+        // reservation covers them before the log is handed over, in every
+        // fsync mode. A copy written by a build that reserved only under
+        // written commit can hold entries above it.
+        let tail = log.tail_now();
+        if tail > 0 && reserved.is_none_or(|reserved| reserved < tail - 1) {
+            let next = (tail - 1).saturating_add(reserved::STEP);
+            // A blocking synced write, like the loads above: this
+            // constructor is not async and runs once per open, before
+            // the log takes any traffic.
+            reserved::store(log.dir(), next)?;
+            reserved = Some(next);
         }
         Ok(Self {
             shared: Arc::new(Shared {

@@ -671,8 +671,13 @@ fleet-wide restore, or a power cut across relaxed brokers, each copy comes
 back with a new copy id, no vote and an empty log. That is what a copy no
 group has reached looks like, and a group formed from them would start at
 index 0 and give out offsets it already acknowledged (issue #2620). So a
-copy whose directory has a kept copy in `.kept/` holding a log entry, or a
-reservation (`raft-reserved`), never says it is blank: it refuses the
+copy whose directory has a kept copy in `.kept/` holding a log entry or a
+reservation, or into which a rotation carried a reservation
+(`raft-reserved-carried` beside `raft-reserved`) and that holds no entry
+yet, never says it is blank. A copy's own reservation does not count, even
+with no entry: every copy reserves before its first write, so a broker
+that dies before that write reaches the disk leaves a reservation on a
+copy no group reached, and the shard forms as usual. Such a copy refuses the
 question the forming broker asks, and a broker whose own copy is like that
 does not form the group. A kept copy that cannot be read counts as one
 that holds entries, and so does a group that never acknowledged a record
@@ -881,6 +886,13 @@ that copy can vouch for as committed:
 The base is the longest log kept that way, padded up to the floor. A
 record is lost only if every copy that holds it has it above its saved
 commit index, in a log that ends in a term other than the floor's.
+
+Cutting a copy to its saved commit index can drop an entry it fsynced and
+counted, so the cut base can end below a committed offset even on a
+broker that fsyncs on commit. That is why every copy reserves offsets in
+every fsync mode (below): the new epoch starts above the reservations it
+reads, so a committed offset the cut dropped is lost, never given out
+again.
 
 The model checks each part. With one term every copy can vouch for all it
 holds, and no record a disk holds is lost
@@ -4729,10 +4741,11 @@ broker append at an old term lands after the vote for a newer one.
 
 > **Partly built, not enabled.** Every broker still fsyncs a Raft log
 > before openraft hears an append is flushed, and everything else on this
-> page describes that. The log side is built behind a fleet feature
-> that no build reports yet, `raft_written_commit`: it waits for the
-> re-form that pads above every reservation. "What is built" below lists
-> the parts.
+> page describes that. Reservations are taken in every fsync mode with
+> no gate. Counting a written entry is built behind a fleet feature that
+> no build reports yet, `raft_written_commit`: it waits for the re-form
+> that pads above every reservation. "What is built" below lists the
+> parts.
 
 A broker whose `fsync_mode` is `periodic` or `none` (a relaxed broker)
 does not wait for the disk before it acknowledges a write. Its Raft logs
@@ -4858,7 +4871,8 @@ built to write on without it, so the proposal keeps the hybrid's rule,
 the bound is stored before the count, and stores the bound on the copy:
 
 - **Each copy reserves offsets ahead of what it counts.** A copy keeps a
-  reservation, an index, in a synced file in its shard directory. Before
+  reservation, an index, in a synced file in its shard directory. In every
+  fsync mode, not only on a relaxed broker, before
   its flush callback fires for entries past the reservation, it raises
   the reservation well ahead (a step of about a million entries) and
   syncs it. So the leader's own count and every follower's answer are
@@ -4954,15 +4968,18 @@ not move.
 - The reservation file, carried by a rotation and holding a kept
   directory against reclaim, and loaded on every open: a copy whose
   `raft-reserved` does not decode does not open.
+- Every Raft log, in every fsync mode, raises the reservation, synced, a
+  million entries past an append it does not cover, before the write. A
+  failed raise fails the append and writes nothing, and no callback
+  fires. Raft counts every entry it finds at start as flushed, so every
+  open first raises the reservation over the entries already on disk (a
+  copy written by a build that reserved only under `periodic` or `none`
+  has none), and the open fails if that raise does. In steady state that
+  is one extra synced small-file write per million entries per shard.
 - `RaftLog::new` accepts `periodic` and `none` only on a root whose run in
   this process began relaxed (`run_state::rotates_on_crash`). Such a log
-  raises the reservation, synced, a million entries past the append when
-  it does not cover it, before the write, then fires `IOFlushed` once the
-  entries are written. A failed raise fails the append and writes nothing.
-  Raft counts every entry it finds at start as flushed, so opening such a
-  log first raises the reservation over the entries already on disk (a
-  copy written under `on_commit` has none), and the open fails if that
-  raise does. A flush or exact log mark that fails after the callback
+  fires `IOFlushed` once the entries are written and reserved, where an
+  `on_commit` log waits for the fsync. A flush or exact log mark that fails after the callback
   stops the log, except one that fails because the log was closed: a
   close syncs the log itself. A member's stop waits for its queued
   flushes before the log closes, so a clean stop never rotates. `flushed` and the exact log mark still wait for

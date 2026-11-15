@@ -136,48 +136,108 @@ async fn a_failed_reservation_write_fails_the_append_and_fires_no_callback() {
     );
 }
 
-/// **A copy written on commit and reopened relaxed raises its reservation
-/// over what it holds before Raft sees it.** Raft counts every entry it
-/// finds at start as flushed, and a copy that never wrote relaxed has no
-/// reservation at all. The open fails when the raise does.
+/// **An fsynced append reserves before its callback, like a written one.**
+/// A re-form can cut a copy to its saved commit, below an entry it fsynced
+/// and counted, and pads only up to the reservations it reads.
 #[tokio::test]
-async fn a_relaxed_open_reserves_the_entries_already_on_disk() {
+async fn an_fsynced_append_fires_no_callback_past_the_reservation() {
     let root = tempdir().expect("dir");
-    begin(root.path(), true);
+    begin(root.path(), false);
     let mut raft = open_under(root.path(), FsyncMode::OnCommit).expect("open");
-    let entries: Vec<_> = (0..=2).map(|index| normal(1, index, "a")).collect();
-    append(&mut raft, entries).await.expect("append");
     let dir = raft.disk_log().dir().to_path_buf();
-    assert_eq!(reserved::load(&dir).expect("load"), None);
-    raft.disk_log().close().await.expect("close");
-    drop(raft);
-
-    std::fs::create_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("block");
-    let err = open_under(root.path(), FsyncMode::None)
-        .err()
-        .expect("an open whose raise fails is refused");
-    assert_eq!(reserved::load(&dir).expect("load"), None, "{err}");
-    std::fs::remove_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("unblock");
-
-    let _raft = open_under(root.path(), FsyncMode::None).expect("reopen relaxed");
+    append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+        .await
+        .expect("append");
     assert_eq!(
         reserved::load(&dir).expect("load"),
-        Some(2 + reserved::STEP)
+        Some(1 + reserved::STEP),
+        "the reservation covers the entries before the callback"
     );
+
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    reserved::store(&dir, 2).expect("store");
+    let mut raft = open_under(root.path(), FsyncMode::OnCommit).expect("reopen");
+
+    std::fs::create_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("block");
+    append(&mut raft, vec![normal(1, 2, "b")])
+        .await
+        .expect("an append inside the reservation needs no raise");
+    let (tx, mut rx) = Types::oneshot();
+    let appended = raft
+        .append(vec![normal(1, 3, "c")], IOFlushed::signal(tx))
+        .await;
+    assert!(appended.is_err(), "the append past it fails");
+    assert!(
+        rx.try_recv().is_err(),
+        "no callback for an unreserved entry"
+    );
+    assert_eq!(raft.disk_log().tail_now(), 3, "the entry was not written");
+}
+
+/// **An open raises the reservation over the entries already on disk, in
+/// every fsync mode.** Raft counts every entry it finds at start as
+/// flushed, and a copy written by a build that reserved only under written
+/// commit has no reservation at all. The open fails when the raise does.
+#[tokio::test]
+async fn an_open_reserves_the_entries_already_on_disk_in_every_mode() {
+    for (relaxed, mode) in [
+        (false, FsyncMode::OnCommit),
+        (true, FsyncMode::OnCommit),
+        (true, FsyncMode::None),
+    ] {
+        let root = tempdir().expect("dir");
+        begin(root.path(), relaxed);
+        let mut raft = open_under(root.path(), mode).expect("open");
+        let entries: Vec<_> = (0..=2).map(|index| normal(1, index, "a")).collect();
+        append(&mut raft, entries).await.expect("append");
+        let dir = raft.disk_log().dir().to_path_buf();
+        raft.disk_log().close().await.expect("close");
+        drop(raft);
+        // What a build that did not reserve here leaves behind.
+        std::fs::remove_file(dir.join(reserved::FILE_NAME)).expect("unreserve");
+
+        std::fs::create_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("block");
+        let err = open_under(root.path(), mode)
+            .err()
+            .expect("an open whose raise fails is refused");
+        assert_eq!(reserved::load(&dir).expect("load"), None, "{mode:?}: {err}");
+        std::fs::remove_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("unblock");
+
+        let _raft = open_under(root.path(), mode).expect("reopen");
+        assert_eq!(
+            reserved::load(&dir).expect("load"),
+            Some(2 + reserved::STEP),
+            "{mode:?}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn a_damaged_reservation_fails_every_open() {
-    let root = tempdir().expect("dir");
-    begin(root.path(), false);
-    let raft = open_under(root.path(), FsyncMode::OnCommit).expect("open");
-    let dir = raft.disk_log().dir().to_path_buf();
-    drop(raft);
-    std::fs::write(dir.join(reserved::FILE_NAME), b"not a reservation").expect("damage");
-    let err = open_under(root.path(), FsyncMode::OnCommit)
-        .err()
-        .expect("refused");
-    assert!(err.to_string().contains("does not decode"), "{err}");
+    for (relaxed, mode) in [
+        (false, FsyncMode::OnCommit),
+        (true, FsyncMode::OnCommit),
+        (true, FsyncMode::None),
+        (
+            true,
+            FsyncMode::Periodic {
+                interval: Duration::from_secs(60),
+            },
+        ),
+    ] {
+        let root = tempdir().expect("dir");
+        begin(root.path(), relaxed);
+        let raft = open_under(root.path(), mode).expect("open");
+        let dir = raft.disk_log().dir().to_path_buf();
+        drop(raft);
+        std::fs::write(dir.join(reserved::FILE_NAME), b"not a reservation").expect("damage");
+        let err = open_under(root.path(), mode).err().expect("refused");
+        assert!(
+            err.to_string().contains("does not decode"),
+            "{mode:?}: {err}"
+        );
+    }
 }
 
 #[tokio::test]
