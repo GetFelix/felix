@@ -517,8 +517,8 @@ impl LaneWork {
     }
 
     /// A publish to a shard a Raft group runs. Proposed on the lane, so the
-    /// group's order is the lane's, and answered off the lane: at its commit,
-    /// or for a `Leader` stream once it is on the leader's log inside the
+    /// group's order is the lane's, and answered off the lane: at its commit
+    /// (a written majority on a relaxed `Quorum` stream), or for a `Leader` stream once it is on the leader's log inside the
     /// group's leader lease.
     /// It never enters the hybrid's fence or touches its log.
     ///

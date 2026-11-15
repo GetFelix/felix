@@ -613,11 +613,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenReachCommitsAfterFailover.cfg` | witness: a record acknowledged early is committed by the next term's leader | violate `NeverCommitsAfterFailover` |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
-| `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
+| `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472; the code now takes the term-bound shape, and this stays as the counterexample twin); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
 | `FelixRaftBatchRewrite.cfg` | the re-send of a cut batch is written whole (#2516) | violate `BatchExactlyOnce`: the held prefix is in the log twice |
 | `FelixRaftBatchRewriteOrder.cfg` | the same, checked for order | violate `BatchInOrder` |
 | `FelixRaftBatchForgetsCut.cfg` | a purge past a cut batch drops it from the table snapshot | violate `BatchExactlyOnce`: the member takes the re-send as new |
 | `FelixRaftBatchForgetsCutPlace.cfg` | the same, checked one step earlier | violate `ProducerPlaceAgrees`: two members place one re-send differently |
+| `FelixRaftBatchInstallWithoutTable.cfg` | a snapshot install gives the base and not the table snapshot (#2562) | violate `BatchExactlyOnce`: a member installed past a cut batch takes the re-send as new |
 | `FelixRaftBatchTableAtApply.cfg` | the leader's table reads committed entries only; no change of leader | violate `BatchExactlyOnce`: a send that arrives while the first is in flight is written too |
 | `FelixRaftBatchHeldBeforeCommit.cfg` | a send is answered as held while its pieces are uncommitted | violate `BatchExactlyOnce`: a batch is acknowledged with nothing committed |
 | `FelixRaftBatchReachFinish.cfg` | witness: a cut batch is finished by its re-send and acknowledged | violate `NeverFinishesACut` |
@@ -3983,7 +3984,7 @@ giving a sequence up is not checked.
 Each knob drops one rule, and each twin fails:
 
 - `TermBoundBatch = FALSE`: each record is its own message with its own term
-  and lease check (#2472). A lease that lapses and comes back inside the batch
+  and lease check (#2472; the code now takes the term-bound shape, and FALSE stays as the counterexample twin). A lease that lapses and comes back inside the batch
   refuses some records and takes others. A batch of three lands its first and
   last records, the table counts it whole by its last position, and the
   re-send is acknowledged with the middle record missing. No change of leader
@@ -3995,6 +3996,10 @@ Each knob drops one rule, and each twin fails:
 - `AtPurge = "forget"`: a purge past a cut batch drops it from the table
   snapshot. That member, or one that installs its snapshot, takes the re-send
   as a new batch and writes the held records again.
+- `InstallKeepsTable = FALSE`: a snapshot install gives the member its
+  sender's base and not its table snapshot (#2562). The member knows only
+  what it holds above the base, so once it leads it takes the re-send of a
+  batch cut below the base as new and writes the held records again.
 - `TableAtAppend = FALSE`: the leader's table reads committed entries only. A
   send that arrives while the first is in flight is placed as new too. So is
   a re-send that reaches a new leader before the pieces it took over commit.

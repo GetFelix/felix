@@ -54,6 +54,7 @@ async fn a_publish_if_to_a_raft_shard_is_written_only_at_its_offset() -> Result<
         1,
         fixture::INCARNATION,
         felix_broker::ConsistencyLevel::Quorum,
+        felix_storage::log::FsyncMode::None,
     )
     .await;
     let shards = fixture::shards(&broker);

@@ -1565,8 +1565,9 @@ could not then be told from a new batch, so the batch is refused whole instead
 (#2524). A re-send of a batch of several records that the log already holds is
 still answered: one held whole as a duplicate, and one a leader change cut
 short by writing only its missing records, answered from the first record's
-original offset. No client can start a multi-record batch on Raft yet (#2472),
-so no cut exists in any log today. See `docs/per-shard-raft.md`, "Idempotent publishes".
+original offset. No client can start a multi-record batch on Raft yet: the lease-hole half
+of #2472 is done, and lifting the refusal is #2524. So no cut exists in any
+log today. See `docs/per-shard-raft.md`, "Idempotent publishes".
 
 A producer is known while any of its batches is in the log. One whose batches
 retention has removed entirely is forgotten, as is the one whose newest batch
