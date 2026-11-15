@@ -521,7 +521,10 @@ fn commands() -> Vec<MetaCommand> {
             node_id: s("b"),
             patch: node_patch(),
         },
-        MetaCommand::DeleteNode { node_id: s("b") },
+        MetaCommand::DeleteNode {
+            node_id: s("b"),
+            forget_reports: true,
+        },
         MetaCommand::RecordNodeHeartbeat {
             node_id: s("b"),
             incarnation: 1,

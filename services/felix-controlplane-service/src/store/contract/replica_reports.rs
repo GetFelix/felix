@@ -1,6 +1,6 @@
 //! What leaders report about their replicas, as every backend must keep it.
 use super::shards::{assignment, key};
-use crate::model::{HaltedCopy, ReplicaReport};
+use crate::model::{HaltedCopy, ReplicaReport, ShardAssignment};
 use crate::store::{ControlPlaneStore, ReportWrite, StoreError};
 
 /// The leader every case assigns, and so the node its reports come from.
@@ -531,6 +531,75 @@ pub(super) async fn a_give_up_is_kept(store: &dyn ControlPlaneStore) {
     assert!(!stored(store, shard).await.given_up);
 }
 
+/// **A node's delete drops its stamp from every held report** (#2619). A
+/// node registered again after a delete restarts at incarnation 0, so a
+/// stamp kept from the process before would match the new one, and a report
+/// from before the delete could count it with none of the data it named.
+/// The rest of the report stays: it still speaks for the other members.
+pub(super) async fn a_deleted_node_leaves_no_report_stamp(store: &dyn ControlPlaneStore) {
+    super::shards::clear(store).await;
+    let shard = 3;
+    store
+        .put_shard_assignment(ShardAssignment {
+            replicas: vec!["broker-y".to_string()],
+            ..assignment(shard, LEADER)
+        })
+        .await
+        .expect("assign");
+    let follower = store.get_node("broker-y").await.expect("node").status;
+    let held = ReplicaReport {
+        leader: Some(LEADER.to_string()),
+        node_incarnations: [
+            (LEADER.to_string(), 0),
+            ("broker-y".to_string(), follower.incarnation),
+        ]
+        .into(),
+        ..report(shard, generation(store, shard).await, &["broker-y"], 5_000)
+    };
+    assert_eq!(
+        store
+            .record_replica_report(held.clone(), LEADER)
+            .await
+            .expect("record"),
+        ReportWrite::Stored
+    );
+    // broker-y leaves the set, and the leader has not reported since.
+    store
+        .put_shard_assignment(assignment(shard, LEADER))
+        .await
+        .expect("drop broker-y");
+    assert!(
+        stored(store, shard)
+            .await
+            .node_incarnations
+            .contains_key("broker-y")
+    );
+
+    store.delete_node("broker-y").await.expect("delete");
+    store
+        .register_node(super::nodes::node("broker-y", 7501))
+        .await
+        .expect("register again");
+    assert_eq!(
+        store
+            .get_node("broker-y")
+            .await
+            .expect("node")
+            .status
+            .incarnation,
+        0
+    );
+    let after = stored(store, shard).await;
+    assert_eq!(
+        after.node_incarnations,
+        [(LEADER.to_string(), 0)].into(),
+        "the deleted node's stamp goes, the leader's stays"
+    );
+    assert_eq!(after.offsets, held.offsets);
+    assert_eq!(after.caught_up, held.caught_up);
+    super::shards::clear(store).await;
+}
+
 /// `shard`'s report as held, stamps and all.
 async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
     store
@@ -542,7 +611,7 @@ async fn stored(store: &dyn ControlPlaneStore, shard: u32) -> ReplicaReport {
         .expect("a report")
 }
 
-pub(super) fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
+pub(crate) fn report(shard: u32, generation: u64, caught_up: &[&str], at: u64) -> ReplicaReport {
     ReplicaReport {
         given_up: false,
         counter_offsets: Default::default(),

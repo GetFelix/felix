@@ -1275,3 +1275,84 @@ async fn a_member_the_new_leader_has_not_reached_keeps_the_previous_reports_iden
         "broker-y is named by none, and broker-z by an identity it no longer has"
     );
 }
+
+/// **A report from before a node's delete never counts it once registered
+/// again** (#2619). The new registration restarts at incarnation 0, so the
+/// old report's stamp would match it, and broker-y registers no storage
+/// identity to tell the two apart.
+#[tokio::test]
+async fn a_report_from_before_a_delete_does_not_count_the_node_registered_again() {
+    use crate::cluster::placement::CaughtUp;
+    let (store, keys) = one_shard_cluster().await;
+    let generation = led_by_x(&store, 0).await;
+    let state = app_state_ready(Arc::clone(&store) as _);
+    let (status, _) = post_report(
+        state,
+        &keys,
+        serde_json::json!([shard_json(0, generation, 10, &["broker-y"])]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let positions = || async {
+        crate::cluster::placement::ReplicaPositions::load(
+            store.as_ref(),
+            &crate::config::NodeLivenessConfig::default(),
+        )
+        .await
+        .expect("positions")
+    };
+    assert!(positions().await.is_caught_up(&shard_zero(), "broker-y"));
+
+    // broker-y leaves the set, is deleted, registers again with an empty
+    // disk, and is put back before broker-x reports again.
+    let mut assignment = store
+        .get_shard_assignment(&shard_zero())
+        .await
+        .expect("get");
+    assignment.replicas.clear();
+    let mut assignment = store.put_shard_assignment(assignment).await.expect("leave");
+    let node = store.get_node("broker-y").await.expect("broker-y");
+    store.delete_node("broker-y").await.expect("delete");
+    let again = store.register_node(node).await.expect("register again");
+    assert_eq!(again.status.incarnation, 0);
+    assignment.replicas = vec!["broker-y".to_string()];
+    store
+        .put_shard_assignment(assignment)
+        .await
+        .expect("rejoin");
+
+    assert!(
+        !positions().await.is_caught_up(&shard_zero(), "broker-y"),
+        "a report from before the delete counted the new registration"
+    );
+}
+
+/// **Only the nodes the assignment names are stamped.** A node outside the
+/// set can be deleted while the report is in flight, after the delete has
+/// cleared the stamps it would otherwise leave.
+#[tokio::test]
+async fn a_report_stamps_only_the_assignments_nodes() {
+    let (store, keys) = one_shard_cluster().await;
+    let generation = led_by_x(&store, 0).await;
+    let mut outside = store.get_node("broker-y").await.expect("broker-y");
+    outside.node_id = "broker-z".to_string();
+    outside.spec.advertise_addr = "127.0.0.1:7999".to_string();
+    outside.spec.client_addr = None;
+    outside.spec.kafka_addr = None;
+    store
+        .register_node(outside)
+        .await
+        .expect("register broker-z");
+    let state = app_state_ready(Arc::clone(&store) as _);
+
+    let (status, _) = post_report(
+        state,
+        &keys,
+        serde_json::json!([shard_json(0, generation, 10, &["broker-y", "broker-z"])]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let held = store.list_replica_reports().await.expect("list");
+    assert!(held[0].node_incarnations.contains_key("broker-y"));
+    assert!(!held[0].node_incarnations.contains_key("broker-z"));
+}

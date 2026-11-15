@@ -717,7 +717,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_node(&self, node_id: &str) -> StoreResult<()> {
-        nodes::delete_node(self, node_id).await
+        nodes::delete_node(self, node_id, true).await
     }
 
     async fn record_node_heartbeat(

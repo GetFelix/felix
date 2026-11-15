@@ -46,6 +46,7 @@ fn commands_without_a_clock_are_left_alone() {
     // the log, so a command from a newer build cannot be reshaped in passing.
     let encoded = encode_command(&MetaCommand::DeleteNode {
         node_id: "broker-1".to_string(),
+        forget_reports: false,
     });
     assert!(restamp(&encoded, 9_000).is_none());
 }
@@ -417,5 +418,40 @@ fn an_escaped_import_op_is_still_settled() {
     assert_eq!(value["mark_unplaced"], true);
     assert!(!depends_on_level(
         br#"{"v":1,"op":"record_node_heartbeat"}"#
+    ));
+}
+
+/// A node delete forgets the node's report stamps only once every member
+/// applies level 37 (#2619); below it the delete is appended as sent.
+#[test]
+fn a_delete_forgets_report_stamps_from_level_37() {
+    let delete = encode_command(&MetaCommand::DeleteNode {
+        node_id: "broker-b".to_string(),
+        forget_reports: false,
+    });
+    let level = super::super::FORGET_REPORTS_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    assert!(depends_on_level(&delete));
+    assert!(
+        settle_for_level(&delete, level - 1)
+            .expect("settles")
+            .is_none()
+    );
+    let flagged = br#"{"v":1,"op":"delete_node","node_id":"broker-b","forget_reports":true}"#;
+    let stripped = settle_for_level(flagged, level - 1)
+        .expect("settles")
+        .expect("rewritten");
+    assert!(decode_command_with_level(&stripped).expect("decodes").1 < level);
+    let settled = settle_for_level(&delete, level)
+        .expect("settles")
+        .expect("rewritten");
+    let (settled, needs) = decode_command_with_level(&settled).expect("decodes");
+    assert_eq!(needs, level);
+    assert!(matches!(
+        settled,
+        MetaCommand::DeleteNode {
+            forget_reports: true,
+            ..
+        }
     ));
 }
