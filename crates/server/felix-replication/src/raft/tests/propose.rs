@@ -3,7 +3,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering::Relaxed};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
 use felix_storage::log::ReadRange;
 use felix_storage::raft_log::LogPositions;
@@ -613,9 +613,8 @@ async fn a_call_cut_short_answers_every_batch_as_stopped() {
     }
 }
 
-/// Records that name a term are refused one by one. A batch with a record
-/// written and a record refused is told so, not that nothing was written,
-/// and the batch behind it gets its own answer.
+/// A batch with a record written and a record not written is told so, not
+/// that nothing was written, and the batch behind it gets its own answer.
 #[tokio::test]
 async fn a_batch_written_in_part_is_told_so() {
     use futures::StreamExt;
@@ -670,8 +669,8 @@ async fn a_batch_written_in_part_is_told_so() {
 
 /// Write `payloads` as the publish task does, the first record at `term`
 /// and the rest at a term this member does not lead, and answer them as one
-/// batch. openraft checks each record on its own, so this is how it
-/// answers a batch whose term moved after its first record.
+/// batch. It stands in for a batch whose tail a new leader discarded: its
+/// first record applied, the rest not.
 pub(super) async fn cut_after_first(
     raft: &openraft::Raft<ShardTypes, super::super::machine::Machine>,
     term: u64,
@@ -719,6 +718,67 @@ async fn a_batch_cut_part_way_is_told_how_far_it_was_written() {
         let held = payloads(&cluster, broker, committed + 1).await;
         assert_eq!(held, [Bytes::from_static(b"in")], "{broker}");
     }
+    cluster.stop().await;
+}
+
+/// **A term-bound drain lands as one run.** The publish task hands openraft
+/// a drain as one write, so another writer's records, at the same term,
+/// cannot land between its records and turn the batch into one that is not
+/// where it was proposed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
+    use super::super::propose::write;
+    use futures::StreamExt;
+    const RECORDS: u64 = 512;
+    let (mut cluster, leader, _engine, _committed) = led().await;
+    let term = status(&cluster, &leader).term;
+    let member = cluster.runtime(&leader.broker).group(&shard(0));
+    let raft = member.expect("group").raft().clone();
+    let command = |payload: &'static [u8]| Command {
+        timestamp_micros: 1_700_000_000,
+        payload: Bytes::from_static(payload),
+        producer: None,
+        written: None,
+    };
+
+    // The writers run only while the drain is handed over, which is when a
+    // record of theirs could get between two of its records. Stopping them
+    // before the drain's answers are awaited keeps the backlog small.
+    let stop = Arc::new(AtomicBool::new(false));
+    let sent = Arc::new(AtomicU64::new(0));
+    let others: Vec<_> = (0..3)
+        .map(|_| {
+            let (raft, stop, sent) = (raft.clone(), Arc::clone(&stop), Arc::clone(&sent));
+            tokio::spawn(async move {
+                while !stop.load(Relaxed) {
+                    let written = write(&raft, vec![command(b"other")], Some(term)).await;
+                    drop(written.expect("running"));
+                    sent.fetch_add(1, Relaxed);
+                    tokio::task::yield_now().await;
+                }
+            })
+        })
+        .collect();
+    while sent.load(Relaxed) < 300 {
+        tokio::task::yield_now().await;
+    }
+    let ours = (0..RECORDS).map(|_| command(b"ours")).collect();
+    let results = write(&raft, ours, Some(term)).await.expect("running");
+    stop.store(true, Relaxed);
+    for other in others {
+        other.await.expect("writer");
+    }
+    let indexes: Vec<u64> = results
+        .map(|result| match result {
+            Ok(Ok(applied)) => applied.log_id.index,
+            Ok(Err(err)) => panic!("not applied: {err}"),
+            Err(fatal) => panic!("not applied: {fatal}"),
+        })
+        .collect()
+        .await;
+    assert_eq!(indexes.len() as u64, RECORDS);
+    let gap = indexes.windows(2).find(|pair| pair[1] != pair[0] + 1);
+    assert_eq!(gap, None, "another writer's record landed inside the drain");
     cluster.stop().await;
 }
 

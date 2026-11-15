@@ -64,9 +64,12 @@ pub(crate) fn sidecars(data: &[u8]) {
 
     let body = SNAPSHOT_HEADER_LEN..data.len().max(SNAPSHOT_HEADER_LEN);
     for bytes in [data.to_vec(), with_crc(data, SNAPSHOT_HEADER_LEN - 4, body)] {
-        if let Some((state, as_of)) = producers::decode(&bytes) {
-            let again = producers::decode(&producers::encode(&state, as_of));
-            assert_eq!(again, Some((state, as_of)));
+        if let Some((state, as_of, _)) = producers::decode_versioned(&bytes) {
+            let again = producers::decode_versioned(&producers::encode(&state, as_of));
+            assert_eq!(
+                again.map(|(state, as_of, _)| (state, as_of)),
+                Some((state, as_of))
+            );
         }
     }
 }

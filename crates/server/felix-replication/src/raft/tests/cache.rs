@@ -446,7 +446,7 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
     use openraft::type_config::alias::{EntryOf, LogIdOf};
     let dir = tempdir().expect("dir");
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
-    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
+    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
     let (mut machine, _, _, cache) = opened.expect("open");
     let cache = cache.expect("a cache group");
     let entry = |index: u64, command: CacheCommand| {
@@ -480,7 +480,7 @@ async fn cache_machine(
     dir: &std::path::Path,
 ) -> (super::super::machine::Machine, super::super::machine::Cache) {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
-    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache).await;
+    let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
     let (machine, _, _, cache) = opened.expect("open");
     (machine, cache.expect("a cache group"))
 }
