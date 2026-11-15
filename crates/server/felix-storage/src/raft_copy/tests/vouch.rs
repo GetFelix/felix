@@ -14,12 +14,13 @@ const INC: u64 = 7;
 fn copy(name: &str, terms: &[u64], committed: Option<u64>, vote: Option<u64>) -> CopyRead {
     CopyRead {
         path: PathBuf::from(name),
-        copy: None,
+        copy: Some(1),
         epoch: None,
         last: terms.last().map(|term| LogPoint {
             term: *term,
             index: terms.len() as u64 - 1,
         }),
+        purged: None,
         committed,
         vote,
         reserved: None,
@@ -428,4 +429,100 @@ fn a_copy_that_never_voted_keys_its_epoch_at_term_zero() {
             term: 2
         })
     );
+}
+
+/// A broker with no copy file holds the base yet has no id a membership
+/// could name, so it is a learner.
+#[test]
+fn a_broker_without_a_copy_id_is_never_a_voter() {
+    let rec = record(&["a", "b"], &[], &[], None);
+    let mut b = copy("b", &[1, 1], Some(1), Some(1));
+    b.copy = None;
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", report(copy("a", &[1, 1], Some(1), Some(1)), vec![])),
+            ("b", report(b, vec![])),
+        ],
+    );
+    assert_eq!(plan.base_end(), 2);
+    assert_eq!(
+        plan.voters,
+        vec![Voter {
+            broker: "a",
+            copy: 1,
+            source: Source::Current
+        }]
+    );
+    assert_eq!(plan.learners, vec!["b"]);
+}
+
+/// The base ends below what its source purged: the term there is not on
+/// that disk, and the refusal says so.
+#[test]
+fn a_base_ending_in_a_purged_prefix_refuses_as_purged() {
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 2,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: 5,
+    }];
+    let rec = record(&["a"], &[], &bases, None);
+    let mut a = copy("a", &[1; 9], Some(8), Some(1));
+    a.purged = Some(6);
+    a.terms.retain(|index, _| *index >= 6);
+    let reports = BTreeMap::from([("a", report(a, vec![]))]);
+    assert_eq!(
+        plan_reform(&rec, &reports),
+        Err(Refused::Purged {
+            broker: "a",
+            index: 2
+        })
+    );
+}
+
+/// A vouch that ends inside a re-form's gap backs off to that epoch's base
+/// end: the floor names index 3 of epoch 0, which re-form 1 put in its gap.
+#[test]
+fn a_base_never_ends_inside_a_gap() {
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 1,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: 5,
+    }];
+    let rec = record(&["a", "d"], &["d"], &bases, floor(3, 0, 1));
+    let a = at_epoch(copy_from("a", &[(0, 1), (1, 1), (5, 2)], Some(2)), &bases);
+    let mut a = a;
+    a.committed = Some(1);
+    let plan = plan(&rec, vec![("a", report(a, vec![]))]);
+    assert!(plan.marked);
+    assert_eq!(
+        plan.base_last,
+        Some(EpochLogId {
+            index: 1,
+            epoch: 0,
+            term: 1
+        })
+    );
+    assert_eq!(plan.first_index, 4);
+}
+
+/// A vote above every entry flags a loss only when it cuts a copy: here the
+/// one copy's commit already covers its whole log.
+#[test]
+fn a_vote_above_every_entry_that_cuts_nothing_needs_no_sign_off() {
+    let rec = record(&["a"], &[], &[], None);
+    let plan = plan(
+        &rec,
+        vec![("a", report(copy("a", &[1, 1], Some(1), Some(2)), vec![]))],
+    );
+    assert_eq!(plan.top, (0, 2));
+    assert_eq!(plan.base_end(), 2);
+    assert!(!plan.cut_by_vote);
+    assert!(!plan.needs_accept_loss());
 }

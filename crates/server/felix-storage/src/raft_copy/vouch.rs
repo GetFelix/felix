@@ -15,37 +15,37 @@ use super::rotated_by::RotatedBy;
 
 /// An (epoch, term) pair. Every term of an epoch is above every term of an
 /// earlier one.
-pub type Key = (u64, u64);
+pub(crate) type Key = (u64, u64);
 
 /// What the control plane holds for the group.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GroupRecord<B> {
-    pub incarnation: u64,
+pub(crate) struct GroupRecord<B> {
+    pub(crate) incarnation: u64,
     /// How each re-form so far started its epoch; the group is at epoch
     /// `bases.len()`.
-    pub bases: Vec<EpochBase>,
+    pub(crate) bases: Vec<EpochBase>,
     /// The highest commit a leader reported, if any.
-    pub floor: Option<EpochLogId>,
+    pub(crate) floor: Option<EpochLogId>,
     /// Every broker placed in the current epoch, removed ones included.
     /// `None` when the shard has no such record.
-    pub placed: Option<BTreeSet<B>>,
+    pub(crate) placed: Option<BTreeSet<B>>,
     /// Brokers declared dead. Their copies are not read.
-    pub dead: BTreeSet<B>,
+    pub(crate) dead: BTreeSet<B>,
 }
 
 /// One broker's answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrokerReport<B> {
+pub(crate) struct BrokerReport<B> {
     /// Whether it leads the current epoch.
-    pub leads: bool,
+    pub(crate) leads: bool,
     /// The voters its newest membership names.
-    pub names: BTreeSet<B>,
-    pub copies: BrokerCopies,
+    pub(crate) names: BTreeSet<B>,
+    pub(crate) copies: BrokerCopies,
 }
 
 /// Which of a broker's copies.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Source {
+pub(crate) enum Source {
     Current,
     /// A kept copy, by its directory.
     Kept(PathBuf),
@@ -54,51 +54,51 @@ pub enum Source {
 /// A voter of the next epoch: the broker under its current copy id, and the
 /// copy on it that holds the base.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Voter<B> {
-    pub broker: B,
-    pub copy: Option<u64>,
-    pub source: Source,
+pub(crate) struct Voter<B> {
+    pub(crate) broker: B,
+    pub(crate) copy: u64,
+    pub(crate) source: Source,
 }
 
 /// The next epoch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReformPlan<B> {
-    pub epoch: u64,
+pub(crate) struct ReformPlan<B> {
+    pub(crate) epoch: u64,
     /// The base's last log id, `None` for an empty base.
-    pub base_last: Option<EpochLogId>,
+    pub(crate) base_last: Option<EpochLogId>,
     /// The copy the base was taken from.
-    pub source: (B, Source),
-    pub voters: Vec<Voter<B>>,
+    pub(crate) source: (B, Source),
+    pub(crate) voters: Vec<Voter<B>>,
     /// Every other broker read.
-    pub learners: Vec<B>,
+    pub(crate) learners: Vec<B>,
     /// Above the base, the floor and every reservation read.
-    pub first_index: u64,
+    pub(crate) first_index: u64,
     /// The highest key of any vote or entry read, and of the floor.
-    pub top: Key,
+    pub(crate) top: Key,
     /// A broker placed in the epoch is dead, has no vote of the epoch read,
     /// or has a copy of the epoch a restore rotated. No copy is then
     /// vouched for past its saved commit or the floor.
-    pub marked: bool,
+    pub(crate) marked: bool,
     /// Unmarked, a vote or the floor is above every entry read, and that
     /// cut a copy below what it holds.
-    pub cut_by_vote: bool,
+    pub(crate) cut_by_vote: bool,
 }
 
 impl<B> ReformPlan<B> {
     /// Whether applying it can drop acknowledged records a reached disk
     /// still holds, so the operator has to accept the loss by name.
-    pub fn needs_accept_loss(&self) -> bool {
+    pub(crate) fn needs_accept_loss(&self) -> bool {
         self.marked || self.cut_by_vote
     }
 
-    pub fn base_end(&self) -> u64 {
+    pub(crate) fn base_end(&self) -> u64 {
         self.base_last.map_or(0, |last| last.index + 1)
     }
 }
 
 /// Why no plan is made. Each is checked before any vouch.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Refused<B> {
+pub(crate) enum Refused<B> {
     /// The shard has no record of the brokers placed in its epoch.
     NoPlacedRecord,
     /// A broker placed in the epoch neither answered nor is declared dead.
@@ -115,6 +115,9 @@ pub enum Refused<B> {
     RecordInGap { broker: B, index: u64 },
     /// A copy was not asked for its term at an index the plan needs.
     NotProbed { broker: B, index: u64 },
+    /// The base ends at an index the source copy purged, so its term is
+    /// not on that disk.
+    Purged { broker: B, index: u64 },
     /// Every index is reserved.
     NoIndexLeft,
     /// No copy was read.
@@ -136,7 +139,10 @@ struct Copy<'a, B> {
 /// base can end (a saved commit, a log's end, the floor, an epoch's base
 /// end) and the floor's index. A survey reads them with
 /// [`super::read_copies`] before [`plan_reform`].
-pub fn probes<B>(record: &GroupRecord<B>, reports: &BTreeMap<B, BrokerReport<B>>) -> BTreeSet<u64> {
+pub(crate) fn probes<B>(
+    record: &GroupRecord<B>,
+    reports: &BTreeMap<B, BrokerReport<B>>,
+) -> BTreeSet<u64> {
     let mut ends: BTreeSet<u64> = record.bases.iter().map(EpochBase::base_end).collect();
     let mut out = BTreeSet::new();
     if let Some(floor) = record.floor {
@@ -153,7 +159,7 @@ pub fn probes<B>(record: &GroupRecord<B>, reports: &BTreeMap<B, BrokerReport<B>>
 }
 
 /// The plan for the next epoch, by the rule in `ReformKept`.
-pub fn plan_reform<B: Ord + Clone>(
+pub(crate) fn plan_reform<B: Ord + Clone>(
     record: &GroupRecord<B>,
     reports: &BTreeMap<B, BrokerReport<B>>,
 ) -> Result<ReformPlan<B>, Refused<B>> {
@@ -300,13 +306,14 @@ pub fn plan_reform<B: Ord + Clone>(
                 best = Some(copy);
             }
         }
-        match best {
-            Some(copy) => voters.push(Voter {
+        // A broker with no copy file has no id a membership could name.
+        match (best, report.copies.current.copy) {
+            (Some(best), Some(copy)) => voters.push(Voter {
                 broker: (*broker).clone(),
-                copy: report.copies.current.copy,
-                source: copy.source.clone(),
+                copy,
+                source: best.source.clone(),
             }),
-            None => learners.push((*broker).clone()),
+            _ => learners.push((*broker).clone()),
         }
     }
 
@@ -417,6 +424,12 @@ impl<B: Clone> Rule<'_, B> {
         if index >= copy.end {
             return Ok(None);
         }
+        if copy.read.purged.is_some_and(|purged| index < purged) {
+            return Err(Refused::Purged {
+                broker: copy.broker.clone(),
+                index,
+            });
+        }
         copy.read
             .terms
             .get(&index)
@@ -437,7 +450,12 @@ impl<B: Clone> Rule<'_, B> {
         key: Key,
         gap_counts: bool,
     ) -> Result<bool, Refused<B>> {
-        if copy.epoch.is_none() || index >= copy.end {
+        // A purged entry's term is gone, so the copy cannot show it holds
+        // it; it joins as a learner and catches up.
+        if copy.epoch.is_none()
+            || index >= copy.end
+            || copy.read.purged.is_some_and(|purged| index < purged)
+        {
             return Ok(false);
         }
         Ok(match self.epoch_at(copy, index) {

@@ -16,7 +16,7 @@ pub(crate) const FILE_NAME: &str = "rotated-by";
 
 /// How a kept copy came to be, as a re-form reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RotatedBy {
+pub(crate) enum RotatedBy {
     /// The log was below its mark, so it lost an unsynced tail and kept its
     /// newest vote.
     PowerCut,
@@ -29,7 +29,7 @@ impl RotatedBy {
     /// The word for each reason. Only a log below its mark is a power cut:
     /// a poisoned log can hold less than it reported, and every other
     /// reason can bring back an older disk or vote.
-    pub fn of(reason: RotateReason) -> Self {
+    pub(crate) fn of(reason: RotateReason) -> Self {
         match reason {
             RotateReason::LogBelowMark => Self::PowerCut,
             RotateReason::Empty
@@ -53,7 +53,7 @@ impl RotatedBy {
 /// The reason kept in `dir`. A kept directory without the file is from
 /// before it existed or from a crash before it was written, and reads as a
 /// restore. A file that does not decode is an error.
-pub fn load(dir: &Path) -> io::Result<RotatedBy> {
+pub(crate) fn load(dir: &Path) -> io::Result<RotatedBy> {
     let Some(bytes) = state_file::load(dir, FILE_NAME)? else {
         return Ok(RotatedBy::Restore);
     };

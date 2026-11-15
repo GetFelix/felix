@@ -4941,7 +4941,8 @@ not move.
   needs the operator to accept the loss. It refuses on an unanswered
   placed broker, a leader, a voter off the record, a copy ahead of the
   record's epoch or whose bases differ from it, a record inside a gap, and
-  an index nobody was asked about. This is `ReformKept` in
+  an index nobody was asked about, and a base that ends below what its
+  source purged. A broker with no copy id is never a voter. This is `ReformKept` in
   `docs/formal/FelixRaftReform.tla`.
 
 Not built: the re-form command and the RF 1 restore themselves (item 8

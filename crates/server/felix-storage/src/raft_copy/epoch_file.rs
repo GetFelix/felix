@@ -26,32 +26,32 @@ pub(crate) const FILE_NAME: &str = "raft-epoch";
 /// A log id with its group epoch: the entry at `index`, written in `term`
 /// of epoch `epoch`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EpochLogId {
-    pub index: u64,
-    pub epoch: u64,
-    pub term: u64,
+pub(crate) struct EpochLogId {
+    pub(crate) index: u64,
+    pub(crate) epoch: u64,
+    pub(crate) term: u64,
 }
 
 /// How one re-form started its epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EpochBase {
+pub(crate) struct EpochBase {
     /// The base's last log id, `None` for an empty base.
-    pub base_last: Option<EpochLogId>,
+    pub(crate) base_last: Option<EpochLogId>,
     /// The epoch's first index. Indexes from the base's end up to it are a
     /// gap: offsets no record will ever take.
-    pub first_index: u64,
+    pub(crate) first_index: u64,
 }
 
 impl EpochBase {
     /// One past the base's last index.
-    pub fn base_end(&self) -> u64 {
+    pub(crate) fn base_end(&self) -> u64 {
         self.base_last.map_or(0, |last| last.index + 1)
     }
 }
 
 /// Where an index sits in a log of some epoch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EpochAt {
+pub(crate) enum EpochAt {
     /// An entry written in this epoch, or copied into a later base from it.
     Entry(u64),
     /// In the gap this epoch's re-form left: never a record.
@@ -60,15 +60,15 @@ pub enum EpochAt {
 
 /// The contents of `raft-epoch`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EpochFile {
-    pub incarnation: u64,
+pub(crate) struct EpochFile {
+    pub(crate) incarnation: u64,
     /// The base of epoch `n + 1` at position `n`, so the copy's epoch is the
     /// length.
-    pub bases: Vec<EpochBase>,
+    pub(crate) bases: Vec<EpochBase>,
 }
 
 impl EpochFile {
-    pub fn epoch(&self) -> u64 {
+    pub(crate) fn epoch(&self) -> u64 {
         self.bases.len() as u64
     }
 
@@ -76,7 +76,7 @@ impl EpochFile {
     /// started from `bases`: the highest epoch at or below `epoch` whose
     /// first index is at or below it, a gap when it sits between that
     /// epoch's base end and first index, else epoch 0.
-    pub fn epoch_at(bases: &[EpochBase], epoch: u64, index: u64) -> EpochAt {
+    pub(crate) fn epoch_at(bases: &[EpochBase], epoch: u64, index: u64) -> EpochAt {
         let upto = usize::try_from(epoch)
             .unwrap_or(usize::MAX)
             .min(bases.len());
@@ -161,7 +161,7 @@ impl EpochFile {
 }
 
 /// The epoch file in `dir`, or `None` when the copy is at epoch 0.
-pub fn load(dir: &Path) -> io::Result<Option<EpochFile>> {
+pub(crate) fn load(dir: &Path) -> io::Result<Option<EpochFile>> {
     let Some(bytes) = state_file::load(dir, FILE_NAME)? else {
         return Ok(None);
     };
@@ -177,6 +177,6 @@ pub fn load(dir: &Path) -> io::Result<Option<EpochFile>> {
 }
 
 /// Replace the epoch file in `dir` with `file`, synced.
-pub fn store(dir: &Path, file: &EpochFile) -> io::Result<()> {
+pub(crate) fn store(dir: &Path, file: &EpochFile) -> io::Result<()> {
     state_file::store(dir, FILE_NAME, &[&file.encode()?])
 }

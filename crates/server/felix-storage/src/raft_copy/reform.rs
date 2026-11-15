@@ -17,25 +17,25 @@ use crate::raft_log::{LogPoint, held, reserved};
 
 /// One kept copy as a re-form reads it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct KeptLog {
-    pub path: std::path::PathBuf,
+pub(crate) struct KeptLog {
+    pub(crate) path: std::path::PathBuf,
     /// The copy id it held, if it had one.
-    pub copy: Option<u64>,
+    pub(crate) copy: Option<u64>,
     /// The last index it holds as an open reads it (a tail that does not
     /// decode is cut), or its purged id if that is
     /// higher. None for a directory with neither.
-    pub last: Option<u64>,
+    pub(crate) last: Option<u64>,
     /// The last index it can vouch for as committed: its saved commit, cut
     /// to the last entry that decodes as an open cuts it, or its purged id
     /// if that is higher. None when it saved no commit and purged nothing, or
     /// when the entry there is not the committed one's, which an open would
     /// not take either.
-    pub committed: Option<u64>,
+    pub(crate) committed: Option<u64>,
 }
 
 /// Every copy rotations moved aside from `dir`, read as [`KeptLog`]s. A
 /// directory that cannot be read is an error, never skipped.
-pub fn kept_logs(dir: &Path, index_spacing_bytes: u64) -> io::Result<Vec<KeptLog>> {
+pub(crate) fn kept_logs(dir: &Path, index_spacing_bytes: u64) -> io::Result<Vec<KeptLog>> {
     kept_copies(dir)?
         .into_iter()
         .map(|KeptCopy { path, copy }| {
@@ -47,7 +47,7 @@ pub fn kept_logs(dir: &Path, index_spacing_bytes: u64) -> io::Result<Vec<KeptLog
 }
 
 /// [`KeptLog`] for one directory. Its copy id is left `None`.
-pub fn read_kept(path: &Path, index_spacing_bytes: u64) -> io::Result<KeptLog> {
+pub(crate) fn read_kept(path: &Path, index_spacing_bytes: u64) -> io::Result<KeptLog> {
     let label = path.display().to_string();
     let held = held::read(path, &label, index_spacing_bytes)?;
     let (saved, generation) = crate::disk_log::saved_commit(path).map_err(io::Error::other)?;
@@ -86,7 +86,11 @@ pub fn read_kept(path: &Path, index_spacing_bytes: u64) -> io::Result<KeptLog> {
 /// above every reservation in `dir` and its kept copies. Every entry a
 /// relaxed copy counted toward a commit is at or below a reservation that
 /// was synced first, so no committed offset is given out again.
-pub fn first_free_index(dir: &Path, base_last: Option<u64>, floor: Option<u64>) -> io::Result<u64> {
+pub(crate) fn first_free_index(
+    dir: &Path,
+    base_last: Option<u64>,
+    floor: Option<u64>,
+) -> io::Result<u64> {
     let highest = base_last.max(floor).max(highest_reserved(dir)?);
     highest.map_or(Ok(0), |index| {
         index
@@ -99,38 +103,40 @@ pub fn first_free_index(dir: &Path, base_last: Option<u64>, floor: Option<u64>) 
 /// kept one, read without opening. Every file it reads that does not decode
 /// fails the read.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CopyRead {
-    pub path: PathBuf,
+pub(crate) struct CopyRead {
+    pub(crate) path: PathBuf,
     /// Its copy id, if it has one.
-    pub copy: Option<u64>,
+    pub(crate) copy: Option<u64>,
     /// Its `raft-epoch`, `None` at epoch 0.
-    pub epoch: Option<EpochFile>,
+    pub(crate) epoch: Option<EpochFile>,
     /// Its last log id as a term and an index: the last entry, or the purged
     /// id if that is higher. The epoch is derived by the plan.
-    pub last: Option<LogPoint>,
+    pub(crate) last: Option<LogPoint>,
+    /// The index of its purged id: below it no term is read.
+    pub(crate) purged: Option<u64>,
     /// Its saved commit's last index, cut as an open cuts it ([`KeptLog`]).
-    pub committed: Option<u64>,
+    pub(crate) committed: Option<u64>,
     /// The term of the vote it saved, `None` when it never voted.
-    pub vote: Option<u64>,
+    pub(crate) vote: Option<u64>,
     /// Its `raft-reserved`.
-    pub reserved: Option<u64>,
+    pub(crate) reserved: Option<u64>,
     /// Why it was rotated; `None` for the current copy.
-    pub rotated_by: Option<RotatedBy>,
+    pub(crate) rotated_by: Option<RotatedBy>,
     /// The term of the entry at each index the plan asked about, `None`
     /// where it holds none or the entry is purged.
-    pub terms: BTreeMap<u64, Option<u64>>,
+    pub(crate) terms: BTreeMap<u64, Option<u64>>,
 }
 
 /// A broker's copies of one shard: the current one and every kept one.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BrokerCopies {
-    pub current: CopyRead,
-    pub kept: Vec<CopyRead>,
+pub(crate) struct BrokerCopies {
+    pub(crate) current: CopyRead,
+    pub(crate) kept: Vec<CopyRead>,
 }
 
 /// Read the current copy in `dir` and every kept copy beside it, with the
 /// term of each at `probes`.
-pub fn read_copies(
+pub(crate) fn read_copies(
     dir: &Path,
     index_spacing_bytes: u64,
     probes: &BTreeSet<u64>,
@@ -151,7 +157,7 @@ pub fn read_copies(
 
 /// [`CopyRead`] for one directory, with its copy id and rotation reason
 /// left `None`. A missing directory reads as an empty copy.
-pub fn read_copy(
+pub(crate) fn read_copy(
     path: &Path,
     index_spacing_bytes: u64,
     probes: &BTreeSet<u64>,
@@ -164,6 +170,7 @@ pub fn read_copy(
             copy: None,
             epoch: None,
             last: None,
+            purged: None,
             committed: None,
             vote: None,
             reserved: None,
@@ -203,6 +210,7 @@ pub fn read_copy(
         copy: None,
         epoch: epoch_file::load(path)?,
         last,
+        purged: purged.map(|purged| purged.index),
         committed: kept.committed,
         vote,
         reserved: reserved::load(path)?,
