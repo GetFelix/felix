@@ -481,6 +481,54 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
     );
 }
 
+/// A rotation moves nothing aside only from a directory an earlier
+/// rotation left before its copy file, which already holds the carried
+/// mark: the mark is written before the reservation. Stopped at each step,
+/// the next open rotates again and the copy still reads as reached, with no
+/// kept copy to say so.
+#[tokio::test]
+async fn an_in_place_rotation_stopped_at_any_step_still_reads_reached() {
+    let spacing = config().index_spacing_bytes;
+    let mut stop = 0;
+    loop {
+        let root = Root::new();
+        let dir = root.shard_dir();
+        std::fs::create_dir_all(&dir).expect("dir");
+        crate::raft_log::reserved::mark_carried(&dir).expect("mark");
+        crate::raft_log::reserved::store(&dir, 1 << 20).expect("reserve");
+
+        let copies = root.open();
+        let parent = dir.parent().expect("parent").to_path_buf();
+        crash_point::watch_under(&parent, Some(stop));
+        let stopped = copies
+            .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+            .await;
+        let steps = crash_point::unwatch(&parent);
+        drop(copies);
+        let finished = match stopped {
+            Ok(opened) => {
+                close(opened).await;
+                true
+            }
+            Err(_) => false,
+        };
+
+        let copies = root.open();
+        let reopened = open_copy(&copies, &dir).await;
+        assert!(kept_copies(&dir).expect("kept").is_empty(), "stop {stop}");
+        assert!(
+            reached_before(&dir, spacing).expect("read"),
+            "stop {stop}: a copy whose carried reservation lost its mark reads as never reached"
+        );
+        close(reopened).await;
+        if finished {
+            assert!(stop >= steps, "stop {stop} of {steps}");
+            break;
+        }
+        stop += 1;
+    }
+}
+
 /// A copy file's temporary is all a crash in its first write leaves, and
 /// nothing to keep.
 #[tokio::test]

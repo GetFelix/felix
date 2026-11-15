@@ -613,13 +613,15 @@ being discarded, so that reason exists to be quoted.
 ### Raft shards
 
 `tests/raft_shards.rs` runs durable stream shards on per-shard Raft
-(`FELIX_SHARD_ENGINE=raft`). Its tests return at once unless
+(`FELIX_SHARD_ENGINE=raft`), and so do the Kafka and MQTT failover tests in
+`tests/failures` whose names end in `on_a_raft_shard...`. They return at once unless
 `FELIX_TEST_RAFT_SHARDS=1` is set, because they need a broker built with the
 `raft` cargo feature and the default build has none:
 
 ```bash
 cargo build -p felix-broker-service --bin felix-broker --features raft
 FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test raft_shards
+FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test failures -- on_a_raft_shard
 ```
 
 Build the broker without the feature again before running the other cluster

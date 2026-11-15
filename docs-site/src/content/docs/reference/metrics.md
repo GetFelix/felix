@@ -299,6 +299,7 @@ Served by the Kafka-compatible listener. See [Kafka compatibility](/features/kaf
 | `felix_kafka_produce_duplicate_records_total` | counter | - | Produced records recognized as duplicates of an earlier retry. |
 | `felix_kafka_produce_dropped_total` | counter | `field` | Produced keys and headers not stored, by `field` (`key` or `headers`): the listener has not opted in with `FELIX_KAFKA_RECORD_HEADERS`, or the broker does not accept record headers yet. |
 | `felix_kafka_produce_errors_total` | counter | `error` | Produce failures by error. |
+| `felix_kafka_produce_refused_total` | counter | `reason` | Refused produce partitions whose Kafka error does not say why, by `reason`: `record_headers_not_finalized` is a key or header for a per-shard Raft partition before the cluster finalizes `raft_record_headers` (answered `INVALID_RECORD`). |
 | `felix_kafka_fetch_records_total` | counter | - | Records returned to fetches. |
 | `felix_kafka_fetch_bytes_total` | counter | - | Bytes returned to fetches. |
 | `felix_kafka_fetch_waits_total` | counter | `outcome` | Fetches that waited for data, by how the wait ended. |

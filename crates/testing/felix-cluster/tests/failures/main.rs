@@ -27,6 +27,7 @@ mod mqtt_publish;
 mod partition;
 mod promotion_fence;
 mod quorum_mark_wake;
+mod raft;
 mod record_headers;
 mod recreate;
 mod replica_election;
