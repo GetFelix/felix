@@ -1890,9 +1890,11 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
     cluster.stop().await;
 }
 
-/// Calls to a follower that answers every other call after its deadline,
-/// over a few seconds of steady writes, and the walks its leader started.
-async fn calls_to_a_flaky_peer(wake: bool) -> (u32, usize) {
+/// Replication streams a leader opened to a follower that answers every
+/// other call after its deadline, over a few seconds of steady writes, then
+/// the calls to it and the walks its leader started. Each stream is a retry;
+/// how many calls one makes depends on the append window, not the wake.
+async fn calls_to_a_flaky_peer(wake: bool) -> (u32, u32, usize) {
     use std::sync::atomic::Ordering::Relaxed;
     let patient = RuntimeConfig {
         election_min: Duration::from_secs(10),
@@ -1916,25 +1918,33 @@ async fn calls_to_a_flaky_peer(wake: bool) -> (u32, usize) {
     }
     *cluster.net.flaky.lock() = None;
     let calls = cluster.net.flaky_calls.load(Relaxed);
+    let streams = runtime
+        .reach()
+        .streams
+        .lock()
+        .get(flaky)
+        .copied()
+        .unwrap_or_default();
     let walks = runtime.reach().walks.load(Relaxed);
     assert_eq!(leader, cluster.elected(0).await, "the leader changed");
     cluster.stop().await;
-    (calls, walks)
+    (streams, calls, walks)
 }
 
 /// A peer that answers every other call too late is not retried ahead of
 /// openraft's own backoff any more often than without the wake (#2543).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_timing_out_every_other_call_is_called_no_more_than_without_the_wake() {
-    let (without, _) = calls_to_a_flaky_peer(false).await;
-    let (with, walks) = calls_to_a_flaky_peer(true).await;
+    let (without, calls_without, _) = calls_to_a_flaky_peer(false).await;
+    let (with, calls_with, walks) = calls_to_a_flaky_peer(true).await;
     eprintln!(
-        "calls to the flaky peer: {without} without the wake, {with} with it ({walks} walks)"
+        "streams to the flaky peer: {without} without the wake ({calls_without} calls), \
+         {with} with it ({calls_with} calls, {walks} walks)"
     );
-    assert!(without > 10, "the peer was called {without} times");
+    assert!(without > 10, "{without} streams were opened to the peer");
     assert!(
         with <= without + without / 5 + 4,
-        "{with} calls with the wake, {without} without"
+        "{with} streams with the wake, {without} without"
     );
 }
 

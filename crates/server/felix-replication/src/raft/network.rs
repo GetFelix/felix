@@ -448,6 +448,8 @@ impl RaftNetworkFactory<ShardTypes> for Network {
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
         Pipelined {
+            #[cfg(test)]
+            opened: (self.router.reach.clone(), target.broker.clone()),
             unary: GroupNetworkAdapter::new(self.router.clone(), target, self.group.clone()),
         }
     }
@@ -463,16 +465,22 @@ pub(crate) const APPEND_WINDOW: usize = 4;
 /// of a replication stream in flight. See [`pipeline`].
 pub(crate) struct Pipelined {
     unary: GroupNetworkAdapter<ShardTypes, GroupId, Router>,
+    /// Where to count the streams this opens.
+    #[cfg(test)]
+    opened: (Arc<Reach>, Arc<str>),
 }
 
 type Answer = Result<AppendResult<ShardTypes>, RPCError<ShardTypes>>;
 
 /// Sends `input` through `send` with up to `window` appends unanswered, and
-/// yields their answers in the order the appends were sent.
+/// yields their answers in the order the appends were sent. Until the
+/// follower takes one append whole, only one is in flight.
 ///
 /// The stream goes on only past an append the follower took whole. Any
 /// other answer is yielded and ends it, and what was sent behind it is
 /// dropped unreported, so openraft starts again from what was acknowledged.
+/// The router still counts those answers in [`Reach`]: the broker did
+/// answer, so it is slow rather than down, and openraft's backoff paces it.
 /// A conflict behind an acknowledged append is dropped too: its
 /// `prev_log_id` is an entry the follower has just acknowledged, so the
 /// follower took it before the append ahead of it (a lost append, or a
@@ -550,7 +558,10 @@ where
                 let (answer, _) = launch(&mut state.send, rpc);
                 state.flight.push_back(answer);
             }
-            let room = state.input.is_some() && state.flight.len() < window;
+            // One at a time until the follower takes an append whole: a
+            // follower that is down or behind costs one append per stream.
+            let open = if state.acked { window } else { 1 };
+            let room = state.input.is_some() && state.flight.len() < open;
             if !room && state.flight.is_empty() && state.held.is_none() {
                 return None;
             }
@@ -608,6 +619,11 @@ impl RaftNetworkV2<ShardTypes> for Pipelined {
     where
         S: Stream<Item = AppendEntriesRequest<ShardTypes>> + Send + Unpin + 'static,
     {
+        #[cfg(test)]
+        {
+            let (reach, broker) = &self.opened;
+            *reach.streams.lock().entry(broker.clone()).or_default() += 1;
+        }
         let unary = self.unary.clone();
         let deadline = option.hard_ttl();
         let fit = move |rpc: &mut AppendEntriesRequest<ShardTypes>| {

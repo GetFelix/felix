@@ -129,23 +129,46 @@ fn assert_ended(out: &mut Out) {
     assert!(matches!(ready(out), Some(None)), "the stream goes on");
 }
 
+/// Sends the first append alone and takes it, which opens the window.
+#[track_caller]
+fn open_window(follower: &mut Follower, out: &mut Out) {
+    assert!(ready(out).is_none());
+    assert_eq!(follower.sent(), 1, "one append before the first answer");
+    follower.take(0);
+    assert_acked(out, 1);
+    assert!(ready(out).is_none());
+}
+
 #[tokio::test]
 async fn appends_leave_before_the_ones_ahead_are_answered() {
     let (mut follower, mut out) = Follower::new(appends(8), 4);
+    open_window(&mut follower, &mut out);
+    assert_eq!(follower.sent(), 5, "the whole window is on its way");
+}
+
+/// A follower that never answers, such as one that just timed out, gets
+/// one append per stream, not a window of them.
+#[tokio::test]
+async fn a_follower_that_does_not_answer_gets_one_append_per_stream() {
+    let (mut follower, mut out) = Follower::new(appends(8), 4);
     assert!(ready(&mut out).is_none());
-    assert_eq!(follower.sent(), 4, "the whole window is on its way");
+    assert_eq!(follower.sent(), 1);
+    follower.answer(0, lost());
+    assert!(matches!(ready(&mut out), Some(Some(Err(_)))));
+    assert_ended(&mut out);
+    assert_eq!(follower.sent(), 1);
 }
 
 #[tokio::test]
 async fn answers_are_yielded_in_the_order_the_appends_left() {
-    let (mut follower, mut out) = Follower::new(appends(4), 4);
-    assert!(ready(&mut out).is_none());
-    for nth in [3, 2, 1] {
+    let (mut follower, mut out) = Follower::new(appends(5), 4);
+    open_window(&mut follower, &mut out);
+    for nth in [4, 3, 2] {
         follower.take(nth);
     }
     assert!(ready(&mut out).is_none(), "the first is still unanswered");
-    follower.take(0);
-    for index in 1..=4 {
+    follower.take(1);
+    for index in 2..=5 {
         assert_acked(&mut out, index);
     }
     assert_ended(&mut out);
@@ -154,45 +177,45 @@ async fn answers_are_yielded_in_the_order_the_appends_left() {
 #[tokio::test]
 async fn no_more_than_the_window_is_in_flight() {
     let (mut follower, mut out) = Follower::new(appends(10), 3);
+    open_window(&mut follower, &mut out);
+    assert_eq!(follower.sent(), 4);
+    follower.take(1);
+    assert_acked(&mut out, 2);
     assert!(ready(&mut out).is_none());
-    assert_eq!(follower.sent(), 3);
-    follower.take(0);
-    assert_acked(&mut out, 1);
-    assert!(ready(&mut out).is_none());
-    assert_eq!(follower.sent(), 4, "one answer makes room for one append");
+    assert_eq!(follower.sent(), 5, "one answer makes room for one append");
 }
 
 #[tokio::test]
 async fn a_failed_append_ends_the_stream_and_what_followed_is_not_reported() {
     let (mut follower, mut out) = Follower::new(appends(8), 4);
-    assert!(ready(&mut out).is_none());
+    open_window(&mut follower, &mut out);
+    follower.take(4);
     follower.take(3);
-    follower.take(2);
-    follower.answer(1, lost());
-    follower.take(0);
-    assert_acked(&mut out, 1);
+    follower.answer(2, lost());
+    follower.take(1);
+    assert_acked(&mut out, 2);
     assert!(matches!(ready(&mut out), Some(Some(Err(_)))));
     assert_ended(&mut out);
-    assert_eq!(follower.sent(), 4, "nothing is sent past the failure");
+    assert_eq!(follower.sent(), 5, "nothing is sent past the failure");
 }
 
-/// The follower took the second append before the first, so it had to
+/// The follower took the third append before the second, so it had to
 /// refuse it. openraft must not hear that refusal: it names an entry the
 /// follower has just acknowledged.
 #[tokio::test]
 async fn a_conflict_behind_an_acknowledged_append_ends_the_stream_unreported() {
     let (mut follower, mut out) = Follower::new(appends(8), 4);
-    assert!(ready(&mut out).is_none());
+    open_window(&mut follower, &mut out);
     let conflict = AppendError::Conflict {
-        log_id: log_id(1),
+        log_id: log_id(2),
         hint: None,
     };
-    follower.answer(1, Ok(Err(conflict)));
-    follower.take(2);
-    follower.take(0);
-    assert_acked(&mut out, 1);
+    follower.answer(2, Ok(Err(conflict)));
+    follower.take(3);
+    follower.take(1);
+    assert_acked(&mut out, 2);
     assert_ended(&mut out);
-    assert_eq!(follower.sent(), 4);
+    assert_eq!(follower.sent(), 5);
 }
 
 #[tokio::test]
@@ -203,29 +226,29 @@ async fn a_conflict_on_the_first_append_is_reported() {
         log_id: log_id(0),
         hint: None,
     };
-    follower.take(1);
     follower.answer(0, Ok(Err(conflict)));
     assert!(matches!(
         ready(&mut out),
         Some(Some(Ok(Err(AppendError::Conflict { log_id: at, .. })))) if at == log_id(0)
     ));
     assert_ended(&mut out);
+    assert_eq!(follower.sent(), 1);
 }
 
 #[tokio::test]
 async fn a_higher_vote_ends_the_stream() {
     let (mut follower, mut out) = Follower::new(appends(8), 4);
-    assert!(ready(&mut out).is_none());
-    follower.take(0);
-    follower.answer(1, Ok(Err(AppendError::HigherVote(vote(TERM + 1)))));
-    follower.take(2);
-    assert_acked(&mut out, 1);
+    open_window(&mut follower, &mut out);
+    follower.take(1);
+    follower.answer(2, Ok(Err(AppendError::HigherVote(vote(TERM + 1)))));
+    follower.take(3);
+    assert_acked(&mut out, 2);
     assert!(matches!(
         ready(&mut out),
         Some(Some(Ok(Err(AppendError::HigherVote(_)))))
     ));
     assert_ended(&mut out);
-    assert_eq!(follower.sent(), 4);
+    assert_eq!(follower.sent(), 5);
 }
 
 /// A follower that took only part of an append ends the stream, as the
@@ -235,45 +258,45 @@ async fn a_partial_acknowledgement_ends_the_stream() {
     let input = vec![append(TERM, 0, 3), append(TERM, 3, 5)];
     let (mut follower, mut out) = Follower::new(input, 4);
     assert!(ready(&mut out).is_none());
-    follower.take(1);
     follower.answer(0, Ok(Ok(Some(log_id(2)))));
     assert_acked(&mut out, 2);
     assert_ended(&mut out);
+    assert_eq!(follower.sent(), 1);
 }
 
 /// openraft opens a stream per leader vote. An append under another one is
 /// not sent, and the stream ends once the appends ahead are answered.
 #[tokio::test]
 async fn an_append_under_another_vote_is_not_sent() {
-    let mut input = appends(2);
-    input.push(append(TERM + 1, 2, 3));
-    input.push(append(TERM, 2, 3));
+    let mut input = appends(3);
+    input.push(append(TERM + 1, 3, 4));
+    input.push(append(TERM, 3, 4));
     let (mut follower, mut out) = Follower::new(input, 4);
-    assert!(ready(&mut out).is_none());
-    assert_eq!(follower.sent(), 2);
-    follower.take(0);
+    open_window(&mut follower, &mut out);
+    assert_eq!(follower.sent(), 3);
     follower.take(1);
-    assert_acked(&mut out, 1);
+    follower.take(2);
     assert_acked(&mut out, 2);
+    assert_acked(&mut out, 3);
     assert_ended(&mut out);
-    assert_eq!(follower.sent(), 2);
+    assert_eq!(follower.sent(), 3);
 }
 
 /// An append without entries goes on another stream than the appends
 /// ahead of it, so it waits for them to land.
 #[tokio::test]
 async fn an_append_without_entries_waits_for_the_flight_to_land() {
-    let input = vec![append(TERM, 0, 1), append(TERM, 1, 1)];
+    let input = vec![append(TERM, 0, 1), append(TERM, 1, 2), append(TERM, 2, 2)];
     let (mut follower, mut out) = Follower::new(input, 4);
-    assert!(ready(&mut out).is_none());
-    assert_eq!(follower.sent(), 1);
-    follower.take(0);
-    assert_acked(&mut out, 1);
-    assert!(ready(&mut out).is_none());
-    assert_eq!(follower.sent(), 2, "it leaves once nothing is ahead of it");
-    assert!(follower.waiting[1].0.entries.is_empty());
+    open_window(&mut follower, &mut out);
+    assert_eq!(follower.sent(), 2);
     follower.take(1);
-    assert_acked(&mut out, 1);
+    assert_acked(&mut out, 2);
+    assert!(ready(&mut out).is_none());
+    assert_eq!(follower.sent(), 3, "it leaves once nothing is ahead of it");
+    assert!(follower.waiting[2].0.entries.is_empty());
+    follower.take(2);
+    assert_acked(&mut out, 2);
     assert_ended(&mut out);
 }
 
@@ -281,17 +304,22 @@ async fn an_append_without_entries_waits_for_the_flight_to_land() {
 /// append without entries waits to carry, and goes in its place.
 #[tokio::test]
 async fn an_append_with_entries_replaces_one_without() {
-    let input = vec![append(TERM, 0, 1), append(TERM, 1, 1), append(TERM, 1, 2)];
+    let input = vec![
+        append(TERM, 0, 1),
+        append(TERM, 1, 2),
+        append(TERM, 2, 2),
+        append(TERM, 2, 3),
+    ];
     let (mut follower, mut out) = Follower::new(input, 4);
-    assert!(ready(&mut out).is_none());
-    assert_eq!(follower.sent(), 2, "the entries do not wait");
-    assert!(!follower.waiting[1].0.entries.is_empty());
+    open_window(&mut follower, &mut out);
+    assert_eq!(follower.sent(), 3, "the entries do not wait");
+    assert!(!follower.waiting[2].0.entries.is_empty());
+    follower.take(2);
     follower.take(1);
-    follower.take(0);
-    assert_acked(&mut out, 1);
     assert_acked(&mut out, 2);
+    assert_acked(&mut out, 3);
     assert_ended(&mut out);
-    assert_eq!(follower.sent(), 2);
+    assert_eq!(follower.sent(), 3);
 }
 
 /// Nothing goes behind an append cut to fit one message, and its answer

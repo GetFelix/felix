@@ -659,3 +659,46 @@ impl RaftRequest {
         }))
     }
 }
+
+/// The pool picks an append's stream from the group's bytes without
+/// decoding the message, so it must find exactly what `put_group` wrote.
+#[test]
+fn the_pool_reads_the_group_where_it_is() {
+    let append = || every_request().remove(1);
+    let group_of = |request: &RaftRequest| {
+        let bytes = encode_request(request).expect("encode");
+        crate::peer::raft_group(&bytes).expect("a group").to_vec()
+    };
+    let mut written = BytesMut::new();
+    put_group(&mut written, &group()).expect("group");
+    assert_eq!(group_of(&append()), written.to_vec());
+
+    let mut later = append();
+    let Request::Append(rpc) = &mut later.body else {
+        panic!("an append");
+    };
+    rpc.entries.truncate(1);
+    rpc.leader_commit = Some(log_id(2, 5));
+    later.deadline = std::time::Duration::from_millis(900);
+    assert_eq!(group_of(&later), group_of(&append()), "one group, one key");
+
+    let other = |change: fn(&mut ShardKey, &mut u64)| {
+        let mut request = append();
+        let mut key = (*request.group.shard).clone();
+        let mut epoch = request.group.epoch;
+        change(&mut key, &mut epoch);
+        request.group = GroupId::new(key, epoch);
+        group_of(&request)
+    };
+    let others = [
+        other(|key, _| key.tenant_id = "u".into()),
+        other(|key, _| key.namespace = "ns2".into()),
+        other(|key, _| key.stream = "order".into()),
+        other(|key, _| key.shard = 4),
+        other(|key, _| key.kind = ShardKind::Stream),
+        other(|_, epoch| *epoch = 8),
+    ];
+    for key in others {
+        assert_ne!(key, group_of(&append()), "another group, another key");
+    }
+}

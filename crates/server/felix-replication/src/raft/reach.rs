@@ -46,6 +46,9 @@ pub(crate) struct Reach {
     /// Leaves every wait to openraft, as without the wake.
     #[cfg(test)]
     pub(crate) no_wake: AtomicBool,
+    /// Replication streams leaders here opened, by broker.
+    #[cfg(test)]
+    pub(crate) streams: parking_lot::Mutex<HashMap<Arc<str>, u32>>,
 }
 
 /// One peer broker. Its fields change only on a failure or on an answer
@@ -73,6 +76,8 @@ impl Reach {
             walks: Default::default(),
             #[cfg(test)]
             no_wake: AtomicBool::new(false),
+            #[cfg(test)]
+            streams: Default::default(),
         }
     }
 
