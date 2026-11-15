@@ -382,7 +382,8 @@ pub(crate) fn term_of(vote: &VoteOf<ShardTypes>) -> u64 {
 }
 
 /// The term of the vote an answer names, when openraft acts on that vote.
-/// A pre-vote's answer changes no vote.
+/// A pre-vote's refusal can carry a higher vote, which openraft adopts
+/// uncommitted, but only on a member that is standing and holds no lease.
 pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
     match reply {
         Reply::Append(Err(AppendError::HigherVote(vote))) => Some(term_of(vote)),

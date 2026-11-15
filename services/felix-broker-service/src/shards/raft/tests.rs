@@ -995,6 +995,33 @@ async fn a_broker_placed_on_a_formed_group_does_not_form_it_again() {
     stop(&members).await;
 }
 
+/// **The broker that forms a group hands its first leadership to the
+/// broker placement names as leader.** `broker-a` forms every set it is
+/// lowest in, so without the hand-over it would lead them all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_formed_group_is_led_by_the_placed_leader() {
+    let net = Arc::new(Loopback::default());
+    let orders = key("orders", 0);
+    let mut placed = replicated();
+    placed.leader = "broker-b".to_string();
+    let mut members = Vec::new();
+    // The broker that forms the group last, so every member it asks is up.
+    for name in BROKERS.iter().rev() {
+        let member = Member::start(&net, name).await;
+        member.shards.take(&mut assignments([placed.clone()])).await;
+        members.push(member);
+    }
+    members.reverse();
+    until("placement's leader serves its term", || {
+        members[1].shards.leading(&orders).is_some()
+    })
+    .await;
+    let term = members[1].shards.leading(&orders).expect("term");
+    assert_eq!(members[0].shards.leading(&orders), None);
+    members[1].publish(term, b"on the placed leader").await;
+    stop(&members).await;
+}
+
 /// **A shard whose every copy rotated is not formed again.** Each copy
 /// comes back with a new copy id, no vote and an empty log, as after
 /// `rotate-storage-id` on every broker or a fleet-wide restore. Formed from
@@ -1815,6 +1842,54 @@ async fn a_request_off_the_leader_is_routed_to_it() {
     );
     stop(&members).await;
     EngineShards::shutdown(&*outside.shards).await;
+}
+
+/// **A restarted follower forwards to the leader its stored vote names,
+/// before it hears from it.** It serves no reader until it does: the hint
+/// is enough to forward to, not to read from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_restarted_follower_forwards_before_it_hears_its_leader() {
+    let (net, mut members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let Member {
+        name, root, shards, ..
+    } = members.remove((leader + 1) % 3);
+    let leader = members
+        .iter()
+        .find(|member| member.shards.leading(&orders).is_some())
+        .expect("the leader");
+    EngineShards::shutdown(&*shards).await;
+    net.forget(name);
+    // Back up, but nothing reaches it, so it takes no append.
+    net.cut.lock().insert(name.to_string());
+    let restarted = Member::start_on(
+        &net,
+        name,
+        root,
+        INCARNATION,
+        ConsistencyLevel::Quorum,
+        FsyncMode::None,
+        false,
+    )
+    .await;
+    restarted
+        .shards
+        .take(&mut assignments([replicated()]))
+        .await;
+    let to_leader = Dispatch::Forward {
+        node_id: leader.name.to_string(),
+        advertise_addr: addr_of(leader.name).expect("addr"),
+        generation: term,
+        incarnation: 0,
+    };
+    until("the restarted follower forwards to its leader", || {
+        EngineShards::dispatch(&*restarted.shards, &orders, &addr_of) == Some(to_leader.clone())
+    })
+    .await;
+    assert!(!EngineShards::serves_reads(&*restarted.shards, &orders));
+    stop(&members).await;
+    EngineShards::shutdown(&*restarted.shards).await;
 }
 
 /// **A placed member that is not open yet answers not ready**, and never

@@ -113,7 +113,8 @@ impl MoveClock {
             | MoveStep::Retake { .. }
             | MoveStep::FenceTimedOut { .. }
             | MoveStep::LeaderGaveUp { .. }
-            | MoveStep::Discard { .. } => {
+            | MoveStep::Discard { .. }
+            | MoveStep::RaftMoveDropped => {
                 self.moves.remove(key);
                 None
             }
@@ -133,7 +134,8 @@ impl MoveClock {
             | MoveStep::PendingSetMemberReplaced { .. }
             | MoveStep::PendingSetDropped
             | MoveStep::PendingSetCancelled
-            | MoveStep::Readmit { .. } => None,
+            | MoveStep::Readmit { .. }
+            | MoveStep::RaftLeader { .. } => None,
         }
     }
 }

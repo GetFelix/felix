@@ -39,6 +39,11 @@ const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 /// How long a shutdown waits for its last batch of log marks, all roots
 /// together.
 const LAST_MARK_LIMIT: Duration = Duration::from_secs(5);
+/// How often [`GroupRuntime::hand_over`] looks at a new group again.
+const HAND_OVER_POLL: Duration = Duration::from_millis(20);
+/// The least [`GroupRuntime::hand_over`] lets the target catch up once the
+/// shard is closed.
+const HAND_OVER_MIN_WAIT: Duration = Duration::from_secs(1);
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +191,12 @@ impl RuntimeConfig {
             // for the next term as it starts. It promised nobody, so it
             // skips the vote hold too (`Group::open`).
             enable_leader_restore: Some(true),
+            // A member raises its term only once a majority would vote for
+            // it. Without this, a member nobody hears raises its term at
+            // every timeout and deposes the leader when it is heard again.
+            // A transfer target still stands at once, so one transfer
+            // costs at most one term.
+            enable_pre_vote: Some(true),
             // openraft keeps six ring buffers of this many slots per member
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
@@ -320,8 +331,16 @@ pub struct GroupStatus {
     pub member: MemberId,
     pub role: Role,
     pub term: u64,
-    /// The leader this member follows, itself included.
+    /// The leader this member follows, itself included, while it is heard:
+    /// a follower names none once its leader is silent past its election
+    /// wait, and a leader names none once no majority answered it within
+    /// its followers' wait. Under pre-vote a cut-off member keeps its term,
+    /// and with it openraft's leader. Readers are served only while this
+    /// names one.
     pub leader: Option<MemberId>,
+    /// The leader openraft names at this member's term, heard lately or
+    /// not. Enough to forward a request to, which fails if it is gone.
+    pub leader_hint: Option<MemberId>,
     pub last_index: Option<u64>,
     /// The last entry this member's log has written since it was opened,
     /// fsynced or not. A power cut can still take it.
@@ -813,6 +832,52 @@ impl GroupRuntime {
             .initialize(members)
             .await
             .map_err(InitializeError::Raft)
+    }
+
+    /// Hand the first leadership of `shard`, a group this broker just
+    /// formed, to `to`. The broker that forms a group is the lowest id in
+    /// its set and wins its first election, so without this one broker
+    /// would lead every group it forms and take every write. Once this
+    /// member leads, the shard closes and the request waits for `to` to
+    /// hold the whole log, since openraft hands over only to a member whose
+    /// log matches. Returns whether the
+    /// transfer was asked for. One that does not go through ends the term
+    /// after an election timeout, as any transfer does.
+    pub async fn hand_over(&self, shard: &ShardKey, to: MemberId, within: Duration) -> bool {
+        let Some(group) = self.inner.registry.get(shard) else {
+            return false;
+        };
+        if to == group.member {
+            return false;
+        }
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let status = group.status();
+            match status.role {
+                Role::Leader => {
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    return group
+                        .transfer_in_caught_up(status.term, to, left.max(HAND_OVER_MIN_WAIT))
+                        .await
+                        .is_some();
+                }
+                // Learner too: a member's metrics can still show the state
+                // it had before the group formed.
+                Role::Candidate | Role::Follower | Role::Learner => {}
+                Role::Stopped => return false,
+            }
+            if status
+                .leader
+                .as_ref()
+                .is_some_and(|leader| *leader != group.member)
+            {
+                return false;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(HAND_OVER_POLL).await;
+        }
     }
 
     /// Ask every other member of `members` whether it has heard from a
