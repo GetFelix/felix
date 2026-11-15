@@ -1263,17 +1263,24 @@ depends on where it is:
 - **In a kept directory.** The next rotation of that shard fails, and
   reclaim holds that kept directory as unreadable. If the current copy's
   `raft-reserved` decodes, the rotation that made the current copy read
-  the kept file while it was still whole and carried its value, so stop
-  the broker and delete that kept directory. If the current copy has no
+  the kept file while it was still whole and carried its value. Stop the
+  broker and delete only the damaged `raft-reserved` file in that kept
+  directory, not the directory. An absent file reads as no reservation,
+  and reclaim still checks the kept records and removes the directory only
+  once the current copy covers them. If the current copy has no
   `raft-reserved`, an older build made it without the carry and the value
-  is lost: start the copy over, as below.
+  is lost: delete the damaged file the same way, then start the copy over,
+  as below.
 - **In the current shard directory.** The next rotation fails, and reclaim
   holds every kept directory of the shard as unreadable, with a warning
   that names the current directory's file. Start the copy over: stop the
-  broker and remove the shard's directory and its kept directories
-  (`.kept/<shard directory>.<copy id>`). The copy comes back under a new
-  copy id, as a learner, and catches up from the group. Do it on one
-  broker at a time, and only while the rest of the group holds a majority.
+  broker and remove only the shard's directory. Leave its kept
+  directories (`.kept/<shard directory>.<copy id>`) in place. The next open
+  finds no copy and rotates, which carries the highest reservation of the
+  kept directories into the new one. The copy comes back under a new copy
+  id, as a learner, and catches up from the group. Do it on one broker at a
+  time, only while the rest of the group holds a majority, and wait until
+  that copy has caught up and is a voter again before starting the next.
 
 A build older than this file counts it as a record and does not carry it, so
 going back to such a build after any copy has reserved can lose a

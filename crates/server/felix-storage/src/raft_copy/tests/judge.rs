@@ -429,12 +429,20 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             Err(_) => false,
         };
 
+        // The walk also counts any step in the open that follows the
+        // rotation. A stop there leaves a finished rotation, which the next
+        // open rightly keeps.
+        let rotated = copy_file::load(&dir)
+            .ok()
+            .flatten()
+            .is_some_and(|found| root.marks_on_disk().map(|marks| marks.copy) == Some(found.copy));
+
         let copies = root.open();
         let reopened = open_copy(&copies, &dir).await;
         assert!(![old, 0xdead].contains(&reopened.copy), "stop {stop}");
         assert_eq!(reopened.log.accepted_generation(), 0, "stop {stop}");
         assert!(
-            finished || reopened.rotation.is_some(),
+            finished || rotated || reopened.rotation.is_some(),
             "stop {stop}: an interrupted rotation passed"
         );
         assert_eq!(
@@ -465,8 +473,10 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
         }
         stop += 1;
     }
+    // Four steps of the rotation itself, then the reservation and the copy
+    // file, each a state_file::store of four steps and one step after it.
     assert!(
-        stop >= 4,
+        stop >= 14,
         "the rotation has fewer steps than expected: {stop}"
     );
 }

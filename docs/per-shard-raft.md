@@ -4249,9 +4249,10 @@ the bound is stored before the count, and stores the bound on the copy:
   below a reservation that is on disk.
 - **The reservation outlives the copy.** A rotation renames the old
   directory into `.kept/`, with the file. The new copy starts its own
-  reservation at the old one's. The new directory is written with the
-  reservation before it is renamed into place, so a crash leaves either
-  the old directory or a new one that carries it. A kept directory is
+  reservation at the old one's. The rotation moves the old directory
+  into `.kept/`, creates the new one, writes the reservation and only then
+  the copy file, so a crash leaves a directory with no copy file, which
+  the next open rotates again, or one that carries it. A kept directory is
   reclaimed only after the new copy's reservation is synced.
 - **The re-form pads up to the highest reservation it reads.** The new
   epoch starts above the stored floor and above the highest
