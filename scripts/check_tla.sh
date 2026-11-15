@@ -115,6 +115,7 @@ module_of() {
     FelixRaftBatch*) echo FelixRaftBatch ;;
     FelixRaftGroups*) echo FelixRaftGroups ;;
     FelixRaftCond*) echo FelixRaftCond ;;
+    FelixRaftStreamPurge*) echo FelixRaftStreamPurge ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -596,6 +597,19 @@ expectations=(
   "FelixRaftGroupsDeadAfterAdvance violates NoSkip"
   "FelixRaftGroupsNoRefreshOnDrop violates TrackerHeard"
   "FelixRaftGroupsTwoChanges pass"
+  "FelixRaftStreamPurge pass"
+  "FelixRaftStreamPurgeLearner pass"
+  "FelixRaftStreamPurgeNoCap pass"
+  "FelixRaftStreamPurgePastFloor violates NoAckedLoss"
+  "FelixRaftStreamPurgeInstallAboveFloor violates NoAckedLoss"
+  "FelixRaftStreamPurgeSnapAtApplied violates CatchUpPossible"
+  "FelixRaftStreamPurgePastMatch violates CatchUpPossible"
+  "FelixRaftStreamPurgeTablesAtApplied violates TablesAgree"
+  "FelixRaftStreamPurgeReformEntries violates OffsetNeverReused"
+  "FelixRaftStreamPurgeReformNoFloor violates OffsetNeverReused"
+  "FelixRaftStreamPurgeReformKeepsOwnFloor violates NoReadBelowFloor"
+  "FelixRaftStreamPurgeReachInstall violates NeverServesAfterInstall"
+  "FelixRaftStreamPurgeReachPurge violates NeverPurgesARecord"
   "FelixRaftCond pass"
   "FelixRaftCondTwoTerms pass"
   "FelixRaftCondLeaderDecides violates CondKeptAtExpected"
@@ -1097,6 +1111,9 @@ fi
 # FelixRaftPlacementMoveWipeFull did not finish in three hours and
 # FelixRaftPlacementTransferMoveFull, TransferMove with a write, not in six,
 # so nothing checks them yet (issue 2497).
+# FelixRaftStreamPurgeFull (5 minutes with 16 workers on a 32-core machine)
+# and FelixRaftStreamPurgeNoCapFull (7 minutes) are not registered: a box run
+# checks them, and their four-entry twins are registered.
 # FelixRaftPlacement{DirectTerms,MoveWipeTwoMoves,TransferMoveWipe,
 # StaleWipeRewindNoAck} did not finish in six hours on a CI runner, and
 # FelixRaftPlacement{StaleReturnWipe,StaleReturnWipeAnyVersion} ran past
@@ -1339,6 +1356,9 @@ weights=(
   "FelixRaftWrittenCommitsReform 2"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
+  "FelixRaftStreamPurge 4"
+  "FelixRaftStreamPurgeNoCap 5"
+  "FelixRaftStreamPurgeLearner 6"
   "FelixRaftCond 300"
   "FelixRaftCondTwoTerms 40"
   "FelixRaftCondLeaderDecidesNoMembers 200"

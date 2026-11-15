@@ -646,6 +646,21 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftGroupsTrackerAcrossTerms.cfg` | a member keeps its tracker across terms; two changes of leader | violate `RedrivenOwed`: a member leading again serves from a tracker that misses a redrive committed in between |
 | `FelixRaftGroupsHydrateBeforeApply.cfg` | the leader decides from a prefix of the committed log it has applied | violate `RedrivenOwed`: the tracker misses a committed redrive |
 | `FelixRaftGroupsUserOpsBeforeOwnApply.cfg` | hydrate, redrive and seek do not wait for the leader's own entries in flight | violate `RedrivenOwed`: a seek's tracker misses a redrive the leader proposed just before it |
+| `FelixRaftStreamPurge.cfg` | `FelixRaftStreamPurge.tla`: three voters, four entries, two trims, one change of leader, one restart, one re-form; every rule on | pass `NoReadBelowFloor`, `NoAckedLoss`, `PurgeBelowFloor`, `TablesAgree`, `OffsetNeverReused`, `CatchUpPossible` (4,333,358 distinct states, 21.7M generated, depth 38, 73 seconds with 4 workers on a 32-core machine) |
+| `FelixRaftStreamPurgeFull.cfg` | the same with five entries; not registered, run on a build box | pass the same (64,003,491 distinct states, 359M generated, depth 46, 5 minutes with 16 workers on a 32-core machine) |
+| `FelixRaftStreamPurgeLearner.cfg` | three voters and a learner, four entries, no re-form | pass the same (6,600,213 distinct states, 48.9M generated) |
+| `FelixRaftStreamPurgeNoCap.cfg` | the leader purges past a member's match | pass the same (5,280,360 distinct states, 26.5M generated, depth 38): the cap is not a safety rule |
+| `FelixRaftStreamPurgeNoCapFull.cfg` | the same with five entries; not registered, run on a build box | pass the same (84,913,054 distinct states, 484M generated, 7 minutes with 16 workers on a 32-core machine) |
+| `FelixRaftStreamPurgePastFloor.cfg` | a purge bounded by the applied entry, not by floor - 1 | violate `NoAckedLoss`: a record at or above the floor is purged |
+| `FelixRaftStreamPurgeInstallAboveFloor.cfg` | the snapshot at the applied entry, and a member installs any snapshot ahead of it | violate `NoAckedLoss`: the member skips records it was never sent |
+| `FelixRaftStreamPurgeSnapAtApplied.cfg` | the snapshot at the applied entry, install rule kept, leader cap kept | violate `CatchUpPossible`: a follower purges past a slow member, leads, and the member refuses every snapshot |
+| `FelixRaftStreamPurgePastMatch.cfg` | the same without the cap and with no change of leader | violate `CatchUpPossible` |
+| `FelixRaftStreamPurgeTablesAtApplied.cfg` | the snapshot at the purge point carries the current tables | violate `TablesAgree`: entries above the purge point are applied twice |
+| `FelixRaftStreamPurgeReformEntries.cfg` | a re-form reads a copy's last entry only | violate `OffsetNeverReused`: a copy that just installed a snapshot reads as empty |
+| `FelixRaftStreamPurgeReformNoFloor.cfg` | a re-form reads the last entry and the purged id, not the floor | violate `OffsetNeverReused`: new records land below an installed floor |
+| `FelixRaftStreamPurgeReformKeepsOwnFloor.cfg` | a re-form leaves each copy its own floor; a learner installs | violate `NoReadBelowFloor`: the new leader serves below the learner's floor |
+| `FelixRaftStreamPurgeReachInstall.cfg` | witness: a member that installed a snapshot leads and serves | violate `NeverServesAfterInstall` |
+| `FelixRaftStreamPurgeReachPurge.cfg` | witness: a member purges past a record | violate `NeverPurgesARecord` |
 | `FelixRaftCond.cfg` | `FelixRaftCond.tla`: three members, three terms, logs up to five entries, one plain publish, one membership entry, three conditional publishes (two naming offset 2, one offset 3); each member decides `kept` from the entry and its index | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold` (169,456,277 distinct states, depth 34, 24 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondTwoTerms.cfg` | the same with two terms | pass the same (18,646,633 distinct states, depth 30, 3 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
@@ -4205,6 +4220,128 @@ snapshots and purge (the table travels in the stream snapshot once Raft logs
 are purged), and the hybrid's lease and round, which
 `FelixShardSessions.tla`'s `NoStaleGroupCommit` covers and Raft's term check
 replaces.
+
+### Purging a Raft stream shard
+
+`FelixRaftStreamPurge.tla` models how a Raft stream shard frees disk below a
+head trim (#2602). Today a head trim on a Raft shard hides records and
+deletes nothing: stream shards never purge their Raft log, and every member
+refuses a stream snapshot. The model is the design the code is being built
+to, behind the `raft_stream_purge` fleet feature, so its configurations cite
+no tests.
+
+A purge drops a member's log up to an index. A member whose next entry the
+leader has purged can only be sent the leader's snapshot, and a stream
+snapshot carries no records. So the questions are where a purge may stop, what
+the snapshot must carry, and when a member may install it.
+
+What is modelled:
+
+- An offset is a Raft index. A head trim is an entry `trim(f)`: once a member
+  applies it, no record below offset `f` is readable there. The leader's
+  retention driver proposes a floor at or below its tail, so the trim entry
+  is always above its own floor.
+- A purge to `P` writes a stream snapshot at `P`: its index, the floor the
+  member has applied, and its tables (producers, consumer groups, cut batches)
+  as of `P`. The tables are one counter, the number of records applied. Like
+  the real tables, it comes out wrong when an entry is applied twice or
+  skipped. The member can build the tables as of `P` because it still holds
+  every entry between its previous snapshot and `P`.
+- A purge is bounded by the applied entry and by floor - 1. On the leader it
+  is also capped at the lowest match of any member, learners included.
+- The leader sends a member whose next entry it purged its snapshot. The
+  member installs it only if every entry it skips is below the floor the
+  snapshot carries (index <= floor - 1). Otherwise it refuses, as today.
+- A restart rolls a member's state back to its snapshot, and it applies its
+  log again.
+- A re-form starts a new epoch from the copies the operator's command reads
+  (`FelixRaftReform.tla` has the command). Copies not read are declared dead.
+  The base is the highest offset a read copy vouches for, padded to the
+  control plane's offset floor, which trails the commit. A copy vouches for
+  its last entry, its purged id, and floor - 1. Every read copy takes the
+  highest floor read, since the trim that set it may be in no read copy's
+  log.
+- A change of leader goes to a voter holding the committed log.
+
+What is checked:
+
+- `NoReadBelowFloor`: a leader serving reads (it has applied every committed
+  entry) serves no record below the floor of the committed log.
+- `NoAckedLoss`: every member holds every committed record at or above the
+  committed floor, up to the end of its log. No purge or install drops one.
+- `PurgeBelowFloor`: a member that purged anything purged below its floor.
+- `TablesAgree`: every member's tables equal the fold of the log up to its
+  applied entry, across purges, installs and restarts.
+- `OffsetNeverReused`: a re-form never gives out again an offset that a copy
+  it read held, purged, or trimmed below.
+- `CatchUpPossible`: a member behind the leader's purge can install the
+  leader's snapshot. This is not safety. A member that fails it is stuck, not
+  wrong, until a later purge gives it a snapshot it accepts.
+
+The broken configurations, and what each shows:
+
+- A purge bounded by the applied entry only, not by floor - 1, drops a record
+  at or above the floor (`FelixRaftStreamPurgePastFloor.cfg`).
+- A snapshot taken at the applied entry, as a plain Raft snapshot is, sits
+  above the trim and so above floor - 1. A member that installs it anyway
+  skips records it was never sent (`FelixRaftStreamPurgeInstallAboveFloor.cfg`).
+  With the install rule kept, every member behind the purge refuses it and
+  stays stuck. The leader's cap does not save it: a follower purges past a
+  slow member and then leads (`FelixRaftStreamPurgeSnapAtApplied.cfg`), and
+  without the cap the leader strands the member itself
+  (`FelixRaftStreamPurgePastMatch.cfg`). So the snapshot has to be written at
+  the purge point, not at the applied entry.
+- A snapshot at the purge point that carries the member's current tables
+  makes an installing or restarting member apply the entries above the purge
+  point twice (`FelixRaftStreamPurgeTablesAtApplied.cfg`).
+- A re-form that reads a copy's last entry only sees nothing on a copy whose
+  log is empty above its purge, which is a copy that just installed a
+  snapshot, and gives out offsets that copy purged
+  (`FelixRaftStreamPurgeReformEntries.cfg`). One that reads the purged id but
+  not the floor gives out offsets below a floor the copy installed, and the new
+  records are unreadable (`FelixRaftStreamPurgeReformNoFloor.cfg`). The re-form
+  floor is max(floor, purged + 1).
+- A re-form that leaves each copy its own floor lets the new leader serve
+  records below a floor another read copy installed
+  (`FelixRaftStreamPurgeReformKeepsOwnFloor.cfg`). The copy that installed is
+  a learner there: with three voters, the quorum that committed the trim
+  always leaves a read copy that holds it.
+
+The leader's cap at the slowest match is not a safety rule. With the snapshot
+at the purge point, a member sent it always accepts it
+(`FelixRaftStreamPurgeNoCap.cfg` passes). The cap only saves sending a
+snapshot to a member that is merely behind.
+
+Inside one epoch the floor never needs the snapshot to survive. The trim that
+set a member's floor is above floor - 1, so no purge or install drops it, and a
+leader applies it again before it serves. The floor in the snapshot is there
+for the install check and for a re-form, whose base can be below that trim.
+
+Abstracted: terms and uncommitted divergence (`FelixRaft.tla` has them; here
+there is one global log and every member holds a prefix of it), votes, record
+payloads, and lost disks (a copy a re-form does not read stands in for one).
+The producer table's own rules at a purge and an install are
+`FelixRaftBatch.tla`'s. Here only the index the tables are taken at is
+checked. A member's log and snapshot are durable.
+
+What the code has to change, behind `raft_stream_purge`:
+
+1. The stream snapshot (`raft/machine.rs`, `stream_data`) is written at the
+   purge point, with the floor and the producer, group and cut-batch tables as
+   of that index. Today it carries only the forgotten cut batches, at the
+   applied entry.
+2. A member accepts a stream snapshot whose index is at most its carried floor
+   minus one, and refuses any other (`raft/group.rs`, `Refused::NoSnapshots`
+   refuses every one today).
+3. The purge driver purges to at most floor - 1 and writes the snapshot
+   there. The leader also caps at its slowest match, to spare a snapshot.
+4. A re-form's first offset is above max(floor - 1, purged id, last entry) of
+   every copy it reads, and the new epoch starts at the highest floor read.
+
+The group table travels in the snapshot only once Raft stream snapshots carry
+it (the consumer-group work, `FelixRaftGroups.tla`). Until then a member that
+installs a snapshot would rebuild an incomplete group table, so
+`raft_stream_purge` waits for that change.
 
 ### Conditional publishes on a Raft shard
 
