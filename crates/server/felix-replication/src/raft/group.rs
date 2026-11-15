@@ -13,7 +13,7 @@ use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, Ta
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::raft::SnapshotResponse;
 use openraft::storage::{RaftLogReader, Snapshot};
-use openraft::type_config::alias::VoteOf;
+use openraft::type_config::alias::{LogIdOf, VoteOf};
 use openraft::vote::RaftLeaderId;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
@@ -160,6 +160,8 @@ pub(crate) struct Pace {
     /// As a leader: when it last sent an entry to anyone.
     wrote: AtomicU64,
     peers: parking_lot::Mutex<Vec<Peer>>,
+    /// As a leader: the newest entry any append has carried.
+    sent: parking_lot::Mutex<Option<LogIdOf<ShardTypes>>>,
     /// Spreads the members of a group over the idle wait, so they do not
     /// all stand in the same tick.
     jitter: u64,
@@ -191,12 +193,27 @@ impl Pace {
             promised: AtomicU64::new(timers.heartbeat),
             wrote: AtomicU64::new(now),
             peers: parking_lot::Mutex::new(Vec::new()),
+            sent: parking_lot::Mutex::new(None),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
         }
     }
 
+    /// Whether an append whose last entry is `last` carries an entry no
+    /// append carried before. Only that makes the group busy: a retry to a
+    /// member that is down, or a catch-up, sends nothing new, and would
+    /// otherwise hold the group at the short gap for as long as it lasts.
+    pub(crate) fn new_entries(&self, last: &LogIdOf<ShardTypes>) -> bool {
+        let mut sent = self.sent.lock();
+        if sent.as_ref().is_some_and(|sent| last <= sent) {
+            return false;
+        }
+        *sent = Some(last.clone());
+        true
+    }
+
     /// The leader is sending `to` an append. The gap it names is the idle
-    /// one once no entry has gone out for `idle_after`.
+    /// one once no entry has gone out for `idle_after`. `entries` is
+    /// whether the append carries a new one ([`Self::new_entries`]).
     pub(crate) fn sending(&self, to: &MemberId, entries: bool) -> Sent {
         let timers = &self.timers;
         if entries {
@@ -480,6 +497,7 @@ impl Group {
                 Arc::clone(&reports),
                 reach,
                 Arc::clone(&refusals),
+                Arc::clone(&config),
             ),
             group: id.clone(),
         };

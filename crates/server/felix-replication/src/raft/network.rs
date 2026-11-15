@@ -9,15 +9,16 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use openraft::EntryPayload;
+use openraft::entry::RaftEntry;
 use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
-use openraft::network::{RPCOption, RaftNetworkFactory};
+use openraft::network::{Backoff, RPCOption, RaftNetworkFactory};
 use openraft::raft::{
     AppendEntriesRequest, AppendError, AppendResult, SnapshotResponse, TransferLeaderRequest,
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
 use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
+use openraft::{Config, EntryPayload};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use felix_storage::raft_log::LogPoint;
@@ -25,7 +26,7 @@ use felix_storage::raft_log::LogPoint;
 use super::group::Pace;
 use super::lease::Lease;
 use super::machine::SnapshotData;
-use super::reach::{Reach, Refusals};
+use super::reach::{Reach, Refusals, Waits};
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 
@@ -174,7 +175,6 @@ pub struct AgreeingPeers;
 #[async_trait]
 impl RaftTransport for AgreeingPeers {
     async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
-        use openraft::entry::RaftEntry;
         Ok(RaftReply(match request.body {
             Request::Append(rpc) => {
                 let last = rpc.entries.last().map(|entry| entry.log_id());
@@ -202,6 +202,11 @@ pub(crate) struct Router {
     reports: Arc<Reports>,
     reach: Arc<Reach>,
     refusals: Arc<Refusals>,
+    /// openraft's settings, for its usual retry delays.
+    config: Arc<Config>,
+    /// The broker of the one member this copy calls, once openraft has
+    /// asked for a client to it.
+    to: Option<Arc<str>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -216,6 +221,7 @@ impl Router {
         reports: Arc<Reports>,
         reach: Arc<Reach>,
         refusals: Arc<Refusals>,
+        config: Arc<Config>,
     ) -> Self {
         Self {
             transport,
@@ -224,6 +230,16 @@ impl Router {
             reports,
             reach,
             refusals,
+            config,
+            to: None,
+        }
+    }
+
+    /// This router, for openraft's client to `target`.
+    fn toward(&self, target: &MemberId) -> Self {
+        Self {
+            to: Some(Arc::clone(&target.broker)),
+            ..self.clone()
         }
     }
 
@@ -245,7 +261,13 @@ impl Router {
             }
         }
         let sent = match &body {
-            Request::Append(rpc) => Some(self.pace.sending(&to, !rpc.entries.is_empty())),
+            Request::Append(rpc) => {
+                let new = rpc
+                    .entries
+                    .last()
+                    .is_some_and(|last| self.pace.new_entries(&last.log_id()));
+                Some(self.pace.sending(&to, new))
+            }
             _ => None,
         };
         // The members that take this stop refusing votes, and the target
@@ -431,6 +453,18 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
             _ => Err(wrong_reply().into()),
         }
     }
+
+    /// openraft's own retry delays, which grow further while the member's
+    /// broker is down.
+    fn backoff(&self) -> Option<Backoff> {
+        let broker = Arc::clone(self.to.as_ref()?);
+        let usual = self.config.build_backoff();
+        Some(Backoff::new(Waits::new(
+            usual,
+            Arc::clone(&self.reach),
+            broker,
+        )))
+    }
 }
 
 /// One group's side of the router.
@@ -443,6 +477,6 @@ impl RaftNetworkFactory<ShardTypes> for Network {
     type Network = GroupNetworkAdapter<ShardTypes, GroupId, Router>;
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
-        GroupNetworkAdapter::new(self.router.clone(), target, self.group.clone())
+        GroupNetworkAdapter::new(self.router.toward(&target), target, self.group.clone())
     }
 }

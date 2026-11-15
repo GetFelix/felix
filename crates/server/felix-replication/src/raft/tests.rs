@@ -133,6 +133,8 @@ struct Net {
     appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
     lose_answers: std::sync::atomic::AtomicBool,
+    /// Calls to a cut broker.
+    cut_calls: std::sync::atomic::AtomicU64,
 }
 
 impl Net {
@@ -201,6 +203,9 @@ impl RaftTransport for Net {
             return Ok(RaftReply(super::network::Reply::Append(Err(higher))));
         }
         let cut = self.cut.lock().contains(broker);
+        if cut {
+            self.cut_calls.fetch_add(1, Relaxed);
+        }
         if cut && matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty()) {
             self.refused_entries(broker);
         }
@@ -795,6 +800,43 @@ async fn a_leader_slows_down_only_once_its_followers_know() {
     later(timers.election_min + 2 * timers.election_max).await;
     pace.answered(&b, &pace.sending(&b, false));
     assert_eq!(pace.leader_gap(timers.now()), idle);
+}
+
+/// Sending an entry again, to a member that did not take it or one catching
+/// up, does not make an idle group busy. Only an entry no append has
+/// carried before does (#2567).
+#[tokio::test(start_paused = true)]
+async fn only_an_entry_sent_for_the_first_time_makes_a_group_busy() {
+    use openraft::type_config::alias::LogIdOf;
+    let (pace, timers) = pace();
+    let [b, c] = ["b", "c"].map(|broker| MemberId::new(broker, 1));
+    let entry = |term: u64, index: u64| LogIdOf::<ShardTypes>::new(term.into(), index);
+    assert!(pace.new_entries(&entry(1, 1)));
+    let sent = pace.sending(&b, true);
+    pace.answered(&b, &sent);
+    assert!(!pace.new_entries(&entry(1, 1)), "the same entry to c");
+    let _lost = pace.sending(&c, false);
+    pace.unanswered(&c);
+
+    // Past the idle wait and c's silence, b answers an idle heartbeat.
+    tokio::time::advance(Duration::from_millis(
+        timers.election_min + 2 * timers.election_max,
+    ))
+    .await;
+    pace.answered(&b, &pace.sending(&b, false));
+    assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
+
+    // The retry to c carries the same entry: still idle.
+    assert!(!pace.new_entries(&entry(1, 1)));
+    let retry = pace.sending(&c, false);
+    assert_eq!(retry.gap, timers.idle_heartbeat);
+    pace.unanswered(&c);
+    assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
+
+    // A later entry, or one at a lower index under a later term, is new.
+    assert!(pace.new_entries(&entry(1, 2)));
+    assert!(pace.new_entries(&entry(2, 2)));
+    assert!(!pace.new_entries(&entry(1, 3)));
 }
 
 /// The follower's side: it waits by the gap its leader last named, three
@@ -1731,6 +1773,56 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
         took < Duration::from_millis(900),
         "the first commit after the cut took {took:?}"
     );
+    cluster.stop().await;
+}
+
+/// A broker that is down costs each group about an idle heartbeat's calls:
+/// retrying an entry it missed neither keeps the group at the short
+/// heartbeat nor goes on once a second. It still catches up as soon as it
+/// is back (#2567).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
+    use std::sync::atomic::Ordering::Relaxed;
+    const GROUPS: u32 = 6;
+    let mut cluster = Cluster::new(true);
+    for n in 0..GROUPS {
+        cluster.form(n).await;
+    }
+    let dead = "c";
+    cluster.net.cut.lock().insert(dead.into());
+    let mut written = Vec::new();
+    for n in 0..GROUPS {
+        written.push(cluster.write(n, b"missed").await);
+    }
+    // Past the silence after which the dead broker no longer holds its
+    // leaders at the short gap, and past openraft's first few delays.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    let window = Duration::from_secs(10);
+    let before = cluster.net.cut_calls.load(Relaxed);
+    tokio::time::sleep(window).await;
+    let calls = cluster.net.cut_calls.load(Relaxed) - before;
+    let per_group = calls as f64 / window.as_secs_f64() / f64::from(GROUPS);
+    eprintln!("{per_group:.2} calls a second per group to the dead broker");
+    // An idle heartbeat is 0.5 a second. Without the fix it was about five:
+    // a heartbeat every 200 ms and a retry every second.
+    assert!(per_group < 0.9, "{per_group:.2} calls a second per group");
+
+    cluster.net.cut.lock().remove(dead);
+    let healed = tokio::time::Instant::now();
+    let returned = cluster.runtime(dead);
+    for (n, index) in (0..GROUPS).zip(written) {
+        eventually(|| {
+            let last = returned.status(&shard(n))?.last_index;
+            (last >= Some(index)).then_some(())
+        })
+        .await;
+    }
+    // The first answer from the broker, within an idle heartbeat (2 s),
+    // ends every group's wait. Its members stood while it was cut, so their
+    // higher term costs an election on top (pre-vote is off).
+    let took = healed.elapsed();
+    eprintln!("caught up {took:?} after the heal");
+    assert!(took < Duration::from_secs(6), "caught up after {took:?}");
     cluster.stop().await;
 }
 

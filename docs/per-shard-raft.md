@@ -1417,8 +1417,11 @@ Nothing is negotiated. Each side acts only on what it has seen:
   the timers it was configured with.
 - A leader goes on heartbeating at the short interval, naming the idle gap,
   until every follower has answered a message that named it. Only then
-  does it slow down. Sending an entry voids those answers and makes the
-  next heartbeat due within 200 ms. A publish does the same when it hands
+  does it slow down. Sending a new entry voids those answers and makes the
+  next heartbeat due within 200 ms. An entry is new the first time any
+  append carries it. Sending it again, to a follower that did not take it
+  or one catching up, does not count, so a follower that is down does not
+  keep its leader at the short interval by being retried. A publish does the same when it hands
   its batch to the group, before anything is sent. So a group with one
   member, or with no follower in reach, is fast again on its first write.
 - A follower that restarts has forgotten the gap and may stand as soon as
@@ -1584,6 +1587,15 @@ member refuses with "no such member". Such a group is left out of the
 walk, since the broker being up says nothing about it, and is retried on
 its own member's first answer instead: a heartbeat once it opens. For an
 idle group that heartbeat can take up to `idle_heartbeat`.
+
+While a broker is down, its members' waits keep doubling past that
+second, up to 10 s. A dead broker then costs each group that has a member
+on it about one call every 2 s, its idle heartbeat, plus a retry every
+10 s, instead of a retry every second. With 1,500 groups and one broker
+of three dead, that is the difference between about 7,500 calls a second
+to it and about 900. The longer wait costs no time to recover: the
+heartbeats are not held by it, and the first answer from the broker
+ends every wait, as above.
 
 None of this calls a peer more often than openraft would. A broker is
 walked at most once a second, openraft's longest delay, and never twice
