@@ -2703,21 +2703,31 @@ the records that are still in the log into the stream a second time. The
 cut batch is remembered for as long as one of its records is in the log,
 and by name after that. A restart keeps it: while records of it are in the
 log, the log's marks rebuild it, and the by-name entry is in a flushed
-`producers.forgotten` file in the log's directory.
+`producers.forgotten` file in the log's directory. A member that was caught
+up by copying segments derives it from the records it was sent, since a
+segment copy carries no producer state, so it does not know a cut batch none
+of whose records it was sent.
 
 A member that installs a snapshot holds no record below it, so it cannot
 read those refusals from its log. They travel in the snapshot instead. A
 stream shard's snapshot data is the list of cut batches, by producer and
 sequence, that a log starting right after the snapshot's last entry has to
-refuse: the ones its sender refuses by name already, and the ones a purge
-to that point would forget. It is read from the records up to that entry,
-which are committed, never from what the sender holds past it, so every
-member's snapshot at one entry carries the same list. The member saves them to its own
-`producers.forgotten` before it stores the snapshot, so from the moment it
-holds nothing below the snapshot it refuses those re-sends the way its
-sender would once purged there. A crash in between leaves the old snapshot
-and only more refusals. Empty data carries none: a switch's base snapshot,
-or a snapshot taken with nothing forgotten.
+refuse. It is what the committed records up to that entry say, and nothing
+else: the cut batches in those records, plus the ones earlier purges and
+installs carried. The sender's own refusals do not go in. A batch evicted
+from a full table of cut batches goes in only once a purge passes its
+records, and the cut batches a reset dropped after an install never do,
+since the records they came from may be ones the leader never had. So every
+member's snapshot at one entry carries the same list. The member saves the
+list to its own `producers.forgotten` before it stores the snapshot, and
+the reset to the snapshot's base then drops what its old records said, so
+it answers a re-send the way a member that holds the records does. A crash
+in between leaves the old snapshot and only more refusals. Empty data
+carries none: a switch's base snapshot, or a snapshot taken with nothing
+forgotten.
+
+The sender reads its log from its base to build the list, a chunk at a
+time, so appends go on while it does. That read is as long as the log.
 
 Whole batches below the snapshot do not travel. A member that installs one
 knows a producer only from the batches it holds, as a member whose own
@@ -2754,7 +2764,8 @@ refused.
 > `past_the_bound_a_cut_first_batch_is_still_refused`;
 > `crates/server/felix-storage/src/disk_log/tests/producers.rs`,
 > `a_purge_past_a_cut_batch_refuses_its_resend` and
-> `a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts`;
+> `a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts` and
+> `a_snapshot_carries_nothing_its_sender_alone_held`;
 > `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
 > `a_member_installed_past_a_cut_batch_refuses_its_resend`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,

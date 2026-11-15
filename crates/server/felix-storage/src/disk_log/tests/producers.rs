@@ -903,7 +903,9 @@ async fn a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts() {
         let copy = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
         copy.reset_to(tail).await.expect("reset");
         assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Unknown);
-        copy.remember_forgotten_cuts(cuts).await.expect("remember");
+        copy.remember_forgotten_cuts(tail, cuts)
+            .await
+            .expect("remember");
         assert_eq!(copy.producer_unfinished(9, 0), REFUSED);
         assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
         copy.shutdown().await.expect("shutdown");
@@ -911,4 +913,67 @@ async fn a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts() {
     let copy = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
     assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
     copy.shutdown().await.expect("shutdown");
+}
+
+/// What a snapshot carries is what the committed records below it say, the
+/// same from every sender. A sender that installed a snapshot over records
+/// of its own, here a cut batch of producer 7 the leader never had, hands
+/// on none of them, and the copy it is sent to answers producer 7 the way
+/// the leader does.
+#[tokio::test]
+async fn a_snapshot_carries_nothing_its_sender_alone_held() {
+    let leader_dir = tempdir().expect("dir");
+    let (leader, tail) = cut_then_filled(&leader_dir).await;
+    let base = tail + 1;
+    let cuts = leader.forgotten_cuts_from(base).await.expect("cuts");
+    assert_eq!(cuts.sequence(9), Some(0));
+
+    let sender_dir = tempdir().expect("dir");
+    let sender = DiskLog::open(sender_dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&sender).await;
+    let stray = |position: u32, payload: &str| AppendRecord {
+        mark: match position {
+            0 => RecordMark::Opens(ProducerBatch {
+                producer_id: 7,
+                sequence: 0,
+                len: 3,
+            }),
+            _ => RecordMark::Piece(BatchPiece {
+                producer_id: 7,
+                sequence: 0,
+                position,
+                len: 3,
+            }),
+        },
+        ..record(payload)
+    };
+    sender
+        .append(&[stray(0, "x"), stray(1, "y")])
+        .await
+        .expect("append");
+    sender.append(&records(FILLED)).await.expect("append");
+    sender
+        .remember_forgotten_cuts(base, cuts.clone())
+        .await
+        .expect("remember");
+    sender.reset_to(base).await.expect("reset");
+    let carried = sender.forgotten_cuts_from(base).await.expect("cuts");
+    assert_eq!(carried, cuts);
+    assert_eq!(
+        sender.producer_sequence(7, 0),
+        leader.producer_sequence(7, 0)
+    );
+
+    let copy_dir = tempdir().expect("dir");
+    let copy = DiskLog::open(copy_dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    copy.remember_forgotten_cuts(base, carried)
+        .await
+        .expect("remember");
+    copy.reset_to(base).await.expect("reset");
+    assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+    assert_eq!(copy.producer_sequence(7, 0), leader.producer_sequence(7, 0));
+    assert_eq!(copy.producer_sequence(7, 0), ProducerSequence::Unknown);
+    for log in [leader, sender, copy] {
+        log.shutdown().await.expect("shutdown");
+    }
 }

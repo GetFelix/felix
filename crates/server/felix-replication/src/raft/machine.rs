@@ -317,9 +317,10 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
 /// right after the snapshot's last entry has to refuse by name. A member
 /// that installs the snapshot holds no record below it, so the batches the
 /// log forgot, or would forget once purged there, are known to it only from
-/// here. Read from the records up to the snapshot's last entry, which are
-/// committed, so every member's snapshot at one entry carries the same.
-/// Empty when there are none.
+/// here. Built from the committed records up to the snapshot's last entry
+/// and what earlier purges and installs carried, never from refusals only
+/// this member has, so every member's snapshot at one entry carries the
+/// same. Empty when there are none.
 async fn stream_data(log: &DiskLog, state: &State) -> io::Result<Bytes> {
     let base = state.last_applied.map_or(0, |id| id.index + 1);
     let cuts = log
@@ -499,7 +500,8 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // the old snapshot and only more refusals, which the next install
         // repeats.
         if let Some(log) = &self.log {
-            log.remember_forgotten_cuts(carried_cuts(&data)?)
+            let base = meta.last_log_id.map_or(0, |id| id.index + 1);
+            log.remember_forgotten_cuts(base, carried_cuts(&data)?)
                 .await
                 .map_err(io::Error::other)?;
         }

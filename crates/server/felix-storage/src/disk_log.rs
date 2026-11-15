@@ -401,31 +401,74 @@ impl DiskLog {
     }
 
     /// The cut batches a copy of this log that starts at `base` has to
-    /// refuse by name: the ones this log refuses so already, and the ones a
-    /// purge to `base` would forget. A copy that takes them in with
-    /// [`Self::remember_forgotten_cuts`] answers a re-send the way this log
-    /// would once purged to `base`. Read from the records below `base`
-    /// alone, so it is the same whatever this log holds past them.
+    /// refuse by name: the ones a purge to `base` would forget, and the ones
+    /// this log carries already. A copy that takes them in with
+    /// [`Self::remember_forgotten_cuts`] answers a re-send the way a copy
+    /// that holds the records would. Read from the committed records below
+    /// `base` and what earlier purges and installs carried, never from what
+    /// this copy alone saw, so every copy hands on the same.
+    ///
+    /// Reads the log from its base, a chunk at a time, letting appends in
+    /// between chunks.
     pub async fn forgotten_cuts_from(&self, base: Offset) -> Result<ForgottenCuts> {
         if !self.inner.config.raft_log {
             return Ok(ForgottenCuts::default());
         }
         let inner = Arc::clone(&self.inner);
         felix_common::blocking::spawn(move || {
-            let segments = inner.segments.read();
-            segments.check_open()?;
-            producers::forgotten_from(&inner.dir, &segments, base)
+            'scan: loop {
+                let (log_base, mut next, mut carried) = {
+                    let segments = inner.segments.read();
+                    segments.check_open()?;
+                    let log_base = segments.base_offset();
+                    let carried =
+                        producers::CarriedFrom::new(inner.producers.lock().carried().clone());
+                    (
+                        log_base,
+                        segments.first_markable_offset().max(log_base),
+                        carried,
+                    )
+                };
+                while next < base {
+                    let records = {
+                        let segments = inner.segments.read();
+                        segments.check_open()?;
+                        // A purge or reset moved the base, and what it
+                        // forgot is carried now: start over from there.
+                        if segments.base_offset() != log_base {
+                            continue 'scan;
+                        }
+                        segments.read(
+                            next,
+                            crate::segment::ReadBudget::new(
+                                producers::REBUILD_READ_BYTES,
+                                usize::MAX,
+                            )
+                            .with_trims(crate::segment::TrimRecords::Include),
+                        )?
+                    };
+                    let Some(last) = records.last() else { break };
+                    next = last.offset + 1;
+                    for record in records.iter().take_while(|record| record.offset < base) {
+                        carried.observe(record.offset, record.mark, &record.payload);
+                    }
+                }
+                return Ok(carried.finish(base));
+            }
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
     }
 
-    /// Refuse the re-send of `cuts` as if this log had forgotten them
-    /// itself, saved to `producers.forgotten` before this returns. A
-    /// producer's higher sequence wins. Only a Raft log keeps cut batches,
-    /// so any other log takes nothing.
-    pub async fn remember_forgotten_cuts(&self, cuts: ForgottenCuts) -> Result<()> {
-        if !self.inner.config.raft_log || cuts.is_empty() {
+    /// Take in the cut batches a snapshot at `base` carries, saved to
+    /// `producers.forgotten` before this returns, ahead of the reset to
+    /// `base`. Their re-send is refused as if this log had purged them. A
+    /// producer's higher sequence wins. The reset to `base` then drops the
+    /// unfinished batches this log held below it: the snapshot speaks for
+    /// those records. Only a Raft log keeps cut batches, so any other log
+    /// takes nothing.
+    pub async fn remember_forgotten_cuts(&self, base: Offset, cuts: ForgottenCuts) -> Result<()> {
+        if !self.inner.config.raft_log {
             return Ok(());
         }
         let inner = Arc::clone(&self.inner);
@@ -435,7 +478,7 @@ impl DiskLog {
             let segments = inner.segments.read();
             segments.check_open()?;
             let mut producers = inner.producers.lock();
-            producers.remember(cuts.0);
+            producers.install(base, cuts);
             inner.store_forgotten(&producers)
         })
         .await
@@ -2066,7 +2109,7 @@ struct LogInner {
     /// read lock: they add refusals and change no offset.
     producers: Mutex<producers::ProducerState>,
     /// What `producers.forgotten` holds on disk. Taken under `producers`.
-    forgotten_saved: Mutex<felix_common::random::HashMap<u64, u64>>,
+    forgotten_saved: Mutex<producers::SavedForgotten>,
     /// The log's trim records and the floor they set. Taken under `segments`
     /// when both are held.
     head: Mutex<head::Head>,

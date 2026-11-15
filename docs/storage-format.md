@@ -1643,6 +1643,8 @@ as of the new segment's base offset, once the retired segment is sealed.
 24   1  open              1 when a batch is waiting for records, then one `partial`
      4  cuts         u32  then cuts × partial
      4  forgotten    u32  then forgotten × { producer_id u64, sequence u64 }
+     4  evicted      u32  then evicted × { producer_id u64, sequence u64, next u64 }
+     4  carried      u32  then carried × { producer_id u64, sequence u64 }
      …  producers × { id u64, last_sequence u64, batches u16,
                       batches × { first u64, last u64, pieces u32, digest } }
 
@@ -1676,6 +1678,13 @@ producer's sequence 0. A later record of the producer does not lift it, since
 a truncation could still remove that record. It goes when a purge passes a
 later batch of the producer, which is committed by then.
 
+A `carried` entry is the part of `forgotten` that committed records below
+the log's base account for: what a purge forgot, and what an installed
+snapshot carried. It is what this log's snapshot hands on (see "Idempotent
+publishes" in `docs/per-shard-raft.md`). An `evicted` entry is a cut batch
+that went past the 4096 kept whole, with `next` one past its last record. A
+purge past `next` moves it to `carried`; until then it is only this log's.
+
 A held batch's `last` is the offset of its last record, which is not
 `first + len - 1` when the batch was finished after a cut. `pieces` is the
 batch's length when its later records are pieces and 0 otherwise.
@@ -1694,9 +1703,10 @@ answer a re-send got before digests were kept. They age out as the producers
 write. Versions 1 and 2 have no cut batches. Their open batch is
 `producer_id u64, sequence u64, len u32, first u64, held u32, digest`, and
 their held batches are `first u64, len u32, digest`: every batch they
-describe is one run. Versions 1 to 3 have no `forgotten` count. All are still
-read, and the next snapshot is written as version 4. A build that predates
-version 4 ignores a version 4 snapshot and
+describe is one run. Versions 1 to 3 have no `forgotten` count, and versions
+1 to 4 no `evicted` or `carried` counts. All are still read, and the next
+snapshot is written as version 5. A build that predates version 5 ignores a
+version 5 snapshot and
 rebuilds the state from the log. Any other version is ignored, like a damaged
 snapshot.
 
@@ -1726,19 +1736,28 @@ the snapshot:
 magic  u32  0x464C5046
 crc    u32  crc32 of the rest
 count  u32  then count × { producer_id u64, sequence u64 }
+count  u32  then count × { producer_id u64, sequence u64 }   carried
+base   u64  the installed snapshot's base, u64::MAX for none
 ```
+
+The second list is the `carried` entries, and `base` is the base of the
+snapshot whose carried batches were taken in last, until the reset to it. A
+file that ends after the first list, as one written before these were kept
+does, carries nothing.
 
 It is written through a temporary and a rename, and flushed with its
 directory, before a purge unlinks a segment and before a reset drops the
 log. A purge or reset that cannot write it fails and removes nothing. Every
 open and every rebuild after a truncation merges it into the table, keeping
 the higher sequence per producer. A reset forgets every unfinished batch
-with a record below the new base. An unreadable file fails the open: the log
-cannot say what it held.
+with a record below the new base, and carries it, unless a snapshot at that
+base was installed: then the snapshot's carried batches speak for those
+records, and the log's own are dropped. An unreadable file fails the open:
+the log cannot say what it held.
 
-A member installed from a snapshot knows only the batches forgotten on its
-own log. The table of the member it copied from does not travel with the
-records.
+A member installed from a snapshot takes in the batches the snapshot
+carries. A member caught up by copying segments knows only what the records
+it was sent say.
 
 Because pieces name their batch, the same holds for a log read from any
 base: a log pruned to an offset and a copy that starts at that offset
