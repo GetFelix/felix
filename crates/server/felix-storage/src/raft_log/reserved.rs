@@ -22,6 +22,9 @@ const VERSION: u16 = 1;
 /// magic(4) + version(2) + reserved(2) + index(8) + crc(4)
 const ENCODED_LEN: usize = 20;
 pub(crate) const FILE_NAME: &str = "raft-reserved";
+/// How far past the entry that needs it a raise goes: one synced write per
+/// million entries, and a gap of at most this many offsets after a re-form.
+pub(crate) const STEP: u64 = 1 << 20;
 
 fn encode(index: u64) -> [u8; ENCODED_LEN] {
     let mut out = [0u8; ENCODED_LEN];

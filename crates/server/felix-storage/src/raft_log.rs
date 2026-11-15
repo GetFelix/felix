@@ -195,6 +195,13 @@ struct Shared<K> {
     segment_reads: std::sync::atomic::AtomicU64,
     /// The root's marks for this copy, once [`RaftLog::mark_with`] set them.
     marking: std::sync::OnceLock<Marking>,
+    /// The log does not wait for its fsync before an append's callback: Raft
+    /// counts an entry once it is written. Only on a root that rotates on a
+    /// crash ([`run_state::rotates_on_crash`](crate::run_state::rotates_on_crash)).
+    written_commit: bool,
+    /// The copy's reservation (`raft-reserved`): no callback fires for an
+    /// entry above it.
+    reserved: tokio::sync::Mutex<Option<u64>>,
 }
 
 /// How this log keeps its marks at the data root.
@@ -225,9 +232,17 @@ where
     /// other log starts on a format with no generations and may delete
     /// entries by retention.
     ///
-    /// Refused unless its fsync mode is [`FsyncMode::OnCommit`]. Under any
-    /// other mode an append's callback fires before the fsync, and Raft
-    /// would count toward a quorum an entry that a power cut can still take.
+    /// Under [`FsyncMode::OnCommit`] an append's callback fires after its
+    /// fsync. Under `Periodic` or `None` it fires once the entries are
+    /// written and the copy's reservation covers them, so Raft counts an
+    /// entry a power cut can still take. That is refused unless the log is
+    /// under a root whose run rotates its storage id after a machine crash
+    /// ([`run_state::rotates_on_crash`](crate::run_state::rotates_on_crash)),
+    /// so a copy that loses a counted entry no longer votes. See
+    /// `docs/per-shard-raft.md`, "Commit on a written majority".
+    ///
+    /// Refused when the copy's `raft-reserved` does not decode, on every
+    /// open: nothing can rebuild it.
     pub fn new(log: DiskLog, codec: K) -> io::Result<Self> {
         Self::with_tail_budget(log, codec, TailBudget::process())
     }
@@ -241,14 +256,16 @@ where
                 log.label()
             )));
         }
-        if log.config().fsync_mode != FsyncMode::OnCommit {
+        let written_commit = log.config().fsync_mode != FsyncMode::OnCommit;
+        if written_commit && !crate::run_state::rotates_on_crash(log.dir()) {
             return Err(invalid(format!(
-                "{} is a Raft log and must fsync on commit, not {:?}",
+                "{} is a Raft log under {:?} on a root whose run does not rotate on a crash; it must fsync on commit",
                 log.label(),
                 log.config().fsync_mode
             )));
         }
         let purged = purged::load(log.dir())?;
+        let reserved = reserved::load(log.dir())?;
         Ok(Self {
             shared: Arc::new(Shared {
                 log,
@@ -266,6 +283,8 @@ where
                 #[cfg(test)]
                 segment_reads: std::sync::atomic::AtomicU64::new(0),
                 marking: std::sync::OnceLock::new(),
+                written_commit,
+                reserved: tokio::sync::Mutex::new(reserved),
             }),
             types: std::marker::PhantomData,
         })
@@ -451,6 +470,22 @@ pub(crate) async fn last_point(log: &DiskLog) -> io::Result<Option<LogPoint>> {
 }
 
 impl<K> Shared<K> {
+    /// Raise the reservation, synced, to [`reserved::STEP`] past `index`
+    /// unless it already covers `index`. Never lowered.
+    async fn reserve_through(&self, index: u64) -> io::Result<()> {
+        let mut reserved = self.reserved.lock().await;
+        if reserved.is_some_and(|reserved| reserved >= index) {
+            return Ok(());
+        }
+        let next = index.saturating_add(reserved::STEP);
+        let dir = self.log.dir().to_path_buf();
+        tokio::task::spawn_blocking(move || reserved::store(&dir, next))
+            .await
+            .map_err(io::Error::other)??;
+        *reserved = Some(next);
+        Ok(())
+    }
+
     /// The index of the first entry the log holds or will hold: one past the
     /// purged id, or where the oldest segment starts when nothing was
     /// purged. Records below it are never read as entries.

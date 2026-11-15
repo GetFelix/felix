@@ -17,6 +17,7 @@ mod tail;
 mod transfer;
 pub(crate) mod writes;
 mod written;
+mod written_commit;
 
 use std::io;
 

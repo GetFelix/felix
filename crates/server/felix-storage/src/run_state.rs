@@ -98,6 +98,10 @@ static WATCHED: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 /// names in the record of a run that began strict.
 static BEGAN_IN: Mutex<Vec<(PathBuf, Option<BootId>)>> = Mutex::new(Vec::new());
 
+/// Directories whose run under way began relaxed, so a machine crash of it
+/// rotates the storage id. See [`rotates_on_crash`].
+static RELAXED_RUNS: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
 /// Held across a read and rewrite of the record of a run under way, so
 /// [`forget_boot`] or [`mark_clean`] is never undone by a boot written from
 /// an older read. Also keeps writers of the shared temporary file apart.
@@ -167,6 +171,14 @@ pub struct Begun {
 /// [`begin`] reads from [`vouched_unsynced`] itself.
 pub fn relaxed(fsync_mode: &crate::log::FsyncMode) -> bool {
     !matches!(fsync_mode, crate::log::FsyncMode::OnCommit)
+}
+
+/// Whether `dir` is under a directory whose run in this process [`begin`]
+/// recorded as relaxed. A machine crash of such a run rotates the storage id
+/// at the next start, so a Raft copy under it may count an entry before its
+/// fsync: a copy that loses the entry no longer votes.
+pub fn rotates_on_crash(dir: &Path) -> bool {
+    RELAXED_RUNS.lock().iter().any(|root| dir.starts_with(root))
 }
 
 /// Start a run on the directory at `root`: read its storage id, give it a new
@@ -281,6 +293,11 @@ pub fn begin(
         let mut began = BEGAN_IN.lock();
         began.retain(|(began, _)| began != root);
         began.push((root.to_path_buf(), boot));
+        let mut runs = RELAXED_RUNS.lock();
+        runs.retain(|run| run != root);
+        if relaxed {
+            runs.push(root.to_path_buf());
+        }
     }
     Ok(Begun {
         id,

@@ -654,6 +654,20 @@ impl DiskLog {
         self.inner.check_healthy()
     }
 
+    /// As [`Self::commit`], except that under a mode that acknowledges before
+    /// the sync it waits for that mode's own syncs (the periodic flush, or an
+    /// explicit [`Self::sync`]) to cover `pending`, and starts none.
+    pub(crate) async fn synced(&self, pending: &PendingAppend) -> Result<()> {
+        if !self.inner.durability.acknowledges_before_sync() || pending.holds_trim {
+            return self.commit(pending).await;
+        }
+        self.inner
+            .durability
+            .reached(pending.durable_target, || self.inner.is_poisoned())
+            .await;
+        self.inner.check_healthy()
+    }
+
     /// The tail once every append already handed to the append thread has
     /// been written or skipped.
     ///

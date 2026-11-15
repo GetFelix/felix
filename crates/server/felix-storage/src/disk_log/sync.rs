@@ -117,6 +117,21 @@ impl Durability {
         self.flush_until(target, flush, &mut receiver).await
     }
 
+    /// Wait, without flushing, until every offset below `target` is durable
+    /// or `stopped` says no flush will get there.
+    pub(super) async fn reached(&self, target: Offset, stopped: impl Fn() -> bool) {
+        let mut receiver = self.durable_tx.subscribe();
+        // The sender lives as long as `self`, so this cannot fail.
+        let _ = receiver
+            .wait_for(|durable| *durable >= target || stopped())
+            .await;
+    }
+
+    /// Wake [`Self::reached`] waiters to look again, as after a poison.
+    pub(super) fn wake(&self) {
+        self.durable_tx.send_modify(|_| {});
+    }
+
     /// Run an unconditional flush under the same lock used by group commit.
     pub(super) async fn force_flush<F, Fut>(&self, flush: F) -> Result<Offset>
     where

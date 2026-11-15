@@ -733,6 +733,10 @@ impl LogInner {
             tracing::error!(shard = %self.label, %reason, "log stopped; it will reject further appends");
             super::note_poisoned(&self.label, &reason);
             *failure = Some(reason);
+        }
+        {
+            // A flush will never move the bound now.
+            self.durability.wake();
             super::ANY_POISONED.store(true, Ordering::Release);
         }
         // A process crash from here on may have lost what this log

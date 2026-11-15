@@ -264,6 +264,38 @@ where
         // stands for the append.
         let pending = pending.expect("at least one batch");
 
+        if shared.written_commit {
+            // Raft counts the entries from here, so the reservation that
+            // bounds a re-form covers them first. A failed raise fails the
+            // append and the callback never fires.
+            if let Some(last) = last {
+                shared.reserve_through(last.index).await?;
+            }
+            callback.io_completed(Ok(()));
+            // `flushed` still waits for the log's own fsync.
+            let positions = Arc::clone(shared);
+            let raise = move |flushed: io::Result<()>| {
+                if flushed.is_ok() {
+                    positions.positions.send_modify(|at| {
+                        if at
+                            .flushed
+                            .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
+                        {
+                            at.flushed = last;
+                        }
+                    });
+                }
+            };
+            let mark = shared
+                .marking
+                .get()
+                .filter(|marking| marking.exact)
+                .zip(last)
+                .map(|(marking, last)| (marking.marks.clone(), last));
+            shared.flushes.push(log, pending, Box::new(raise), mark);
+            return Ok(());
+        }
+
         // The exact log mark is synced before Raft hears the entries are on
         // disk, so the callback waits for the flush task.
         let mark = shared
@@ -312,7 +344,11 @@ where
     async fn truncate_after(&mut self, last_log_id: Option<LogIdOf<C>>) -> io::Result<()> {
         let log = &self.shared.log;
         // A flush still waiting on entries this cuts would never reach them
-        // and would report the append failed. Each one finishes first.
+        // and would report the append failed. Each one finishes first. On a
+        // written-commit log nothing else may sync soon (`None` never does).
+        if self.shared.written_commit {
+            log.sync().await.map_err(io_error)?;
+        }
         self.shared.flushes.drained().await;
         // Before the cut, so no read finds here an entry the log has lost.
         self.shared.tail.clear();
