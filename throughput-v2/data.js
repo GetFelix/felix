@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794715592712,
+  "lastUpdate": 1794716196887,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57876,6 +57876,58 @@ window.BENCHMARK_DATA = {
             "range": "27176.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1187393.61\nmean: 1174267.54\nstdev: 27176.99\ncv: 2.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "77663e731976480a35593e16aa9340fe4ecf090e",
+          "message": "fix(raft): a dead peer costs each group about an idle heartbeat (#2567) (#2590)\n\n* fix(raft): a dead peer costs each group about an idle heartbeat (#2567)\n\nWith one broker of three down, each group with a member there made about\nfive calls a second to it. Two causes, neither in the transport:\n\n- Pace counted every append that carried entries as a write. openraft's\n  retry of the entry the dead member missed reset the group's last write\n  each second, so its leader never went idle and heartbeated every 200 ms.\n  Only an entry no append carried before now counts (Pace::new_entries).\n- openraft's retry delays stop at 1 s. The router now gives each member's\n  stream its own delays (reach::Waits), which keep doubling to 10 s while\n  Reach says the broker is down. The first answer from the broker still\n  ends every wait through the ticker's walk (#2549).\n\nAt 300 groups in raft_idle_cpu the calls to the dead broker go from 5.1\nto 0.6 a second per group (0.5 idle heartbeats, 0.1 retries), and the\nlive brokers' CPU from 3.7% to 0.4% of a core.\n\nSpec-Unaffected: no spec models heartbeat pacing or retry delays; time is abstract in the FelixRaft models (timeouts are steps), so when a heartbeat or a retry is sent changes no modelled step.\n\n* fix(raft): keep openraft's delays for cache shards; review fixes\n\nA cache shard's snapshot pieces take the same backoff, and the ticker's\nwalk cannot cut that sleep short, so only stream shard members wait longer\nwhile their broker is down. Docs: reorder the idle-groups bullet and give\nthe measured figures rather than an extrapolation.\n\nSpec-Unaffected: retry delays only; no spec models message timing.\n\n* fix(raft): a broker back from being down is found within a heartbeat (#2567)\n\nIdle groups heartbeat a dead broker every 2 s, so its first answer after\nit came back could wait that long, where main found it within 200 ms. A\nleader with an entry not yet committed now stays at the short gap, and\nwhile a broker is down the ticker has one group that leads here\nheartbeat it every short gap (the last group whose call to it failed),\nwhich costs a fixed 5 calls a second per dead broker.\n\nTests: an entry waiting on two dead brokers commits within ~a heartbeat\nof one coming back; an idle group catches a returning broker up within\n~a heartbeat. The dead-broker cost test mutes the cut broker, so its\nvotes do not depose leaders inside the window, and no longer bounds the\nreal-timer election after the heal. Docs state the recovery bound.\n\nSpec-Unaffected: heartbeat pacing only; time is abstract in the FelixRaft models, so when a heartbeat is sent changes no modelled step.\n\n* docs(changelog): the recovery bound for #2567\n\nSpec-Unaffected: changelog only.\n\n* fix(raft): only a leader's failed append names the scout group (#2567)",
+          "timestamp": "2026-11-14T20:00:21-08:00",
+          "tree_id": "bf0cb1b3fef4b3666da80f358a20ca8e7dacaf41",
+          "url": "https://github.com/GetFelix/felix/commit/77663e731976480a35593e16aa9340fe4ecf090e"
+        },
+        "date": 1794716196330,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 488792.81,
+            "range": "16741.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 488792.81\nmean: 480811.77\nstdev: 16741.59\ncv: 3.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 488792.81,
+            "range": "16741.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 488792.81\nmean: 480811.77\nstdev: 16741.59\ncv: 3.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120667.56,
+            "range": "1678.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120667.56\nmean: 119787.26\nstdev: 1678.72\ncv: 1.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1206675.65,
+            "range": "16787.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1206675.65\nmean: 1197872.64\nstdev: 16787.20\ncv: 1.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
