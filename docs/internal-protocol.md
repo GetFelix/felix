@@ -1186,7 +1186,12 @@ After the report byte comes the message:
   entry 5 to no one today. Adding it left the layout at 5, so every other
   frame is byte-identical to a build without it, and such a build refuses
   a conditional entry by its tag (`5 is not an entry payload`) rather
-  than store the record unconditionally.
+  than store the record unconditionally. 6 is a head trim (the floor
+  `u64`, then the record: append time, length and the trim's headers).
+  Unlike 5 it is sent, since the log holds the trim mark, and a build
+  without it refuses the whole append (`6 is not an entry payload`), so a
+  leader writes one only once the fleet has finalized `raft_head_trim`. A
+  trim with an expected offset or a producer is refused to encode.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.

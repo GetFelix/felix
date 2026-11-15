@@ -1947,6 +1947,17 @@ trim record is cut like any other torn record.
 > `deletion_never_reaches_the_record_that_set_the_floor`,
 > `a_held_log_deletes_only_below_the_saved_commit_offset`
 
+A Raft log (`LogConfig::raft_log`) applies a trim's floor only once the trim
+record is below its commit offset, since an entry above it may still be cut
+by a later leader, and it deletes no segment below a floor: only openraft's
+purge may move a Raft log's start. The records stay on disk, unreadable,
+until a purge passes them. See `docs/per-shard-raft.md`, "Head trims".
+
+> `crates/server/felix-storage/src/raft_log/tests.rs`,
+> `a_trim_entry_applies_once_it_is_committed`;
+> `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
+> `a_trim_entry_deletes_no_segment`
+
 ### The `head` file
 
 The floor is derived, like the indexes. Each trim record the log holds is one

@@ -2398,7 +2398,8 @@ The broker never appends to that log, and four rules follow from it.
   itself would be an entry the group never agreed on. Publishes go through
   `propose_publish`, and an idempotent producer's through
   `propose_idempotent` ("Idempotent publishes", below), and a conditional
-  one through `propose_publish_at` ("Conditional publishes", below). #2446
+  one through `propose_publish_at` ("Conditional publishes", below), and a
+  head trim through `propose_trim_at` ("Head trims", below). #2446
   lists what is still refused.
 - The commit hold survives deposition. A batch joins the hold only after
   `await_commit`, so `discard_uncommitted`, which the hybrid uses to drop
@@ -2584,11 +2585,10 @@ never ends a subscriber of the new term.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_term_led_again_keeps_its_subscribers`.
 
-Atomic commits, head trims and consumer-group operations on a Raft shard
-are refused by name before they reach the hybrid's fence (#2446).
+Atomic commits and consumer-group operations on a Raft shard are refused by
+name before they reach the hybrid's fence (#2446). A head trim goes to the
+shard's engine ("Head trims", above).
 
-> `services/felix-broker-service/src/serving/commit_ops/tests.rs`,
-> `a_trim_to_a_raft_shard_is_refused_by_name`;
 > `services/felix-broker-service/src/serving/group_ops/tests.rs`,
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
@@ -2935,6 +2935,75 @@ model) lands between the guess and the append.
 > `a_command_the_codec_blanks_is_stored_as_a_blank_entry`;
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_publish_if_to_a_raft_shard_is_written_only_at_its_offset`.
+
+**Head trims.** A `trim_before` (`docs/protocol.md`) on a Raft shard is
+answered as on the hybrid. `Broker::propose_trim_at` runs the hybrid's
+checks in the hybrid's order before anything is proposed: `before` past
+`expected_offset` is `trim_past_tail`, a tail other than `expected_offset`
+is `offset_mismatch` with nothing written, a stream holding atomic commits
+is `stream_has_commits`, and a trim at or below the current floor writes
+nothing and answers with the floor.
+
+Otherwise the trim is one entry, conditional on landing at
+`expected_offset` exactly as a conditional publish is. Its record is a trim
+record holding the floor and the trim's headers, the same record the
+hybrid writes. Only a tail that moved between the check and the append
+costs an offset: the leader's log stores a blank there, and the answer is
+`offset_mismatch` with the offset after it.
+
+The floor comes from the log on every member. A Raft log applies a trim
+record's floor once the record is below its commit offset, and rebuilds it
+at open from the trim records and the `head` file, as the hybrid does
+(`docs/durable-storage.md`, "Conditional head trim"). So a follower, a new
+leader and a restarted member hide the same records. The difference from
+the hybrid is deletion: a Raft log never deletes a segment below a floor,
+because only openraft's purge may move a Raft log's start. The records stay
+on disk, unreadable, until a purge passes them. No snapshot carries a
+floor: a stream shard's snapshot holds no records, and the trim's own index
+is at or below any snapshot that covers it, so the log above the snapshot
+is already past the floor.
+
+On the leader the trim reaches the replay ring in its entry's turn and
+drops the ring's records below the floor, and the answer waits for that, so
+no reader is served below the floor after `trim_ok`. A follower's ring
+keeps records below the floor until they age out. It never serves them:
+every resume checks the log's floor first.
+
+Every member writes the data directory's `head-trimmed` marker before its
+log stores a trim record, the leader's append and a follower's copy alike,
+so a copy holding a trim refuses to join a fleet that has not finalized
+`head_trim` (`felix_storage::run_state::head_trimmed`).
+
+A trim entry has its own tag, 6, in the Raft wire's entry payloads, and
+openraft does send it: leaders replicate entries read back from their log,
+which hold the trim mark. A member built before it refuses the whole append
+by that tag, and replication to it stops at the entry. So a Raft trim waits
+for the fleet feature `raft_head_trim`, which needs `head_trim` and is
+reported only by builds that read the tag. Until the control plane
+finalizes it a clustered broker refuses a trim on a Raft shard with
+`feature_not_enabled` and nothing proposed. A lone broker allows it from
+the start. The layout stays 5, so every other frame is byte-identical to an
+older build's.
+
+`FelixHeadTrim.tla` covers the rule: the trim is a record, its floor is
+applied at the commit offset, and a broker deletes below it at most up to
+the floor. A Raft log deleting nothing below a floor is a case of that. The
+condition is `FelixRaftCond.tla`'s, decided at the entry's final index.
+
+> `services/felix-broker-service/src/shards/raft/tests/trim.rs`,
+> `a_trim_hides_the_shard_below_its_floor_on_every_member`,
+> `a_trim_holds_after_a_restart` and
+> `a_trim_is_refused_until_raft_head_trim_is_finalized`;
+> `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
+> `a_trim_before_to_a_raft_shard_is_answered_as_on_the_hybrid`;
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_trim_entry_is_counted_as_skipped`;
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `a_trim_entry_is_refused_by_its_tag_on_an_older_build`;
+> `crates/server/felix-storage/src/raft_log/tests.rs`,
+> `a_trim_entry_applies_once_it_is_committed`;
+> `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
+> `a_trim_entry_deletes_no_segment`.
 
 A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
 shards this way. Use it on a fresh cluster only, with the variable set on
