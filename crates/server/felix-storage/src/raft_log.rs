@@ -385,6 +385,12 @@ pub(crate) fn store_purged(
     purged::store(dir, &purged::Purged { index, generation })
 }
 
+/// The index the log in `dir` restarts at after its purged id, if one is
+/// saved.
+pub(crate) fn first_after_purged(dir: &std::path::Path) -> io::Result<Option<Offset>> {
+    Ok(purged::load(dir)?.map(|purged| purged.index + 1))
+}
+
 /// The last entry `log` holds as a Raft log, or the purged id when it holds
 /// none above it. What a member opening the directory would report as its
 /// last log id.

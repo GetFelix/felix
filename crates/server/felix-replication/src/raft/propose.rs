@@ -69,6 +69,14 @@ pub enum AnswerAt {
     /// does not. A `Leader` stream: the batch can still be lost if this
     /// broker stops leading before it commits.
     Lease,
+    /// Once a majority of the shard's voters has written the batch
+    /// ([`super::RaftEngine::await_quorum_ack`]), or at the commit if that
+    /// is first. A `Quorum` stream that is not fsynced on commit: the batch
+    /// survives a change of leader and process crashes, and is lost only
+    /// if a majority of copies each lose their unsynced tail, by a power
+    /// cut or a failed flush. With
+    /// [`AckAt::Flushed`] it is the commit.
+    Majority,
 }
 
 /// A publish batch for [`super::RaftEngine::propose`]. It must hold a record.

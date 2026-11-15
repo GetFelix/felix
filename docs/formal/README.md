@@ -618,6 +618,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchRewriteOrder.cfg` | the same, checked for order | violate `BatchInOrder` |
 | `FelixRaftBatchForgetsCut.cfg` | a purge past a cut batch drops it from the table snapshot | violate `BatchExactlyOnce`: the member takes the re-send as new |
 | `FelixRaftBatchForgetsCutPlace.cfg` | the same, checked one step earlier | violate `ProducerPlaceAgrees`: two members place one re-send differently |
+| `FelixRaftBatchInstallWithoutTable.cfg` | a snapshot install gives the base and not the table snapshot (#2562) | violate `BatchExactlyOnce`: a member installed past a cut batch takes the re-send as new |
 | `FelixRaftBatchTableAtApply.cfg` | the leader's table reads committed entries only; no change of leader | violate `BatchExactlyOnce`: a send that arrives while the first is in flight is written too |
 | `FelixRaftBatchHeldBeforeCommit.cfg` | a send is answered as held while its pieces are uncommitted | violate `BatchExactlyOnce`: a batch is acknowledged with nothing committed |
 | `FelixRaftBatchReachFinish.cfg` | witness: a cut batch is finished by its re-send and acknowledged | violate `NeverFinishesACut` |
@@ -3997,6 +3998,10 @@ Each knob drops one rule, and each twin fails:
 - `AtPurge = "forget"`: a purge past a cut batch drops it from the table
   snapshot. That member, or one that installs its snapshot, takes the re-send
   as a new batch and writes the held records again.
+- `InstallKeepsTable = FALSE`: a snapshot install gives the member its
+  sender's base and not its table snapshot (#2562). The member knows only
+  what it holds above the base, so once it leads it takes the re-send of a
+  batch cut below the base as new and writes the held records again.
 - `TableAtAppend = FALSE`: the leader's table reads committed entries only. A
   send that arrives while the first is in flight is placed as new too. So is
   a re-send that reaches a new leader before the pieces it took over commit.

@@ -1179,8 +1179,16 @@ Written through a temporary, an fsync, a rename and a directory sync, before
 the purge deletes any segment. The log's first index is one past `index`,
 or the oldest segment's base when that is higher. Records at or below
 `index` that remain in a segment are not entries. When `index` is at or
-past the log's last record the log is empty, and the next append restarts
-the segments at `index + 1`.
+past the log's last record the log is empty, and the purge resets the
+segments to start at `index + 1`. After a snapshot install, the records it
+drops may be ones the leader never had. A crash between writing the file and
+that reset leaves them, so the next open finishes the reset before the log
+serves when an install at `index + 1` is still pending in
+`producers.forgotten` and the log ends at or below it. A snapshot then never
+reads those records as the log's own. The reset removes the producer
+snapshot, the head file and any key index snapshot before it drops a record,
+since a crash after the drop is not redone and one of them saved at the old
+tail could pass for the new log's.
 
 Nothing can rebuild this file, so one that is present and does not decode
 fails the open of the Raft log. Absent means nothing was purged.
@@ -1643,6 +1651,8 @@ as of the new segment's base offset, once the retired segment is sealed.
 24   1  open              1 when a batch is waiting for records, then one `partial`
      4  cuts         u32  then cuts × partial
      4  forgotten    u32  then forgotten × { producer_id u64, sequence u64 }
+     4  evicted      u32  then evicted × { producer_id u64, sequence u64, next u64 }
+     4  carried      u32  then carried × { producer_id u64, sequence u64 }
      …  producers × { id u64, last_sequence u64, batches u16,
                       batches × { first u64, last u64, pieces u32, digest } }
 
@@ -1676,6 +1686,13 @@ producer's sequence 0. A later record of the producer does not lift it, since
 a truncation could still remove that record. It goes when a purge passes a
 later batch of the producer, which is committed by then.
 
+A `carried` entry is the part of `forgotten` that committed records below
+the log's base account for: what a purge forgot, and what an installed
+snapshot carried. It is what this log's snapshot hands on (see "Idempotent
+publishes" in `docs/per-shard-raft.md`). An `evicted` entry is a cut batch
+that went past the 4096 kept whole, with `next` one past its last record. A
+purge past `next` moves it to `carried`; until then it is only this log's.
+
 A held batch's `last` is the offset of its last record, which is not
 `first + len - 1` when the batch was finished after a cut. `pieces` is the
 batch's length when its later records are pieces and 0 otherwise.
@@ -1694,10 +1711,12 @@ answer a re-send got before digests were kept. They age out as the producers
 write. Versions 1 and 2 have no cut batches. Their open batch is
 `producer_id u64, sequence u64, len u32, first u64, held u32, digest`, and
 their held batches are `first u64, len u32, digest`: every batch they
-describe is one run. Versions 1 to 3 have no `forgotten` count. All are still
-read, and the next snapshot is written as version 4. A build that predates
-version 4 ignores a version 4 snapshot and
-rebuilds the state from the log. Any other version is ignored, like a damaged
+describe is one run. Versions 1 to 3 have no `forgotten` count, and versions
+1 to 4 no `evicted` or `carried` counts. All are still read, and the next
+snapshot is written as version 5, except that a Raft log ignores one older
+than version 5 and rebuilds from the log: it cannot say which cut batches
+were evicted, so a later purge would not carry them. A build that predates
+version 5 ignores a version 5 snapshot and rebuilds the state from the log. Any other version is ignored, like a damaged
 snapshot.
 
 An open reads it and replays only the marks after `as_of`. Those are normally
@@ -1726,19 +1745,31 @@ the snapshot:
 magic  u32  0x464C5046
 crc    u32  crc32 of the rest
 count  u32  then count × { producer_id u64, sequence u64 }
+count  u32  then count × { producer_id u64, sequence u64 }   carried
+base   u64  the installed snapshot's base, u64::MAX for none
 ```
+
+The second list is the `carried` entries, and `base` is the base of the
+snapshot whose carried batches were taken in last. It is cleared only once
+the reset to it has dropped the log, so a reset redone after a crash still
+follows the install. A file that ends after the first list, as one written
+before these were kept does, carries every entry in it: it cannot say which
+were this log's own, and refusing too much is safe, since every copy that
+holds or purged the records refuses them too.
 
 It is written through a temporary and a rename, and flushed with its
 directory, before a purge unlinks a segment and before a reset drops the
 log. A purge or reset that cannot write it fails and removes nothing. Every
 open and every rebuild after a truncation merges it into the table, keeping
 the higher sequence per producer. A reset forgets every unfinished batch
-with a record below the new base. An unreadable file fails the open: the log
-cannot say what it held.
+with a record below the new base, and carries it, unless a snapshot at that
+base was installed: then the snapshot's carried batches speak for those
+records, and the log's own are dropped. An unreadable file fails the open:
+the log cannot say what it held.
 
-A member installed from a snapshot knows only the batches forgotten on its
-own log. The table of the member it copied from does not travel with the
-records.
+A member installed from a snapshot takes in the batches the snapshot
+carries. A member caught up by copying segments knows only what the records
+it was sent say.
 
 Because pieces name their batch, the same holds for a log read from any
 base: a log pruned to an offset and a copy that starts at that offset

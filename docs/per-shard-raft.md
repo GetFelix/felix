@@ -986,7 +986,9 @@ is committed, whichever is first. This count releases the publisher's
 acknowledgement and nothing else. The commit index, `read_bound`, apply,
 the offset floor and the root's log marks use fsynced positions only, so
 no member can come to hold a different record at a committed offset. On a
-stream with fsync on commit, `Quorum` waits for the commit index.
+stream with fsync on commit, `Quorum` waits for the commit index. The
+publish path answers this way (`AnswerAt::Majority`, "Acknowledging a
+write").
 
 Votes are the exception, and must be. A voter compares the candidate's
 last log id with the last entry its own log has accepted, written or not
@@ -1076,11 +1078,11 @@ What the acknowledgement promises, and what it does not
   where every broker is on `on_commit`, a leader acknowledges at its flush
   or the commit and asks for no written report, so no copy vouches, every
   broker keeps its id, and the shard reopens with every acknowledged
-  record. Brokers on `periodic` or `none` all rotate. Once written
-  acknowledgements are on, so does an `on_commit` broker that ever
-  followed a leader on a relaxed mode, since it answered that leader's
-  ask. Today the broker acknowledges at the commit only (#2469), so no
-  leader asks and no `on_commit` copy vouches. A shard whose every voter rotated
+  record. Brokers on `periodic` or `none` all rotate. A `Quorum`
+  stream on a relaxed mode is answered on a written majority, so its
+  leader asks for written reports. An `on_commit` broker that answers
+  such an ask vouches for the record before its fsync, and rotates on a
+  site-wide power loss too. A shard whose every voter rotated
   has no voter left and needs a re-form, as a 0.7 shard whose copies all
   rotated stays closed.
 - The cost is a voter seat. The rotated copy rejoins only through a
@@ -1624,7 +1626,8 @@ holds none. Two settings keep that true until retention is designed:
   sent. The member answers `NoSnapshots` and logs an error. A leader keeps
   its whole log, so a member that is behind is sent the entries.
 
-So the snapshot message between brokers carries only its metadata. A
+So the snapshot message between brokers carries its metadata and the cut
+batches its sender refuses by name ("Idempotent publishes"), never records. A
 stream shard that needs more than entries, a learner started below the
 switch's base, is caught up by copying segments from a starting offset, as a
 rebuild does.
@@ -1823,12 +1826,42 @@ A `Quorum` write is acknowledged when `await_commit` returns: the commit
 index has passed it and the entry there has the term it was written at. On
 a `Periodic` stream it is acknowledged earlier if a majority has written
 it: `await_quorum_ack` is `await_commit` raced with the written count
-("Two signals from one append"). The publish path does not call
-`await_quorum_ack` yet and answers every `Quorum` publisher at the commit
-("Delivering committed records" says why). If
+("Two signals from one append"). `RaftEngine::publish` does this for a
+`Quorum` stream that is not fsynced on commit (`AnswerAt::Majority`): the
+publisher is answered at the first of the two, and subscribers still get the
+batch at its commit. The early answer is paced like a `Leader` one ("A
+`Leader` publisher that outruns the commits is slowed down"), and answers
+can overtake each other the same way. If
 the leader is deposed first, the waiter gets leadership lost and the client
 gets an unknown outcome, as today. Nothing on this path asks the control
 plane anything, which is the property issue #1792 asks for.
+
+Where each stream is answered, and what that answer promises. The answer
+point and the loss are the same on Raft and on the hybrid:
+
+| Stream | Answered on Raft | Answered on the hybrid | Lost by |
+| --- | --- | --- | --- |
+| `Quorum`, fsync on commit | At the commit: a majority has fsynced it | A majority has fsynced it | Losing the disks of a majority |
+| `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | Lost only if a majority of copies each lose their unsynced tail, by a power cut or a failed flush, on both. One such loss does not: that copy comes back under a new copy id and cannot vote the record away (issues #2423, #2469) |
+| `Leader` | On the leader's log while the lease holds, else at the commit | On the leader's log | A change of leader before the commit |
+
+A record a majority has written in the leader's term survives a change of
+leader without a power cut. Any majority that elects a later leader holds a
+voter with the record, and that voter refuses a candidate whose last log id
+is behind its own, unsynced entries included (openraft's `handle_vote_req`,
+`engine/engine_impl.rs:448` at the pinned rev; Raft's election restriction,
+§5.4.1 of the Raft paper). Its own term matters: a majority holding an
+entry of an older term proves nothing, which is why the count reads the
+term on each report.
+
+> `crates/server/felix-replication/src/raft/tests/deliver.rs`,
+> `a_quorum_publish_is_answered_once_a_majority_has_written_it` and
+> `a_majority_answered_publish_survives_its_leader`.
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_publish_answered_on_a_written_majority_survives_a_power_cut`.
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_periodic_quorum_stream_is_answered_on_a_written_majority` and
+> `a_quorum_stream_fsynced_on_commit_is_not_answered_on_a_written_majority`.
 
 **`await_commit` as built** (`RaftEngine::await_commit`, in
 `crates/server/felix-replication/src/raft/commit.rs`). It takes the
@@ -2178,8 +2211,10 @@ commit index.
 `ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
 first, then calls `RaftEngine::confirm_read` with that term, then takes its
 value. The read is confirmed only if the shard is still open in that term,
-the round's answer is for it, and this broker has applied the read index
-before the same deadline. The value comes after that wait, because a write
+the round's answer is for it, this broker has applied the read index
+before the same deadline, and the shard is still open in that term after
+the apply. A broker deposed during the wait still applies the index as a
+follower, so the apply alone does not show it still leads. The value comes after that wait, because a write
 can be answered before the leader applies it. A value taken from the read
 bound before the wait could miss a write whose client already has its
 answer. The term open at confirm time is not
@@ -2200,7 +2235,9 @@ to answer and asks again within the same bound.
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
 > `a_read_from_before_the_shard_was_opened_again_is_not_confirmed`.
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
-> `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused`.
+> `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused` and
+> `a_read_confirmed_after_a_majority_answer_sees_the_write_or_is_refused` and
+> `a_read_is_refused_if_the_shard_closes_while_it_waits_for_the_apply`.
 
 Which answered writes a confirmed read observes depends on when the write
 was answered:
@@ -2209,7 +2246,7 @@ was answered:
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum` with `AckAt::Written`, not wired to a publish path yet) | Once the leader has counted it committed |
+| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read` |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
@@ -2369,10 +2406,10 @@ The broker never appends to that log, and four rules follow from it.
 - move the ring's start past a gap batch, so a reader resuming while the
   ring is empty reads that batch from the log instead of missing it (#2428);
 - answer a `Quorum` publisher on a stream that does not fsync on commit
-  from `await_quorum_ack`. `propose_publish` answers at the commit today,
-  and live delivery stays at the commit either way. The answer has to wait
-  for the batch's turn in `ProposalOrder`, because written-count wakeups
-  arrive in no particular order.
+  from `await_quorum_ack`, through the same early answer as a `Leader`
+  publisher's. Live delivery stays at the commit. Answers can come out of
+  order, but a follower writes its log in order, so a batch on a majority
+  has every batch before it there too.
 - The stream starts at what the engine committed, never at the log's tail.
   Entries past the commit index may be cut by a later leader, so a reader
   asking for the latest must not join above them. While the engine cannot
@@ -2456,8 +2493,8 @@ On a broker that holds a member:
 | has no leader, or leads and is still moving to the tail | answered `shard_unavailable` (`not_ready`), which a client retries |
 
 A publish served here is proposed in the order the shard's publishes
-arrive. On a `Quorum` stream it is answered at its commit, whatever the
-fsync policy. On a `Leader` stream it is answered once it is on this
+arrive. On a `Quorum` stream it is answered at its commit under `on_commit`,
+and on a written majority under `periodic` or `none`. On a `Leader` stream it is answered once it is on this
 leader's log, while the group's leader lease holds, and at its commit
 while it does not ("Acknowledging a write"). Either way its subscribers
 get it at the commit. It does not enter the hybrid's write fence and does
@@ -2469,12 +2506,13 @@ checked against the term the owner serves now, not the one the sender saw.
 
 `FELIX_ACK_ON_COMMIT` does not apply to a shard on Raft. With it set to `0`
 a hybrid `Leader` stream is acknowledged when the publish is queued; a Raft
-shard still answers only after the write, at the commit or on the leader
-lease as above, since an answer on enqueue would promise a write the term
-may not live to make.
+shard still answers only after the write, at the commit, on a written
+majority or on the leader lease as above, since an answer on enqueue would
+promise a write the term may not live to make.
 
 > `services/felix-broker-service/src/serving/quic/handlers/publish/tests/on_raft.rs`,
-> `a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off` and
+> `a_quorum_stream_on_raft_answers_at_the_commit_with_ack_on_commit_off`,
+> `a_periodic_quorum_stream_on_raft_answers_after_its_write_with_ack_on_commit_off` and
 > `a_leader_stream_on_raft_answers_after_its_write_with_ack_on_commit_off`.
 
 A publish sent with no acknowledgement asked for takes the same path. It is
@@ -2485,10 +2523,8 @@ publish whose write was not confirmed is counted in
 whose commit wait timed out, which may still commit and be delivered.
 
 A `Quorum` publisher on a stream that does not fsync on commit is answered
-at the commit too, not earlier from `await_quorum_ack`. That waits until a
-copy whose flush failed can no longer vote with its cut log (#2469), and the
-answer will have to wait for the batch's turn in `ProposalOrder`, because
-written-count wakeups arrive in no particular order.
+from `await_quorum_ack` once a majority has written the batch, or at the
+commit if that is first. See "`Quorum` on a `Periodic` stream".
 
 The term a publish was routed at goes with it into the group. A broker
 deposed and elected again between the route and the proposal leads a newer
@@ -2759,10 +2795,40 @@ the records that are still in the log into the stream a second time. The
 cut batch is remembered for as long as one of its records is in the log,
 and by name after that. A restart keeps it: while records of it are in the
 log, the log's marks rebuild it, and the by-name entry is in a flushed
-`producers.forgotten` file in the log's directory. A member that was caught up by
-copying segments derives it from the records it was sent, since a shard
-group's snapshot carries no records and no producer state, so it does not
-know a cut batch none of whose records it was sent.
+`producers.forgotten` file in the log's directory. A member that was caught
+up by copying segments derives it from the records it was sent, since a
+segment copy carries no producer state, so it does not know a cut batch none
+of whose records it was sent.
+
+A member that installs a snapshot holds no record below it, so it cannot
+read those refusals from its log. They travel in the snapshot instead. A
+stream shard's snapshot data is the list of cut batches, by producer and
+sequence, that a log starting right after the snapshot's last entry has to
+refuse. It is what the committed records up to that entry say, and nothing
+else: the cut batches in those records, plus the ones earlier purges and
+installs carried. The sender's own refusals do not go in. A batch evicted
+from a full table of cut batches goes in only once a purge passes its
+records, and the cut batches a reset dropped after an install never do,
+since the records they came from may be ones the leader never had. So every
+member's snapshot at one entry carries the same list. The member saves the
+list to its own `producers.forgotten` before it stores the snapshot, and
+the reset to the snapshot's base then drops what its old records said, so
+it answers a re-send the way a member that holds the records does. A crash
+in between leaves the old snapshot and only more refusals. Empty data
+carries none: a switch's base snapshot, or a snapshot taken with nothing
+forgotten.
+
+The sender reads its log from its base to build the list, a chunk at a
+time, so appends go on while it does. That read is as long as the log.
+
+Whole batches below the snapshot do not travel. A member that installs one
+knows a producer only from the batches it holds, as a member whose own
+purge passed every batch of that producer does, and takes its sequence 0
+as a new batch.
+
+Nothing sends a stream shard's snapshot to a member yet: a member still
+refuses it, because it carries no records (see "Group runtime"). The
+install that ships the records below it will take these refusals with it.
 
 A batch with a hole is refused if one is ever found, though a drain is one
 write that openraft checks once ("A batch is written only at the term it
@@ -2789,7 +2855,11 @@ refused.
 > `a_purge_past_an_open_batch_refuses_its_resend` and
 > `past_the_bound_a_cut_first_batch_is_still_refused`;
 > `crates/server/felix-storage/src/disk_log/tests/producers.rs`,
-> `a_purge_past_a_cut_batch_refuses_its_resend`;
+> `a_purge_past_a_cut_batch_refuses_its_resend` and
+> `a_copy_past_a_cut_batch_refuses_its_resend_with_the_carried_cuts` and
+> `a_snapshot_carries_nothing_its_sender_alone_held`;
+> `crates/server/felix-replication/src/raft/tests/idempotent.rs`,
+> `a_member_installed_past_a_cut_batch_refuses_its_resend`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `an_idempotent_batch_sent_again_after_its_leader_stopped_is_written_once`;
 > `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
