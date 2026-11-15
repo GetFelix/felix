@@ -525,6 +525,62 @@ mod engine_log {
         assert_eq!(handle.tail_seq(), 5);
     }
 
+    /// **A follower's batch names one publisher and keeps each record's
+    /// headers.** Records of two publishes stamped at one time would read
+    /// as one batch, and a subscriber would see the second publish as the
+    /// first one's.
+    #[tokio::test]
+    async fn a_follower_starts_a_batch_where_the_publisher_changes() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        let (one, two) = (Bytes::from_static(b"one"), Bytes::from_static(b"two"));
+        let headers = Bytes::from_static(b"\x00\x01k\x00\x01v");
+        let order = Arc::new(CommitSequencer::new(0));
+        for (records, publisher, headers) in [
+            (
+                &["a", "b"][..],
+                &one,
+                Some(vec![None, Some(headers.clone())]),
+            ),
+            (&["c"][..], &two, None),
+        ] {
+            let (pending, _turn) = log
+                .begin_append(
+                    &payloads(records),
+                    &vec![Some(publisher.clone()); records.len()],
+                    headers.as_deref(),
+                    1,
+                    &order,
+                )
+                .await
+                .expect("append");
+            log.commit(&pending).await.expect("commit");
+        }
+
+        *bound.0.lock() = ReadBound::Committed(3);
+        handle.deliver_from_log().await.expect("pass");
+        let mut next = async || {
+            tokio::time::timeout(Duration::from_secs(5), receiver.recv())
+                .await
+                .expect("delivered in time")
+                .expect("subscription open")
+        };
+        let first = next().await;
+        assert_eq!(first.payloads(), payloads(&["a", "b"]));
+        assert_eq!(first.publisher(), Some(&one));
+        assert_eq!(first.record_headers(), Some(&[None, Some(headers)][..]));
+        let second = next().await;
+        assert_eq!(second.base_offset(), Some(2));
+        assert_eq!(second.publisher(), Some(&two));
+        assert_eq!(second.record_headers(), None);
+    }
+
     /// **No pass runs while a batch this broker was handed is unsettled.**
     /// The batch delivers its own records when it is released. Read from
     /// the log under it, they would reach a subscriber twice.

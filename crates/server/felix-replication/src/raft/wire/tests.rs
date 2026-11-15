@@ -505,7 +505,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
     const { assert!(ENTRY_CONDITIONAL > ENTRY_PIECE) };
     // An older build takes 5 the way this one takes any tag it lacks.
     let mut unknown = BytesMut::from(&bytes[..]);
-    unknown[at] = ENTRY_TRIM + 1;
+    unknown[at] = ENTRY_ATTRIBUTED + 1;
     let refused = decode_request(unknown.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
@@ -545,7 +545,7 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
     // Tags 0 to 5 are what the build before this one reads.
     const { assert!(ENTRY_TRIM == ENTRY_CONDITIONAL + 1) };
     let mut older = BytesMut::from(&bytes[..]);
-    older[at] = ENTRY_TRIM + 1;
+    older[at] = ENTRY_ATTRIBUTED + 1;
     let refused = decode_request(older.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
@@ -562,6 +562,111 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
     for command in [trim(Some(11), None), trim(None, Some(producer))] {
         encode_request(&append(command)).expect_err("not sent");
     }
+}
+
+/// A record's publisher and headers ride a wrapper tag around the record's
+/// own frame, so every frame without them is unchanged, and a build without
+/// the wrapper refuses the entry by its tag rather than store the record
+/// without them.
+#[test]
+fn an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
+    let payload = Bytes::from_static(b"an attributed record");
+    let publisher = Bytes::from_static(b"svc-orders");
+    let headers = Bytes::from_static(b"\x00\x01k\x00\x01v");
+    let record = |producer, expected, publisher: Option<Bytes>, headers: Option<Bytes>| Command {
+        timestamp_micros: 104,
+        payload: payload.clone(),
+        producer,
+        expected,
+        trim: None,
+        publisher,
+        headers: headers.map(Box::new),
+        written: None,
+    };
+    let append = |command| {
+        request(Request::Append(AppendEntriesRequest {
+            vote: vote(2, true),
+            prev_log_id: None,
+            entries: vec![EntryOf::<ShardTypes>::new_normal(log_id(2, 12), command)],
+            leader_commit: None,
+        }))
+    };
+    let piece = ProducerMark {
+        producer_id: 9,
+        sequence: 3,
+        position: 1,
+        len: 2,
+    };
+    let attributes = [
+        (Some(publisher.clone()), None),
+        (None, Some(headers.clone())),
+        (Some(publisher.clone()), Some(headers.clone())),
+    ];
+    for (who, what) in attributes {
+        for (producer, expected) in [(None, None), (Some(piece), None), (None, Some(10))] {
+            let written = record(producer, expected, who.clone(), what.clone());
+            let bytes = encode_request(&append(written.clone())).expect("encode");
+            assert_eq!(bytes[0], 5, "the layout is unchanged");
+            let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
+                panic!("not an append");
+            };
+            let EntryPayload::Normal(command) = &read.entries[0].payload else {
+                panic!("not a record");
+            };
+            assert_eq!(*command, written);
+            assert_eq!(command.publisher, written.publisher);
+            assert_eq!(command.headers, written.headers);
+            // The same record without them keeps the frame it always had.
+            let plain =
+                encode_request(&append(record(producer, expected, None, None))).expect("encode");
+            let extra = 2
+                + who.as_ref().map_or(0, |who| 4 + who.len())
+                + what.as_ref().map_or(0, |what| 4 + what.len());
+            assert_eq!(bytes.len(), plain.len() + extra);
+            let at = plain.len()
+                - payload.len()
+                - 4
+                - 8
+                - 1
+                - match (producer, expected) {
+                    (Some(_), _) => 24,
+                    (_, Some(_)) => 8,
+                    _ => 0,
+                };
+            assert_eq!(bytes[at], ENTRY_ATTRIBUTED);
+            assert_eq!(bytes[at + extra..], plain[at..]);
+            // Tags 0 to 6 are what the build before this one reads.
+            const { assert!(ENTRY_ATTRIBUTED == ENTRY_TRIM + 1) };
+            let mut older = BytesMut::from(&bytes[..]);
+            older[at] = ENTRY_ATTRIBUTED + 1;
+            let refused = decode_request(older.freeze()).expect_err("refused");
+            assert!(
+                refused.to_string().contains("is not an entry payload"),
+                "{refused}"
+            );
+        }
+    }
+    // A wrapper with nothing in it, or around a trim or another wrapper, is
+    // never written and is refused.
+    let bytes =
+        encode_request(&append(record(None, None, Some(publisher.clone()), None))).expect("encode");
+    let at = bytes.len() - payload.len() - 4 - 8 - 1 - (4 + publisher.len()) - 2;
+    assert_eq!(bytes[at], ENTRY_ATTRIBUTED);
+    let mut empty = BytesMut::from(&bytes[..]);
+    empty[at + 1] = 0;
+    let refused = decode_request(empty.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("attributes"), "{refused}");
+    let inner = at + 2 + 4 + publisher.len();
+    assert_eq!(bytes[inner], ENTRY_RECORD);
+    for tag in [0, ENTRY_TRIM, ENTRY_ATTRIBUTED] {
+        let mut nested = BytesMut::from(&bytes[..]);
+        nested[inner] = tag;
+        let refused = decode_request(nested.freeze()).expect_err("refused");
+        assert!(refused.to_string().contains("not a record"), "{refused}");
+    }
+    let mut trim = record(None, None, Some(publisher), None);
+    trim.trim = Some(7);
+    encode_request(&append(trim)).expect_err("not sent");
 }
 
 /// A peer cannot make this broker reserve room for entries the body does
