@@ -1496,3 +1496,54 @@ async fn snapshot_apply_stall() {
         (runs * RUN) as f64 / during.as_secs_f64().max(f64::EPSILON),
     );
 }
+
+/// A cache shard on a log that counts written entries can apply an entry
+/// its log has not synced. The snapshot is synced, so the log below it must
+/// be synced first, or a power cut would leave a snapshot over a log that
+/// lost the entries it covers.
+#[tokio::test]
+async fn a_snapshot_syncs_a_written_commit_log_first() {
+    use felix_storage::log::{AppendOnlyLog, AppendRecord, LogConfig, RecordMark};
+    use openraft::entry::RaftEntry;
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+    let dir = tempdir().expect("dir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..LogConfig::default()
+    };
+    let log = DiskLog::open(&dir.path().join("log"), "t/ns/c/0", config).expect("log");
+    let record = AppendRecord {
+        payload: bytes::Bytes::from_static(b"entry"),
+        timestamp_micros: 1_700_000_000,
+        mark: RecordMark::None,
+        publisher: None,
+        headers: None,
+    };
+    log.append(&[record]).await.expect("append");
+    assert_eq!(log.durable_offset(), 0, "nothing synced yet");
+    let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
+    let opened =
+        super::super::machine::Machine::open(snapshots, ShardKind::Cache, Some(&log)).await;
+    let (mut machine, _, _, _) = opened.expect("open");
+    let command = Command {
+        timestamp_micros: 10,
+        payload: put("k", b"one", 1).encode(),
+        producer: None,
+        expected: None,
+        written: None,
+    };
+    let id = LogIdOf::<ShardTypes>::new(1.into(), 0);
+    let entry = EntryOf::<ShardTypes>::new_normal(id, command);
+    machine
+        .apply(futures::stream::iter([Ok((entry, None))]))
+        .await
+        .expect("apply");
+    let mut builder = machine.get_snapshot_builder().await;
+    builder.build_snapshot().await.expect("build");
+    assert_eq!(
+        log.durable_offset(),
+        1,
+        "the log is synced before the snapshot"
+    );
+}
