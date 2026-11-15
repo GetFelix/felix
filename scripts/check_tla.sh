@@ -648,6 +648,8 @@ expectations=(
   "FelixRaftPlacementTransferMove pass"
   "FelixRaftPlacementTransferMoveSelfRemove violates NeverLeadsRemoved"
   "FelixRaftPlacementReachTransfer violates NeverTransfers"
+  "FelixRaftPlacementPlaced pass"
+  "FelixRaftPlacementReachPlaced violates NeverTransfers"
   "FelixRaftPlacementSingleMove pass"
   "FelixRaftPlacementSingleMoveSelfRemove violates NeverLeadsRemoved"
   "FelixRaftPlacementStampDoomable pass"

@@ -40,6 +40,8 @@ pub(crate) struct Basis {
 pub(crate) struct Replication {
     pub(crate) last_index: u64,
     pub(crate) matched: BTreeMap<MemberId, u64>,
+    /// The members that answered this leader lately.
+    pub(crate) live: BTreeSet<MemberId>,
 }
 
 impl Basis {
@@ -122,6 +124,7 @@ impl Group {
             matched: matched
                 .filter_map(|(member, at)| Some((member.clone(), at.as_ref()?.index)))
                 .collect(),
+            live: self.pace.live(),
         }
     }
 

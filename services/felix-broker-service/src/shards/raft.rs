@@ -45,9 +45,6 @@ const LEAD_RETRY: Duration = Duration::from_millis(50);
 /// How long the broker that forms a group waits for each other member to
 /// say its log is empty. One that does not is asked again on the next pass.
 const ASK_WITHIN: Duration = Duration::from_secs(5);
-/// How long a broker that formed a group waits to lead it before it
-/// gives up handing the first leadership to placement's leader.
-const HAND_OVER_WITHIN: Duration = Duration::from_secs(10);
 
 /// How many engine markers a pass reads at once.
 const MARKER_READS: usize = 16;
@@ -58,6 +55,9 @@ pub(crate) const OFF_PLACEMENT: &str = "felix_broker_raft_shards_off_placement";
 
 /// Raft shards whose term this broker leads and serves.
 pub(crate) const LED: &str = "felix_broker_raft_shards_led";
+
+/// Raft shards this broker leads whose placement names another leader.
+pub(crate) const LED_OFF_PLACEMENT: &str = "felix_broker_raft_shards_led_off_placement";
 
 /// This broker's Raft members of stream shards.
 pub(crate) struct RaftShards {
@@ -471,10 +471,7 @@ impl RaftShards {
     /// the set gets here, so a set is formed by one broker or by none, and
     /// only once every other broker has named its copy and said no group
     /// reached it. The rest join when the leader's first append arrives.
-    ///
-    /// Once formed, the first leadership goes to `leader`, the broker
-    /// placement names, so leaders spread the way placement spreads them.
-    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, leader: String, incarnation: u64) {
+    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, incarnation: u64) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
@@ -491,25 +488,13 @@ impl RaftShards {
                     // Under the pass's lock, so the member formed is the one
                     // the others were asked about.
                     me.put_off.lock().remove(&key);
-                    let to = members
-                        .iter()
-                        .find(|member| *member.broker == *leader)
-                        .cloned();
                     let open = me.open.lock().await;
-                    let formed = open
+                    if open
                         .get(&key)
                         .is_some_and(|member| member.incarnation == incarnation)
-                        && match me.runtime.initialize(&key, members).await {
-                            Ok(()) => true,
-                            Err(err) => {
-                                tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
-                                false
-                            }
-                        };
-                    drop(open);
-                    if formed && let Some(to) = to {
-                        let handed = me.runtime.hand_over(&key, to, HAND_OVER_WITHIN).await;
-                        tracing::debug!(shard = ?key, %leader, handed, "handed the first leadership of a formed group");
+                        && let Err(err) = me.runtime.initialize(&key, members).await
+                    {
+                        tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
                     }
                 }
                 Err(err) => {
@@ -807,6 +792,9 @@ impl EngineShards for RaftShards {
                 if self.off_placement(key, &brokers) {
                     off_placement += 1;
                 }
+                // The group's leader hands it the leadership. Even the first
+                // one: the broker that forms a group wins its first term.
+                self.runtime.prefer(key, &assignment.leader);
                 // A set short of the stream's replica count forms nothing: a
                 // group of the brokers placed so far would be formed again,
                 // on empty logs, by the ones placed later.
@@ -816,20 +804,20 @@ impl EngineShards for RaftShards {
                     .is_some_and(|status| status.term == 0 && status.last_index.is_none());
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
-                    self.form(
-                        key.clone(),
-                        brokers,
-                        assignment.leader.clone(),
-                        assignment.incarnation,
-                    );
+                    self.form(key.clone(), brokers, assignment.incarnation);
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
-            let led = open
+            let led: Vec<&ShardKey> = open
                 .keys()
                 .filter(|key| self.leading(key).is_some())
-                .count();
-            metrics::gauge!(LED).set(led as f64);
+                .collect();
+            let led_off_placement = led.iter().filter(|key| {
+                fed.get(**key)
+                    .is_some_and(|(assignment, _)| assignment.leader != self.local)
+            });
+            metrics::gauge!(LED_OFF_PLACEMENT).set(led_off_placement.count() as f64);
+            metrics::gauge!(LED).set(led.len() as f64);
             taken
         })
     }
