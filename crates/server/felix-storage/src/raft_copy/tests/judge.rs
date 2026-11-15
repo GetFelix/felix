@@ -401,6 +401,7 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             let copies = root.open();
             let opened = open_copy(&copies, &dir).await;
             save_vote(&opened, 6).await;
+            crate::raft_log::reserved::store(&dir, 1 << 20).expect("reserve");
             let old = close(opened).await;
             // Marks for another copy, so the next open rotates.
             copies
@@ -450,6 +451,11 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
                 .collect::<Vec<_>>(),
             vec![Some(old)],
             "stop {stop}"
+        );
+        assert_eq!(
+            crate::raft_log::reserved::load(&dir).expect("reservation"),
+            Some(1 << 20),
+            "stop {stop}: the new copy lost the old one's reservation"
         );
         close(reopened).await;
         if finished {

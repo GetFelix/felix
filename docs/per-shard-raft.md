@@ -599,6 +599,12 @@ it. A kept directory with no records is covered by the saved committed index
 alone.
 Only that evidence counts: no age and no timer.
 
+A kept directory is also held while its reservation (`raft-reserved`, see
+`docs/storage-format.md`) is above the current copy's. A rotation carries the
+highest reservation into the new copy, so this holds only a directory some
+other path left uncovered, and deleting it would lose how far a re-form must
+pad.
+
 The first index comes from the running member, so a purge held only in memory
 counts. The flushed tail is read from the log's durable offset, so a copy
 that restarted and has not appended since is not stuck. A kept directory is

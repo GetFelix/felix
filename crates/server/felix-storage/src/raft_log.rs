@@ -38,6 +38,7 @@ pub(crate) mod held;
 mod hide;
 mod purged;
 mod reader;
+pub(crate) mod reserved;
 pub(crate) mod snapshot;
 pub(crate) mod state_file;
 mod tail_cache;

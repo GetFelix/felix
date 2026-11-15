@@ -4,9 +4,9 @@ use openraft::storage::RaftLogStorage;
 
 use super::*;
 use crate::DiskLog;
-use crate::raft_log::RaftLog;
 use crate::raft_log::tests::writes::append;
 use crate::raft_log::tests::{Codec, Types, log_id, normal};
+use crate::raft_log::{RaftLog, reserved};
 
 type Log = RaftLog<Types, Codec>;
 
@@ -360,5 +360,106 @@ async fn a_pass_deletes_nothing_once_the_group_has_stopped() {
         .await
         .expect("reclaim");
     assert!(report.reclaimed.is_empty(), "{report:?}");
+    assert!(kept.is_dir());
+}
+
+/// Close `opened` and rotate the shard directory by marks that name another
+/// copy, returning the new copy.
+async fn rotate_again(root: &Root, opened: OpenedCopy) -> OpenedCopy {
+    opened.log.close().await.expect("close");
+    let copies = root.open();
+    copies
+        .mark_log()
+        .fresh(Arc::from(SHARD), 0xbeef)
+        .await
+        .expect("marks");
+    let new = copies
+        .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", config())
+        .await
+        .expect("rotate");
+    assert!(new.rotation.is_some());
+    new
+}
+
+/// The new copy starts at the highest reservation it replaced, its own
+/// directory's or a kept one's, so a re-form that reads only the current
+/// copy still pads far enough.
+#[tokio::test]
+async fn a_rotation_carries_the_highest_reservation_into_the_new_copy() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let copies = root.open();
+    let first = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    fill(&first.log, 1, 0, 2).await;
+    reserved::store(&dir, 5000).expect("reserve");
+    drop(copies);
+
+    let second = rotate_again(&root, first).await;
+    assert_eq!(reserved::load(&dir).expect("load"), Some(5000));
+    fill(&second.log, 2, 0, 2).await;
+    // Below the kept one's, which only a lost raise could leave.
+    reserved::store(&dir, 3000).expect("reserve");
+
+    let third = rotate_again(&root, second).await;
+    assert_eq!(reserved::load(&dir).expect("load"), Some(5000));
+    assert_eq!(highest_reserved(&dir).expect("highest"), Some(5000));
+    assert_eq!(kept_copies(&dir).expect("kept").len(), 2);
+    third.log.close().await.expect("close");
+}
+
+/// A copy that never reserved writes no reservation file.
+#[tokio::test]
+async fn a_rotation_with_no_reservation_writes_none() {
+    let root = Root::new();
+    let (_copies, _old, new) = rotated(&root, 2).await;
+    assert!(!root.shard_dir().join(reserved::FILE_NAME).exists());
+    assert_eq!(highest_reserved(&root.shard_dir()).expect("highest"), None);
+    new.log.close().await.expect("close");
+}
+
+#[tokio::test]
+async fn a_kept_copy_reserved_past_the_current_copy_is_held() {
+    let root = Root::new();
+    let (_copies, old, new) = rotated(&root, 2).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    reserved::store(&kept, 100).expect("reserve");
+    fill(&new.log, 1, 0, 2).await;
+    commit(&new.log, 2, 2).await;
+    let copy = current(&new.log, 0);
+
+    let report = pass(&root, &copy).await;
+    assert_eq!(
+        report.held,
+        vec![HeldCopy {
+            path: kept.clone(),
+            copy: Some(old),
+            last_index: None,
+            reason: HeldReason::Reserved,
+        }]
+    );
+
+    reserved::store(&root.shard_dir(), 100).expect("reserve");
+    let report = pass(&root, &copy).await;
+    assert_eq!(report.reclaimed, vec![kept]);
+}
+
+/// A reservation that does not decode cannot be rebuilt, so it is never
+/// read as none.
+#[tokio::test]
+async fn a_damaged_reservation_is_an_error_and_holds_its_copy() {
+    let root = Root::new();
+    let (_copies, old, new) = rotated(&root, 2).await;
+    let kept = kept_dir(&root).join(format!("0.{old:016x}"));
+    std::fs::write(kept.join(reserved::FILE_NAME), b"not a reservation").expect("damage");
+    assert!(highest_reserved(&root.shard_dir()).is_err());
+    fill(&new.log, 1, 0, 2).await;
+    commit(&new.log, 2, 2).await;
+
+    let report = pass(&root, &current(&new.log, 0)).await;
+    assert_eq!(report.held.len(), 1, "{report:?}");
+    assert_eq!(report.held[0].reason, HeldReason::Unreadable);
     assert!(kept.is_dir());
 }
