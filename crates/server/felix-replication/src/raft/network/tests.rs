@@ -106,7 +106,7 @@ impl Follower {
             .entries
             .last()
             .map(|entry| entry.log_id())
-            .or_else(|| rpc.prev_log_id.clone());
+            .or(rpc.prev_log_id);
         self.answer(nth, Ok(Ok(last)));
     }
 }

@@ -527,7 +527,7 @@ where
             .entries
             .last()
             .map(|entry| entry.log_id())
-            .or_else(|| rpc.prev_log_id.clone());
+            .or(rpc.prev_log_id);
         let cut = fit(&mut rpc);
         let answer = send(rpc);
         (async move { (last, answer.await) }, cut)
