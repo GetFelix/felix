@@ -3395,10 +3395,12 @@ Membership changes are not built yet
   lead every group it formed and take every write while the others only
   follow. Once it leads, it closes the shard for that term and asks for
   the transfer when that broker holds its whole log, because openraft
-  hands over only to a member whose log matches. A transfer that does not go through ends the term after an
-  election timeout like any other, and whoever wins leads. It gives up
+  hands over only to a member whose log matches. A transfer that does not
+  go through ends the term after an election timeout like any other, and
+  whoever wins leads. It gives up
   after 10 s. Only the first term is placed this way: a later election, a
-  restart or a failover leaves leadership where the vote puts it.
+  restart or a failover leaves leadership where the vote puts it, and
+  leaders do not move back to placement's leader afterwards (issue #2649).
 - A formed group keeps its members. A member that placement drops stays
   open and keeps voting, and it opens again after a restart: the broker
   reads the `engine` marker of each shard placed elsewhere, and opens the
