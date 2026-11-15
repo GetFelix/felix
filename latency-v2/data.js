@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794726451698,
+  "lastUpdate": 1794728672002,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -73722,6 +73722,72 @@ window.BENCHMARK_DATA = {
             "range": "255.43",
             "unit": "us",
             "extra": "trials: 5\nmedian: 387.00\nmean: 474.20\nstdev: 255.43\ncv: 53.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6bd4f567d5edd5f0d6119c5f1b0795e712ada7e0",
+          "message": "perf(raft): wake a written-count wait only from a report that can complete it (#2581) (#2594)\n\n* perf(raft): wake a written-count wait only from a report that can complete it (#2581)\n\nA Quorum write on a periodic-fsync stream waits for a majority of voters\nto report having written it. Each wait looped on the reports watch, so\nevery follower report woke every waiting write to look and sleep again.\n\nThe wait now sleeps in a felix_storage::waiters queue by rank: a write\nthat needs n followers sleeps on the queue keyed by the nth furthest\nposition heard, since its majority cannot exist before that position\nreaches it. Every report advances every rank, so a wait whose position was\nreached but not by voters of its term (a learner ahead, another term) is\nstill woken by the next report. Each wake reads the reports and the voters\nagain and applies the same rules as before.\n\n300 writes waiting at five voters, one follower ahead and one stepping\nthrough: 16,470 looks before, 300 after.\n\nSpec-Unaffected: a wake-up mechanism change; the written-count rules and what is counted are unchanged.\n\n* fix(raft): review fixes for the ranked written-count wait\n\nSpec-Unaffected: doc order, docs wording and test setup only.\n\n* test(raft): written-count waits across membership changes (#2581)\n\n* docs(raft): cite the renamed lost-term test (#2581)",
+          "timestamp": "2026-11-15T07:35:24Z",
+          "tree_id": "235e94cbd406127188cb1d9e9a4a96f23b0bf770",
+          "url": "https://github.com/GetFelix/felix/commit/6bd4f567d5edd5f0d6119c5f1b0795e712ada7e0"
+        },
+        "date": 1794728660140,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 110,
+            "range": "3.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 110.00\nmean: 108.60\nstdev: 3.97\ncv: 3.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 161,
+            "range": "5.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 161.00\nmean: 160.40\nstdev: 5.68\ncv: 3.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 309,
+            "range": "146.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 318.00\nstdev: 146.96\ncv: 46.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 120,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 119.40\nstdev: 0.89\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 250,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 250.00\nmean: 250.60\nstdev: 2.51\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 349,
+            "range": "32.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 349.00\nmean: 363.20\nstdev: 32.07\ncv: 8.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
