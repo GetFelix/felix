@@ -13,7 +13,14 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
     crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
-    crate::store::contract::root_sequences::run_root_sequence_contract(store.clone()).await;
+    crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
+}
+
+/// On a store of its own: the fleet contract leaves a feature enabled that
+/// its brokers would have to carry.
+#[tokio::test]
+async fn satisfies_the_placement_ack_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::placement_acks::run_placement_ack_contract(store).await;
 }
 

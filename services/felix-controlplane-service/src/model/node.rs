@@ -292,7 +292,7 @@ impl RootSequence {
 /// After a restore raises the control plane's placement incarnation, no
 /// Raft target or copy delete goes out until every broker holds one at the
 /// new incarnation ([`crate::store::ControlPlaneStore::placement_acked_by`]).
-/// See `docs/per-shard-raft.md`, "Membership".
+/// See `docs/per-shard-raft.md`, "The restore incarnation".
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, Copy, PartialEq, Eq)]
 pub struct PlacementAck {
     pub incarnation: u64,
@@ -306,8 +306,8 @@ impl PlacementAck {
     /// less, as one whose data root was wiped does, and must not be counted
     /// at its predecessor's acknowledgement. Not "a later one": a restore
     /// rewinds node incarnations, so the next process can carry a lower one.
-    /// Only the node's current process is heard (`report_health`), so a late
-    /// beat of an earlier process never gets here.
+    /// A store keeps `heard` only from the process its node record holds, so
+    /// a late beat of an earlier process is refused before this is asked.
     pub fn moved_by(held: Option<&PlacementAck>, heard: &PlacementAck) -> bool {
         held.is_none_or(|held| {
             held.node_incarnation != heard.node_incarnation || held.incarnation < heard.incarnation

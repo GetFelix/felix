@@ -705,11 +705,20 @@ impl MetadataStateMachine {
                     // to the same value. An acknowledgement above it, from
                     // brokers that saw a control plane this one did not keep,
                     // raises it again when heard (`record_placement_ack`).
+                    // Refused before anything changes: at the limit there is
+                    // no incarnation left that no target or delete has used.
                     state.placement_incarnation =
                         felix_storage::raft_copy::restored_placement_incarnation(
                             store.placement_incarnation().await?,
                             state.placement_incarnation,
-                        );
+                        )
+                        .ok_or_else(|| {
+                            crate::store::raft::command::MetaError::Conflict(
+                                "the placement incarnation is at its limit; this backup cannot \
+                                 be restored over this group"
+                                    .to_string(),
+                            )
+                        })?;
                 }
                 store.import_state(state).await?;
                 if let Some(identity) = kept {

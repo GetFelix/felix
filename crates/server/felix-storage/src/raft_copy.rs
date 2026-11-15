@@ -37,8 +37,9 @@ pub use judge::{
 };
 pub use marks::{CopyMarks, MarkLog};
 pub use placement_ack::{
-    ack_placement_incarnation, acked_placement_incarnation, all_acked_placement_incarnation,
-    copy_delete_is_void, restored_placement_incarnation,
+    MAX_PLACEMENT_ACK_AHEAD, ack_placement_incarnation, acked_placement_incarnation,
+    all_acked_placement_incarnation, copy_delete_is_void, placement_ack_in_bound,
+    restored_placement_incarnation,
 };
 pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
 

@@ -6,8 +6,9 @@ use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::raft_copy::{
-    ack_placement_incarnation, acked_placement_incarnation, all_acked_placement_incarnation,
-    copy_delete_is_void, restored_placement_incarnation,
+    MAX_PLACEMENT_ACK_AHEAD, ack_placement_incarnation, acked_placement_incarnation,
+    all_acked_placement_incarnation, copy_delete_is_void, placement_ack_in_bound,
+    restored_placement_incarnation,
 };
 
 #[test]
@@ -38,10 +39,29 @@ fn a_damaged_placement_incarnation_file_is_an_error() {
 // incarnation lets a reissued version pass while an old delete is pending.
 #[test]
 fn a_restore_raises_the_incarnation_above_both_sides() {
-    assert_eq!(restored_placement_incarnation(0, 0), 1);
-    assert_eq!(restored_placement_incarnation(3, 1), 4);
+    assert_eq!(restored_placement_incarnation(0, 0), Some(1));
+    assert_eq!(restored_placement_incarnation(3, 1), Some(4));
     // An older control plane restoring a newer backup still moves past it.
-    assert_eq!(restored_placement_incarnation(1, 5), 6);
+    assert_eq!(restored_placement_incarnation(1, 5), Some(6));
+}
+
+// Saturating at the top would hand every later restore the same incarnation.
+#[test]
+fn a_restore_at_the_top_has_no_incarnation_to_raise_to() {
+    assert_eq!(
+        restored_placement_incarnation(u64::MAX - 1, 0),
+        Some(u64::MAX)
+    );
+    assert_eq!(restored_placement_incarnation(u64::MAX, 0), None);
+    assert_eq!(restored_placement_incarnation(0, u64::MAX), None);
+}
+
+#[test]
+fn an_acknowledgement_far_above_the_incarnation_is_out_of_bound() {
+    assert!(placement_ack_in_bound(5, 0));
+    assert!(placement_ack_in_bound(5, 5 + MAX_PLACEMENT_ACK_AHEAD));
+    assert!(!placement_ack_in_bound(5, 6 + MAX_PLACEMENT_ACK_AHEAD));
+    assert!(!placement_ack_in_bound(0, u64::MAX));
 }
 
 // FelixRaftPlacementStaleWipeRewindNoAck: a target or doom sent before every

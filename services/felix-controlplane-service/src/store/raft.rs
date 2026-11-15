@@ -1458,15 +1458,25 @@ impl ControlPlaneStore for RaftStore {
         self.local()?.placement_incarnation().await
     }
 
-    /// As `record_root_sequence`: proposed only when it moves what the local
-    /// copy holds, and kept from level 35 on.
+    /// As `record_root_sequence`: proposed only when the local copy would
+    /// keep it, and kept from level 35 on. The apply decides again against
+    /// the record it lands on.
     async fn record_placement_ack(
         &self,
         node_id: &str,
         heard: crate::model::PlacementAck,
     ) -> StoreResult<bool> {
-        let held = self
-            .local()?
+        let local = self.local()?;
+        let current_process = match local.get_node(node_id).await {
+            Ok(node) => Some(node.status.incarnation),
+            Err(StoreError::NotFound(_)) => None,
+            Err(err) => return Err(err),
+        };
+        let current = local.placement_incarnation().await?;
+        if !crate::store::memory::placement_ack_heard(node_id, current_process, current, &heard) {
+            return Ok(false);
+        }
+        let held = local
             .placement_acks()
             .await?
             .into_iter()

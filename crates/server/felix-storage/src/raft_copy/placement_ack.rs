@@ -82,8 +82,23 @@ pub fn ack_placement_incarnation(root: &Path, incarnation: u64) -> io::Result<u6
 /// The incarnation a placement restore writes: above the one being replaced
 /// and the one the backup holds. Reusing either would let a target issued
 /// after the backup, or a delete told then, pass the version rule again.
-pub fn restored_placement_incarnation(current: u64, restored: u64) -> u64 {
-    current.max(restored).saturating_add(1)
+/// `None` at `u64::MAX`: saturating there would reuse it on every restore.
+pub fn restored_placement_incarnation(current: u64, restored: u64) -> Option<u64> {
+    current.max(restored).checked_add(1)
+}
+
+/// How far above the control plane's incarnation a broker's acknowledgement
+/// may be and still be heard. One above it comes only from a control plane
+/// this one was not restored from, and each restore there raised it by one,
+/// so the gap counts restores the backup missed. Far more than any operator
+/// runs, and small enough that a broker cannot walk the incarnation to
+/// `u64::MAX`.
+pub const MAX_PLACEMENT_ACK_AHEAD: u64 = 1 << 20;
+
+/// Whether an acknowledgement of `acked` may be heard by a control plane at
+/// `current` ([`MAX_PLACEMENT_ACK_AHEAD`]).
+pub fn placement_ack_in_bound(current: u64, acked: u64) -> bool {
+    acked.saturating_sub(current) <= MAX_PLACEMENT_ACK_AHEAD
 }
 
 /// Whether the control plane may send a target or a copy delete at

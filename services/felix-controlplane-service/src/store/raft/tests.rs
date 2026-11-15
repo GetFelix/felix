@@ -69,7 +69,15 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
     crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
-    crate::store::contract::root_sequences::run_root_sequence_contract(store.clone()).await;
+    crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
+}
+
+/// On a store of its own: the fleet contract leaves a feature enabled that
+/// its brokers would have to carry.
+#[tokio::test]
+async fn satisfies_the_placement_ack_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
     crate::store::contract::placement_acks::run_placement_ack_contract(store).await;
 }
 
@@ -4485,9 +4493,13 @@ async fn a_root_sequence_is_kept_only_at_level_33() {
 async fn placement_acks_and_their_gate_wait_for_level_35() {
     let dir = tempfile::tempdir().expect("tempdir");
     let (store, version) = store_with_member_at(dir.path(), PLACEMENT_INCARNATION_LEVEL - 1).await;
+    let registered = store
+        .register_node(crate::store::contract::nodes::node("broker-a", 7001))
+        .await
+        .expect("register");
     let heard = crate::model::PlacementAck {
         incarnation: 0,
-        node_incarnation: 1,
+        node_incarnation: registered.status.incarnation,
     };
     let brokers = ["broker-a".to_string()];
     assert!(

@@ -311,11 +311,19 @@ async fn an_import_raises_the_placement_incarnation_past_both_sides() {
 }
 
 /// FelixRaftPlacement's AllAcked: after a restore nothing goes out until
-/// every broker named has acknowledged the new incarnation, through the
-/// applied command.
+/// every broker named has acknowledged the new incarnation from its current
+/// process, through the applied command.
 #[tokio::test]
 async fn after_a_restore_the_gate_waits_for_every_broker() {
     let machine = machine();
+    for (id, port) in [("broker-a", 7_001), ("broker-b", 7_002)] {
+        machine
+            .dispatch(MetaCommand::RegisterNode {
+                node: node(id, port),
+            })
+            .await
+            .expect("register");
+    }
     let backup = crate::store::export::export_state_from(
         machine.store().as_ref() as &(dyn crate::store::ControlPlaneAuthStore + Send + Sync)
     )
@@ -336,7 +344,7 @@ async fn after_a_restore_the_gate_waits_for_every_broker() {
             .await
             .expect("gate")
     };
-    machine.dispatch(ack("broker-a", 0, 1)).await.expect("ack");
+    machine.dispatch(ack("broker-a", 0, 0)).await.expect("ack");
     assert!(open().await, "before a restore 0 is current");
 
     machine
@@ -349,13 +357,56 @@ async fn after_a_restore_the_gate_waits_for_every_broker() {
         .await
         .expect("import");
     assert!(!open().await);
-    machine.dispatch(ack("broker-a", 1, 1)).await.expect("ack");
+    machine.dispatch(ack("broker-a", 1, 0)).await.expect("ack");
     assert!(!open().await, "broker-b has not acknowledged");
+    machine.dispatch(ack("broker-b", 1, 0)).await.expect("ack");
+    assert!(open().await);
+
+    // broker-b restarts with its root wiped: its predecessor's
+    // acknowledgement does not stand for the new process.
+    machine
+        .dispatch(MetaCommand::RegisterNode {
+            node: node("broker-b", 7_002),
+        })
+        .await
+        .expect("register again");
+    assert!(!open().await, "held by the process before the registration");
     machine.dispatch(ack("broker-b", 1, 1)).await.expect("ack");
     assert!(open().await);
-    // broker-b restarts with its root wiped.
-    machine.dispatch(ack("broker-b", 0, 2)).await.expect("ack");
-    assert!(!open().await);
+
+    // A beat of the earlier process lands late. Proposed while it was
+    // current, it must not replace the later process's acknowledgement.
+    machine.dispatch(ack("broker-b", 0, 0)).await.expect("ack");
+    assert!(open().await, "a late beat of an earlier process was kept");
+}
+
+/// Saturating at the top would give every later restore the same
+/// incarnation, so an import there is refused and changes nothing.
+#[tokio::test]
+async fn an_import_at_the_incarnation_limit_is_refused() {
+    let machine = machine();
+    let mut backup = crate::store::export::export_state_from(
+        machine.store().as_ref() as &(dyn crate::store::ControlPlaneAuthStore + Send + Sync)
+    )
+    .await
+    .expect("export");
+    backup.placement_incarnation = u64::MAX;
+    let result = machine
+        .dispatch(MetaCommand::ImportState {
+            state: Box::new(backup),
+            overwrite: true,
+            mark_unplaced: true,
+            raise_incarnation: true,
+        })
+        .await;
+    assert!(
+        matches!(&result, Err(MetaError::Conflict(message)) if message.contains("at its limit")),
+        "{result:?}"
+    );
+    assert_eq!(
+        machine.store().placement_incarnation().await.expect("read"),
+        0
+    );
 }
 
 /// The round trip every command takes: encode → decode is identity, so the

@@ -571,7 +571,7 @@ pub trait ControlPlaneStore: Send + Sync {
 
     /// The placement incarnation: 0 until a restore, and raised by every
     /// restore above both the incarnation it replaces and the backup's. See
-    /// `docs/per-shard-raft.md`, "Membership".
+    /// `docs/per-shard-raft.md`, "The restore incarnation".
     async fn placement_incarnation(&self) -> StoreResult<u64> {
         Ok(0)
     }
@@ -593,17 +593,27 @@ pub trait ControlPlaneStore: Send + Sync {
     /// placement incarnation. A Raft target write, its delivery and a copy
     /// delete go out only while this holds: a broker still on an older
     /// incarnation could take a target or delete issued before the restore
-    /// as current. A broker with no acknowledgement held counts as 0, which
-    /// is only enough before the first restore. An acknowledgement above the
-    /// incarnation does not count; recording one raises the incarnation past
-    /// it. The answer is this store's own copy: callers act on it only where
-    /// that copy is current, as on the Raft leader after a confirmed read.
+    /// as current. Only an acknowledgement from the process the node record
+    /// holds counts, so a broker that registered again (its root perhaps
+    /// wiped) is not counted at its predecessor's. A broker with none counts
+    /// as 0, which is only enough before the first restore. An
+    /// acknowledgement above the incarnation does not count; recording one
+    /// raises the incarnation past it. The answer is this store's own copy:
+    /// callers act on it only where that copy is current, as on the Raft
+    /// leader after a confirmed read.
     async fn placement_acked_by(&self, brokers: &[String]) -> StoreResult<bool> {
         let incarnation = self.placement_incarnation().await?;
+        let processes: std::collections::BTreeMap<String, u64> = self
+            .list_nodes()
+            .await?
+            .into_iter()
+            .map(|node| (node.node_id, node.status.incarnation))
+            .collect();
         let acked = self
             .placement_acks()
             .await?
             .into_iter()
+            .filter(|(node, ack)| processes.get(node) == Some(&ack.node_incarnation))
             .map(|(node, ack)| (node, ack.incarnation))
             .collect();
         Ok(felix_storage::raft_copy::all_acked_placement_incarnation(
