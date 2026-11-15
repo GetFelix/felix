@@ -1403,7 +1403,8 @@ pub(crate) fn replicated() -> ShardAssignment {
 }
 
 /// Three brokers holding a member each, and the one whose term is served.
-/// `orders` is a `Quorum` stream: a publish is answered at its commit.
+/// `orders` is a `Quorum` stream on `FsyncMode::None`: a publish is
+/// answered on a written majority.
 pub(crate) async fn trio() -> (Arc<Loopback>, Vec<Member>, usize) {
     trio_at(ConsistencyLevel::Quorum).await
 }
@@ -1854,10 +1855,11 @@ async fn a_leader_stream_is_answered_on_its_leaders_log() {
 }
 
 /// **A publish to a `Quorum` stream is not answered while no follower
-/// holds it, lease or no lease.** Answered on the leader's log, a `Quorum`
-/// acknowledgement could be lost with one broker.
+/// has it, lease or no lease.** With every follower cut there is no
+/// majority, and an answer on the leader's log alone could be lost with
+/// one broker.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_quorum_stream_is_answered_only_at_its_commit() {
+async fn a_quorum_stream_is_not_answered_without_a_majority() {
     let (net, members, leader) = trio().await;
     let term = members[leader].shards.leading(&key("orders", 0));
     let term = term.expect("term");

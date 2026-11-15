@@ -1052,11 +1052,11 @@ What the acknowledgement promises, and what it does not
   where every broker is on `on_commit`, a leader acknowledges at its flush
   or the commit and asks for no written report, so no copy vouches, every
   broker keeps its id, and the shard reopens with every acknowledged
-  record. Brokers on `periodic` or `none` all rotate. Once written
-  acknowledgements are on, so does an `on_commit` broker that ever
-  followed a leader on a relaxed mode, since it answered that leader's
-  ask. Today the broker acknowledges at the commit only (#2469), so no
-  leader asks and no `on_commit` copy vouches. A shard whose every voter rotated
+  record. Brokers on `periodic` or `none` all rotate. A `Quorum`
+  stream on a relaxed mode is answered on a written majority, so its
+  leader asks for written reports. An `on_commit` broker that answers
+  such an ask vouches for the record before its fsync, and rotates on a
+  site-wide power loss too. A shard whose every voter rotated
   has no voter left and needs a re-form, as a 0.7 shard whose copies all
   rotated stays closed.
 - The cost is a voter seat. The rotated copy rejoins only through a
@@ -2472,8 +2472,8 @@ On a broker that holds a member:
 | has no leader, or leads and is still moving to the tail | answered `shard_unavailable` (`not_ready`), which a client retries |
 
 A publish served here is proposed in the order the shard's publishes
-arrive. On a `Quorum` stream it is answered at its commit, whatever the
-fsync policy. On a `Leader` stream it is answered once it is on this
+arrive. On a `Quorum` stream it is answered at its commit under `on_commit`,
+and on a written majority under `periodic` or `none`. On a `Leader` stream it is answered once it is on this
 leader's log, while the group's leader lease holds, and at its commit
 while it does not ("Acknowledging a write"). Either way its subscribers
 get it at the commit. It does not enter the hybrid's write fence and does
