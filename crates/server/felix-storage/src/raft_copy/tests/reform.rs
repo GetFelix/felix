@@ -83,6 +83,29 @@ async fn a_kept_commit_cut_onto_a_later_terms_entry_vouches_for_nothing() {
     assert_eq!(kept.committed, None);
 }
 
+/// A saved commit inside the log whose entry is another term's names some
+/// other log's entry. An open does not take it, so neither does the read.
+#[tokio::test]
+async fn a_kept_commit_on_another_terms_entry_inside_the_log_vouches_for_nothing() {
+    let ahead = tempfile::tempdir().expect("dir");
+    let mut raft = open(&ahead);
+    let mut entries: Vec<_> = (0..5).map(|index| normal(1, index, "x")).collect();
+    entries.push(normal(2, 5, "other"));
+    append_flushed(&mut raft, &entries).await;
+    raft.save_committed(Some(log_id(2, 5))).await.expect("save");
+    raft.disk_log().close().await.expect("close");
+
+    let dir = tempfile::tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let ours: Vec<_> = (0..6).map(|index| normal(1, index, "x")).collect();
+    append_flushed(&mut raft, &ours).await;
+    raft.disk_log().close().await.expect("close");
+    std::fs::copy(ahead.path().join("replica"), dir.path().join("replica")).expect("copy");
+
+    let kept = read_kept(dir.path(), SPACING).expect("read");
+    assert_eq!((kept.last, kept.committed), (Some(5), None));
+}
+
 /// A saved commit the log holds stands as saved.
 #[tokio::test]
 async fn a_kept_commit_inside_the_log_stands() {

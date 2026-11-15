@@ -10,8 +10,11 @@ use std::path::Path;
 use super::purged;
 use crate::disk_log::durable_mark;
 use crate::log::Offset;
+use crate::segment::SegmentReader;
 use crate::segment::parse_segment_file_name;
-use crate::segment::scan::{ScanStart, TailRepair, scan_segment_with};
+use crate::segment::scan::{
+    ScanOutcome, ScanStart, TailRepair, record_generation_at, scan_segment_with,
+};
 
 /// The records a directory holds, whether or not Raft still reads them as
 /// entries: a purge drops whole segments, so the segment that holds the purged
@@ -36,31 +39,11 @@ pub(crate) struct Held {
 /// id that does not decode, is an error. Nothing is written.
 pub(crate) fn read(dir: &Path, label: &str, index_spacing_bytes: u64) -> io::Result<Held> {
     let purged = purged::load(dir)?;
-    let mark = durable_mark::load(dir);
-    let mut segments = Vec::new();
-    for entry in crate::fs::read_dir(dir)? {
-        let entry = entry?;
-        if let Some(id) = entry.file_name().to_str().and_then(parse_segment_file_name) {
-            segments.push((id, entry.path()));
-        }
-    }
-    segments.sort();
-    let scan = |id: u64, path: &Path| {
-        scan_segment_with(
-            path,
-            id,
-            label,
-            index_spacing_bytes,
-            ScanStart::Full,
-            TailRepair {
-                checksum_tail: false,
-                unsynced_from: durable_mark::DurableMark::unsynced_from(mark, id),
-            },
-        )
-        .map_err(io::Error::other)
-    };
+    let listed = Segments::list(dir, label, index_spacing_bytes)?;
+    let scan = |id: u64, path: &Path| listed.scan(id, path);
+    let segments = &listed.files;
     let mut lowest = None;
-    for (id, path) in &segments {
+    for (id, path) in segments {
         let scanned = scan(*id, path)?;
         if scanned.last_offset().is_some() {
             lowest = Some(scanned.header.base_offset);
@@ -81,4 +64,79 @@ pub(crate) fn read(dir: &Path, label: &str, index_spacing_bytes: u64) -> io::Res
         last: last.map(|(offset, _)| offset).max(purged),
         last_record: last,
     })
+}
+
+/// The generation stamped on the record at `index` in `dir`, read the way
+/// [`read`] reads: `None` when no segment holds that record up to its
+/// durable mark, `Some(None)` when it is unstamped. Nothing is written.
+pub(crate) fn generation_at(
+    dir: &Path,
+    label: &str,
+    index_spacing_bytes: u64,
+    index: Offset,
+) -> io::Result<Option<Option<u64>>> {
+    let segments = Segments::list(dir, label, index_spacing_bytes)?;
+    for (id, path) in segments.files.iter().rev() {
+        let scanned = segments.scan(*id, path)?;
+        if scanned.header.base_offset > index {
+            continue;
+        }
+        if !scanned.last_offset().is_some_and(|last| last >= index) {
+            return Ok(None);
+        }
+        let reader =
+            SegmentReader::open(path, *id, scanned.header.base_offset).map_err(io::Error::other)?;
+        let position = reader
+            .position_of(&scanned.index, index, scanned.valid_bytes, label)
+            .map_err(io::Error::other)?;
+        return record_generation_at(path, *id, label, scanned.header.version, position)
+            .map(Some)
+            .map_err(io::Error::other);
+    }
+    Ok(None)
+}
+
+/// A directory's segment files, sorted, with what scanning one needs.
+struct Segments<'a> {
+    files: Vec<(u64, std::path::PathBuf)>,
+    mark: Option<durable_mark::DurableMark>,
+    label: &'a str,
+    index_spacing_bytes: u64,
+}
+
+impl<'a> Segments<'a> {
+    fn list(dir: &Path, label: &'a str, index_spacing_bytes: u64) -> io::Result<Self> {
+        let mark = durable_mark::load(dir);
+        let mut files = Vec::new();
+        for entry in crate::fs::read_dir(dir)? {
+            let entry = entry?;
+            if let Some(id) = entry.file_name().to_str().and_then(parse_segment_file_name) {
+                files.push((id, entry.path()));
+            }
+        }
+        files.sort();
+        Ok(Self {
+            files,
+            mark,
+            label,
+            index_spacing_bytes,
+        })
+    }
+
+    /// Scanned up to the durable mark as an open would, so an unsynced tail
+    /// reads as the torn tail it is.
+    fn scan(&self, id: u64, path: &Path) -> io::Result<ScanOutcome> {
+        scan_segment_with(
+            path,
+            id,
+            self.label,
+            self.index_spacing_bytes,
+            ScanStart::Full,
+            TailRepair {
+                checksum_tail: false,
+                unsynced_from: durable_mark::DurableMark::unsynced_from(self.mark, id),
+            },
+        )
+        .map_err(io::Error::other)
+    }
 }

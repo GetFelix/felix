@@ -1117,7 +1117,8 @@ What the acknowledgement promises, and what it does not
   such an ask vouches for the record before its fsync, and rotates on a
   site-wide power loss too. A shard whose every voter rotated
   has no voter left and needs a re-form, as a 0.7 shard whose copies all
-  rotated stays closed.
+  rotated stays closed. Today such a shard is formed again from empty
+  logs instead (#2620).
 - The cost is a voter seat. The rotated copy rejoins only through a
   membership change, which per-shard Raft does not make yet, so until then
   a group that lost a seat this way has one fewer broker to lose, as a 0.7
@@ -4702,9 +4703,10 @@ not move.
 Not built: the re-form command and the RF 1 restore themselves (item 8
 under "Every start that must rotate first"), and with them the offset
 floor ("Re-forming a group"). The feature waits for them, since they are
-what would call the reads above. Until then nothing starts a new epoch on
-a Raft group, so a group that lost a majority stays closed and no offset
-is given out again. Also not built: the written-report rules
+what would call the reads above. It also waits for a fix to the first
+form: a shard whose every copy rotated has blank members, and the broker
+forms it again from empty logs at index 0, which gives acknowledged
+offsets out again (#2620). Also not built: the written-report rules
 (a relaxed leader still asks every follower, which is safe and only
 redundant, #2612); the perf measurement.
 
