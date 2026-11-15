@@ -1391,6 +1391,17 @@ received. Under Raft they need metadata levels 12 and 13 and are
 dropped by the proposer below them. See
 [replication-design.md](replication-design.md#who-may-be-promoted).
 
+**A deleted node leaves no stamp behind.** A node deleted and registered
+again starts at incarnation 0, the same number its old process may have been
+stamped at. So deleting a node also removes it from `node_incarnations` in
+every held report, and the API stamps only the nodes the shard's assignment
+names, none of which can be deleted while that assignment stands. A report
+taken before the delete then never counts the new registration through the
+incarnation check. The rest of the report stays, because it still speaks for
+the shard's other members. Under Raft the delete clears stamps only once every
+member is at metadata level 37; below it a report from before a delete can
+still count a re-registered node that has no storage identity (#2619).
+
 A leader also reports, for each follower it has not reached yet at its
 generation, the identity it inherited for it: the one the failover that
 promoted it named, or after a set change that kept it as leader, the one it

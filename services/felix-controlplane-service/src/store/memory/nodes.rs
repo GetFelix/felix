@@ -135,7 +135,13 @@ pub(super) async fn patch_node(
     Ok(patched)
 }
 
-pub(super) async fn delete_node(store: &InMemoryStore, node_id: &str) -> StoreResult<()> {
+/// `forget_reports` also drops the node's incarnation from every held
+/// replica report. Under Raft it is set only once every member does the same.
+pub(super) async fn delete_node(
+    store: &InMemoryStore,
+    node_id: &str,
+    forget_reports: bool,
+) -> StoreResult<()> {
     // Nodes before shards, the order an assignment write takes them in, and
     // held across the check: released in between, a write could validate
     // this node and land an assignment to it after the count.
@@ -170,6 +176,14 @@ pub(super) async fn delete_node(store: &InMemoryStore, node_id: &str) -> StoreRe
     // acknowledgement would match the new process and count a wiped broker
     // at its predecessor's value. Under the node lock, as a record is.
     store.placement.write().await.acks.remove(node_id);
+    // The same for a held replica report: its stamp would vouch for the new
+    // process when it has no storage id (#2619). Only the stamp goes, since
+    // the report still speaks for the shard's other members.
+    if forget_reports {
+        for report in store.replica_reports.write().await.values_mut() {
+            report.node_incarnations.remove(node_id);
+        }
+    }
     state.record(NodeChangeOp::Deregistered, node_id, None);
     metrics::counter!("felix_node_changes_total", "op" => "deregistered").increment(1);
     Ok(())
@@ -359,4 +373,16 @@ fn invalid_node(err: crate::model::NodeValidationError) -> StoreError {
 
 fn invalid_transition(from: NodeLifecycle, to: NodeLifecycle) -> StoreError {
     invalid_node(crate::model::NodeValidationError::UnsupportedTransition { from, to })
+}
+
+impl InMemoryStore {
+    /// A Raft entry's delete: an entry from below the level that forgets
+    /// report stamps must apply as it did then.
+    pub(crate) async fn apply_delete_node(
+        &self,
+        node_id: &str,
+        forget_reports: bool,
+    ) -> StoreResult<()> {
+        delete_node(self, node_id, forget_reports).await
+    }
 }

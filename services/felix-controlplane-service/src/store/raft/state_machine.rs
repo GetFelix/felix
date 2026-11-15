@@ -350,8 +350,11 @@ impl MetadataStateMachine {
                 .await
                 .map(|node| MetaResponse::Node { node })
                 .map_err(Into::into),
-            MetaCommand::DeleteNode { node_id } => {
-                store.delete_node(&node_id).await?;
+            MetaCommand::DeleteNode {
+                node_id,
+                forget_reports,
+            } => {
+                store.apply_delete_node(&node_id, forget_reports).await?;
                 self.node_reset(Some(&node_id));
                 Ok(MetaResponse::Unit)
             }

@@ -516,7 +516,13 @@ async fn record_one(
         by_round: shard.by_round && leader_incarnation.is_some(),
         leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
         leader: Some(node_id.to_string()),
-        node_incarnations: node_incarnations(node_id, shard, incarnations),
+        node_incarnations: node_incarnations(node_id, shard, incarnations)
+            .into_iter()
+            // Only nodes the assignment names: none of them can be deleted
+            // before this report lands at its generation, so no stamp read
+            // before a delete outlives the delete's clearing (#2619).
+            .filter(|(id, _)| assignment.named_nodes().any(|named| named == id))
+            .collect(),
         given_up: shard.given_up,
         // A malformed identity is no evidence either way, so it is left out
         // and the follower is judged as one that sent none.
