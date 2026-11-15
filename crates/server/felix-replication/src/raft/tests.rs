@@ -621,8 +621,20 @@ async fn without_the_ticker_no_timeout_is_noticed() {
     for broker in ["b", "c"] {
         let status = cluster.runtime(broker).status(&shard(0)).expect("status");
         assert_eq!(status.role, Role::Follower, "{status:?}");
-        assert_eq!(status.leader.as_ref(), Some(&first), "{status:?}");
         assert_eq!(status.term, term, "{status:?}");
+        // The status names no leader once the member stops hearing it, but
+        // openraft itself has noticed nothing.
+        let group = cluster.runtime(broker).group(&shard(0)).expect("group");
+        let named = {
+            use openraft::async_runtime::watch::WatchReceiver;
+            group
+                .raft()
+                .metrics()
+                .borrow_watched()
+                .current_leader
+                .clone()
+        };
+        assert_eq!(named.as_ref(), Some(&first), "{status:?}");
     }
 
     for broker in ["b", "c"] {
@@ -2205,6 +2217,13 @@ async fn a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_retur
     tokio::time::sleep(timers().election_max * 4).await;
     let status = cluster.runtime(alone).status(&shard(0)).expect("status");
     assert_eq!(status.term, term, "{alone}'s term while cut off");
+    // openraft still names the leader at that term; the member does not
+    // count on one it has not heard within its wait.
+    eventually(|| {
+        let status = cluster.runtime(alone).status(&shard(0)).expect("status");
+        status.leader.is_none().then_some(())
+    })
+    .await;
 
     cluster.net.cut.lock().clear();
     cluster.net.muted.lock().clear();

@@ -1812,11 +1812,18 @@ impl Group {
         // an append that publishes in between, and that append behind the
         // first: the caller and the member's log would both stop for good.
         let positions = *self.positions.borrow();
+        // Pre-vote keeps a cut-off member at its term, so openraft names the
+        // last leader forever. A follower counts on it only as long as it
+        // would refuse a pre-vote for it.
+        let leader = metrics.current_leader.filter(|_| {
+            metrics.state == ServerState::Leader
+                || self.pace.follows_live_leader(self.pace.timers.now())
+        });
         GroupStatus {
             member: self.member.clone(),
             role,
             term: metrics.current_term,
-            leader: metrics.current_leader,
+            leader,
             last_index: metrics.last_log_index,
             written: positions.written,
             flushed: positions.flushed,

@@ -1574,6 +1574,12 @@ pre-vote at the transfer's expiry is granted at once. After a leader
 dies, the first follower to time out may have to wait for the others to
 time out too, which still falls inside the 6 to 7 s above.
 
+Because a cut-off member keeps its term, openraft keeps naming the leader it
+last heard. Felix does not: a follower names a leader only while it would
+refuse a pre-vote for it. Past that wait it serves no reader, ends the
+subscribers it has, and answers `not_ready` instead of forwarding to a
+leader that may be gone.
+
 > `crates/server/felix-replication/src/raft/tests.rs`,
 > `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return`,
 > `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease` and

@@ -326,7 +326,10 @@ pub struct GroupStatus {
     pub member: MemberId,
     pub role: Role,
     pub term: u64,
-    /// The leader this member follows, itself included.
+    /// The leader this member follows, itself included. A follower that
+    /// has not heard its leader within its election wait names none, even
+    /// though openraft still does: under pre-vote a cut-off member keeps
+    /// its term, and with it openraft's leader.
     pub leader: Option<MemberId>,
     pub last_index: Option<u64>,
     /// The last entry this member's log has written since it was opened,
