@@ -38,6 +38,30 @@ pub(super) enum Pass {
     Refused(String),
 }
 
+/// Test hook: parks a pass after it planned its trim and before it proposes,
+/// so a test can change the shard in that window.
+#[cfg(test)]
+#[derive(Default)]
+pub(super) struct Gate {
+    armed: std::sync::atomic::AtomicBool,
+    pub(super) reached: tokio::sync::Notify,
+    pub(super) release: tokio::sync::Notify,
+}
+
+#[cfg(test)]
+impl Gate {
+    pub(super) fn arm(&self) {
+        self.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    async fn pause(&self) {
+        if self.armed.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            self.reached.notify_one();
+            self.release.notified().await;
+        }
+    }
+}
+
 impl RaftShards {
     /// Run [`Self::enforce_retention`] for `key` every `interval` until the
     /// member closes, which aborts the task, or the shards are dropped.
@@ -109,6 +133,8 @@ impl RaftShards {
         if cut <= log.head_trim().map_or(0, |trim| trim.floor) {
             return Pass::Nothing;
         }
+        #[cfg(test)]
+        self.retention_gate.pause().await;
         let ack = AckAt::for_fsync(&storage.config().fsync_mode);
         let outcome = match self
             .engine

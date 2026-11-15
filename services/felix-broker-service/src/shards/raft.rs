@@ -103,6 +103,9 @@ pub(crate) struct RaftShards {
     reads_under_lock: AtomicU64,
     #[cfg(test)]
     marker_reads: AtomicU64,
+    /// Holds a retention pass between its plan and its proposal.
+    #[cfg(test)]
+    retention_gate: retention::Gate,
     /// Held across a whole pass, after its marker reads, and a whole
     /// close, so a stream's delete never runs between a member's claim of
     /// its directory and its open.
@@ -190,6 +193,8 @@ impl RaftShards {
             reads_under_lock: AtomicU64::new(0),
             #[cfg(test)]
             marker_reads: AtomicU64::new(0),
+            #[cfg(test)]
+            retention_gate: retention::Gate::default(),
             carried_over: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
             wake: std::sync::OnceLock::new(),

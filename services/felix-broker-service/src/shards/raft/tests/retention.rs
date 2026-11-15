@@ -155,42 +155,27 @@ async fn the_leader_trims_what_the_streams_retention_drops() {
 /// **Retention keeps up on a busy shard.** A trim conditional on the tail
 /// it read is refused by any publish landing first, which on a busy shard
 /// is nearly every time, so the floor would stay behind for as long as
-/// publishes keep coming.
+/// publishes keep coming. The pass is held after it planned its trim, a
+/// publish lands, and the trim must still go through.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn retention_trims_a_shard_under_constant_publishes() {
-    let shard = Bounded::start(NO_TIMER, true).await;
+async fn retention_trims_a_shard_when_a_publish_lands_mid_pass() {
+    let shard = Arc::new(Bounded::start(NO_TIMER, true).await);
     shard.publish(64).await;
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let mut publishers = Vec::new();
-    for _ in 0..4 {
-        let (broker, engine, handle, term) = (
-            Arc::clone(&shard.broker),
-            Arc::clone(&shard.engine),
-            shard.handle.clone(),
-            shard.term,
-        );
-        let stop = Arc::clone(&stop);
-        publishers.push(tokio::spawn(async move {
-            while !stop.load(Ordering::Relaxed) {
-                publish_one(&broker, &engine, &handle, term).await;
-            }
-        }));
-    }
-    // Let the publishers get going.
-    let busy = shard.tail().await + 200;
-    while shard.tail().await < busy {
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
+    shard.shards.retention_gate.arm();
+    let pass = {
+        let shard = Arc::clone(&shard);
+        tokio::spawn(async move { shard.pass().await })
+    };
+    shard.shards.retention_gate.reached.notified().await;
+    let planned = shard.tail().await;
+    shard.publish(1).await;
+    assert!(shard.tail().await > planned, "the publish did not land");
+    shard.shards.retention_gate.release.notify_one();
 
-    let pass = shard.pass().await;
-
-    stop.store(true, Ordering::Relaxed);
-    for publisher in publishers {
-        publisher.await.expect("publisher");
-    }
+    let pass = pass.await.expect("pass");
     assert!(
         matches!(pass, Pass::Trimmed(_)),
-        "the pass did not trim under publishes: {pass:?}"
+        "a publish landing mid-pass refused the trim: {pass:?}"
     );
     shard.shards.runtime.shutdown().await;
 }
@@ -209,6 +194,31 @@ async fn a_member_not_leading_proposes_no_trim() {
     assert_eq!(shard.tail().await, tail, "a trim was written");
     assert!(shard.log.head_trim().is_none());
     shard.shards.runtime.shutdown().await;
+}
+
+/// **A member deposed between planning its trim and proposing it writes
+/// nothing and says nothing**: the next leader runs its own pass, and a
+/// warning here would be noise on every failover.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_deposed_mid_pass_proposes_nothing_and_does_not_warn() {
+    let shard = Arc::new(Bounded::start(NO_TIMER, true).await);
+    shard.publish(64).await;
+    let tail = shard.tail().await;
+    shard.shards.retention_gate.arm();
+    let pass = {
+        let shard = Arc::clone(&shard);
+        tokio::spawn(async move { shard.pass().await })
+    };
+    shard.shards.retention_gate.reached.notified().await;
+    // The group going away is what makes the proposal fail; the member
+    // no longer leading is what makes that a deposition.
+    shard.shards.leading.forget(&key("orders", 0));
+    shard.shards.runtime.shutdown().await;
+    shard.shards.retention_gate.release.notify_one();
+
+    // A refusal, not Nothing, is what the timer logs as a warning.
+    assert_eq!(pass.await.expect("pass"), Pass::Nothing);
+    assert_eq!(shard.tail().await, tail, "a trim was written");
 }
 
 /// **Until the fleet finalizes `raft_head_trim`, retention writes nothing**
