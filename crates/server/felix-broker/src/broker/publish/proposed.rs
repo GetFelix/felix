@@ -149,6 +149,7 @@ impl Broker {
     ///
     /// No record is [`BrokerError::EmptyConditionalPublish`] and more than
     /// one is [`BrokerError::NotOnEngineStream`], with `propose` not called.
+    #[allow(clippy::too_many_arguments)]
     pub fn propose_publish_at<F, E>(
         &self,
         handle: &StreamHandle,
@@ -188,6 +189,7 @@ impl Broker {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::broker) fn propose<F, E>(
         &self,
         handle: &StreamHandle,
@@ -653,6 +655,7 @@ pub(in crate::broker) struct HeldTrim {
     pub(in crate::broker) applied: oneshot::Sender<()>,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn finish<E>(
     handle: StreamHandle,
     payloads: Vec<Bytes>,

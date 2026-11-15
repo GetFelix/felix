@@ -181,6 +181,7 @@ impl StreamEngine {
     /// and at the commit while it does not. Subscribers get the batch at
     /// its commit either way. No write waits on the hybrid's marks or this
     /// broker's lease.
+    #[allow(clippy::too_many_arguments)]
     pub fn publish_on_raft(
         &self,
         broker: &felix_broker::Broker,
