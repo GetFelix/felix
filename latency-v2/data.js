@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794750429446,
+  "lastUpdate": 1794753297747,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74448,6 +74448,72 @@ window.BENCHMARK_DATA = {
             "range": "580.52",
             "unit": "us",
             "extra": "trials: 5\nmedian: 450.00\nmean: 704.40\nstdev: 580.52\ncv: 82.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "69e376951ea0809d8c498ba2c6fd5cb14366e9c8",
+          "message": "feat(storage): the re-form's reads of a broker's Raft copies (#2621)\n\n* test(raft): the dead-broker commit test names no expected offset\n\n#2590 added a test that builds a Command, and #2589 then added the\nrequired `expected` field, so main's felix-replication tests no longer\ncompiled.\n\nSpec-Unaffected: test-only fix for a compile error.\n\n* feat(storage): a Raft copy's reservation file, carried across rotation\n\nA copy can now hold `raft-reserved`, the highest Raft index it may report\nas flushed before raising the file again. It is the bound a re-form will\npad above once relaxed brokers commit on a written majority.\n\nA rotation reads the highest reservation of the old directory and every\nkept directory and writes it into the new directory before the copy file,\nso a crash leaves either a directory that carries it or one the next open\nrotates again. `highest_reserved` reads the same set for the re-form. A\nkept directory reserved past the current copy is held, never reclaimed,\nand a reservation that does not decode is an error everywhere.\n\nNothing takes a reservation yet, so no broker's behaviour or files change.\n\n* fix(storage): review round on the reservation file\n\nMove the raft-reserved section after the raft-purged subsection, point at\nthe design PR instead of a section main does not have yet, give the\nrecovery step for a damaged file and the downgrade hazard, and test the\ntemporary a crash leaves in the reservation write.\n\n* fix(storage): second review round on the reservation file\n\nRecovery steps for a damaged current or kept raft-reserved, the normal-open\nclaim, the strict-fsync held directory note, reclaim names the failing file,\nand the rotation crash test stops inside the reservation write (#2611).\n\n* fix(storage): reservation recovery steps keep the kept copies\n\nDelete only a damaged kept raft-reserved file, and start a copy over by\nremoving only its shard directory, so reclaim keeps its record checks and\nthe next rotation carries the kept reservations. Correct the rotation\norder in per-shard-raft.md, and tighten the rotation crash-walk test.\n\nSpec-Unaffected: docs and test-only changes.\n\n* feat(storage): a Raft log on a relaxed root counts written entries\n\nA Raft log opened under Periodic or None, on a root whose run rotates on a\ncrash, fires openraft's flush callback once the entries are written and the\ncopy's raft-reserved covers them. LogPositions::flushed still waits for the\nlog's own fsync. raft-reserved is loaded on every open and a damaged one\nfails the open. A failed periodic flush poisons the log.\n\n* feat(replication): a snapshot syncs a written-commit Raft log first\n\n* feat(common): the raft_written_commit fleet feature, not reported yet\n\n* test(replication): clippy\n\n* test(storage): the batched mark of a written-commit log, start 6 stops written commits\n\n* feat(broker): a relaxed broker's Raft shard opens with its own mode once raft_written_commit is finalized\n\n* docs(raft): what the written-commit log side builds, and the raft_written_commit feature\n\n* fix(storage): the written-commit sync helpers only with the raft feature\n\n* fix(storage): a purge or admit on a written-commit log syncs before it drains the flushes\n\n* fix(raft): reserve before the write and at open; a failed member close is not a clean stop\n\nA written-commit Raft log now raises raft-reserved before it writes the\nentries, and raises it over the entries already on disk when it opens,\nfailing the open if that raise fails. Raft counts everything it finds at\nstart as flushed, so a crash between a write and a later raise, or a copy\nwritten on commit and reopened relaxed, could otherwise count an entry\nabove its synced reservation.\n\nA Raft member log that fails to close makes EngineShards::shutdown report\nfalse, and the broker then records no clean stop. A failed rollover wakes\nflushes waiting on the log, and a written-commit flush or exact mark that\nfails after the callback poisons the log instead of stalling flushed.\n\n* Add the trim field to a written-commit cache test after the merge\n\n* fix(storage): a queued written-commit flush no longer poisons a closed log\n\nA member's stop drains its log's queued flushes before the log closes, and\na flush that finds the log closed does not poison it: the close synced the\nlog itself. Also notes why the open-time reservation write is blocking and\ncorrects a stale comment on roll failures.\n\n* feat(storage): the re-form's reads of a broker's copies\n\nraft_copy::first_free_index gives the first index a new epoch may use:\nabove the base, the stored floor and every raft-reserved in the shard\ndirectory and its kept directories. raft_copy::kept_logs reads each kept\ndirectory without opening it, with its saved commit cut to its last\nsynced entry the way an open cuts it.\n\nThe re-form command and the RF 1 restore are not built, so nothing calls\nthese yet and raft_written_commit stays out of IMPLEMENTED.\n\nSpec-Unaffected: code reads that FelixRaftWrittenCommitsReform.cfg already models (pad above every reservation); no new protocol rule.\n\n* fix(storage): a kept copy's commit is read against the entry it names\n\nread_kept now reads the generation at the commit's index, as an open\ndoes, so a saved commit on another term's entry vouches for nothing.\nDocs: the all-rotated shard is formed again today (#2620), so the\nfeature waits for that fix too.\n\nSpec-Unaffected: storage reads mirror the open's existing commit rule; no protocol change.\n\n* fix(storage): a kept copy vouches for its purged id; reform tests for the guards",
+          "timestamp": "2026-11-15T14:30:48Z",
+          "tree_id": "d8bad9747693559d789be014a36640bcdf486551",
+          "url": "https://github.com/GetFelix/felix/commit/69e376951ea0809d8c498ba2c6fd5cb14366e9c8"
+        },
+        "date": 1794753290221,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 66,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 66.00\nmean: 65.80\nstdev: 0.84\ncv: 1.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 90,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.60\nstdev: 1.34\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 170,
+            "range": "19.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 170.00\nmean: 167.00\nstdev: 19.07\ncv: 11.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 83,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 83.00\nmean: 82.80\nstdev: 1.30\ncv: 1.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 175,
+            "range": "17.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 182.20\nstdev: 17.31\ncv: 9.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 290,
+            "range": "734.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 290.00\nmean: 593.40\nstdev: 734.15\ncv: 123.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
