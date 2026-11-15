@@ -1,0 +1,1 @@
+A Raft shard's leader keeps up to four appends in flight to each follower instead of waiting for each answer before sending the next, and a follower hands one group's appends to openraft in the order they arrived. Answers reach openraft in send order; a lost or refused append ends the stream and openraft resends from what was acknowledged.

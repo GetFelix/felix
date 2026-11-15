@@ -134,10 +134,12 @@ struct Net {
     appends: std::sync::atomic::AtomicU64,
     /// While set, an append is taken and its answer is lost.
     lose_answers: std::sync::atomic::AtomicBool,
-    /// What happens to appends that carry entries, by their count.
+    /// What happens to appends, by their count.
     disorder: parking_lot::Mutex<Option<Disorder>>,
-    entry_appends: std::sync::atomic::AtomicU32,
-    /// Appends with entries a member answered with a conflict.
+    /// Appends a disorder applies to, by broker, so a disorder by count
+    /// reorders one follower's appends.
+    entry_appends: parking_lot::Mutex<HashMap<String, u32>>,
+    /// Appends a member answered with a conflict while a disorder was on.
     conflicts: std::sync::atomic::AtomicU32,
 }
 
@@ -278,18 +280,28 @@ impl RaftTransport for Net {
         let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
         let entries = matches!(&request.body, Request::Append(rpc) if !rpc.entries.is_empty());
         let late = Duration::from_millis(3);
-        let nth = match entries {
-            true => self.entry_appends.fetch_add(1, Relaxed),
-            false => 0,
+        // Late arrivals reorder entry-less appends too: one that carries
+        // only the commit can overtake the entries sent before it.
+        let disorder = (*self.disorder.lock()).filter(|disorder| match disorder {
+            Disorder::LateArrivals => matches!(request.body, Request::Append(_)),
+            _ => entries,
+        });
+        let nth = match disorder {
+            Some(_) => {
+                let mut sent = self.entry_appends.lock();
+                let nth = sent.entry(broker.to_string()).or_default();
+                *nth += 1;
+                *nth - 1
+            }
+            None => 0,
         };
-        let disorder = (*self.disorder.lock()).filter(|_| entries);
         match disorder {
             Some(Disorder::Lost) if nth % 5 == 4 => {
                 // Noticed late, as a timeout is: those behind are answered.
                 tokio::time::sleep(late * 3).await;
                 return Err(Refused::Unreachable("lost".into()));
             }
-            Some(Disorder::LateArrivals) if nth % 2 == 0 => tokio::time::sleep(late).await,
+            Some(Disorder::LateArrivals) if nth % 2 == 0 => tokio::time::sleep(late * 3).await,
             _ => {}
         }
         let answer = match runtime {
@@ -308,7 +320,7 @@ impl RaftTransport for Net {
                 openraft::raft::AppendError::Conflict { .. }
             ))))
         );
-        if entries && conflict {
+        if conflict && self.disorder.lock().is_some() {
             self.conflicts.fetch_add(1, Relaxed);
         }
         if unheard {

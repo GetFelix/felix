@@ -1548,6 +1548,24 @@ builds the runtime yet, so no shipping broker offers the capability. The
 unit tests join three runtimes with a transport that calls `handle`
 directly; one test forms a group over real listeners on loopback.
 
+**Pipelined appends.** openraft replicates to each follower over a stream
+of appends (`stream_append`). Felix's network for one group and one member
+(`Pipelined` in `raft/network.rs`) keeps up to four of them unanswered at
+once, so an entry written while an append is on its way leaves at once
+instead of waiting a round trip and the follower's fsync. Answers go back to
+openraft in the order the appends left. The stream goes on only past an
+append the follower took whole: a lost append, a timeout, a partial
+acknowledgement or a higher vote is passed on and ends the stream, and the
+appends sent behind it are dropped unreported. openraft then starts a new
+stream from what was acknowledged. A conflict behind an acknowledged append
+is dropped without being passed on, since it names an entry the follower has
+just acknowledged: the follower took that append out of order. Passed on,
+openraft would read it as a follower that lost acknowledged entries. A real
+conflict shows on the next stream's first append, which openraft handles as
+before. The stream also stops sending at an append under another vote than
+its first. The follower's side of the ordering is in
+`docs/internal-protocol.md`, "Raft messages".
+
 A leader's messages carry the gap described in "Idle groups", which is
 how idle groups slow down.
 

@@ -9,15 +9,19 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use futures::future::BoxFuture;
+use futures::stream::{BoxStream, FuturesOrdered};
+use futures::{Stream, StreamExt};
 use openraft::EntryPayload;
 use openraft::error::{RPCError, ReplicationClosed, StreamingError, Unreachable};
 use openraft::impls::EmptyNode;
-use openraft::network::{RPCOption, RaftNetworkFactory};
+use openraft::network::v2::RaftNetworkV2;
+use openraft::network::{Backoff, RPCOption, RaftNetworkFactory};
 use openraft::raft::{
     AppendEntriesRequest, AppendError, AppendResult, SnapshotResponse, TransferLeaderRequest,
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
-use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
+use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, SnapshotOf, VoteOf};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
 use felix_storage::raft_log::LogPoint;
@@ -440,9 +444,180 @@ pub(crate) struct Network {
 }
 
 impl RaftNetworkFactory<ShardTypes> for Network {
-    type Network = GroupNetworkAdapter<ShardTypes, GroupId, Router>;
+    type Network = Pipelined;
 
     async fn new_client(&mut self, target: MemberId, _node: &EmptyNode) -> Self::Network {
-        GroupNetworkAdapter::new(self.router.clone(), target, self.group.clone())
+        Pipelined {
+            unary: GroupNetworkAdapter::new(self.router.clone(), target, self.group.clone()),
+        }
     }
 }
+
+/// Appends a leader keeps on their way to one follower at once. A follower
+/// answers an append only once it is fsynced, so with one in flight an
+/// entry written during that round trip waits for all of it before it
+/// leaves.
+pub(crate) const APPEND_WINDOW: usize = 4;
+
+/// One group's calls to one member, with up to [`APPEND_WINDOW`] appends
+/// of a replication stream in flight. See [`pipeline`].
+pub(crate) struct Pipelined {
+    unary: GroupNetworkAdapter<ShardTypes, GroupId, Router>,
+}
+
+type Answer = Result<AppendResult<ShardTypes>, RPCError<ShardTypes>>;
+
+/// Sends `input` through `send` with up to `window` appends unanswered, and
+/// yields their answers in the order the appends were sent.
+///
+/// The stream goes on only past an append the follower took whole. Any
+/// other answer is yielded and ends it, and what was sent behind it is
+/// dropped unreported, so openraft starts again from what was acknowledged.
+/// A conflict behind an acknowledged append is dropped too: its
+/// `prev_log_id` is an entry the follower has just acknowledged, so the
+/// follower took it before the append ahead of it (a lost append, or a
+/// reconnect that reordered them), and openraft would read the conflict as
+/// a follower that lost acknowledged entries. A real conflict shows again
+/// on the next stream's first append. The stream also stops sending at an
+/// append under another vote than the first; openraft opens one stream per
+/// leader vote.
+pub(crate) fn pipeline<S, F, Fut>(input: S, window: usize, send: F) -> impl Stream<Item = Answer>
+where
+    S: Stream<Item = AppendEntriesRequest<ShardTypes>> + Unpin,
+    F: FnMut(AppendEntriesRequest<ShardTypes>) -> Fut,
+    Fut: Future<Output = Answer>,
+{
+    use openraft::entry::RaftEntry;
+    struct Window<S, F, A: Future> {
+        input: Option<S>,
+        send: F,
+        flight: FuturesOrdered<A>,
+        vote: Option<VoteOf<ShardTypes>>,
+        acked: bool,
+    }
+    async fn next<S: Stream + Unpin>(input: &mut Option<S>) -> Option<S::Item> {
+        match input {
+            Some(input) => input.next().await,
+            None => std::future::pending().await,
+        }
+    }
+    let sent = move |send: &mut F, rpc: AppendEntriesRequest<ShardTypes>| {
+        let last: Option<LogIdOf<ShardTypes>> = rpc
+            .entries
+            .last()
+            .map(|entry| entry.log_id())
+            .or_else(|| rpc.prev_log_id.clone());
+        let answer = send(rpc);
+        async move { (last, answer.await) }
+    };
+    let window = window.max(1);
+    let start = Window {
+        input: Some(input),
+        send,
+        flight: FuturesOrdered::new(),
+        vote: None,
+        acked: false,
+    };
+    futures::stream::unfold(Some(start), move |state| async move {
+        let mut state = state?;
+        loop {
+            let room = state.input.is_some() && state.flight.len() < window;
+            if !room && state.flight.is_empty() {
+                return None;
+            }
+            tokio::select! {
+                // Answers first, so a stream that has to end sends no more.
+                biased;
+                Some((last, answer)) = state.flight.next(), if !state.flight.is_empty() => {
+                    return match answer {
+                        Ok(Ok(acked)) if acked == last => {
+                            state.acked = true;
+                            Some((Ok(Ok(acked)), Some(state)))
+                        }
+                        Ok(Err(AppendError::Conflict { .. })) if state.acked => None,
+                        answer => Some((answer, None)),
+                    };
+                }
+                rpc = next(&mut state.input), if room => match rpc {
+                    Some(rpc) if *state.vote.get_or_insert_with(|| rpc.vote.clone()) == rpc.vote => {
+                        let answer = sent(&mut state.send, rpc);
+                        state.flight.push_back(answer);
+                    }
+                    _ => state.input = None,
+                },
+            }
+        }
+    })
+}
+
+impl RaftNetworkV2<ShardTypes> for Pipelined {
+    type SnapshotData = SnapshotData;
+
+    async fn append_entries(
+        &mut self,
+        rpc: AppendEntriesRequest<ShardTypes>,
+        option: RPCOption,
+    ) -> Result<AppendResult<ShardTypes>, RPCError<ShardTypes>> {
+        self.unary.append_entries(rpc, option).await
+    }
+
+    fn stream_append<'s, S>(
+        &'s mut self,
+        input: S,
+        option: RPCOption,
+    ) -> BoxFuture<'s, Result<BoxStream<'s, Answer>, RPCError<ShardTypes>>>
+    where
+        S: Stream<Item = AppendEntriesRequest<ShardTypes>> + Send + Unpin + 'static,
+    {
+        let unary = self.unary.clone();
+        let answers = pipeline(input, APPEND_WINDOW, move |rpc| {
+            let mut unary = unary.clone();
+            let option = option.clone();
+            async move { unary.append_entries(rpc, option).await }
+        });
+        Box::pin(async move { Ok(Box::pin(answers) as BoxStream<'s, Answer>) })
+    }
+
+    async fn vote(
+        &mut self,
+        rpc: VoteRequest<ShardTypes>,
+        option: RPCOption,
+    ) -> Result<VoteResponse<ShardTypes>, RPCError<ShardTypes>> {
+        self.unary.vote(rpc, option).await
+    }
+
+    async fn pre_vote(
+        &mut self,
+        rpc: VoteRequest<ShardTypes>,
+        option: RPCOption,
+    ) -> Result<VoteResponse<ShardTypes>, RPCError<ShardTypes>> {
+        self.unary.pre_vote(rpc, option).await
+    }
+
+    async fn full_snapshot(
+        &mut self,
+        vote: VoteOf<ShardTypes>,
+        snapshot: SnapshotOf<ShardTypes, SnapshotData>,
+        cancel: impl Future<Output = ReplicationClosed> + Send + 'static,
+        option: RPCOption,
+    ) -> Result<SnapshotResponse<ShardTypes>, StreamingError<ShardTypes>> {
+        self.unary
+            .full_snapshot(vote, snapshot, cancel, option)
+            .await
+    }
+
+    async fn transfer_leader(
+        &mut self,
+        req: TransferLeaderRequest<ShardTypes>,
+        option: RPCOption,
+    ) -> Result<TransferLeaderResponse<ShardTypes>, RPCError<ShardTypes>> {
+        self.unary.transfer_leader(req, option).await
+    }
+
+    fn backoff(&self) -> Option<Backoff> {
+        self.unary.backoff()
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -878,7 +878,8 @@ release before the design relies on it:
   (below) is still Felix's to build, and a candidate to contribute upstream.
 - Pipelined replication (`RaftNetworkV2::stream_append`), and consecutive
   appends merged into one storage write. Both bear on the per-record cost of
-  Decision 2.
+  Decision 2. Felix's network keeps up to four appends in flight per
+  follower (`docs/per-shard-raft.md`, "Pipelined appends").
 - Lease admission: a leader past its lease refuses new proposals
   (openraft#1898), and `quorum_loss_probe_interval` stops its heartbeats so a
   connected majority can elect (openraft#2080, #2166).
