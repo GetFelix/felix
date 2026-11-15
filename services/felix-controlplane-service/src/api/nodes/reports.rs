@@ -6,13 +6,19 @@ use axum::http::HeaderMap;
 
 use super::require_node_manage;
 use crate::api::AppState;
-use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
+use crate::api::error::{
+    ApiError, api_conflict, api_internal, api_not_found, api_validation_error,
+};
 use crate::api::types::{
     NodeHeartbeatRequest, NodeHeartbeatResponse, RaftCopyIdRequest, RaftCopyIdResponse,
     RaftFloorsRequest, RaftFloorsResponse, ReplicaStatusRequest, ReplicaStatusResponse,
     ReportOutcome, ShardReplicaStatus, ShardReportOutcome,
 };
 use crate::store::{ReportWrite, StoreError};
+
+/// Most floors one request may carry: what a broker sends in one tick, so
+/// one request is one bounded proposal.
+const MAX_RAFT_FLOORS: usize = 1024;
 
 #[utoipa::path(
     post,
@@ -331,6 +337,7 @@ pub(crate) async fn report_raft_copy_id(
     request_body = RaftFloorsRequest,
     responses(
         (status = 200, description = "Every entry was decided", body = RaftFloorsResponse),
+        (status = 400, description = "More than 1024 floors in one request", body = crate::api::types::ErrorResponse),
         (status = 409, description = "A control-plane member is below metadata version 38", body = crate::api::types::ErrorResponse)
     )
 )]
@@ -343,6 +350,7 @@ pub(crate) async fn report_raft_copy_id(
 /// skipped and not counted, and the rest still apply.
 ///
 /// # Errors
+/// - 400 for more than 1024 entries, the most a broker sends at once.
 /// - 409 for the whole batch when a control-plane member is below metadata
 ///   version 38 or its level is unknown. Nothing in it was recorded.
 pub(crate) async fn report_raft_floors(
@@ -352,6 +360,11 @@ pub(crate) async fn report_raft_floors(
     Json(request): Json<RaftFloorsRequest>,
 ) -> Result<Json<RaftFloorsResponse>, ApiError> {
     require_node_manage(&state, &headers, &node_id).await?;
+    if request.floors.len() > MAX_RAFT_FLOORS {
+        return Err(api_validation_error(&format!(
+            "at most {MAX_RAFT_FLOORS} floors in one request"
+        )));
+    }
     match state
         .store
         .record_raft_floors(&node_id, request.floors)

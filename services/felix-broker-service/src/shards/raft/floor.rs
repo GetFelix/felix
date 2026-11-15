@@ -9,6 +9,7 @@
 //! included, on the first tick it accepts.
 
 use std::collections::BTreeMap;
+use std::ops::Bound;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,6 +43,10 @@ struct Entry {
 #[derive(Debug, Default)]
 pub(crate) struct Floors {
     entries: BTreeMap<(ShardKey, u64), Entry>,
+    /// The last group a full batch carried. The next batch starts after it,
+    /// so with more than [`MAX_BATCH`] groups moving every tick each one is
+    /// still sent within a few ticks instead of the first ones every time.
+    resume_after: Option<(ShardKey, u64)>,
 }
 
 impl Floors {
@@ -61,21 +66,37 @@ impl Floors {
     }
 
     /// The groups whose commit the control plane has not taken yet, up to
-    /// [`MAX_BATCH`]. Empty when nothing moved.
-    pub(crate) fn batch(&self) -> Vec<RaftFloor> {
-        self.entries
-            .iter()
-            .filter(|(_, entry)| entry.acked != Some(entry.at))
-            .take(MAX_BATCH)
+    /// [`MAX_BATCH`], starting after the last group the previous full batch
+    /// carried and wrapping around. Empty when nothing moved.
+    pub(crate) fn batch(&mut self) -> Vec<RaftFloor> {
+        let owed = |(_, entry): &(&(ShardKey, u64), &Entry)| entry.acked != Some(entry.at);
+        let picked: Vec<_> = match &self.resume_after {
+            Some(last) => self
+                .entries
+                .range((Bound::Excluded(last.clone()), Bound::Unbounded))
+                .chain(self.entries.range(..=last.clone()))
+                .filter(owed)
+                .take(MAX_BATCH)
+                .collect(),
+            None => self.entries.iter().filter(owed).take(MAX_BATCH).collect(),
+        };
+        let resume_after = (picked.len() == MAX_BATCH)
+            .then(|| picked.last().map(|(key, _)| (*key).clone()))
+            .flatten();
+        let batch = picked
+            .into_iter()
             .map(|((key, incarnation), entry)| RaftFloor {
                 key: key.clone(),
                 incarnation: *incarnation,
-                // No group is re-formed yet.
+                // No group is re-formed yet; the PR that starts a re-form
+                // sends the group's real epoch here.
                 epoch: 0,
                 index: entry.at.index,
                 term: entry.at.term,
             })
-            .collect()
+            .collect();
+        self.resume_after = resume_after;
+        batch
     }
 
     /// The control plane took `batch`. An entry that moved since stays owed.

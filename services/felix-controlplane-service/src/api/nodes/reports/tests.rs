@@ -1406,4 +1406,25 @@ async fn a_floor_batch_is_answered_with_how_many_it_raised() {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(body.expect("json")["raised"], 0);
     }
+
+    // As many as a broker sends in one tick, and one more.
+    let many = |n: usize| {
+        serde_json::Value::Array(
+            (0..n)
+                .map(|i| {
+                    serde_json::json!({
+                        "key": shard_zero(),
+                        "incarnation": 0,
+                        "index": i,
+                        "term": 1,
+                    })
+                })
+                .collect(),
+        )
+    };
+    let (status, _) = post("node.manage:node:broker-x", many(1024)).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post("node.manage:node:broker-x", many(1025)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body.expect("json")["code"], "validation_error");
 }

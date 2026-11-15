@@ -3850,8 +3850,10 @@ acknowledged, and to tell whether a group ever committed anything.
 - **It is kept per incarnation and epoch.** A report for another stream
   incarnation, or for a reform epoch other than the shard's
   (`placed.epoch`), is skipped, so a late report from an old group never
-  sets the new group's floor. A floor from an earlier epoch is replaced by
-  the first report of the current one. A write at the same stream
+  sets the new group's floor. A new epoch never lowers the floor: its first
+  report moves the floor's epoch to the new one and keeps the higher index,
+  since offsets the earlier epoch gave out stay given out. Terms are not
+  compared across epochs. A write at the same stream
   incarnation keeps the floor, a recreated stream starts without one, and
   an export and import carry it.
 - **Each entry is decided on its own.** A skipped entry is not counted and

@@ -191,3 +191,20 @@ fn a_batch_is_bounded() {
     assert_eq!(first.len(), MAX_BATCH);
     assert_eq!(floors.batch().len(), 3);
 }
+
+/// More groups than one batch holds, all writing every tick: each is still
+/// sent within ceil(n / MAX_BATCH) ticks rather than only the first ones.
+#[test]
+fn every_group_is_sent_in_turn_when_more_move_than_one_batch_holds() {
+    let groups = MAX_BATCH as u64 + 476;
+    let ticks = groups.div_ceil(MAX_BATCH as u64);
+    let mut floors = Floors::default();
+    let mut sent = std::collections::BTreeSet::new();
+    for tick in 1..=ticks {
+        floors.observe((0..groups).map(|i| (key(&format!("s{i:05}")), 1, at(1, tick))));
+        let batch = floors.batch();
+        floors.accepted(&batch);
+        sent.extend(batch.into_iter().map(|floor| floor.key.stream));
+    }
+    assert_eq!(sent.len() as u64, groups);
+}
