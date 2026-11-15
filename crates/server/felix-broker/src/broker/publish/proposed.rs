@@ -10,6 +10,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -22,6 +23,7 @@ use super::completion::spawn_release;
 use super::{PublishOutcome, SequenceReuse};
 use crate::broker::Broker;
 use crate::broker::shards::StreamHandle;
+use crate::commit::StateOp;
 use crate::error::{BrokerError, Result};
 use crate::stream::HeldBatch;
 
@@ -95,6 +97,7 @@ impl Broker {
             handle,
             payloads,
             attribution,
+            None,
             None,
             None,
             stalled_after,
@@ -184,6 +187,7 @@ impl Broker {
             attribution,
             Some(expected),
             None,
+            None,
             stalled_after,
             propose,
         )
@@ -197,6 +201,7 @@ impl Broker {
         attribution: Attribution,
         expected: Option<Expected<E>>,
         trim: Option<HeldTrim>,
+        commit: Option<Arc<[StateOp]>>,
         stalled_after: Duration,
         propose: impl FnOnce(u64) -> F,
     ) -> Result<ProposedPublish<E>>
@@ -241,6 +246,7 @@ impl Broker {
                 timestamp_micros,
                 expected,
                 trim,
+                commit,
                 handed.queued,
                 handed.turn,
             ))),
@@ -671,6 +677,7 @@ async fn finish<E>(
     timestamp_micros: u64,
     expected: Option<Expected<E>>,
     trim: Option<HeldTrim>,
+    commit: Option<Arc<[StateOp]>>,
     committed: Committing<E>,
     turn: CommitTurn<'static>,
 ) -> std::result::Result<PublishOutcome, E> {
@@ -697,13 +704,23 @@ async fn finish<E>(
     // Never reset, so a wait cannot be refused.
     let _ = turn.wait().await;
     let state = &handle.state;
+    // A commit is answered once its state updates are in the view, so the
+    // writer's next state read has them. Dropped unsent if a reset took the
+    // view, which a read then rebuilds from the log.
+    let (mut applied, in_view) = match commit {
+        Some(_) => {
+            let (applied, in_view) = oneshot::channel();
+            (Some(applied), Some(in_view))
+        }
+        None => (None, None),
+    };
     let batch = match (&committed, first_offset) {
         (Ok(_), Some(first_offset)) if missed.is_some() => HeldBatch::blank(first_offset),
         (Ok(at), Some(first_offset)) if let Some(trim) = trim => HeldBatch {
             payloads,
             first_offset,
             trim: Some(trim.before),
-            trim_applied: Some(trim.applied),
+            ring_applied: Some(trim.applied),
             skipped_before: at.skipped_before,
             gap: false,
             ..HeldBatch::gap(None)
@@ -714,9 +731,9 @@ async fn finish<E>(
             record_headers: attribution.headers.map(Into::into),
             timestamp_micros: Some(timestamp_micros),
             first_offset,
-            commit: None,
+            commit,
             trim: None,
-            trim_applied: None,
+            ring_applied: applied.take(),
             skipped_before: at.skipped_before,
             gap: false,
             gap_end: None,
@@ -725,6 +742,8 @@ async fn finish<E>(
         (Err(failed), _) => HeldBatch::gap(failed.written_end),
         (Ok(at), None) => HeldBatch::gap(Some(at.end)),
     };
+    // Any other batch never reaches the view: the wait ends at once.
+    drop(applied);
     let start = state.held.push(batch);
     state.proposals.settled();
     drop(turn);
@@ -734,6 +753,9 @@ async fn finish<E>(
     committed.map_err(|failed| failed.error)?;
     if let (Some(tail), Some(expected)) = (missed, expected) {
         return Err((expected.mismatch)(tail));
+    }
+    if let Some(in_view) = in_view {
+        let _ = in_view.await;
     }
     Ok(PublishOutcome {
         subscribers: 0,

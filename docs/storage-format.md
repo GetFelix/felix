@@ -81,6 +81,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     engine                                   ← only in a Raft shard's directory: which engine writes it
     raft-purged                              ← a Raft log's last purged id
     raft-reserved                            ← a Raft copy's reserved index, once it took one
+    raft-reserved-carried                    ← empty; a rotation carried raft-reserved in
     raft-epoch                               ← a Raft copy's group epoch, once a re-form started one
     rotated-by                               ← only in a kept directory: why the rotation moved it aside
     raft-snapshot                            ← a Raft group's snapshot
@@ -1239,18 +1240,37 @@ highest Raft index it may report as flushed before it raises the file again.
 16   4  crc          u32  crc32 over bytes 0..16
 ```
 
-It is for a broker whose `fsync_mode` is `periodic` or `none`, where a
-copy will be able to count an entry toward a commit once it is written and
-before it is synced. A power cut of a majority can then lose committed
-entries, and a re-form must start above every index that was counted. The
-reservation is synced before any count above it, so it bounds them. The
-design is in `docs/per-shard-raft.md`, "Proposal: commit on a written
-majority on relaxed brokers". A Raft log opened with `periodic` or
-`none` raises it, synced, to a million entries past an append it does not
-cover, before Raft counts the append; that happens only once the fleet
-finalizes `raft_written_commit`, which no build reports yet. A rotation
-also writes it, when the copies it replaced had one. Every open loads it,
-and a file that does not decode fails the open.
+A re-form must start above every index that was counted toward a commit.
+On a broker whose `fsync_mode` is `periodic` or `none`, a copy will be
+able to count an entry once it is written and before it is synced, so a
+power cut of a majority can lose committed entries. On any broker, a
+re-form can cut a copy back to its saved commit index, below an entry it
+fsynced and counted. The reservation is synced before any count above it,
+so it bounds them. The design is in `docs/per-shard-raft.md`, "Proposal:
+commit on a written majority on relaxed brokers".
+
+Every Raft log writes it, in every fsync mode. An append it does not cover
+raises it, synced, to a million entries past the append before the write,
+so before Raft counts the append. Every open raises it over the entries
+already on disk before Raft sees them, and loads it; a file that does not
+decode, or a raise that fails, fails the open. A rotation also writes it,
+when the copies it replaced had one.
+
+A rotation that carries a reservation first writes an empty
+`raft-reserved-carried` beside it, synced the same way. A copy's own
+reservation and a carried one hold the same bytes, and only a carried one
+means a group reached the shard before: a copy whose broker died between
+its first raise and its first entry's fsync holds a reservation and no
+entry, and no group reached it. A copy with the mark and no entry yet does
+not answer that it is blank (`docs/per-shard-raft.md`, "Re-forming a
+group"). The mark is never removed; once the copy
+holds an entry from a group it no longer matters.
+
+A build of `main` from after `raft-reserved` (#2609) and before this mark
+carried reservations without it, so a copy it rotated and that holds no
+entry yet reads as never reached. No released build has either file. Wipe
+the data root of such a build, or re-form its Raft shards, before
+upgrading.
 
 Written through a temporary, an fsync, a rename and a directory sync. A
 rotation reads the highest reservation of the old directory and every kept
@@ -1272,8 +1292,8 @@ stops depends on where it is:
   the kept file while it was still whole and carried its value, and a
   reservation is never lowered after that. A copy raising its own value
   does not prove the carry by itself: an older build could have rotated
-  without it. That is the downgrade the fleet feature rules out (below),
-  so this holds only while no broker of the fleet ran a build without the
+  without it. That is the downgrade ruled out below, so this holds only
+  while no broker of the fleet ran a build without the
   file after the shard took a reservation. Then stop the
   broker and delete only the damaged `raft-reserved` file in that kept
   directory, not the directory. An absent file reads as no reservation,
@@ -1297,11 +1317,20 @@ A build older than this file counts it as a record and does not carry it, so
 going back to such a build after any copy has reserved can lose a
 reservation. Its rotation also leaves a kept directory whose reservation is
 above the new copy's, and reclaim holds that directory as reserved. A
-broker with strict fsync never reserves, so only another rotation would
-cover it: until then the directory stays on disk, and the only sign is its
-line in the held report. Taking reservations will wait on a fleet
-feature that is finalized only once every broker carries this file, and a
-downgrade after that is unsafe (#2611).
+copy raises its own reservation only as its log grows, so until it passes
+the kept one or another rotation carries it, the directory stays on
+disk, and the only sign is its line in the held report. A copy takes a reservation from its first open
+or append by a build that carries this file, with no fleet gate: no
+released build runs Raft shards (the engine is behind the `raft` build
+feature), so no older build meets the file. Going back to a build
+without it after any copy reserved is unsafe (#2611).
+
+A build that carries this file but reserves only under `periodic` or
+`none` leaves an `on_commit` copy unreserved. The first open by a build
+that reserves in every mode raises it over the copy's whole log before
+Raft counts anything, so an upgraded copy is covered. No released build
+has the file at all (above), so only an unreleased build can leave such a
+copy.
 
 ## `raft-epoch`: a Raft copy's group epoch
 

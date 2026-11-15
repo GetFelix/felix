@@ -264,6 +264,7 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         "head_trim"
         | "raft_head_trim"
         | "raft_record_headers"
+        | "raft_atomic_commit"
         | "atomic_commit"
         | "publisher_principal"
         | "group_cursor_dependencies"

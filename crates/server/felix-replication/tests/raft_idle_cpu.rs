@@ -200,6 +200,7 @@ async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Durati
                             Batch {
                                 expected: None,
                                 trim: None,
+                                commit: false,
                                 records: vec![Record {
                                     timestamp_micros: 1_700_000_000,
                                     payload: Bytes::from_static(&[7; 100]),
@@ -267,6 +268,7 @@ async fn with_a_dead_peer(
         let batch = Batch {
             expected: None,
             trim: None,
+            commit: false,
             records: vec![Record {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(&[7; 100]),

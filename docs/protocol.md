@@ -995,6 +995,15 @@ commit writes. Sent only to a broker that advertised
 `FEATURE_PUBLISH_CONDITIONAL`: an older one ignores the field and would commit
 unconditionally. Absent, the frame is the one every client sent before.
 
+On a stream shard that runs on Raft (`docs/per-shard-raft.md`, "Atomic
+commits") two things differ. A cluster member also refuses a commit until the
+fleet has finalized `raft_atomic_commit`, with `error` (`invalid_request`)
+naming it, since an older member could not read the entry. And a refused
+conditional commit consumes one offset, as a refused `publish_if` does there:
+the log stores a blank entry in its place, readers skip it, and the tail in
+`offset_mismatch` is the offset after it. A commit is answered once its state
+updates are readable, so a `state_get` after `commit_ok` sees them.
+
 ### CommitOk (server -> client)
 ```
 { "type": "commit_ok", "request_id": <u64>, "offset": <u64> }

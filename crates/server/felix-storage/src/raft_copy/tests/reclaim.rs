@@ -410,11 +410,31 @@ async fn a_rotation_carries_the_highest_reservation_into_the_new_copy() {
     third.log.close().await.expect("close");
 }
 
-/// A copy that never reserved writes no reservation file.
+/// A copy with no reservation, as a build that reserved only on relaxed
+/// brokers left it, carries none into the new copy.
 #[tokio::test]
 async fn a_rotation_with_no_reservation_writes_none() {
     let root = Root::new();
-    let (_copies, _old, new) = rotated(&root, 2).await;
+    let copies = root.open();
+    let opened = copies
+        .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    fill(&opened.log, 1, 0, 2).await;
+    opened.log.close().await.expect("close");
+    std::fs::remove_file(root.shard_dir().join(reserved::FILE_NAME)).expect("unreserve");
+    copies
+        .mark_log()
+        .fresh(Arc::from(SHARD), 0xdead)
+        .await
+        .expect("marks");
+    drop(copies);
+    let copies = root.open();
+    let new = copies
+        .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", config())
+        .await
+        .expect("rotate");
+    assert!(new.rotation.is_some());
     assert!(!root.shard_dir().join(reserved::FILE_NAME).exists());
     assert_eq!(highest_reserved(&root.shard_dir()).expect("highest"), None);
     new.log.close().await.expect("close");
@@ -425,7 +445,9 @@ async fn a_kept_copy_reserved_past_the_current_copy_is_held() {
     let root = Root::new();
     let (_copies, old, new) = rotated(&root, 2).await;
     let kept = kept_dir(&root).join(format!("0.{old:016x}"));
-    reserved::store(&kept, 100).expect("reserve");
+    // Past what the current copy carried and reserved for its own entries.
+    let past = 4 * reserved::STEP;
+    reserved::store(&kept, past).expect("reserve");
     fill(&new.log, 1, 0, 2).await;
     commit(&new.log, 2, 2).await;
     let copy = current(&new.log, 0);
@@ -441,7 +463,7 @@ async fn a_kept_copy_reserved_past_the_current_copy_is_held() {
         }]
     );
 
-    reserved::store(&root.shard_dir(), 100).expect("reserve");
+    reserved::store(&root.shard_dir(), past).expect("reserve");
     let report = pass(&root, &copy).await;
     assert_eq!(report.reclaimed, vec![kept]);
 }
@@ -504,4 +526,65 @@ async fn a_reservation_temporary_left_by_a_crash_is_not_kept() {
     assert_eq!(kept_copies(&dir).expect("kept").len(), 1);
     assert_eq!(reserved::load(&dir).expect("load"), Some(5000));
     third.log.close().await.expect("close");
+}
+
+/// **A copy's own reservation beside its own entries is not an earlier
+/// copy.** Every copy reserves what it writes, so only a reservation in a
+/// directory with no entry, which a rotation carried, or a kept copy says
+/// a group reached this shard before.
+#[tokio::test]
+async fn only_a_carried_reservation_says_the_shard_was_reached_before() {
+    let spacing = config().index_spacing_bytes;
+    let unrotated = Root::new();
+    let dir = unrotated.shard_dir();
+    let copies = unrotated.open();
+    let opened = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    fill(&opened.log, 1, 0, 2).await;
+    assert!(reserved::load(&dir).expect("load").is_some());
+    assert!(
+        !reached_before(&dir, spacing).expect("read"),
+        "its own entries"
+    );
+    opened.log.close().await.expect("close");
+    drop(copies);
+
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let (_copies, _old, new) = rotated(&root, 2).await;
+    assert!(reached_before(&dir, spacing).expect("read"), "a kept copy");
+    let kept = new.rotation.clone().expect("rotated").kept.expect("kept");
+    std::fs::remove_dir_all(&kept).expect("reclaim");
+    assert!(
+        reached_before(&dir, spacing).expect("read"),
+        "the carried reservation, with no entry"
+    );
+    fill(&new.log, 1, 0, 2).await;
+    assert!(
+        !reached_before(&dir, spacing).expect("read"),
+        "entries from a group"
+    );
+    new.log.close().await.expect("close");
+}
+
+/// **A crash between a new copy's reservation and its first entry's fsync
+/// leaves a copy no group reached.** The reservation is its own, not a
+/// carried one, so the shard forms as usual.
+#[tokio::test]
+async fn a_crash_before_the_first_entry_is_synced_leaves_a_copy_not_reached() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let copies = root.open();
+    let opened = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    opened.log.close().await.expect("close");
+    drop(copies);
+    // What writer.rs leaves when the broker dies after the synced raise and
+    // before the entry reaches the disk.
+    reserved::store(&dir, reserved::STEP).expect("reserve");
+    assert!(!reached_before(&dir, config().index_spacing_bytes).expect("read"));
 }

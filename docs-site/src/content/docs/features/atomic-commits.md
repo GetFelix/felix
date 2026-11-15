@@ -56,7 +56,9 @@ flowchart LR
 `commit_if` takes one more argument, the offset the commit must land at: the
 shard's next. It is written only if nothing was appended to the shard since
 the writer saw that offset, and refused otherwise with the shard's tail and
-nothing written, neither the event nor the state.
+nothing written, neither the event nor the state. On a stream shard that runs
+on Raft the refusal still takes one offset, which readers skip, so the tail
+it answers is one further on.
 
 ```rust
 use felix_client::{CommitOp, ConditionalWrite};

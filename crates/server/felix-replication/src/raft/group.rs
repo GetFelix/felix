@@ -1177,6 +1177,11 @@ impl Group {
         self.commits.borrow().read_bound()
     }
 
+    /// See [`Commits::records_end`].
+    pub(crate) fn records_end(&self, end: u64) -> u64 {
+        self.commits.borrow().records_end(end)
+    }
+
     /// Wait until `written` is committed: the commit index has passed it
     /// and the entry there has the term it was written at.
     pub(crate) fn await_commit(
