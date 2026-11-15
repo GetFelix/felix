@@ -1360,8 +1360,10 @@ fn a_commands_token_is_not_serialized() {
         sent.as_object().expect("object").keys().collect::<Vec<_>>(),
         [
             "expected",
+            "headers",
             "payload",
             "producer",
+            "publisher",
             "timestamp_micros",
             "trim"
         ]
