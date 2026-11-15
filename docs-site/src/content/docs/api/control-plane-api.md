@@ -427,7 +427,10 @@ A start is refused where placement would not make the move: 404
 `move_limit`. A cancel answers `cancel` before the fence and `retake` after
 it, when the leader that stopped serves again at a new generation; with no
 move in progress it is 409 `not_moving`. A start, a cancel and an abandon on
-a shard that switched to Raft are 409 `switched`. Under `replica_election`, a start is
+a shard that switched to Raft are 409 `switched`. On a cluster that runs
+durable streams on Raft, a start names another member of the shard's set
+leader in one write, answered with step `raft_leader`, and a destination
+outside the set is 409 `not_a_member`. Under `replica_election`, a start is
 409 `set_change_pending` while a cut-over's change of replica set waits for
 the leader to report it on both sets; a cancel drops that change and keeps
 the old set (`pending_set_cancelled`).
