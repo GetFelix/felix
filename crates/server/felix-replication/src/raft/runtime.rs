@@ -157,8 +157,9 @@ impl RuntimeConfig {
             // The node ticker runs the timer check. A tick task per group
             // costs most of a core per thousand idle members.
             enable_tick: false,
-            // A stream shard's log is its data. Entries leave it by
-            // retention, never because a snapshot was taken. A cache
+            // A stream shard's log is its data. Raft logs take no retention
+            // (#2602): entries leave only by an openraft purge, and a
+            // snapshot must not cause one. A cache
             // shard's state is in its snapshot, so its log is cut to it.
             // openraft checks the policy after each batch of messages, not
             // on its tick, which is off.

@@ -79,6 +79,17 @@ pub(crate) async fn broker_at(
         preallocate_segments: false,
         ..LogConfig::default()
     };
+    broker_with_config(root, replicas, incarnation, consistency, config).await
+}
+
+/// [`broker_at`], with the storage opened on `config`.
+pub(crate) async fn broker_with_config(
+    root: &Path,
+    replicas: u32,
+    incarnation: u64,
+    consistency: ConsistencyLevel,
+    config: LogConfig,
+) -> Arc<Broker> {
     let storage = felix_broker::DurableStorage::open(root, config).expect("storage");
     let broker =
         Broker::new(felix_storage::EphemeralCache::new().into()).with_durable_storage(storage);
@@ -402,6 +413,46 @@ async fn a_durable_stream_shard_opens_as_a_raft_member() {
             .is_ok(),
         "the stream is not open on the member's log"
     );
+    shards.runtime.shutdown().await;
+}
+
+/// **Broker-wide retention does not stop a Raft shard from opening.** A Raft
+/// log refuses retention bounds, and the member's config is the broker's.
+#[tokio::test]
+async fn broker_wide_retention_does_not_stop_a_shard_opening() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        retention_bytes: Some(1 << 30),
+        retention_age: Some(Duration::from_secs(3600)),
+        ..LogConfig::default()
+    };
+    let broker = broker_with_config(
+        root.path(),
+        1,
+        INCARNATION,
+        ConsistencyLevel::Leader,
+        config,
+    )
+    .await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut left = assignments([assigned(orders.clone(), INCARNATION)]);
+
+    shards.take(&mut left).await;
+
+    until("the member to lead its group of one", || {
+        shards
+            .runtime
+            .status(&orders)
+            .is_some_and(|status| status.role == Role::Leader)
+    })
+    .await;
+    until("the led term to be served", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
     shards.runtime.shutdown().await;
 }
 

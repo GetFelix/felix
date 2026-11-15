@@ -225,6 +225,10 @@ impl RaftShards {
             let config = LogConfig {
                 raft_log: true,
                 fsync_mode: FsyncMode::OnCommit,
+                // A Raft log refuses retention bounds, so the broker-wide
+                // ones are left off it (#2602).
+                retention_bytes: None,
+                retention_age: None,
                 ..storage.config().clone()
             };
             Ok((dir, config))
