@@ -60,7 +60,7 @@ pub mod sim {
     }
 
     /// Whether this thread draws from a seeded generator.
-    pub(crate) fn is_seeded() -> bool {
+    pub fn is_seeded() -> bool {
         STATE.with(|state| state.get().is_some())
     }
 

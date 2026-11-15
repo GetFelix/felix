@@ -218,6 +218,9 @@ pub fn run_seed(seed: u64, config: RaftSimConfig) -> RaftOutcome {
     builder.rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()));
     // openraft's election timeouts come from this thread's draws.
     let _draws = felix_replication::raft::seed_timers(seed);
+    // The engine's maps take their hash keys from this, so they walk in the
+    // same order every run.
+    felix_common::jitter::sim::seed(seed);
     let runtime = builder.build().expect("build the simulation runtime");
     runtime.block_on(run(seed, config))
 }
@@ -1018,6 +1021,12 @@ impl Sim {
 }
 
 async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
+    // Unseeded, the engine's maps walk in a new order each run, and two runs
+    // of a seed part ways without any check failing.
+    assert!(
+        felix_common::jitter::sim::is_seeded(),
+        "a Raft simulation runs on a thread seeded with felix_common::jitter::sim::seed"
+    );
     // With the clock installed, storage's blocking work runs as tasks here
     // rather than on real threads, whose timing differs from run to run.
     crate::clock::install(crate::clock::Clocks::default());
