@@ -1400,7 +1400,9 @@ taken before the delete then never counts the new registration through the
 incarnation check. The rest of the report stays, because it still speaks for
 the shard's other members. Under Raft the delete clears stamps only once every
 member is at metadata level 37; below it a report from before a delete can
-still count a re-registered node that has no storage identity (#2619).
+still count a re-registered node that has no storage identity (#2619). Reaching
+level 37 does not clear a stamp a delete left at 36: it goes when the node is
+deleted again or the shard's leader sends a new report.
 
 A leader also reports, for each follower it has not reached yet at its
 generation, the identity it inherited for it: the one the failover that
