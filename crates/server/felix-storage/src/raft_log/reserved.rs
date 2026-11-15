@@ -24,6 +24,10 @@ const VERSION: u16 = 1;
 /// magic(4) + version(2) + reserved(2) + index(8) + crc(4)
 const ENCODED_LEN: usize = 20;
 pub(crate) const FILE_NAME: &str = "raft-reserved";
+/// Written by a rotation, before it carries a reservation in: a copy's own
+/// reservation reads the same as a carried one, and only a carried one says
+/// a group reached the shard before.
+pub(crate) const CARRIED_FILE_NAME: &str = "raft-reserved-carried";
 /// How far past the entry that needs it a raise goes: one synced write per
 /// million entries, and a gap of at most this many offsets after a re-form.
 pub(crate) const STEP: u64 = 1 << 20;
@@ -77,8 +81,22 @@ pub(crate) fn store(dir: &Path, index: u64) -> io::Result<()> {
     state_file::store(dir, FILE_NAME, &[&encode(index)])
 }
 
-/// Whether `path` is the reservation file in `dir` or the temporary its
-/// write leaves.
+/// Mark the reservation in `dir` as carried by a rotation, synced. Written
+/// before the reservation itself, so a carried reservation is never
+/// without it.
+pub(crate) fn mark_carried(dir: &Path) -> io::Result<()> {
+    state_file::store(dir, CARRIED_FILE_NAME, &[&[]])
+}
+
+/// Whether a rotation carried a reservation into `dir`.
+pub(crate) fn carried(dir: &Path) -> io::Result<bool> {
+    Ok(state_file::load(dir, CARRIED_FILE_NAME)?.is_some())
+}
+
+/// Whether `path` is the reservation file or its carried mark in `dir`, or
+/// the temporary either write leaves.
 pub(crate) fn is_reservation(dir: &Path, path: &Path) -> bool {
-    path == dir.join(FILE_NAME) || path == state_file::temporary(dir, FILE_NAME)
+    [FILE_NAME, CARRIED_FILE_NAME]
+        .iter()
+        .any(|name| path == dir.join(name) || path == state_file::temporary(dir, name))
 }

@@ -568,3 +568,23 @@ async fn only_a_carried_reservation_says_the_shard_was_reached_before() {
     );
     new.log.close().await.expect("close");
 }
+
+/// **A crash between a new copy's reservation and its first entry's fsync
+/// leaves a copy no group reached.** The reservation is its own, not a
+/// carried one, so the shard forms as usual.
+#[tokio::test]
+async fn a_crash_before_the_first_entry_is_synced_leaves_a_copy_not_reached() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let copies = root.open();
+    let opened = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    opened.log.close().await.expect("close");
+    drop(copies);
+    // What writer.rs leaves when the broker dies after the synced raise and
+    // before the entry reaches the disk.
+    reserved::store(&dir, reserved::STEP).expect("reserve");
+    assert!(!reached_before(&dir, config().index_spacing_bytes).expect("read"));
+}

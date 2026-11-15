@@ -248,6 +248,8 @@ impl CopyRoot {
         // Synced before the copy file, so a directory with a copy file
         // always carries the reservations it replaced.
         if let Some(index) = carried {
+            reserved::mark_carried(dir)?;
+            step()?;
             reserved::store(dir, index)?;
             step()?;
         }
@@ -284,8 +286,8 @@ pub fn highest_reserved(dir: &Path) -> io::Result<Option<u64>> {
 }
 
 /// Whether a group reached an earlier copy of `dir`: one rotations moved
-/// aside holds a log entry or a reservation, or `dir` holds a reservation
-/// but no entry, so a rotation carried it. A group formed on the rotated
+/// aside holds a log entry or a reservation, or a rotation carried a
+/// reservation into `dir` and it holds no entry yet. A group formed on the rotated
 /// copies alone would start at index 0 and give out offsets the old one
 /// acknowledged. A kept copy that cannot be read is an error.
 pub fn reached_before(dir: &Path, index_spacing_bytes: u64) -> io::Result<bool> {
@@ -299,10 +301,10 @@ pub fn reached_before(dir: &Path, index_spacing_bytes: u64) -> io::Result<bool> 
             return Ok(true);
         }
     }
-    // Every copy reserves its own entries, so a reservation beside entries
-    // says nothing about an earlier copy. Those entries came from a group,
-    // which the copy is then a member of.
-    if reserved::load(dir)?.is_none() {
+    // Every copy reserves before its first write, so its own reservation
+    // says nothing about an earlier copy, even with no entry after a crash.
+    // Entries in a carried copy came from a group it is then a member of.
+    if !reserved::carried(dir)? || reserved::load(dir)?.is_none() {
         return Ok(false);
     }
     let label = dir.display().to_string();

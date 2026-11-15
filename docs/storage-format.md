@@ -81,6 +81,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     engine                                   ← only in a Raft shard's directory: which engine writes it
     raft-purged                              ← a Raft log's last purged id
     raft-reserved                            ← a Raft copy's reserved index, once it took one
+    raft-reserved-carried                    ← empty; a rotation carried raft-reserved in
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
     poisoned                                 ← only after a failed fsync: the mark as of the failure
@@ -1252,6 +1253,16 @@ so before Raft counts the append. Every open raises it over the entries
 already on disk before Raft sees them, and loads it; a file that does not
 decode, or a raise that fails, fails the open. A rotation also writes it,
 when the copies it replaced had one.
+
+A rotation that carries a reservation first writes an empty
+`raft-reserved-carried` beside it, synced the same way. A copy's own
+reservation and a carried one hold the same bytes, and only a carried one
+means a group reached the shard before: a copy whose broker died between
+its first raise and its first entry's fsync holds a reservation and no
+entry, and no group reached it. A copy with the mark and no entry yet does
+not answer that it is blank (`docs/per-shard-raft.md`, "Re-forming a
+group"). The mark is never removed; once the copy
+holds an entry from a group it no longer matters.
 
 Written through a temporary, an fsync, a rename and a directory sync. A
 rotation reads the highest reservation of the old directory and every kept
