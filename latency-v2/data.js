@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794773753981,
+  "lastUpdate": 1794774131918,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74844,6 +74844,72 @@ window.BENCHMARK_DATA = {
             "range": "802.15",
             "unit": "us",
             "extra": "trials: 5\nmedian: 542.00\nmean: 890.60\nstdev: 802.15\ncv: 90.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "40d08067f3a6462b2c4282ac59da9584aed688c3",
+          "message": "feat(raft): Kafka produce and MQTT publish on a Raft stream shard (#2446) (#2633)\n\n* feat(raft): Kafka produce and MQTT publish on a Raft stream shard (#2446)\n\nA Kafka produce is proposed to the shard's Raft group through a new\nCluster::produce hook; an idempotent producer's records go one per batch\nat their own sequence, as the hybrid stores them. An MQTT batch is\nproposed as the connection's idempotent batch, one message per batch on a\nbroker that runs Raft shards. Both answer and refuse as the hybrid does.\n\n* test(raft): Kafka and MQTT on a Raft shard across a leader failover; docs (#2446)\n\nSpec-Unaffected: service-level routing of Kafka/MQTT writes onto the existing Raft publish and idempotent proposals; no change to the Raft entry format, apply, or the modelled batch protocol.\n\n* fix(raft): review of Kafka and MQTT on a Raft shard (#2446)\n\nKafka keys and headers bound for a Raft shard before raft_record_headers\nis finalized are refused with INVALID_RECORD before the quota is charged,\nnot dropped. A record refused behind a failed earlier record of its batch\nis answered with that failure rather than a fatal sequence gap. MQTT waits\nout an election within the forward budget instead of refusing not_owner.\nThe Raft CI job runs the Kafka and MQTT failover tests, which now cut a\nmulti-record Kafka batch with the kill and publish MQTT once per message.\nBatching MQTT on Raft is #2638.\n\nSpec-Unaffected: service-level answers and retries around existing Raft proposals; no change to the Raft entry format, apply, or the modelled batch protocol.\n\n* fix(raft): wait only for a leaderless Raft group, count the Kafka headers refusal (#2446)\n\nAn MQTT message on a broker that runs Raft waited out the whole forward\nbudget on any first not_owner, including refusals waiting cannot change\n(an anonymous forward, an owner that refuses the sequenced kind) and\nshards on the default engine. Only a Raft group here without a leader is\nwaited out now.\n\nA Kafka produce with keys or headers to a Raft partition before\nraft_record_headers is finalized is counted in\nfelix_kafka_produce_refused_total{reason=\"record_headers_not_finalized\"}.",
+          "timestamp": "2026-11-15T20:17:06Z",
+          "tree_id": "217e653fd4dba447f5e67600902174e48b83a6c1",
+          "url": "https://github.com/GetFelix/felix/commit/40d08067f3a6462b2c4282ac59da9584aed688c3"
+        },
+        "date": 1794774122641,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 75,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 75.00\nmean: 75.60\nstdev: 0.89\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 132,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.40\nstdev: 0.89\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 161,
+            "range": "5.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 161.00\nmean: 161.80\nstdev: 5.63\ncv: 3.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 90,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 90.00\nmean: 90.20\nstdev: 1.48\ncv: 1.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 194,
+            "range": "24.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 194.00\nmean: 205.00\nstdev: 24.58\ncv: 11.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 551,
+            "range": "879.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 551.00\nmean: 979.60\nstdev: 879.19\ncv: 89.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
