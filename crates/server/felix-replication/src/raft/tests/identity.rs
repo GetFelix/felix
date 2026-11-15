@@ -112,6 +112,84 @@ async fn the_first_members_are_the_copies_the_brokers_hold() {
     }
 }
 
+/// A broker a target adds joins by the copy its directory holds: the
+/// leader asks for its id, as the first members are asked for, and the
+/// driver adds that copy. A silent broker the group does not hold stops
+/// the call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_target_names_the_copy_a_new_broker_holds() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut opened = HashMap::new();
+    let mut logs = Vec::new();
+    for broker in BROKERS {
+        let member = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        opened.insert(broker, member.member);
+        logs.push(member.log);
+    }
+    let (a, key, within) = (cluster.runtime("a"), shard(0), Duration::from_secs(5));
+    let first = a
+        .first_members(&key, ["a", "b"], within)
+        .await
+        .expect("blank");
+    // c is cut while the group forms, since it is no member yet and would
+    // never see the leader.
+    cluster.net.cut.lock().insert("c".into());
+    a.initialize(&key, first).await.expect("initialize");
+    cluster.elected(0).await;
+    cluster.write(0, b"record").await;
+
+    match a.target_members(&key, BROKERS, within).await {
+        Err(NotBlank::Unanswered(member, _)) => assert_eq!(&*member.broker, "c"),
+        other => panic!("a silent new broker got a member id: {other:?}"),
+    }
+    // A silent broker the group holds keeps the member it has.
+    cluster.net.cut.lock().insert("b".into());
+    cluster.net.cut.lock().remove("c");
+    let kept = a
+        .target_members(&key, BROKERS, within)
+        .await
+        .expect("members");
+    assert_eq!(kept, opened.values().cloned().collect());
+    cluster.net.cut.lock().clear();
+
+    let voters = a
+        .target_members(&key, BROKERS, within)
+        .await
+        .expect("members");
+    assert_eq!(voters, opened.values().cloned().collect());
+    let target = Target {
+        voters: voters.clone(),
+        version: TargetVersion {
+            incarnation: 0,
+            counter: 1,
+        },
+    };
+    for runtime in cluster.runtimes() {
+        runtime.retarget(&key, target.clone());
+    }
+    eventually(|| {
+        BROKERS
+            .iter()
+            .all(|broker| cluster.runtime(broker).group(&key).expect("group").voters() == voters)
+            .then_some(())
+    })
+    .await;
+    cluster.stop().await;
+    for log in logs {
+        log.close().await.expect("close");
+    }
+}
+
 /// A copy whose directory was wiped comes back under a new id. A request
 /// for the old id is refused, the group still counts the old id as its
 /// voter, and the new copy never votes: the old promise is not made again

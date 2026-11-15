@@ -3030,6 +3030,19 @@ target's version. It keeps only the newest target it was told, in memory.
 Every member can be told. Only the one that leads acts, and one elected
 later acts on the target it holds.
 
+A target names members, not brokers, and a member is a copy id. The copy
+id of a broker the group does not have yet is minted on that broker, when
+it opens its shard directory with `GroupRuntime::open_copy`, so it is
+asked for, never guessed. `GroupRuntime::target_members` turns a list of
+brokers into the members a target names, the way the first members are
+asked for ("Forming a group"): a question to copy 0 is refused with the
+copy the broker holds. A broker that does not answer keeps the member the
+membership already names on it, so a down voter that stays does not block
+a change; a new broker that does not answer stops the call. A broker
+whose copy was wiped answers with its new id, so the target names the new
+copy: the driver adds it as a learner and drops the old id once the new
+copy has caught up.
+
 The control plane does not send targets yet, so no broker changes a
 group's membership in a running cluster today. The driver is exercised by
 tests that tell it a target directly.

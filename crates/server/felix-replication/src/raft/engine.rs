@@ -217,6 +217,17 @@ impl RaftEngine {
         self.runtime.retarget(shard, target)
     }
 
+    /// The members a target on `brokers` names, by the copy each broker
+    /// holds. See [`GroupRuntime::target_members`].
+    pub async fn target_members(
+        &self,
+        shard: &ShardKey,
+        brokers: impl IntoIterator<Item = &str>,
+        within: Duration,
+    ) -> Result<std::collections::BTreeSet<super::MemberId>, super::NotBlank> {
+        self.runtime.target_members(shard, brokers, within).await
+    }
+
     /// Where `shard`'s membership stands against its target, as this
     /// broker's member last saw. Only the leader's answer says anything:
     /// every other member is idle.

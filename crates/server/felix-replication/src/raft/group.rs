@@ -1581,6 +1581,19 @@ impl Group {
         metrics.membership_config.membership().voter_ids().collect()
     }
 
+    /// Every member of the latest membership this member holds, voters and
+    /// learners.
+    pub(crate) fn members(&self) -> BTreeSet<MemberId> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let membership = metrics.membership_config.membership();
+        membership
+            .voter_ids()
+            .chain(membership.learner_ids())
+            .collect()
+    }
+
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.positions.clone()
     }
