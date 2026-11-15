@@ -366,7 +366,8 @@ encoding as kind 52, whose section must hold one. It travels as
 `PlainSequencedForwardPublish` (64) instead: the `AuthorizedForwardPublish`
 body followed by the same two `u64`s, with no block section, and it decodes
 with no headers. That is the form a Raft shard's owner can take, since it
-refuses any forward with headers until Raft stores them. It goes only to an
+refuses a forward with headers until the fleet finalizes
+`raft_record_headers`. It goes only to an
 owner that offered `PLAIN_SEQUENCED_FORWARDS` and `SEQUENCED_FORWARDS`. A
 batch with a block still travels as kind 52, byte for byte as before. The
 MQTT listener, today's only sender of a sequenced forward, always attaches a

@@ -1307,18 +1307,18 @@ async fn a_trim_entry_is_counted_as_skipped() {
     led.cluster.stop().await;
 }
 
-/// A publish carrying `headers` for its one record and `publisher`.
+/// A publish carrying `publisher` and `headers` for its one record.
 fn publish_attributed(
     led: &Led,
     broker: &Broker,
     handle: &StreamHandle,
     payload: Bytes,
     publisher: Option<Bytes>,
-    headers: Bytes,
+    headers: Option<Bytes>,
 ) -> Result<Publishing, BrokerError> {
     let attribution = felix_broker::Attribution {
         publisher,
-        headers: Some(vec![Some(headers)]),
+        headers: headers.map(|headers| vec![Some(headers)]),
     };
     let proposed = led.engine.publish_with(
         broker,
@@ -1362,7 +1362,7 @@ async fn a_records_publisher_and_headers_reach_every_member() {
         &handle,
         Bytes::from_static(b"one"),
         Some(publisher.clone()),
-        headers.clone(),
+        Some(headers.clone()),
     );
     let outcome = published.expect("admitted").await.expect("joined");
     assert_eq!(outcome.expect("committed").offsets, Some((at, at)));
@@ -1408,7 +1408,7 @@ async fn headers_are_refused_until_the_fleet_stores_them_on_raft() {
         &handle,
         Bytes::from_static(b"one"),
         None,
-        headers,
+        Some(headers),
     );
     assert!(
         matches!(
@@ -1424,7 +1424,28 @@ async fn headers_are_refused_until_the_fleet_stores_them_on_raft() {
     let after = publish(&led, &broker, &handle, Bytes::from_static(b"after"));
     let outcome = after.await.expect("joined").expect("committed");
     assert_eq!(outcome.offsets, Some((at, at)));
-    let now = led.cluster.logs[&(leader, 0)].tail_offset().await;
+    let now = led.cluster.logs[&(leader.clone(), 0)].tail_offset().await;
     assert_eq!(now.expect("tail"), tail.expect("tail") + 1);
+
+    // A publisher is not refused but is not stored either: a member that
+    // cannot read the entry must not be sent one.
+    broker.record_publishers_when(|| true);
+    let named = publish_attributed(
+        &led,
+        &broker,
+        &handle,
+        Bytes::from_static(b"named"),
+        Some(Bytes::from_static(b"svc-orders")),
+        None,
+    );
+    let outcome = named.expect("admitted").await.expect("joined");
+    assert_eq!(outcome.expect("committed").offsets, Some((at + 1, at + 1)));
+    let read = felix_storage::log::ReadRange {
+        start: at + 1,
+        max_bytes: 1 << 20,
+    };
+    let log = &led.cluster.logs[&(leader, 0)];
+    let page = felix_storage::log::AppendOnlyLog::read_range(log, read).await;
+    assert_eq!(page.expect("read").records[0].publisher, None);
     led.cluster.stop().await;
 }

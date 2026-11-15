@@ -1765,8 +1765,8 @@ no version is refused, not read as zero.
 Two things are left for the pull request that puts stream shards on Raft
 (#2233):
 
-- An entry carries a record's payload and timestamp only. The publisher,
-  headers and marks come with adoption.
+- An entry carries a record's payload, timestamp and, since #2446, its
+  publisher and headers. Marks come with adoption.
 - The state machine keeps nothing on disk, so a restarted member applies
   its committed entries again, which reads them. That is fine for the
   tests here and too slow for a real shard.
@@ -2705,8 +2705,7 @@ shard's engine ("Head trims", above).
 > `a_group_operation_on_a_raft_shard_is_refused_by_name`.
 
 A Kafka produce and an MQTT publish to a Raft shard are refused by name
-too, before anything is claimed. Both write with a producer's sequence, and
-every MQTT message carries headers. A Kafka client gets `INVALID_REQUEST`,
+too, before anything is claimed. Both write with a producer's sequence. A Kafka client gets `INVALID_REQUEST`,
 which it does not retry; an MQTT client gets `PUBACK` 0x83 with the reason
 string `raft_stream`.
 
@@ -3160,8 +3159,9 @@ restarted member and a history read get them back.
 
 The rules for using them are the hybrid's, plus one fleet feature:
 
-- The publisher id is stored only when `publisher_principal` is finalized,
-  as on the hybrid. Without it the record is stored with no publisher.
+- The publisher id is stored only when `publisher_principal` and
+  `raft_record_headers` are both finalized. Without them the record is
+  stored with no publisher, and the publish is not refused.
 - Headers need `record_headers` and then `raft_record_headers`. A publish
   with headers before both are finalized is refused with
   `feature_not_enabled`, naming the missing feature, and nothing is
@@ -3356,8 +3356,8 @@ with the leader, and the requester sends it there.
 > `services/felix-broker-service/src/serving/forward/owner/tests.rs`,
 > `a_forward_to_a_member_that_does_not_lead_is_followed_to_the_leader`.
 
-The records a Raft stream stores carry no publisher or headers, so its
-subscribers are told neither. The state machine remembers the last 64 runs
+A follower's subscriber gets each record's publisher and headers from its
+log ("Publishers and record headers", above). The state machine remembers the last 64 runs
 of entries that hold no record; a batch committed after more runs than
 that, or on a member that resumed from a snapshot above its run, reports
 none skipped.

@@ -366,6 +366,14 @@ impl Broker {
             if let Some(headers) = &mut attribution.headers {
                 headers.drain(..held.min(headers.len()));
             }
+            // A rest with no block is stored, and so read back, without any.
+            if attribution
+                .headers
+                .as_ref()
+                .is_some_and(|headers| headers.iter().all(Option::is_none))
+            {
+                attribution.headers = None;
+            }
             position = unfinished.held;
             batch_first = Some(first);
         } else {
