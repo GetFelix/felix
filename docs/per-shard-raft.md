@@ -3105,9 +3105,8 @@ whose copy was wiped answers with its new id, so the target names the new
 copy: the driver adds it as a learner and drops the old id once the new
 copy has caught up.
 
-The control plane does not send targets yet, so no broker changes a
-group's membership in a running cluster today. The driver is exercised by
-tests that tell it a target directly.
+Where a broker's targets come from is in "Where a target comes from"
+below.
 
 The driver works in looks. On each look it reads, from the leader's own
 log, the latest membership, whether that entry is committed, whether an
@@ -3149,30 +3148,14 @@ removes itself. A leader that a joint membership leaves out prefers a
 successor its own newer target keeps, so the next leader is not one that
 target moves out again.
 
-**What the control plane must guarantee (not yet wired).** The grown set
-keeps the membership's version, so a successor holding a different target
-does not see it as stale. Two members holding targets that each leave the
-other's seat out hand leadership back and forth, paced by the transfer
-count above. Members do not report the target version they hold, so the
-leader cannot check its successor's.
-
-A leader steps as soon as it holds a target, so the control plane's only
-lever is the order it delivers in. When a target removes the leader's
-broker, the control plane must first have the new target acknowledged by
-every voter the target keeps (the possible successors), and only then send
-it to the leader. A voter the target drops, or one that is down, does not
-need it: a down voter cannot be chosen as successor, because a successor
-must have matched the leader's last index. Members do not acknowledge
-targets yet, so this needs a target acknowledgement in the protocol
-(#2591).
-
-Two weaker cases cost liveness only, never safety, because every set the
-driver writes contains its leader and passes the same checks:
-
-- A successor still holding an older target whose version equals the
-  membership's shrinks the grown set back to that older target.
-- A successor holding no target parks on the grown set, with the old
-  leader's seat still a voter, and reports Idle until a target arrives.
+**A target lasts one term.** A member acts on a target only in the
+term its broker read it for, and a new leader waits for a fresh one
+("Where a target comes from"). Without that, two members holding targets
+that each leave the other's seat out would hand leadership back and forth:
+the grown set keeps the membership's version, so neither sees the other's
+step as stale. With it, every leader acts on a target at least as new as
+the one its predecessor acted on, so no successor shrinks the grown set
+back to an older target or parks on it holding none (#2591).
 
 **Refusals.** A step can fail in two ways, and the driver treats them
 differently:
@@ -3230,12 +3213,82 @@ publishes both get their index from openraft. A copy with a new copy id is
 handled by the same loop: the set names the broker, the member id differs,
 so the old member is swapped for a learner with the new id.
 
-The control plane no longer assigns leaders. Brokers report who leads each
-shard, the committed membership and the commit offset. The routing table
+The control plane no longer assigns leaders. The design has brokers
+report who leads each shard, the committed membership and the commit
+offset; those reports are not built yet. The routing table
 uses the leader as a hint, and the offset is the floor a re-form starts
 from. A broker that gets a write
 for a shard it does not lead answers with the leader it knows. To balance
 leaders the control plane asks the current leader for a transfer.
+
+#### Where a target comes from
+
+A broker turns placement into a target for each Raft shard its member
+leads. The target's brokers are the ones placement names for the shard,
+its members are what `GroupRuntime::target_members` asks those brokers
+for, and its version is the restore incarnation followed by the
+assignment's generation. The generation rises on every write of the
+shard's assignment, so a newer placement is a newer target. A write that
+keeps the same brokers gives a newer version of the same voters, which
+the leader stamps. The restore incarnation is 0 until the control plane
+records one (#2529); until then a target written after a restore that
+rewound the generation is older than the membership and refused, and the
+group waits for a newer write.
+
+The broker tells its member a target only for the term that member leads,
+and only from a view of placement whose request started after the broker
+learned of that term (the shard feed's `as_of`). A target told in an
+earlier term is not acted on. A new leader whose broker has no fresh view
+asks the feed for one at once, as a lease renewal does.
+
+Why that is enough: a leader acts on a target only after the control
+plane has written it. It hands leadership over after that, and its
+successor's term starts after the handover. A view read after the term
+starts holds that target or a newer one. So the versions leaders act on
+never go back from one leader to the next, which is what #2591 asks of
+the control plane, without members acknowledging targets. Nothing new
+crosses the wire: no capability bit, no fleet feature, no metadata field.
+
+```mermaid
+sequenceDiagram
+    participant CP as Control plane
+    participant A as Broker A (leads)
+    participant B as Broker B
+    CP->>CP: write placement {B, C}, generation 7
+    A->>CP: read the feed (after A's term began)
+    A->>A: target {B, C} at 0.7: add C, grow to {A, B, C}
+    A->>B: transfer leadership
+    B->>CP: read the feed (after B's term began)
+    B->>B: target at 0.7 or newer: shrink to {B, C}
+```
+
+While the control plane is down a new leader reads no fresh view, so it
+takes no step: the group keeps serving with the membership it has, the
+grown set included, and moves on once the feed answers. That costs
+liveness only. The placement model checks safety with a leader acting on
+any target ever written (`StaleTargets`), which covers every target this
+rule lets through.
+
+What placement does not do yet for a Raft shard:
+
+- **A dropped copy keeps its directory.** Deleting it needs the control
+  plane's doomed set and the leaders' membership reports ("Membership"
+  above, `DoomGuard` in the model), which are new metadata.
+- **A move waits on a report Raft shards do not send.** Placement's move
+  adds the new broker and drops the old one once the leader reports the
+  new copy caught up. A Raft leader reports nothing to placement yet, and
+  a shard that switched to Raft is not placed at all.
+- **A short set forms nothing.** A group forms only once placement names
+  as many brokers as the stream's replica count ("Forming a group").
+- **Requests to a broker with no member go by placement.** A broker with
+  a member routes by its group's leader hint. One without a member still
+  sends to the leader placement names, which can be wrong mid-move.
+
+A wiped copy is replaced by the same path: its broker answers
+`target_members` with its new copy id, the target names that id, and the
+leader adds it as a learner and drops the old id once it has caught up.
+The old id never votes again, because the wiped directory opens under a
+new copy id ("Group and member identity").
 
 ### Shards with one replica
 
