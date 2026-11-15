@@ -61,6 +61,28 @@ impl StreamEngine {
     }
 }
 
+impl StreamEngine {
+    /// Confirm by a read-index round that this broker still leads `shard`'s
+    /// Raft group in `term`, before a read of the shard's state takes its
+    /// value. `None` when the hybrid runs the shard.
+    pub async fn confirm_raft_read(
+        &self,
+        shard: &ShardKey,
+        term: u64,
+    ) -> Option<Result<(), CommitError>> {
+        #[cfg(feature = "raft")]
+        {
+            let raft = self.raft(shard)?;
+            Some(raft.confirm_read(shard, term).await)
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = (shard, term);
+            None
+        }
+    }
+}
+
 /// A publish to a Raft shard refused with nothing proposed.
 #[derive(Debug, thiserror::Error)]
 pub enum RaftRefusal {
@@ -312,6 +334,64 @@ impl StreamEngine {
 }
 
 impl StreamEngine {
+    /// Propose an atomic commit to `shard`'s Raft group, at the `term`
+    /// routing answered: `event` and `ops` as one entry, only at offset
+    /// `expected` when there is one. `None` when the hybrid runs the shard.
+    ///
+    /// A commit refused at its final index takes an offset, as a
+    /// conditional publish does. Either answer waits for the commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_on_raft(
+        &self,
+        broker: &felix_broker::Broker,
+        handle: &felix_broker::StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        event: bytes::Bytes,
+        ops: Vec<felix_broker::StateOp>,
+        publisher: Option<bytes::Bytes>,
+        expected: Option<u64>,
+        timeout: Duration,
+    ) -> Option<Result<RaftPublish, RaftRefusal>> {
+        #[cfg(feature = "raft")]
+        {
+            use felix_replication::raft::AckAt;
+            let raft = self.raft(shard)?;
+            if self.raft_term(shard) != Some(term) {
+                return Some(Err(RaftRefusal::NotLeading { term }));
+            }
+            let ack = broker.durable_storage().map_or(AckAt::Flushed, |storage| {
+                AckAt::for_fsync(&storage.config().fsync_mode)
+            });
+            let proposed = raft.commit_at(
+                broker,
+                handle,
+                shard,
+                Some(term),
+                event,
+                ops,
+                publisher,
+                expected,
+                ack,
+                timeout,
+            );
+            Some(
+                proposed
+                    .map(|proposed| RaftPublish(Some(proposed)))
+                    .map_err(RaftRefusal::Broker),
+            )
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = (
+                broker, handle, shard, term, event, ops, publisher, expected, timeout,
+            );
+            None
+        }
+    }
+}
+
+impl StreamEngine {
     /// Propose a head trim to `shard`'s Raft group, at the `term` routing
     /// answered: hide the shard below `before`, only if its next offset is
     /// `expected`. `None` when the hybrid runs the shard.
@@ -492,6 +572,14 @@ impl Engine for StreamEngine {
             };
         }
         self.hybrid.committed_bound(shard)
+    }
+
+    fn records_end(&self, shard: &ShardKey, end: u64) -> u64 {
+        #[cfg(feature = "raft")]
+        if let Some(raft) = self.raft(shard) {
+            return raft.records_end(shard, end);
+        }
+        self.hybrid.records_end(shard, end)
     }
 
     async fn confirm_read(&self, shard: &ShardKey) -> anyhow::Result<()> {

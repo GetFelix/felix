@@ -710,6 +710,18 @@ pub struct StreamHandle {
 }
 
 impl StreamHandle {
+    /// Hold releases just before their ring append, for tests outside `broker`.
+    #[cfg(test)]
+    pub(crate) fn stall_releases(&self, stalled: bool) {
+        self.state.stall_release.set(stalled);
+    }
+
+    /// Whether a release is held by [`Self::stall_releases`].
+    #[cfg(test)]
+    pub(crate) fn release_stalled(&self) -> bool {
+        self.state.stall_release.holds()
+    }
+
     /// The stream's sequence, for tests outside `broker`.
     #[cfg(test)]
     pub(crate) fn tail_seq(&self) -> u64 {

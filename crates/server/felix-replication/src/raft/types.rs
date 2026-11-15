@@ -190,6 +190,10 @@ pub(crate) struct Command {
     /// conditional, so it is proposed with `expected` set, and read back
     /// from the log it holds `trim` alone.
     pub(crate) trim: Option<u64>,
+    /// Set on an atomic commit: the payload is the encoded commit record (an
+    /// event and its state updates), stored with the log's commit mark so
+    /// every member's state view is rebuilt from the same record.
+    pub(crate) commit: bool,
     /// The principal that published the record, stored with it.
     pub(crate) publisher: Option<Bytes>,
     /// The record's encoded key and headers block, stored as given. Boxed
@@ -214,6 +218,7 @@ impl PartialEq for Command {
             producer,
             expected,
             trim,
+            commit,
             publisher,
             headers,
             written: _,
@@ -223,6 +228,7 @@ impl PartialEq for Command {
             && *producer == other.producer
             && *expected == other.expected
             && *trim == other.trim
+            && *commit == other.commit
             && *publisher == other.publisher
             && *headers == other.headers
     }
@@ -251,6 +257,7 @@ impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.trim {
             Some(before) => write!(f, "trim below {before}"),
+            None if self.commit => write!(f, "commit of {} bytes", self.payload.len()),
             None => write!(f, "record of {} bytes", self.payload.len()),
         }
     }

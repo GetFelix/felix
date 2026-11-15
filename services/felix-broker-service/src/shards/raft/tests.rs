@@ -90,9 +90,22 @@ pub(crate) async fn broker_with_config(
     consistency: ConsistencyLevel,
     config: LogConfig,
 ) -> Arc<Broker> {
+    let broker = Broker::new(felix_storage::EphemeralCache::new().into());
+    registered(broker, root, replicas, incarnation, consistency, config).await
+}
+
+/// [`broker_with_config`] on `broker`, for a test that needs it built
+/// another way.
+pub(crate) async fn registered(
+    broker: Broker,
+    root: &Path,
+    replicas: u32,
+    incarnation: u64,
+    consistency: ConsistencyLevel,
+    config: LogConfig,
+) -> Arc<Broker> {
     let storage = felix_broker::DurableStorage::open(root, config).expect("storage");
-    let broker =
-        Broker::new(felix_storage::EphemeralCache::new().into()).with_durable_storage(storage);
+    let broker = broker.with_durable_storage(storage);
     broker.require_registered_streams();
     broker.leave_durable_streams_to_engines();
     broker.register_tenant("t1").await.expect("tenant");
