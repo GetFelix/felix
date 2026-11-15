@@ -1643,9 +1643,10 @@ A peer that answers only some of its calls can count as down now and then,
 and is then retried early at most once a second, which openraft's backoff
 would do anyway.
 
-Broker-wide retention (`FELIX_DURABLE_RETENTION_BYTES` and
-`FELIX_DURABLE_RETENTION_SECONDS`) does not apply to Raft shards yet (#2602):
-their logs open without it.
+Retention does not apply to Raft shards yet (#2602). Neither the broker-wide
+bounds (`FELIX_DURABLE_RETENTION_BYTES` and `FELIX_DURABLE_RETENTION_SECONDS`)
+nor a stream's own `retention` in the control plane bound a Raft shard's log:
+it opens without them and grows until the stream is deleted.
 
 A snapshot must not cost a record either, and a stream shard's snapshot
 holds none. Two settings keep that true until retention is designed:

@@ -1880,7 +1880,9 @@ broker applies it when it registers the stream, before any shard opens, and
 again on every update, which reaches logs already open: `DiskLog::set_retention`
 swaps the bounds the next sweep uses and starts the timer if it was not
 running. The control plane refuses a zero bound, which no log could meet.
-Group cursor and dead-letter logs keep the broker's bounds.
+Group cursor and dead-letter logs keep the broker's bounds. A shard that runs on
+Raft takes no retention yet, from the stream or the broker: its log grows until
+the stream is deleted (#2602).
 
 > `a_streams_retention_bounds_its_log_and_updates_in_place`
 
