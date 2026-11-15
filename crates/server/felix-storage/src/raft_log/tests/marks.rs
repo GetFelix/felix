@@ -366,3 +366,39 @@ async fn a_failed_batched_mark_fails_later_appends() {
     }
     assert!(copies.mark_log().failure().is_some());
 }
+
+/// On a relaxed root Raft hears of an append at the write, but the batched
+/// mark still names only what is synced: a mark above the log would read as
+/// a lost entry after a crash and rotate the copy for nothing.
+#[tokio::test]
+async fn the_batched_mark_of_a_written_commit_log_names_only_synced_entries() {
+    let root = Root::new();
+    crate::run_state::begin(root.path(), true, None, None, || false, || [7; 16]).expect("begin");
+    let copies = root.open();
+    let relaxed = LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..config()
+    };
+    let opened = copies
+        .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", relaxed)
+        .await
+        .expect("open copy");
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a written-commit log");
+    let batched = LogMarkMode::Batched(std::time::Duration::from_secs(3600));
+    log.mark_with(opened.marks.clone(), batched).expect("marks");
+    append(&mut log, &[normal(1, 0, "a"), normal(1, 1, "b")])
+        .await
+        .expect("append")
+        .await
+        .expect("counted before any fsync");
+    copies.mark_log().mark_batched().await.expect("batch");
+    assert_eq!(root.marks_on_disk().expect("marks").log, None);
+    log.disk_log().sync().await.expect("sync");
+    let mut positions = log.positions();
+    positions
+        .wait_for(|at| at.flushed == Some(point(1, 1)))
+        .await
+        .expect("flushed");
+    copies.mark_log().mark_batched().await.expect("batch");
+    assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(1, 1)));
+}
