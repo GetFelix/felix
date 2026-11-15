@@ -89,8 +89,13 @@ impl EntryCodec<ShardTypes> for ShardCodec {
             timestamp_micros: record.timestamp_micros,
             payload: record.payload,
             producer: ProducerMark::of_record(record.mark)?,
+            expected: None,
             written: None,
         })
+    }
+
+    fn blank_at(&self, data: &Command, index: u64) -> bool {
+        data.blank_at(index)
     }
 
     fn written_token(&self, data: &Command) -> Option<WrittenToken> {

@@ -47,6 +47,7 @@ async fn leave_one_behind(led: &Led, records: usize) -> (String, u64) {
     while left > 0 {
         let n = left.min(1000);
         let batch = Batch {
+            expected: None,
             records: vec![record.clone(); n],
             ack: AckAt::Flushed,
             term: None,

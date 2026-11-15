@@ -65,6 +65,68 @@ impl Broker {
             + 'static,
         E: Send + 'static,
     {
+        self.propose(handle, payloads, None, stalled_after, propose)
+    }
+
+    /// [`Self::propose_publish`] for a conditional publish: one record that
+    /// must be written at offset `expected`.
+    ///
+    /// The engine writes the record wherever its turn falls, and `propose`
+    /// must have it store a blank entry in place of the record when that is
+    /// not `expected`, decided where the leader appends it, at the entry's
+    /// final index, and copied by followers. Such a batch is
+    /// never delivered, and [`ProposedPublish::complete`] answers it with
+    /// `mismatch` given the offset after it, the shard's next offset once
+    /// the blank is written. It is answered only once committed, so the
+    /// outcome is the group's. See `docs/per-shard-raft.md`, "Conditional
+    /// publishes".
+    ///
+    /// No record is [`BrokerError::EmptyConditionalPublish`] and more than
+    /// one is [`BrokerError::NotOnEngineStream`], with `propose` not called.
+    pub fn propose_publish_at<F, E>(
+        &self,
+        handle: &StreamHandle,
+        payload: Vec<Bytes>,
+        expected: u64,
+        stalled_after: Duration,
+        mismatch: impl FnOnce(u64) -> E + Send + 'static,
+        propose: impl FnOnce(u64) -> F,
+    ) -> Result<ProposedPublish<E>>
+    where
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
+        E: Send + 'static,
+    {
+        if payload.is_empty() {
+            return Err(BrokerError::EmptyConditionalPublish);
+        }
+        if payload.len() != 1 {
+            return Err(BrokerError::NotOnEngineStream {
+                what: SEVERAL_CONDITIONAL,
+            });
+        }
+        let expected = Expected {
+            offset: expected,
+            mismatch: Box::new(mismatch),
+        };
+        self.propose(handle, payload, Some(expected), stalled_after, propose)
+    }
+
+    fn propose<F, E>(
+        &self,
+        handle: &StreamHandle,
+        payloads: Vec<Bytes>,
+        expected: Option<Expected<E>>,
+        stalled_after: Duration,
+        propose: impl FnOnce(u64) -> F,
+    ) -> Result<ProposedPublish<E>>
+    where
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
+        E: Send + 'static,
+    {
         let state = &handle.state;
         if !state.active.load(std::sync::atomic::Ordering::Acquire) {
             return Err(BrokerError::StreamHandleInactive(handle.id()));
@@ -88,12 +150,16 @@ impl Broker {
             .map_err(|waited| BrokerError::ProposalsStalled { waited })?;
         Ok(ProposedPublish {
             count: payloads.len() as u64,
-            answer_early: handed.answer_early,
+            // Whether the record landed where expected is known from where
+            // it was written, but the answer waits for the commit so it is
+            // the group's outcome.
+            answer_early: handed.answer_early && expected.is_none(),
             answer_at: None,
             finishing: Some(Box::pin(finish(
                 handle.clone(),
                 payloads,
                 timestamp_micros,
+                expected,
                 handed.queued,
                 handed.turn,
             ))),
@@ -272,6 +338,16 @@ pub struct OwedRecords {
 /// What [`Broker::propose_idempotent`] refuses, as
 /// [`BrokerError::NotOnEngineStream`] names it.
 const SEVERAL_RECORDS: &str = "idempotent batches of more than one record";
+
+/// What [`Broker::propose_publish_at`] refuses.
+const SEVERAL_CONDITIONAL: &str = "conditional publishes of more than one record";
+
+/// The offset a conditional publish must land at, and its answer when it
+/// does not.
+struct Expected<E> {
+    offset: u64,
+    mismatch: Box<dyn FnOnce(u64) -> E + Send>,
+}
 
 /// A producer's turn on a stream. While it is held, no other batch of the
 /// producer is checked against the log. See [`Broker::propose_idempotent`].
@@ -477,6 +553,7 @@ async fn finish<E>(
     handle: StreamHandle,
     payloads: Vec<Bytes>,
     timestamp_micros: u64,
+    expected: Option<Expected<E>>,
     committed: Committing<E>,
     turn: CommitTurn<'static>,
 ) -> std::result::Result<PublishOutcome, E> {
@@ -485,6 +562,13 @@ async fn finish<E>(
     let first_offset = match &committed {
         Ok(at) => at.end.checked_sub(count),
         Err(_) => None,
+    };
+    // Off its offset, the leader's log stored a blank, which followers copy.
+    // Its outcome is known, so it is held as a blank, not a gap: nothing is
+    // sent and the replay ring stays.
+    let missed = match (&committed, &expected) {
+        (Ok(at), Some(expected)) if first_offset != Some(expected.offset) => Some(at.end),
+        _ => None,
     };
     if let (Ok(at), None) = (&committed, first_offset) {
         tracing::error!(
@@ -497,6 +581,7 @@ async fn finish<E>(
     let _ = turn.wait().await;
     let state = &handle.state;
     let batch = match (&committed, first_offset) {
+        (Ok(_), Some(first_offset)) if missed.is_some() => HeldBatch::blank(first_offset),
         (Ok(at), Some(first_offset)) => HeldBatch {
             payloads,
             publisher: None,
@@ -509,6 +594,7 @@ async fn finish<E>(
             skipped_before: at.skipped_before,
             gap: false,
             gap_end: None,
+            blank: false,
         },
         (Err(failed), _) => HeldBatch::gap(failed.written_end),
         (Ok(at), None) => HeldBatch::gap(Some(at.end)),
@@ -520,6 +606,9 @@ async fn finish<E>(
         spawn_release(&handle);
     }
     committed.map_err(|failed| failed.error)?;
+    if let (Some(tail), Some(expected)) = (missed, expected) {
+        return Err((expected.mismatch)(tail));
+    }
     Ok(PublishOutcome {
         subscribers: 0,
         offsets: first_offset.map(|first| (first, first + count - 1)),

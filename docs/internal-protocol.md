@@ -1190,7 +1190,15 @@ After the report byte comes the message:
   membership, 3 for the one record of an idempotent batch (producer id
   `u64` and sequence `u64`, then the record), 4 for a record of an
   idempotent batch of several (producer id `u64`, sequence `u64`, position
-  `u32`, batch length `u32`, then the record).
+  `u32`, batch length `u32`, then the record), 5 for a conditional
+  publish's record (the offset it must be written at, `u64`, then the
+  record). A member writes entry 5 as the record only when the entry's
+  index is that offset, and as a blank entry otherwise. A leader replicates
+  entries read back from its log, which hold only that outcome, so it sends
+  entry 5 to no one today. Adding it left the layout at 5, so every other
+  frame is byte-identical to a build without it, and such a build refuses
+  a conditional entry by its tag (`5 is not an entry payload`) rather
+  than store the record unconditionally.
 - **Vote and pre-vote**: the candidate's vote, its last log id (optional),
   and the vote of the leader that asked for the election (optional), which
   is present only when a leader hands over leadership.

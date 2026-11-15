@@ -394,6 +394,7 @@ impl Led {
             payload: Bytes::from_static(b"proposed"),
         };
         let batch = Batch {
+            expected: None,
             records: vec![record],
             ack: AckAt::Written,
             term: None,

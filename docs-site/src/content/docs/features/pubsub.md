@@ -169,24 +169,30 @@ A few things to know:
   writes when it takes over. After a failover the expected offset is stale
   even with no rival, and the refusal says where the shard is now.
 - A refused publish consumes no offset, so the next write is not held up and
-  leaves no gap.
+  leaves no gap. On the Raft engine (`FELIX_SHARD_ENGINE=raft`) the leader
+  decides at the offset the entry lands at, so a refusal does consume one
+  offset: a gap that readers skip, and the tail in the refusal is past it.
 - A batch of several records is not all or nothing on a `Quorum` stream. After
   an error with an unknown outcome (a dropped connection, a quorum timeout, a
   lost leader) any prefix of it may exist. `felix_client::outcome_unknown` tells
-  that from a refusal that wrote nothing. On the Raft engine
-  (`FELIX_SHARD_ENGINE=raft`) a batch cut by a lapsed write lease can be any
-  subset of its records, not a prefix. Use a [commit](/features/atomic-commits/)
-  when the batch must be all or nothing.
+  that from a refusal that wrote nothing. On the Raft engine a conditional
+  publish carries exactly one record, a batch of several is refused, and like
+  any Raft publish it does not keep the publisher id. Use a
+  [commit](/features/atomic-commits/) when the batch must be all or nothing.
 - If the answer is lost, do not resend: the retry would be refused by your own
-  write. Read the shard at the expected offset to see whether it landed. On the
-  Raft engine a cut batch can leave a later record of it at that offset, so
-  compare the payload you read with the one you sent, not just the offset. To
+  write. Read the shard at the expected offset and check both that the record you
+  get is at that offset and that it carries the payload you sent: another
+  publisher may have taken the offset, so a record there is not proof that
+  yours landed. On the Raft engine a refused
+  publish leaves a blank where its entry landed, which reads skip. To
   retry a batch that landed whole without checking, publish through an
   [idempotent producer](/clients/python/#idempotent-producers) instead. It
   recognises a batch only once all of it is held, so a re-send after a cut can
   write the records that did land a second time.
 - The broker leading the shard answers it; it is never forwarded. On a
-  `Leader` stream the fence is only as strong as the leader's lease.
+  `Leader` stream the fence is only as strong as the leader's lease. On the
+  Raft engine it does not depend on the lease: the answer waits for the commit
+  at every level.
 - It needs a durable stream. Negotiated as `FEATURE_PUBLISH_CONDITIONAL`.
 - `commit_if` is the same check on an [atomic commit](/features/atomic-commits/).
 
