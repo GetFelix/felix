@@ -862,9 +862,10 @@ pub trait EngineShards: Send + Sync {
     fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
 
     /// Stop every member and close its log. The broker calls it once, when
-    /// it stops, before storage is flushed.
-    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        Box::pin(async {})
+    /// it stops, before storage is flushed. False when a log failed to
+    /// close, here or earlier, so the stop may have left it unsynced.
+    fn shutdown(&self) -> std::pin::Pin<Box<dyn Future<Output = bool> + Send + '_>> {
+        Box::pin(async { true })
     }
 }
 

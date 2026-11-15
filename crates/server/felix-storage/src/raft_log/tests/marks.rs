@@ -402,3 +402,39 @@ async fn the_batched_mark_of_a_written_commit_log_names_only_synced_entries() {
     copies.mark_log().mark_batched().await.expect("batch");
     assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(1, 1)));
 }
+
+/// On a relaxed root the callback has fired before the exact mark is
+/// written, so a mark write that fails stops the log instead of leaving
+/// `flushed` stuck below what it holds.
+#[tokio::test]
+async fn a_failed_exact_mark_of_a_written_commit_log_stops_the_log() {
+    let root = Root::new();
+    crate::run_state::begin(root.path(), true, None, None, || false, || [7; 16]).expect("begin");
+    let copies = root.open();
+    let relaxed = LogConfig {
+        fsync_mode: FsyncMode::None,
+        ..config()
+    };
+    let opened = copies
+        .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", relaxed)
+        .await
+        .expect("open copy");
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a written-commit log");
+    log.mark_with(opened.marks.clone(), LogMarkMode::Exact)
+        .expect("marks");
+    copies.mark_log().fail_next_write();
+    append(&mut log, &[normal(1, 0, "a")])
+        .await
+        .expect("append")
+        .await
+        .expect("counted before any fsync");
+    log.disk_log().sync().await.expect("sync");
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        while !log.disk_log().is_poisoned() {
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the failed mark stops the log");
+    assert_eq!(log.positions().borrow().flushed, None);
+}

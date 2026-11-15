@@ -65,6 +65,9 @@ pub(crate) struct RaftShards {
     /// open: a member opened strict stays strict until it opens again.
     fleet: Arc<FleetGate>,
     leading: Arc<Leading>,
+    /// Set when a member's log failed to close: its last sync may not have
+    /// run, so the broker must not record a clean stop.
+    close_failed: std::sync::atomic::AtomicBool,
     /// Every Raft shard in the feed and the broker its placement names as
     /// leader: where a request goes while no member is open here.
     placed: parking_lot::Mutex<HashMap<ShardKey, String>>,
@@ -170,6 +173,7 @@ impl RaftShards {
             local,
             fleet,
             leading,
+            close_failed: std::sync::atomic::AtomicBool::new(false),
             placed: parking_lot::Mutex::default(),
             forming: parking_lot::Mutex::default(),
             put_off: parking_lot::Mutex::default(),
@@ -499,6 +503,8 @@ impl RaftShards {
             follow.abort();
         }
         if let Err(err) = member.log.close().await {
+            self.close_failed
+                .store(true, std::sync::atomic::Ordering::Release);
             tracing::warn!(shard = ?key, error = %err, "could not close a Raft member's log");
         }
     }
@@ -801,7 +807,7 @@ impl EngineShards for RaftShards {
         let _ = self.wake.set(wake);
     }
 
-    fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
         Box::pin(async move {
             let mut open = self.open.lock().await;
             self.placed.lock().clear();
@@ -809,6 +815,7 @@ impl EngineShards for RaftShards {
                 self.close_member(&key, member).await;
             }
             self.runtime.shutdown().await;
+            !self.close_failed.load(std::sync::atomic::Ordering::Acquire)
         })
     }
 }

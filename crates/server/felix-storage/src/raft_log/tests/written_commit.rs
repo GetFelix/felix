@@ -122,6 +122,48 @@ async fn a_failed_reservation_write_fails_the_append_and_fires_no_callback() {
         rx.try_recv().is_err(),
         "no callback for an unreserved entry"
     );
+    // The raise comes before the write, so nothing a restart would count
+    // as flushed sits above the reservation.
+    assert_eq!(raft.disk_log().tail_now(), 0, "the entry was not written");
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    std::fs::remove_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("unblock");
+    let raft = open_under(root.path(), FsyncMode::None).expect("reopen");
+    let tail = raft.disk_log().tail_now();
+    assert!(
+        tail == 0 || reserved::load(&dir).expect("load") >= Some(tail - 1),
+        "a restart finds every entry it holds reserved"
+    );
+}
+
+/// **A copy written on commit and reopened relaxed raises its reservation
+/// over what it holds before Raft sees it.** Raft counts every entry it
+/// finds at start as flushed, and a copy that never wrote relaxed has no
+/// reservation at all. The open fails when the raise does.
+#[tokio::test]
+async fn a_relaxed_open_reserves_the_entries_already_on_disk() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(root.path(), FsyncMode::OnCommit).expect("open");
+    let entries: Vec<_> = (0..=2).map(|index| normal(1, index, "a")).collect();
+    append(&mut raft, entries).await.expect("append");
+    let dir = raft.disk_log().dir().to_path_buf();
+    assert_eq!(reserved::load(&dir).expect("load"), None);
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+
+    std::fs::create_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("block");
+    let err = open_under(root.path(), FsyncMode::None)
+        .err()
+        .expect("an open whose raise fails is refused");
+    assert_eq!(reserved::load(&dir).expect("load"), None, "{err}");
+    std::fs::remove_dir(state_file::temporary(&dir, reserved::FILE_NAME)).expect("unblock");
+
+    let _raft = open_under(root.path(), FsyncMode::None).expect("reopen relaxed");
+    assert_eq!(
+        reserved::load(&dir).expect("load"),
+        Some(2 + reserved::STEP)
+    );
 }
 
 #[tokio::test]

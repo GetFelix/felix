@@ -265,7 +265,19 @@ where
             )));
         }
         let purged = purged::load(log.dir())?;
-        let reserved = reserved::load(log.dir())?;
+        let mut reserved = reserved::load(log.dir())?;
+        if written_commit {
+            // Raft counts every entry it finds at start as flushed, so the
+            // reservation covers them before the log is handed over. A copy
+            // opened on commit before, or one whose last raise failed after
+            // its write, can hold entries above it.
+            let tail = log.tail_now();
+            if tail > 0 && reserved.is_none_or(|reserved| reserved < tail - 1) {
+                let next = (tail - 1).saturating_add(reserved::STEP);
+                reserved::store(log.dir(), next)?;
+                reserved = Some(next);
+            }
+        }
         Ok(Self {
             shared: Arc::new(Shared {
                 log,

@@ -368,6 +368,27 @@ async fn commit_now_answers_only_when_there_is_nothing_to_wait_for() {
     assert!(matches!(log.commit_now(&pending), Some(Err(_))));
 }
 
+/// A failed rollover wakes a flush waiting for a sync that will not come.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_failed_rollover_wakes_a_waiting_flush() {
+    let dir = tempdir().expect("dir");
+    let log = open(&dir, FsyncMode::None);
+    let pending = log.append_pending(&records(&["a"])).await.expect("append");
+    let waiter = {
+        let log = log.clone();
+        tokio::spawn(async move { log.synced(&pending).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    log.inner
+        .record_roll_failure(&crate::StorageError::SyncFailed("injected".to_string()));
+    let synced = tokio::time::timeout(std::time::Duration::from_secs(10), waiter)
+        .await
+        .expect("woken")
+        .expect("joined");
+    assert!(synced.is_err(), "the log failed");
+}
+
 /// A restart in the boot that poisoned the log: the failed flush's bytes are
 /// still in the page cache and read back as valid records. They were never
 /// acknowledged under `OnCommit`, so the log opens without them and takes

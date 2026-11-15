@@ -1256,12 +1256,31 @@ async fn shutdown_stops_the_members_and_closes_their_logs() {
     shards.take(&mut all).await;
     assert!(shards.log_of(&orders).await.is_some());
 
-    EngineShards::shutdown(&*shards).await;
+    assert!(EngineShards::shutdown(&*shards).await, "every log closed");
 
     assert!(shards.log_of(&orders).await.is_none());
     assert_eq!(shards.runtime.status(&orders), None);
     assert_eq!(shards.leading(&orders), None);
     assert_eq!(route(&shards, &orders), None);
+}
+
+/// **A member log whose close fails makes the stop unclean**: its last sync
+/// may not have run, so the broker must not record a clean stop.
+#[tokio::test]
+async fn shutdown_reports_a_log_that_failed_to_close() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut all = assignments([assigned(orders.clone(), INCARNATION)]);
+    shards.take(&mut all).await;
+    shards
+        .log_of(&orders)
+        .await
+        .expect("open")
+        .fail_next_flush();
+
+    assert!(!EngineShards::shutdown(&*shards).await);
 }
 
 /// **Stopping the broker writes the last batch of log marks**, after it

@@ -229,6 +229,15 @@ where
                 tail
             }
         };
+        // Before the write: a copy that finds an entry on disk at start
+        // counts it as flushed, so a crash between the write and a later
+        // raise would leave a counted entry above the synced reservation.
+        // A failed raise fails the append and the callback never fires.
+        if shared.written_commit
+            && let Some(last) = last
+        {
+            shared.reserve_through(last.index).await?;
+        }
         // Read before the write: see `TailCache`.
         let cuts = log.cuts();
         let mut pending = None;
@@ -265,26 +274,26 @@ where
         let pending = pending.expect("at least one batch");
 
         if shared.written_commit {
-            // Raft counts the entries from here, so the reservation that
-            // bounds a re-form covers them first. A failed raise fails the
-            // append and the callback never fires.
-            if let Some(last) = last {
-                shared.reserve_through(last.index).await?;
-            }
+            // Raft counts the entries from here; the reservation already
+            // covers them.
             callback.io_completed(Ok(()));
             // `flushed` still waits for the log's own fsync.
             let positions = Arc::clone(shared);
-            let raise = move |flushed: io::Result<()>| {
-                if flushed.is_ok() {
-                    positions.positions.send_modify(|at| {
-                        if at
-                            .flushed
-                            .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
-                        {
-                            at.flushed = last;
-                        }
-                    });
-                }
+            let raise = move |flushed: io::Result<()>| match flushed {
+                Ok(()) => positions.positions.send_modify(|at| {
+                    if at
+                        .flushed
+                        .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
+                    {
+                        at.flushed = last;
+                    }
+                }),
+                // Raft already counted these entries, so there is no
+                // callback to fail. Stop the log rather than leave `flushed`
+                // stuck below what it holds.
+                Err(err) => positions.log.poison(format!(
+                    "a written-commit flush or exact log mark failed ({err})"
+                )),
             };
             let mark = shared
                 .marking

@@ -4575,8 +4575,13 @@ not move.
 - `RaftLog::new` accepts `periodic` and `none` only on a root whose run in
   this process began relaxed (`run_state::rotates_on_crash`). Such a log
   raises the reservation, synced, a million entries past the append when
-  it does not cover it, then fires `IOFlushed` at the write. A failed
-  raise fails the append. `flushed` and the exact log mark still wait for
+  it does not cover it, before the write, then fires `IOFlushed` once the
+  entries are written. A failed raise fails the append and writes nothing.
+  Raft counts every entry it finds at start as flushed, so opening such a
+  log first raises the reservation over the entries already on disk (a
+  copy written under `on_commit` has none), and the open fails if that
+  raise does. A flush or exact log mark that fails after the callback
+  stops the log. `flushed` and the exact log mark still wait for
   the log's own fsync; the batched mark reads `flushed`, so it never names
   an unsynced entry. A truncation, a purge and a cache log's admit sync
   first, since under `none` nothing else would.
@@ -4584,13 +4589,15 @@ not move.
 - A failed fsync, the periodic tick's included, wakes every flush waiting
   on the log, and `flushed` stays behind.
 - A crash under `periodic` restarted on `on_commit` rotates, and the
-  strict run's logs fsync on commit again (start 6).
+  strict run's logs fsync on commit again (item 6 under "Every start
+  that must rotate first").
 - A broker opens a shard's Raft log with its own fsync mode only when the
   fleet has finalized `raft_written_commit` and the root's run is relaxed;
   otherwise `OnCommit`.
 
 Not built: the re-form's pad and cap of kept directories and the RF 1
-restore (start 8), which the feature waits for; the written-report rules
+restore (item 8 under "Every start that must rotate first"), which the
+feature waits for; the written-report rules
 (a relaxed leader still asks every follower, which is safe and only
 redundant, #2612); the perf measurement.
 
@@ -4601,11 +4608,11 @@ redundant, #2612); the perf measurement.
 | Accept `Periodic` and `None` on a Raft log opened on a relaxed root, with a proof from the gate that the root rotates on a crash; keep refusing otherwise | `felix-storage/src/raft_log.rs:205-227`, `run_state.rs:168` | opens on a relaxed root; refused on a strict one |
 | Fire `IOFlushed` at the write on such a log; set `flushed` only from the log's durable bound | `felix-storage/src/raft_log/writer.rs:266-302`, `raft_log/flush_queue.rs:57` | a power cut after the callback and before the fsync leaves `flushed` behind; the callback order still follows the appends |
 | Batched log mark on relaxed roots, fed by `flushed` | `felix-replication/src/raft/runtime.rs:111`, `felix-storage/src/raft_copy/marks.rs:314-323` | the mark never names an unsynced id |
-| The reservation: a synced file per shard directory, raised before the callback, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
+| The reservation: a synced file per shard directory, raised before the write and at open, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
 | Open the shard's Raft log with the broker's own fsync mode instead of `OnCommit` | `felix-broker-service/src/shards/raft.rs:227` | a relaxed broker's shard commits before any fsync |
 | The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | `felix-replication/src/raft/group.rs:740-775`, `group.rs:1025-1050`, `raft/engine.rs:152` | no `Request::Written` from a relaxed leader to a relaxed follower; a relaxed leader with strict followers acknowledges a `Quorum` write on their written reports, before their fsync |
-| A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (start 6) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
-| A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (start 8) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
+| A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (item 6 above) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
+| A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (item 8 above) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | the re-form, not built | a kept directory whose saved commit is past its last synced entry is cut at the entry, not at the saved index |
 | Snapshot waits for the durable bound | `felix-replication/src/raft/machine.rs:286` | a snapshot never covers an entry above `flushed` |
 | The periodic flusher's failure poisons a Raft log and rotates the copy | `felix-storage/src/disk_log/sync.rs:239` | a failed tick rotates, as a failed commit flush does |

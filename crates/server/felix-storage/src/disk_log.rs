@@ -1504,6 +1504,12 @@ impl DiskLog {
         self.inner.segments.read().generation()
     }
 
+    /// Stop the log for good, as a failed flush does.
+    #[cfg(feature = "raft")]
+    pub(crate) fn poison(&self, reason: String) {
+        self.inner.poison(reason);
+    }
+
     /// The tail as it is now, without a future to poll.
     #[cfg(feature = "raft")]
     pub(crate) fn tail_now(&self) -> Offset {

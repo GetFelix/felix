@@ -271,10 +271,11 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
         let _ = self.wake.set(wake);
     }
 
-    fn shutdown(&self) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+    fn shutdown(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
         Box::pin(async move {
-            if let Some(inner) = &self.inner {
-                inner.shutdown().await;
+            match &self.inner {
+                Some(inner) => inner.shutdown().await,
+                None => true,
             }
         })
     }
