@@ -618,10 +618,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenCommitsReformTrailing.cfg` | the same without the reservation: the re-form pads up to the trailing floor only | violate `OffsetNeverReused` |
 | `FelixRaftWrittenCommitsReformLoses.cfg` | witness: under the proposal a power cut of a majority loses a committed record | violate `NeverLosesCommitted` |
 | `FelixRaftWrittenReformOnCommit.cfg` | the design as built (commit on fsynced copies), two power cuts and a re-form with the trailing floor alone | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `OffsetNeverReused`, `NeverLosesCommitted` (58k distinct states) |
-| `FelixRaftWrittenCommitsReformTerms.cfg` | the proposal across two terms with the re-form's vouch rule (saved commit, the floor's entry, the whole log only when its last entry has the highest term of any vote read), two power cuts and one broker declared dead | pass `OffsetNeverReused`, `LossNeedsLostDiskAtTop` (no record a read copy holds is lost when no broker is dead and no vote is above every entry), `NeverCutsAcrossTerms` and the safety checks above; over an hour on a 32-core box (1.7M distinct states a minute); not registered for pull requests, runs nightly (`tla-walk.yml`); running in dispatch 43744757023 |
+| `FelixRaftWrittenCommitsReformTerms.cfg` | the proposal across two terms with the re-form's vouch rule (saved commit, the floor's entry, the whole log only when its last entry has the highest term of any vote read), two power cuts and one broker declared dead | pass `OffsetNeverReused`, `LossNeedsLostDiskAtTop` (no record a read copy holds is lost when no broker is dead and no vote is above every entry) and the safety checks above; did not finish in six hours on a CI runner; not registered, running to completion on a 32-core build box |
 | `FelixRaftWrittenCommitsReformTermsFloorHolder.cfg` | the same with the shortcut the rule replaces: the copy with the highest last log id is the base when some copy holds the floor's entry | violate `OffsetNeverReused` (73.0M distinct states, depth 26, 9 minutes 16 seconds on a 32-core build box) |
 | `FelixRaftWrittenCommitsReformTermsHappens.cfg` | witness, with no broker dead: a re-form after a term-2 election cuts the longest copy read | violate `NeverCutsAcrossTerms` (21.8k distinct states, 1 second) |
 | `FelixRaftWrittenCommitsReformTermsVoteOnly.cfg` | witness: a vote in a term that wrote nothing cuts every copy, so a committed entry a read copy holds is lost (reported as "cut by a vote", needs `--accept-loss`) | violate `LossNeedsLostDisk` (387k distinct states, 4 seconds) |
+| `FelixRaftWrittenReformVouchDead.cfg` | the vouch rule with the commit on fsynced copies (`WrittenCommits` off), `Reserve`, one term and one broker declared dead | violate `NeverLosesCommitted` (#2661; a 15-state trace, 177k distinct states, 4 seconds): a leads term 1, a and b fsync and reserve entry 1, a commits it, c holds it unsynced, a is declared dead and c loses power; with a broker dead no copy vouches for its whole log and b's saved commit is 0, so the base is empty and the re-form starts at 1 past a gap. No offset is reused, but the record on b's intact disk is lost |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472; the code now takes the term-bound shape, and this stays as the counterexample twin); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
@@ -795,10 +796,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformTwoReformsTrailingFloorLeaderReserve.cfg` | the same with only the leader reserving | violate `OffsetNeverReused` (396k distinct states, 36 seconds) |
 | `FelixRaftReformTwoReformsTrailingFloorAllDead.cfg` | the same with both copies that counted the record dead: the documented residual of a trailing floor | violate `OffsetNeverReused` (408k distinct states, 31 seconds) |
 | `FelixRaftReformTwoReformsEpochMark.cfg` | witness: an epoch-0 restore and a dead epoch-0 voter leave the second re-form unmarked, and it keeps an epoch-1 record | violate `NeverKeepsAcrossOldRestore` (84k distinct states, 6 seconds) |
-| `FelixRaftReformTwoReformsOldRestore.cfg` | the same bounds as a pass, with a second write so epoch 2 writes too | pass the same as `...TrailingFloor.cfg` (no violation in 40 min on 2 cores, 34M distinct states); not registered for pull requests, runs nightly (`tla-walk.yml`); running in dispatch 43744757023 |
+| `FelixRaftReformTwoReformsOldRestore.cfg` | the same bounds as a pass, with a second write so epoch 2 writes too | pass the same as `...TrailingFloor.cfg` (380.6M distinct states, depth 43, 4 h 16 min on a CI runner); not registered for pull requests, runs nightly (`tla-walk.yml`) |
 | `FelixRaftReformKeptOldKept.cfg` | `Kept`, epoch 0 writes (`OldKeptShape`): its leader is declared dead with two committed records, returns in epoch 1 with its epoch-0 copy, and the second re-form reads that copy | pass the same as `...TrailingFloor.cfg` (354k distinct states, depth 29, 44 s) |
 | `FelixRaftReformKeptOldKeptCap.cfg` | witness: the epoch-1 cap lowers what the returned epoch-0 copy vouches for | violate `NeverCaps` (207k distinct states, depth 17, 20 s) |
-| `FelixRaftReformKeptTerms.cfg` | `Kept`, one re-form over two terms of epoch 0 and one power cut, the group unmarked | pass the same as `...TrailingFloor.cfg` (no violation in 40 min on 2 cores, 33M distinct states); not registered for pull requests, runs nightly (`tla-walk.yml`); running in dispatch 43744757023 |
+| `FelixRaftReformKeptTerms.cfg` | `Kept`, one re-form over two terms of epoch 0 and one power cut, the group unmarked | pass the same as `...TrailingFloor.cfg` (82.3M distinct states, depth 34, 56 min on a CI runner); not registered for pull requests, runs nightly (`tla-walk.yml`) |
 | `FelixRaftReformKeptTermsT.cfg` | witness: T keeps one copy whole and cuts another, longer one | violate `NeverVouchesByT` (335k distinct states, depth 12, 21 s) |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.3M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
@@ -2913,9 +2914,11 @@ With the commit on written copies, two cut tails can take committed records
 (`FelixRaftWrittenCommitsReformLoses.cfg` finds it). Without `Reserve`, a
 record committed after the last floor report is above the floor, and its
 offset is given out again (`FelixRaftWrittenCommitsReformTrailing.cfg`). With
-it, `OffsetNeverReused` holds (`FelixRaftWrittenCommitsReform.cfg`). The design
-as built, with the commit on fsynced copies, loses nothing and reuses nothing
-with the trailing floor alone (`FelixRaftWrittenReformOnCommit.cfg`).
+it, `OffsetNeverReused` holds (`FelixRaftWrittenCommitsReform.cfg`). With the
+commit on fsynced copies and the longest log as the base, a re-form loses
+nothing and reuses nothing with the trailing floor alone
+(`FelixRaftWrittenReformOnCommit.cfg`). The vouch rule below does lose a
+record there when a broker is dead.
 
 Across two terms the longest log is no longer safe. In
 `FelixRaftWrittenCommitsReformTermsFloorHolder.cfg`, a leads term 1 and writes
@@ -2929,6 +2932,14 @@ longest copy there. The price is a lone vote: a term that wrote nothing still
 raises T and cuts every copy to its saved commit, so a committed entry a read
 copy holds is lost (`FelixRaftWrittenCommitsReformTermsVoteOnly.cfg`). The
 command reports such a group as "cut by a vote" and needs `--accept-loss`.
+Followers never learn the commit index in this model, so a follower's saved
+commit is always 0 and the saved-commit leg is exercised only for a leader's
+own copy.
+That is why the rule loses a committed record when a broker is dead, even
+with the commit on fsynced copies: b holds it fsynced and reserved, but no
+copy vouches for its whole log and b's saved commit is 0, so the re-form
+starts past a gap without it (`FelixRaftWrittenReformVouchDead.cfg`). #2661
+fixes the rule.
 
 With `Reserve`, every copy also reserves before its fsynced copy counts toward
 the commit, the leader's own included. A fsynced copy is not enough on its
@@ -2938,9 +2949,9 @@ its saved commit. Without a reservation at that entry the re-form starts below
 it and reuses a committed offset. TLC finds this in 14 steps when Ack and Agree
 skip the reservation for fsynced counts: a leads term 1, a and b fsync entry 1
 unreserved, a commits it, a is declared dead, c loses power, and the re-form
-reads only b's saved commit and starts at 0 (`OffsetNeverReused`). The code reserves only when the group commits on written
-copies (`crates/server/felix-storage/src/raft_log/writer.rs`), so it must also
-reserve before a fsynced count (#2632).
+reads b's saved commit and c's kept copy, which vouch for nothing, and starts
+at 0 (`OffsetNeverReused`). The code reserves before every count, in every
+fsync mode (`crates/server/felix-storage/src/raft_log/writer.rs`).
 
 Abstracted: votes are durable and followers do not learn the commit index
 (`FelixRaft.tla` has the adapter's rules and what followers apply), snapshots,

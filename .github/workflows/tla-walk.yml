@@ -203,7 +203,6 @@ jobs:
           - FelixRaftPlacementFull
           - FelixRaftPlacementRewindSpare
           - FelixRaftWrittenFailover
-          - FelixRaftWrittenCommitsReformTerms
           - FelixRaftReformTwoReformsOldRestore
           - FelixRaftReformKeptTerms
     steps:

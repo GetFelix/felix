@@ -570,6 +570,7 @@ expectations=(
   "FelixRaftWrittenCommitsReformTermsFloorHolder violates OffsetNeverReused"
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
+  "FelixRaftWrittenReformVouchDead violates NeverLosesCommitted"
   "FelixRaftBatch pass"
   "FelixRaftBatchKeepsCut pass"
   "FelixRaftBatchEachRecord violates BatchExactlyOnce"
@@ -1086,9 +1087,11 @@ fi
 # 32-core machine and is not registered: a box run checks it.
 # FelixRaftWrittenCommitsFailoverPowerCut passes in 17 minutes with 30
 # workers on a 32-core machine and is not registered: a box run checks it.
-# FelixRaftWrittenCommitsReformTerms, FelixRaftReformTwoReformsOldRestore and
-# FelixRaftReformKeptTerms pass but run past a pull request's hour, so they
-# are not registered and run nightly (tla-walk.yml).
+# FelixRaftReformKeptTerms passes in 56 minutes and
+# FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
+# pull request's hour, so they are not registered and run nightly
+# (tla-walk.yml). FelixRaftWrittenCommitsReformTerms did not finish in a
+# runner's six hours and is not registered: a build box run checks it.
 # FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a
