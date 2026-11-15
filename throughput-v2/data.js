@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794726456602,
+  "lastUpdate": 1794728676672,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -58084,6 +58084,58 @@ window.BENCHMARK_DATA = {
             "range": "55301.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1151367.86\nmean: 1143246.60\nstdev: 55301.63\ncv: 4.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6bd4f567d5edd5f0d6119c5f1b0795e712ada7e0",
+          "message": "perf(raft): wake a written-count wait only from a report that can complete it (#2581) (#2594)\n\n* perf(raft): wake a written-count wait only from a report that can complete it (#2581)\n\nA Quorum write on a periodic-fsync stream waits for a majority of voters\nto report having written it. Each wait looped on the reports watch, so\nevery follower report woke every waiting write to look and sleep again.\n\nThe wait now sleeps in a felix_storage::waiters queue by rank: a write\nthat needs n followers sleeps on the queue keyed by the nth furthest\nposition heard, since its majority cannot exist before that position\nreaches it. Every report advances every rank, so a wait whose position was\nreached but not by voters of its term (a learner ahead, another term) is\nstill woken by the next report. Each wake reads the reports and the voters\nagain and applies the same rules as before.\n\n300 writes waiting at five voters, one follower ahead and one stepping\nthrough: 16,470 looks before, 300 after.\n\nSpec-Unaffected: a wake-up mechanism change; the written-count rules and what is counted are unchanged.\n\n* fix(raft): review fixes for the ranked written-count wait\n\nSpec-Unaffected: doc order, docs wording and test setup only.\n\n* test(raft): written-count waits across membership changes (#2581)\n\n* docs(raft): cite the renamed lost-term test (#2581)",
+          "timestamp": "2026-11-15T07:35:24Z",
+          "tree_id": "235e94cbd406127188cb1d9e9a4a96f23b0bf770",
+          "url": "https://github.com/GetFelix/felix/commit/6bd4f567d5edd5f0d6119c5f1b0795e712ada7e0"
+        },
+        "date": 1794728675907,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 417427.93,
+            "range": "19337.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417427.93\nmean: 426874.63\nstdev: 19337.81\ncv: 4.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 417427.93,
+            "range": "19337.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417427.93\nmean: 426874.63\nstdev: 19337.81\ncv: 4.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 101699.64,
+            "range": "2708.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 101699.64\nmean: 100628.25\nstdev: 2708.64\ncv: 2.69%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1016996.42,
+            "range": "27086.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1016996.42\nmean: 1006282.47\nstdev: 27086.36\ncv: 2.69%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
