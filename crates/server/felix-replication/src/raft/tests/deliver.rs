@@ -513,6 +513,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             payload,
         };
         let batch = Batch {
+            expected: None,
             records: vec![record],
             ack: AckAt::Flushed,
             term,
@@ -1004,6 +1005,57 @@ async fn a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused() {
     led.cluster.stop().await;
 }
 
+/// **A conditional publish lands only at its expected offset, and one that
+/// does not is a blank on every member: refused with the offset after it,
+/// delivered by no member, and counted as skipped.** The leader's log
+/// decides and followers copy it; a follower holding the record would
+/// deliver it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conditional_publish_off_its_offset_is_a_blank_on_every_member() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let follower = led.followers().next().expect("a follower");
+    let (follower_broker, _follower_handle) = broker_on_log_of(&led, &follower).await;
+    let (mut on_follower, _follower_guard) = subscriber(&follower_broker).await;
+
+    let at = led.committed + 1;
+    let publish_at = |payload: &'static [u8]| {
+        let proposed = led.engine.publish_at(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            vec![Bytes::from_static(payload)],
+            at,
+            AckAt::Flushed,
+            PATIENCE,
+        );
+        tokio::spawn(proposed.expect("proposed").complete())
+    };
+    let landed = publish_at(b"first").await.expect("joined");
+    assert_eq!(landed.expect("written").offsets, Some((at, at)));
+    let refused = publish_at(b"stale").await.expect("joined");
+    assert_eq!(refused, Err(CommitError::OffsetMismatch { tail: at + 2 }));
+
+    let after = publish(&led, &broker, &handle, Bytes::from_static(b"after"));
+    let outcome = after.await.expect("joined").expect("committed");
+    assert_eq!(outcome.offsets, Some((at + 2, at + 2)));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(at));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(at + 2));
+    assert_eq!(envelope.skipped_before(), 1);
+    assert_eq!(
+        records(&mut on_follower, 2).await,
+        [
+            (at, Bytes::from_static(b"first")),
+            (at + 2, Bytes::from_static(b"after"))
+        ]
+    );
+    led.cluster.stop().await;
+}
+
 /// How long a publish answered on a written majority may take while no
 /// follower fsyncs. Short of `PATIENCE`, so an answer left at the commit
 /// fails quickly.
@@ -1132,6 +1184,36 @@ async fn a_read_is_refused_if_the_shard_closes_while_it_waits_for_the_apply() {
         matches!(confirmed, Err(CommitError::LeadershipLost { .. })),
         "a read confirmed after its shard closed: {confirmed:?}"
     );
+    led.cluster.stop().await;
+}
+
+/// **A conditional publish of no record, or of several, proposes nothing.**
+/// No record has no offset to land at, and the condition covers one entry.
+#[tokio::test]
+async fn a_conditional_publish_of_other_than_one_record_is_refused() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let publish_at = |payloads: Vec<Bytes>| {
+        led.engine.publish_at(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            payloads,
+            led.committed + 1,
+            AckAt::Flushed,
+            PATIENCE,
+        )
+    };
+    assert!(matches!(
+        publish_at(Vec::new()),
+        Err(BrokerError::EmptyConditionalPublish)
+    ));
+    let two = vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")];
+    assert!(matches!(
+        publish_at(two),
+        Err(BrokerError::NotOnEngineStream { .. })
+    ));
     led.cluster.stop().await;
 }
 

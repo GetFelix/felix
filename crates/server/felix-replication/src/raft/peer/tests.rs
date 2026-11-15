@@ -376,6 +376,7 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
             timestamp_micros: sequence,
             payload: put.encode(),
             producer: None,
+            expected: None,
             written: None,
         };
         let written = leader.raft().client_write(command).await.expect("write");
