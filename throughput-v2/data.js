@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794777225771,
+  "lastUpdate": 1794779516844,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59124,6 +59124,58 @@ window.BENCHMARK_DATA = {
             "range": "17271.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1205614.13\nmean: 1211631.87\nstdev: 17271.00\ncv: 1.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "91b6b6508c306662a7cc78be40943de76bcff868",
+          "message": "feat(raft): enforce stream retention on Raft shards with leader head trims (#2602) (#2635)\n\n* feat(raft): enforce stream retention on Raft shards with leader head trims (#2602)\n\nA Raft log takes no retention bounds, since only a purge may drop its\nentries, so neither a stream's control-plane retention nor the\nbroker-wide bounds were enforced on Raft shards. The shard's leader now\nreads the stream's bounds on the retention timer, asks the log where a\nsweep would start it (DiskLog::retention_cut, a whole-segment boundary,\nnothing deleted), and proposes the existing head-trim record to that\noffset when it is past the floor. Followers apply the floor at the\ntrim's entry and never evaluate the bounds themselves.\n\nRecords are hidden on every member; no disk is freed until stream\nshards can purge, which needs a snapshot format change behind a new\nfleet feature (raft_stream_purge). Raft logs also no longer offload.\n\nSpec-Unaffected: the leader proposes the existing head-trim entry, which FelixHeadTrim and the Raft trim path already allow at any time from any client; no new entry kind, term, fence or apply rule.\n\n* fix(raft): retention trims a busy shard, skips hidden segments, needs a timer (#2602)\n\nA retention trim conditional on the tail lost to any publish landing\nfirst, so on a busy shard it was refused, or stored as a blank, on every\npass. Retention now proposes its trim with no expected offset\n(Broker::propose_trim_below, RaftEngine::trim_below). The cut is a\nsealed segment boundary at or below the tail the leader read, and the\nleader appends the entry after every entry it holds, so the floor is\nnever past the trim's own index; atomic commits are still checked below\nthat tail. Raft's proposal shape check takes a trim without an expected\noffset; the entry's wire and log form is unchanged.\n\nA pass that cannot trim counts felix_broker_raft_retention_trims_refused_total\nand warns when its reason changes; one deposed mid-pass says nothing.\nThe retention cut takes segments already below the floor without\nreading them, so an age bound does not reread every hidden segment on\neach tick. A zero retention interval starts no timer instead of\npanicking.\n\nSpec-Unaffected: the entry is the ENTRY_TRIM a conditional trim that landed becomes, with its floor at or below its own index as FelixHeadTrim requires (f <= Len + 1); FelixHeadTrim's Unconditional knob breaks StaleTrimRefused, a lease holder's fencing, and a retention trim is the server's own, carries no holder epoch and fences nothing.\n\n* test(raft): deposed-mid-pass and a deterministic publish race for retention (#2602)\n\n* docs(raft): cite the renamed retention race test (#2602)",
+          "timestamp": "2026-11-15T21:45:56Z",
+          "tree_id": "8fd43601d566b1648b0c1a73df48fed810cf0dad",
+          "url": "https://github.com/GetFelix/felix/commit/91b6b6508c306662a7cc78be40943de76bcff868"
+        },
+        "date": 1794779515902,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340821.5,
+            "range": "3822.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340821.50\nmean: 341767.77\nstdev: 3822.43\ncv: 1.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340821.5,
+            "range": "3822.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340821.50\nmean: 341767.77\nstdev: 3822.43\ncv: 1.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79746.08,
+            "range": "4239.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79746.08\nmean: 77978.05\nstdev: 4239.41\ncv: 5.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 797460.79,
+            "range": "42394.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 797460.79\nmean: 779780.55\nstdev: 42394.14\ncv: 5.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
