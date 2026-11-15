@@ -5,7 +5,7 @@
 //! u8   version (1)
 //! u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
 //!          4 discard, 5 seek, 6 delete
-//! u32  group name length, then the name (UTF-8)
+//! u32  group name length, then the name (UTF-8, never empty)
 //! creation token                                    (ops 0 to 4)
 //!   u64  term
 //!   u64  index
@@ -163,6 +163,10 @@ impl GroupEntry {
         }
         let code = take_u8(&mut buf)?;
         let len = take_u32(&mut buf)? as usize;
+        // Every group op names a group, so no proposer writes an empty name.
+        if len == 0 {
+            return Err(malformed("the group name is empty".to_owned()));
+        }
         if buf.remaining() < len {
             return Err(malformed("truncated".to_owned()));
         }
