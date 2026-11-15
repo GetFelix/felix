@@ -100,6 +100,9 @@ pub struct Batch {
     /// Set on a head trim: the floor below which reads stop once its one
     /// record, the trim's headers, is committed. Always with `expected`.
     pub trim: Option<u64>,
+    /// Set on an atomic commit: its one record is the encoded commit,
+    /// stored with the commit mark. Never with `producer` or `trim`.
+    pub commit: bool,
     /// The principal publishing the batch, stored with each record.
     pub publisher: Option<Bytes>,
 }
@@ -333,6 +336,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         producer,
         expected,
         trim,
+        commit,
         publisher,
     } = batch;
     let count = records.len();
@@ -343,6 +347,10 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     if (expected.is_some() || trim.is_some())
         && (count != 1 || producer.is_some() || expected.is_none())
     {
+        return Err(lost(CONDITIONAL_SHAPE));
+    }
+    // A commit is one record, so it lands whole or not at all.
+    if commit && (count != 1 || producer.is_some() || trim.is_some()) {
         return Err(lost(CONDITIONAL_SHAPE));
     }
     let first = match producer {
@@ -384,6 +392,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                 }),
                 expected,
                 trim,
+                commit,
                 publisher: publisher.clone(),
                 headers: record.headers.map(Box::new),
                 written: None,
@@ -404,6 +413,7 @@ pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting),
             producer: None,
             expected: None,
             trim: None,
+            commit: false,
             publisher: None,
             headers: None,
             written: None,

@@ -96,6 +96,7 @@ impl Broker {
             crate::broker::publish::Attribution::default(),
             Some(expected_at),
             Some(HeldTrim { before, applied }),
+            None,
             stalled_after,
             propose,
         )?;

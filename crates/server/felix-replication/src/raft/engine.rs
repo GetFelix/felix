@@ -172,6 +172,15 @@ impl RaftEngine {
         Ok(group.read_bound())
     }
 
+    /// `end`, a read bound of `shard`, less the entries just below it that
+    /// hold no record: a leader's blank entry or a membership change. `end`
+    /// when the shard is not served here.
+    pub fn records_end(&self, shard: &ShardKey, end: u64) -> u64 {
+        self.runtime
+            .group(shard)
+            .map_or(end, |group| group.records_end(end))
+    }
+
     /// Confirm that this broker still leads `term`, by one read-index
     /// round: a majority answers a heartbeat sent after the call, and this
     /// broker has applied the read index. A reader of `shard`'s state takes

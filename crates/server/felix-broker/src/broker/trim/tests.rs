@@ -748,3 +748,133 @@ async fn a_trim_answered_after_its_log_closed_is_ambiguous() {
         "{err:?}"
     );
 }
+
+async fn append_marked(log: &crate::durable::StreamLog, marks: &[felix_storage::log::RecordMark]) {
+    let payloads: Vec<Bytes> = marks.iter().map(|_| Bytes::from_static(b"x")).collect();
+    let order = Arc::new(felix_storage::CommitSequencer::new(
+        log.tail_offset().await.expect("tail"),
+    ));
+    let (pending, _turn) = log
+        .begin_append_marked(&payloads, marks, &[], None, 1, &order)
+        .await
+        .expect("append");
+    log.commit(&pending).await.expect("commit");
+}
+
+/// A stream on an engine's log holding ten plain records, with its read
+/// bound at `bound`.
+async fn engine_log_stream(
+    dir: &std::path::Path,
+    bound: &Arc<Bound>,
+) -> (Broker, StreamHandle, crate::durable::StreamLog) {
+    use felix_storage::disk_log::DiskLog;
+    use felix_storage::log::RecordMark;
+
+    let config = LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let log =
+        crate::durable::StreamLog::from_log(DiskLog::open(dir, "orders", config).expect("log"));
+    append_marked(&log, &[RecordMark::None; 10]).await;
+    let broker = Broker::new(EphemeralCache::new().into());
+    broker.leave_durable_streams_to_engines();
+    broker.set_read_bounds(Arc::clone(bound) as Arc<dyn ReadBounds>);
+    broker.register_tenant("t1").await.expect("tenant");
+    broker
+        .register_namespace("t1", "ns")
+        .await
+        .expect("namespace");
+    broker
+        .register_stream(
+            "t1",
+            "ns",
+            "orders",
+            StreamMetadata {
+                durable: true,
+                shards: 1,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("stream");
+    let handle = broker
+        .open_stream_on_engine_log("t1", "ns", "orders", 0, log.clone())
+        .await
+        .expect("open");
+    (broker, handle, log)
+}
+
+/// A new leader cuts the uncommitted 6..10 and writes a commit at 8.
+async fn cut_and_commit_at_8(log: &crate::durable::StreamLog) {
+    use felix_storage::log::RecordMark;
+
+    log.truncate(6).await.expect("truncate");
+    append_marked(
+        log,
+        &[
+            RecordMark::None,
+            RecordMark::None,
+            RecordMark::Commit,
+            RecordMark::None,
+        ],
+    )
+    .await;
+}
+
+/// **On an engine's log a trim's scan records no further than the engine
+/// committed.** Entries above that can be cut and written again by the next
+/// leader, so a commit put there must still refuse a later trim.
+#[tokio::test]
+async fn a_scan_on_an_engine_log_keeps_only_what_is_committed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bound = Arc::new(Bound(Mutex::new(ReadBound::Committed(6))));
+    let (_broker, handle, log) = engine_log_stream(dir.path(), &bound).await;
+    super::refuse_commit_stream(&handle, &log, 10)
+        .await
+        .expect("no commit yet");
+
+    cut_and_commit_at_8(&log).await;
+    *bound.0.lock() = ReadBound::Committed(10);
+    let refused = super::refuse_commit_stream(&handle, &log, 10).await;
+    assert!(
+        matches!(refused, Err(BrokerError::TrimOnCommitStream)),
+        "{refused:?}"
+    );
+}
+
+/// **A trim's scan keeps only what was committed before it read the log.**
+/// The scan reads 8 as a plain record; a new leader then cuts it, writes a
+/// commit there, and the engine commits it. With the bound read after the
+/// scan, the scan recorded 8 as clear and the next trim missed the commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_scan_keeps_no_more_than_was_committed_when_it_began() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let bound = Arc::new(Bound(Mutex::new(ReadBound::Committed(6))));
+    let (_broker, handle, log) = engine_log_stream(dir.path(), &bound).await;
+
+    handle.state.stall_trim_scan.set(true);
+    let scan = tokio::spawn({
+        let (handle, log) = (handle.clone(), log.clone());
+        async move { super::refuse_commit_stream(&handle, &log, 10).await }
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while !handle.state.stall_trim_scan.holds() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the scan never stalled"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    cut_and_commit_at_8(&log).await;
+    *bound.0.lock() = ReadBound::Committed(10);
+    handle.state.stall_trim_scan.set(false);
+    scan.await.expect("scan").expect("no commit when read");
+
+    let refused = super::refuse_commit_stream(&handle, &log, 10).await;
+    assert!(
+        matches!(refused, Err(BrokerError::TrimOnCommitStream)),
+        "{refused:?}"
+    );
+}

@@ -94,9 +94,14 @@ pub(crate) struct StreamState {
     pub(crate) leads_wanted: AtomicUsize,
     /// Wakes a pass waiting on full subscribers when `leads_wanted` rises.
     pub(crate) lead_wanted: tokio::sync::Notify,
+    /// Wakes a state read waiting for `next_seq` to reach the read bound.
+    pub(crate) ring_moved: tokio::sync::Notify,
     /// Holds a release just before its ring append, for a test to act there.
     #[cfg(test)]
     pub(crate) stall_release: Stall,
+    /// Holds a trim's commit scan after it reads the log, for a test to act there.
+    #[cfg(test)]
+    pub(crate) stall_trim_scan: Stall,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -105,11 +110,16 @@ pub(crate) struct StreamState {
 /// Whether a stream's log holds an atomic commit, learned without reading
 /// the whole log on every trim.
 ///
-/// `seen` is set before a commit is appended here, and when one arrives by
-/// replication. `clear` is how far a scan found none. A trim scans from there
-/// to the tail it expects and then reads `seen`; since the trim lands only at
-/// that tail, a commit appended after the scan either set `seen` first or
-/// lands after the trim.
+/// `seen` is set before a commit is appended or proposed here, and when one
+/// arrives by replication or is delivered from an engine's log. `clear` is
+/// how far a scan found none. A trim scans from there to the tail it expects
+/// and then reads `seen`; since the trim lands only at that tail, a commit
+/// appended after the scan either set `seen` first or lands after the trim.
+///
+/// On an engine's log `clear` stays within what the engine had committed
+/// when the scan began, since entries above that can be cut and written
+/// again. A cut there needs no reset: it can only leave `seen` set for a
+/// proposed commit that went, which refuses trims it need not.
 ///
 /// A truncation can put a different record below `clear`, so it forgets
 /// both. Its epoch keeps a scan that started before it from recording a
@@ -217,8 +227,11 @@ impl StreamState {
             log_pass: tokio::sync::Mutex::new(()),
             leads_wanted: AtomicUsize::new(0),
             lead_wanted: tokio::sync::Notify::new(),
+            ring_moved: tokio::sync::Notify::new(),
             #[cfg(test)]
             stall_release: Stall::default(),
+            #[cfg(test)]
+            stall_trim_scan: Stall::default(),
             commits: CommitScan::default(),
         }
     }
@@ -261,6 +274,13 @@ impl StreamState {
             };
         }
         self.held.bound()
+    }
+
+    /// Where the records below `end`, a read bound, end: the offsets just
+    /// below it that hold no record (a Raft leader's blank entry, a
+    /// membership change) never reach the ring until a record follows them.
+    pub(crate) fn records_end(&self, end: u64) -> u64 {
+        self.held.records_end(end)
     }
 
     /// Drop the held batches and the replay ring, keeping `next_seq`.
@@ -443,6 +463,7 @@ impl StreamState {
         self.end_passed_over(&state, to);
         state.log.clear();
         state.next_seq = next_seq;
+        self.ring_moved.notify_waiters();
         state.generation_start_run = None;
         state.state_view = None;
         // Writes arriving as a follower: whatever this broker held as a
@@ -615,6 +636,7 @@ impl StreamState {
 
         // Trim once after append to keep the newest `log_capacity` entries.
         state.log.trim(log_capacity);
+        self.ring_moved.notify_waiters();
 
         // Captured while the log lock is still held, so any subscriber that
         // registers after this point takes these records as backlog instead.
@@ -650,6 +672,7 @@ impl StreamState {
             return true;
         }
         state.pass_blank(offset);
+        self.ring_moved.notify_waiters();
         true
     }
 
@@ -667,6 +690,7 @@ impl StreamState {
             return;
         }
         state.pass_blank(offset);
+        self.ring_moved.notify_waiters();
     }
 
     /// A generation-start record sits at `offset` at the tail, the last of
@@ -688,6 +712,7 @@ impl StreamState {
             if !self.held.is_busy() {
                 state.forget_view_across(next, run);
                 state.next_seq = next;
+                self.ring_moved.notify_waiters();
             }
             self.commit_sequencer.reset(next);
         }
@@ -724,6 +749,7 @@ impl StreamState {
         // The ring would end below records a reader from it then never gets.
         state.log.clear();
         state.next_seq = tail;
+        self.ring_moved.notify_waiters();
         state.generation_start_run = (run > 0).then_some((tail, run));
         if self.commit_sequencer.next_offset() < tail {
             self.commit_sequencer.reset(tail);

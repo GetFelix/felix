@@ -76,6 +76,7 @@ fn batch(payload: &Bytes) -> Batch {
         producer: None,
         expected: None,
         trim: None,
+        commit: false,
         publisher: None,
     }
 }
