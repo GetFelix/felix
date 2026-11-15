@@ -10,6 +10,7 @@ use std::time::Duration;
 use felix_storage::DiskLog;
 use felix_storage::raft_copy::{CopyMarks, LogMarkMode, MarkLog};
 use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
+use felix_storage::waiters::Waiters;
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::raft::SnapshotResponse;
 use openraft::storage::{RaftLogReader, Snapshot};
@@ -67,8 +68,14 @@ pub(crate) struct Group {
     refusals: Arc<Refusals>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
+    /// Waits on `positions.written` and `positions.flushed`, woken only
+    /// once the position reaches theirs.
+    written_waiters: Waiters<(u64, u64)>,
+    flushed_waiters: Waiters<(u64, u64)>,
     /// What this member has applied, as its state machine reports it.
     commits: tokio::sync::watch::Receiver<Commits>,
+    /// Waits on the applied index, woken only once it reaches theirs.
+    applied: Waiters<u64>,
     /// The member's log, and its first index read live: a purge held only in
     /// memory counts.
     copy: felix_storage::raft_copy::CurrentCopy,
@@ -463,12 +470,13 @@ impl Group {
             log.mark_with(marks, mode)?;
         }
         let positions = log.positions();
+        let (written_waiters, flushed_waiters) = (log.written_waiters(), log.flushed_waiters());
         let copy = felix_storage::raft_copy::CurrentCopy::new(
             log.disk_log().clone(),
             copy_id,
             log.first_index_reader(),
         );
-        let (machine, commits, cache) =
+        let (machine, commits, applied, cache) =
             Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
@@ -535,7 +543,10 @@ impl Group {
             root,
             refusals,
             positions,
+            written_waiters,
+            flushed_waiters,
             commits,
+            applied,
             copy,
             leadership,
             cache,
@@ -743,17 +754,13 @@ impl Group {
     /// leader's entry `last`: the id of the last entry the log has taken,
     /// before its fsync. A log that never gets there says nothing.
     async fn tell_written(&self, leader: MemberId, last: LogPoint) {
-        let mut positions = self.positions.clone();
         let holds = |at: &LogPositions| {
             let written = at.written;
-            written.is_some_and(|at| at.term == last.term && at.index >= last.index)
+            written.filter(|at| at.term == last.term && at.index >= last.index)
         };
-        let Some(at) = positions
-            .wait_for(holds)
-            .await
-            .ok()
-            .and_then(|at| at.written)
-        else {
+        let key = (last.term, last.index);
+        let waited = self.written_waiters.wait_for(&self.positions, key, holds);
+        let Ok(at) = waited.await else {
             return;
         };
         // Before the report leaves. Without the marker a power cut here would
@@ -966,9 +973,10 @@ impl Group {
             })
         };
         let positions = self.positions.clone();
+        let flushed = self.flushed_waiters.clone();
         let leading = self.leadership.watch(&self.raft);
         let stop = self.stop.clone();
-        async move { propose::acknowledged(waiting?, positions, leading, stop).await }
+        async move { propose::acknowledged(waiting?, positions, flushed, leading, stop).await }
     }
 
     /// The member's copy, for deciding whether a kept copy of an earlier
@@ -1004,6 +1012,7 @@ impl Group {
         commit::committed(
             written,
             self.commits.clone(),
+            self.applied.clone(),
             self.leadership.watch(&self.raft),
             self.stop.clone(),
             timeout,
@@ -1186,11 +1195,11 @@ impl Group {
         deadline: tokio::time::Instant,
         timed_out: CommitError,
     ) -> Result<(), CommitError> {
-        let mut commits = self.commits.clone();
-        let applied = commits.wait_for(|commits| {
+        let applied = self.applied.wait_for(&self.commits, index, |commits| {
             commits
                 .applied()
                 .is_some_and(|applied| applied.index >= index)
+                .then_some(())
         });
         tokio::select! {
             biased;
@@ -1360,8 +1369,11 @@ impl Group {
         };
         let term = self.open_term().ok_or(lost)?;
         let bound = self.read_index(term).await?;
-        let mut commits = self.commits.clone();
-        let applied = commits.wait_for(|commits| commits.read_bound() >= bound);
+        // Applied through `bound - 1`; a bound of 0 holds at once.
+        let index = bound.saturating_sub(1);
+        let applied = self.applied.wait_for(&self.commits, index, |commits| {
+            (commits.read_bound() >= bound).then_some(())
+        });
         tokio::select! {
             biased;
             () = self.stop.cancelled() => Err(propose::stopped()),
