@@ -119,6 +119,7 @@ impl Durability {
 
     /// Wait, without flushing, until every offset below `target` is durable
     /// or `stopped` says no flush will get there.
+    #[cfg(feature = "raft")]
     pub(super) async fn reached(&self, target: Offset, stopped: impl Fn() -> bool) {
         let mut receiver = self.durable_tx.subscribe();
         // The sender lives as long as `self`, so this cannot fail.

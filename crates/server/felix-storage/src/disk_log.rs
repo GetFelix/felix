@@ -657,6 +657,7 @@ impl DiskLog {
     /// As [`Self::commit`], except that under a mode that acknowledges before
     /// the sync it waits for that mode's own syncs (the periodic flush, or an
     /// explicit [`Self::sync`]) to cover `pending`, and starts none.
+    #[cfg(feature = "raft")]
     pub(crate) async fn synced(&self, pending: &PendingAppend) -> Result<()> {
         if !self.inner.durability.acknowledges_before_sync() || pending.holds_trim {
             return self.commit(pending).await;
