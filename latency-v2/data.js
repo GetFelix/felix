@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794744664585,
+  "lastUpdate": 1794745172170,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -74250,6 +74250,72 @@ window.BENCHMARK_DATA = {
             "range": "80.18",
             "unit": "us",
             "extra": "trials: 5\nmedian: 383.00\nmean: 411.00\nstdev: 80.18\ncv: 19.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2379049e0d46883c2e6d3a4b1305d3e8661e8986",
+          "message": "feat(raft): publisher id and record headers on a Raft shard (#2446) (#2616)\n\n* feat(raft): publisher id and record headers on a Raft stream shard, WIP (#2446)\n\nA Raft entry stores the batch's publisher and each record's headers block,\nread back by every member, after a restart, by catch-up and by history\nreads. On the wire such an entry is wrapped in a new tag (7), so other\nframes stay byte-identical and an older member refuses it by tag. The\nbroker admits them as the hybrid does (publisher only when\nrecords_publishers, headers refused when record_headers is off) and also\nwaits for the new fleet feature raft_record_headers. Every member's Raft\nlog writes the record-headers marker before storing one. Followers\ndeliver headers from the log and start a new batch at a publisher change.\n\nTests, revert checks and docs still to come.\n\n* fix(raft): allow the longer argument lists (#2446)\n\n* test(raft): publisher and headers on the wire, in every member's log, and on follower delivery (#2446)\n\n* test(storage): a Raft record with headers marks the root (#2446)\n\n* test(raft): a queued publish to a Raft shard keeps its publisher and headers (#2446)\n\n* test(cluster): record headers on a Raft shard replay from every member (#2446)\n\n* docs(raft): publishers and record headers on a Raft shard (#2446)\n\n* fix(raft): review: publisher gate test, idempotent rest without blocks, stale docs (#2446)\n\n* test(raft): a cut batch finished with headers keeps each record's own (#2446)\n\n* test(raft): a command's serialized keys include publisher and headers (#2446)\n\n* Name the owner's Raft headers gate in a forwarded refusal; test a restarted member's headers; size the attributed wrapper\n\n* docs(raft): record headers do not change the modelled protocol\n\nSpec-Unaffected: publisher id and record headers ride inside a Raft entry's payload; the lease, quorum mark, reports, promotion and handoff are unchanged.",
+          "timestamp": "2026-11-15T12:13:55Z",
+          "tree_id": "86d544bd892fb725344303fc67ecd64a61a8b0c0",
+          "url": "https://github.com/GetFelix/felix/commit/2379049e0d46883c2e6d3a4b1305d3e8661e8986"
+        },
+        "date": 1794745159046,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 111,
+            "range": "1.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 111.60\nstdev: 1.95\ncv: 1.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 154,
+            "range": "2.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 153.80\nstdev: 2.68\ncv: 1.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 206,
+            "range": "150.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 286.00\nstdev: 150.05\ncv: 52.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 146,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 145.40\nstdev: 0.89\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 298,
+            "range": "5.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 298.00\nmean: 299.80\nstdev: 5.89\ncv: 1.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 526,
+            "range": "71.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 526.00\nmean: 508.40\nstdev: 71.20\ncv: 14.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
