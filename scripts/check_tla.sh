@@ -567,7 +567,6 @@ expectations=(
   "FelixRaftWrittenCommitsReformTrailing violates OffsetNeverReused"
   "FelixRaftWrittenCommitsReformLoses violates NeverLosesCommitted"
   "FelixRaftWrittenReformOnCommit pass"
-  "FelixRaftWrittenCommitsReformTerms pass"
   "FelixRaftWrittenCommitsReformTermsFloorHolder violates OffsetNeverReused"
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
@@ -749,10 +748,8 @@ expectations=(
   "FelixRaftReformTwoReformsTrailingFloorLeaderReserve violates OffsetNeverReused"
   "FelixRaftReformTwoReformsTrailingFloorAllDead violates OffsetNeverReused"
   "FelixRaftReformTwoReformsEpochMark violates NeverKeepsAcrossOldRestore"
-  "FelixRaftReformTwoReformsOldRestore pass"
   "FelixRaftReformKeptOldKept pass"
   "FelixRaftReformKeptOldKeptCap violates NeverCaps"
-  "FelixRaftReformKeptTerms pass"
   "FelixRaftReformKeptTermsT violates NeverVouchesByT"
   "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
@@ -1089,6 +1086,9 @@ fi
 # 32-core machine and is not registered: a box run checks it.
 # FelixRaftWrittenCommitsFailoverPowerCut passes in 17 minutes with 30
 # workers on a 32-core machine and is not registered: a box run checks it.
+# FelixRaftWrittenCommitsReformTerms, FelixRaftReformTwoReformsOldRestore and
+# FelixRaftReformKeptTerms pass but run past a pull request's hour, so they
+# are not registered and run nightly (tla-walk.yml).
 # FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a
@@ -1338,11 +1338,8 @@ weights=(
   "FelixRaftWrittenCrash 5"
   "FelixRaftWrittenCommitsPowerCut 24"
   "FelixRaftWrittenCommitsReform 2"
-  "FelixRaftWrittenCommitsReformTerms 340"
-  "FelixRaftWrittenCommitsReformTermsFloorHolder 70"
+  "FelixRaftWrittenCommitsReformTermsFloorHolder 8"
   "FelixRaftReformTwoReformsTrailingFloor 9"
-  "FelixRaftReformTwoReformsOldRestore 300"
-  "FelixRaftReformKeptTerms 300"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
   "FelixRaftCond 300"
