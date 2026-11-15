@@ -5,8 +5,9 @@
 //! numbers come from this process's own clock, so no cross-machine clock sync
 //! is involved.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use felix_wire::AckMode;
@@ -19,32 +20,31 @@ use crate::stats::report;
 /// What one kill cost, in milliseconds since the run's start.
 #[derive(Debug, PartialEq)]
 pub(super) struct Outage {
-    /// The last ack before the longest silence.
-    pub gap_start_ms: f64,
-    /// Silence until the first ack after it: leader kill to first commit.
+    /// When the harness issued the kill.
+    pub kill_ms: f64,
+    /// Kill to the first ack after it.
     pub first_commit_ms: f64,
-    /// From the same start until the subscriber had a record published after
-    /// the recovery. `None` when it never did.
+    /// Kill until the subscriber had a record published after the recovery.
+    /// `None` when it never did.
     pub caught_up_ms: Option<f64>,
 }
 
-/// Find the longest silence between acks and the subscriber's recovery after
-/// it. `acks` and `deliveries` are `(seq, ms)` in time order.
-pub(super) fn analyze(acks: &[(u64, f64)], deliveries: &[(u64, f64)]) -> Option<Outage> {
-    let (i, gap) = acks
-        .windows(2)
-        .enumerate()
-        .map(|(i, w)| (i, w[1].1 - w[0].1))
-        .max_by(|a, b| a.1.total_cmp(&b.1))?;
-    let start = acks[i].1;
-    let resume_seq = acks[i + 1].0;
+/// Measure from the kill instant the harness recorded, not from the longest
+/// silence: a stall before the kill is not the outage. `acks` and
+/// `deliveries` are `(seq, ms)` in time order.
+pub(super) fn analyze(
+    acks: &[(u64, f64)],
+    deliveries: &[(u64, f64)],
+    kill_ms: f64,
+) -> Option<Outage> {
+    let (resume_seq, resume_ms) = *acks.iter().find(|(_, ms)| *ms > kill_ms)?;
     let caught_up_ms = deliveries
         .iter()
-        .find(|(seq, ms)| *seq >= resume_seq && *ms >= start)
-        .map(|(_, ms)| ms - start);
+        .find(|(seq, ms)| *seq >= resume_seq && *ms >= kill_ms)
+        .map(|(_, ms)| ms - kill_ms);
     Some(Outage {
-        gap_start_ms: start,
-        first_commit_ms: gap,
+        kill_ms,
+        first_commit_ms: resume_ms - kill_ms,
         caught_up_ms,
     })
 }
@@ -54,7 +54,12 @@ pub(crate) async fn failover(
     stream: &str,
     duration: Duration,
     start_at: Option<SystemTime>,
+    kill_file: &Path,
 ) -> Result<serde_json::Value> {
+    let start_unix = start_at
+        .context("failover needs --start-at")?
+        .duration_since(UNIX_EPOCH)?
+        .as_secs_f64();
     let epoch = Instant::now();
     let client = Arc::new(cluster(common).await?);
 
@@ -151,10 +156,18 @@ pub(crate) async fn failover(
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     follower.abort();
     let deliveries = deliveries.lock().expect("deliveries").clone();
-    let outage = analyze(&acks, &deliveries).context("fewer than two acks")?;
+    // The harness writes the kill's unix time (taken on the killed broker's box,
+    // right before the signal) while the run is still going.
+    let kill_unix: f64 = std::fs::read_to_string(kill_file)
+        .with_context(|| format!("read {}", kill_file.display()))?
+        .trim()
+        .parse()
+        .context("kill file is not a unix time")?;
+    let outage = analyze(&acks, &deliveries, (kill_unix - start_unix) * 1000.0)
+        .context("no ack after the kill")?;
     report!(
         common,
-        "failover: first commit {:.0} ms after the last ack, subscriber caught up {}",
+        "failover: first commit {:.0} ms after the kill, subscriber caught up {}",
         outage.first_commit_ms,
         outage
             .caught_up_ms
@@ -168,7 +181,7 @@ pub(crate) async fn failover(
         "acked": acks.len(),
         "failed_sends": failures,
         "delivered": deliveries.len(),
-        "gap_start_s": outage.gap_start_ms / 1000.0,
+        "kill_at_s": outage.kill_ms / 1000.0,
         "first_commit_ms": outage.first_commit_ms,
         "caught_up_ms": outage.caught_up_ms,
     }))

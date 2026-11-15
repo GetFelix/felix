@@ -74,6 +74,13 @@ for b in "${BOXES[@]}"; do
     --format='value(status,networkInterfaces[0].networkIP,machineType.basename())')
   [ "$st" = RUNNING ] || { echo "!! felix-build-$b is not running; start it with remote.sh first" >&2; exit 1; }
   IP[$b]=$ip; MT[$b]=$mt
+  # A box that just (re)started can answer ssh before its disk is mounted writable.
+  ok=0
+  for _ in $(seq 1 60); do
+    raw "$b" "test -w /mnt/build" 2>/dev/null && { ok=1; break; }
+    sleep 5
+  done
+  [ "$ok" = 1 ] || { echo "!! felix-build-$b: /mnt/build is not writable after 5 min" >&2; exit 1; }
 done
 
 # --- the binary, the same on every box -------------------------------------------
@@ -101,8 +108,12 @@ case " $CELLS " in *-kafka*) for b in "${BOXES[@]}"; do on "$b" kafka-install; d
 
 # --- reservation -----------------------------------------------------------------
 CUR=""
+LGPID=""
 cleanup() {
   set +e
+  # Our own background ssh (by PID); `stop` below kills the remote loadgen, Kafka tool
+  # and brokers through the pid files node.sh wrote, never by name.
+  [ -z "$LGPID" ] || kill "$LGPID" 2>/dev/null
   if [ -n "$CUR" ]; then
     for b in "${BOXES[@]}"; do on "$b" stop "$CUR"; on "$b" wipe "$CUR"; done
   fi
@@ -111,6 +122,7 @@ cleanup() {
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
+trap 'exit 143' HUP
 
 for b in "${BOXES[@]}"; do
   raw "$b" "setsid nohup bash $R/node.sh hold $RUNID $SLOT_WAIT_SECS $MAX_HOLD_SECS > $R/hold/$RUNID.log 2>&1 < /dev/null &"
@@ -269,12 +281,16 @@ run_cell() {
         || status=loadgen-failed
     elif [ "$KIND" = failover ]; then
       start=$(raw "$lg" "date +%s.%N"); start=$(python3 -c "print(float('$start') + 15)")
-      on "$lg" loadgen "$dir" "$limit" $common $args --start-at "$start" > "$loc/loadgen.txt" 2>&1 &
-      lgpid=$!
+      on "$lg" loadgen "$dir" "$limit" $common $args --start-at "$start" --kill-file "$dir/kill.at" > "$loc/loadgen.txt" 2>&1 &
+      LGPID=$!
       sleep 30   # 15 s to the start, 15 s into the run
-      on "$lead" kill-broker "$dir" || status=kill-failed
+      # The kill instant comes from the killed box right before the signal; the loadgen
+      # measures from it, so a stall earlier in the run is not counted.
+      kt=$(on "$lead" kill-broker "$dir") || status=kill-failed
       killed=$lead
-      wait "$lgpid" || status=loadgen-failed
+      echo "$kt" | on "$lg" put "$dir/kill.at"
+      wait "$LGPID" || status=loadgen-failed
+      LGPID=""
     else
       on "$lg" loadgen "$dir" "$limit" $common $args > "$loc/loadgen.txt" 2>&1 || status=loadgen-failed
     fi
@@ -284,7 +300,7 @@ run_cell() {
       python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1])); dur = float(sys.argv[2])
-sys.exit(0 if 3 < d["gap_start_s"] < dur - 5 else 1)' "$loc/loadgen.json" "$FAIL_SECS" || status=kill-missed
+sys.exit(0 if 3 < d["kill_at_s"] < dur - 5 else 1)' "$loc/loadgen.json" "$FAIL_SECS" || status=kill-missed
     fi
     for b in "${brokers[@]}"; do
       [ "$b" = "$killed" ] && continue

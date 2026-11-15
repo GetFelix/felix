@@ -43,7 +43,7 @@ and every setting.
 |---|---|
 | `{single,rf3}-{oncommit,quorum,leader}-lat` | Batch 1 ack latency (p50, p99, p999), one acked publish at a time per publisher. `oncommit` is Quorum with fsync on_commit, `quorum` is Quorum with periodic fsync, `leader` is Leader with periodic fsync. Single node is RF 1. |
 | `{single,rf3}-{oncommit,quorum,leader}-tput` | Batched throughput (batch 16, 1 KiB, 6 shards) and the per batch ack p99. |
-| `rf3-failover` | The shard's leader is killed with SIGKILL mid-run. First commit is the longest silence between acked publishes. Caught up is the time from the last ack before the kill until a live-tail subscriber receives a record published after recovery. |
+| `rf3-failover` | The shard's leader is killed with SIGKILL mid-run. The harness stamps the kill on the killed box's clock just before the signal and the generator measures from that instant (GCP's synced clocks make the skew negligible next to the recovery). First commit is the kill to the first acked publish after it. Caught up is the kill until a live-tail subscriber receives a record published after recovery. |
 | `rf3-kafka` | Kafka's own `kafka-producer-perf-test`, `acks=all`, 64 KiB batches, same settings on both engines. |
 | `rf3-mqtt` | MQTT 3.1.1 QoS 1 publishes, a window of 64 per connection, to a stream mounted at `bench/`. |
 | `rf3-fanout` | One publisher, four subscribers. Gates delivered throughput and delivery p99. |
@@ -55,7 +55,7 @@ differs from it by the fanout factor.
 
 A cell that Raft refuses or cannot run (a Kafka produce or MQTT publish on a shard engine that
 does not support it yet, say) is recorded with its failure status, has no data on the Raft side
-and fails the gate. That is the intent: an unbuilt feature is a gap, not a pass.
+and fails the gate. That is the intent: an unbuilt feature is a gap, not a pass. `rf3-kafka` and `rf3-mqtt` fail until #2633 lands.
 
 ## Read it
 

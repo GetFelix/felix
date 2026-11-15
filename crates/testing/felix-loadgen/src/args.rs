@@ -35,6 +35,9 @@ pub(crate) fn usage() -> ! {
                               of a plain connection per publisher whose batches a non-leader
                               forwards. Works at any --batch; fire-and-forget too. Use it
                               with --keys so records spread over the shards
+  --kill-file <path>          failover: file the harness writes the leader's kill
+                              time (unix seconds) to before the run ends; needs
+                              --start-at and --duration-secs
   --mqtt-addrs <a,b,...>      mqtt-publish: plain-TCP MQTT listeners (host:port)
   --mqtt-topic-prefix <p>     mqtt-publish: the mounted prefix (default: bench/);
                               --in-flight sets the window, --concurrency the
@@ -87,6 +90,7 @@ pub(crate) fn parse_args() -> Result<Args> {
     let mut via_entry = false;
     let mut concurrency = 8usize;
     let mut ingest = IngestOptions::default();
+    let mut kill_file = String::new();
     let mut mqtt_addrs: Vec<String> = Vec::new();
     let mut mqtt_prefix = "bench/".to_string();
     let mut environment = "unknown".to_string();
@@ -164,6 +168,7 @@ pub(crate) fn parse_args() -> Result<Args> {
                 ingest.start_at =
                     Some(std::time::UNIX_EPOCH + std::time::Duration::from_secs_f64(secs));
             }
+            "--kill-file" => kill_file = value("--kill-file")?,
             "--mqtt-addrs" => {
                 mqtt_addrs = value("--mqtt-addrs")?
                     .split(',')
@@ -215,6 +220,7 @@ pub(crate) fn parse_args() -> Result<Args> {
             stream,
             duration: ingest.duration.context("failover needs --duration-secs")?,
             start_at: ingest.start_at,
+            kill_file: kill_file.into(),
         },
         "mqtt-publish" => Scenario::MqttPublish {
             addrs: mqtt_addrs,

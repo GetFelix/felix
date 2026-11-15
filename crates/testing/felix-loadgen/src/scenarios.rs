@@ -116,6 +116,8 @@ pub enum Scenario {
         stream: String,
         duration: Duration,
         start_at: Option<SystemTime>,
+        /// File holding the unix time the harness killed the leader.
+        kill_file: std::path::PathBuf,
     },
     /// MQTT QoS 1 publishes over plain TCP to a stream mounted at a topic
     /// prefix, `window` unacknowledged per connection.
@@ -153,7 +155,8 @@ pub async fn run(common: &Common, scenario: &Scenario) -> Result<serde_json::Val
             stream,
             duration,
             start_at,
-        } => failover::failover(common, stream, *duration, *start_at).await,
+            kill_file,
+        } => failover::failover(common, stream, *duration, *start_at, kill_file).await,
         Scenario::MqttPublish {
             addrs,
             topic_prefix,

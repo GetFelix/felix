@@ -171,8 +171,9 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
   # loadgen <dir> <timeout-secs> <args...>: felix-loadgen with the client token; prints its output.
   loadgen)
     dir=$1 limit=$2; shift 2; in_run "$dir"
-    timeout -k 10 "$limit" "$BIN/felix-loadgen" --tenant "$TENANT" --token-file "$dir/tokens/client.jwt" "$@" 2>&1 \
-      | tee "$dir/loadgen.log"
+    # exec keeps the pid file pointing at the process itself, so `stop` reaches it.
+    bash -c 'echo $$ > "$0/loadgen.pid"; exec timeout -k 10 "$1" "$2" --tenant "$3" --token-file "$0/tokens/client.jwt" "${@:4}"' \
+      "$dir" "$limit" "$BIN/felix-loadgen" "$TENANT" "$@" 2>&1 | tee "$dir/loadgen.log"
     ;;
 
   # stop <dir>: TERM then KILL the processes this script started under <dir>.
@@ -203,7 +204,9 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
 
   # kill-broker <dir>: SIGKILL the broker this script started, as a crashed leader.
   kill-broker)
-    dir=$1; in_run "$dir"; kill -9 "$(cat "$dir/broker.pid")"
+    dir=$1; in_run "$dir"
+    date +%s.%N   # the kill instant, on this box's clock, just before the signal
+    kill -9 "$(cat "$dir/broker.pid")"
     ;;
 
   # sysinfo: the machine the numbers came from.
@@ -227,7 +230,8 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
   # Both engines get the same producer settings: acks=all, 64 KiB batches, no compression.
   kafka)
     dir=$1 limit=$2 boot=$3 topic=$4 records=$5 bytes=$6; in_run "$dir"
-    timeout -k 10 "$limit" "$R/kafka/bin/kafka-producer-perf-test.sh" --topic "$topic" \
+    bash -c 'echo $$ > "$0/kafka.pid"; exec timeout -k 10 "$@"' "$dir" "$limit" \
+      "$R/kafka/bin/kafka-producer-perf-test.sh" --topic "$topic" \
       --num-records "$records" --record-size "$bytes" --throughput -1 --producer-props \
       bootstrap.servers="$boot" acks=all batch.size=65536 linger.ms=5 compression.type=none \
       max.in.flight.requests.per.connection=5 2>&1 | tee "$dir/kafka.log" | tail -1 | python3 -c '
