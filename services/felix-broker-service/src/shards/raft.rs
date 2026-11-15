@@ -45,6 +45,9 @@ const LEAD_RETRY: Duration = Duration::from_millis(50);
 /// How long the broker that forms a group waits for each other member to
 /// say its log is empty. One that does not is asked again on the next pass.
 const ASK_WITHIN: Duration = Duration::from_secs(5);
+/// How long a broker that formed a group waits to lead it before it
+/// gives up handing the first leadership to placement's leader.
+const HAND_OVER_WITHIN: Duration = Duration::from_secs(10);
 
 /// How many engine markers a pass reads at once.
 const MARKER_READS: usize = 16;
@@ -468,7 +471,10 @@ impl RaftShards {
     /// the set gets here, so a set is formed by one broker or by none, and
     /// only once every other broker has named its copy and said no group
     /// reached it. The rest join when the leader's first append arrives.
-    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, incarnation: u64) {
+    ///
+    /// Once formed, the first leadership goes to `leader`, the broker
+    /// placement names, so leaders spread the way placement spreads them.
+    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, leader: String, incarnation: u64) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
@@ -485,13 +491,25 @@ impl RaftShards {
                     // Under the pass's lock, so the member formed is the one
                     // the others were asked about.
                     me.put_off.lock().remove(&key);
+                    let to = members
+                        .iter()
+                        .find(|member| *member.broker == *leader)
+                        .cloned();
                     let open = me.open.lock().await;
-                    if open
+                    let formed = open
                         .get(&key)
                         .is_some_and(|member| member.incarnation == incarnation)
-                        && let Err(err) = me.runtime.initialize(&key, members).await
-                    {
-                        tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                        && match me.runtime.initialize(&key, members).await {
+                            Ok(()) => true,
+                            Err(err) => {
+                                tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                                false
+                            }
+                        };
+                    drop(open);
+                    if formed && let Some(to) = to {
+                        let handed = me.runtime.hand_over(&key, to, HAND_OVER_WITHIN).await;
+                        tracing::debug!(shard = ?key, %leader, handed, "handed the first leadership of a formed group");
                     }
                 }
                 Err(err) => {
@@ -798,7 +816,12 @@ impl EngineShards for RaftShards {
                     .is_some_and(|status| status.term == 0 && status.last_index.is_none());
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
-                    self.form(key.clone(), brokers, assignment.incarnation);
+                    self.form(
+                        key.clone(),
+                        brokers,
+                        assignment.leader.clone(),
+                        assignment.incarnation,
+                    );
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
