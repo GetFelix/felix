@@ -2961,16 +2961,20 @@ On the hybrid only the leader serves readers, so once a trim is answered
 no reader on any broker is served below its floor. A Raft follower serves
 from its own log, so a member whose log holds a trim its commit has not
 passed yet (a follower that has not heard the commit, or a member
-restarted with its saved commit offset behind the trim) holds every
-resume, cursor subscribe and history page until it has, for at most 5 s,
-then refuses it as retryable (`NotReadable::Settling`). A follower that
+restarted with its saved commit offset behind the trim) holds a resume,
+cursor subscribe or history page that starts below the trim's floor (or at
+`earliest`) until it has, for at most 5 s, then refuses it as retryable
+(`NotReadable::Settling`). Reads at or above the floor, and tail
+subscribes, are served at once. The refusal repeats on every retry for as
+long as the trim stays uncommitted, for example on a leader without a
+quorum or on a partitioned follower. A follower that
 does not hold the trim's entry at all yet can still serve below the floor
 after `trim_ok` until the entry reaches it, about one append round.
 Closing that needs a read index asked of the leader
 ([#2603](https://github.com/GetFelix/felix/issues/2603)).
 
-A Raft trim that does not commit within 30 s is answered as on the
-hybrid: `unacknowledged` with `detail.reason` = `trim_timed_out`, and it
+A Raft trim that does not commit and reach the leader's ring within 30 s
+of its proposal (one budget for both) is answered as on the hybrid: `unacknowledged` with `detail.reason` = `trim_timed_out`, and it
 may still land.
 
 The other difference from the hybrid is deletion:

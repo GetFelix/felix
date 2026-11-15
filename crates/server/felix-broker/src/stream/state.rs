@@ -640,6 +640,15 @@ impl StreamState {
             return false;
         }
         state.log.drop_below(floor);
+        // A released trim behind a gap on a broker that no longer leads
+        // leaves the sequence to the pass over the log, as a blank does.
+        if turn.is_none()
+            && self.engine_log
+            && offset > state.next_seq
+            && !self.leads_engine_log.load(Ordering::Acquire)
+        {
+            return true;
+        }
         state.pass_blank(offset);
         true
     }

@@ -112,7 +112,7 @@ impl Broker {
             .await?;
         let stream_state = handle.state;
         if let Some(log) = &stream_state.durable {
-            await_pending_trim(log, stream, shard).await?;
+            await_pending_trim(log, Some(cursor.next_seq), stream, shard).await?;
         }
 
         // Backlog and registration are captured together. Taking the snapshot
@@ -365,7 +365,7 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
-        await_pending_trim(log, stream, shard).await?;
+        await_pending_trim(log, Some(from_offset), stream, shard).await?;
         let mut from_offset = from_offset;
         loop {
             let appended = Arc::clone(&handle.state.appended);
@@ -483,7 +483,13 @@ async fn resolve_position(
 ) -> Result<Position> {
     let durable = stream_state.durable.clone();
     if let Some(log) = &durable {
-        await_pending_trim(log, stream, shard).await?;
+        // `Latest` starts at the tail, above any floor.
+        let from = match start {
+            StartPosition::Latest => Some(u64::MAX),
+            StartPosition::Earliest => None,
+            StartPosition::Offset(offset) => Some(offset),
+        };
+        await_pending_trim(log, from, stream, shard).await?;
     }
     let tail = match &durable {
         Some(log) => log.tail_offset().await?,
@@ -554,27 +560,30 @@ pub(super) fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u
     }
 }
 
-/// Refuse a durable read from `requested` below the readable base, checked
-/// after the reader registered.
-///
-/// The ring only knows its own oldest entry. A trim held for the committed
-/// mark has raised the log's floor but not yet dropped the ring below it, and
-/// retention moves the base without touching the ring at all. Checked after
-/// registration, a trim acknowledged before the reader registered is always
-/// seen here.
-/// Wait until a Raft member has seen committed every trim its log holds.
+/// Wait until a Raft member has seen committed every trim its log holds
+/// whose floor is above `from`, the read's start (`None` for the earliest
+/// readable offset). A read at or above every pending floor goes ahead.
 ///
 /// The leader answers a trim once it commits, and a member's floor applies
 /// only once its own commit passes the trim, which on a follower or a member
 /// restarted behind it comes later. Reading before then could serve records
 /// below a floor a client was already told about. A member that never got
 /// the trim entry is not covered: see `docs/per-shard-raft.md`, "Head trims".
-async fn await_pending_trim(log: &crate::StreamLog, stream: &str, shard: u32) -> Result<()> {
-    if !log.raft_trim_pending() {
+async fn await_pending_trim(
+    log: &crate::StreamLog,
+    from: Option<u64>,
+    stream: &str,
+    shard: u32,
+) -> Result<()> {
+    let held = || {
+        log.raft_pending_trim_floor()
+            .is_some_and(|floor| from.is_none_or(|from| from < floor))
+    };
+    if !held() {
         return Ok(());
     }
     let deadline = tokio::time::Instant::now() + PENDING_TRIM_WAIT;
-    while log.raft_trim_pending() {
+    while held() {
         if tokio::time::Instant::now() >= deadline {
             return Err(not_readable(stream, shard, NotReadable::Settling));
         }
@@ -583,6 +592,14 @@ async fn await_pending_trim(log: &crate::StreamLog, stream: &str, shard: u32) ->
     Ok(())
 }
 
+/// Refuse a durable read from `requested` below the readable base, checked
+/// after the reader registered.
+///
+/// The ring only knows its own oldest entry. A trim held for the committed
+/// mark has raised the log's floor but not yet dropped the ring below it, and
+/// retention moves the base without touching the ring at all. Checked after
+/// registration, a trim acknowledged before the reader registered is always
+/// seen here.
 fn refuse_below_floor(log: &crate::StreamLog, requested: u64) -> Result<()> {
     let oldest = log.readable_base();
     if requested < oldest {

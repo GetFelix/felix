@@ -79,7 +79,7 @@ impl Broker {
         if before <= floor {
             return Ok(ProposedTrim {
                 handle: handle.clone(),
-                trim_wait: self.trim_wait,
+                deadline: tokio::time::Instant::now() + self.trim_wait,
                 step: Step::NoOp { expected },
             });
         }
@@ -100,7 +100,7 @@ impl Broker {
         )?;
         Ok(ProposedTrim {
             handle: handle.clone(),
-            trim_wait: self.trim_wait,
+            deadline: tokio::time::Instant::now() + self.trim_wait,
             step: Step::Proposed {
                 before,
                 expected,
@@ -115,7 +115,9 @@ impl Broker {
 /// [`Broker::propose_trim_at`].
 pub struct ProposedTrim<E: Send + 'static> {
     handle: StreamHandle,
-    trim_wait: Duration,
+    /// One budget for the whole trim, from its proposal: the commit and the
+    /// floor reaching the ring share it.
+    deadline: tokio::time::Instant,
     step: Step<E>,
 }
 
@@ -160,7 +162,13 @@ impl<E: Send + 'static> ProposedTrim<E> {
             } => Step::Proposed {
                 before,
                 expected,
-                proposed: proposed.answer_within(timeout, timed_out),
+                proposed: proposed.answer_within(
+                    timeout.min(
+                        self.deadline
+                            .saturating_duration_since(tokio::time::Instant::now()),
+                    ),
+                    timed_out,
+                ),
                 applied,
             },
             noop => noop,
@@ -177,7 +185,10 @@ impl<E: Send + 'static> ProposedTrim<E> {
         };
         let (before, expected, proposed, applied) = match self.step {
             Step::NoOp { expected } => {
-                await_committed(&self.handle, expected, self.trim_wait)
+                let left = self
+                    .deadline
+                    .saturating_duration_since(tokio::time::Instant::now());
+                await_committed(&self.handle, expected, left)
                     .await
                     .map_err(TrimFailed::Broker)?;
                 return Ok(TrimOutcome {
@@ -195,7 +206,7 @@ impl<E: Send + 'static> ProposedTrim<E> {
         let outcome = proposed.complete().await.map_err(TrimFailed::Engine)?;
         let offset = outcome.offsets.map(|(first, _)| first);
         let stood_at = offset.unwrap_or(expected);
-        match tokio::time::timeout(self.trim_wait, applied).await {
+        match tokio::time::timeout_at(self.deadline, applied).await {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
                 return Err(TrimFailed::Broker(BrokerError::PublishSuperseded {

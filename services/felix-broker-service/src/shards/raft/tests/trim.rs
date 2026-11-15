@@ -288,12 +288,37 @@ async fn a_follower_holding_the_trim_is_not_read_below_it_after_the_answer() {
         log.commit_offset() <= tail,
         "the holder never heard the commit"
     );
+    // Reads at or above the pending floor are not held. Checked first: the
+    // trim can commit on the holder during the 5 s hold of the read below.
+    let started = tokio::time::Instant::now();
+    for start in [StartPosition::Offset(floor), StartPosition::Latest] {
+        holder
+            .broker
+            .subscribe_from("t1", "ns", "orders", 0, start)
+            .await
+            .expect("a read above the pending floor is served");
+    }
+    holder
+        .broker
+        .read_committed("t1", "ns", "orders", 0, floor, 1 << 16)
+        .await
+        .expect("a page above the pending floor is served");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "a read above the pending floor waited for the trim"
+    );
     let resumed = holder
         .broker
         .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(first))
         .await;
     assert!(
-        resumed.is_err(),
+        matches!(
+            resumed,
+            Err(felix_broker::BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::Settling,
+                ..
+            })
+        ),
         "the holder served a resume below the floor after trim_ok"
     );
 
