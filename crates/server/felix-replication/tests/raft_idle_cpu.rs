@@ -198,6 +198,7 @@ async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Durati
                         engine.propose(
                             &shard(n),
                             Batch {
+                                expected: None,
                                 records: vec![Record {
                                     timestamp_micros: 1_700_000_000,
                                     payload: Bytes::from_static(&[7; 100]),
@@ -261,6 +262,7 @@ async fn with_a_dead_peer(
     for n in 0..groups {
         let Some(runtime) = leader(n) else { continue };
         let batch = Batch {
+            expected: None,
             records: vec![Record {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(&[7; 100]),

@@ -113,6 +113,7 @@ module_of() {
     FelixRaftSwitch*) echo FelixRaftSwitch ;;
     FelixRaftWritten*) echo FelixRaftWritten ;;
     FelixRaftBatch*) echo FelixRaftBatch ;;
+    FelixRaftCond*) echo FelixRaftCond ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -576,6 +577,11 @@ expectations=(
   "FelixRaftBatchReachInstall violates NeverInstalls"
   "FelixRaftBatchKeepsCutReachSnapshotFinish violates NeverFinishesFromSnapshot"
   "FelixRaftBatchReachHeld violates NeverAnswersHeld"
+  "FelixRaftCond pass"
+  "FelixRaftCondTwoTerms pass"
+  "FelixRaftCondLeaderDecides violates CondKeptAtExpected"
+  "FelixRaftCondLeaderDecidesNoMembers pass"
+  "FelixRaftCondReachAnswers violates NeverOkAndMismatch"
   "FelixRaftIdentity pass"
   "FelixRaftIdentityBatched pass"
   "FelixRaftIdentityRelaxedCrash pass"
@@ -1310,6 +1316,9 @@ weights=(
   "FelixRaftWrittenCrash 5"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
+  "FelixRaftCond 300"
+  "FelixRaftCondTwoTerms 40"
+  "FelixRaftCondLeaderDecidesNoMembers 200"
   "FelixRaftLeaseAck 2"
   "FelixRaftLeaseDeliver 6"
   "FelixRaftLeaseRestart 6"
@@ -1506,7 +1515,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache Cond"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"

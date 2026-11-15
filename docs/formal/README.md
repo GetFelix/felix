@@ -627,6 +627,11 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
 | `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
 | `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
+| `FelixRaftCond.cfg` | `FelixRaftCond.tla`: three members, three terms, logs up to five entries, one plain publish, one membership entry, three conditional publishes (two naming offset 2, one offset 3); each member decides `kept` from the entry and its index | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold` (169,456,277 distinct states, depth 34, 24 minutes with 12 workers on a 32-core machine) |
+| `FelixRaftCondTwoTerms.cfg` | the same with two terms | pass the same (18,646,633 distinct states, depth 30, 3 minutes with 12 workers on a 32-core machine) |
+| `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
+| `FelixRaftCondLeaderDecidesNoMembers.cfg` | the same with no membership entry | pass the same as `FelixRaftCond.cfg` (101,575,424 distinct states, depth 36, 23 minutes with 8 workers on a 32-core machine): the membership entry is what breaks the guess |
+| `FelixRaftCondReachAnswers.cfg` | witness, one term: one conditional publish is answered "ok" and another "mismatch" | violate `NeverOkAndMismatch` |
 | `FelixRaftIdentity.cfg` | `FelixRaftIdentity.tla`: three brokers, two terms, one write, one membership change, one fault that empties the shard directory or loses the root | pass `OneLeaderPerTerm`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `AckedHeldByLeader` (0.2M distinct states) |
 | `FelixRaftIdentityBatched.cfg` | the same faults plus the relaxed-fsync crash, with the batched log mark the broker ships; no restore, so the mark never moves | pass the same (0.2M distinct states) |
 | `FelixRaftIdentityRelaxedCrash.cfg` | the fault is a relaxed-fsync crash: the storage id rotates and the directory rotates its copy when opened | pass the same (0.1M distinct states) |
@@ -4055,6 +4060,56 @@ still refuses a batch of several records in `raft/propose.rs`.
    it. A re-send is then refused when the producer is unknown and its
    sequence is not 0, but a cut first batch (sequence 0) is taken as new.
    That is the `"forget"` case, and the code change has to close it.
+
+### Conditional publishes on a Raft shard
+
+`FelixRaftCond.tla` models a conditional publish on a Raft stream shard
+(#2446). A conditional publish names an offset, `expected`, and lands there
+or not at all. The offset is the Raft index.
+
+What is modelled:
+
+- Raft in the abstract: per-member logs of entries with terms, elections by
+  vote, followers that cut a conflicting tail before they append, and a
+  commit at a majority in the leader's own term.
+- The leader appends one entry for a conditional publish wherever its log
+  ends. Every member decides from the entry and its index alone: at
+  `expected` it holds the record, anywhere else a blank that readers skip.
+  The stored entry carries that decision as `kept`, worked out when the
+  member writes it. A cut removes the entry and its decision together.
+- Plain publishes, the blank a leader writes when its term starts, and a
+  membership entry the leader may append at any time. Publishes go through
+  the leader's queue in order. The blank and the membership entry do not.
+- The leader answers a client once its entry is committed: "ok at i" when it
+  is kept, "mismatch" otherwise.
+
+What it promises, over each member's committed prefix:
+
+- `CondKeptAtExpected`: every kept conditional record is at its expected
+  offset.
+- `OneKeptPerOffset`: of the publishes naming one offset, at most one is kept.
+- `MembersAgree`: two members that committed an index hold the same entry
+  there, `kept` included.
+- `AnswersHold`: a client answered "ok at i" is kept at i, its expected
+  offset, on every member that committed i. One answered "mismatch" is kept
+  nowhere.
+
+`LeaderDecides = TRUE` drops the rule: the leader decides `kept` when the
+publish arrives, from its guess of the index (its log, plus the queue ahead,
+plus one), and followers copy it. A membership entry appended between the
+guess and the append moves the publish one index on, where it is kept
+(`FelixRaftCondLeaderDecides.cfg`). With no membership entry the guess is
+right (`FelixRaftCondLeaderDecidesNoMembers.cfg`), which shows the
+membership entry is what breaks it. `FelixRaftCondReachAnswers.cfg` shows the
+passes are not vacuous: one publish is answered "ok" and another "mismatch".
+The leader's queue is modelled only for the guess. When members decide at
+write time, a publish is appended as it arrives, which changes no outcome.
+
+Abstracted: disks, crashes and snapshots (`FelixRaft.tla` has them). A
+message is one step that reads both members, and a leader counts a follower
+toward a commit by reading its log. A client sends once; a retry is a new
+publish. Any leader holding the entry committed may answer, which allows more
+than the code.
 
 ## How CI checks the models
 

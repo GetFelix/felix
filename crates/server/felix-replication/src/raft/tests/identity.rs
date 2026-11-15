@@ -462,6 +462,7 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
             "no written report arrived"
         );
         let batch = Batch {
+            expected: None,
             records: vec![Record {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(b"relaxed"),
@@ -531,6 +532,7 @@ async fn a_slow_marker_sync_does_not_hold_the_commit_or_the_timeout() {
 
     let engine = RaftEngine::new(cluster.runtime(&leader.broker));
     let batch = |payload: &'static [u8]| Batch {
+        expected: None,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
@@ -689,6 +691,7 @@ async fn power_cut_keeps(acked: Acked) {
     let leader = cluster.elected(0).await;
     let engine = RaftEngine::new(cluster.runtime(&leader.broker));
     let batch = |payload: &'static [u8]| Batch {
+        expected: None,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
@@ -995,6 +998,7 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
     let leader = cluster.elected(0).await;
     let engine = RaftEngine::new(cluster.runtime(&leader.broker));
     let batch = |payload: &'static [u8]| Batch {
+        expected: None,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
