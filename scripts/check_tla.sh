@@ -1514,7 +1514,7 @@ if [ -n "${TLA_CHANGED_BASE:-}" ]; then
   # change to each: FelixRaftFourTerms is the only passing check of the
   # commit rule for earlier terms and is over ten minutes.
   # The track 4 modules beside it are each behind their own few, the same way.
-  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache"
+  raft_parts="Membership Identity Placement Reform Lease Sleep Switch Cache Cond"
   if ! git diff --quiet "$TLA_CHANGED_BASE" HEAD -- "$SPEC_DIR/FelixRaft.tla"; then
     for f in "$SPEC_DIR"/FelixRaft*.cfg; do
       f="${f##*/}"
