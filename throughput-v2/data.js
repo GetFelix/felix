@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794714341042,
+  "lastUpdate": 1794715592712,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -57824,6 +57824,58 @@ window.BENCHMARK_DATA = {
             "range": "40522.56",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1657637.15\nmean: 1660384.73\nstdev: 40522.56\ncv: 2.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f8559331175cd9e8d37cf52bfa4385d816672f3e",
+          "message": "perf(raft): batch the broker's Raft log marks, one synced write a second (#2576) (#2584)\n\n* feat(raft): batch the broker's Raft log marks, one synced write a second\n\nWIP: default switch and tests; docs and model config follow.\n\n* docs(raft): the batched log mark ships; its residual stated and modelled\n\nQuestions, 11 resolved as option (a). FelixRaftIdentityBatched.cfg checks\nthe base faults under the shipped mark.\n\n* fix(raft): a reopened copy marks what it recovered; a stale batch is dropped, not fatal\n\nA member opened before its batch ran had no flushed position until its first\nappend, so its mark could trail an idle log without limit. A batch that met a\nshard reopened under a new copy failed and stopped the root's mark log.\n\n* docs(raft): the A/B numbers behind the batched log mark; model state count\n\n* fix(raft): a hung batched mark write stops the root; a planned stop marks exactly\n\nA batch still unwritten five intervals after the last written one started\npoisons the mark log without waiting on the writer, so batched shards stop\nappending and every later mark write fails, as after a failed write. The\nage is exported as felix_storage_raft_log_mark_age_seconds. Runtime\nshutdown writes one last batch, bounded at 5 s. Tests cover the hung batch\n(paused time), the reopen mark (mark_recovered) and the shutdown batch; the\nwrite-count bound now allows for elections.\n\nSpec-Unaffected: the identity models already let a batched mark lag without bound; stopping appends on a hung write only removes behaviours, and no restore window grows.\n\n* fix(raft): a hung batched mark write holds appends instead of stopping the root\n\nPast five intervals, a batched shard's append waits (MarkLog::caught_up)\nuntil a batch is written, so no ack runs more than about six seconds ahead\nof its mark, and it heals when the disk returns. Only a real write error\nstill stops the root. The batcher selects biased with the batch first and\nskips missed checks, so a freeze with a finished batch never holds; a batch\nthat took past the limit keeps the hold and writes again at once.\n\nThe runtime records each data root its members mark at, once, and its\nshutdown writes their last batch together under one 5 s deadline. The\nbroker closes its members before the runtime shuts down, so the batch over\nopen groups never ran there.\n\nTests: a_hung_batch_holds_batched_appends replaces the stop test;\nshutdown_writes_the_last_batched_log_marks goes through RaftShards'\nshutdown. Both fail with their fix reverted.\n\nSpec-Unaffected: the identity models already let a batched mark lag without bound; holding appends on a hung write only removes behaviours, and no restore window grows past the documented bound.\n\n* docs(raft): caught_up states the same bound as the batcher",
+          "timestamp": "2026-11-14T19:59:27-08:00",
+          "tree_id": "7889d2e2a3a841922f6cf0592ecca67b7469b694",
+          "url": "https://github.com/GetFelix/felix/commit/f8559331175cd9e8d37cf52bfa4385d816672f3e"
+        },
+        "date": 1794715592023,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 527600.22,
+            "range": "26652.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 527600.22\nmean: 520870.45\nstdev: 26652.72\ncv: 5.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 527600.22,
+            "range": "26652.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 527600.22\nmean: 520870.45\nstdev: 26652.72\ncv: 5.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118739.36,
+            "range": "2717.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118739.36\nmean: 117426.75\nstdev: 2717.70\ncv: 2.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1187393.61,
+            "range": "27176.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1187393.61\nmean: 1174267.54\nstdev: 27176.99\ncv: 2.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
