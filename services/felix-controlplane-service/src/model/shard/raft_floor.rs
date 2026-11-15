@@ -1,6 +1,6 @@
-//! The highest committed Raft log id a shard's leaders have reported, kept
-//! per stream incarnation so a re-form can tell whether a group ever
-//! committed anything.
+//! What a shard's Raft leaders reported committing, kept per stream
+//! incarnation: the highest committed index across reform epochs, and the
+//! exact last committed log id of the current epoch.
 //!
 //! `docs/per-shard-raft.md`, "Offset floor".
 use serde::{Deserialize, Serialize};
@@ -9,19 +9,24 @@ use utoipa::ToSchema;
 
 use super::{ShardAssignment, ShardKey};
 
-/// A Raft shard's floor: the highest committed index a leader reported for
-/// the group at one stream incarnation, across its reform epochs. It only
-/// rises.
+/// A Raft shard's floor at one stream incarnation. Two things, never mixed:
+/// `offset_floor`, the highest committed index any reform epoch of the group
+/// reported, and `(epoch, index, term)`, the exact last committed log id a
+/// leader of the current epoch reported. A re-form start reads
+/// `offset_floor` as the bound below which no offset is given out again; a
+/// rule that matches a copy's log against a log id reads the exact id.
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone, PartialEq, Eq)]
 pub struct RaftFloor {
     /// The stream incarnation the group runs.
     pub incarnation: u64,
-    /// The shard's reform epoch the report was made in. 0 until a re-form.
+    /// The highest committed index reported in any reform epoch of this
+    /// incarnation. It only rises.
+    pub offset_floor: u64,
+    /// The reform epoch of the exact log id below. 0 until a re-form.
     pub epoch: u64,
-    /// The committed log index.
+    /// The last committed index reported in `epoch`.
     pub index: u64,
-    /// The term of the entry at `index`, or, while a new epoch has reported
-    /// no index above the earlier epoch's, that epoch's last reported term.
+    /// The term of the entry at `index`, in `epoch`.
     pub term: u64,
 }
 
@@ -67,8 +72,9 @@ pub enum RaftFloorError {
 
 impl ShardAssignment {
     /// Raise the shard's floor to `report` if it is higher. Returns whether
-    /// it moved; an equal or lower index in the same epoch is a no-op, and
-    /// in a later epoch moves only the floor's epoch.
+    /// it moved; an equal or lower index in the same epoch is a no-op. The
+    /// first report of a later epoch replaces the exact log id and keeps the
+    /// higher `offset_floor`.
     ///
     /// Refused for a shard not on Raft, or a report for another incarnation
     /// or reform epoch: a late report from an old group must not set the new
@@ -95,48 +101,39 @@ impl ShardAssignment {
                 current: epoch,
             });
         }
-        let reported = RaftFloor {
-            incarnation: report.incarnation,
-            epoch: report.epoch,
-            index: report.index,
-            term: report.term,
-        };
-        match &self.raft_floor {
-            Some(held)
-                if (held.incarnation, held.epoch) == (reported.incarnation, reported.epoch) =>
-            {
-                if reported.index <= held.index {
+        let held = self
+            .raft_floor
+            .as_ref()
+            .filter(|held| held.incarnation == report.incarnation);
+        let offset_floor = match held {
+            Some(held) if held.epoch == report.epoch => {
+                if report.index <= held.index {
                     return Ok(false);
                 }
-                if reported.term < held.term {
+                if report.term < held.term {
                     return Err(RaftFloorError::LowerTerm {
-                        index: reported.index,
-                        term: reported.term,
+                        index: report.index,
+                        term: report.term,
                         held_index: held.index,
                         held_term: held.term,
                     });
                 }
+                held.offset_floor.max(report.index)
             }
-            // An earlier epoch of this group: offsets it gave out stay given
-            // out, so the new epoch's first report never lowers the index.
-            // It takes the new epoch's term, since the next same-epoch report
-            // is compared against it and terms do not carry across epochs.
-            Some(held)
-                if held.incarnation == reported.incarnation && reported.index <= held.index =>
-            {
-                self.raft_floor = Some(RaftFloor {
-                    index: held.index,
-                    epoch: held.epoch.max(reported.epoch),
-                    ..reported
-                });
-                return Ok(true);
-            }
-            // A floor from an earlier incarnation says nothing about this
-            // group. One from a later one cannot be held here, since the
-            // report matched the record.
-            _ => {}
-        }
-        self.raft_floor = Some(reported);
+            // An earlier epoch of this group: its exact id says nothing
+            // about the new epoch's log and is replaced, but the offsets it
+            // gave out stay given out, so `offset_floor` never drops.
+            Some(held) => held.offset_floor.max(report.index),
+            // None yet, or one from an earlier incarnation, a different group.
+            None => report.index,
+        };
+        self.raft_floor = Some(RaftFloor {
+            incarnation: report.incarnation,
+            offset_floor,
+            epoch: report.epoch,
+            index: report.index,
+            term: report.term,
+        });
         Ok(true)
     }
 

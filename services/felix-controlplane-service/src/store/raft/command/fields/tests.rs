@@ -213,6 +213,7 @@ fn assignment() -> ShardAssignment {
         }),
         raft_floor: Some(crate::model::RaftFloor {
             incarnation: 1,
+            offset_floor: 1,
             epoch: 1,
             index: 1,
             term: 1,

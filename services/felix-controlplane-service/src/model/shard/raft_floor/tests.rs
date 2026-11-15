@@ -154,35 +154,35 @@ fn only_a_switched_shard_at_the_reports_incarnation_and_epoch_keeps_one() {
     assert_eq!(a.raise_raft_floor(&at), Ok(true));
 }
 
-/// A new epoch's first report never lowers the floor: the offsets the
-/// earlier epoch gave out stay given out. The epoch moves on, and a higher
-/// index in it raises the floor whatever the earlier epoch's term.
+/// A new epoch's first report replaces the exact log id with its own and
+/// keeps the higher `offset_floor`: the offsets the earlier epoch gave out
+/// stay given out. No field ever pairs an index from one epoch with a term
+/// from another.
 #[test]
-fn a_new_epoch_keeps_the_highest_index() {
+fn a_new_epoch_keeps_the_offset_floor_and_stores_its_own_log_id() {
+    let floor = |a: &ShardAssignment| {
+        a.raft_floor
+            .as_ref()
+            .map(|f| (f.offset_floor, (f.epoch, f.index, f.term)))
+    };
     let mut a = switched();
     a.raise_raft_floor(&report(100, 9)).expect("epoch 0");
     a.placed = Some(PlacedInEpoch {
         epoch: 1,
         brokers: Default::default(),
     });
-    let lower = RaftFloorReport {
+    let in_epoch_1 = |index, term| RaftFloorReport {
         epoch: 1,
-        ..report(3, 1)
+        ..report(index, term)
     };
-    assert_eq!(a.raise_raft_floor(&lower), Ok(true));
-    assert_eq!(
-        a.raft_floor.as_ref().map(|f| (f.epoch, f.index, f.term)),
-        Some((1, 100, 1))
-    );
-    let higher = RaftFloorReport {
-        epoch: 1,
-        ..report(120, 2)
-    };
-    assert_eq!(a.raise_raft_floor(&higher), Ok(true));
-    assert_eq!(
-        a.raft_floor.as_ref().map(|f| (f.epoch, f.index, f.term)),
-        Some((1, 120, 2))
-    );
+    assert_eq!(a.raise_raft_floor(&in_epoch_1(3, 1)), Ok(true));
+    assert_eq!(floor(&a), Some((100, (1, 3, 1))));
+    // Compared within the epoch only: term 1, not epoch 0's 9.
+    assert_eq!(a.raise_raft_floor(&in_epoch_1(50, 2)), Ok(true));
+    assert_eq!(floor(&a), Some((100, (1, 50, 2))));
+    assert_eq!(a.raise_raft_floor(&in_epoch_1(120, 2)), Ok(true));
+    assert_eq!(floor(&a), Some((120, (1, 120, 2))));
+    assert_eq!(a.raise_raft_floor(&in_epoch_1(120, 2)), Ok(false));
 }
 
 #[test]

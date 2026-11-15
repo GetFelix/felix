@@ -3825,11 +3825,16 @@ has seen, its acknowledgement or any membership in the copy's log
 
 #### Offset floor
 
-The control plane keeps, on each Raft shard's record, the highest committed
-log id its leaders reported: `raft_floor`, with the stream `incarnation`, the
-reform `epoch`, and the `index` and `term` of the commit. The re-form uses it
-("Offsets are not reused") to start a new epoch above every offset that was
-acknowledged, and to tell whether a group ever committed anything.
+The control plane keeps `raft_floor` on each Raft shard's record, per stream
+`incarnation`. It holds two separate things:
+
+- `offset_floor`: the highest committed index any leader reported, in any
+  reform epoch of the incarnation. The re-form start reads it ("Offsets are
+  not reused") so a new epoch gives out no offset at or below one that was
+  acknowledged.
+- `epoch`, `index` and `term`: the exact last committed log id a leader of
+  the current epoch reported. A rule that matches a copy's log against a log
+  id reads this one. Its index and term always come from the same report.
 
 - **Every leader reports once a second.** Each broker batches the commit log
   id of every group it leads into one `POST /v1/nodes/{node_id}/raft-floors`,
@@ -3844,16 +3849,18 @@ acknowledged, and to tell whether a group ever committed anything.
 - **Cache groups are reported too.** The control plane skips a shard it does
   not keep a floor for, a cache shard or one not on Raft, without failing the
   batch.
-- **It only rises.** A report raises the floor when its index is higher and
-  its term is not lower. An equal or lower index changes nothing. A higher
-  index at a lower term contradicts the floor and is skipped.
+- **It only rises within an epoch.** A report replaces the exact log id when
+  its index is higher and its term is not lower. An equal or lower index
+  changes nothing. A higher index at a lower term contradicts the held log
+  id and is skipped.
 - **It is kept per incarnation and epoch.** A report for another stream
   incarnation, or for a reform epoch other than the shard's
   (`placed.epoch`), is skipped, so a late report from an old group never
-  sets the new group's floor. A new epoch never lowers the floor: its first
-  report moves the floor's epoch to the new one and keeps the higher index,
-  since offsets the earlier epoch gave out stay given out. Terms are not
-  compared across epochs. A write at the same stream
+  sets the new group's floor. A new epoch's first report replaces the exact
+  log id with its own, whatever its index, since the earlier epoch's id says
+  nothing about the new log. `offset_floor` keeps the higher index, since
+  offsets the earlier epoch gave out stay given out. Terms are compared only
+  within one epoch. A write at the same stream
   incarnation keeps the floor, a recreated stream starts without one, and
   an export and import carry it.
 - **Each entry is decided on its own.** A skipped entry is not counted and

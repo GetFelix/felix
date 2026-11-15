@@ -698,6 +698,7 @@ async fn a_placement_write_keeps_the_floor_at_its_incarnation() {
         .expect("assign");
     let held = crate::model::RaftFloor {
         incarnation: first.incarnation,
+        offset_floor: 12,
         epoch: 0,
         index: 12,
         term: 2,
