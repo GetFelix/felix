@@ -634,11 +634,12 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftBatchReachInstall.cfg` | witness: a member installs another member's snapshot | violate `NeverInstalls` |
 | `FelixRaftBatchReachHeld.cfg` | witness, every rule on: a send is answered as held from the committed log | violate `NeverAnswersHeld` |
 | `FelixRaftBatchKeepsCutReachSnapshotFinish.cfg` | witness: with the count kept, a leader that retains none of the held pieces finishes the batch from its table snapshot | violate `NeverFinishesFromSnapshot` |
-| `FelixRaftGroups.cfg` | `FelixRaftGroups.tla`: two members, one group over two records, one change of leader, four entries; every rule on | pass `NoSkip`, `RedrivenOwed`, `IfNewKeepsServed` (6,645,375 distinct states, 15.2M generated, depth 38, 24 seconds with 8 workers on a 32-core machine) |
-| `FelixRaftGroupsTwoChanges.cfg` | the same with two changes of leader, so a member leads, loses the term and leads again | pass the same (18,608,068 distinct states, 52.0M generated, depth 41, 67 seconds with 8 workers on a 32-core machine) |
-| `FelixRaftGroupsNoCreationIndex.cfg` | apply ignores the creation index | violate `NoSkip`: an advance decided before a seek lands after it and moves the cursor over a record the new incarnation never read |
+| `FelixRaftGroups.cfg` | `FelixRaftGroups.tla`: two members, one group over two records, one change of leader, four entries; every rule on | pass `NoSkip`, `RedrivenOwed`, `IfNewKeepsServed`, `TrackerHeard` (7,972,425 distinct states, 17.6M generated, depth 38, 31 seconds with 8 workers on a 32-core machine) |
+| `FelixRaftGroupsTwoChanges.cfg` | the same with two changes of leader, so a member leads, loses the term and leads again | pass the same (27,964,287 distinct states, 71.0M generated, depth 41, 108 seconds with 8 workers on a 32-core machine) |
+| `FelixRaftGroupsNoCreationIndex.cfg` | apply ignores the creation token | violate `NoSkip`: an advance decided before a seek lands after it and moves the cursor over a record the new incarnation never read |
 | `FelixRaftGroupsNoDeleteWatermark.cfg` | an entry naming an absent group is never dropped | violate `NoSkip`: an advance decided before a delete lands after it and recreates the group past a record |
 | `FelixRaftGroupsStaleByHydrateIndex.cfg` | the earlier rule: drop any entry whose tracker hydrated before the shard's last delete | violate `RedrivenOwed`: another group's delete silences this group's tracker, so its dead letter of a redriven record is dropped and nothing owes the record |
+| `FelixRaftGroupsNoRefreshOnDrop.cfg` | the leader keeps a tracker whose entries apply drops | violate `TrackerHeard`: a group with nothing committed hydrates, another group's delete commits, and the tracker's dead letter lands after it and is dropped while the tracker serves on |
 | `FelixRaftGroupsNoRedrivenSet.cfg` | a redrive deletes the dead letter and owes the record in memory only | violate `NoSkip`: a record below the cursor is in no set |
 | `FelixRaftGroupsDeadAfterAdvance.cfg` | a dead letter is proposed in any order with the advance over it | violate `NoSkip`: the advance commits first and the record is in no set |
 | `FelixRaftGroupsIfNewTableOnly.cfg` | if_new checks the table only | violate `IfNewKeepsServed`: a new group with a record handed out and nothing committed is moved |
@@ -4142,15 +4143,23 @@ What is modelled:
   order with other proposals. So an advance decided before a seek can land
   after it. A dead letter is appended before the run over it closes, as the
   code writes it before settling.
-- A live group has a creation index: the index of the seek that created or
-  last reset it, or, for a group its first acknowledgement or dead letter
-  created, the index its tracker hydrated at. Every tracker-driven entry
-  carries the creation index of the group its tracker serves.
+- A live group has a creation token: the term and index of the seek that
+  created or last reset it, or, for a group its first acknowledgement or dead
+  letter created, the term its tracker was made in and the index it hydrated
+  at. The term keeps a seek dropped at a change of leader apart from a later
+  seek at the same index. Every tracker-driven entry carries the creation
+  token of the group its tracker serves.
 - The shard keeps the index of its latest delete of any group, and nothing
-  per deleted name. Apply drops an entry whose creation index differs from the
-  live group's, or that names an absent group with a creation index below the
+  per deleted name. Apply drops an entry whose creation token differs from the
+  live group's, or that names an absent group with a token index below the
   latest delete. Within that the cursor only moves forward. Deleting one group
   leaves the other groups' trackers serving.
+- That watermark also drops the entries of a group with nothing committed yet
+  whose tracker hydrated before another group's delete. So when the leader
+  applies a dropped entry that carries its own tracker's token, it drops the
+  tracker and the next poll hydrates a fresh one past the delete. Whatever the
+  dropped entries settled, a dead letter included, is delivered again. Only
+  whether the old tracker handed anything out is kept, for if_new.
 - A seek with if_new moves only a group that does not exist, decided by the
   leader from the table and its tracker.
 - The leader decides from its applied table only, never from its own
@@ -4171,10 +4180,15 @@ What is checked:
   redriven record in the table, so a redrive is delivered again.
 - `IfNewKeepsServed`: an if_new seek is never placed while the group has
   handed out records in this term.
+- `TrackerHeard`: no committed entry carrying the leader's current tracker's
+  token was dropped. A tracker never serves on after the table threw its
+  writes away, and with `NoSkip` a dropped dead letter is delivered again
+  rather than lost.
 
 Each broken configuration drops one rule and finds the trace: no creation
-index at apply, no delete watermark, the earlier rule that dropped every entry
-from a tracker hydrated before any delete, if_new checking the table only,
+token at apply, no delete watermark, the earlier rule that dropped every entry
+from a tracker hydrated before any delete, keeping a tracker whose entries were
+dropped, if_new checking the table only,
 trackers kept across terms, deciding from part of the committed log, deciding
 before the leader's own entries are applied, a dead letter proposed in any
 order with the advance over it, and a redrive that keeps the record in memory

@@ -594,6 +594,7 @@ expectations=(
   "FelixRaftGroupsUserOpsBeforeOwnApply violates RedrivenOwed"
   "FelixRaftGroupsStaleByHydrateIndex violates RedrivenOwed"
   "FelixRaftGroupsDeadAfterAdvance violates NoSkip"
+  "FelixRaftGroupsNoRefreshOnDrop violates TrackerHeard"
   "FelixRaftGroupsTwoChanges pass"
   "FelixRaftCond pass"
   "FelixRaftCondTwoTerms pass"

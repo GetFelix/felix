@@ -28,16 +28,25 @@
 (*   delete       -- the group and its dead letters are gone               *)
 (*   fdelete      -- another group of the shard is deleted                 *)
 (*                                                                         *)
-(* A live group has a creation index `cre`: the index of the seek that    *)
-(* created or last reset it, or, for a group created by its first          *)
-(* acknowledgement or dead letter, the index its tracker hydrated at (a    *)
-(* tracker cannot know the index its first entry will land at). Every      *)
+(* A live group has a creation token `cre`: the term and index of the     *)
+(* seek that created or last reset it, or, for a group created by its     *)
+(* first acknowledgement or dead letter, the term its tracker was made in  *)
+(* and the index it hydrated at (a tracker cannot know the index its first *)
+(* entry will land at). The term keeps a seek dropped at a change of       *)
+(* leader apart from a later seek placed at the same index. Every          *)
 (* tracker-driven entry carries the `cre` of the group its tracker serves. *)
 (* The shard keeps `lastDel`, the index of its latest delete of any group, *)
 (* and keeps nothing per deleted name. Apply drops an entry whose `cre`    *)
 (* differs from the live group's, or that names an absent group with a     *)
 (* `cre` below `lastDel`. Within that, the cursor only moves forward. A    *)
-(* delete of another group therefore leaves a live group's tracker alone. *)
+(* delete of another group therefore leaves a live group's tracker alone.  *)
+(*                                                                         *)
+(* A group with nothing committed whose tracker hydrated before another    *)
+(* group's delete has its entries dropped by that watermark. When the      *)
+(* leader applies a dropped entry carrying its own tracker's `cre`, it     *)
+(* drops the tracker (keeping only whether it handed anything out), and    *)
+(* the next poll hydrates a fresh one from the table, past the delete.     *)
+(* What the dropped entries settled is delivered again.                    *)
 (*                                                                         *)
 (* The leader decides from its applied table, never from its own entries   *)
 (* in flight. So a hydrate, a redrive and a seek wait until the leader has *)
@@ -59,6 +68,11 @@
 (*                       is delivered again.                               *)
 (*   IfNewKeepsServed -- an if_new seek is never placed while the group    *)
 (*                       has handed out records in this term.              *)
+(*   TrackerHeard     -- no committed entry carrying the leader's current  *)
+(*                       tracker's `cre` was dropped, so a tracker never   *)
+(*                       serves on after the table threw its writes away   *)
+(*                       (with NoSkip, a dropped dead letter is delivered  *)
+(*                       again, never lost).                               *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -73,6 +87,10 @@
 (*                                 the group's last seek or the shard's    *)
 (*                                 last delete, so deleting another group  *)
 (*                                 silences a live group's tracker.        *)
+(*   RefreshOnDrop = FALSE      -- the leader keeps a tracker whose        *)
+(*                                 entries apply drops, so a group with    *)
+(*                                 nothing committed is silenced for the   *)
+(*                                 rest of the term.                       *)
 (*   IfNewChecksTracker = FALSE -- if_new looks at the table only.         *)
 (*   TermBoundTrackers = FALSE  -- a member keeps its tracker across terms *)
 (*                                 and serves from it when it leads again. *)
@@ -110,6 +128,7 @@ CONSTANTS
     HydrateFromApplied,
     WaitOwnProposals,
     StaleByHyd,
+    RefreshOnDrop,
     DeadBeforeAdvance,
     KeepRedriven
 
@@ -120,7 +139,7 @@ ASSUME
     /\ IfNewChecksTracker \in BOOLEAN /\ TermBoundTrackers \in BOOLEAN
     /\ HydrateFromApplied \in BOOLEAN /\ KeepRedriven \in BOOLEAN
     /\ WaitOwnProposals \in BOOLEAN /\ StaleByHyd \in BOOLEAN
-    /\ DeadBeforeAdvance \in BOOLEAN
+    /\ DeadBeforeAdvance \in BOOLEAN /\ RefreshOnDrop \in BOOLEAN
 
 VARIABLES
     log,       \* every committed entry, in order
@@ -142,8 +161,11 @@ Symm == Permutations(Members)
 
 Records == 1..N
 Max2(a, b) == IF a >= b THEN a ELSE b
+\* No tracker. A tracker dropped for its dropped entries keeps `any`, for if_new.
 None == [none |-> TRUE, any |-> FALSE]
-NoCre == [at |-> 0, by |-> "none"]
+NoCre == [term |-> 0, at |-> 0, by |-> "none"]
+\* The creation token of a seek or hydrate in this term at index i.
+Cre(i, by) == [term |-> changes, at |-> i, by |-> by]
 
 Full == log \o tail
 
@@ -188,6 +210,17 @@ RECURSIVE FoldFrom(_, _, _)
 FoldFrom(T, L, i) == IF i > Len(L) THEN T ELSE FoldFrom(Step(T, L[i], i), L, i + 1)
 
 Fold(L) == FoldFrom(T0, L, 1)
+
+\* Apply drops `e` (seeks and deletes always apply).
+Dropped(T, e) ==
+    e.kind \in {"advance", "dead", "redrive", "finish"} /\ Stale(T, e)
+
+\* The `cre` of every entry of `L` that apply dropped.
+RECURSIVE DroppedFrom(_, _, _, _)
+DroppedFrom(T, L, i, S) ==
+    IF i > Len(L) THEN S
+    ELSE DroppedFrom(Step(T, L[i], i), L, i + 1,
+                     IF Dropped(T, L[i]) THEN S \cup {L[i].cre} ELSE S)
 
 ----------------------------------------------------------------------------
 \* Trackers.
@@ -240,9 +273,9 @@ Hydrate ==
     /\ Ready
     /\ \E k \in Views :
         LET T == View(k) IN
-        trk' = [trk EXCEPT ![leader] =
-                    IF T.exists THEN Tracker(k, T.cre, T.cursor, T.red)
-                    ELSE Tracker(k, [at |-> k, by |-> "hydrate"], 1, {})]
+        LET t == IF T.exists THEN Tracker(k, T.cre, T.cursor, T.red)
+                 ELSE Tracker(k, Cre(k, "hydrate"), 1, {})
+        IN trk' = [trk EXCEPT ![leader] = [t EXCEPT !.any = Lead.any]]
     /\ UNCHANGED <<log, tail, pend, leader, acks, served, badIfNew, changes>>
 
 HandOut(o) ==
@@ -321,9 +354,9 @@ Seek(to, ifNew) ==
         IN
         /\ ifNew => ~exists
         /\ trk' = [trk EXCEPT ![leader] =
-                       Tracker(i, [at |-> i, by |-> "seek"], to, T.red)]
+                       Tracker(i, Cre(i, "seek"), to, T.red)]
     /\ tail' = Append(tail, [kind |-> "seek", to |-> to, hyd |-> i,
-                              cre |-> [at |-> i, by |-> "seek"]])
+                              cre |-> Cre(i, "seek")])
     /\ badIfNew' = (badIfNew \/
                     (ifNew /\ served >= Fold(Full).gfloor))
     /\ UNCHANGED <<log, pend, leader, acks, served, changes>>
@@ -340,11 +373,21 @@ ForeignDelete ==
     /\ tail' = Append(tail, [kind |-> "fdelete", hyd |-> Len(Full) + 1])
     /\ UNCHANGED <<log, pend, leader, trk, acks, served, badIfNew, changes>>
 
+\* The leader applies what commits. A dropped entry of its own tracker means
+\* the table will never take that tracker's writes, so it starts over.
 Commit ==
+    LET e == Head(tail) IN
     /\ tail # <<>>
-    /\ log' = Append(log, Head(tail))
+    /\ log' = Append(log, e)
     /\ tail' = Tail(tail)
-    /\ UNCHANGED <<pend, leader, trk, acks, served, badIfNew, changes>>
+    /\ trk' = IF /\ RefreshOnDrop
+                 /\ ~Lead.none
+                 /\ e.kind \in {"advance", "dead", "redrive", "finish"}
+                 /\ e.cre = Lead.cre
+                 /\ Dropped(Fold(log), e)
+              THEN [trk EXCEPT ![leader] = [None EXCEPT !.any = Lead.any]]
+              ELSE trk
+    /\ UNCHANGED <<pend, leader, acks, served, badIfNew, changes>>
 
 ChangeLeader(m) ==
     /\ changes < MaxChanges
@@ -387,5 +430,8 @@ RedrivenOwed ==
             t.owed \cup t.out \cup {e.o : e \in {x \in pend : x.kind = "finish"}}
 
 IfNewKeepsServed == ~badIfNew
+
+TrackerHeard ==
+    ~Lead.none => Lead.cre \notin DroppedFrom(T0, log, 1, {})
 
 =============================================================================
