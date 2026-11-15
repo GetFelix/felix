@@ -50,7 +50,8 @@ pub enum ErrorCode {
     /// The owner wrote a sequenced forward and stopped leading the shard
     /// before a majority held it. The batch may be in the log; sent again
     /// under the same sequence, it is answered from whoever leads now. Sent
-    /// only in answer to a `SequencedForwardPublish`. Not retryable as a
+    /// only in answer to a sequenced forward (`SequencedForwardPublish` or
+    /// `PlainSequencedForwardPublish`). Not retryable as a
     /// refusal.
     LeadershipLost = 13,
 }

@@ -583,6 +583,7 @@ expectations=(
   "FelixRaftCondLeaderDecidesNoMembers pass"
   "FelixRaftCondReachAnswers violates NeverOkAndMismatch"
   "FelixRaftIdentity pass"
+  "FelixRaftIdentityBatched pass"
   "FelixRaftIdentityRelaxedCrash pass"
   "FelixRaftIdentityRootRestore pass"
   "FelixRaftIdentityDirRestore pass"

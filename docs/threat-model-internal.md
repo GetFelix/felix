@@ -165,7 +165,9 @@ against stored bytes and answered as a retry; a replayed plain
 
 Idempotent producers (#422) cover forwarding too. A forward that carries a
 producer id and sequence travels as `SequencedForwardPublish` to an owner that
-advertised `SEQUENCED_FORWARDS`, and the owner deduplicates it exactly as it
+advertised `SEQUENCED_FORWARDS` (with no header block, as
+`PlainSequencedForwardPublish` to one that also advertised
+`PLAIN_SEQUENCED_FORWARDS`), and the owner deduplicates it exactly as it
 does a direct publish, so a replay of one is recognised and not written again.
 What stays open is a plain, non-idempotent forward: it has nothing to
 deduplicate against, so a replay still duplicates records. That is within the

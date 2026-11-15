@@ -1203,6 +1203,45 @@ async fn shutdown_stops_the_members_and_closes_their_logs() {
     assert_eq!(route(&shards, &orders), None);
 }
 
+/// **Stopping the broker writes the last batch of log marks**, after it
+/// closed every member, so a planned stop leaves each batched log mark at
+/// the flushed log rather than up to a batch interval behind it.
+#[tokio::test]
+async fn shutdown_writes_the_last_batched_log_marks() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let config = RuntimeConfig {
+        log_mark: felix_replication::raft::LogMarkMode::Batched(Duration::from_secs(3600)),
+        ..timers()
+    };
+    let runtime =
+        GroupRuntime::start("broker-a", config, Arc::new(AgreeingPeers)).expect("runtime");
+    let shards = RaftShards::new(Arc::clone(&broker), runtime, "broker-a".to_string());
+    broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        Arc::new(engine(&shards)),
+    )));
+    open_root(&broker, &shards);
+    lead_orders(&shards).await;
+    let orders = key("orders", 0);
+    for sequence in 0..3 {
+        write_batch(&shards, &orders, 1, sequence, 0, 1, &[b"one"]).await;
+    }
+    let last = written(&shards, &orders);
+    let marks = shards.root.get().expect("root").mark_log().clone();
+    let name = felix_replication::raft::mark_name(&orders);
+    let mark = || {
+        marks
+            .marks(&name)
+            .and_then(|marks| marks.log)
+            .map(|at| at.index)
+    };
+    assert!(mark() < Some(last), "the batch ran before the stop");
+
+    EngineShards::shutdown(&*shards).await;
+
+    assert_eq!(mark(), Some(last));
+}
+
 /// **A member's log directory is locked while the member is open**, so a
 /// second broker started on the same data directory cannot recover and
 /// write a log this one is writing. Closing the member lets it go.

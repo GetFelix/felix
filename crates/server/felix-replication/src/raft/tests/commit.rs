@@ -4,7 +4,12 @@
 
 use std::sync::atomic::Ordering::Relaxed;
 
+use felix_storage::waiters::Queue;
+use futures::FutureExt;
+use tokio_util::sync::CancellationToken;
+
 use super::super::commit::{Commits, TermAt};
+use super::super::propose::{Leading, Lost};
 use super::*;
 use crate::engine::{CommitError, EngineHost, Written};
 use crate::quorum::Unreadable;
@@ -213,6 +218,129 @@ fn the_commit_table_knows_the_term_at_every_applied_index() {
     assert_eq!(resumed.read_bound(), 11);
     assert_eq!(resumed.term_at(9), TermAt::Forgotten);
     assert_eq!(resumed.term_at(10), term(3));
+}
+
+/// Whether the member leads, at which term, as a test says.
+struct Leads(tokio::sync::watch::Receiver<(bool, u64)>);
+
+impl Leading for Leads {
+    async fn lost(&mut self, term: Option<u64>) -> Lost {
+        let lost = |&(leads, at): &(bool, u64)| !leads || term.is_some_and(|term| term != at);
+        let _ = self.0.wait_for(lost).await;
+        Lost::Deposed
+    }
+}
+
+type Wait = std::pin::Pin<Box<dyn Future<Output = Result<(), CommitError>> + Send>>;
+
+/// The state machine's side of commit waits, without a group.
+struct Applying {
+    commits: Commits,
+    published: tokio::sync::watch::Sender<Commits>,
+    queue: Queue<u64>,
+    leads: tokio::sync::watch::Sender<(bool, u64)>,
+}
+
+impl Applying {
+    fn new() -> Self {
+        Self {
+            commits: Commits::default(),
+            published: tokio::sync::watch::Sender::default(),
+            queue: Queue::new(),
+            leads: tokio::sync::watch::Sender::new((true, 2)),
+        }
+    }
+
+    /// A write at `index` in term 2, waiting for its commit.
+    fn wait(&self, index: u64) -> Wait {
+        let written = Written {
+            end: index + 1,
+            generation: 2,
+        };
+        Box::pin(super::super::commit::committed(
+            written,
+            self.published.subscribe(),
+            self.queue.waiters(),
+            Leads(self.leads.subscribe()),
+            CancellationToken::new(),
+            Duration::from_secs(60),
+        ))
+    }
+
+    /// One run of entries applied, published once as the machine does.
+    fn apply(&mut self, run: &[LogPoint]) {
+        for point in run {
+            self.commits.advance(*point);
+        }
+        self.published.send_replace(self.commits.clone());
+        let applied = self.commits.applied().map(|at| at.index);
+        self.queue.advance(applied);
+    }
+}
+
+/// **A commit wait is answered by the apply that reaches its index, in
+/// index order, and not before.** The term check still applies: an index
+/// another term committed is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_wait_is_answered_by_the_apply_that_reaches_it() {
+    let mut machine = Applying::new();
+    let mut waits: Vec<Wait> = (0..4).map(|index| machine.wait(index)).collect();
+    for wait in &mut waits {
+        assert!(wait.as_mut().now_or_never().is_none());
+    }
+    machine.apply(&[at(2, 0), at(2, 1)]);
+    assert_eq!(waits[0].as_mut().now_or_never(), Some(Ok(())));
+    assert_eq!(waits[1].as_mut().now_or_never(), Some(Ok(())));
+    assert!(waits[2].as_mut().now_or_never().is_none());
+    assert!(waits[3].as_mut().now_or_never().is_none());
+    // Only the waits not yet answered are queued.
+    assert_eq!(machine.queue.waiters().queued(), 2);
+    machine.apply(&[at(3, 2), at(3, 3)]);
+    let refused = waits[2].as_mut().now_or_never().expect("answered");
+    assert_eq!(
+        lost(&refused),
+        "another leader's entry committed at the offset"
+    );
+    let refused = waits[3].as_mut().now_or_never().expect("answered");
+    assert_eq!(
+        lost(&refused),
+        "another leader's entry committed at the offset"
+    );
+}
+
+/// **A commit wait ends when its term is lost, with nothing applied.** The
+/// queue never wakes it; the leadership check does.
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_wait_ends_on_a_lost_term_with_nothing_applied() {
+    let machine = Applying::new();
+    let mut wait = machine.wait(5);
+    assert!(wait.as_mut().now_or_never().is_none());
+    machine.leads.send_replace((true, 3));
+    let told = tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .expect("woken by the lost term");
+    assert_eq!(lost(&told), "this broker stopped leading the shard");
+}
+
+/// **A commit wait ends as stopped when the state machine is gone.**
+#[tokio::test(flavor = "current_thread")]
+async fn a_commit_wait_ends_when_the_state_machine_is_dropped() {
+    let machine = Applying::new();
+    let mut wait = machine.wait(5);
+    assert!(wait.as_mut().now_or_never().is_none());
+    let Applying {
+        published,
+        queue,
+        leads,
+        ..
+    } = machine;
+    drop((published, queue));
+    let told = tokio::time::timeout(Duration::from_secs(5), wait)
+        .await
+        .expect("woken by the close");
+    let stopped = Err(super::super::propose::stopped());
+    assert_eq!(lost(&told), lost(&stopped));
+    drop(leads);
 }
 
 /// A write waits until a majority holds it, and no longer than it is given.

@@ -10,10 +10,11 @@ use std::time::Duration;
 use felix_storage::DiskLog;
 use felix_storage::raft_copy::{CopyMarks, LogMarkMode, MarkLog};
 use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
+use felix_storage::waiters::Waiters;
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
 use openraft::raft::SnapshotResponse;
 use openraft::storage::{RaftLogReader, Snapshot};
-use openraft::type_config::alias::VoteOf;
+use openraft::type_config::alias::{LogIdOf, VoteOf};
 use openraft::vote::RaftLeaderId;
 use openraft::{Config, Raft, ReadPolicy, ServerState};
 use tokio::sync::mpsc;
@@ -67,8 +68,14 @@ pub(crate) struct Group {
     refusals: Arc<Refusals>,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
+    /// Waits on `positions.written` and `positions.flushed`, woken only
+    /// once the position reaches theirs.
+    written_waiters: Waiters<(u64, u64)>,
+    flushed_waiters: Waiters<(u64, u64)>,
     /// What this member has applied, as its state machine reports it.
     commits: tokio::sync::watch::Receiver<Commits>,
+    /// Waits on the applied index, woken only once it reaches theirs.
+    applied: Waiters<u64>,
     /// The member's log, and its first index read live: a purge held only in
     /// memory counts.
     copy: felix_storage::raft_copy::CurrentCopy,
@@ -163,6 +170,8 @@ pub(crate) struct Pace {
     /// As a leader: when it last sent an entry to anyone.
     wrote: AtomicU64,
     peers: parking_lot::Mutex<Vec<Peer>>,
+    /// As a leader: the newest entry any append has carried.
+    sent: parking_lot::Mutex<Option<LogIdOf<ShardTypes>>>,
     /// Spreads the members of a group over the idle wait, so they do not
     /// all stand in the same tick.
     jitter: u64,
@@ -194,12 +203,27 @@ impl Pace {
             promised: AtomicU64::new(timers.heartbeat),
             wrote: AtomicU64::new(now),
             peers: parking_lot::Mutex::new(Vec::new()),
+            sent: parking_lot::Mutex::new(None),
             jitter: hasher.finish() % (timers.election_max - timers.election_min).max(1),
         }
     }
 
+    /// Whether an append whose last entry is `last` carries an entry no
+    /// append carried before. Only that makes the group busy: a retry to a
+    /// member that is down, or a catch-up, sends nothing new, and would
+    /// otherwise hold the group at the short gap for as long as it lasts.
+    pub(crate) fn new_entries(&self, last: &LogIdOf<ShardTypes>) -> bool {
+        let mut sent = self.sent.lock();
+        if sent.as_ref().is_some_and(|sent| last <= sent) {
+            return false;
+        }
+        *sent = Some(*last);
+        true
+    }
+
     /// The leader is sending `to` an append. The gap it names is the idle
-    /// one once no entry has gone out for `idle_after`.
+    /// one once no entry has gone out for `idle_after`. `entries` is
+    /// whether the append carries a new one ([`Self::new_entries`]).
     pub(crate) fn sending(&self, to: &MemberId, entries: bool) -> Sent {
         let timers = &self.timers;
         if entries {
@@ -461,14 +485,16 @@ impl Group {
         let root = marks.as_ref().map(|(marks, _)| marks.mark_log().clone());
         if let Some((marks, mode)) = marks {
             log.mark_with(marks, mode)?;
+            log.mark_recovered().await?;
         }
         let positions = log.positions();
+        let (written_waiters, flushed_waiters) = (log.written_waiters(), log.flushed_waiters());
         let copy = felix_storage::raft_copy::CurrentCopy::new(
             log.disk_log().clone(),
             copy_id,
             log.first_index_reader(),
         );
-        let (machine, commits, cache) =
+        let (machine, commits, applied, cache) =
             Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
@@ -484,6 +510,7 @@ impl Group {
                 Arc::clone(&reports),
                 reach,
                 Arc::clone(&refusals),
+                Arc::clone(&config),
             ),
             group: id.clone(),
         };
@@ -535,7 +562,10 @@ impl Group {
             root,
             refusals,
             positions,
+            written_waiters,
+            flushed_waiters,
             commits,
+            applied,
             copy,
             leadership,
             cache,
@@ -629,6 +659,13 @@ impl Group {
         }
     }
 
+    /// If this member leads, heartbeat now, whatever its gap.
+    pub(crate) async fn heartbeat_now(&self) {
+        if self.leads() {
+            let _ = self.raft.trigger().heartbeat().await;
+        }
+    }
+
     fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader
@@ -656,10 +693,21 @@ impl Group {
             tick, election_min, ..
         } = pace.timers;
         let now = pace.timers.now();
-        match self.raft.metrics().borrow_watched().state {
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        match metrics.state {
             // One past the interval, so the check lands after the heartbeat
-            // is due and not just before it.
-            ServerState::Leader => now + pace.leader_gap(now) + 1,
+            // is due and not just before it. An entry not yet committed
+            // keeps the short gap: it waits on a member that is down, and a
+            // heartbeat is what finds that member back and retries it.
+            ServerState::Leader => {
+                let committed = metrics.local_committed.map(|log_id| log_id.index);
+                let gap = match metrics.last_log_index > committed {
+                    true => pace.timers.heartbeat,
+                    false => pace.leader_gap(now),
+                };
+                now + gap + 1
+            }
             ServerState::Follower | ServerState::Candidate => {
                 let heard = pace.heard.load(Ordering::Relaxed);
                 heard.saturating_add(pace.follower_wait()).max(now + tick)
@@ -743,17 +791,13 @@ impl Group {
     /// leader's entry `last`: the id of the last entry the log has taken,
     /// before its fsync. A log that never gets there says nothing.
     async fn tell_written(&self, leader: MemberId, last: LogPoint) {
-        let mut positions = self.positions.clone();
         let holds = |at: &LogPositions| {
             let written = at.written;
-            written.is_some_and(|at| at.term == last.term && at.index >= last.index)
+            written.filter(|at| at.term == last.term && at.index >= last.index)
         };
-        let Some(at) = positions
-            .wait_for(holds)
-            .await
-            .ok()
-            .and_then(|at| at.written)
-        else {
+        let key = (last.term, last.index);
+        let waited = self.written_waiters.wait_for(&self.positions, key, holds);
+        let Ok(at) = waited.await else {
             return;
         };
         // Before the report leaves. Without the marker a power cut here would
@@ -966,9 +1010,10 @@ impl Group {
             })
         };
         let positions = self.positions.clone();
+        let flushed = self.flushed_waiters.clone();
         let leading = self.leadership.watch(&self.raft);
         let stop = self.stop.clone();
-        async move { propose::acknowledged(waiting?, positions, leading, stop).await }
+        async move { propose::acknowledged(waiting?, positions, flushed, leading, stop).await }
     }
 
     /// The member's copy, for deciding whether a kept copy of an earlier
@@ -1004,6 +1049,7 @@ impl Group {
         commit::committed(
             written,
             self.commits.clone(),
+            self.applied.clone(),
             self.leadership.watch(&self.raft),
             self.stop.clone(),
             timeout,
@@ -1186,11 +1232,11 @@ impl Group {
         deadline: tokio::time::Instant,
         timed_out: CommitError,
     ) -> Result<(), CommitError> {
-        let mut commits = self.commits.clone();
-        let applied = commits.wait_for(|commits| {
+        let applied = self.applied.wait_for(&self.commits, index, |commits| {
             commits
                 .applied()
                 .is_some_and(|applied| applied.index >= index)
+                .then_some(())
         });
         tokio::select! {
             biased;
@@ -1360,8 +1406,11 @@ impl Group {
         };
         let term = self.open_term().ok_or(lost)?;
         let bound = self.read_index(term).await?;
-        let mut commits = self.commits.clone();
-        let applied = commits.wait_for(|commits| commits.read_bound() >= bound);
+        // Applied through `bound - 1`; a bound of 0 holds at once.
+        let index = bound.saturating_sub(1);
+        let applied = self.applied.wait_for(&self.commits, index, |commits| {
+            (commits.read_bound() >= bound).then_some(())
+        });
         tokio::select! {
             biased;
             () = self.stop.cancelled() => Err(propose::stopped()),
@@ -1502,6 +1551,11 @@ impl Group {
                 }
             }
         });
+    }
+
+    /// The data root's mark log, when the member has one.
+    pub(crate) fn mark_root(&self) -> Option<&MarkLog> {
+        self.root.as_ref()
     }
 
     /// Stop the member's tasks. Entries and the vote it acknowledged are

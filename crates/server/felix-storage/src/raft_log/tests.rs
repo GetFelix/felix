@@ -8,6 +8,7 @@ mod flush_queue;
 mod install_crash_points;
 mod machine;
 mod marks;
+mod positions;
 mod purge;
 mod receive;
 mod snapshots;

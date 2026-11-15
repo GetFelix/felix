@@ -76,6 +76,7 @@ use crate::log::{FsyncMode, Offset};
 #[cfg(doc)]
 use crate::log::{LogConfig, RecordMark, UNKNOWN_WRITER};
 use crate::raft_copy::{CopyMarks, LogMarkMode};
+use crate::waiters::{Queue, Waiters};
 
 /// The openraft type configs this log stores: a log id is a term and an
 /// index, and an entry is openraft's own [`Entry`].
@@ -149,10 +150,31 @@ impl LogPositions {
     }
 }
 
+/// The positions' watch, and a queue for each position beside it so a
+/// write waiting on one is woken only once it gets there.
+#[derive(Default)]
+struct Positions {
+    sent: tokio::sync::watch::Sender<LogPositions>,
+    written: Queue<(u64, u64)>,
+    flushed: Queue<(u64, u64)>,
+}
+
+impl Positions {
+    fn send_modify(&self, modify: impl FnOnce(&mut LogPositions)) {
+        self.sent.send_modify(modify);
+        // Read back rather than taken from `modify`: a flush callback on
+        // another thread may have sent since.
+        let now = *self.sent.borrow();
+        let key = |at: Option<LogPoint>| at.map(|at| (at.term, at.index));
+        self.written.advance(key(now.written));
+        self.flushed.advance(key(now.flushed));
+    }
+}
+
 struct Shared<K> {
     log: DiskLog,
     codec: K,
-    positions: tokio::sync::watch::Sender<LogPositions>,
+    positions: Positions,
     /// The last purged entry.
     bounds: parking_lot::Mutex<Bounds>,
     /// Set by [`RaftLog::purge_within`] or [`RaftLog::purge_hides_past`]:
@@ -256,7 +278,7 @@ where
             shared: Arc::new(Shared {
                 log,
                 codec,
-                positions: tokio::sync::watch::Sender::default(),
+                positions: Positions::default(),
                 bounds: parking_lot::Mutex::new(Bounds {
                     on_disk: purged,
                     hidden: None,
@@ -302,9 +324,38 @@ where
         Ok(())
     }
 
+    /// Mark the log as it was recovered: sync it, then raise the log mark
+    /// to its last entry. Until the first append the batch has no flushed
+    /// position to mark, so without this a reopened copy's mark could trail
+    /// what it holds for as long as it takes no append. Call it after
+    /// [`Self::mark_with`] and before the log is handed to Raft.
+    pub async fn mark_recovered(&self) -> io::Result<()> {
+        let Some(marking) = self.shared.marking.get() else {
+            return Ok(());
+        };
+        let log = &self.shared.log;
+        log.sync().await.map_err(writer::io_error)?;
+        let last = last_point(log).await?;
+        if last.is_some() {
+            marking.marks.raise_log(last).await?;
+        }
+        Ok(())
+    }
+
     /// The log's written and flushed positions, as they change.
     pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
-        self.shared.positions.subscribe()
+        self.shared.positions.sent.subscribe()
+    }
+
+    /// Waiters on [`LogPositions::written`], keyed by `(term, index)`, woken
+    /// only once the position reaches their key.
+    pub fn written_waiters(&self) -> Waiters<(u64, u64)> {
+        self.shared.positions.written.waiters()
+    }
+
+    /// Waiters on [`LogPositions::flushed`], as [`Self::written_waiters`].
+    pub fn flushed_waiters(&self) -> Waiters<(u64, u64)> {
+        self.shared.positions.flushed.waiters()
     }
 
     /// The first index the log holds or will hold, read live: one past a

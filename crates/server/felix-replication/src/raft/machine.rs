@@ -18,6 +18,7 @@ use bytes::Bytes;
 use felix_storage::DiskLog;
 use felix_storage::disk_log::ForgottenCuts;
 use felix_storage::raft_log::{LogPoint, SnapshotId, SnapshotStore, StoredSnapshot};
+use felix_storage::waiters::{Queue, Waiters};
 use futures::{Stream, StreamExt};
 use openraft::storage::{EntryResponder, RaftSnapshotBuilder, RaftStateMachine};
 use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf};
@@ -49,6 +50,8 @@ pub(crate) struct Machine {
     /// `commits` as the read bound and the commit waits see it, moved once
     /// per run of applied entries.
     published: watch::Sender<Commits>,
+    /// Woken by the applied index, beside `published`.
+    applied: Queue<u64>,
     /// `None` in a stream shard's group.
     cache: Option<Cache>,
     /// A stream shard's log, `None` in a cache shard's group.
@@ -69,7 +72,7 @@ impl Machine {
         snapshots: SnapshotStore,
         kind: ShardKind,
         log: Option<&DiskLog>,
-    ) -> io::Result<(Self, watch::Receiver<Commits>, Option<Cache>)> {
+    ) -> io::Result<(Self, watch::Receiver<Commits>, Waiters<u64>, Option<Cache>)> {
         let stored = snapshots.current().await?;
         let state = match &stored {
             Some(stored) => StoredMeta::state(&stored.meta)?,
@@ -84,12 +87,15 @@ impl Machine {
             }
         };
         let commits = Commits::resumed(state.last_applied.as_ref().map(point));
-        let (published, applied) = watch::channel(commits.clone());
+        let (published, watched) = watch::channel(commits.clone());
+        let applied = Queue::new();
+        let waiters = applied.waiters();
         let machine = Self {
             snapshots,
             state,
             commits,
             published,
+            applied,
             cache: cache.clone(),
             log: log.filter(|_| matches!(kind, ShardKind::Stream)).cloned(),
             #[cfg(test)]
@@ -97,17 +103,21 @@ impl Machine {
             #[cfg(test)]
             fold_hold: Arc::default(),
         };
-        Ok((machine, applied, cache))
+        Ok((machine, watched, waiters, cache))
     }
 
     fn publish(&self) {
-        self.published.send_if_modified(|published| {
+        let moved = self.published.send_if_modified(|published| {
             let moved = *published != self.commits;
             if moved {
                 published.clone_from(&self.commits);
             }
             moved
         });
+        if moved {
+            self.applied
+                .advance(self.commits.applied().map(|applied| applied.index));
+        }
     }
 }
 
