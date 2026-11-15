@@ -50,8 +50,13 @@ pub(crate) type TestEntry = Entry<CommittedLeaderIdOf<Types>, EntryPayload<Strin
 pub(crate) struct Codec;
 
 impl EntryCodec<Types> for Codec {
+    /// `trim:<n>` is a head trim to `n`.
     fn encode_data(&self, data: &String) -> io::Result<AppendRecord> {
-        Ok(record(RecordMark::None, data.as_bytes()))
+        let mark = match data.strip_prefix("trim:").and_then(|at| at.parse().ok()) {
+            Some(floor) => RecordMark::Trim { floor },
+            None => RecordMark::None,
+        };
+        Ok(record(mark, data.as_bytes()))
     }
 
     fn decode_data(&self, record: LogRecord) -> io::Result<String> {
@@ -237,6 +242,55 @@ async fn a_command_the_codec_blanks_is_stored_as_a_blank_entry() {
             normal(1, 3, "plain"),
         ]
     );
+}
+
+/// A Raft log's entries above its commit may still be cut, so a trim
+/// entry hides nothing until it is committed, then hides what is below it,
+/// and again after a reopen.
+#[tokio::test]
+async fn a_trim_entry_applies_once_it_is_committed() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let entries = vec![
+        blank(1, 0),
+        normal(1, 1, "a"),
+        normal(1, 2, "b"),
+        normal(1, 3, "trim:2"),
+        normal(1, 4, "c"),
+    ];
+    store(&raft, &entries).await.expect("store");
+    let log = raft.disk_log().clone();
+    assert_eq!(log.readable_base(), 0, "an uncommitted trim hides nothing");
+
+    use openraft::storage::RaftLogStorage;
+    raft.save_committed(Some(log_id(1, 3)))
+        .await
+        .expect("commit");
+    assert_eq!(
+        log.readable_base(),
+        2,
+        "a committed trim hides below its floor"
+    );
+    let below = log
+        .read_range(ReadRange {
+            start: 1,
+            max_bytes: usize::MAX,
+        })
+        .await;
+    assert!(
+        matches!(below, Err(crate::StorageError::Trimmed { oldest: 2, .. })),
+        "{below:?}"
+    );
+    assert_eq!(
+        all(&raft).await.expect("entries"),
+        entries,
+        "the entries stay"
+    );
+
+    log.close().await.expect("close");
+    drop(raft);
+    let raft = open(&dir);
+    assert_eq!(raft.disk_log().readable_base(), 2, "the floor is read back");
 }
 
 /// The safety call: a blank or membership entry takes an offset, since the

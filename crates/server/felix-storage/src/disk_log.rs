@@ -2304,7 +2304,9 @@ impl LogInner {
     /// asked to hide.
     fn head_apply_bound(&self) -> Offset {
         let durable = self.durability.durable_upto();
-        if self.hold_at_commit.load(Ordering::Acquire) {
+        // A Raft log's entries above the commit may still be cut by a later
+        // leader, so its trims apply at the commit whatever the hold says.
+        if self.config.raft_log || self.hold_at_commit.load(Ordering::Acquire) {
             durable.min(self.commit_offset.load(Ordering::Acquire))
         } else {
             durable
