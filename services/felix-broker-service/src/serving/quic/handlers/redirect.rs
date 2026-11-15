@@ -70,6 +70,13 @@ pub(crate) fn redirect_for(
         {
             crate::shards::routing::Dispatch::Unavailable(crate::shards::routing::Reason::NotReady)
         }
+        // The engine's hint may name a dead leader. A reader needs the heard
+        // one, so a member that has not heard it answers retryably instead.
+        crate::shards::routing::Dispatch::Forward { .. }
+            if ingress.is_some_and(|ingress| ingress.engine_dispatch(&key).is_some()) =>
+        {
+            crate::shards::routing::Dispatch::Unavailable(crate::shards::routing::Reason::NotReady)
+        }
         dispatched => dispatched,
     };
     // A shard another engine runs is held by that engine's term. This

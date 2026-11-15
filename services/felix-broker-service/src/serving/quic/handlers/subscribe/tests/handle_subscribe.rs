@@ -1570,6 +1570,14 @@ mod on_raft {
             redirected(&ingress).is_some()
         })
         .await;
+        // The hint may name the dead leader, so the answer is a retry and
+        // not a redirect to it.
+        let answer = redirected(&ingress).expect("a refusal");
+        assert!(
+            !matches!(answer, Message::NotLeader { .. })
+                && format!("{answer:?}").contains("not_ready"),
+            "a new subscribe was not told to retry: {answer:?}"
+        );
         follower
             .shards
             .take(&mut fixture::assignments([fixture::replicated()]))

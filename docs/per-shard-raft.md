@@ -2649,6 +2649,7 @@ On a broker that holds a member:
 | leads, and its stream is at the committed tail | served here, at the term |
 | follows a leader | forwarded to that leader |
 | has no leader, or leads and is still moving to the tail | answered `shard_unavailable` (`not_ready`), which a client retries |
+| leads, but no majority answers it | a publish is served here, where it waits for its commit; a subscribe is answered `not_ready` |
 
 A publish served here is proposed in the order the shard's publishes
 arrive. On a `Quorum` stream it is answered at its commit under `on_commit`,
@@ -2721,7 +2722,11 @@ fence are not asked.
 - A member with no known leader serves no subscriber: a new subscribe is
   refused with a retryable `not_ready`, and the ones it has are ended on
   the next feed pass, since a member cut off from its group may be
-  reading a log that group has moved past.
+  reading a log that group has moved past. A publish there is still
+  forwarded to the leader openraft last named, but a subscribe is not
+  redirected to it, because that leader may be the one that is gone. A
+  restarted follower therefore answers a new subscribe with `not_ready`
+  until it hears its leader, up to one idle heartbeat.
 - A leader that is deposed ends the subscribers of its term, because
   records it had not seen committed may be replaced, and a gap would read
   as a drop. They can subscribe again to the same broker, which now serves
