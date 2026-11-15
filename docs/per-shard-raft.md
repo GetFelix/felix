@@ -3248,6 +3248,13 @@ target counter (metadata level 36):
   (metadata level 35), so every target written after the restore, including
   the restored record's own, is newer than anything a group took before.
   The incarnation is 0 until #2529 lands.
+- **Nothing moves until every serving broker has acknowledged the
+  incarnation.** The control plane refuses a target write, and the feed
+  leaves out the current target, while any serving broker has not
+  acknowledged the current incarnation (#2529). A restored record's target
+  is never written again, so the gate has to be on delivery as well as on
+  writes. The acks and the incarnation are in the same metadata log, so a
+  follower's answer is consistent with itself.
 
 A wiped copy reopens under a new copy id ("Group and member identity"). Its
 broker reports the id, and the control plane writes the target again with
@@ -3262,7 +3269,10 @@ names member ids.
 
 The broker hands a target to its member only while that member leads, and
 only for the term it leads in. The driver acts on a target only when it was
-told in the current term, and a new term needs it told again.
+told in the current term, and a new term needs it told again. A tell of
+the same version in a new term is accepted: the group holds the target
+with the term it was told in (`Told { target, term }`), and a newer term
+replaces it even at an equal version.
 
 A view taken after the term began is not enough on its own. The shard feed
 can be answered by a control-plane follower that has not applied the latest
@@ -3270,18 +3280,25 @@ write, so a request that started late can still return an old target. The
 broker therefore waits for two things before it hands a target to a member
 that started leading at time `since`:
 
-1. **A head from the control-plane leader.** The broker's next heartbeat
-   after `since` asks for `assignment_seq`. The control plane reads it with
+1. **A head from the control-plane leader.** A heartbeat sent at or after
+   `since` asks for `assignment_seq`; one already in flight when the term
+   began does not count. The control plane reads it with
    `confirmed_shard_assignment_head` after it accepted the heartbeat, so
-   every target written before then has a lower sequence. This is the same
-   bar `RoutesWanted` sets for a broker that serves again after a surrender
-   (`cluster/lease.rs`). A linearizable read of the feed head would do as
-   well.
+   every target written before then has a lower sequence. This is the bar
+   `RoutesWanted` sets for a broker that serves again after a surrender
+   (`cluster/lease.rs`), with one difference: an answer with no head (a
+   control plane that predates it, or a leader that cannot answer) means no
+   handover, where a lease falls back to time alone. A linearizable read of
+   the feed head would do as well.
 2. **A view that reaches it.** A feed answer whose request started after
    `since` and whose checkpoint is at or past that head.
 
 A target write is a shard-record change, so it is on the assignment feed
-with its own sequence.
+with its own sequence. A restore brings the feed's sequence back with the
+backup, so a head taken before it can sit above every sequence the new
+feed reaches. When the broker acknowledges a new incarnation it drops
+every bar and moves each `since` to that moment, so it takes a new head
+and a view of the restored feed.
 
 Why the versions leaders act on never go back: a leader acts on a target
 only after the control plane committed it. It hands leadership over after
@@ -3318,15 +3335,20 @@ While the control plane is down a new leader gets no head, so it takes no
 step: the group keeps serving with the membership it has, a grown set
 included, and moves on once the control plane answers. That costs liveness
 only. The placement model checks safety with a leader acting on any target
-ever written (`StaleTargets`), which covers every target this rule lets
-through.
+ever written (`StaleTargets`), and with the current target delivered and
+written only once every broker has acknowledged the incarnation
+(`AllAcked`), the same gate as above. Together they cover every target
+this rule lets through.
 
 The doomed set and its reports are metadata level 36 and are enabled only
-at that level. The level in force is the lowest any control-plane member
-can apply, and a build that applies 36 applies 35, so 36 in force means the
-restore incarnation is too. Each doom write also checks that every broker
-has acknowledged the current incarnation. A doom written before the incarnation existed could
-be undone by a restore that brings the id back as a voter.
+once the control plane knows that level is in force
+(`cluster_version_if_known`, so an unknown level enables nothing). The
+level in force is the lowest any control-plane member can apply, and a
+build that applies 36 applies 35, so 36 in force means the restore
+incarnation is too. Each doom write, like each target write, also checks
+that every broker has acknowledged the current incarnation. A doom written
+before the incarnation existed could be undone by a restore that brings
+the id back as a voter.
 
 What placement does not do yet for a Raft shard:
 
