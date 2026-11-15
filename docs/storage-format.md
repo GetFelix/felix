@@ -533,8 +533,9 @@ v9 ("Group records", below). The other pairs that include bit 31 (31 and
 29, 31 and 28) and the other triples that include it stay `RecordFlags` in
 every version.
 
-Only a v9 segment holds them, and nothing writes them yet. An append that
-holds one is refused (`Unsupported`) before it can roll the log onto v9. They
+Only a v9 segment holds them. A Raft log writes membership records (see
+"Records as Raft entries"); nothing writes counter records yet. A stream
+log's append that holds one is refused (`Unsupported`) before it can roll the log onto v9. They
 exist so the replication engine and the cache shard's single log (see
 `docs/replication-engine.md`, decisions 1 and 4) have kinds to write once the
 fleet reads v9. Recovery treats them like any other record: one cut short is a
@@ -573,7 +574,10 @@ than skip it: every member must fold the same writes.
 Only a v9 segment holds one, as with the membership and counter codes, and
 only a Raft log writes one. A stream log refuses the append (`Unsupported`)
 before it can roll onto v9. Every build before v9 reads the bits as
-`RecordFlags`, and so does a v9 reader in an older segment. Nothing writes
+`RecordFlags`, and so does a v9 reader in an older segment. So does a v9
+build from before group records: a Raft member downgraded to one refuses
+to open a log that holds a group record, at the tail too, rather than drop
+it. Nothing writes
 one yet: groups are not served on Raft shards (`docs/per-shard-raft.md`,
 "Consumer groups").
 

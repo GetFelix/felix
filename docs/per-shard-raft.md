@@ -3343,7 +3343,9 @@ its finish, a discard, a seek, a delete) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member will fold them, in log order, into the same group table, so a
 new leader serves the group from exactly the state the old one committed.
-`docs/formal/FelixRaftGroups.tla` models the rules the fold follows.
+`docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
+leaves out discard, which only drops a dead letter, and `if_new`, which the
+leader decides before it proposes the seek.
 
 The payload is a `GroupEntry` (`felix-broker`, `queue/entry.rs`): the
 group's name, the operation, and for every write a tracker decides, the

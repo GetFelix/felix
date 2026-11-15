@@ -2549,16 +2549,28 @@ fn a_group_write_round_trips_through_its_record() {
         .expect("decode");
     assert_eq!(read, group());
     assert!(!read.holds_record_at(4));
+    let forged = felix_storage::log::LogRecord {
+        offset: 4,
+        timestamp_micros: 9,
+        checksum: 0,
+        payload: Bytes::from_static(b"x"),
+        mark: felix_storage::log::RecordMark::Group,
+        publisher: Some(Bytes::from_static(b"alice")),
+        headers: None,
+        generation: Some(3),
+    };
+    ShardCodec.decode_data(forged).expect_err("refused");
     let producer = types::ProducerMark {
         producer_id: 1,
         sequence: 1,
         position: 0,
         len: 1,
     };
-    let refusals: [fn(&mut Command, types::ProducerMark); 5] = [
+    let refusals: [fn(&mut Command, types::ProducerMark); 6] = [
         |c, _| c.commit = true,
         |c, _| c.trim = Some(3),
         |c, p| c.producer = Some(p),
+        |c, _| c.expected = Some(4),
         |c, _| c.publisher = Some(Bytes::from_static(b"alice")),
         |c, _| c.headers = Some(Box::new(Bytes::from_static(b"h"))),
     ];
