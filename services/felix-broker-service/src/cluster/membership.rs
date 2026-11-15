@@ -279,14 +279,26 @@ impl RootSequenceSlot {
             return Ok(());
         }
         let root = placement.root.clone();
-        let acked = felix_common::blocking::spawn(move || {
-            felix_storage::raft_copy::ack_placement_incarnation(&root, told)
-        })
-        .await
-        .map_err(std::io::Error::other)??;
+        let acked = felix_common::blocking::spawn(move || write_placement_ack(&root, told))
+            .await
+            .map_err(std::io::Error::other)??;
         placement.acked.fetch_max(acked, Ordering::AcqRel);
         Ok(())
     }
+}
+
+#[cfg(feature = "raft")]
+fn write_placement_ack(root: &std::path::Path, told: u64) -> std::io::Result<u64> {
+    felix_storage::raft_copy::ack_placement_incarnation(root, told)
+}
+
+// Only the Raft restore gate sets a placement root, so a build without the
+// Raft engine never reaches this.
+#[cfg(not(feature = "raft"))]
+fn write_placement_ack(_root: &std::path::Path, _told: u64) -> std::io::Result<u64> {
+    Err(std::io::Error::other(
+        "placement acknowledgements need the Raft engine",
+    ))
 }
 
 impl std::fmt::Debug for RootSequenceSlot {
