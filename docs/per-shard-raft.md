@@ -1559,6 +1559,23 @@ transfer's target (so a transfer costs at most one term), a restarted
 leader whose stored vote is its own (`enable_leader_restore`), and a sole
 voter.
 
+openraft refuses a pre-vote only inside its own lease of `election_max`
+(2 s) from the last message a member took. In an idle group that lease
+ends just before each idle heartbeat, so a member coming back could still
+win a pre-vote there. Felix closes that gap. A follower refuses a pre-vote
+for as long as it would wait for its leader itself (6 to 7 s at the idle
+interval), and a leader refuses one while a majority answered it within
+three idle intervals. The refusal is an ordinary not-granted answer, so
+the candidate still counts the broker as reachable, adopts a higher term
+or backs off for a longer log as openraft does, and asks again at its
+next timeout. After a leader dies, the first
+follower to time out may have to wait for the others to time out too,
+which still falls inside the 6 to 7 s above.
+
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return` and
+> `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease`.
+
 ### Many groups electing at once
 
 A vote is a small file per shard, written whole and renamed into place,
@@ -2266,8 +2283,12 @@ restarted member cannot help elect anyone but the leader it followed
 leader stands as it starts. If a follower is already open it grants, and
 the group has its leader back within one vote round: 16 ms in the
 runtime's tests, against 2.1 to 3.2 s when the followers dropped the
-request. If the leader opens first, its request finds nobody, and it asks
-again at its next election timeout: 1.3 to 2.1 s over five runs.
+request. If the leader opens first, its request finds nobody. It asks
+again at its next election timeout with a pre-vote, which the followers
+refuse until their own hold and openraft's start-up lease end, about
+`election_max` after they open. The group then elects at the next term up:
+2.2 to 4.0 s over eight runs. Without pre-vote the retry was a vote, which
+the followers let through, at 1.3 to 2.1 s.
 
 **As built.** `Group::open` reads the vote from the log before openraft
 starts, and the voters once it has. Until `election_max` has passed since the open, the
@@ -2292,7 +2313,8 @@ member of a group being formed.
 > `a_restarted_member_alone_in_a_set_not_committed_is_held`,
 > `a_held_member_grants_the_leader_its_stored_vote_names`,
 > `a_later_leaders_append_ends_what_the_stored_vote_lets_through`,
-> `a_group_restarted_whole_has_its_leader_back_within_one_vote_round` and
+> `a_group_restarted_whole_has_its_leader_back_within_one_vote_round`,
+> `a_group_restarted_whole_with_its_leader_first_has_a_leader_within_its_holds` and
 > `a_held_member_handed_the_leadership_stands_and_is_ticked`.
 
 ### Reads

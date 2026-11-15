@@ -2218,6 +2218,86 @@ async fn a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_retur
     cluster.stop().await;
 }
 
+/// openraft refuses a pre-vote only inside its 2 s lease, which ends just
+/// before each idle heartbeat. A follower that heard its leader within its
+/// own wait, and a leader a majority answered within its followers' wait,
+/// refuse one past that lease too (#2630). Once a follower grants one, its
+/// own timer is left alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    let leading = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    // Idle: every follower took a heartbeat naming the idle gap.
+    eventually(|| (leading.leader_gap() > 1000).then_some(())).await;
+    let [follower, candidate] = {
+        let mut others = BROKERS
+            .into_iter()
+            .filter(|broker| *broker != &*leader.broker);
+        [others.next().expect("b"), others.next().expect("c")]
+    };
+    // Neither hears the leader, and neither can stand.
+    for broker in [follower, candidate] {
+        cluster.net.cut.lock().insert(broker.into());
+        cluster.net.muted.lock().insert(broker.into());
+    }
+    // Each last heard the leader 0 to 2 s ago. 3 s on, that is past the
+    // openraft lease and inside the 6 s idle wait.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let status = leading.status();
+    let last = {
+        use openraft::async_runtime::watch::WatchReceiver;
+        leading.raft().metrics().borrow_watched().last_applied
+    };
+    let last = last.expect("an applied entry");
+    let stands = LeaderIdOf::<ShardTypes>::new(status.term + 1, MemberId::new(candidate, 1));
+    let pre_vote = |to: &str| RaftRequest {
+        group: group(0),
+        to: MemberId::new(to, 1),
+        beat: 0,
+        report: false,
+        deadline: Duration::from_secs(1),
+        body: Request::PreVote(VoteRequest::new(
+            <VoteOf<ShardTypes> as RaftVote>::from_leader_id(stands.clone(), false),
+            Some(last),
+        )),
+    };
+    for to in [follower, &*leader.broker] {
+        let answer = cluster.runtime(to).handle(pre_vote(to)).await;
+        // An answer, not a drop: a dropped call counts the broker as down.
+        assert!(
+            matches!(
+                answer,
+                Ok(RaftReply(super::network::Reply::Vote(ref vote))) if !vote.vote_granted
+            ),
+            "{to} did not answer the pre-vote with a refusal"
+        );
+    }
+
+    // Past the follower's wait it grants one, which promises nothing: its
+    // own election timer runs on.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let following = cluster.runtime(follower).group(&shard(0)).expect("group");
+    let heard = following.heard();
+    let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
+    assert!(
+        matches!(
+            answer,
+            Ok(RaftReply(super::network::Reply::Vote(ref vote))) if vote.vote_granted
+        ),
+        "{follower} refused a pre-vote past its wait"
+    );
+    assert_eq!(following.heard(), heard, "a pre-vote restarted the timer");
+    cluster.stop().await;
+}
+
 /// A group whose entry waits on brokers that are down stays at the short
 /// heartbeat, so the first of them back takes the entry within about one,
 /// not within an idle heartbeat (#2567).

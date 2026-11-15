@@ -12,7 +12,7 @@ use felix_storage::raft_copy::{CopyMarks, LogMarkMode, MarkLog};
 use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
 use felix_storage::waiters::Waiters;
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
-use openraft::raft::SnapshotResponse;
+use openraft::raft::{SnapshotResponse, VoteResponse};
 use openraft::storage::{RaftLogReader, Snapshot};
 use openraft::type_config::alias::{LogIdOf, VoteOf};
 use openraft::vote::RaftLeaderId;
@@ -192,6 +192,8 @@ pub(crate) struct Pace {
     heard: AtomicU64,
     /// As a follower: the longest its leader said it may stay silent.
     promised: AtomicU64,
+    /// When this member last took an append, or [`NEVER`].
+    led: AtomicU64,
     /// As a leader: when it last sent an entry to anyone.
     wrote: AtomicU64,
     peers: parking_lot::Mutex<Vec<Peer>>,
@@ -241,6 +243,7 @@ impl Pace {
             due: AtomicU64::new(0),
             heard: AtomicU64::new(0),
             promised: AtomicU64::new(timers.heartbeat),
+            led: AtomicU64::new(NEVER),
             wrote: AtomicU64::new(now),
             peers: parking_lot::Mutex::new(Vec::new()),
             sent: parking_lot::Mutex::new(None),
@@ -410,6 +413,25 @@ impl Pace {
         let late = self.timers.now().saturating_sub(arrived) >= deadline.as_millis() as u64;
         let short = gap <= self.timers.heartbeat;
         self.followed((!(late && short)).then_some(gap));
+        self.led.store(self.timers.now(), Ordering::Relaxed);
+    }
+
+    /// Whether this member, as a follower, still counts on the leader it
+    /// last took an append from: it would not stand itself yet.
+    pub(super) fn follows_live_leader(&self, now: u64) -> bool {
+        let led = self.led.load(Ordering::Relaxed);
+        led != NEVER && now < led.saturating_add(self.follower_wait())
+    }
+
+    /// Whether a leader that a majority answered `acked` ago is still
+    /// waited for by its followers. Some may have been told the idle gap
+    /// even when the leader is back at the short one.
+    pub(super) fn leads_live(&self, acked: Duration) -> bool {
+        let timers = &self.timers;
+        let wait = timers
+            .election_min
+            .max(timers.idle_heartbeat.saturating_mul(3));
+        (acked.as_millis() as u64) < wait
     }
 
     /// This member granted a vote. Whoever wins starts at the short gap.
@@ -507,6 +529,9 @@ pub(crate) struct Host {
     pub(crate) engine: Option<Arc<dyn EngineHost>>,
     pub(crate) clock: Clock,
 }
+
+/// [`Pace`]'s mark for a time that has not come yet.
+const NEVER: u64 = u64::MAX;
 
 /// Expired values deleted by one pass of the expiry task.
 const EXPIRE_AT_ONCE: usize = 256;
@@ -794,6 +819,31 @@ impl Group {
         }
     }
 
+    /// Whether this member follows a leader it heard within its wait, or
+    /// leads with a majority's answer within its followers' wait.
+    fn leader_seems_live(&self) -> bool {
+        use openraft::Instant as _;
+        use openraft::async_runtime::watch::WatchReceiver;
+        let now = self.pace.timers.now();
+        if self.pace.follows_live_leader(now) {
+            return true;
+        }
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let acked = metrics.last_quorum_acked.map(|acked| acked.elapsed());
+        metrics.state == ServerState::Leader
+            && acked.is_some_and(|acked| self.pace.leads_live(acked))
+    }
+
+    /// A pre-vote answer that grants nothing, naming this member's vote and
+    /// last log id as openraft's own refusal would.
+    fn refusal(&self) -> VoteResponse<ShardTypes> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let vote = self.raft.metrics().borrow_watched().vote.clone();
+        let last = self.raft.data_metrics().borrow_watched().last_log;
+        VoteResponse::new(vote, last, false)
+    }
+
     fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader
@@ -973,6 +1023,17 @@ impl Group {
             && self.reached_before()
         {
             return Err(stopped(REACHED_BEFORE.to_string()));
+        }
+        // openraft refuses a pre-vote only within its own lease of
+        // `election_max` (2 s), which lapses just before each idle
+        // heartbeat. A member that still counts on a live leader refuses it
+        // for as long as it would wait for that leader itself. The refusal
+        // is a real answer, so the candidate keeps the broker counted as
+        // reachable and still learns a higher term or a longer log.
+        if let Request::PreVote(_) = &body
+            && self.leader_seems_live()
+        {
+            return Ok(Reply::Vote(self.refusal()));
         }
         let held = self.holds_votes();
         let asks = match &body {
@@ -1781,6 +1842,12 @@ impl Group {
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.positions.clone()
+    }
+
+    /// When this member last took an append or granted a vote.
+    #[cfg(test)]
+    pub(crate) fn heard(&self) -> u64 {
+        self.pace.heard.load(Ordering::Relaxed)
     }
 
     /// How long this member, as a leader, would wait for its next heartbeat.
