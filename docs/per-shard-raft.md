@@ -4937,7 +4937,7 @@ not move.
   last log id; the first index is above the base, the floor and every
   reservation read. It marks the group when a broker placed in the epoch
   is dead, has no vote of the epoch read or has a copy of the epoch a
-  restore rotated, and flags a cut by a vote above every entry. Either
+  restore rotated, and flags a vote above every entry that cut a copy below what it holds. Either
   needs the operator to accept the loss. It refuses on an unanswered
   placed broker, a leader, a voter off the record, a copy ahead of the
   record's epoch or whose bases differ from it, a record inside a gap, and

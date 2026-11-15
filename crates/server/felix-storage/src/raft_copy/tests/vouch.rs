@@ -393,3 +393,39 @@ fn probes_cover_every_place_a_base_can_end() {
     let reports = BTreeMap::from([("a", report(copy("a", &[1; 6], Some(1), None), vec![]))]);
     assert_eq!(probes(&rec, &reports), BTreeSet::from([1, 3, 5]));
 }
+
+/// A copy of the epoch that never voted still puts T at (epoch, 0), so a
+/// restored older-epoch copy with a higher term is not vouched whole. Epoch
+/// 0: `s`, declared dead but running, wrote t3 at index 1 while `a` held
+/// [t1, t2] committed. Re-form 1 took `a`'s log; `a` never voted in epoch 1.
+#[test]
+fn a_copy_that_never_voted_keys_its_epoch_at_term_zero() {
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 1,
+            epoch: 0,
+            term: 2,
+        }),
+        first_index: 2,
+    }];
+    let rec = record(&["a"], &[], &bases, None);
+    let a = at_epoch(copy("a", &[1, 2], Some(1), None), &bases);
+    let s = kept(
+        copy("s-kept", &[1, 3], Some(0), Some(3)),
+        RotatedBy::Restore,
+    );
+    let plan = plan(
+        &rec,
+        vec![("a", report(a, vec![])), ("s", report(blank(), vec![s]))],
+    );
+    assert_eq!(plan.top, (1, 0));
+    assert_eq!(plan.source, ("a", Source::Current));
+    assert_eq!(
+        plan.base_last,
+        Some(EpochLogId {
+            index: 1,
+            epoch: 0,
+            term: 2
+        })
+    );
+}

@@ -101,8 +101,6 @@ impl<B> ReformPlan<B> {
 pub enum Refused<B> {
     /// The shard has no record of the brokers placed in its epoch.
     NoPlacedRecord,
-    /// The record's bases do not match its epoch count.
-    BadRecord,
     /// A broker placed in the epoch neither answered nor is declared dead.
     Unaccounted(B),
     /// A broker leads the current epoch.
@@ -204,7 +202,7 @@ pub fn plan_reform<B: Ord + Clone>(
     let entries = copies.iter().filter_map(|c| c.last).max();
     let votes = copies
         .iter()
-        .filter_map(|c| Some((c.epoch?, c.read.vote?)))
+        .filter_map(|c| Some((c.epoch?, c.read.vote.unwrap_or(0))))
         .max();
     let floor = record.floor.map(|floor| (floor.epoch, floor.term));
     let top = entries.max(votes).max(floor).unwrap_or((0, 0));
