@@ -598,7 +598,10 @@ have](#feeding-felix-from-kafka-producers-you-already-have).
 
 **A produce is refused with `INVALID_RECORD`.** A header name starts with
 `felix.`, which Felix reserves, or is empty. Produce v8 and later clients get a
-message saying which; older ones get the code alone. Rename the header.
+message saying which; older ones get the code alone. Rename the header. On a
+per-shard Raft partition, a key or any header is refused until the cluster
+finalizes `raft_record_headers`, counted in
+`felix_kafka_produce_refused_total{reason="record_headers_not_finalized"}`.
 
 **SSL handshake failed.** Either the client does not trust the broker's
 certificate (point `ssl.ca.location` at the CA that issued `FELIX_TLS_CERT`,

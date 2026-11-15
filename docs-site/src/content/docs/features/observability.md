@@ -261,6 +261,7 @@ felix_kafka_produce_records_total           # records Kafka producers wrote
 felix_kafka_produce_bytes_total             # their payload bytes
 felix_kafka_produce_duplicate_records_total # re-sent idempotent records answered without writing
 felix_kafka_produce_errors_total            # refused partitions, by error
+felix_kafka_produce_refused_total           # refused partitions whose error code does not say why, by reason: record_headers_not_finalized
 felix_kafka_produce_dropped_total           # records whose key or headers were dropped (`FELIX_KAFKA_RECORD_HEADERS` off, or the broker not accepting record headers), by field
 ```
 
@@ -270,6 +271,9 @@ failover or a move. `produce_errors_total{error="out_of_order_sequence_number"}`
 should stay at zero; it means a producer believes records were written that the
 log does not have. `produce_dropped_total{field="headers"}` shows producers
 whose headers Felix cannot keep.
+`produce_refused_total{reason="record_headers_not_finalized"}` counts produces
+with keys or headers to a per-shard Raft partition before the cluster
+finalizes `raft_record_headers`; they are refused with `INVALID_RECORD`.
 
 A steady `not_leader_or_follower` rate means clients keep fetching from a
 broker that no longer leads the partition, which is normal for a moment after

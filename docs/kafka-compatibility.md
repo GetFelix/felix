@@ -348,7 +348,9 @@ A partition on per-shard Raft (`FELIX_SHARD_ENGINE=raft`) stores them once the
 fleet has also finalized `raft_record_headers`. Until then, with the listener
 opted in and the broker accepting headers, a produce whose records carry a key
 or headers is refused with `INVALID_RECORD`, nothing written and no quota
-charged, as a native publish with headers to such a shard is refused.
+charged, as a native publish with headers to such a shard is refused. Each
+refusal is counted in
+`felix_kafka_produce_refused_total{reason="record_headers_not_finalized"}`.
 
 The producer's timestamp is always dropped.
 
@@ -488,7 +490,8 @@ The metrics are listed on the
 `felix_kafka_fetch_waits_total{outcome}`, `felix_kafka_fetch_wait_seconds`,
 `felix_kafka_produce_records_total`, `felix_kafka_produce_bytes_total`,
 `felix_kafka_produce_duplicate_records_total`,
-`felix_kafka_produce_errors_total{error}` and
+`felix_kafka_produce_errors_total{error}`,
+`felix_kafka_produce_refused_total{reason}` and
 `felix_kafka_produce_dropped_total{field}`.
 
 ## Design choices

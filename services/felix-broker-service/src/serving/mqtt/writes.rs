@@ -60,6 +60,9 @@ enum Sent {
     Written,
     /// Nothing was written by this send.
     Refused(Refusal),
+    /// Nothing was written: the shard's Raft group here has no leader to
+    /// take it right now, as during an election.
+    Leaderless,
     /// It may be in the log and sending it again cannot tell: the owner's
     /// write or its quorum wait failed after the batch took offsets.
     Unknown(&'static str),
@@ -183,21 +186,20 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
             let reason = match sent {
                 Sent::Written => return Ok(()),
                 Sent::Unknown(reason) => return Err(WriteError::OutcomeUnknown(reason)),
-                // A Raft shard has no leader during an election, which the
-                // hybrid's dispatch waits out. Nothing was written, so it is
-                // waited out here, and still a refusal if the budget ends.
-                Sent::Refused(Refusal::NotOwner)
-                    if unanswered.is_none() && self.engine.runs_raft() =>
-                {
-                    match deadline {
-                        Some(deadline) if Instant::now() + delay < deadline => {
-                            tokio::time::sleep(delay).await;
-                            resends += 1;
-                            continue;
-                        }
-                        _ => return Err(WriteError::Refused(Refusal::NotOwner)),
+                Sent::Leaderless => match (unanswered, deadline) {
+                    // During a failover nobody may own the shard for a moment.
+                    (Some(reason), _) => reason,
+                    // A Raft shard has no leader during an election, which
+                    // the hybrid's dispatch waits out. Nothing was written,
+                    // so it is waited out here, and still a refusal if the
+                    // budget ends.
+                    (None, Some(deadline)) if Instant::now() + delay < deadline => {
+                        tokio::time::sleep(delay).await;
+                        resends += 1;
+                        continue;
                     }
-                }
+                    (None, _) => return Err(WriteError::Refused(Refusal::NotOwner)),
+                },
                 Sent::Refused(refusal) => match unanswered {
                     None => return Err(WriteError::Refused(refusal)),
                     // During a failover nobody may own the shard for a moment.
@@ -239,7 +241,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
         }
         let ingress = self.engine.serving().map(|ingress| &**ingress);
         let (permit, generation) = match dispatch_write(ingress, key).await {
-            (Dispatch::Local { .. }, _) if on_raft => return Sent::Refused(Refusal::NotOwner),
+            (Dispatch::Local { .. }, _) if on_raft => return Sent::Leaderless,
             (Dispatch::Local { generation }, mut held) => {
                 match fence::enter_or_keep(&mut held, ingress, Some(key), generation) {
                     Ok(permit) => (permit, generation),
@@ -265,6 +267,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                     .forward(batch, &target, payloads, headers, deadline)
                     .await;
             }
+            (Dispatch::Unavailable(_), _) if on_raft => return Sent::Leaderless,
             (Dispatch::Unavailable(_), _) => return Sent::Refused(Refusal::NotOwner),
         };
 
@@ -352,7 +355,7 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
         let proposed = match proposed.unwrap_or(Err(RaftRefusal::NotLeading { term })) {
             Ok(proposed) => proposed,
             // Deposed since the check: nothing was written.
-            Err(RaftRefusal::NotLeading { .. }) => return Sent::Refused(Refusal::NotOwner),
+            Err(RaftRefusal::NotLeading { .. }) => return Sent::Leaderless,
             Err(RaftRefusal::Broker(err)) => return claim_failure(err),
         };
         match proposed.complete().await {

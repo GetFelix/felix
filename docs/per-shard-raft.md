@@ -2744,8 +2744,9 @@ stream is answered at the commit: later than on the hybrid, never weaker.
 Kafka keys and headers are stored once the cluster finalizes
 `raft_record_headers`. Before that a produce whose records carry any is
 refused with `INVALID_RECORD`, before the tenant's quota is charged and
-with nothing written, as a native publish with headers is refused; a
-produce without them is written. If a record of an idempotent batch is
+with nothing written, as a native publish with headers is refused, and
+counted in `felix_kafka_produce_refused_total`; a produce without them is
+written. If a record of an idempotent batch is
 refused because one before it failed (its sequence is then a gap), the
 answer is that earlier failure, which the producer retries, not
 `OUT_OF_ORDER_SEQUENCE_NUMBER`, which it takes as fatal.
@@ -2757,9 +2758,11 @@ MQTT message as its own batch. A broker that is not a member forwards it to
 the leader under its producer sequence, and the leader proposes it. Until
 the cluster finalizes `raft_record_headers` an MQTT message, which always
 carries headers, is refused `record_headers_disabled`. While the shard has
-no leader (an election), the broker waits for one within the forward
-budget, as the hybrid's dispatch waits for a shard that is not ready,
-rather than refusing the message `not_owner`.
+no leader (an election), a broker that is a member of its group waits for
+one within the forward budget, as the hybrid's dispatch waits for a shard
+that is not ready, rather than refusing the message `not_owner`. A refusal
+that waiting cannot change, such as an anonymous connection's message for
+a shard led elsewhere, is answered at once.
 
 One message per batch costs a commit round trip per message on a
 connection, QoS 0 included; real batching on Raft is tracked in #2638.
@@ -2769,6 +2772,8 @@ connection, QoS 0 included; real batching on Raft is tracked in #2638.
 > `services/felix-broker-service/src/serving/mqtt/writes/tests.rs`,
 > `a_message_for_a_raft_shard_lands_once_with_its_headers` and
 > `a_message_for_a_raft_shard_between_leaders_waits_for_the_next`;
+> `services/felix-broker-service/src/serving/mqtt/writes/tests/cluster.rs`,
+> `a_lasting_refusal_is_answered_at_once_on_a_broker_that_runs_raft`;
 > `crates/server/felix-mqtt/src/service/tests/publish.rs`,
 > `queued_publishes_go_one_per_batch_when_the_broker_says_so`;
 > `crates/testing/felix-cluster/tests/failures/kafka_produce.rs`,

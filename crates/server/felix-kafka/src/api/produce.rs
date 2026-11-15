@@ -184,6 +184,7 @@ async fn write(
             .cluster
             .refuses_record_headers(&shared.broker, &located.shard_ref())
     {
+        crate::metrics::produce_refused_for("record_headers_not_finalized");
         return Err(Failure {
             error: ResponseError::InvalidRecord,
             message: Some(format!(

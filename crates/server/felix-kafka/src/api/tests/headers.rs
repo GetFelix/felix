@@ -435,12 +435,15 @@ async fn header_bytes_count_toward_the_quota() {
 }
 
 /// **A shard that cannot store keys and headers yet refuses a record with
-/// them**, before the quota is charged, rather than dropping them. A record
-/// with neither is still written.
+/// them**, before the quota is charged, rather than dropping them, and counts
+/// the refusal by reason. A record with neither is still written.
 #[tokio::test]
 async fn keys_and_headers_a_shard_cannot_store_yet_are_refused_not_dropped() {
     let fixture = stream_fixture(true, true).await;
     *fixture.cluster.headers_refused.lock().expect("lock") = Some("raft_record_headers");
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let rendered = recorder.handle();
+    let _local = metrics::set_default_local_recorder(&recorder);
     let mut client = fixture.connect();
 
     let refused = produce(
@@ -463,4 +466,11 @@ async fn keys_and_headers_a_shard_cannot_store_yet_are_refused_not_dropped() {
     assert_eq!(charged, 0, "a refused produce was charged to the quota");
     assert_eq!(plain.error_code, 0, "{plain:?}");
     assert_eq!(fetched(&mut client).await, vec![seen("b", None, &[])]);
+    let rendered = rendered.render();
+    assert!(
+        rendered.contains(
+            r#"felix_kafka_produce_refused_total{reason="record_headers_not_finalized"} 1"#
+        ),
+        "{rendered}"
+    );
 }
