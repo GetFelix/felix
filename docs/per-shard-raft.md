@@ -3076,9 +3076,10 @@ A trim entry has its own tag, 6, in the Raft wire's entry payloads, and
 openraft does send it: leaders replicate entries read back from their log,
 which hold the trim mark. A member built before it refuses the whole append
 by that tag, and replication to it stops at the entry. So a Raft trim waits
-for the fleet feature `raft_head_trim`, which needs `head_trim` and is
-reported only by builds that read the tag. Until the control plane
-finalizes it a clustered broker refuses a trim on a Raft shard with
+for the fleet feature `raft_head_trim`, which needs `head_trim`. Every
+build of this release reports it: one built without the Raft engine holds
+no Raft shard, so it never receives the entry. A new cluster starts with it
+finalized. Until the control plane finalizes it a clustered broker refuses a trim on a Raft shard with
 `feature_not_enabled` and nothing proposed. A lone broker allows it from
 the start. The layout stays 5, so every other frame is byte-identical to an
 older build's.

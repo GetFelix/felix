@@ -587,6 +587,8 @@ proposes nothing. A trim on Raft is an entry of its own kind that a broker
 built before it refuses, and replication to that broker would stop at the
 entry. A single broker allows Raft trims from the start.
 
+- **A new cluster** starts with it finalized.
+
 #### `record_headers`
 
 Once finalized, a durable stream in a cluster accepts record keys and headers

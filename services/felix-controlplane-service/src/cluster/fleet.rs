@@ -272,7 +272,7 @@ pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 /// `FELIX_RECORD_PUBLISHERS` asks for it, and `record_generations`, the one-way
 /// move onto segment format v9, kept out until replicated clusters are
 /// measured with it on.
-pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 11] = [
+pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 12] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,
     felix_common::fleet::LEASE_FREE_READS,
@@ -283,6 +283,7 @@ pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 11] = [
     felix_common::fleet::STREAM_INCARNATIONS,
     felix_common::fleet::CACHE_INCARNATIONS,
     felix_common::fleet::HEAD_TRIM,
+    felix_common::fleet::RAFT_HEAD_TRIM,
     felix_common::fleet::RECORD_HEADERS,
 ];
 
