@@ -44,6 +44,7 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
         timestamp_micros: stamp,
         payload: command.encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     let written = member.raft().client_write(command).await.expect("write");
@@ -202,6 +203,7 @@ async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
         timestamp_micros: 10,
         payload: put("k", b"one", sequence).encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     assert!(!group.write_in_term(command(1), term - 1).await);
@@ -379,6 +381,7 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
         timestamp_micros: 20,
         payload: put("k", b"two", 2).encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -413,6 +416,7 @@ async fn a_read_whose_apply_lags_past_the_election_timeout_waits_out_its_own_dea
         timestamp_micros: 20,
         payload: put("k", b"two", 2).encode(),
         producer: None,
+        expected: None,
         written: None,
     };
     let raft = group.raft().clone();
@@ -454,6 +458,7 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
             timestamp_micros: index * 10,
             payload: command.encode(),
             producer: None,
+            expected: None,
             written: None,
         };
         let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -501,6 +506,7 @@ fn entries(
                 timestamp_micros: index * 10,
                 payload: command(index).encode(),
                 producer: None,
+                expected: None,
                 written: None,
             };
             let id = LogIdOf::<ShardTypes>::new(1.into(), index);
@@ -1286,6 +1292,7 @@ async fn a_cache_shard_takes_no_stream_batch_and_a_stream_shard_no_cache_write()
     cluster.form(1).await;
     let (engine, group) = leading(&cluster).await;
     let batch = || Batch {
+        expected: None,
         records: vec![Record {
             timestamp_micros: 10,
             payload: Bytes::from_static(b"a stream record"),
@@ -1400,6 +1407,7 @@ async fn what_a_write_call_per_entry_costs() {
                     timestamp_micros: 10,
                     payload: put("k", b"value", (mode * ROUNDS + round) * 1_000 + entry).encode(),
                     producer: None,
+                    expected: None,
                     written: None,
                 });
                 let commands = commands.collect();

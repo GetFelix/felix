@@ -179,6 +179,11 @@ pub(crate) struct Command {
     pub(crate) payload: Bytes,
     /// Set on the records of an idempotent producer's batch.
     pub(crate) producer: Option<ProducerMark>,
+    /// Set on a conditional publish: the offset the record must be written
+    /// at. Written at any other index, every member stores a blank entry
+    /// there instead ([`Self::blank_at`]). Never set on a command read back
+    /// from the log, which holds only the outcome.
+    pub(crate) expected: Option<u64>,
     /// Set by a proposer that waits to hear where the record was written.
     /// It rides on the entry from `client_write` to the leader's own append
     /// and nowhere else: it is not in the record and not in a message, so a
@@ -195,15 +200,27 @@ impl PartialEq for Command {
             timestamp_micros,
             payload,
             producer,
+            expected,
             written: _,
         } = self;
         *timestamp_micros == other.timestamp_micros
             && *payload == other.payload
             && *producer == other.producer
+            && *expected == other.expected
     }
 }
 
 impl Eq for Command {}
+
+impl Command {
+    /// Whether the command, written at `index`, holds no record: a
+    /// conditional publish that did not land at its expected offset. It
+    /// depends on the entry and its index alone, so every member decides
+    /// the same, and an entry a later leader cuts takes its outcome with it.
+    pub(crate) fn blank_at(&self, index: u64) -> bool {
+        self.expected.is_some_and(|expected| expected != index)
+    }
+}
 
 impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

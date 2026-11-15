@@ -77,6 +77,7 @@ fn every_request() -> Vec<RaftRequest> {
                 timestamp_micros: 99,
                 payload: Bytes::from_static(b"a record"),
                 producer: None,
+                expected: None,
                 written: None,
             },
         ),
@@ -92,6 +93,7 @@ fn every_request() -> Vec<RaftRequest> {
                     position: 0,
                     len: 1,
                 }),
+                expected: None,
                 written: None,
             },
         ),
@@ -106,6 +108,17 @@ fn every_request() -> Vec<RaftRequest> {
                     position: 2,
                     len: 5,
                 }),
+                expected: None,
+                written: None,
+            },
+        ),
+        EntryOf::<ShardTypes>::new_normal(
+            log_id(2, 10),
+            Command {
+                timestamp_micros: 102,
+                payload: Bytes::from_static(b"a conditional publish"),
+                producer: None,
+                expected: Some(10),
                 written: None,
             },
         ),
@@ -241,7 +254,7 @@ fn entries_read_back_with_their_payloads() {
     let Request::Append(sent) = &written.body else {
         unreachable!()
     };
-    assert_eq!(read.entries.len(), 5);
+    assert_eq!(read.entries.len(), 6);
     for (read, sent) in read.entries.iter().zip(&sent.entries) {
         assert_eq!(read.log_id, sent.log_id);
         assert!(read.payload == sent.payload, "{:?}", read.payload);
@@ -286,7 +299,7 @@ fn every_reply_reads_back_as_written() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[5, 3][..],
+        &[6, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -486,6 +499,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                     timestamp_micros: 1,
                     payload: record.clone(),
                     producer: None,
+                    expected: None,
                     written: None,
                 },
             )
@@ -532,6 +546,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                     timestamp_micros: 1,
                     payload: record.clone(),
                     producer: None,
+                    expected: None,
                     written: None,
                 },
             )
@@ -628,6 +643,7 @@ fn an_entry_that_continues_a_batch_is_refused() {
         timestamp_micros: 100,
         payload: Bytes::from_static(b"a record"),
         producer: None,
+        expected: None,
         written: None,
     };
     let written = request(Request::Append(AppendEntriesRequest {

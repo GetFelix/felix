@@ -387,7 +387,12 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     .apply(entry.log_id.index, command.0, &command.1);
                 written += 1;
             }
-            let record = matches!(entry.payload, EntryPayload::Normal(_));
+            // A conditional publish off its offset is a blank on disk. It
+            // may reach apply as the command, from memory.
+            let record = match &entry.payload {
+                EntryPayload::Normal(command) => !command.blank_at(entry.log_id.index),
+                _ => false,
+            };
             if let EntryPayload::Membership(membership) = entry.payload {
                 self.state.membership =
                     StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);

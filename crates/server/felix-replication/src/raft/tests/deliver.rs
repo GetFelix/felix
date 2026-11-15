@@ -487,6 +487,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             payload,
         };
         let batch = Batch {
+            expected: None,
             records: vec![record],
             ack: AckAt::Flushed,
             term,
@@ -958,5 +959,55 @@ async fn a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused() {
     let confirmed = led.engine.confirm_read(&shard(0), term).await;
     assert_eq!(confirmed, Ok(()));
     assert!(led.engine.read_bound(&shard(0)).expect("bound") > offset);
+    led.cluster.stop().await;
+}
+
+/// **A conditional publish lands only at its expected offset, and one that
+/// does not is a blank on every member: refused with the offset after it,
+/// delivered by no member, and counted as skipped.** Decided by the leader
+/// alone, a follower that wrote the record would deliver it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_conditional_publish_off_its_offset_is_a_blank_on_every_member() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let follower = led.followers().next().expect("a follower");
+    let (follower_broker, _follower_handle) = broker_on_log_of(&led, &follower).await;
+    let (mut on_follower, _follower_guard) = subscriber(&follower_broker).await;
+
+    let at = led.committed + 1;
+    let publish_at = |payload: &'static [u8]| {
+        let proposed = led.engine.publish_at(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            Bytes::from_static(payload),
+            at,
+            AckAt::Flushed,
+            PATIENCE,
+        );
+        tokio::spawn(proposed.expect("proposed").complete())
+    };
+    let landed = publish_at(b"first").await.expect("joined");
+    assert_eq!(landed.expect("written").offsets, Some((at, at)));
+    let refused = publish_at(b"stale").await.expect("joined");
+    assert_eq!(refused, Err(CommitError::OffsetMismatch { tail: at + 2 }));
+
+    let after = publish(&led, &broker, &handle, Bytes::from_static(b"after"));
+    let outcome = after.await.expect("joined").expect("committed");
+    assert_eq!(outcome.offsets, Some((at + 2, at + 2)));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(at));
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(at + 2));
+    assert_eq!(envelope.skipped_before(), 1);
+    assert_eq!(
+        records(&mut on_follower, 2).await,
+        [
+            (at, Bytes::from_static(b"first")),
+            (at + 2, Bytes::from_static(b"after"))
+        ]
+    );
     led.cluster.stop().await;
 }

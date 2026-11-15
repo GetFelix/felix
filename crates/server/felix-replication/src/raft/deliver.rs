@@ -34,6 +34,9 @@ const LOG_RETRY_MAX: Duration = Duration::from_secs(5);
 /// subscribers are ended, so their clients resubscribe where the log reads.
 const LOG_FAILURES_TO_END: u32 = 5;
 
+/// A stream batch on its way to its commit, as the broker waits on it.
+type Settling = BoxFuture<'static, Result<ProposalCommitted, ProposalFailed<CommitError>>>;
+
 const OTHER_TERM: &str = "the batch was written at a later term than it was admitted at";
 
 impl RaftEngine {
@@ -82,7 +85,88 @@ impl RaftEngine {
         // A leader cut off from its majority is not deposed, and every batch
         // it is handed waits, payload in hand, until the partition heals.
         // Refusing once the oldest has waited out its timeout bounds them.
-        let proposed = broker.propose_publish(stream, payloads, timeout, |timestamp_micros| {
+        let proposed = broker.propose_publish(
+            stream,
+            payloads,
+            timeout,
+            self.proposer(shard, term, records, None, ack, on_lease, timeout),
+        )?;
+        let proposed = match answer {
+            AnswerAt::Lease => proposed.answer_at(answered),
+            AnswerAt::Commit => proposed,
+        };
+        Ok(
+            proposed.answer_within(timeout, move || CommitError::TimedOut {
+                what: "batch",
+                timeout,
+            }),
+        )
+    }
+
+    /// [`Self::publish`] for a conditional publish: one record, written
+    /// only if it lands at offset `expected`.
+    ///
+    /// The condition is decided where the entry is written, on every
+    /// member, from the entry's own index: off `expected`, each member
+    /// stores a blank entry there instead of the record. Nothing a leader
+    /// decides alone goes into it, so a leader deposed after its look
+    /// writes nothing different, and a membership entry openraft puts
+    /// ahead of the record cannot move it off its offset unnoticed. A
+    /// refused publish still takes an offset, which readers skip, and is
+    /// answered with [`CommitError::OffsetMismatch`] once committed,
+    /// carrying the offset after it. The answer always waits for the
+    /// commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_at(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: Option<u64>,
+        payload: Bytes,
+        expected: u64,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        let proposed = broker.propose_publish_at(
+            stream,
+            vec![payload.clone()],
+            expected,
+            timeout,
+            |tail| CommitError::OffsetMismatch { tail },
+            self.proposer(
+                shard,
+                term,
+                vec![payload],
+                Some(expected),
+                ack,
+                None,
+                timeout,
+            ),
+        )?;
+        Ok(
+            proposed.answer_within(timeout, move || CommitError::TimedOut {
+                what: "batch",
+                timeout,
+            }),
+        )
+    }
+
+    /// What [`Broker::propose_publish`] is handed to queue a stream batch.
+    #[allow(clippy::too_many_arguments)]
+    fn proposer(
+        &self,
+        shard: &ShardKey,
+        term: Option<u64>,
+        records: Vec<Bytes>,
+        expected: Option<u64>,
+        ack: AckAt,
+        on_lease: Option<oneshot::Sender<u64>>,
+        timeout: Duration,
+    ) -> impl FnOnce(u64) -> Settling + use<> {
+        let engine = self.clone();
+        let shard = shard.clone();
+        move |timestamp_micros| {
             let count = records.len() as u64;
             let records = records
                 .into_iter()
@@ -96,27 +180,18 @@ impl RaftEngine {
                 ack,
                 term,
                 producer: None,
+                expected,
             };
-            let written = self.propose_reaching(shard, batch);
+            let written = engine.propose_reaching(&shard, batch);
             let batch = Proposed {
-                shard: shard.clone(),
+                shard,
                 term,
                 count,
                 timeout,
                 on_lease,
             };
-            settled(self.clone(), batch, written)
-        })?;
-        let proposed = match answer {
-            AnswerAt::Lease => proposed.answer_at(answered),
-            AnswerAt::Commit => proposed,
-        };
-        Ok(
-            proposed.answer_within(timeout, move || CommitError::TimedOut {
-                what: "batch",
-                timeout,
-            }),
-        )
+            Box::pin(settled(engine, batch, written))
+        }
     }
 
     /// [`Self::publish`] for an idempotent producer's batch, which is
@@ -190,6 +265,7 @@ impl RaftEngine {
                     ack: AckAt::Written,
                     term: Some(term),
                     producer: Some(producer),
+                    expected: None,
                 };
                 let written = self.propose_reaching(shard, batch);
                 // On a task of its own, so the turn is given up when
