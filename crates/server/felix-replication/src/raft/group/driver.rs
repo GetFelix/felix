@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use super::Group;
 use super::membership::{Basis, Replication, StepError};
 use crate::raft::lead::Lead;
-use crate::raft::membership::{Config, Step, Target, TargetVersion, View, Wait};
+use crate::raft::membership::{Config, Step, Target, TargetVersion, Told, View, Wait};
 use crate::raft::types::MemberId;
 
 pub(crate) const CONVERGING: &str = "felix_broker_raft_membership_converging";
@@ -235,12 +235,29 @@ impl<M: Member> Driver<M> {
         }
     }
 
-    /// Look once and take at most one step toward `target`.
-    pub(crate) async fn pass(&mut self, target: Option<&Target>) -> Pass {
+    /// Look once and take at most one step toward the target, if it was
+    /// told for the term this member leads. One told in an earlier term may
+    /// be older than what an earlier leader of this term's view acted on.
+    pub(crate) async fn pass(&mut self, told: Option<&Told>) -> Pass {
+        self.pass_for(|term| {
+            told.filter(|told| told.term == term)
+                .map(|told| &told.target)
+        })
+        .await
+    }
+
+    /// `pass` with a target taken whatever term it was told in.
+    #[cfg(test)]
+    pub(crate) async fn pass_any(&mut self, target: Option<&Target>) -> Pass {
+        self.pass_for(|_| target).await
+    }
+
+    async fn pass_for<'t>(&mut self, target: impl FnOnce(u64) -> Option<&'t Target>) -> Pass {
         let Some(look) = self.member.look().await else {
             return Pass::NotLeading;
         };
         let basis = &look.basis;
+        let target = target(basis.term);
         if self.halted == Some(basis.term) {
             return Pass::Halted;
         }
@@ -420,7 +437,7 @@ impl<M: Member> Driver<M> {
 /// Drive `driver`'s group until `stop`, or until the group's core is gone.
 pub(crate) async fn run<M: Member>(
     mut driver: Driver<M>,
-    mut target: watch::Receiver<Option<Target>>,
+    mut target: watch::Receiver<Option<Told>>,
     mut lead: watch::Receiver<Lead>,
     stop: CancellationToken,
 ) {
@@ -457,7 +474,12 @@ pub(crate) async fn run<M: Member>(
                 if changed.is_err() {
                     break;
                 }
-                driver.retargeted();
+                // The same target told again for a new term must not reset
+                // the pacing of transfers that keep failing.
+                let version = |told: Option<&Told>| told.map(|told| told.target.version);
+                if version(target.borrow().as_ref()) != version(goal.as_ref()) {
+                    driver.retargeted();
+                }
             }
             changed = lead.changed() => {
                 if changed.is_err() {

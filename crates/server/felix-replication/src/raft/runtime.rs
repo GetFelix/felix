@@ -1056,19 +1056,20 @@ impl GroupRuntime {
         true
     }
 
-    /// Tell `shard`'s member here the control plane's target: the voters
-    /// the group should have, and the target's version. The member that
-    /// leads takes the steps: it adds each new member as a learner,
-    /// changes the voters once the learners have caught up, and hands the
-    /// leadership over first if the target leaves it out. Every member can
-    /// be told; one that does not lead keeps the target for when it does.
+    /// Tell `shard`'s member here the control plane's target for `term`:
+    /// the voters the group should have, and the target's version. The
+    /// member that leads takes the steps: it adds each new member as a
+    /// learner, changes the voters once the learners have caught up, and
+    /// hands the leadership over first if the target leaves it out.
     ///
-    /// Only a target newer than the one held is kept, and the leader acts
-    /// only on one at least as new as its membership. False if the target
-    /// is not newer, or the shard has no group here.
-    pub fn retarget(&self, shard: &ShardKey, target: Target) -> bool {
+    /// The member acts on a target only while it leads `term`, so a new
+    /// term needs the target told again. A target is kept if it is newer
+    /// than the one held, or the same version told for a newer term, and
+    /// the leader acts only on one at least as new as its membership.
+    /// False if it was not kept, or the shard has no group here.
+    pub fn retarget(&self, shard: &ShardKey, target: Target, term: u64) -> bool {
         self.group(shard)
-            .is_some_and(|group| group.retarget(target))
+            .is_some_and(|group| group.retarget(target, term))
     }
 
     /// Stop the ticker and every group, then write the batched log marks

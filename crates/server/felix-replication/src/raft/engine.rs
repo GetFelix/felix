@@ -221,8 +221,8 @@ impl RaftEngine {
 
     /// Tell this broker's member of `shard` the control plane's target.
     /// See [`GroupRuntime::retarget`].
-    pub fn retarget(&self, shard: &ShardKey, target: super::Target) -> bool {
-        self.runtime.retarget(shard, target)
+    pub fn retarget(&self, shard: &ShardKey, target: super::Target, term: u64) -> bool {
+        self.runtime.retarget(shard, target, term)
     }
 
     /// The members a target on `brokers` names, by the copy each broker

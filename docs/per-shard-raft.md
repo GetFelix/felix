@@ -3629,10 +3629,12 @@ as #2413 extends it) guard by guard.
 
 Each group has one task, the driver (`raft/group/driver.rs`), that makes
 the membership match the target. A broker is told a target with
-`GroupRuntime::retarget`: the voters the group should have, and the
-target's version. It keeps only the newest target it was told, in memory.
-Every member can be told. Only the one that leads acts, and one elected
-later acts on the target it holds.
+`GroupRuntime::retarget`: the voters the group should have, the
+target's version, and the term it is told for. It keeps only the newest
+target it was told, or the same one told for a newer term, in memory.
+Every member can be told. Only the one that leads acts, and only on a
+target told for the term it leads: one elected later does nothing until
+it is told again.
 
 A target names members, not brokers, and a member is a copy id. The copy
 id of a broker the group does not have yet is minted on that broker, when
