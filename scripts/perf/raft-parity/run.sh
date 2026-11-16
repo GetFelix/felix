@@ -188,10 +188,11 @@ echo "quiet_at_start $report" >> "$OUT/run.env"
 cell_shape() {
   MOUNT="" STREAM_NAME=bench NSHARDS=$SHARDS
   case "$1" in
-    # The read cells run on one shard so an offset or a follower means one thing.
+    # The read cells run on one shard so an offset or a follower means one thing,
+    # and the kafka-tail consumer reads partition 0 only.
     single-resume|rf3-resume) TOPO=${1%%-*} CONS=Quorum FSYNC=on_commit KIND=resume NSHARDS=1 ;;
     rf3-follower-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=follower-tail NSHARDS=1 ;;
-    rf3-kafka-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=kafka-tail STREAM_NAME=kbench ;;
+    rf3-kafka-tail) TOPO=rf3 CONS=Quorum FSYNC=on_commit KIND=kafka-tail STREAM_NAME=kbench NSHARDS=1 ;;
     single-*|rf3-*-lat|rf3-*-tput) TOPO=${1%%-*}; local rest=${1#*-}; local mode=${rest%%-*} prof=${rest#*-}
       case "$mode" in
         oncommit) CONS=Quorum FSYNC=on_commit ;;
