@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794821388737,
+  "lastUpdate": 1794821800667,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59852,6 +59852,58 @@ window.BENCHMARK_DATA = {
             "range": "23783.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1607455.37\nmean: 1616115.04\nstdev: 23783.70\ncv: 1.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "95b631305f9102b47bb3d09cf31d514eb58ae659",
+          "message": "fix(raft): re-form voters by copy id, restored ordered lists lost, accept-loss from the plan (#2671) (#2672)\n\n* fix(raft): re-form voters by copy id, restored ordered lists lost, accept-loss from the plan (#2671)\n\nVoter sets are (broker, copy id). A voter id that is neither the broker's\ncurrent copy nor reached from it by a chain of power cuts read from kept\ncopies is unknown, so a replaced disk's new copy never stands for the old\nvoter. An import marks every ordered-target list lost (level 40). Start\ntakes AcceptLoss from ReformPlan::needs_accept_loss. The start's refusal\nnames the commit that refused.\n\n* fix(raft): a rotation carries raft-epoch, a current copy's vote counts only at its epoch, start takes the operator's accept-loss (#2671)\n\nA copy a power cut minted read as epoch 0, so its vote in the group's\nepoch keyed below the terms it decided, and the power-cut excuse counted\nit as known anyway: a re-form could vouch for a stale leader's entry where\nanother was acked. A rotation now carries the newest raft-epoch into the\nnew copy before its copy file, and a current copy with a vote is known only\nwhen it reads as the epoch.\n\nAcceptLoss::of takes the operator's --accept-loss and refuses a plan that\nneeds it without it.\n\n* docs(raft): copies that can still lack raft-epoch, and the voted-copy rule\n\nSpec-Unaffected: documentation only.",
+          "timestamp": "2026-11-16T09:24:49Z",
+          "tree_id": "8ec15ac17d57b5c06f6396af2581feb79e393a72",
+          "url": "https://github.com/GetFelix/felix/commit/95b631305f9102b47bb3d09cf31d514eb58ae659"
+        },
+        "date": 1794821799287,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 330991.22,
+            "range": "20931.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 330991.22\nmean: 333259.26\nstdev: 20931.56\ncv: 6.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 330991.22,
+            "range": "20931.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 330991.22\nmean: 333259.26\nstdev: 20931.56\ncv: 6.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79140.63,
+            "range": "2148.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79140.63\nmean: 78340.67\nstdev: 2148.91\ncv: 2.74%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 791406.31,
+            "range": "21489.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 791406.31\nmean: 783406.69\nstdev: 21489.04\ncv: 2.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
