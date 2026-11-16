@@ -411,3 +411,27 @@ async fn settling_follows_the_incarnation_a_forward_names() {
         .expect("settles once the routes reach the incarnation")
         .expect("settle");
 }
+
+/// A write already waiting for a shard to open is refused the moment the open
+/// is held on the open-file limit, not after the whole hold window.
+#[tokio::test]
+async fn a_held_open_refuses_the_writes_waiting_on_it() {
+    let mut a = Broker::new("broker-a", hold(30_000, 16));
+    let assignment = assignment(0, "broker-a", 1);
+    let action = a.lifecycle.observe(&key(0), Some(&assignment));
+    assert!(matches!(action, Action::Open { .. }));
+    a.assignments.insert(key(0), assignment);
+    a.publish();
+
+    let ingress = Arc::clone(&a.ingress);
+    let write = tokio::spawn(async move { ingress.dispatch_write(&key(0)).await.0 });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!write.is_finished(), "opening, so the write waits");
+
+    a.lifecycle.open_held(action, "too many open files".into());
+    let dispatch = tokio::time::timeout(Duration::from_secs(2), write)
+        .await
+        .expect("refused at once")
+        .expect("write");
+    assert_eq!(dispatch, Dispatch::Unavailable(Reason::NotReady));
+}

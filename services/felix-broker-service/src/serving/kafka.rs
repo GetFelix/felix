@@ -523,6 +523,9 @@ impl KafkaListener {
                 Ok(accepted) => accepted,
                 Err(err) => {
                     tracing::warn!(error = %err, "kafka accept failed");
+                    // Out of descriptors, the pending connection stays queued
+                    // and the next accept fails at once; pause rather than spin.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     continue;
                 }
             };
