@@ -373,6 +373,10 @@ async fn a_target_from_before_a_restore_is_not_told() {
 
     lease.record_placement(1);
     lease.record_head(tokio::time::Instant::now(), 12);
+    // The pass that takes the lower head drops the bar to it and starts the
+    // term's wait again from now.
+    shards.answered(now(), Some(12));
+    tokio::time::sleep(Duration::from_millis(5)).await;
     shards.take(&mut assignments([fed(at(0, 9))])).await;
     shards.answered(now(), Some(41));
     assert_eq!(
