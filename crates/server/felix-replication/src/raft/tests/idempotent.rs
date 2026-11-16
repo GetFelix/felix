@@ -106,6 +106,42 @@ async fn log_from(broker: &Broker, from: u64) -> Vec<Bytes> {
     records.into_iter().map(|record| record.payload).collect()
 }
 
+/// **A Kafka producer that restarts at sequence 0 after the broker forgot it
+/// is written, where a native producer is refused.** Kafka keeps its id
+/// across an epoch bump and sends sequence 0 again; answering that as expired
+/// reads as a duplicate to the Java client and loses the records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_forgotten_producer_restarting_at_zero_is_written_for_kafka_only() {
+    let mut led = led().await;
+    let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+    let producer = Producer {
+        engine: &led.engine,
+        broker: &broker,
+        handle: &handle,
+        term: led.term,
+    };
+    let sent = producer.publish(0, &[b"a"]).await.expect("committed");
+    let first = offsets(&sent).0;
+
+    // The log forgets the producer entirely, as a purge past it does.
+    let log = led.cluster.logs[&(led.leader.broker.to_string(), 0)].clone();
+    let tail = log.tail_offset().await.expect("tail");
+    log.reset_to(tail).await.expect("reset");
+
+    let refused = producer.propose(0, &[b"b"], SequenceReuse::Refuse).await;
+    assert!(matches!(
+        refused.err().expect("refused"),
+        BrokerError::SequenceExpired { sequence: 0 }
+    ));
+    let kafka = producer
+        .propose(0, &[b"b"], SequenceReuse::AnswerDuplicate)
+        .await;
+    let kafka = kafka.expect("written").complete().await.expect("committed");
+    assert!(!kafka.duplicate);
+    assert!(offsets(&kafka).0 > first);
+    led.cluster.stop().await;
+}
+
 /// **A batch sent again under its sequence is answered with where it first
 /// landed and is not written again, and a sequence the log cannot place is
 /// refused the way the hybrid refuses it.** Written again, the re-send of

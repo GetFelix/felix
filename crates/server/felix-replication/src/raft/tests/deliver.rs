@@ -397,6 +397,7 @@ async fn a_reader_resuming_in_a_batch_written_in_part_goes_to_the_log() {
             }
         };
         let batch = Proposed {
+            skips: None,
             shard: shard(0),
             term: Some(term),
             count: 2,
@@ -531,6 +532,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             written
         };
         let batch = Proposed {
+            skips: None,
             shard: shard(0),
             term,
             count: 1,
@@ -695,6 +697,7 @@ async fn a_batch_written_at_another_term_is_not_answered_on_the_lease() {
     let written = led.propose(1).await;
     let (on_lease, mut answered) = oneshot::channel();
     let batch = Proposed {
+        skips: None,
         shard: shard(0),
         term: Some(written.generation + 1),
         count: 1,
@@ -1542,6 +1545,68 @@ async fn an_atomic_commit_applies_whole_on_every_member() {
             );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
+    }
+    led.cluster.stop().await;
+}
+
+/// **Every record of one long apply run is told exactly the offsets below
+/// it that hold no record.** Records alternate with group entries, so each
+/// has a one-entry run below it, many more than any short history keeps.
+/// A record told of none would read as a drop to an offset-counting
+/// subscriber.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn records_between_group_entries_in_one_apply_run_count_no_drop() {
+    use felix_broker::{CreatedBy, CreationToken, GroupEntry, GroupOp};
+    const RECORDS: u64 = 80;
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    leased(&led).await;
+    let member = leader_member(&led);
+
+    let held = Arc::clone(&member.apply_hold).lock_owned().await;
+    let mut offsets = Vec::new();
+    for at in 0..RECORDS {
+        let published = publish_on_lease(&led, &broker, &handle, Bytes::from_static(b"r"));
+        let outcome = published.await.expect("joined").expect("on the lease");
+        offsets.push(outcome.offsets.expect("an offset").0);
+        let write = GroupEntry {
+            group: "g".to_owned(),
+            op: GroupOp::Advance {
+                cre: CreationToken {
+                    term: 0,
+                    index: 0,
+                    by: CreatedBy::Hydrate,
+                },
+                to: at + 1,
+            },
+        };
+        led.engine
+            .propose_group(&shard(0), led.term, 1_700_000_000, &write)
+            .await
+            .expect("written");
+    }
+    drop(held);
+
+    // The claim only matters if the run outgrows what a bounded history
+    // keeps; a run cut short by openraft would pass without the fix.
+    eventually(|| (super::super::machine::longest_run(&member.apply_hold) > 128).then_some(()))
+        .await;
+
+    let mut previous: Option<u64> = None;
+    for expected in &offsets {
+        let envelope = next(&mut receiver).await;
+        let offset = envelope.base_offset().expect("an offset");
+        assert_eq!(offset, *expected);
+        if let Some(previous) = previous {
+            assert_eq!(offset - previous, 2, "a group entry between records");
+            assert_eq!(
+                envelope.skipped_before(),
+                1,
+                "the group entry below {offset} read as a drop"
+            );
+        }
+        previous = Some(offset);
     }
     led.cluster.stop().await;
 }

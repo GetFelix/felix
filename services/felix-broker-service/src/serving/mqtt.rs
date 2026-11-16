@@ -9,6 +9,7 @@
 
 mod mounts;
 mod rate;
+mod reads;
 mod writes;
 
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use felix_mqtt::{AuthError, Authenticator, Mounts, MqttService, Principal, Writes, ws};
+use felix_mqtt::{AuthError, Authenticator, Mounts, MqttService, Principal, Reads, Writes, ws};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::runtime::Runtime;
@@ -27,6 +28,7 @@ use tokio_util::task::TaskTracker;
 
 pub use self::mounts::BrokerMounts;
 use self::rate::RateGate;
+pub use self::reads::BrokerReads;
 pub use self::writes::BrokerWrites;
 use crate::config::MqttListenerConfig;
 use crate::serving::auth::{BrokerAuth, CredentialRefused};
@@ -162,6 +164,12 @@ impl MqttListener {
             per_ip: PerIpLimiter::new(config.max_connections_per_ip),
             connect_rate: config.connect_rate,
         })
+    }
+
+    /// Serve SUBSCRIBE from `reads`. Without it every SUBSCRIBE is refused.
+    pub fn with_reads(mut self, reads: Arc<dyn Reads>) -> Self {
+        self.service = self.service.with_reads(reads);
+        self
     }
 
     pub fn local_addr(&self) -> Result<std::net::SocketAddr> {

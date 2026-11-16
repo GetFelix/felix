@@ -267,6 +267,7 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "raft_atomic_commit"
         // Off, a follower sends such reads to the leader.
         | "raft_follower_read"
+        | "raft_consumer_groups"
         | "atomic_commit"
         | "publisher_principal"
         | "group_cursor_dependencies"

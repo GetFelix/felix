@@ -7,6 +7,7 @@
 //! records become unknown in the history, and the run reports the loss.
 //! Anything else is a finding.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -129,7 +130,7 @@ impl Nemesis {
         let relaxed = self.cluster.config.fsync_mode != FsyncMode::OnCommit;
         match fault {
             Fault::MajorityCut { .. } => {
-                let cut = self.cluster.power_loss_together(&nodes);
+                let cut = self.cluster.power_loss_together_read(&nodes);
                 self.disk_fault(format!("{fault}"), &nodes, relaxed, cut)
                     .await;
             }
@@ -141,7 +142,10 @@ impl Nemesis {
                 }
                 let scope = *scope;
                 let cluster = &self.cluster;
-                let wiped = async { cluster.wipe_stopped(&nodes, scope) };
+                let wiped = async {
+                    let before = cluster.disk_values();
+                    (cluster.wipe_stopped(&nodes, scope), before)
+                };
                 self.disk_fault(format!("{fault}"), &nodes, true, wiped)
                     .await;
             }
@@ -154,16 +158,16 @@ impl Nemesis {
         }
     }
 
-    /// Run `act`, which changes the devices of `nodes`, and account for what
-    /// it cost. A multi-broker `act` must change the devices before its first
-    /// await: a record acknowledged after the disks were read is not judged
+    /// Run `act`, which changes the devices of `nodes` and returns every
+    /// broker's stream shards as they were at the change, and account for
+    /// what it cost. A record acknowledged after this starts is not judged
     /// here, only at the end of the run.
     pub(super) async fn disk_fault<R>(
         &self,
         what: String,
         nodes: &[usize],
         loses_synced: bool,
-        act: impl std::future::Future<Output = R>,
+        act: impl std::future::Future<Output = (R, Vec<BTreeSet<u64>>)>,
     ) -> R {
         let _guard = self.disks.lock().await;
         // Which copies a leader could vouch, for the hold rule.
@@ -171,15 +175,8 @@ impl Nemesis {
         let at = self.cluster.elapsed();
         // Acknowledged before the disks are read, so a quorum's disks hold it.
         let acked = acked_values(&self.recorder.history());
-        let before = self.cluster.disk_values();
-        let out = act.await;
+        let (out, before) = act.await;
         let after = self.cluster.disk_values();
-        let judged: std::collections::BTreeSet<u64> = acked.values().flatten().copied().collect();
-        let late: Vec<u64> = acked_values(&self.recorder.history())
-            .into_values()
-            .flatten()
-            .filter(|value| !judged.contains(value))
-            .collect();
         let event = judge(Observed {
             at,
             what,
@@ -191,11 +188,13 @@ impl Nemesis {
             gone: &self.gone.lock(),
             thinned: &self.thinned.lock(),
         });
+        // Every record acknowledged by now, including those `judge` left for
+        // the end of the run: the read at the change says which copies the
+        // fault took.
         thin(
             &mut self.thinned.lock(),
             nodes,
-            &acked,
-            &late,
+            &acked_values(&self.recorder.history()),
             &before,
             &after,
         );

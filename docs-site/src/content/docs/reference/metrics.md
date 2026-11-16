@@ -199,6 +199,7 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 | `felix_broker_peer_request_seconds` | histogram | `outcome` | Round-trip latency of a request to a peer. |
 | `felix_broker_peer_served_total` | counter | `outcome` | Requests this broker served for a peer. |
 | `felix_broker_shard_engine_refused_total` | counter | `engine` | Durable stream shards this broker closed because a broker that shares them runs the other shard engine. `engine` is this broker's own (`hybrid` or `raft`). Anything above zero means `FELIX_SHARD_ENGINE` differs between brokers. |
+| `felix_broker_raft_shards_short_placement` | gauge | - | Raft shards on this broker that no group forms for because placement names fewer brokers than the stream's replication factor. The broker also warns once per shard and placement generation, naming the shard, the replication factor and the brokers placed. A value that stays above zero means too few brokers are registered for the stream: register more, or create the stream with a lower replication factor. |
 | `felix_broker_raft_shards_off_placement` | gauge | - | Raft shards open on this broker whose group's voters are not the brokers placement names for the shard. The group's leader moves it to the target the control plane sends, so this drops back to zero once the group converges. The control plane does not move Raft shards yet, so a value that stays above zero means placement moved, drained or replaced a broker of a Raft shard, which is not supported yet. |
 | `felix_broker_raft_shards_led` | gauge | - | Raft shards whose current term this broker leads and serves writes for. Refreshed every shard feed pass, so it can trail a leader change by a couple of seconds. |
 | `felix_broker_raft_shards_led_off_placement` | gauge | - | Raft shards this broker leads whose placement names another broker as leader. The leader hands such a shard over once the named broker is caught up, so this stays above zero while a hand-over is held back (that broker is behind or down, another voter is, or the transfer is backing off), or for good when the named broker holds no voter of the group, as after a move placement staged but Raft did not carry out. |
@@ -318,6 +319,9 @@ Served by the MQTT listener, when `FELIX_MQTT_LISTEN` is set. See [MQTT](/featur
 | `felix_mqtt_connections_total` | counter | - | MQTT connections that reached the connection loop. |
 | `felix_mqtt_refused_total` | counter | `reason` | Connections or requests the listener turned away, by `reason`. The reasons are listed in [observability](/features/observability/). |
 | `felix_mqtt_published_total` | counter | `qos` | Messages written to a mounted stream, by `qos` (`0` or `1`). |
+| `felix_mqtt_delivered_total` | counter | `qos` | Messages sent to MQTT subscribers, by `qos` (`0` or `1`). |
+| `felix_mqtt_dropped_total` | counter | `reason` | Messages a subscriber did not get: `queue_full` (QoS 0, its queue was full), `expired`, `retention` (the log no longer held it), or `client_max_packet_size` (larger than the 5.0 client's `Maximum Packet Size`, discarded as if delivered). |
+| `felix_mqtt_readers` | gauge | - | Subscription reader tasks running, against `FELIX_MQTT_MAX_READERS`. |
 
 ## Control plane: placement
 

@@ -403,6 +403,17 @@ impl Broker {
                 ProducerSequence::Expired | ProducerSequence::Partial { .. } => {
                     return Err(BrokerError::SequenceExpired { sequence });
                 }
+                // Kafka keeps its id across an epoch bump and restarts at
+                // sequence 0 (#2702), so its re-send must be written, as
+                // before tombstones.
+                ProducerSequence::Retired if reuse == SequenceReuse::AnswerDuplicate => {
+                    if sequence != 0 {
+                        return Err(BrokerError::UnknownProducer { producer_id });
+                    }
+                }
+                ProducerSequence::Retired => {
+                    return Err(BrokerError::SequenceExpired { sequence });
+                }
                 ProducerSequence::Unknown | ProducerSequence::Next => {}
             }
             // After the look: a multi-record batch the log holds whole is

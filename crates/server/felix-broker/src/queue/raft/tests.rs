@@ -453,6 +453,35 @@ async fn a_dead_letter_above_the_cursor_is_not_redelivered() {
     assert_eq!(fx.cursor(G), Some(2));
 }
 
+/// A seek back over a dead letter delivers it again after a leader change:
+/// the seek's fold clears it, so the rebuilt tracker does not settle it.
+#[tokio::test]
+async fn a_seek_back_over_a_dead_letter_delivers_it_again_after_a_leader_change() {
+    let fx = fixture(5);
+    publish(&fx.log, 10).await;
+    assert_eq!(fx.poll(G, 10).await.expect("poll").len(), 10);
+    assert!(
+        fx.groups
+            .dead_letter(&key(G), 5, later())
+            .await
+            .expect("dead letter")
+    );
+    for offset in (0..10).filter(|&offset| offset != 5) {
+        fx.groups.ack(&key(G), offset, later()).await.expect("ack");
+    }
+    assert_eq!(fx.cursor(G), Some(10));
+    fx.groups
+        .seek(&key(G), 0, false, later())
+        .await
+        .expect("seek");
+    fx.fake().new_term();
+    assert_eq!(
+        fx.poll(G, 10).await.expect("poll"),
+        (0..10).collect::<Vec<_>>()
+    );
+    assert!(fx.dead(G).is_empty());
+}
+
 /// R3-2: `if_new` on a group the table holds proposes nothing.
 #[tokio::test]
 async fn if_new_on_an_existing_group_proposes_nothing() {

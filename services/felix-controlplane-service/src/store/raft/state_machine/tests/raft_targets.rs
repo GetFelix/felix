@@ -63,7 +63,8 @@ async fn a_member_built_from_the_log_continues_the_counter() {
 /// FelixRaftPlacement's CpRewind for targets: the restore brings back the
 /// backup's counter and raises the incarnation, so the restored target's
 /// version is above every one written before it. Nothing moves again until
-/// every registered broker has acknowledged the new incarnation.
+/// every registered broker has acknowledged the new incarnation, and the
+/// backup's list of ordered targets is never read as complete.
 #[tokio::test]
 async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
     let machine = machine();
@@ -86,6 +87,10 @@ async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
             .await
             .expect("copy id");
         assert_eq!(counter(&machine, &shard.key).await, Some(2));
+        assert_eq!(
+            ordered(&machine, &shard.key).await.map(|sets| sets.len()),
+            Some(2)
+        );
 
         machine
             .dispatch(MetaCommand::ImportState {
@@ -93,6 +98,7 @@ async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
                 overwrite: true,
                 mark_unplaced: true,
                 raise_incarnation: true,
+                lose_ordered: true,
             })
             .await
             .expect("import");
@@ -101,6 +107,8 @@ async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
             1
         );
         assert_eq!(counter(&machine, &shard.key).await, Some(1));
+        // The backup's list misses the target ordered after it.
+        assert_eq!(ordered(&machine, &shard.key).await, None);
 
         let refused = machine
             .dispatch(copy_id(&machine, &shard.key, "broker-y", 4).await)
@@ -148,7 +156,7 @@ async fn kept(
 async fn ordered(
     machine: &MetadataStateMachine,
     key: &crate::model::ShardKey,
-) -> Option<Vec<std::collections::BTreeSet<String>>> {
+) -> Option<Vec<std::collections::BTreeSet<(String, u64)>>> {
     machine
         .store()
         .get_shard_assignment(key)

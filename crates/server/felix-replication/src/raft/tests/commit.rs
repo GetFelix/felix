@@ -169,23 +169,44 @@ fn at(term: u64, index: u64) -> LogPoint {
     LogPoint { term, index }
 }
 
-/// **The run of entries holding no record just below a record is counted,
-/// and only that run.** A leader's blank entry and a membership change in a
-/// row are one run of two; one further down does not count.
+/// **A publisher's claim keeps its record's skip count through any number
+/// of later runs, and once no claim is left the counts go.** Each run here
+/// holds one group entry and one record, far more runs than a short history
+/// keeps; a count dropped before its publisher asks reads as a drop.
 #[test]
-fn the_commit_table_counts_the_entries_just_below_a_record_that_hold_none() {
+fn a_claimed_skip_count_outlives_any_number_of_runs() {
+    use super::super::commit::Skips;
     let mut commits = Commits::default();
-    for (index, record) in [(0, false), (1, false), (2, true), (3, false), (4, false)] {
-        commits.advance(at(1, index));
-        if !record {
-            commits.holds_no_record(index);
-        }
+    let (published, watched) = tokio::sync::watch::channel(commits.clone());
+    let skips = Skips::default();
+    let (first, second, third) = (
+        skips.claim(&watched),
+        skips.claim(&watched),
+        skips.claim(&watched),
+    );
+    let mut bound = 0;
+    for run in 0..200 {
+        let record = 2 * run + 1;
+        skips.applied(bound, &[(record, 1)], || {
+            commits.advance(at(1, record));
+            published.send_replace(commits.clone());
+            true
+        });
+        bound = record + 1;
     }
-    commits.advance(at(1, 5));
-    assert_eq!(commits.skipped_before(2), 2);
-    assert_eq!(commits.skipped_before(5), 2);
-    assert_eq!(commits.skipped_before(3), 0);
-    assert_eq!(commits.skipped_before(6), 0);
+    assert_eq!(first.skipped_before(1), 1);
+    assert_eq!(second.skipped_before(399), 1);
+    assert_eq!(third.skipped_before(2), 0);
+
+    // Every claim is released, asked or dropped alike.
+    skips.applied(bound, &[], || false);
+    let late = skips.claim(&watched);
+    assert_eq!(late.skipped_before(1), 0, "no claim was left to ask");
+    // A claim taken now holds from the published bound on.
+    let claim = skips.claim(&watched);
+    skips.applied(bound, &[(401, 1)], || false);
+    skips.applied(bound + 10, &[], || false);
+    assert_eq!(claim.skipped_before(401), 1);
 }
 
 #[test]
@@ -857,5 +878,125 @@ async fn only_the_leader_reports_its_committed_log_id() {
         } else {
             assert!(commits.is_empty(), "{broker} leads nothing");
         }
+    }
+}
+
+mod skipped_counts {
+    use openraft::entry::RaftEntry;
+    use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine};
+    use openraft::type_config::alias::{EntryOf, LogIdOf};
+
+    use super::super::super::machine::{Machine, Opened};
+    use super::*;
+
+    type Run = Vec<std::io::Result<openraft::storage::EntryResponder<ShardTypes>>>;
+
+    async fn machine(dir: &std::path::Path) -> Opened {
+        let log = open_log(dir, "m", 0, log_config());
+        let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
+        Machine::open(snapshots, ShardKind::Stream, Some(&log))
+            .await
+            .expect("open")
+    }
+
+    fn id(index: u64) -> LogIdOf<ShardTypes> {
+        LogIdOf::<ShardTypes>::new(1.into(), index)
+    }
+
+    /// Records at the indexes in `records`, blank entries elsewhere in
+    /// `from..to`, as one apply run.
+    fn run(
+        from: u64,
+        to: u64,
+        records: &[u64],
+    ) -> impl futures::Stream<Item = std::io::Result<openraft::storage::EntryResponder<ShardTypes>>>
+    + Unpin {
+        let entries: Run = (from..to)
+            .map(|index| {
+                let entry = if records.contains(&index) {
+                    let command = Command {
+                        timestamp_micros: index,
+                        payload: bytes::Bytes::from_static(b"record"),
+                        producer: None,
+                        expected: None,
+                        trim: None,
+                        commit: false,
+                        group: false,
+                        publisher: None,
+                        headers: None,
+                        written: None,
+                    };
+                    EntryOf::<ShardTypes>::new_normal(id(index), command)
+                } else {
+                    EntryOf::<ShardTypes>::new_blank(id(index))
+                };
+                Ok((entry, None))
+            })
+            .collect();
+        futures::stream::iter(entries)
+    }
+
+    /// **A run of entries holding no record that straddles apply runs is
+    /// counted whole for the record above it.** The count rides the
+    /// machine, not one `apply` call, so openraft cutting a run anywhere
+    /// does not turn skipped offsets into a drop.
+    #[tokio::test]
+    async fn a_quiet_run_across_apply_runs_counts_whole() {
+        let dir = tempfile::tempdir().expect("dir");
+        let Opened {
+            mut machine,
+            commits,
+            skips,
+            ..
+        } = machine(dir.path()).await;
+        let claim = skips.claim(&commits);
+        machine.apply(run(1, 2, &[1])).await.expect("apply");
+        machine.apply(run(2, 60, &[])).await.expect("apply");
+        machine.apply(run(60, 101, &[])).await.expect("apply");
+        machine.apply(run(101, 102, &[101])).await.expect("apply");
+        assert_eq!(claim.skipped_before(101), 99);
+    }
+
+    /// **A member that installs a snapshot counts the quiet entries it
+    /// applies after it, but not those below it.** The count is kept in
+    /// memory only, so the first record above a snapshot cut reads short by
+    /// the blank entries just under the cut. Documented in
+    /// `docs/per-shard-raft.md`.
+    #[tokio::test]
+    async fn a_snapshot_install_forgets_the_quiet_run_below_its_cut() {
+        let sender_dir = tempfile::tempdir().expect("dir");
+        let mut sender = machine(sender_dir.path()).await.machine;
+        sender.apply(run(1, 51, &[1])).await.expect("apply");
+        let built = sender
+            .get_snapshot_builder()
+            .await
+            .build_snapshot()
+            .await
+            .expect("build");
+
+        let dir = tempfile::tempdir().expect("dir");
+        let Opened {
+            mut machine,
+            commits,
+            skips,
+            ..
+        } = machine(dir.path()).await;
+        machine
+            .install_snapshot(&built.meta, built.snapshot)
+            .await
+            .expect("install");
+        let (early, late) = (skips.claim(&commits), skips.claim(&commits));
+        machine.apply(run(51, 52, &[51])).await.expect("apply");
+        machine.apply(run(52, 62, &[61])).await.expect("apply");
+        assert_eq!(
+            early.skipped_before(51),
+            0,
+            "the 49 below the cut are unknown"
+        );
+        assert_eq!(
+            late.skipped_before(61),
+            9,
+            "the quiet run above it is counted"
+        );
     }
 }

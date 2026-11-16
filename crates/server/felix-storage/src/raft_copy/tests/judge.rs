@@ -150,6 +150,7 @@ async fn a_directory_restored_to_an_older_vote_rotates() {
     let backup = tempfile::tempdir().expect("backup");
     let opened = open_copy(&copies, &root.shard_dir()).await;
     save_vote(&opened, 3).await;
+    super::epoch_file::store(&root.shard_dir(), &epoch_one()).expect("epoch");
     let old = close(opened).await;
     copy_tree(&root.shard_dir(), backup.path());
 
@@ -408,6 +409,7 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             let opened = open_copy(&copies, &dir).await;
             save_vote(&opened, 6).await;
             crate::raft_log::reserved::store(&dir, 1 << 20).expect("reserve");
+            super::epoch_file::store(&dir, &epoch_one()).expect("epoch");
             let old = close(opened).await;
             // Marks for another copy, so the next open rotates.
             copies
@@ -470,6 +472,11 @@ async fn a_rotation_stopped_at_any_step_rotates_again() {
             crate::raft_log::reserved::load(&dir).expect("reservation"),
             Some(1 << 20),
             "stop {stop}: the new copy lost the old one's reservation"
+        );
+        assert_eq!(
+            super::epoch_file::load(&dir).expect("epoch"),
+            Some(epoch_one()),
+            "stop {stop}: the new copy lost the old one's group epoch"
         );
         close(reopened).await;
         if finished {
@@ -634,6 +641,7 @@ async fn a_power_cut_rotation_keeps_the_vote() {
     let backup = tempfile::tempdir().expect("backup");
     let opened = open_copy(&copies, &root.shard_dir()).await;
     save_vote(&opened, 3).await;
+    super::epoch_file::store(&root.shard_dir(), &epoch_one()).expect("epoch");
     let old = close(opened).await;
     copy_tree(&root.shard_dir(), backup.path());
 
@@ -667,4 +675,18 @@ async fn a_power_cut_rotation_keeps_the_vote() {
     assert_eq!(kept_read.copy, Some(old));
     assert_eq!(kept_read.vote, Some(2), "generation 3 holds term 2");
     assert_eq!(read.current.vote, None, "the new copy never voted");
+    // The new copy votes in the same group epoch, so it reads as that
+    // epoch (#2671).
+    assert_eq!(read.current.epoch, Some(epoch_one()));
+}
+
+/// A group epoch past 0, as a re-form start writes it.
+fn epoch_one() -> super::EpochFile {
+    super::EpochFile {
+        incarnation: 3,
+        bases: vec![super::EpochBase {
+            base_last: None,
+            first_index: 4,
+        }],
+    }
 }

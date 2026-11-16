@@ -6,11 +6,12 @@ TLS by default, and over WebSockets for browsers when `FELIX_MQTT_WS_LISTEN` is
 also set. The design for the whole feature is in
 [mqtt-design.md](mqtt-design.md); this page says what works today.
 
-**Today a device can connect with a Felix token and publish at QoS 0 and 1 to
-a mounted stream.** Streams are mounted at topic prefixes (see
-[Mounting streams](#mounting-streams)), and a `PUBACK` means the message is in
-the stream with the durability the stream asks for. `SUBSCRIBE` is still
-refused, because the subscribe path comes in a later change. With
+**Today a device can connect with a Felix token, publish at QoS 0 and 1 to
+a mounted stream, and subscribe to topics under a mount.** Streams are mounted
+at topic prefixes (see [Mounting streams](#mounting-streams)), and a `PUBACK`
+means the message is in the stream with the durability the stream asks for.
+Subscriptions are for clean sessions on the broker the device connected to; see
+[Subscribing](#subscribing). With
 `FELIX_MQTT_LISTEN` unset, the broker binds nothing, builds no runtime and runs exactly the code it
 ran before.
 
@@ -41,11 +42,10 @@ convention as the Kafka listener. For example, with the Mosquitto client:
 
 ```bash
 mosquitto_sub -h broker.example.com -p 8883 --cafile ca.pem \
-  -u my-tenant -P "$FELIX_TOKEN" -t 'sensors/#'
+  -u my-tenant -P "$FELIX_TOKEN" -t 'sensors/#' -q 1
 ```
 
-That connects and then fails to subscribe, as described above. Publishing
-works today; see [Publishing](#publishing).
+See [Subscribing](#subscribing) and [Publishing](#publishing).
 
 What `CONNECT` does:
 
@@ -294,8 +294,9 @@ Problem Information`.
 | `PINGREQ` | `PINGRESP` |
 | `DISCONNECT` | The connection closes. |
 | `PUBLISH` | QoS 0 and 1 are written to the mounted stream; see [Publishing](#publishing). |
-| `SUBSCRIBE` | `SUBACK` refusing every filter (5.0: 0x87, 3.1.1: 0x80). |
-| `UNSUBSCRIBE` | `UNSUBACK`. Nothing was subscribed. |
+| `SUBSCRIBE` | `SUBACK` per filter; see [Subscribing](#subscribing). |
+| `UNSUBSCRIBE` | `UNSUBACK`; 5.0 is told per filter whether it existed (0x11 if not). |
+| `PUBACK` | Frees one of the client's receive slots for a message sent to it. One for an id not in flight is counted and ignored. |
 | `CONNECT` again, `AUTH`, or a packet only a server sends | A protocol error: the connection closes. |
 
 Every refusal is counted in `felix_mqtt_refused_total{reason}`.
@@ -318,13 +319,78 @@ clients.
 | Connections on the broker | `FELIX_MQTT_MAX_CONNECTIONS` | The new connection is closed on arrival (`connection_limit`). |
 | Connections per source address | `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | The new connection is closed on arrival (`per_ip_limit`). |
 | New connections per second | `FELIX_MQTT_CONNECT_RATE` | They wait in the kernel's accept queue, not in the broker. |
+| A message larger than the client's `Maximum Packet Size` | The client's own (5.0) | Not sent. It is discarded as if delivered, so a QoS 1 message needs no `PUBACK` (MQTT-3.1.2-25), and counted in `felix_mqtt_dropped_total{reason="client_max_packet_size"}`. |
 | Packet size | `FELIX_MQTT_MAX_PACKET_BYTES` | The connection closes (5.0: reason 0x95). A 5.0 client is told the limit as `Maximum Packet Size`. |
 | Unacknowledged QoS 1 publishes | `FELIX_MQTT_MAX_INFLIGHT` | 5.0: the connection closes with reason 0x93. 3.1.1: the broker stops reading until the stream has acknowledged them. Advertised as `Receive Maximum`. |
 | Topic length and levels, filters per `SUBSCRIBE` | `FELIX_MQTT_MAX_TOPIC_BYTES`, `_MAX_TOPIC_LEVELS`, `_MAX_SUBSCRIPTIONS` | The connection closes. |
 
+## Subscribing
+
+A filter is served from the mount its literal part falls under. `plant/7/temp`
+reads the one shard that topic hashes to. A filter with `+` or `#`
+(`plant/+/temp`, `plant/#`) reads every shard of the mounted stream and
+matches each record by its topic, so on a stream with many shards and few
+matching topics most of what is read is thrown away. A filter that would span
+mounts (`#`, `+/temp`, or one shorter than its mount's prefix) is refused.
+
+| Case | `SUBACK` |
+|---|---|
+| Filter under a mount the principal has `stream.subscribe` on | Granted QoS 0 or 1: the lower of the one asked for and 1. |
+| Filter under no mount, or spanning mounts | 5.0: 0x8F. 3.1.1: 0x80. |
+| No `stream.subscribe` on the mounted stream | 5.0: 0x87. 3.1.1: 0x80. |
+| More filters held than `FELIX_MQTT_MAX_SUBSCRIPTIONS` | 5.0: 0x97. 3.1.1: 0x80. |
+| The broker already runs `FELIX_MQTT_MAX_READERS` subscription readers | 5.0: 0x97. 3.1.1: 0x80. Counted as `reader_limit`. |
+| `$share/...` (5.0) | 0x9E. |
+| A subscription identifier (5.0) | 0xA1. |
+| `No Local` (5.0) | 0x83. |
+| The filter covers a shard this broker does not serve | 5.0: 0x83. 3.1.1: 0x80. The whole filter is refused, never served in part. |
+| This broker cannot say right now whether it serves the shard | 5.0: 0x80. 3.1.1: 0x80. |
+
+The session is clean, so it ends with the connection. Each filter starts at
+what each shard has committed when its `SUBACK` is sent: a message published
+before that is not delivered to it, even when another filter of the session is
+still reading older records of the same shard, and one acknowledged after it
+is. A record that is not past
+the shard's committed mark is never read, so a failover cannot take back a
+message a device has been sent. On Raft shards the bound is the group's commit
+index.
+
+A message is delivered at the lower of the QoS it was published at and the QoS
+granted. When several filters match, it is delivered once, at the highest QoS
+granted among them. The delivery carries the topic and, for 5.0, the content
+type, response topic, correlation data, payload format and user properties it
+was published with; `Message Expiry Interval` is what is left of the message's
+life, and an expired message is not sent. `retain` is always 0.
+
+Order is kept per shard, which keeps it per topic. A client with a QoS 1
+message unacknowledged for each of `Receive Maximum` (and
+`FELIX_MQTT_MAX_INFLIGHT`) is sent no more until it acknowledges one. A message
+is sent once: a clean session has no state to resend from after a reconnect,
+and the broker does not resend on the same connection.
+
+Each session has its own reader and a bounded queue. When a client does not
+keep up, a QoS 0 message that finds the queue full is dropped (counted in
+`felix_mqtt_dropped_total{reason="queue_full"}`) and a QoS 1 message waits in
+the log, so a slow client delays only itself. If retention removes records past
+a session's position it resumes at the oldest one kept
+(`reason="retention"`). Deliveries are counted in
+`felix_mqtt_delivered_total{qos}`.
+
+Only records published over MQTT carry a topic, so a record published over
+QUIC or Kafka to a mounted stream is not delivered to MQTT subscribers.
+
+A broker serves a subscription only from shards it holds: the shards it leads,
+or on Raft a shard whose leader it knows. A `SUBSCRIBE` whose filter covers any
+other shard is refused (table above). When a shard a session reads moves away,
+or this broker stops serving it (a lapsed lease, a Raft member that has lost its
+leader), the session ends: a 5.0 client gets `DISCONNECT` 0x9C (Use another
+server) for a move and 0x89 (Server busy) otherwise, and a 3.1.1 client is
+closed. Reading shards another broker owns is
+[#1693](https://github.com/GetFelix/felix/issues/1693).
+
 ## Not built yet
 
-QoS 2, subscribing,
+QoS 2,
 retained messages, persistent sessions, will messages, shared subscriptions and
 topic-level grants. The order they land in is in
 [mqtt-design.md](mqtt-design.md#implementation-slices).

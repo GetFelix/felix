@@ -62,6 +62,8 @@ struct Tally {
     /// Records in sends abandoned at the deadline.
     cut_off: usize,
     retries: u64,
+    /// What each retry was retrying, so a nonzero `retries` says why.
+    retry_reasons: BTreeMap<String, u64>,
     /// Records in sends that failed outright (a dead broker, a refusal that
     /// is not retried). They may or may not have landed.
     failed_sends: usize,
@@ -249,7 +251,7 @@ pub(crate) async fn ingest(
                     // to finish being written, so it is not half-counted.
                     match until(deadline.map(|d| d + DRAIN_BOUND), send).await {
                         Some(Ok(sent)) => {
-                            tally.retries += sent.retries;
+                            tally.add_retries(sent);
                             tally.published += this;
                             tally.completed += this;
                             last_success = Instant::now();
@@ -376,6 +378,7 @@ pub(crate) async fn ingest(
         acked,
         cut_off,
         retries,
+        retry_reasons,
         failed_sends,
         reconnects,
         per_shard,
@@ -442,6 +445,7 @@ pub(crate) async fn ingest(
         "acked_throughput_mb_s": acked_msg_s.map(|r| r * payload_bytes as f64 / 1_000_000.0),
         "cut_off_records": cut_off,
         "publish_retries": retries,
+        "publish_retry_reasons": retry_reasons,
         "failed_sends": failed_sends,
         "reconnects": reconnects,
         "per_shard_acked": per_shard_acked,
@@ -477,6 +481,8 @@ enum Sink {
 /// What an acknowledged or queued send came back with.
 struct Sent {
     retries: u64,
+    /// Each retried refusal's [`retry_reason`], counted.
+    reasons: BTreeMap<String, u64>,
 }
 
 /// One acked send's result, with what is needed to tally it.
@@ -511,7 +517,7 @@ fn failure(err: &anyhow::Error, generation: u64) -> Failure {
 fn settle(tally: &mut Tally, done: Done, last_success: &mut Instant) -> Result<(), Failure> {
     match done.result {
         Ok(sent) => {
-            tally.acked_one(sent.retries, done.took, done.records, done.shard);
+            tally.acked_one(sent, done.took, done.records, done.shard);
             *last_success = Instant::now();
             Ok(())
         }
@@ -662,6 +668,7 @@ async fn send(
     stamp: bool,
 ) -> Result<Sent> {
     let mut retries = 0u64;
+    let mut reasons = BTreeMap::new();
     loop {
         let payloads: Vec<Vec<u8>> = std::iter::repeat_with(|| {
             let mut body = template.to_vec();
@@ -739,9 +746,10 @@ async fn send(
             }
         };
         match result {
-            Ok(_) => return Ok(Sent { retries }),
+            Ok(_) => return Ok(Sent { retries, reasons }),
             Err(err) if is_retriable_transient(&err) => {
                 retries += 1;
+                *reasons.entry(retry_reason(&err)).or_default() += 1;
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
             Err(err) => return Err(err.context("ingest publish")),
@@ -749,9 +757,25 @@ async fn send(
     }
 }
 
+/// A retried refusal, as its code and the broker's message, or the client's
+/// error text when no broker answered.
+fn retry_reason(err: &anyhow::Error) -> String {
+    match err.downcast_ref::<felix_client::BrokerError>() {
+        Some(broker) => format!("{:?}: {}", broker.code, broker.message),
+        None => format!("{err:#}"),
+    }
+}
+
 impl Tally {
-    fn acked_one(&mut self, retries: u64, took: Duration, records: usize, shard: u32) {
-        self.retries += retries;
+    fn add_retries(&mut self, sent: Sent) {
+        self.retries += sent.retries;
+        for (reason, n) in sent.reasons {
+            *self.retry_reasons.entry(reason).or_default() += n;
+        }
+    }
+
+    fn acked_one(&mut self, sent: Sent, took: Duration, records: usize, shard: u32) {
+        self.add_retries(sent);
         self.completed += records;
         self.acked += records;
         *self.per_shard.entry(shard).or_default() += records;
@@ -765,6 +789,9 @@ impl Tally {
         self.acked += other.acked;
         self.cut_off += other.cut_off;
         self.retries += other.retries;
+        for (reason, n) in other.retry_reasons {
+            *self.retry_reasons.entry(reason).or_default() += n;
+        }
         self.failed_sends += other.failed_sends;
         self.reconnects += other.reconnects;
         for (shard, n) in other.per_shard {

@@ -126,7 +126,48 @@ impl GroupReader {
                 &dead_letters,
             )
             .await?;
+        self.resolve_clears(key).await?;
         self.normalized.lock().insert(shard);
+        Ok(())
+    }
+
+    /// Finish or void each seek's clear left part way on this shard. One whose
+    /// seek's cursor is in force, the exact offset and mark that seek wrote,
+    /// is finished; otherwise the seek never landed and the dead letters stay
+    /// listed. Any other cursor, such as a commit from a build that ignores
+    /// the marker, voids it: it may stand above the dead letters.
+    async fn resolve_clears(&self, key: &GroupKey) -> Result<()> {
+        let pending = self
+            .dead_letters
+            .pending_clears(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let _shard = self.lock_shard(key).await;
+        for (group, clear) in pending {
+            let key = GroupKey {
+                group,
+                ..key.clone()
+            };
+            let mark = self.dead_letters.clear_mark(&key, clear).await?;
+            let landed = self
+                .cursors
+                .stored(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &key.group,
+                )
+                .await?
+                .is_some_and(|stored| stored.offset == clear.from && stored.requires == mark);
+            if landed {
+                self.dead_letters.finish_clear(&key, clear).await?;
+            } else {
+                self.dead_letters.void_clear(&key, clear).await?;
+            }
+        }
         Ok(())
     }
 
@@ -210,6 +251,7 @@ impl GroupReader {
     /// what to look at, not a copy of it, so nothing is duplicated and nothing
     /// is lost.
     pub async fn dead_lettered(&self, key: &GroupKey) -> Result<Vec<u64>> {
+        self.ensure_normalized(key).await?;
         self.dead_letters.list(key).await
     }
 
@@ -301,7 +343,11 @@ impl GroupReader {
         // ever tried it -- the record would be silently skipped rather than
         // dead-lettered.
         for (i, dead) in claim.dead_lettered.iter().enumerate() {
-            let recorded = self.dead_letters.record(key, dead.offset).await;
+            let recorded = match self.record_dead_letter(key, &held, dead.offset).await {
+                Ok(false) => break,
+                Ok(true) => Ok(()),
+                Err(err) => Err(err),
+            };
             if recorded.is_ok() {
                 self.wrote(key);
                 // The write replaced any redrive record.
@@ -606,7 +652,8 @@ impl GroupReader {
     /// Every claim standing at the seek is void. The tracker is replaced by
     /// one at `offset` that inherits nothing, and the old one can no longer
     /// commit, so a late ack from before the seek cannot move the new cursor
-    /// or mark a record the group now owes as finished. Dead letters are kept.
+    /// or mark a record the group now owes as finished. Dead letters below
+    /// `offset` are kept; those at or above it are cleared and delivered again.
     ///
     /// The caller picks `offset`; this does not check it against the log.
     pub async fn seek(&self, key: &GroupKey, offset: u64, if_new: bool) -> Result<Seek> {
@@ -627,16 +674,58 @@ impl GroupReader {
                 });
             }
         }
+        // A fleet whose cursors cannot carry the clear's mark keeps dead
+        // letters across a seek, as builds before the clear did.
+        if !self.cursors.dependencies() {
+            self.cursors
+                .set_locked(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &key.group,
+                    Some(offset),
+                )
+                .await?;
+            self.replace(key, offset, &slot).await?;
+            drop(old);
+            self.wake(key);
+            return Ok(Seek {
+                offset,
+                moved: true,
+            });
+        }
+        // A seek delivers everything from `offset` again, dead letters
+        // included. The clear is begun before the cursor moves and finished
+        // after, and counts only once the cursor is in force: a seek that
+        // crashes, fails or is cancelled in between moves nothing and clears
+        // nothing (see `resolve_clears`). The other order would settle those
+        // dead letters below a cursor moved back.
+        let abandon = Abandon {
+            reader: self,
+            key,
+            cell: &slot,
+        };
+        let clear = self.dead_letters.begin_clear(key, offset).await?;
+        let requires = match clear {
+            Some(clear) => self.dead_letters.clear_mark(key, clear).await?,
+            None => self.dead_letter_mark(key).await?,
+        };
         self.cursors
-            .set_locked(
+            .place_locked(
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
                 &key.group,
-                Some(offset),
+                offset,
+                requires,
             )
             .await?;
+        if let Some(clear) = clear {
+            self.dead_letters.finish_clear(key, clear).await?;
+        }
+        std::mem::forget(abandon);
         self.replace(key, offset, &slot).await?;
         drop(old);
         self.wake(key);
@@ -761,6 +850,20 @@ impl GroupReader {
         Ok(())
     }
 
+    /// Retire the tracker in `cell` and leave the slot empty, and check the
+    /// shard again before it is next served: a seek stopped part way. The
+    /// next operation resolves its clear and rebuilds the group from disk.
+    fn abandon(&self, key: &GroupKey, cell: &Arc<OnceCell<Arc<Mutex<GroupTracker>>>>) {
+        self.invalidate(&key.tenant_id, &key.namespace, &key.stream, key.shard);
+        let mut trackers = self.trackers.lock();
+        let slot = trackers.slot(key, Instant::now());
+        if Arc::ptr_eq(&slot.cell, cell) {
+            slot.retired.store(true, Ordering::Release);
+            slot.retired = Arc::new(AtomicBool::new(false));
+            slot.cell = Arc::new(OnceCell::new());
+        }
+    }
+
     /// Forget what every group has in flight on one shard, so the next
     /// operation rebuilds it from the durable cursor.
     ///
@@ -845,6 +948,21 @@ impl GroupReader {
         Ok(())
     }
 
+    /// Record that `held`'s group gave up on `offset`, unless a seek or delete
+    /// has retired that tracker. Returns whether it was recorded.
+    ///
+    /// Under the shard's lock, which a seek holds across its clear: a dead
+    /// letter from the old tracker landing after the clear would sit above
+    /// the new cursor, and the next rebuild would settle it unread.
+    async fn record_dead_letter(&self, key: &GroupKey, held: &Held, offset: u64) -> Result<bool> {
+        let _shard = self.lock_shard(key).await;
+        if held.retired.load(Ordering::Acquire) {
+            return Ok(false);
+        }
+        self.dead_letters.record(key, offset).await?;
+        Ok(true)
+    }
+
     /// Write `group`'s durable cursor at `committed`, unless its tracker was
     /// retired.
     async fn commit_cursor(&self, key: &GroupKey, held: &Held, committed: u64) -> Result<()> {
@@ -923,8 +1041,20 @@ impl GroupReader {
             // everything published before the group first connected.
             .unwrap_or(0);
         let mut tracker = GroupTracker::new(committed, self.max_attempts);
-        for offset in self.dead_letters.redriven(key).await? {
+        let listed = self.dead_letters.listed(key).await?;
+        for offset in listed.redriven {
             tracker.restore_redrive(offset);
+        }
+        // A dead letter is listed before the cursor advances over it, so a
+        // leader change in between leaves it above the cursor. It is settled.
+        // A seek clears those at or above its target, so none is skipped.
+        // Without cursor dependencies a seek keeps them, so they stay owed.
+        if self.cursors.dependencies() {
+            for offset in listed.dead {
+                if offset >= committed {
+                    tracker.ack(offset);
+                }
+            }
         }
         Ok(Arc::new(Mutex::new(tracker)))
     }
@@ -1065,3 +1195,17 @@ pub struct Claimed {
 
 #[cfg(test)]
 mod tests;
+
+/// Abandons a seek's group if the seek errs or is cancelled before its
+/// cursor and clear are both in place; see [`GroupReader::abandon`].
+struct Abandon<'a> {
+    reader: &'a GroupReader,
+    key: &'a GroupKey,
+    cell: &'a Arc<OnceCell<Arc<Mutex<GroupTracker>>>>,
+}
+
+impl Drop for Abandon<'_> {
+    fn drop(&mut self) {
+        self.reader.abandon(self.key, self.cell);
+    }
+}

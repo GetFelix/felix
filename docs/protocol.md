@@ -630,7 +630,9 @@ A seek voids every claim standing when it lands. The group's in-flight state is
 replaced, and the new state takes no settle from a claim made before it: an ack
 or nack for an offset at or above the new position is refused with
 `stale_claim`, and the record is delivered again from there. One below it is a
-duplicate and is taken. A seek keeps the group's dead letters.
+duplicate and is taken. A seek keeps the group's dead letters below the new
+position; those at or above it are cleared and delivered again from there, and
+one that fails again is dead-lettered again.
 
 `group_describe` is answered with `group_info`. `group_delete` removes the
 group's cursor and dead letters and drops its in-flight state, and is answered
@@ -2548,8 +2550,9 @@ appends another. Each step of a move is a new generation, so a move can leave
 several in a row. A record takes the next
 offset like any other and is never delivered, not to a subscription, a
 consumer group, or a Kafka fetch. A subscriber therefore sees `N-1` and then
-`N+1` across a generation start at `N`. A trim record, and the membership and
-counter records storage format v9 defines, are skipped the same way and
+`N+1` across a generation start at `N`. A trim record, the membership and
+counter records storage format v9 defines, and the consumer group writes a
+Raft shard keeps in its log, are skipped the same way and
 counted in `skipped_before` like a generation start (`docs/storage-format.md`,
 "Record kinds").
 

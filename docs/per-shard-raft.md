@@ -880,7 +880,19 @@ then end at the base's last index in the base's term, or the start fails.
 
 A voter's saved commit is set to `first_index`. One saved above it claims
 entries past the base that the copy does not hold, so it is lowered only by
-a re-form that accepts the loss, and the start refuses otherwise.
+a re-form that accepts the loss, and the start refuses otherwise. A start
+takes both the plan and the operator's `--accept-loss` (`AcceptLoss::of`):
+a marked plan, or one a vote cut, is refused unless the operator accepted
+the loss, and an unmarked plan never lowers a commit.
+
+A saved commit in `(base_end, first_index]` on a voter holding no record past
+the base is overwritten with `first_index` without accepting a loss. On a
+relaxed broker the commit is saved behind openraft and can name entries the
+last sync never covered, so it is not evidence of a record this disk holds;
+the plan already read each copy's commit cut to what it holds. That saved
+commit can still be the only trace that an acknowledged entry existed. The
+start does not refuse here, because every relaxed power cut would then need
+an operator to accept a loss of records no reached disk holds.
 
 A learner keeps its log only when all of it is a prefix of the base: no
 record past the base's last index, no purged id, and every record in the
@@ -964,9 +976,27 @@ the highest term read vouches for everything it holds, unless the group is
 marked. Every elected term took votes from a majority of some voter set of
 the epoch, and a vote is fsynced before the reply and kept across a power
 cut, so while the unknown votes are a minority of every voter set, some
-vote read is at least as new as every elected term. The unknown votes are
-those of dead brokers, of brokers whose current copy is not of the epoch or
-lost its vote, and of brokers with a copy of the epoch a restore rotated.
+vote read is at least as new as every elected term.
+
+A voter is a copy, named by its broker and copy id, not a broker. A broker
+whose disk was replaced runs a new copy that never gave the old one's votes,
+even after it saves votes of its own as a learner. The unknown votes are
+those of:
+
+- voters on dead brokers;
+- voters on a broker with a copy of the epoch a restore rotated;
+- a voter whose copy id is not the broker's current copy and no chain of
+  power cuts leads from it to the current copy. The chain is read from the
+  kept copies of the epoch: each holds its own copy id and a `rotated-by`
+  of `power-cut <to>`, and a power cut keeps its copy's newest vote. A
+  replaced disk keeps nothing, and an empty rotation keeps no directory, so
+  their old ids have no chain and stay unknown;
+- the current copy when it never voted, unless a power cut of the epoch
+  rotated into it (the kept copy holds its newest vote), and when it voted
+  but is not of the epoch. A rotation carries `raft-epoch` into the new
+  copy, so a copy a power cut minted votes as of its epoch. A copy that
+  reads as an older epoch than the one it voted in would key its vote
+  below the terms it decided, so its vote is never counted.
 
 The voter sets are the epoch's seed voters, both halves of every membership
 entry of the epoch in every copy read (uncommitted ones included), and every
@@ -2614,7 +2644,9 @@ way a held `Quorum` batch is released on the hybrid.
   state machine remembers each run of them, and a batch right after one
   tells its subscribers how many offsets it skipped (`skipped_before`), so
   the jump is not read as a drop. This is the rule `FelixRaft.tla` checks;
-  its twin `FelixRaftSkipsNotCounted` must fail.
+  its twin `FelixRaftSkipsNotCounted` must fail. The run is counted in
+  memory, so after a restart or a snapshot install the first record above
+  the cut is told too few, by the blank entries just under the cut.
 - Every reader of the stream is bounded by `read_bound`, at every
   consistency level (`StreamHandle::bound_every_level`, answered by
   `RaftReads`). On a follower that bound is what the follower has applied,
@@ -2917,12 +2949,13 @@ never ends a subscriber of the new term.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_term_led_again_keeps_its_subscribers`.
 
-Consumer-group operations on a Raft shard are refused by name before they
-reach the hybrid's fence (#2446). A head trim and an atomic commit go to
-the shard's engine ("Head trims" and "Atomic commits", above).
+Consumer-group operations on a Raft shard go to the shard's own groups
+("Consumer groups", below), and are refused by name until the fleet
+finalizes `raft_consumer_groups` (#2446). A head trim and an atomic commit
+go to the shard's engine ("Head trims" and "Atomic commits", above).
 
-> `services/felix-broker-service/src/serving/group_ops/tests.rs`,
-> `a_group_operation_on_a_raft_shard_is_refused_by_name`.
+> `services/felix-broker-service/src/serving/quic/streams/tests/raft_groups.rs`,
+> `group_operations_on_a_raft_shard_are_answered_as_on_the_hybrid`.
 
 **Kafka produce and MQTT publish.** Both work on a Raft shard and get the
 same answers as on the hybrid.
@@ -3166,6 +3199,14 @@ it answers a re-send the way a member that holds the records does. A crash
 in between leaves the old snapshot and only more refusals. Empty data
 carries none: a switch's base snapshot, or a snapshot taken with nothing
 forgotten.
+
+A producer whose batches a purge removed altogether is not just dropped. Its
+newest sequence stays as a tombstone, carried in the snapshot data with the
+cut batches, so a re-send of its first batch is refused as expired instead of
+being written a second time. Kafka producers are the exception: they
+restart at sequence 0 under the same id after an epoch bump, so their re-send
+is written. Up to 4096 are kept per shard, oldest out first;
+see "`producers`: the producer snapshot" in `docs/storage-format.md`.
 
 The sender reads its log from its base to build the list, a chunk at a
 time, so appends go on while it does. That read is as long as the log.
@@ -3545,9 +3586,21 @@ refused (`stream_has_commits`), as on the hybrid.
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid`.
 
-**Consumer groups.** Not served on a Raft shard yet: a group operation on
-one is refused as `invalid_request`. What is built is the entry the groups
-will write and the table every member folds from those entries. A group's writes (a cursor advance, a dead letter, a redrive and
+**Consumer groups.** Served on a Raft shard once the cluster finalizes
+`raft_consumer_groups` (a new cluster starts with it); until then a group
+operation on one is refused as `invalid_request`, since an older member
+refuses the entry. Only the shard's leader serves its groups. Every
+operation, read or write, first confirms the leader's term by a read index
+and waits for this member to apply it, so it sees every group write
+committed before it. A write is proposed at that term, refused by openraft
+if the member no longer leads it, and answered only once applied. If the
+append's outcome is unknown, the leader closes the term before answering, so
+only a later term's read index can see the entry. Claims are the leader's
+memory: when it stops leading a shard it drops the shard's trackers, and the
+next leader hands out what was in flight again at once, without waiting out
+the visibility timeout (at least once; #2644 tracks keeping claims across a
+failover). Group writes are log entries, so they
+take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
 its finish, a discard, a seek, a delete) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
@@ -3595,9 +3648,9 @@ seek or a delete of its group is dropped rather than applied to the group
 that replaced it. A seek's own token is its entry's log id.
 
 A group entry has its own tag, 9, in the Raft wire's entry payloads, and a
-member built before it refuses the whole append by that tag. Serving groups
-on Raft will wait for the fleet feature `raft_consumer_groups`, which no
-build reports yet.
+member built before it refuses the whole append by that tag. Groups are
+served on Raft once the fleet finalizes `raft_consumer_groups`, which every
+broker on this build reports.
 
 > `crates/server/felix-replication/src/raft/wire/tests.rs`,
 > `a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
@@ -3692,7 +3745,11 @@ Membership changes are not built yet
   answers "not ready". Placement fills a short set only after the shard's
   leader has reported to it, which a Raft shard does not do, so today a
   shard placed short stays short: create a stream once as many brokers as
-  its replication factor are registered.
+  its replication factor are registered. The hold is not silent: the broker
+  warns once per shard and placement generation, naming the shard, the
+  replication factor and the brokers placed, and counts held shards in
+  `felix_broker_raft_shards_short_placement`. The control plane's create
+  response warns when the replication factor exceeds the registered brokers.
 - One broker forms the group: the one with the lowest id in the set. It
   first asks every other broker which copy of the shard it holds and
   whether a group has reached that copy, with Raft pre-votes, which change
@@ -4432,6 +4489,11 @@ plane keeps them all on the shard's record as `raft_ordered`: the stream
   `None`, and the re-form stays marked, when the list is from another epoch or
   incarnation, is `lost`, or was never started. A shard that switched before
   level 39 has no list for the rest of its epoch.
+
+A control-plane restore brings back each list as the backup had it, with the
+same incarnation and epoch, so a target ordered after the backup would be
+missing. From metadata level 40 an import marks every list `lost`
+(`ImportState::lose_ordered`), and the re-form stays marked for that epoch.
 
 The list is metadata level 39. Below it, `settle_for_level` leaves
 `keep_ordered` off `accept_seal_report` and `record_raft_copy_id`, so no member
@@ -5624,7 +5686,8 @@ not move.
   or has no copy file marks the group unless a power-cut kept copy names
   that current copy as the one it rotated into: a wiped directory or an
   empty rotation leaves nothing kept, so an older power cut does not
-  count. The first index is also
+  count. A current copy that voted counts only if it reads as the group's
+  epoch, which a rotation carries into it before its copy file. The first index is also
   never below an earlier epoch's first index or any record a copy of the
   incarnation holds. A later epoch's gap counts as holding the floor's
   entry only on a copy with a record past the gap, so the start, not

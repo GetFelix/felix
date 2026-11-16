@@ -59,6 +59,14 @@ impl StreamEngine {
     pub fn raft_term(&self, _shard: &ShardKey) -> Option<u64> {
         None
     }
+
+    /// The consumer groups of `shard`, when a Raft group runs it here.
+    #[cfg(feature = "raft")]
+    pub(crate) fn raft_groups(&self, shard: &ShardKey) -> Option<&Arc<super::raft::RaftGroups>> {
+        let raft = self.raft.get()?;
+        raft.engine_for(shard)?;
+        Some(raft.groups())
+    }
 }
 
 impl StreamEngine {
