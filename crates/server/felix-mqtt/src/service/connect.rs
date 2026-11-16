@@ -27,6 +27,8 @@ pub(super) struct Session {
     /// Most QoS 1 messages sent to the client unacknowledged: the lower of its
     /// `Receive Maximum` and the listener's own limit.
     pub(super) receive_maximum: u16,
+    /// The largest packet the client accepts (5.0 `Maximum Packet Size`).
+    pub(super) client_max_packet: Option<u32>,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
@@ -87,6 +89,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             principal,
             producer_id: shared.writes.new_producer_id(),
             reason_strings,
+            client_max_packet: connect.properties.maximum_packet_size,
             receive_maximum: connect
                 .properties
                 .receive_maximum

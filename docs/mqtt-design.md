@@ -608,6 +608,7 @@ variable the broker does not read today:
 | `FELIX_MQTT_MAX_TOPIC_LEVELS` | 16 | Levels in a topic or filter. |
 | `FELIX_MQTT_MAX_INFLIGHT` | 32 | Unacknowledged QoS 1 and 2 messages in each direction. Advertised as `Receive Maximum`. |
 | `FELIX_MQTT_MAX_SUBSCRIPTIONS` | 64 | Filters per session. |
+| `FELIX_MQTT_MAX_READERS` | 4096 | Subscription reader tasks on the listener. Stands in for a shared reader until one is built; a SUBSCRIBE past it is refused with 0x97. |
 | `FELIX_MQTT_MAX_TOPIC_ALIASES` | 16 | Inbound topic aliases per connection (5.0). *Not built yet.* |
 | `FELIX_MQTT_SESSION_QUEUE_MAX_BYTES` | 1 MiB | A session's delivery queue. QoS 1 detaches to a catch-up read past it; QoS 0 drops. *Not built yet.* |
 | `FELIX_MQTT_QUEUE_MAX_BYTES_TOTAL` | 512 MiB | All session queues on the broker together. *Not built yet.* |

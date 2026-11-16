@@ -1906,6 +1906,45 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// **An MQTT subscription over a Raft shard this member cannot serve ends**
+/// as stopped, not as moved: nobody can be named, and reading on would
+/// answer from a commit index that has stopped moving.
+#[tokio::test]
+async fn an_mqtt_reader_of_a_leaderless_raft_member_is_stopped() {
+    use felix_mqtt::{ReadError, Reads};
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .placed
+        .lock()
+        .insert(orders.clone(), "broker-a".to_string());
+    let reads = crate::serving::mqtt::BrokerReads::new(Arc::clone(&broker), Some(ingress(&shards)));
+
+    assert_eq!(
+        reads.tail("t1", "ns", "orders", 0).await,
+        Err(ReadError::Stopped)
+    );
+    assert_eq!(
+        reads
+            .read(
+                "t1",
+                "ns",
+                "orders",
+                0,
+                0,
+                1 << 20,
+                Duration::from_millis(50)
+            )
+            .await
+            .map(|_| ()),
+        Err(ReadError::Stopped)
+    );
+    EngineShards::shutdown(&*shards).await;
+}
+
 pub(crate) async fn delivered(
     receiver: &mut felix_broker::SubscriptionReceiver,
 ) -> (u64, bytes::Bytes) {

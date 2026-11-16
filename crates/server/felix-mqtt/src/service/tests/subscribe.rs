@@ -134,6 +134,19 @@ async fn subscriber(
     settings: Settings,
     receive_maximum: Option<u16>,
 ) -> Harness {
+    subscriber_with(version, token, reads, settings, |c| {
+        c.properties.receive_maximum = receive_maximum;
+    })
+    .await
+}
+
+async fn subscriber_with(
+    version: Version,
+    token: &'static str,
+    reads: &Arc<FakeReads>,
+    settings: Settings,
+    tweak: impl FnOnce(&mut Connect),
+) -> Harness {
     let mut h = start_full(
         settings,
         None,
@@ -143,7 +156,7 @@ async fn subscriber(
     h.client.version = Some(version);
     let mut c = connect(version);
     c.password = Some(Bytes::from_static(token.as_bytes()));
-    c.properties.receive_maximum = receive_maximum;
+    tweak(&mut c);
     h.client.send(Packet::Connect(c), version).await;
     assert_eq!(connack(h.client.recv().await).reason, ReasonCode::Success);
     h
@@ -439,16 +452,15 @@ async fn a_slow_subscriber_neither_loses_qos1_nor_holds_up_another() {
         let publish = next_publish(&mut fast).await;
         ack(&mut fast, Version::V5, publish.packet_id.unwrap()).await;
     }
-    // The slow one has had one and, once it acknowledges, gets the rest, one
-    // at a time, none lost.
-    let mut seen = 0;
-    loop {
+    // The slow one has had one; nothing more arrives until it acknowledges,
+    // then it gets the rest, one at a time, none lost.
+    let first = next_publish(&mut slow).await;
+    nothing(&mut slow).await;
+    ack(&mut slow, Version::V5, first.packet_id.unwrap()).await;
+    for _ in 1..N {
         let publish = next_publish(&mut slow).await;
-        seen += 1;
+        nothing(&mut slow).await;
         ack(&mut slow, Version::V5, publish.packet_id.unwrap()).await;
-        if seen == N {
-            break;
-        }
     }
 }
 
@@ -620,4 +632,63 @@ async fn a_new_filter_on_a_lagging_reader_starts_at_its_suback() {
     }
     assert_eq!(b, vec![Bytes::from_static(b"after")]);
     nothing(&mut h).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_message_past_the_clients_maximum_packet_size_is_discarded() {
+    let reads = FakeReads::new();
+    let mut h = subscriber_with(Version::V5, "good", &reads, Settings::default(), |c| {
+        c.properties.maximum_packet_size = Some(40);
+    })
+    .await;
+    subscribe_ok(&mut h, Version::V5, "plant/+", QoS::AtLeastOnce).await;
+    reads.append(
+        0,
+        "plant/a",
+        "1",
+        b"a payload far longer than the forty bytes this client said it takes",
+    );
+    reads.append(0, "plant/a", "1", b"x");
+    // The long one is skipped as if delivered, and holds no packet id.
+    let publish = next_publish(&mut h).await;
+    assert_eq!(publish.payload.as_ref(), b"x");
+    assert_eq!(publish.packet_id, Some(1));
+    nothing(&mut h).await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn readers_are_capped_for_the_listener_and_given_back() {
+    for (version, refused) in [
+        (Version::V5, ReasonCode::QuotaExceeded),
+        (Version::V311, ReasonCode::UnspecifiedError),
+    ] {
+        let reads = FakeReads::new();
+        let settings = Settings {
+            max_readers: 1,
+            ..Settings::default()
+        };
+        let mut h = subscriber(version, "good", &reads, settings, None).await;
+        subscribe_ok(&mut h, version, "plant/a", QoS::AtMostOnce).await;
+        // A wildcard needs a reader on each of two shards.
+        h.client
+            .send(sub(2, &[("plant/#", QoS::AtMostOnce)]), version)
+            .await;
+        assert_eq!(suback(h.client.recv().await).reasons, vec![refused]);
+        // The refused filter changed nothing.
+        reads.append(0, "plant/b", "0", b"x");
+        nothing(&mut h).await;
+        // Dropping the filter gives its reader back.
+        h.client
+            .send(
+                Packet::Unsubscribe(Unsubscribe {
+                    packet_id: 3,
+                    filters: vec![Utf8::new("plant/a".to_string()).unwrap()],
+                    properties: Properties::default(),
+                }),
+                version,
+            )
+            .await;
+        assert!(matches!(h.client.recv().await, Some(Packet::UnsubAck(_))));
+        subscribe_ok(&mut h, version, "plant/b", QoS::AtMostOnce).await;
+    }
 }

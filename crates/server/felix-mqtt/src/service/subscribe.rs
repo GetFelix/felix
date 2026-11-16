@@ -31,9 +31,9 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-use super::Shared;
 use super::connect::Session;
 use super::connection::{Connection, End};
+use super::{ReaderSlot, Shared};
 use crate::filter::{FilterTrie, literal_prefix};
 use crate::metrics;
 use crate::read::{ReadError, Reads};
@@ -65,11 +65,15 @@ pub(super) enum Fetched {
 }
 
 /// A reader task, stopped when it is dropped.
-struct Reader(JoinHandle<()>);
+struct Reader {
+    task: JoinHandle<()>,
+    /// Held for its drop, which gives the slot back.
+    _slot: ReaderSlot,
+}
 
 impl Drop for Reader {
     fn drop(&mut self) {
-        self.0.abort();
+        self.task.abort();
     }
 }
 
@@ -109,6 +113,7 @@ pub(super) struct Subscriptions {
     in_flight: HashSet<u16>,
     next_id: u16,
     max_in_flight: usize,
+    client_max_packet: Option<u32>,
     /// A QoS 1 message taken off the queue while the client was at its
     /// receive maximum. Nothing is taken until it has gone.
     stalled: Option<Outgoing>,
@@ -126,6 +131,7 @@ impl Subscriptions {
             in_flight: HashSet::new(),
             next_id: 0,
             max_in_flight: usize::from(session.receive_maximum),
+            client_max_packet: session.client_max_packet,
             stalled: None,
         }
     }
@@ -150,6 +156,22 @@ impl Subscriptions {
             if !self.in_flight.contains(&self.next_id) {
                 return self.next_id;
             }
+        }
+    }
+
+    /// Whether sending `publish` would pass the client's Maximum Packet Size.
+    fn too_large_for_client(&self, publish: &Publish, version: Version) -> bool {
+        let Some(max) = self.client_max_packet else {
+            return false;
+        };
+        // A QoS 1 publish carries a packet id the message does not have yet.
+        let mut sized = publish.clone();
+        if sized.qos != QoS::AtMostOnce {
+            sized.packet_id = Some(1);
+        }
+        match Packet::Publish(sized).encoded_len(version) {
+            Ok(len) => len as u64 > u64::from(max),
+            Err(_) => true,
         }
     }
 
@@ -188,11 +210,20 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 }
                 Fetched::Message(boxed) => {
                     let outgoing = *boxed;
-                    if outgoing.publish.qos != QoS::AtMostOnce && subs.at_limit() {
+                    // MQTT-3.1.2-24: never send what the client said it
+                    // cannot take. -25: discard it as if it were delivered,
+                    // so a QoS 1 message needs no acknowledgement.
+                    if subs.too_large_for_client(
+                        &outgoing.publish,
+                        self.version.unwrap_or(Version::V311),
+                    ) {
+                        metrics::dropped("client_max_packet_size");
+                    } else if outgoing.publish.qos != QoS::AtMostOnce && subs.at_limit() {
                         subs.stalled = Some(outgoing);
                         return Ok(());
+                    } else {
+                        self.send_outgoing(subs, outgoing)?;
                     }
-                    self.send_outgoing(subs, outgoing)?;
                 }
             }
             taken += 1;
@@ -341,16 +372,21 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 .map_err(|err| ("subscribe_unavailable", read_failure(err)))?;
             starts.insert(key.clone(), tail);
         }
+        let new_keys: Vec<&StreamShard> = keys
+            .iter()
+            .filter(|key| !subs.readers.contains_key(*key))
+            .collect();
+        let mut slots = shared
+            .readers
+            .acquire(new_keys.len(), shared.settings.max_readers)
+            .ok_or(("reader_limit", ReasonCode::QuotaExceeded))?;
         {
             let mut filters = subs.filters.write().unwrap();
             let id = filters.trie.insert(filter, granted);
             // A replaced filter keeps reading from where it was.
             filters.starts.entry(id).or_insert_with(|| starts.clone());
         }
-        for key in &keys {
-            if subs.readers.contains_key(key) {
-                continue;
-            }
+        for key in new_keys {
             let reader = tokio::spawn(read_loop(
                 shared.reads.clone(),
                 tenant.into(),
@@ -360,7 +396,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 subs.tx.clone(),
                 session.version,
             ));
-            subs.readers.insert(key.clone(), Reader(reader));
+            subs.readers.insert(
+                key.clone(),
+                Reader {
+                    task: reader,
+                    _slot: slots.pop().expect("one slot per new reader"),
+                },
+            );
         }
         subs.shards_of.insert(filter.to_owned(), keys);
         subs.prune_readers();

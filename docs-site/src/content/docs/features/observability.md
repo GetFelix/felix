@@ -290,6 +290,7 @@ felix_mqtt_refused_total                    # by reason, below
 felix_mqtt_published_total                  # messages written, by qos
 felix_mqtt_delivered_total                  # messages sent to subscribers, by qos
 felix_mqtt_dropped_total                    # messages a subscriber did not get, by reason
+felix_mqtt_readers                          # gauge: subscription readers, capped by FELIX_MQTT_MAX_READERS
 ```
 
 `felix_mqtt_refused_total` counts every connection or request the listener

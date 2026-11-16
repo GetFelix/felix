@@ -14,6 +14,7 @@ mod subscribe;
 mod tests;
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
@@ -37,6 +38,44 @@ pub(crate) struct Shared {
     pub(crate) writes: Arc<dyn Writes>,
     pub(crate) reads: Arc<dyn Reads>,
     pub(crate) settings: Settings,
+    pub(crate) readers: Arc<ReaderSlots>,
+}
+
+/// How many reader tasks run on the listener, against `Settings::max_readers`.
+#[derive(Default)]
+pub(crate) struct ReaderSlots(AtomicUsize);
+
+impl ReaderSlots {
+    /// `count` slots, or `None` when that would pass `max`. They are given
+    /// back when the guards drop.
+    pub(crate) fn acquire(self: &Arc<Self>, count: usize, max: usize) -> Option<Vec<ReaderSlot>> {
+        let mut held = self.0.load(Ordering::Relaxed);
+        loop {
+            if held + count > max {
+                return None;
+            }
+            match self.0.compare_exchange_weak(
+                held,
+                held + count,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(now) => held = now,
+            }
+        }
+        metrics::gauge!("felix_mqtt_readers").increment(count as f64);
+        Some((0..count).map(|_| ReaderSlot(self.clone())).collect())
+    }
+}
+
+pub(crate) struct ReaderSlot(Arc<ReaderSlots>);
+
+impl Drop for ReaderSlot {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::AcqRel);
+        metrics::gauge!("felix_mqtt_readers").decrement(1.0);
+    }
 }
 
 impl MqttService {
@@ -53,6 +92,7 @@ impl MqttService {
                 writes,
                 reads: Arc::new(NoReads),
                 settings,
+                readers: Arc::default(),
             }),
         }
     }

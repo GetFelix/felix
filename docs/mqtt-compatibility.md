@@ -319,6 +319,7 @@ clients.
 | Connections on the broker | `FELIX_MQTT_MAX_CONNECTIONS` | The new connection is closed on arrival (`connection_limit`). |
 | Connections per source address | `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | The new connection is closed on arrival (`per_ip_limit`). |
 | New connections per second | `FELIX_MQTT_CONNECT_RATE` | They wait in the kernel's accept queue, not in the broker. |
+| A message larger than the client's `Maximum Packet Size` | The client's own (5.0) | Not sent. It is discarded as if delivered, so a QoS 1 message needs no `PUBACK` (MQTT-3.1.2-25), and counted in `felix_mqtt_dropped_total{reason="client_max_packet_size"}`. |
 | Packet size | `FELIX_MQTT_MAX_PACKET_BYTES` | The connection closes (5.0: reason 0x95). A 5.0 client is told the limit as `Maximum Packet Size`. |
 | Unacknowledged QoS 1 publishes | `FELIX_MQTT_MAX_INFLIGHT` | 5.0: the connection closes with reason 0x93. 3.1.1: the broker stops reading until the stream has acknowledged them. Advertised as `Receive Maximum`. |
 | Topic length and levels, filters per `SUBSCRIBE` | `FELIX_MQTT_MAX_TOPIC_BYTES`, `_MAX_TOPIC_LEVELS`, `_MAX_SUBSCRIPTIONS` | The connection closes. |
@@ -338,6 +339,7 @@ mounts (`#`, `+/temp`, or one shorter than its mount's prefix) is refused.
 | Filter under no mount, or spanning mounts | 5.0: 0x8F. 3.1.1: 0x80. |
 | No `stream.subscribe` on the mounted stream | 5.0: 0x87. 3.1.1: 0x80. |
 | More filters held than `FELIX_MQTT_MAX_SUBSCRIPTIONS` | 5.0: 0x97. 3.1.1: 0x80. |
+| The broker already runs `FELIX_MQTT_MAX_READERS` subscription readers | 5.0: 0x97. 3.1.1: 0x80. Counted as `reader_limit`. |
 | `$share/...` (5.0) | 0x9E. |
 | A subscription identifier (5.0) | 0xA1. |
 | `No Local` (5.0) | 0x83. |

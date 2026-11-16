@@ -37,6 +37,10 @@ pub struct Settings {
     /// Messages one session's delivery queue holds. A QoS 0 message that
     /// finds it full is dropped; a QoS 1 message waits in the log.
     pub session_queue_messages: usize,
+    /// Reader tasks the whole listener runs, one per shard each session reads.
+    /// A SUBSCRIBE that would pass it is refused. A reader polls its shard
+    /// even when idle, so this bounds that cost.
+    pub max_readers: usize,
 }
 
 impl Default for Settings {
@@ -51,6 +55,7 @@ impl Default for Settings {
             keepalive_max_secs: 600,
             max_inflight: 64,
             session_queue_messages: 256,
+            max_readers: 4096,
         }
     }
 }

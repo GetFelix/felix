@@ -319,7 +319,8 @@ Served by the MQTT listener, when `FELIX_MQTT_LISTEN` is set. See [MQTT](/featur
 | `felix_mqtt_refused_total` | counter | `reason` | Connections or requests the listener turned away, by `reason`. The reasons are listed in [observability](/features/observability/). |
 | `felix_mqtt_published_total` | counter | `qos` | Messages written to a mounted stream, by `qos` (`0` or `1`). |
 | `felix_mqtt_delivered_total` | counter | `qos` | Messages sent to MQTT subscribers, by `qos` (`0` or `1`). |
-| `felix_mqtt_dropped_total` | counter | `reason` | Messages a subscriber did not get: `queue_full` (QoS 0, its queue was full), `expired`, or `retention` (the log no longer held it). |
+| `felix_mqtt_dropped_total` | counter | `reason` | Messages a subscriber did not get: `queue_full` (QoS 0, its queue was full), `expired`, `retention` (the log no longer held it), or `client_max_packet_size` (larger than the 5.0 client's `Maximum Packet Size`, discarded as if delivered). |
+| `felix_mqtt_readers` | gauge | - | Subscription reader tasks running, against `FELIX_MQTT_MAX_READERS`. |
 
 ## Control plane: placement
 

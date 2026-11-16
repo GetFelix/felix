@@ -4,7 +4,8 @@
 //! One broker with a durable stream mounted at `plant/`. Each test subscribes
 //! through the listener, publishes through it from a second client, and
 //! checks what the subscriber is sent. Without `mosquitto_sub` on the path its
-//! test says so and returns; CI installs it.
+//! test says so and returns. CI does not install it, so the rumqttc tests are
+//! what CI runs.
 //!
 //! Run with `cargo test -p felix-broker-service --test mqtt_subscribe`.
 use std::sync::Arc;

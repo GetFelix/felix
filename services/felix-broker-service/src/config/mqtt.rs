@@ -138,6 +138,12 @@ impl MqttListenerConfig {
                 65_535,
             )? as u16,
             session_queue_messages: defaults.session_queue_messages,
+            max_readers: number(
+                "FELIX_MQTT_MAX_READERS",
+                defaults.max_readers as u64,
+                1,
+                u32::MAX.into(),
+            )? as usize,
         };
         let ws = ws_config(&get, &number)?;
         Ok(Some(Self {

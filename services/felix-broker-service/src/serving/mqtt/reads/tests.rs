@@ -180,6 +180,81 @@ async fn a_raft_shard_is_read_up_to_its_commit_index() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// A read bound a test moves by hand, standing in for the commit index.
+#[cfg(feature = "raft")]
+#[derive(Debug, Default)]
+struct HeldBound(std::sync::atomic::AtomicU64);
+
+#[cfg(feature = "raft")]
+impl felix_broker::ReadBounds for HeldBound {
+    fn stream_bound(&self, _: &str, _: &str, _: &str, _: u32) -> felix_broker::ReadBound {
+        felix_broker::ReadBound::Committed(self.0.load(std::sync::atomic::Ordering::SeqCst))
+    }
+}
+
+/// **A record the group has not committed is not read**, and is once it is.
+/// Removing the read bound from `read_range` fails the first assertion.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_shard_withholds_a_record_until_it_is_committed() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    broker.record_headers_when(|| true);
+    broker.read_record_headers_when(|| true);
+    broker.allow_raft_record_headers_when(|| true);
+    let shards = fixture::held_shards(&broker);
+    fixture::open_root(&broker, &shards);
+    let bound = Arc::new(HeldBound::default());
+    broker.set_read_bounds(Arc::clone(&bound) as Arc<dyn felix_broker::ReadBounds>);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(fixture::engine(&shards)),
+        Duration::from_secs(1),
+    );
+    let reads = BrokerReads::new(Arc::clone(&broker), None);
+    let producer = writes.new_producer_id();
+    let mut message = batch(0, producer, "plant/a", "orders");
+    message.tenant_id = "t1".into();
+    writes.write(message).await.expect("written");
+
+    let read = || async {
+        reads
+            .read(
+                "t1",
+                "ns",
+                "orders",
+                0,
+                0,
+                1 << 20,
+                Duration::from_millis(200),
+            )
+            .await
+            .expect("read")
+    };
+    assert!(
+        read().await.messages.is_empty(),
+        "an uncommitted record was read"
+    );
+    bound.0.store(u64::MAX, std::sync::atomic::Ordering::SeqCst);
+    // The bound moving wakes the hold; give the release a moment.
+    let mut delivered = 0;
+    for _ in 0..50 {
+        delivered = read().await.messages.len();
+        if delivered > 0 {
+            break;
+        }
+    }
+    assert_eq!(delivered, 1);
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// A read waiting on a shard returns as soon as the shard's readers are
 /// ended, and says why: moved away, or stopped with nobody named.
 #[tokio::test]
