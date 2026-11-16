@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794842918258,
+  "lastUpdate": 1794843849720,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76560,6 +76560,72 @@ window.BENCHMARK_DATA = {
             "range": "599.00",
             "unit": "us",
             "extra": "trials: 5\nmedian: 368.00\nmean: 643.40\nstdev: 599.00\ncv: 93.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "02e8646c4bc23ef4b5410e0d0d016820b3a8594b",
+          "message": "ci(deps): bump azure/setup-helm (#2691)\n\nBumps the actions-minor-and-patch group with 1 update: [azure/setup-helm](https://github.com/azure/setup-helm).\n\n\nUpdates `azure/setup-helm` from 5.0.1 to 5.1.0\n- [Release notes](https://github.com/azure/setup-helm/releases)\n- [Changelog](https://github.com/Azure/setup-helm/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/azure/setup-helm/compare/9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310...2f5e7bc67f1f9972ab16657bb795f36d8f04de0e)\n\n---\nupdated-dependencies:\n- dependency-name: azure/setup-helm\n  dependency-version: 5.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: actions-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-16T07:11:38-08:00",
+          "tree_id": "3ed7d5ed9ce8c20c731c54086a6e8f272a86d786",
+          "url": "https://github.com/GetFelix/felix/commit/02e8646c4bc23ef4b5410e0d0d016820b3a8594b"
+        },
+        "date": 1794843838194,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.00\nstdev: 0.71\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "26.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 145.40\nstdev: 26.75\ncv: 18.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 256,
+            "range": "166.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 256.00\nmean: 306.60\nstdev: 166.10\ncv: 54.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.00\nstdev: 0.71\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 266,
+            "range": "9.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 267.40\nstdev: 9.76\ncv: 3.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 518,
+            "range": "878.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 518.00\nmean: 980.60\nstdev: 878.32\ncv: 89.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
