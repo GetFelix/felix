@@ -61,6 +61,15 @@
 (*   PurgeBelowFloorRule = FALSE -- a purge is bounded by the applied      *)
 (*                        entry only, not by floor - 1.                    *)
 (*   InstallRule = FALSE  -- a member installs any snapshot ahead of it.   *)
+(*   InstallFloor         -- what an install does to the member's durable  *)
+(*                        floor. "replace" stores the leader's snapshot as *)
+(*                        it is, so a snapshot carrying a lower floor than *)
+(*                        the member's lowers it at the next restart (a    *)
+(*                        plain Raft install replaces the whole state      *)
+(*                        machine, so it lowers it at once). "max" stores  *)
+(*                        the higher of the two floors with that floor's   *)
+(*                        headers. "refuse" refuses a snapshot carrying a  *)
+(*                        floor below the member's.                        *)
 (*   LeaderCaps = FALSE   -- the leader purges past a member's match.      *)
 (*   SnapAtApplied = TRUE -- the snapshot is taken at the applied entry    *)
 (*                        and the purge goes below it, as a plain Raft     *)
@@ -107,6 +116,7 @@ CONSTANTS
     MaxReforms,
     PurgeBelowFloorRule,
     InstallRule,
+    InstallFloor,
     LeaderCaps,
     SnapAtApplied,
     TablesAtApplied,
@@ -127,6 +137,7 @@ ASSUME
     /\ SnapCarriesHeaders \in BOOLEAN /\ DropFirst \in BOOLEAN
     /\ ReformCarriesFloor \in BOOLEAN /\ ReformStoresFloor \in BOOLEAN
     /\ ReformReads \in {"full", "purged", "logged", "entries"}
+    /\ InstallFloor \in {"replace", "max", "refuse"}
 
 VARIABLES
     log,      \* every entry of the current epoch's history, in order
@@ -271,6 +282,7 @@ Replicate(n) ==
 Installable(s, n) ==
     /\ s.idx > len[n]
     /\ InstallRule => s.idx <= s.floor - 1
+    /\ InstallFloor = "refuse" => s.floor >= floor[n]
 
 Install(n) ==
     LET s == snap[leader] IN
@@ -286,7 +298,10 @@ Install(n) ==
     /\ RaiseHiFloor
     /\ given' = [given EXCEPT ![n] = Max({@, s.idx, s.floor})]
     /\ tbl' = [tbl EXCEPT ![n] = s.tbl]
-    /\ snap' = [snap EXCEPT ![n] = s]
+    \* The floor the member vouched for must survive a restart.
+    /\ snap' = [snap EXCEPT ![n] =
+          IF InstallFloor = "max" THEN [s EXCEPT !.floor = floor'[n], !.hdr = hdr'[n]]
+          ELSE s]
     /\ installed' = installed \cup {n}
     /\ UNCHANGED <<log, commit, leader, live, cpFloor, reused, trimF, post,
                    trims, changes, restarts, reforms>>
@@ -513,6 +528,10 @@ HeadersAgree ==
         floor[m] > 1 => hdr[m] \in 1..trims /\ trimF[hdr[m]] = floor[m]
 
 OffsetNeverReused == ~reused
+
+\* Steers FelixRaftStreamPurgeInstallLowersFloor.cfg to the floor drop: trims
+\* naming 3 then 4, and no floor reported to the control plane.
+FloorDropPath == trimF \in {<<>>, <<3>>, <<3, 4>>} /\ cpFloor = 0
 
 CatchUpPossible ==
     \A n \in live \ {leader} :
