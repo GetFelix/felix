@@ -105,8 +105,24 @@ async fn poll_rechecking(
     )
     .await?
     {
+        let appended = match wait.is_zero() {
+            true => None,
+            false => broker
+                .resolve_stream_handle(tenant_id, namespace, stream, shard)
+                .await
+                .ok()
+                .map(|handle| handle.appended()),
+        };
         return on_raft
-            .poll(publish_ctx, max_records, wait, consumer, visibility)
+            .poll(
+                publish_ctx,
+                max_records,
+                wait,
+                appended,
+                recheck,
+                consumer,
+                visibility,
+            )
             .await;
     }
     let (reader, log, owned) =

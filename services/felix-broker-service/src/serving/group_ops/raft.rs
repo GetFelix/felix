@@ -21,10 +21,6 @@ use crate::shards::raft::RaftGroups;
 use crate::shards::routing::{Dispatch, dispatch, dispatch_write};
 use crate::shards::{ShardKey, ShardKind};
 
-/// How often a waiting poll looks again. Raft claims lapse and records
-/// commit without waking it.
-const RECHECK: Duration = Duration::from_millis(50);
-
 /// A group operation on a shard a Raft group runs here.
 pub(super) struct OnRaft {
     groups: Arc<RaftGroups>,
@@ -126,17 +122,25 @@ impl OnRaft {
         Ok(tail.min(committed))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn poll(
         &self,
         publish_ctx: &PublishContext,
         max_records: usize,
         wait: Duration,
+        appended: Option<Arc<tokio::sync::Notify>>,
+        recheck: Duration,
         consumer: Option<&felix_broker::GroupConsumer>,
         visibility: Option<Duration>,
     ) -> Result<Vec<GroupRecord>, ClientError> {
         let until = Instant::now() + wait;
         let mut first = true;
         loop {
+            // Armed before the read, so a commit landing between the read and
+            // the wait still wakes it. The stream's commit follower signals
+            // it each time the shard's commit index moves here; `recheck`
+            // covers a claim lapsing or a nack, which nothing signals.
+            let mut on_append = super::armed(appended.as_ref());
             let polled = async {
                 let committed = self.committed(publish_ctx)?;
                 self.groups
@@ -168,7 +172,10 @@ impl OnRaft {
             if now >= until {
                 return Ok(Vec::new());
             }
-            tokio::time::sleep_until(until.min(now + RECHECK).into()).await;
+            tokio::select! {
+                () = tokio::time::sleep_until(until.min(now + recheck).into()) => {}
+                () = super::fired(&mut on_append) => {}
+            }
         }
     }
 
