@@ -618,7 +618,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenCommitsReformTrailing.cfg` | the same without the reservation: the re-form pads up to the trailing floor only | violate `OffsetNeverReused` |
 | `FelixRaftWrittenCommitsReformLoses.cfg` | witness: under the proposal a power cut of a majority loses a committed record | violate `NeverLosesCommitted` |
 | `FelixRaftWrittenReformOnCommit.cfg` | the design as built (commit on fsynced copies), two power cuts and a re-form with the trailing floor alone | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `OffsetNeverReused`, `NeverLosesCommitted` (58k distinct states) |
-| `FelixRaftWrittenCommitsReformTerms.cfg` | the proposal across two terms with the re-form's vouch rule (saved commit, the floor's entry, the whole log only when its last entry has the highest term of any vote read), two power cuts and one broker declared dead | `OffsetNeverReused`, `LossNeedsLostDiskAtTop` (no record a read copy holds is lost when no broker is dead and no vote is above every entry) and the safety checks above: expected to pass, no violation in six hours on a CI runner (319.6M distinct states, depth 28); not registered, running to completion on a 32-core build box |
+| `FelixRaftWrittenCommitsReformTerms.cfg` | the proposal across two terms with the re-form's vouch rule (saved commit, the floor's entry, the whole log only when its last entry has the highest term of any vote read), two power cuts and one broker declared dead | `OffsetNeverReused`, `LossNeedsLostDiskAtTop` (no record a read copy holds is lost when no broker is dead and no vote is above every entry) and the safety checks above: pass (1,752,892,374 distinct states, 16,415,841,106 generated, depth 45, 6 hours 53 minutes on a 32-core build box); not registered, past a runner's six hours |
 | `FelixRaftWrittenCommitsReformTermsFloorHolder.cfg` | the same with the shortcut the rule replaces: the copy with the highest last log id is the base when some copy holds the floor's entry | violate `OffsetNeverReused` (73.0M distinct states, depth 26, 9 minutes 16 seconds on a 32-core build box) |
 | `FelixRaftWrittenCommitsReformTermsHappens.cfg` | witness, with no broker dead: a re-form after a term-2 election cuts the longest copy read | violate `NeverCutsAcrossTerms` (21.8k distinct states, 1 second) |
 | `FelixRaftWrittenCommitsReformTermsVoteOnly.cfg` | witness: a vote in a term that wrote nothing cuts every copy, so a committed entry a read copy holds is lost (reported as "cut by a vote", needs `--accept-loss`) | violate `LossNeedsLostDisk` (387k distinct states, 4 seconds) |
@@ -2926,8 +2926,9 @@ an entry past the floor; b and c commit a term-2 entry at that index on a
 written majority, and a power cut takes it from both. The shortcut makes a's
 log the base and serves its term-1 entry where the term-2 one was committed.
 b's and c's kept votes say term 2, so `Vouch` cuts a to the floor, and
-`FelixRaftWrittenCommitsReformTerms.cfg` is expected to pass with a broker
-declared dead (no violation in six hours on a CI runner).
+`FelixRaftWrittenCommitsReformTerms.cfg` passes with a broker
+declared dead (1,752,892,374 distinct states, depth 45, 6 hours 53 minutes on a
+32-core build box).
 `FelixRaftWrittenCommitsReformTermsHappens.cfg` shows the rule does cut the
 longest copy there. The price is a lone vote: a term that wrote nothing still
 raises T and cuts every copy to its saved commit, so a committed entry a read
