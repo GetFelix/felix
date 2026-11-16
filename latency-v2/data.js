@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794846291484,
+  "lastUpdate": 1794846607949,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76692,6 +76692,72 @@ window.BENCHMARK_DATA = {
             "range": "186.84",
             "unit": "us",
             "extra": "trials: 5\nmedian: 422.00\nmean: 432.80\nstdev: 186.84\ncv: 43.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8ecf0ebfc4c16452d22099ea871f55d47d63d983",
+          "message": "formal(raft): mark on the voter sets a re-form can know (#2661) (#2666)\n\n* formal(raft): written re-form across two terms with the vouch rule (M1 for #2250)\n\n* formal(raft): one process crash in the two-term re-form configs\n\n* formal(raft): reach witness for the two-term cut without a dead broker\n\n* formal(raft): kept copies, power-cut rotation and reservations in the re-form model (M2 for #2250)\n\nFelixRaftReform.tla gains a Kept mode: every rotation keeps the whole copy\nwith its vote, why it rotated and its reservation; PowerCutRotate loses only\nthe unsynced tail and keeps the vote; Rotate is the restore; Return brings a\ndead broker back. The re-form reads current and kept copies and keeps the\nlongest prefix a copy vouches for, keyed by (epoch, term), capped by later\nbase ends, padded past every reservation read, with the epoch-scoped mark.\nExisting configs set Kept FALSE and keep their state spaces.\n\n* docs(formal): kept copies and two re-forms in the README\n\n* formal(raft): shape the two re-form configs so each finishes, with results\n\nTwoReformsShape closes epoch 0 empty, allows one write per later epoch and\nholds the plan that closes epoch 1 until epoch 1 commits a record. All six\ntwo re-form configs now give their declared outcome on a build box in\nunder seven minutes. README rows with state counts and times, weights for\nthe longer configs, and a changelog fragment.\n\n* formal(raft): exercise the cap, T and Return, and bound Kept losses\n\n- TwoReformsOldRestore takes a second write, so epoch 2 writes.\n- NeverPadsByReserve needs both power cuts and a power-cut copy whose\n  reservation is above its log, at a committed epoch-1 record.\n- New Kept configs with a non-empty epoch 0: KeptOldKept (a dead broker\n  returns with its epoch-0 copy; witness KeptOldKeptCap for the cap) and\n  KeptTerms (two terms; witness KeptTermsT for T).\n- KeptLossBound: unmarked, no vote above every entry, no acknowledged\n  record held below its cap is lost.\n- LossNeedsLostDiskAtTop on CommitsReformTerms.\n- Evidence lines on EpochMark and TrailingFloorHappens.\n\n* formal(raft): a fsynced count needs no reservation; long re-form configs run nightly\n\nAn fsynced entry survives a power cut, so the re-form's base covers it.\nOnly a written count needs a reservation, as in raft_log/writer.rs.\nRelaxing Ack and Agree only adds behaviours; every registered\nFelixRaftWritten config keeps its outcome.\n\nFelixRaftWrittenCommitsReformTerms, FelixRaftReformTwoReformsOldRestore\nand FelixRaftReformKeptTerms pass but run past a pull request's hour, so\nthey move to the nightly exhaustive job.\n\n* formal(raft): every count needs a reservation, fsynced ones too\n\nRelaxing Ack and Agree so a fsynced count skips the reservation lets\nFelixRaftWrittenCommitsReformTerms violate OffsetNeverReused in 14\nsteps: the vouch rule keeps only b's saved commit once a is declared\ndead, so the base is cut below a fsynced, committed entry that nothing\nreserved, and the re-form reuses its offset. The code must reserve\nbefore any count (#2632).\n\n* docs(formal): the long re-form configs run in dispatch 43744757023\n\n* formal(raft): pin the vouch rule's dead-broker loss; record the long re-form results\n\nFelixRaftWrittenReformVouchDead violates NeverLosesCommitted in 15 states:\nwith a broker declared dead no copy vouches for its whole log and a\nfollower's saved commit is 0, so a record fsynced and reserved on an\nintact copy is cut (#2661). KeptTerms and TwoReformsOldRestore pass\nexhaustively; ReformTerms leaves the nightly list, a box run checks it.\nThe code reserves in every fsync mode (#2636).\n\n* docs(formal): the vouch-dead trace loses a committed entry; ReformTerms is expected to pass\n\n* docs(formal): record ReformTerms' six-hour reach\n\n* formal(raft): vouch for a whole log while the dead are a minority (#2661)\n\nA broker declared dead hides only its own vote. While the dead are a\nminority of each voter set, every election took a vote the re-form read,\nso T is still the top elected term and a copy ending in T vouches for its\nwhole log. FelixRaftWrittenReformVouchDead now passes.\n\n* formal(raft): mark on the voter sets a re-form can know (#2661)\n\nVotesRead quantifies over the seed voters, both halves of every membership\nentry in a copy read and each target the control plane ordered. Reform's\nMarked(E) takes the same rule per epoch, with an ordered-targets record.\nLossNeedsLostDisk and its AtTop half widen to VotesRead. New configurations:\nVouchDeadFive, CommitsReformJointDead (+OneSet mutant), JointCutDead,\nReformGate (+GateOpen mutant) and the BaseAgrees check.\n\n* formal(raft): key re-form voters by copy id (#2671)\n\nA replaced disk keeps nothing, so its old copy's vote is unknown even\nafter the broker's new copy votes; that vote can be a deposed leader's\nterm. Replace action, ReplacedCopy/ReplacementCopy constants, Unknown =\ndead plus copies with no disk read, and the broker-keyed mutant.\n\n* formal(raft): tight replaced-disk twins, witness, and disk loss in the re-form model (#2671)\n\nReplacedScope now allows one candidate per term, declares a broker dead\nonly after the disk is replaced, and lets the one crash stop a leader once\na broker is dead. The broker-keyed mutant violates BaseAgrees in 7 s and\nthe new witness FelixRaftWrittenReformReplacedHappens reaches the\ndeposed-leader trace in 3 s. The copy-id pass and the full-scope pass run\nby dispatch.\n\nFelixRaftReform.tla: Rotate can replace the disk with nothing kept, which\nis also a restore whose kept copy was reclaimed; VoteRead was already keyed\nby copy id. New FelixRaftReformReplacedDisk.cfg, run by dispatch.\n\n* formal(raft): replaced-disk twin keyed by broker for the re-form model (#2671)\n\nVoteByBroker drops the copy-id match in VoteRead. With it, a base that\ncontradicts an acknowledged record is kept: OffsetNeverReused is violated\nin 10.5M states at depth 15. The twin is registered as an expected\nviolation and is the evidence for FelixRaftReformReplacedDisk.cfg.\n\n* formal(raft): SelfStart leaves the ordered targets unchanged\n\nFelixRaftReformOneReplica failed with 'variable not assigned: ordered' after the ordered-targets variable was added.\n\n* formal(raft): a replaced copy carries its reservation (#2671)\n\nThe round-3 dispatch found OffsetNeverReused violated in\nFelixRaftReformReplacedDisk and FelixRaftReformTwoReformsOldRestore by\none trace shape: a commits a record with b, ReplaceDisk zeroes a's\nreservation, b is declared dead, and the re-form reads no reservation\nthat covers the offset. The vote rule did its part (the group is marked\nand the base is cut); the offset guard was gone.\n\nReplaceDisk stands for a restore whose kept copy is later reclaimed. In\nthe implementation the rotation writes the highest kept reservation into\nthe new copy before its copy file (raft_copy/judge.rs, rotate), and\nreclaim_kept holds a kept copy whose reservation is above the current\ncopy's (raft_copy/reclaim.rs). The model now carries it.\n\nA disk lost outright does lose the reservation. With a dead broker that\nis every copy that counted the record, the documented residual of a\ntrailing floor. FelixRaftReformReplacedDiskLost.cfg pins it as an\nexpected OffsetNeverReused violation (ReplacedReserve <- LostReserve),\nand docs/per-shard-raft.md now names a lost disk in that residual.\n\n* docs(formal): record the ReformTerms pass (1.75B distinct states, 6 h 53 min on a box)\n\n* formal(raft): written re-form across two terms with the vouch rule (M1 for #2250)\n\n* formal(raft): one process crash in the two-term re-form configs\n\n* formal(raft): reach witness for the two-term cut without a dead broker\n\n* formal(raft): kept copies, power-cut rotation and reservations in the re-form model (M2 for #2250)\n\nFelixRaftReform.tla gains a Kept mode: every rotation keeps the whole copy\nwith its vote, why it rotated and its reservation; PowerCutRotate loses only\nthe unsynced tail and keeps the vote; Rotate is the restore; Return brings a\ndead broker back. The re-form reads current and kept copies and keeps the\nlongest prefix a copy vouches for, keyed by (epoch, term), capped by later\nbase ends, padded past every reservation read, with the epoch-scoped mark.\nExisting configs set Kept FALSE and keep their state spaces.\n\n* docs(formal): kept copies and two re-forms in the README\n\n* formal(raft): shape the two re-form configs so each finishes, with results\n\nTwoReformsShape closes epoch 0 empty, allows one write per later epoch and\nholds the plan that closes epoch 1 until epoch 1 commits a record. All six\ntwo re-form configs now give their declared outcome on a build box in\nunder seven minutes. README rows with state counts and times, weights for\nthe longer configs, and a changelog fragment.\n\n* formal(raft): exercise the cap, T and Return, and bound Kept losses\n\n- TwoReformsOldRestore takes a second write, so epoch 2 writes.\n- NeverPadsByReserve needs both power cuts and a power-cut copy whose\n  reservation is above its log, at a committed epoch-1 record.\n- New Kept configs with a non-empty epoch 0: KeptOldKept (a dead broker\n  returns with its epoch-0 copy; witness KeptOldKeptCap for the cap) and\n  KeptTerms (two terms; witness KeptTermsT for T).\n- KeptLossBound: unmarked, no vote above every entry, no acknowledged\n  record held below its cap is lost.\n- LossNeedsLostDiskAtTop on CommitsReformTerms.\n- Evidence lines on EpochMark and TrailingFloorHappens.\n\n* formal(raft): a fsynced count needs no reservation; long re-form configs run nightly\n\nAn fsynced entry survives a power cut, so the re-form's base covers it.\nOnly a written count needs a reservation, as in raft_log/writer.rs.\nRelaxing Ack and Agree only adds behaviours; every registered\nFelixRaftWritten config keeps its outcome.\n\nFelixRaftWrittenCommitsReformTerms, FelixRaftReformTwoReformsOldRestore\nand FelixRaftReformKeptTerms pass but run past a pull request's hour, so\nthey move to the nightly exhaustive job.\n\n* formal(raft): every count needs a reservation, fsynced ones too\n\nRelaxing Ack and Agree so a fsynced count skips the reservation lets\nFelixRaftWrittenCommitsReformTerms violate OffsetNeverReused in 14\nsteps: the vouch rule keeps only b's saved commit once a is declared\ndead, so the base is cut below a fsynced, committed entry that nothing\nreserved, and the re-form reuses its offset. The code must reserve\nbefore any count (#2632).\n\n* docs(formal): the long re-form configs run in dispatch 43744757023\n\n* formal(raft): pin the vouch rule's dead-broker loss; record the long re-form results\n\nFelixRaftWrittenReformVouchDead violates NeverLosesCommitted in 15 states:\nwith a broker declared dead no copy vouches for its whole log and a\nfollower's saved commit is 0, so a record fsynced and reserved on an\nintact copy is cut (#2661). KeptTerms and TwoReformsOldRestore pass\nexhaustively; ReformTerms leaves the nightly list, a box run checks it.\nThe code reserves in every fsync mode (#2636).\n\n* docs(formal): the vouch-dead trace loses a committed entry; ReformTerms is expected to pass\n\n* docs(formal): record ReformTerms' six-hour reach\n\n* docs(formal): record the ReformTerms pass (1.75B distinct states, 6 h 53 min on a box)",
+          "timestamp": "2026-11-16T08:20:54-08:00",
+          "tree_id": "bb9ba2e045272ab226c7d90b5b6e807450d4bcc1",
+          "url": "https://github.com/GetFelix/felix/commit/8ecf0ebfc4c16452d22099ea871f55d47d63d983"
+        },
+        "date": 1794846599507,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 67,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 67.00\nmean: 67.00\nstdev: 0.71\ncv: 1.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 94,
+            "range": "2.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 94.00\nmean: 95.00\nstdev: 2.55\ncv: 2.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 127,
+            "range": "19.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 137.20\nstdev: 19.87\ncv: 14.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 85.60\nstdev: 0.55\ncv: 0.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 192,
+            "range": "4.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 192.00\nstdev: 4.47\ncv: 2.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 290,
+            "range": "20.60",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 290.00\nmean: 291.40\nstdev: 20.60\ncv: 7.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
