@@ -607,6 +607,24 @@ Next ==
 
 Spec == Init /\ [][Next]_vars
 
+\* The scope of the #2671 configurations, an ACTION_CONSTRAINT so TLC
+\* reaches a deposed leader's append to a replacement copy in seconds and
+\* the vote gate alone decides: no written reports and no floor report (a
+\* floor at the dead leader's term would hide the deposed term), one
+\* candidate per term, the replaced copy never campaigns, its disk is
+\* replaced only after something committed, a broker is declared dead only
+\* after that, and the one crash stops a leader once one is dead.
+ReplacedScope ==
+    /\ wrote' = wrote
+    /\ cpFloor' = cpFloor
+    /\ role'[ReplacedCopy] # "candidate"
+    /\ \A c \in Servers : (term'[c] > term[c] /\ role'[c] = "candidate")
+            => \A s \in Servers \ {c} : term[s] < term'[c]
+    /\ replaced' # replaced => committed # <<>>
+    /\ dead' # dead => replaced # {}
+    /\ used'.crashes > used.crashes =>
+            dead # {} /\ \E s \in Servers : role[s] = "leader" /\ role'[s] # "leader"
+
 ----------------------------------------------------------------------------
 
 TypeOK ==
@@ -700,6 +718,14 @@ NeverLosesCommitted ==
 \* index. A witness that the gate is needed: with the gate forced open, a
 \* copy holding an older term's tail vouches for it over a commit the dead
 \* made.
+\* Witness for the #2671 configurations: a re-form runs after the
+\* replacement copy saved a deposed leader's term below a committed one.
+NoDeposedAppend ==
+    ~(/\ reform.on
+      /\ replaced # {}
+      /\ term[ReplacementCopy] > 0
+      /\ \E k \in 1..Len(committed) : committed[k].by > term[ReplacementCopy])
+
 BaseAgrees ==
     reform.on =>
         \A k \in 1..Min(Len(reform.base), Len(committed)) : reform.base[k] = committed[k].e

@@ -550,6 +550,15 @@ KeepCopy(b, l, t, by) ==
     /\ synced' = [synced EXCEPT ![b] = 0]
     /\ reserve' = [reserve EXCEPT ![b] = 0]
 
+\* A replaced disk keeps nothing, not even the old copy's vote (#2671). A
+\* restore whose kept copy is later reclaimed ends in the same state: a
+\* new empty copy and no kept copy of the old id.
+ReplaceDisk(b) ==
+    /\ NewCopy(b, <<>>)
+    /\ synced' = [synced EXCEPT ![b] = 0]
+    /\ reserve' = [reserve EXCEPT ![b] = 0]
+    /\ UNCHANGED keptLogs
+
 \* The shard directory is lost, or restored from an older copy: the copy id
 \* rotates and any prefix of the log is left. The stop marker goes with it.
 Rotate(b, n) ==
@@ -558,7 +567,8 @@ Rotate(b, n) ==
     /\ rotations' = rotations + 1
     /\ n \in 0..Len(log[b])
     /\ IF Kept
-       THEN \E t \in 0..term[b] : KeepCopy(b, SubSeq(log[b], 1, n), t, "restore")
+       THEN \/ \E t \in 0..term[b] : KeepCopy(b, SubSeq(log[b], 1, n), t, "restore")
+            \/ n = 0 /\ ReplaceDisk(b)
        ELSE NewCopy(b, SubSeq(log[b], 1, n)) /\ UNCHANGED <<keptLogs, synced, reserve>>
     /\ UNCHANGED <<cpVars, writes, steps, places, rejoins, restarts, cuts, returns>>
 
@@ -844,7 +854,8 @@ VoterSets(E, R) ==
 \* A member's epoch-E vote is read when the re-form read the copy it gave it
 \* from, current or kept by a power cut, and its broker is not dead and has
 \* no kept copy of E rotated by a restore, which can hold an older vote than
-\* one it gave.
+\* one it gave. Keyed by copy id (#2671): a later copy of the same broker
+\* says nothing of an earlier one's vote.
 VoteRead(m, E, R) ==
     /\ m[1] \notin dead
     /\ ~\E k \in keptLogs[m[1]] : k.e = E /\ k.by = "restore"

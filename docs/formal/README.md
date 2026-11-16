@@ -629,8 +629,10 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenCommitsReformJointCutDead.cfg` | five voters move to {a, b, c} on c's unsynced write; c is cut, a and b die | `BaseAgrees`, `OffsetNeverReused`: pass (#2661) |
 | `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms | `BaseAgrees`: pass (#2661) |
 | `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | violates `BaseAgrees` (#2661) |
-| `FelixRaftWrittenReformReplaced.cfg` | voters a1, b1, c1 with b2 a learner; b1's disk is replaced with nothing kept, c1 is declared dead, and a1, deposed, appends its term-1 tail to b2 | `BaseAgrees`: pass (#2671): voters are keyed by copy id, so b1's vote is unknown, {b1, c1} is a majority and the group is marked |
-| `FelixRaftWrittenReformReplacedByBroker.cfg` | the same with voters keyed by broker: b2's vote stands in for b1's | violates `BaseAgrees` (#2671): a1 vouches for x at the index where c1 committed f |
+| `FelixRaftWrittenReformReplaced.cfg` | voters a1, b1, c1 with b2 a learner; b1's disk is replaced with nothing kept, c1 is declared dead, and a1, deposed, appends its term-1 tail to b2 | `BaseAgrees`: pass (#2671): voters are keyed by copy id, so b1's vote is unknown, {b1, c1} is a majority and the group is marked. Not registered, run by dispatch |
+| `FelixRaftWrittenReformReplacedHappens.cfg` | witness: the same scope, a re-form after b2 saved the deposed term 1 while term 2 committed | violates `NoDeposedAppend` (184k distinct states, 3 s) |
+| `FelixRaftWrittenReformReplacedFull.cfg` | `FelixRaftWrittenReformReplaced.cfg` without `ReplacedScope` and with reservations | `BaseAgrees`: pass. Not registered, run by dispatch |
+| `FelixRaftWrittenReformReplacedByBroker.cfg` | the same with voters keyed by broker: b2's vote stands in for b1's | violates `BaseAgrees` (#2671): a1 vouches for x at the index where c1 committed f (226k distinct states, depth 19, 7 s) |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472; the code now takes the term-bound shape, and this stays as the counterexample twin); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
@@ -821,6 +823,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftReformKeptOldKeptCap.cfg` | witness: the epoch-1 cap lowers what the returned epoch-0 copy vouches for | violate `NeverCaps` (207k distinct states, depth 17, 20 s) |
 | `FelixRaftReformKeptTerms.cfg` | `Kept`, one re-form over two terms of epoch 0 and one power cut, the group unmarked | pass the same as `...TrailingFloor.cfg` (82.3M distinct states, depth 34, 56 min on a CI runner); not registered for pull requests, runs nightly (`tla-walk.yml`) |
 | `FelixRaftReformKeptTermsT.cfg` | witness: T keeps one copy whole and cuts another, longer one | violate `NeverVouchesByT` (335k distinct states, depth 12, 21 s) |
+| `FelixRaftReformReplacedDisk.cfg` | `Kept`, one rotation that can replace the disk with nothing kept (#2671), one broker declared dead, two terms | pass the same as `...TrailingFloor.cfg`. Not registered, run by dispatch |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.3M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.1M distinct states) |
@@ -2982,7 +2985,12 @@ to it as a learner, and says nothing about the term the old copy voted in.
 Counting it for the broker leaves the group unmarked and a1 vouches for a
 term-1 tail over the term-2 commit that b1's vote made
 (`FelixRaftWrittenReformReplacedByBroker.cfg`; `FelixRaftWrittenReformReplaced.cfg`
-passes).
+passes). Both run under `ReplacedScope`, an action constraint that turns off
+written reports and the floor report and lets only a leader crash and only
+after a commit lose the replaced disk, so the vote gate alone decides and
+TLC reaches the deposed leader's append in seconds. A restore whose kept copy
+is reclaimed later is the same state as a replaced disk: a new copy and no
+kept copy of the old id.
 
 With `Reserve`, every copy also reserves before its fsynced copy counts toward
 the commit, the leader's own included. A fsynced copy is not enough on its
@@ -3492,7 +3500,8 @@ index that only lags is not a loss: the twin that cuts every log to it
 the whole copy into a kept copy that holds its log, saved commit, vote, why
 it rotated and its reservation. `PowerCutRotate` loses only the unsynced tail
 and keeps the vote; `Rotate` is a restore that can bring back any prefix and
-an older vote; `Return` brings a broker declared dead back under a new copy
+an older vote, or a disk replaced with nothing kept (#2671), which is also
+where a restore ends once its kept copy is reclaimed; `Return` brings a broker declared dead back under a new copy
 id with its kept copies. The re-form reads every current and kept copy of the
 brokers it reads. A copy vouches for its saved commit, for the floor's index
 if it holds the floor's entry, and for its whole log when its last key equals
