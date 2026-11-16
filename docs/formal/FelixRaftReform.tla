@@ -115,6 +115,8 @@
 (*                         plan, and does not read the copies again.       *)
 (*   RotatedNotWaited   -- a rotated copy is not read.                     *)
 (*   RetireNotDurable   -- a restart forgets the stop marker.              *)
+(*   VoteByBroker       -- a vote counts as read when any copy of its      *)
+(*                         broker was read, as if keyed by broker (#2671). *)
 (*   BaseNotHighest     -- the base is any copy's log.                     *)
 (*   NoCas              -- the command does not compare the epoch.         *)
 (*   SoloPlacedTwo      -- a restored copy starts by itself although a     *)
@@ -188,6 +190,7 @@ CONSTANTS
     PlanNotRechecked,
     RotatedNotWaited,
     RetireNotDurable,
+    VoteByBroker,
     BaseNotHighest,
     NoCas,
     SoloPlacedTwo,
@@ -859,7 +862,7 @@ VoterSets(E, R) ==
 VoteRead(m, E, R) ==
     /\ m[1] \notin dead
     /\ ~\E k \in keptLogs[m[1]] : k.e = E /\ k.by = "restore"
-    /\ \E c \in R \cap Copies(m[1]) : c.e = E /\ c.cid = m[2] /\ c.by \in {"current", "power-cut"}
+    /\ \E c \in R \cap Copies(m[1]) : c.e = E /\ (VoteByBroker \/ c.cid = m[2]) /\ c.by \in {"current", "power-cut"}
 
 \* The epoch-E mark: the votes not read are a majority of some voter set of
 \* E, so an election of E may have taken none the re-form read.

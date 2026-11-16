@@ -773,6 +773,7 @@ expectations=(
   "FelixRaftReformKeptOldKept pass"
   "FelixRaftReformKeptOldKeptCap violates NeverCaps"
   "FelixRaftReformKeptTermsT violates NeverVouchesByT"
+  "FelixRaftReformReplacedDiskByBroker violates OffsetNeverReused"
   "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
   "FelixRaftReformStaleMembershipIntact pass"
