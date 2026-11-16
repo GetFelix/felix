@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794835766422,
+  "lastUpdate": 1794836733526,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76296,6 +76296,72 @@ window.BENCHMARK_DATA = {
             "range": "759.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 570.00\nmean: 938.20\nstdev: 759.98\ncv: 81.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8440cc96581a95219486e23912e93fc9475af73e",
+          "message": "fix(queue): a rebuilt group settles dead letters above its cursor (#2696)\n\n* fix(queue): a rebuilt group settles dead letters above its cursor (#2687)\n\n* fix(queue): a seek delivers the dead letters at or above it again (#2687)\n\nA seek back over a dead letter delivered it again only until the tracker\nwas rebuilt, which then settled it as a dead letter above the cursor. A\nseek now clears the dead letters at or above its target, on both readers.\n\nHybrid: the entries are deleted and the dead-letter log synced before the\ncursor moves, and the cursor records that log as its dependency, so a copy\nwithout the clears falls back to the pre-seek cursor. Raft: the Seek entry's\nfold clears them (spec Step updated), so every member agrees.\n\nAlso: an offset left in both layouts by a legacy redrive cut short is only\nredriven, and the two lists come from one scan.\n\n* fix(queue): a seek's dead-letter clear counts only once its cursor lands (#2687)\n\nThe clear is a marker written before the cursor and finished after it.\nBefore a shard is served a leftover marker is finished if the group's\ncursor needs the dead-letter log past it and voided otherwise, so a seek\nstopped part way clears nothing. A failed or cancelled seek retires the\ntracker. A retired tracker records no dead letter. A seek back keeps the\norigin at or below the cursor. The Raft model's rebuild settles dead\nletters at or above the cursor.\n\n* fix(queue): bind a seek's clear to its own cursor, gate it on cursor dependencies (#2687)\n\nA pending clear is finished only when the cursor in force is exactly the\nseek's: offset `from` and the mark of the log just past the marker. A\ncommit from a build that ignores the marker voids it instead of deleting\ndead letters below that cursor.\n\nThe clear and the rebuild's settling of dead letters above the cursor\napply only once the fleet has finalized group_cursor_dependencies; before\nthat a seek keeps dead letters, as earlier builds did.\n\nSpec-Unaffected: hybrid-only gating and marker binding; FelixRaftGroups models the Raft fold, which is unchanged.",
+          "timestamp": "2026-11-16T13:40:34Z",
+          "tree_id": "1eb86332c391208f51e5312b39990e7656108667",
+          "url": "https://github.com/GetFelix/felix/commit/8440cc96581a95219486e23912e93fc9475af73e"
+        },
+        "date": 1794836725161,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 76,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 76.00\nmean: 76.00\nstdev: 1.00\ncv: 1.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "2.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 128.80\nstdev: 2.86\ncv: 2.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 156,
+            "range": "7.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 156.00\nmean: 155.00\nstdev: 7.14\ncv: 4.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 91,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 91.60\nstdev: 0.89\ncv: 0.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 188,
+            "range": "26.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 188.00\nmean: 200.40\nstdev: 26.12\ncv: 13.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 286,
+            "range": "794.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 286.00\nmean: 691.20\nstdev: 794.83\ncv: 114.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
