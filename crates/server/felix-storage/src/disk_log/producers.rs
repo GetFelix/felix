@@ -11,7 +11,9 @@
 //! What is remembered is a function of the log alone: a producer is known
 //! while one of its batches is still in the log, and forgotten once retention
 //! has removed them all or it is the least recently written of more than
-//! [`MAX_PRODUCERS`]. The snapshot written at each rollover only saves
+//! [`MAX_PRODUCERS`]. A producer retention forgot keeps a [`Tombstone`]
+//! with its newest sequence, so its re-send is refused rather than taken as
+//! a new producer's. The snapshot written at each rollover only saves
 //! rescanning sealed segments on open; losing it costs a longer open, never
 //! an answer. See `docs/storage-format.md`, "Producer state".
 //!
@@ -98,33 +100,76 @@ pub struct UnfinishedBatch {
     pub digest: Option<PayloadDigest>,
 }
 
-/// Cut batches a log refuses by producer and sequence alone, as one copy of
-/// a shard hands them to another that starts at a later base. Nothing in
-/// the records says they were written, so a copy that starts past them
-/// knows them only this way. See `docs/per-shard-raft.md`, "Idempotent
-/// publishes".
+/// Batches a log refuses by producer and sequence alone, as one copy of a
+/// shard hands them to another that starts at a later base: cut batches, and
+/// the newest batch of each producer a purge forgot completely
+/// ([`Tombstone`]). Nothing in the records says they were written, so a copy
+/// that starts past them knows them only this way. See
+/// `docs/per-shard-raft.md`, "Idempotent publishes".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ForgottenCuts(pub(super) HashMap<u64, u64>);
+pub struct ForgottenCuts {
+    pub(super) cuts: HashMap<u64, u64>,
+    pub(super) tombstones: HashMap<u64, Tombstone>,
+}
 
 impl ForgottenCuts {
     pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
+        self.cuts.is_empty() && self.tombstones.is_empty()
     }
 
     /// The batch refused for `producer_id`: that sequence and older ones.
     pub fn sequence(&self, producer_id: u64) -> Option<u64> {
-        self.0.get(&producer_id).copied()
+        let cut = self.cuts.get(&producer_id).copied();
+        let tombstone = self.tombstones.get(&producer_id).map(|t| t.sequence);
+        cut.max(tombstone)
     }
 
-    /// The same layout as the `producers.forgotten` file.
+    /// The same layout as the `producers.forgotten` file's first table, with
+    /// the tombstones after it when there are any.
     pub fn encode(&self) -> Vec<u8> {
-        encode_forgotten(&self.0)
+        let mut out = encode_forgotten(&self.cuts);
+        if self.tombstones.is_empty() {
+            return out;
+        }
+        let mut body = out.split_off(8);
+        encode_tombstones(&mut body, &self.tombstones);
+        out.truncate(4);
+        out.extend_from_slice(&crate::segment::format::crc32(&[&body]).to_be_bytes());
+        out.extend_from_slice(&body);
+        out
     }
 
     /// `None` when `bytes` are not what [`Self::encode`] writes.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
-        decode_forgotten(bytes).map(Self)
+        let mut reader = Reader(bytes);
+        if reader.u32()? != FORGOTTEN_MAGIC {
+            return None;
+        }
+        let crc = reader.u32()?;
+        if crate::segment::format::crc32(&[reader.0]) != crc {
+            return None;
+        }
+        let cuts = reader.forgotten()?;
+        let tombstones = if reader.0.is_empty() {
+            HashMap::default()
+        } else {
+            // `encode` leaves an empty table out, so one state has one
+            // encoding.
+            Some(reader.tombstones()?).filter(|t| !t.is_empty())?
+        };
+        reader.0.is_empty().then_some(Self { cuts, tombstones })
     }
+}
+
+/// A producer a purge forgot completely: every batch of it was below the
+/// new base. Its re-send of `sequence` or anything older is refused as
+/// expired, where the log alone would take a re-send at sequence 0 as new.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Tombstone {
+    pub(super) sequence: u64,
+    /// The offset of the producer's last record, so the oldest goes first
+    /// past [`MAX_PRODUCERS`].
+    pub(super) last: Offset,
 }
 
 /// Every producer a shard's log holds batches for.
@@ -153,6 +198,10 @@ pub(crate) struct ProducerState {
     /// one past the last record held of it. A purge past that moves it to
     /// `carried`.
     evicted: HashMap<u64, (u64, Offset)>,
+    /// Producers a purge forgot completely, at most [`MAX_PRODUCERS`]. Like
+    /// `carried`, committed records below the base account for them, so
+    /// every copy derives the same and a snapshot hands them on.
+    tombstones: HashMap<u64, Tombstone>,
     /// The base of the snapshot whose carried batches were taken in last,
     /// until the reset to it. Saved with `carried`. Not in the snapshot.
     installed: Option<Offset>,
@@ -264,7 +313,10 @@ impl ProducerState {
             };
         }
         let Some(producer) = self.producers.get(&producer_id) else {
-            return ProducerSequence::Unknown;
+            return match self.tombstones.get(&producer_id) {
+                Some(tombstone) if sequence <= tombstone.sequence => ProducerSequence::Expired,
+                _ => ProducerSequence::Unknown,
+            };
         };
         let expected = producer.last_sequence + 1;
         if sequence == expected {
@@ -505,7 +557,12 @@ impl ProducerState {
         let forgotten = &mut self.forgotten;
         let carried = &mut self.carried;
         let evicted = &mut self.evicted;
+        let tombstones = &mut self.tombstones;
         self.producers.retain(|id, producer| {
+            let newest = Tombstone {
+                sequence: producer.last_sequence,
+                last: producer.last_offset(),
+            };
             let mut sequence = producer
                 .last_sequence
                 .wrapping_sub(producer.recent.len() as u64)
@@ -543,8 +600,18 @@ impl ProducerState {
                 }
                 sequence = sequence.wrapping_add(1);
             }
+            // Without this a re-send at sequence 0 would read as a new
+            // producer and be written again. A batch with pieces still here
+            // is refused as cut instead, as a copy that starts at `base`
+            // sees it.
+            if producer.recent.is_empty()
+                && headless.last().is_none_or(|b| b.batch.producer_id != *id)
+            {
+                bury(tombstones, *id, newest);
+            }
             !producer.recent.is_empty()
         });
+        bound_tombstones(&mut self.tombstones);
         let open = self.open.map(|open| open.batch.producer_id);
         for batch in headless {
             // A batch the producer opened later has replaced it.
@@ -574,6 +641,20 @@ impl ProducerState {
         // that trims instead, leaves it set. That is harmless: it counts only
         // for a reset to that same base, and the next install overwrites it.
         let installed = self.installed == Some(base);
+        if !installed {
+            // Every record below `base` was applied, so committed: the
+            // producers it held are forgotten as a purge forgets them.
+            for (id, producer) in &self.producers {
+                if producer.last_offset() < base {
+                    let newest = Tombstone {
+                        sequence: producer.last_sequence,
+                        last: producer.last_offset(),
+                    };
+                    bury(&mut self.tombstones, *id, newest);
+                }
+            }
+            bound_tombstones(&mut self.tombstones);
+        }
         let unfinished: Vec<_> =
             self.open
                 .take()
@@ -617,8 +698,16 @@ impl ProducerState {
     }
 
     /// What a snapshot at the log's base hands on. See `carried`.
-    pub(crate) fn carried(&self) -> &HashMap<u64, u64> {
-        &self.carried
+    pub(crate) fn carried(&self) -> ForgottenCuts {
+        ForgottenCuts {
+            cuts: self.carried.clone(),
+            tombstones: self.tombstones.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn tombstones(&self) -> &HashMap<u64, Tombstone> {
+        &self.tombstones
     }
 
     /// Take in forgotten batches saved earlier. The higher sequence wins.
@@ -632,7 +721,11 @@ impl ProducerState {
     /// Take in the batches a snapshot at `base` carries, ahead of the reset
     /// to `base`.
     pub(super) fn install(&mut self, base: Offset, cuts: ForgottenCuts) {
-        for (id, sequence) in cuts.0 {
+        for (id, tombstone) in cuts.tombstones {
+            bury(&mut self.tombstones, id, tombstone);
+        }
+        bound_tombstones(&mut self.tombstones);
+        for (id, sequence) in cuts.cuts {
             self.carry(ProducerBatch {
                 producer_id: id,
                 sequence,
@@ -662,10 +755,12 @@ impl ProducerState {
             forgotten: self.forgotten.clone(),
             carried: self.carried.clone(),
             installed: self.installed,
+            tombstones: self.tombstones.clone(),
         }
     }
 
     fn restore(&mut self, saved: SavedForgotten) {
+        self.restore_tombstones(&saved);
         self.remember(saved.forgotten);
         self.remember(saved.carried.clone());
         for (id, sequence) in saved.carried {
@@ -673,6 +768,13 @@ impl ProducerState {
             *kept = (*kept).max(sequence);
         }
         self.installed = saved.installed;
+    }
+
+    fn restore_tombstones(&mut self, saved: &SavedForgotten) {
+        for (id, tombstone) in &saved.tombstones {
+            bury(&mut self.tombstones, *id, *tombstone);
+        }
+        bound_tombstones(&mut self.tombstones);
     }
 
     /// Keep only enough of a cut batch to refuse its re-send. Written again
@@ -737,6 +839,27 @@ impl ProducerState {
     #[cfg(test)]
     pub(crate) fn len(&self) -> usize {
         self.producers.len()
+    }
+}
+
+/// Remember `tombstone` for `id`. The newer one wins.
+fn bury(tombstones: &mut HashMap<u64, Tombstone>, id: u64, tombstone: Tombstone) {
+    let kept = tombstones.entry(id).or_insert(tombstone);
+    kept.sequence = kept.sequence.max(tombstone.sequence);
+    kept.last = kept.last.max(tombstone.last);
+}
+
+/// Keep the newest [`MAX_PRODUCERS`] tombstones. Ties go by producer, so
+/// every copy keeps the same ones.
+fn bound_tombstones(tombstones: &mut HashMap<u64, Tombstone>) {
+    let excess = tombstones.len().saturating_sub(MAX_PRODUCERS);
+    if excess == 0 {
+        return;
+    }
+    let mut oldest: Vec<_> = tombstones.iter().map(|(id, t)| (t.last, *id)).collect();
+    oldest.select_nth_unstable(excess - 1);
+    for (_, id) in &oldest[..excess] {
+        tombstones.remove(id);
     }
 }
 
@@ -945,6 +1068,7 @@ pub(super) fn decode_versioned(bytes: &[u8]) -> Option<(ProducerState, Offset, u
             forgotten,
             carried,
             evicted,
+            tombstones: HashMap::default(),
             installed: None,
             keeps_cuts: false,
         },
@@ -967,6 +1091,16 @@ impl Reader<'_> {
             forgotten.insert(self.u64()?, self.u64()?);
         }
         Some(forgotten)
+    }
+    fn tombstones(&mut self) -> Option<HashMap<u64, Tombstone>> {
+        let mut tombstones = HashMap::default();
+        for _ in 0..self.u32()? {
+            let id = self.u64()?;
+            let sequence = self.u64()?;
+            let last = self.u64()?;
+            tombstones.insert(id, Tombstone { sequence, last });
+        }
+        Some(tombstones)
     }
 
     fn u8(&mut self) -> Option<u8> {
@@ -1067,17 +1201,17 @@ pub(super) fn rebuild(
         ),
     };
     state.keeps_cuts = keeps_cuts;
-    let mut saved = SavedForgotten::default();
+    // Not in the records and maybe not in the snapshot: see
+    // `store_forgotten`.
+    let saved = load_forgotten(dir)?;
     if keeps_cuts {
-        // Not in the records and maybe not in the snapshot: see
-        // `store_forgotten`.
-        saved = load_forgotten(dir)?;
         state.restore(saved.clone());
     } else {
         state.cuts.clear();
         state.forgotten.clear();
         state.carried.clear();
         state.evicted.clear();
+        state.restore_tombstones(&saved);
     }
     state.prune(base);
 
@@ -1193,11 +1327,13 @@ pub(crate) struct SavedForgotten {
     forgotten: HashMap<u64, u64>,
     carried: HashMap<u64, u64>,
     installed: Option<Offset>,
+    tombstones: HashMap<u64, Tombstone>,
 }
 
 // The file is the forgotten batches in the layout below, then the carried
-// ones the same way, then the installed base u64 (u64::MAX for none). The
-// crc covers all of it. A file with the forgotten batches alone predates the
+// ones the same way, then the installed base u64 (u64::MAX for none), then
+// the tombstones when there are any: count u32, then per producer
+// producer_id u64, sequence u64, last u64. The crc covers all of it. A file with the forgotten batches alone predates the
 // carried set and cannot say which were this copy's own, so it carries all
 // of them: refusing too much is safe, since every copy that holds or purged
 // the records refuses them too.
@@ -1206,6 +1342,9 @@ fn encode_saved(saved: &SavedForgotten) -> Vec<u8> {
     let mut body = out.split_off(8);
     body.extend_from_slice(&encode_forgotten(&saved.carried)[8..]);
     body.extend_from_slice(&saved.installed.unwrap_or(u64::MAX).to_be_bytes());
+    if !saved.tombstones.is_empty() {
+        encode_tombstones(&mut body, &saved.tombstones);
+    }
     out.truncate(4);
     out.extend_from_slice(&crate::segment::format::crc32(&[&body]).to_be_bytes());
     out.extend_from_slice(&body);
@@ -1230,6 +1369,9 @@ fn decode_saved(bytes: &[u8]) -> Option<SavedForgotten> {
     } else {
         saved.carried = reader.forgotten()?;
         saved.installed = Some(reader.u64()?).filter(|base| *base != u64::MAX);
+        if !reader.0.is_empty() {
+            saved.tombstones = Some(reader.tombstones()?).filter(|t| !t.is_empty())?;
+        }
     }
     reader.0.is_empty().then_some(saved)
 }
@@ -1253,6 +1395,18 @@ fn encode_forgotten(forgotten: &HashMap<u64, u64>) -> Vec<u8> {
     out
 }
 
+fn encode_tombstones(body: &mut Vec<u8>, tombstones: &HashMap<u64, Tombstone>) {
+    body.extend_from_slice(&(tombstones.len() as u32).to_be_bytes());
+    let mut sorted: Vec<_> = tombstones.iter().collect();
+    sorted.sort_unstable_by_key(|(id, _)| **id);
+    for (id, tombstone) in sorted {
+        body.extend_from_slice(&id.to_be_bytes());
+        body.extend_from_slice(&tombstone.sequence.to_be_bytes());
+        body.extend_from_slice(&tombstone.last.to_be_bytes());
+    }
+}
+
+#[cfg(test)]
 fn decode_forgotten(bytes: &[u8]) -> Option<HashMap<u64, u64>> {
     let mut reader = Reader(bytes);
     if reader.u32()? != FORGOTTEN_MAGIC {
@@ -1275,13 +1429,14 @@ pub(super) struct CarriedFrom {
 }
 
 impl CarriedFrom {
-    pub(super) fn new(carried: HashMap<u64, u64>) -> Self {
+    pub(super) fn new(carried: ForgottenCuts) -> Self {
         let mut state = ProducerState {
             keeps_cuts: true,
+            tombstones: carried.tombstones,
             ..ProducerState::default()
         };
-        state.remember(carried.clone());
-        state.carried = carried;
+        state.remember(carried.cuts.clone());
+        state.carried = carried.cuts;
         Self { state }
     }
 
@@ -1292,7 +1447,7 @@ impl CarriedFrom {
 
     pub(super) fn finish(mut self, base: Offset) -> ForgottenCuts {
         self.state.prune(base);
-        ForgottenCuts(self.state.carried)
+        self.state.carried()
     }
 }
 

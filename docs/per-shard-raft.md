@@ -3186,6 +3186,12 @@ in between leaves the old snapshot and only more refusals. Empty data
 carries none: a switch's base snapshot, or a snapshot taken with nothing
 forgotten.
 
+A producer whose batches a purge removed altogether is not just dropped. Its
+newest sequence stays as a tombstone, carried in the snapshot data with the
+cut batches, so a re-send of its first batch is refused as expired instead of
+being written a second time. Up to 4096 are kept per shard, oldest out first;
+see "`producers`: the producer snapshot" in `docs/storage-format.md`.
+
 The sender reads its log from its base to build the list, a chunk at a
 time, so appends go on while it does. That read is as long as the log.
 

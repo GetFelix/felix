@@ -257,13 +257,94 @@ async fn retention_forgets_a_producer_once_its_batches_are_gone() {
     let outcome = log.enforce_retention_now().await.expect("retention");
     assert!(outcome.segments_deleted > 0);
     assert_eq!(log.producer_sequence(9, 1), ProducerSequence::Unknown);
+    // A re-send of the forgotten batch is not taken as a new producer's.
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
     assert_eq!(log.producer_sequence(1, 12), ProducerSequence::Next);
     log.shutdown().await.expect("shutdown");
     drop(log);
 
-    let log = DiskLog::open(dir.path(), "t/ns/s/0", config).expect("reopen");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config.clone()).expect("reopen");
     assert_eq!(log.producer_sequence(9, 1), ProducerSequence::Unknown);
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
     assert_eq!(log.producer_sequence(1, 12), ProducerSequence::Next);
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+
+    // The snapshot is not flushed; without it the records alone cannot say
+    // producer 9 was ever here.
+    std::fs::remove_file(snapshot_path(&dir)).expect("remove snapshot");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", config).expect("reopen");
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+}
+
+/// A Raft purge past every batch of a producer still refuses its re-send:
+/// after a restart, and on a copy that starts from a snapshot past it.
+#[tokio::test]
+async fn a_raft_purge_past_a_producer_refuses_its_first_batch_again() {
+    let dir = tempdir().expect("dir");
+    let tail = {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        lead(&log).await;
+        log.append(&marked(9, 0, &["a", "b"]))
+            .await
+            .expect("append");
+        let mut tail = 0;
+        for _ in 0..12 {
+            tail = log
+                .append(&records(FILLED))
+                .await
+                .expect("append")
+                .last_offset;
+        }
+        assert!(!log.trim_before(tail).await.expect("trim").is_empty());
+        assert!(log.base_offset() > 1, "base {}", log.base_offset());
+        assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+        assert_eq!(log.producer_sequence(9, 1), ProducerSequence::Unknown);
+        log.shutdown().await.expect("shutdown");
+        tail
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    lead(&log).await;
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    let cuts = log.forgotten_cuts_from(tail).await.expect("cuts");
+    assert_eq!(cuts.sequence(9), Some(0));
+    assert_eq!(ForgottenCuts::decode(&cuts.encode()), Some(cuts.clone()));
+    log.shutdown().await.expect("shutdown");
+
+    let copy_dir = tempdir().expect("dir");
+    {
+        let copy = DiskLog::open(copy_dir.path(), "t/ns/s/0", raft_config()).expect("open");
+        copy.reset_to(tail).await.expect("reset");
+        assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Unknown);
+        copy.remember_forgotten_cuts(tail, cuts)
+            .await
+            .expect("remember");
+        assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+        copy.shutdown().await.expect("shutdown");
+    }
+    let copy = DiskLog::open(copy_dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(copy.producer_sequence(9, 0), ProducerSequence::Expired);
+    copy.shutdown().await.expect("shutdown");
+}
+
+/// A reset past a producer's batches, with no snapshot installed, forgets
+/// it the way a purge does.
+#[tokio::test]
+async fn a_reset_past_a_producer_refuses_its_first_batch_again() {
+    let dir = tempdir().expect("dir");
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("open");
+    lead(&log).await;
+    log.append(&marked(9, 0, &["a", "b"]))
+        .await
+        .expect("append");
+    let tail = log.tail_offset().await.expect("tail");
+    log.reset_to(tail).await.expect("reset");
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
+    drop(log);
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_config()).expect("reopen");
+    assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Expired);
+    log.shutdown().await.expect("shutdown");
 }
 
 /// A segment written by a build that could not store marks is rolled before
