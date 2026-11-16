@@ -24,12 +24,18 @@ const READ_ORDERS: &str = "stream.subscribe:stream:t1/orders/*";
 enum Producer {
     Plain,
     Idempotent { id: i64, sequence: i32 },
+    AtEpoch { id: i64, epoch: i16, sequence: i32 },
 }
 
 fn batch(producer: Producer, values: &[&str], compression: Compression) -> Bytes {
     let (producer_id, producer_epoch, base) = match producer {
         Producer::Plain => (NO_PRODUCER_ID, NO_PRODUCER_EPOCH, NO_SEQUENCE),
         Producer::Idempotent { id, sequence } => (id, 0, sequence),
+        Producer::AtEpoch {
+            id,
+            epoch,
+            sequence,
+        } => (id, epoch, sequence),
     };
     let records: Vec<Record> = values
         .iter()
@@ -287,6 +293,17 @@ async fn ship_producer(
     first_sequence: i32,
     values: &[&str],
 ) {
+    ship_producer_at(fixture, producer, 0, first_sequence, values).await;
+}
+
+/// [`ship_producer`] at `epoch`: a promoted replica that holds them.
+async fn ship_producer_at(
+    fixture: &super::Fixture,
+    producer: i64,
+    epoch: i16,
+    first_sequence: i32,
+    values: &[&str],
+) {
     use felix_wire::internal::{ProducerMark, batch_checksum};
     let handle = fixture
         .broker
@@ -301,7 +318,7 @@ async fn ship_producer(
         .collect();
     let marks: Vec<ProducerMark> = (0..values.len())
         .map(|i| ProducerMark::Opens {
-            producer_id: producer as u64,
+            producer_id: crate::api::producer_id::felix_producer(producer, epoch),
             sequence: first_sequence.wrapping_add(i as i32) as u64,
             len: 1,
         })
@@ -339,6 +356,98 @@ fn idempotent(id: i64, sequence: i32, values: &[&str]) -> Bytes {
         values,
         Compression::None,
     )
+}
+
+fn at_epoch(id: i64, epoch: i16, sequence: i32, values: &[&str]) -> Bytes {
+    batch(
+        Producer::AtEpoch {
+            id,
+            epoch,
+            sequence,
+        },
+        values,
+        Compression::None,
+    )
+}
+
+/// **A bumped epoch starts its sequences over and is written** (KIP-360).
+/// A Java producer bumps its epoch itself, keeps its id and sends sequence 0
+/// again; while the old epoch is still in the log, that batch is new, not a
+/// duplicate of the old epoch's first.
+#[tokio::test]
+async fn a_bumped_epoch_restarts_at_zero_and_is_written() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    let mut client = fixture.connect();
+    let id = producer_id(&mut client).await;
+    assert_eq!(
+        produce(&mut client, -1, at_epoch(id, 0, 0, &["a", "b"]))
+            .await
+            .base_offset,
+        0
+    );
+
+    let bumped = produce(&mut client, -1, at_epoch(id, 1, 0, &["c"])).await;
+    assert_eq!((bumped.error_code, bumped.base_offset), (0, 2));
+    let next = produce(&mut client, -1, at_epoch(id, 1, 1, &["d"])).await;
+    assert_eq!((next.error_code, next.base_offset), (0, 3));
+    let again = produce(&mut client, -1, at_epoch(id, 1, 0, &["c"])).await;
+    assert_eq!((again.error_code, again.base_offset), (0, 2));
+    // A new epoch starts at 0, as any producer the log does not know.
+    let skipped = produce(&mut client, -1, at_epoch(id, 3, 4, &["x"])).await;
+    assert_eq!(skipped.error_code, 59, "UNKNOWN_PRODUCER_ID");
+    assert_eq!(
+        stored(&mut client).await,
+        owned(&[(0, "a"), (1, "b"), (2, "c"), (3, "d")])
+    );
+}
+
+/// **An older epoch is fenced once a later one wrote.** Its next batch and
+/// its re-sends are both refused with `INVALID_PRODUCER_EPOCH`, as a Kafka
+/// broker refuses them, and nothing is written.
+#[tokio::test]
+async fn an_older_epoch_is_fenced_after_a_bump() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    let mut client = fixture.connect();
+    let id = producer_id(&mut client).await;
+    produce(&mut client, -1, at_epoch(id, 0, 0, &["a"])).await;
+    produce(&mut client, -1, at_epoch(id, 1, 0, &["b"])).await;
+
+    for stale in [at_epoch(id, 0, 1, &["x"]), at_epoch(id, 0, 0, &["a"])] {
+        let fenced = produce(&mut client, -1, stale).await;
+        assert_eq!(fenced.error_code, 47, "INVALID_PRODUCER_EPOCH");
+    }
+    let negative = produce(&mut client, -1, at_epoch(id, -1, 0, &["x"])).await;
+    assert_eq!(negative.error_code, 87, "INVALID_RECORD");
+    // Another producer's epochs are its own.
+    let other = producer_id(&mut client).await;
+    let fresh = produce(&mut client, -1, at_epoch(other, 0, 0, &["c"])).await;
+    assert_eq!((fresh.error_code, fresh.base_offset), (0, 2));
+    assert_eq!(
+        stored(&mut client).await,
+        owned(&[(0, "a"), (1, "b"), (2, "c")])
+    );
+}
+
+/// **A promoted replica knows the epoch from the records it was shipped.**
+/// The epoch is part of each record's producer mark, so the new leader
+/// fences the old epoch and continues the new one's sequences.
+#[tokio::test]
+async fn a_promoted_replica_keeps_the_epoch() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    let mut client = fixture.connect();
+    let id = producer_id(&mut client).await;
+    ship_producer_at(&fixture, id, 0, 0, &["a"]).await;
+    ship_producer_at(&fixture, id, 2, 0, &["b", "c"]).await;
+
+    let fenced = produce(&mut client, -1, at_epoch(id, 0, 1, &["x"])).await;
+    assert_eq!(fenced.error_code, 47, "INVALID_PRODUCER_EPOCH");
+    let again = produce(&mut client, -1, at_epoch(id, 2, 1, &["c"])).await;
+    assert_eq!((again.error_code, again.base_offset), (0, 2));
+    let next = produce(&mut client, -1, at_epoch(id, 2, 2, &["d"])).await;
+    assert_eq!((next.error_code, next.base_offset), (0, 3));
 }
 
 /// **Sequences wrap from `i32::MAX` to 0, as Kafka's do.** After a record at

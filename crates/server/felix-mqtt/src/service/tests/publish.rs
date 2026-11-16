@@ -137,17 +137,18 @@ async fn publishes_that_arrive_while_a_batch_is_out_go_as_one_batch() {
     assert_eq!(batches[0].producer_id, batches[1].producer_id);
 }
 
-/// A broker that takes one record per batch (a Raft shard's) gets each
-/// queued message as its own batch, numbered in order.
+/// A broker that numbers each record (a Raft shard's) still gets queued
+/// messages as one batch, and the next batch's sequence follows its last
+/// record's.
 #[tokio::test(start_paused = true)]
-async fn queued_publishes_go_one_per_batch_when_the_broker_says_so() {
+async fn sequences_count_records_when_the_broker_numbers_each() {
     let writes = FakeWrites::new();
     writes
-        .max_batch_records
-        .store(1, std::sync::atomic::Ordering::SeqCst);
+        .sequence_per_record
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     writes.hold();
     let mut h = connected_with(Version::V311, Settings::default(), Arc::clone(&writes)).await;
-    for id in 1..=3 {
+    for id in 1..=4 {
         h.client
             .send(
                 Packet::Publish(publish(QoS::AtLeastOnce, Some(id))),
@@ -156,15 +157,23 @@ async fn queued_publishes_go_one_per_batch_when_the_broker_says_so() {
             .await;
         settle_down().await;
     }
-    writes.release(3);
-    for id in 1..=3 {
+    writes.release(2);
+    for id in 1..=4 {
         assert_eq!(puback(h.client.recv().await).packet_id, id);
     }
+    h.client
+        .send(
+            Packet::Publish(publish(QoS::AtLeastOnce, Some(5))),
+            Version::V311,
+        )
+        .await;
+    writes.release(1);
+    assert_eq!(puback(h.client.recv().await).packet_id, 5);
     let batches = writes.batches();
     let sizes: Vec<_> = batches.iter().map(|b| b.records.len()).collect();
-    assert_eq!(sizes, [1, 1, 1]);
+    assert_eq!(sizes, [1, 3, 1]);
     let sequences: Vec<_> = batches.iter().map(|b| b.sequence).collect();
-    assert_eq!(sequences, [0, 1, 2]);
+    assert_eq!(sequences, [0, 1, 4]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -618,4 +627,59 @@ async fn over_quota_the_connection_stops_reading_for_the_hold() {
         "{:?}",
         start.elapsed()
     );
+}
+
+/// **A batch written partway acknowledges the messages that were written**
+/// and refuses only the rest, and the next batch's sequence follows the
+/// last written one. Closing instead would leave the written ones to be
+/// sent again under a new producer, as copies.
+#[tokio::test(start_paused = true)]
+async fn a_batch_written_partway_acknowledges_what_was_written() {
+    let writes = FakeWrites::new();
+    writes
+        .sequence_per_record
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    writes.hold();
+    let mut h = connected_with(Version::V5, Settings::default(), Arc::clone(&writes)).await;
+    for id in 1..=4 {
+        h.client
+            .send(
+                Packet::Publish(publish(QoS::AtLeastOnce, Some(id))),
+                Version::V5,
+            )
+            .await;
+        settle_down().await;
+    }
+    writes.release(1);
+    assert_eq!(puback(h.client.recv().await).packet_id, 1);
+    // The second batch holds messages 2 to 4, and only 2 and 3 land.
+    writes.fail_with(Err(WriteError::Partly {
+        written: 2,
+        rest: crate::write::Unwritten::Refused(Refusal::NotOwner),
+    }));
+    writes.release(1);
+    let mut answers = Vec::new();
+    for _ in 2..=4 {
+        let ack = puback(h.client.recv().await);
+        answers.push((ack.packet_id, ack.reason));
+    }
+    assert_eq!(
+        answers,
+        [
+            (2, ReasonCode::Success),
+            (3, ReasonCode::Success),
+            (4, ReasonCode::ImplementationSpecificError)
+        ]
+    );
+    writes.fail_with(Ok(()));
+    h.client
+        .send(
+            Packet::Publish(publish(QoS::AtLeastOnce, Some(5))),
+            Version::V5,
+        )
+        .await;
+    writes.release(1);
+    assert_eq!(puback(h.client.recv().await).reason, ReasonCode::Success);
+    let sequences: Vec<_> = writes.batches().iter().map(|b| b.sequence).collect();
+    assert_eq!(sequences, [0, 1, 3]);
 }

@@ -29,7 +29,8 @@
 //! `docs/storage-format.md`, "Producer marks".
 
 use felix_common::random::HashMap;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use super::segments::SegmentSet;
@@ -207,6 +208,10 @@ pub(crate) struct ProducerState {
     /// `carried`, committed records below the base account for them, so
     /// every copy derives the same and a snapshot hands them on.
     tombstones: HashMap<u64, Tombstone>,
+    /// Every id in `producers` or `tombstones`, so `highest_known` finds the
+    /// top of a range without walking both tables on each Kafka batch.
+    /// Derived: not in the snapshot, and equal whenever the tables are.
+    known: BTreeSet<u64>,
     /// The base of the snapshot whose carried batches were taken in last,
     /// until the reset to it. Saved with `carried`. Not in the snapshot.
     installed: Option<Offset>,
@@ -299,6 +304,30 @@ impl ProducerState {
         }
     }
 
+    /// The highest id in `ids` this log holds batches or a tombstone for.
+    pub(crate) fn highest_known(&self, ids: RangeInclusive<u64>) -> Option<u64> {
+        self.known.range(ids).next_back().copied()
+    }
+
+    /// Bring `known` in step for `id` after either table changed.
+    fn refresh_known(&mut self, id: u64) {
+        if self.producers.contains_key(&id) || self.tombstones.contains_key(&id) {
+            self.known.insert(id);
+        } else {
+            self.known.remove(&id);
+        }
+    }
+
+    /// Rebuild `known` after a change that touched many ids at once.
+    fn rebuild_known(&mut self) {
+        self.known = self
+            .producers
+            .keys()
+            .chain(self.tombstones.keys())
+            .copied()
+            .collect();
+    }
+
     /// Where `sequence` stands for `producer_id`.
     pub(crate) fn classify(&self, producer_id: u64, sequence: u64) -> ProducerSequence {
         if self.is_forgotten(producer_id, sequence) {
@@ -375,6 +404,18 @@ impl ProducerState {
         self.producers
             .get(&producer_id)
             .map(|producer| producer.last_sequence + 1)
+    }
+
+    /// The count a 31-bit sequence from `producer_id` should be lifted
+    /// toward: what it owes next, or one past its tombstone. A forgotten
+    /// producer's tombstone is 64-bit, so lifting against nothing would read
+    /// a wrapped sequence as old.
+    pub(crate) fn lift_basis(&self, producer_id: u64) -> Option<u64> {
+        self.next_sequence(producer_id).or_else(|| {
+            self.tombstones
+                .get(&producer_id)
+                .map(|tombstone| tombstone.sequence + 1)
+        })
     }
 
     /// Whether a batch is waiting for more of its records. While one is, an
@@ -518,6 +559,7 @@ impl ProducerState {
                 *next = (*next).max(cut.next);
             }
             self.producers.remove(&oldest);
+            self.refresh_known(oldest);
         }
     }
 
@@ -617,6 +659,7 @@ impl ProducerState {
             !producer.recent.is_empty()
         });
         bound_tombstones(&mut self.tombstones);
+        self.rebuild_known();
         let open = self.open.map(|open| open.batch.producer_id);
         for batch in headless {
             // A batch the producer opened later has replaced it.
@@ -659,6 +702,7 @@ impl ProducerState {
                 }
             }
             bound_tombstones(&mut self.tombstones);
+            self.rebuild_known();
         }
         let unfinished: Vec<_> =
             self.open
@@ -730,6 +774,7 @@ impl ProducerState {
             bury(&mut self.tombstones, id, tombstone);
         }
         bound_tombstones(&mut self.tombstones);
+        self.rebuild_known();
         for (id, sequence) in cuts.cuts {
             self.carry(ProducerBatch {
                 producer_id: id,
@@ -780,6 +825,7 @@ impl ProducerState {
             bury(&mut self.tombstones, *id, *tombstone);
         }
         bound_tombstones(&mut self.tombstones);
+        self.rebuild_known();
     }
 
     /// Keep only enough of a cut batch to refuse its re-send. Written again
@@ -838,7 +884,9 @@ impl ProducerState {
                 .map(|(id, _)| *id)
         {
             self.producers.remove(&coldest);
+            self.refresh_known(coldest);
         }
+        self.refresh_known(batch.producer_id);
     }
 
     #[cfg(test)]
@@ -1067,6 +1115,7 @@ pub(super) fn decode_versioned(bytes: &[u8]) -> Option<(ProducerState, Offset, u
     }
     reader.0.is_empty().then_some((
         ProducerState {
+            known: producers.keys().copied().collect(),
             producers,
             open,
             cuts,
@@ -1441,6 +1490,7 @@ impl CarriedFrom {
             tombstones: carried.tombstones,
             ..ProducerState::default()
         };
+        state.rebuild_known();
         state.remember(carried.cuts.clone());
         state.carried = carried.cuts;
         Self { state }

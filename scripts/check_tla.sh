@@ -568,6 +568,18 @@ expectations=(
   "FelixRaftWrittenCommitsReformTrailing violates OffsetNeverReused"
   "FelixRaftWrittenCommitsReformLoses violates NeverLosesCommitted"
   "FelixRaftWrittenReformOnCommit pass"
+  "FelixRaftWrittenCommitsReformTermsFloorHolder violates OffsetNeverReused"
+  "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
+  "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
+  "FelixRaftWrittenReformVouchDead pass"
+  "FelixRaftWrittenReformVouchDeadFive pass"
+  "FelixRaftWrittenCommitsReformJointDead pass"
+  "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
+  "FelixRaftWrittenCommitsReformJointCutDead pass"
+  "FelixRaftWrittenReformGate pass"
+  "FelixRaftWrittenReformGateOpen violates BaseAgrees"
+  "FelixRaftWrittenReformReplacedByBroker violates BaseAgrees"
+  "FelixRaftWrittenReformReplacedHappens violates NoDeposedAppend"
   "FelixRaftBatch pass"
   "FelixRaftBatchKeepsCut pass"
   "FelixRaftBatchEachRecord violates BatchExactlyOnce"
@@ -755,6 +767,16 @@ expectations=(
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"
   "FelixRaftReformTwoRotatedOffsetsTerms pass"
+  "FelixRaftReformTwoReformsTrailingFloor pass"
+  "FelixRaftReformTwoReformsTrailingFloorHappens violates NeverPadsByReserve"
+  "FelixRaftReformTwoReformsTrailingFloorLeaderReserve violates OffsetNeverReused"
+  "FelixRaftReformTwoReformsTrailingFloorAllDead violates OffsetNeverReused"
+  "FelixRaftReformTwoReformsEpochMark violates NeverKeepsAcrossOldRestore"
+  "FelixRaftReformKeptOldKept pass"
+  "FelixRaftReformKeptOldKeptCap violates NeverCaps"
+  "FelixRaftReformKeptTermsT violates NeverVouchesByT"
+  "FelixRaftReformReplacedDiskByBroker violates OffsetNeverReused"
+  "FelixRaftReformReplacedDiskLost violates OffsetNeverReused"
   "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
   "FelixRaftReformStaleMembershipIntact pass"
@@ -1090,6 +1112,16 @@ fi
 # 32-core machine and is not registered: a box run checks it.
 # FelixRaftWrittenCommitsFailoverPowerCut passes in 17 minutes with 30
 # workers on a 32-core machine and is not registered: a box run checks it.
+# FelixRaftWrittenReformReplaced (past 10M distinct states in 4 minutes
+# on a box, queue still growing), FelixRaftWrittenReformReplacedFull and
+# FelixRaftReformReplacedDisk are not registered: they run past a pull
+# request's time; run them as a TLA workflow dispatch.
+# FelixRaftReformKeptTerms passes in 56 minutes and
+# FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
+# pull request's hour, so they are not registered and run nightly
+# (tla-walk.yml). FelixRaftWrittenCommitsReformTerms did not finish in a
+# runner's six hours and is not registered. It passed on a 32-core build box
+# (1,752,892,374 distinct states, depth 45, 6 h 53 min).
 # FelixRaftLeaseRestoreTransferThreeTermsWrite is not registered: it passes
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a
@@ -1341,6 +1373,8 @@ weights=(
   "FelixRaftWrittenCrash 5"
   "FelixRaftWrittenCommitsPowerCut 24"
   "FelixRaftWrittenCommitsReform 2"
+  "FelixRaftWrittenCommitsReformTermsFloorHolder 70"
+  "FelixRaftReformTwoReformsTrailingFloor 9"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
   "FelixRaftCond 300"
