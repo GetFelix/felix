@@ -936,7 +936,7 @@ SelfStart(b) ==
     /\ WriteEpoch(cpEpoch, log[b], {Mid(b)}, FALSE)
     /\ everPlaced' = placed
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs>>
-    /\ UNCHANGED <<placed, dead, cpFloor, plans, elected, counters>>
+    /\ UNCHANGED <<placed, ordered, dead, cpFloor, plans, elected, counters>>
     /\ UNCHANGED diskVars
 
 \* A voter held the base, so its log is the base and the gap. Anyone else
