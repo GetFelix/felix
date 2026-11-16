@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794834651058,
+  "lastUpdate": 1794835775007,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60060,6 +60060,58 @@ window.BENCHMARK_DATA = {
             "range": "24008.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1189904.65\nmean: 1182397.70\nstdev: 24008.97\ncv: 2.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d82aa58aadc8d3fed35fd517dd570378ce38f7b9",
+          "message": "Say why a Raft group is held back for a short placement (#2700)\n\n* feat(raft): say why a group is held back for a short placement (#2695)\n\nThe broker warns once per shard and placement generation and counts held\nshards in a gauge. The control plane's stream create response carries an\nadvisory warnings field when the replication factor exceeds registered\nbrokers.\n\nSpec-Unaffected: logging, a metric and an advisory API field only\n\n* fix(raft): review fixes for the short-placement warning (#2695)",
+          "timestamp": "2026-11-16T13:21:08Z",
+          "tree_id": "17ad468d32fe6725aab3ce0d8105939d2fdff888",
+          "url": "https://github.com/GetFelix/felix/commit/d82aa58aadc8d3fed35fd517dd570378ce38f7b9"
+        },
+        "date": 1794835774000,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 350041.97,
+            "range": "14854.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350041.97\nmean: 349105.20\nstdev: 14854.69\ncv: 4.26%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 350041.97,
+            "range": "14854.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 350041.97\nmean: 349105.20\nstdev: 14854.69\ncv: 4.26%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80441.46,
+            "range": "4970.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80441.46\nmean: 78600.78\nstdev: 4970.72\ncv: 6.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 804414.59,
+            "range": "49707.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 804414.59\nmean: 786007.75\nstdev: 49707.14\ncv: 6.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
