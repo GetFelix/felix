@@ -176,6 +176,11 @@ async fn every_open_step_that_runs_out_of_descriptors_is_retried() {
             Phase::Opening,
             "{free} free descriptors failed the shard"
         );
+        // At most: the storage may close idle handles it held to make room.
+        assert!(
+            open_descriptors() <= before,
+            "{free} free descriptors: the part-way open leaked descriptors"
+        );
         reconcile(&lifecycle, &store, &assignments(&[0, shard])).await;
         assert_eq!(
             lifecycle.lock().await.phase(&key(shard)),

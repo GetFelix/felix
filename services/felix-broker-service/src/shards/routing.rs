@@ -146,8 +146,6 @@ pub struct IngressRouter {
     router: Arc<ShardRouter>,
     view: ArcSwap<View>,
     fence: Arc<ShardFence>,
-    /// Woken on every new view, for writes held while their shard moves.
-    changed: tokio::sync::Notify,
     hold: MoveHold,
     /// Routes for the shards the hybrid does not run. They never reach the
     /// view, so they are asked for first.
@@ -184,7 +182,6 @@ impl IngressRouter {
             router,
             view,
             fence,
-            changed: tokio::sync::Notify::new(),
             hold: MoveHold::disabled(),
             engine_shards: std::sync::OnceLock::new(),
             #[cfg(test)]
@@ -415,7 +412,7 @@ impl IngressRouter {
         }
         let mut held = None;
         loop {
-            let changed = self.changed.notified();
+            let changed = self.fence.changed().notified();
             tokio::pin!(changed);
             // Registered before the view is read, so a view published in
             // between still wakes this.
@@ -475,7 +472,7 @@ impl IngressRouter {
     pub(crate) async fn settle(&self, key: &ShardKey, generation: u64, incarnation: Option<u64>) {
         let mut held = None;
         loop {
-            let changed = self.changed.notified();
+            let changed = self.fence.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             let view = self.view.load();
@@ -570,7 +567,7 @@ impl IngressRouter {
 
     fn store(&self, view: View) {
         self.view.store(Arc::new(view));
-        self.changed.notify_waiters();
+        self.fence.changed().notify_waiters();
     }
 }
 

@@ -238,7 +238,7 @@ pub enum OpenError {
     /// The log cannot be a Raft log, its Raft state does not read back, or
     /// the files could not be opened. Kept as the source, so a caller can
     /// tell an exhausted open-file limit, which is worth a retry.
-    #[error("{0}")]
+    #[error("the group's log could not be opened")]
     Log(#[from] io::Error),
     #[error("the group did not start: {0}")]
     Raft(String),

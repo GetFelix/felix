@@ -996,8 +996,11 @@ generation history or the generation-start record. The shard stays in
 `Opening`, so it does not serve, and it opens again on the next assignment
 pass, so it starts serving once descriptors free up. Until then `inspect`
 shows the error, and a write sent to the shard is refused at once rather than
-held as if the shard were moments from serving. Every other shard keeps
-serving. Any other open failure marks the shard `Failed` until its next
+held as if the shard were moments from serving. A shard held for 60 seconds
+is reported to the control plane as failed to open, once, so it can move the
+shard to a broker that can open it; the broker keeps retrying and the shard
+still opens here if descriptors free up first. The warning for a held open is
+logged at most every 30 seconds per shard. Every other shard keeps serving. Any other open failure marks the shard `Failed` until its next
 assignment. A Raft shard that cannot open is tried again on the next pass
 too, and counts in the same metric. A Raft member that runs out of descriptors while it reads its
 kept copies fails its open the same way, rather than holding the group as if

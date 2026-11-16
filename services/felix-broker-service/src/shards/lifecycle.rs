@@ -32,6 +32,48 @@ use crate::shards::{ShardKey, ShardKind, watch::ShardAssignment};
 
 /// How long ending a shard's readers waits for writes already in flight. A
 /// write inside the fence is a commit and a fanout, normally milliseconds.
+/// How long a shard may sit `Opening` on an exhausted open-file limit before
+/// the control plane is told the open failed, so it can move the shard to a
+/// broker that can open it. The broker keeps retrying locally meanwhile and
+/// after: the report does not fail the shard.
+const OPEN_HELD_REPORT_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The most often a shard's held-open warning is logged.
+pub(crate) const HELD_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A shard's open held on the open-file limit, from the first pass that hit it.
+#[derive(Debug)]
+struct HeldOpen {
+    generation: u64,
+    since: Instant,
+    reported: bool,
+    warned: Instant,
+}
+
+/// When each key last logged a warning, so a fault that repeats every pass
+/// does not log every pass.
+#[derive(Debug, Default)]
+pub(crate) struct WarnThrottle(HashMap<ShardKey, Instant>);
+
+impl WarnThrottle {
+    /// Whether `key` may log now, noting that it did if so.
+    pub(crate) fn due(&mut self, key: &ShardKey) -> bool {
+        let now = Instant::now();
+        match self.0.get(key) {
+            Some(last) if now.duration_since(*last) < HELD_WARN_EVERY => false,
+            _ => {
+                self.0.insert(key.clone(), now);
+                true
+            }
+        }
+    }
+
+    /// `key` stopped faulting.
+    pub(crate) fn clear(&mut self, key: &ShardKey) {
+        self.0.remove(key);
+    }
+}
+
 const QUIESCE_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Where this broker is with one shard.
@@ -177,6 +219,9 @@ pub struct ShardLifecycle {
     /// Opens held back until the catalog registers the shard's stream at the
     /// incarnation its assignment names. The shard stays `Opening` meanwhile.
     awaiting_registration: HashMap<ShardKey, Action>,
+    /// Opens held on the open-file limit.
+    held_opens: HashMap<ShardKey, HeldOpen>,
+    report_held_after: std::time::Duration,
 }
 
 /// A move toward this broker, timed from when this broker first saw each step.
@@ -199,7 +244,16 @@ impl ShardLifecycle {
             joint_fence: None,
             promoting: felix_common::random::HashSet::default(),
             awaiting_registration: HashMap::default(),
+            held_opens: HashMap::default(),
+            report_held_after: OPEN_HELD_REPORT_AFTER,
         }
+    }
+
+    /// Report a held open to the control plane after `after` instead of the
+    /// default. For tests.
+    #[cfg(test)]
+    pub(crate) fn report_held_after(&mut self, after: std::time::Duration) {
+        self.report_held_after = after;
     }
 
     /// Hold every shard, stream or cache, that this broker starts leading at
@@ -655,21 +709,58 @@ impl ShardLifecycle {
     }
 
     /// Keep `key` opening after an open that ran out of file descriptors, with
-    /// `error` beside it, and hold the open for the next pass.
-    pub fn open_held(&mut self, open: Action, error: String) {
+    /// `error` beside it, and hold the open for the next pass. Once held past
+    /// the report bound the control plane is told the open failed, once, and
+    /// the retries go on. Returns whether to log this pass.
+    pub fn open_held(&mut self, open: Action, error: String) -> bool {
         let Action::Open {
             key, generation, ..
         } = &open
         else {
-            return;
+            return false;
         };
-        if let Some(shard) = self.shards.get(key)
-            && shard.phase == Phase::Opening
-            && shard.generation == *generation
-        {
-            self.fence.record_open_error(key, error);
-            self.await_registration(open);
+        let generation = *generation;
+        let key = key.clone();
+        let current = self
+            .shards
+            .get(&key)
+            .is_some_and(|shard| shard.phase == Phase::Opening && shard.generation == generation);
+        if !current {
+            return false;
         }
+        let now = Instant::now();
+        let entry = self
+            .held_opens
+            .entry(key.clone())
+            .and_modify(|held| {
+                if held.generation != generation {
+                    *held = HeldOpen {
+                        generation,
+                        since: now,
+                        reported: false,
+                        warned: now,
+                    };
+                }
+            })
+            .or_insert(HeldOpen {
+                generation,
+                since: now,
+                reported: false,
+                // Backdated so the first pass logs.
+                warned: now.checked_sub(HELD_WARN_EVERY).unwrap_or(now),
+            });
+        let report = !entry.reported && now.duration_since(entry.since) >= self.report_held_after;
+        entry.reported |= report;
+        let log = now.duration_since(entry.warned) >= HELD_WARN_EVERY;
+        if log {
+            entry.warned = now;
+        }
+        self.fence.record_open_error(&key, error);
+        if report {
+            self.fence.open_failed(&key, generation);
+        }
+        self.await_registration(open);
+        log
     }
 
     pub fn open_failed(&mut self, key: &ShardKey, generation: u64, error: String) {
@@ -814,6 +905,9 @@ impl ShardLifecycle {
             self.fence.promotion_settled(key);
         }
         self.fence.record_phase(key, phase, generation);
+        if phase != Phase::Opening {
+            self.held_opens.remove(key);
+        }
         let previous = self.shards.get(key).map(|shard| shard.phase);
         let (incarnation, replicated, renewal) =
             self.shards.get(key).map_or((0, false, 0), |shard| {
@@ -2005,23 +2099,26 @@ async fn apply_open(
         Err(err) if out_of_files(&err) => {
             mm::record_open_failure();
             mm::record_open_file_limit();
-            tracing::warn!(
-                stream = %key.stream,
-                shard = key.shard,
-                generation,
-                error = %format!("{err:#}"),
-                "shard could not open: the open-file limit is exhausted; opening on a later pass",
-            );
-            lifecycle.lock().await.open_held(
+            let error = format!("{err:#}");
+            let log = lifecycle.lock().await.open_held(
                 Action::Open {
-                    key,
+                    key: key.clone(),
                     generation,
                     new_term,
                     fence,
                     incarnation,
                 },
-                format!("{err:#}"),
+                error.clone(),
             );
+            if log {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    error = %error,
+                    "shard could not open: the open-file limit is exhausted; opening on a later pass",
+                );
+            }
         }
         Err(err) => {
             mm::record_open_failure();
