@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794807053757,
+  "lastUpdate": 1794820239826,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59696,6 +59696,58 @@ window.BENCHMARK_DATA = {
             "range": "12893.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1185118.44\nmean: 1185064.98\nstdev: 12893.48\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "494712e409fbef47e8dc9383efc595e0e691067b",
+          "message": "feat(raft): the broker tells its leading member the target, once per term (#2235, #2591) (#2684)\n\n* feat(replication): a Raft leader acts only on a target told for its term (#2235)\n\nGroupRuntime::retarget and RaftEngine::retarget take the term the target\nis told for. The group holds Told { target, term }; a newer version, or\nthe same version told for a newer term, replaces it. The driver acts only\non a target told for the term it leads, so a new leader waits to be told\nagain (#2591). A re-tell of the same version does not reset transfer\npacing.\n\n* docs(replication): Idle covers a target told for an older term; clarify a test seed (#2235)\n\n* fix(replication): keep transfer pacing on a re-tell and the stuck report across terms (#2235)\n\nA same-version target told for a new term no longer resets the transfer\ncount; a run()-level test drives it. A group stuck on transfers that do\nnot land stays reported stuck while its member does not lead or leads a\nterm not told yet, for as long as the transfers are paced (Pass::Untold,\nDriver::stuck_left).\n\n* chore(replication): note the placement spec is unaffected (#2235)\n\nSpec-Unaffected: FelixRaftPlacement's StaleTargets already lets a leader act on any target ever written, a superset of a target told for its term; the per-term rule and the stuck report are liveness and metrics, not modelled.\n\n* WIP: broker tells the leading Raft member its target per term (#2235, #2591)\n\nFeed items carry the Raft target; the lease records the feed head from\nheartbeats; RaftShards tells each led shard its target once a feed view\nstarted after the term and reached the head bar. Trio test\na_new_leader_tells_its_target_again_once_its_feed_catches_up still fails;\ndocs, changelog fragment and revert checks not done.\n\n* test(broker): stop the first leader, add the #2591 successor test, docs (#2235)\n\n* fix(raft): refuse pre-restore targets, tell no target, pass the CP's members verbatim (#2591)\n\n* test(raft): restore, no-target and heartbeat wiring tests; docs for the retarget rules (#2591)\n\n* fix(raft): the feed says when it withheld targets, and a withheld view untargets nothing (#2591)",
+          "timestamp": "2026-11-16T08:59:57Z",
+          "tree_id": "4ac711e42ff98ce9979264863965e237b84ec304",
+          "url": "https://github.com/GetFelix/felix/commit/494712e409fbef47e8dc9383efc595e0e691067b"
+        },
+        "date": 1794820239105,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 363270.98,
+            "range": "8206.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 363270.98\nmean: 362207.21\nstdev: 8206.95\ncv: 2.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 363270.98,
+            "range": "8206.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 363270.98\nmean: 362207.21\nstdev: 8206.95\ncv: 2.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82006.46,
+            "range": "448.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82006.46\nmean: 82140.00\nstdev: 448.85\ncv: 0.55%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 820064.61,
+            "range": "4488.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 820064.61\nmean: 821400.03\nstdev: 4488.49\ncv: 0.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
