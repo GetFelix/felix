@@ -193,8 +193,11 @@ than on the next poll tick. A partition error ends the wait at once, and so does
 broker shutdown. At least one record is returned even if it is larger than
 `max_bytes`, as Kafka does, so an oversized record cannot stall a consumer.
 
-Requests on one connection are answered in order, one at a time, which is also
-Kafka's rule. A request frame larger than 8 MiB closes the connection.
+Requests on one connection are answered in order, which is also Kafka's rule.
+A fetch, like any request other than a produce, runs once every earlier answer
+on its connection is written, so it sees what the connection produced before
+it, and nothing sent after it is answered first. A request frame larger than
+8 MiB closes the connection.
 
 ## Leadership and moves
 
@@ -304,9 +307,30 @@ A partition's answer carries the first offset written, the log start offset,
 and the broker's append time as `log_append_time_ms`, which tells the client
 that the timestamp it sent was not kept.
 
-Requests on a connection are answered one at a time and in order, which is
-Kafka's rule, so one connection has one produce in flight at a time at the
-broker even if the client pipelines several.
+A connection's produces are pipelined. Each takes its place in its
+partitions' order (its offsets, or its place in a Raft group's log) as it is
+read, and then waits for its commit while the broker reads the next request,
+so a producer that keeps several requests in flight pays about one commit
+round trip for them, not one each. Answers still go out in request order. Up
+to 8 answers are waited on at once; past that the broker stops reading the
+connection until one is written. A claimed batch runs to durability whether or
+not its answer can be written, so a client that stops reading its answers, or
+goes away, never holds up other writers on the partition or a shard move.
+
+On a Raft shard an idempotent producer's records for a partition go to the
+group as one proposal, under one turn of the producer, so a request costs one
+round through the group, not one per record. Each record is still stored as a
+batch of its own at its own sequence, as on the hybrid, so a leader change that
+cuts the request partway leaves whole records, and the re-send writes only the
+rest.
+
+An idempotent producer's batches keep their order through this. A batch is
+checked against the records the log holds or has claimed, so the next one is
+not refused as a gap while the one before it commits. When a batch fails after
+it was claimed, the ones claimed behind it cannot commit ahead of it: on a Raft
+shard a later entry never commits without the ones before it, and on the
+hybrid a failed flush poisons the log. The producer re-sends them, and the log
+answers whatever it already holds as a duplicate.
 
 ### Keys, headers and timestamps
 

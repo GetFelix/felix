@@ -2965,10 +2965,16 @@ same answers as on the hybrid.
 
 A Kafka produce goes to the shard's leader, as on the hybrid, and is
 proposed to its group. A plain batch is one proposal. An idempotent
-producer numbers records, not batches, so each record is proposed as a
+producer numbers records, not batches, so each record is stored as a
 one-record idempotent batch at its own sequence. That is how the hybrid
 stores Kafka records too, so a re-send finds the records the log holds,
-writes only the rest, and is answered with the first arrival's offsets. The
+writes only the rest, and is answered with the first arrival's offsets. A
+request's records for a partition are checked and proposed together, as one
+proposal under one producer turn, so they share a drain instead of taking a
+round trip each. The entries are the ones a proposal per record would
+write: a leader change that cuts them leaves whole one-record batches, and
+the re-send finishes the rest. A produce cancelled while it waits for its
+turn has proposed nothing. The
 sequence errors (`OUT_OF_ORDER_SEQUENCE_NUMBER`, `UNKNOWN_PRODUCER_ID`,
 `DUPLICATE_SEQUENCE_NUMBER`) are the hybrid's. The answer waits for what the
 stream's level asks for, as any Raft publish does, so `acks=1` on a `Quorum`
@@ -2978,10 +2984,7 @@ Kafka keys and headers are stored once the cluster finalizes
 refused with `INVALID_RECORD`, before the tenant's quota is charged and
 with nothing written, as a native publish with headers is refused, and
 counted in `felix_kafka_produce_refused_total`; a produce without them is
-written. If a record of an idempotent batch is
-refused because one before it failed (its sequence is then a gap), the
-answer is that earlier failure, which the producer retries, not
-`OUT_OF_ORDER_SEQUENCE_NUMBER`, which it takes as fatal.
+written.
 
 An MQTT connection's messages are written as idempotent batches, as on the
 hybrid, and each is answered at its commit. A Raft shard takes an idempotent

@@ -1,0 +1,2 @@
+- A Kafka connection's produces are pipelined: each claims its place in order as it is read and waits for its commit while the next request is read, with answers still in request order and at most 8 waited on at once. On a Raft shard this lifts single-connection produce from about one commit round trip per request (#2704).
+- On a Raft shard, an idempotent Kafka producer's records for a partition are proposed to the group together, under one producer turn, instead of one proposal and one round through the group per record (#2704).
