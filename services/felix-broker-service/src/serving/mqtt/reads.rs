@@ -61,7 +61,8 @@ impl BrokerReads {
             shard,
             kind: ShardKind::Stream,
         };
-        let refused = redirect::redirect_for(
+        // One call, so a refusal is counted once.
+        let refusal = redirect::redirect_for(
             Some(ingress),
             None,
             tenant_id,
@@ -71,10 +72,15 @@ impl BrokerReads {
             ShardKind::Stream,
             0,
         )
-        .is_some()
-            || redirect::stopped_serving(Some(ingress), &key).is_some();
-        if !refused {
+        .or_else(|| redirect::stopped_serving(Some(ingress), &key));
+        let Some(refusal) = refusal else {
             return Ok(());
+        };
+        // A leader not yet heard or a node still opening the shard is a
+        // moment, as QUIC treats it: the reader waits and asks again, and no
+        // read is served meanwhile.
+        if is_not_ready(&refusal) && !ingress.fence().is_closed(&key) {
+            return Err(ReadError::Unavailable);
         }
         let elsewhere = ingress.fence().is_closed(&key)
             || matches!(dispatch(Some(ingress), &key), Dispatch::Forward { .. })
@@ -88,6 +94,14 @@ impl BrokerReads {
             ReadError::Stopped
         })
     }
+}
+
+fn is_not_ready(refusal: &felix_wire::Message) -> bool {
+    matches!(
+        refusal,
+        felix_wire::Message::Error { detail: Some(detail), .. }
+            if detail.reason.as_deref() == Some(felix_wire::shard_unavailable_reason::NOT_READY)
+    )
 }
 
 fn read_error(err: &BrokerError) -> ReadError {

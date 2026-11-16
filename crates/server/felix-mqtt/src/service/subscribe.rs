@@ -41,8 +41,7 @@ use crate::read::{ReadError, Reads};
 /// Bytes asked for in one read of a shard.
 const READ_BYTES: usize = 256 * 1024;
 /// How long a read waits for a record before the reader looks again. An
-/// append or the shard's readers being ended wakes it sooner; a commit mark
-/// that moves does not, and is seen at the next look.
+/// append, a commit or the shard's readers being ended wakes it sooner.
 const READ_WAIT: Duration = Duration::from_millis(500);
 /// Pause before reading again after the broker could not answer.
 const RETRY_PAUSE: Duration = Duration::from_millis(200);

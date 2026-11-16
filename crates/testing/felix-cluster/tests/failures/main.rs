@@ -24,6 +24,7 @@ mod links;
 mod majority_ack;
 mod membership;
 mod mqtt_publish;
+mod mqtt_subscribe;
 mod partition;
 mod promotion_fence;
 mod quorum_mark_wake;

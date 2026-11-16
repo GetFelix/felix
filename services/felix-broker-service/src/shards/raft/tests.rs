@@ -1906,11 +1906,11 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     EngineShards::shutdown(&*shards).await;
 }
 
-/// **An MQTT subscription over a Raft shard this member cannot serve ends**
-/// as stopped, not as moved: nobody can be named, and reading on would
-/// answer from a commit index that has stopped moving.
+/// **An MQTT subscription over a Raft shard whose leader this member has not
+/// heard is paused, not ended**: nothing is read from a commit index that may
+/// have stopped moving, and the session survives a missed heartbeat round.
 #[tokio::test]
-async fn an_mqtt_reader_of_a_leaderless_raft_member_is_stopped() {
+async fn an_mqtt_reader_of_a_leaderless_raft_member_waits() {
     use felix_mqtt::{ReadError, Reads};
 
     let root = tempfile::tempdir().expect("tempdir");
@@ -1925,7 +1925,7 @@ async fn an_mqtt_reader_of_a_leaderless_raft_member_is_stopped() {
 
     assert_eq!(
         reads.tail("t1", "ns", "orders", 0).await,
-        Err(ReadError::Stopped)
+        Err(ReadError::Unavailable)
     );
     assert_eq!(
         reads
@@ -1940,7 +1940,7 @@ async fn an_mqtt_reader_of_a_leaderless_raft_member_is_stopped() {
             )
             .await
             .map(|_| ()),
-        Err(ReadError::Stopped)
+        Err(ReadError::Unavailable)
     );
     EngineShards::shutdown(&*shards).await;
 }
