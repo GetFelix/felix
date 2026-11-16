@@ -763,7 +763,7 @@ async fn a_malformed_storage_id_is_a_bad_request() {
 }
 
 /// What a new cluster finalizes, in the order the enabled set answers it.
-const NEW_CLUSTER: [&str; 16] = [
+const NEW_CLUSTER: [&str; 17] = [
     "atomic_commit",
     "cache_incarnations",
     "fenced_caches",
@@ -778,6 +778,7 @@ const NEW_CLUSTER: [&str; 16] = [
     "raft_follower_read",
     "raft_head_trim",
     "raft_record_headers",
+    "raft_stream_purge",
     "record_headers",
     "stream_incarnations",
 ];

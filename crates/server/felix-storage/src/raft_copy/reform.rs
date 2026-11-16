@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use super::epoch_file::{self, EpochFile};
 use super::judge::{KeptCopy, highest_reserved, kept_copies};
 use super::rotated_by::{self, RotatedBy};
+use crate::disk_log::CarriedFloor;
 use crate::raft_log::{LogPoint, held, reserved};
 
 /// One kept copy as a re-form reads it.
@@ -120,6 +121,11 @@ pub(crate) struct CopyRead {
     pub(crate) vote: Option<u64>,
     /// Its `raft-reserved`.
     pub(crate) reserved: Option<u64>,
+    /// The highest floor it holds, from its `raft-floor` or a trim record at
+    /// or below its saved commit, with that trim's headers. A copy that
+    /// installed a purge snapshot holds no trim record for its floor, so
+    /// only `raft-floor` names it.
+    pub(crate) floor: Option<CarriedFloor>,
     /// Why it was rotated; `None` for the current copy.
     pub(crate) rotated_by: Option<RotatedBy>,
     /// The term of the entry at each index the plan asked about, `None`
@@ -174,6 +180,7 @@ pub(crate) fn read_copy(
             committed: None,
             vote: None,
             reserved: None,
+            floor: None,
             rotated_by: None,
             terms: probes.iter().map(|index| (*index, None)).collect(),
         });
@@ -231,6 +238,14 @@ pub(crate) fn read_copy(
             };
         }
     }
+    let recorded = match kept.committed {
+        Some(through) => held::trim_floor(path, &label, index_spacing_bytes, through)?,
+        None => None,
+    };
+    let floor = [crate::disk_log::carried_floor::load(path)?, recorded]
+        .into_iter()
+        .flatten()
+        .max_by_key(|floor| floor.floor);
     let vote = crate::disk_log::saved_vote_generation(path)
         .map_err(io::Error::other)?
         .checked_sub(1);
@@ -255,6 +270,7 @@ pub(crate) fn read_copy(
         committed: kept.committed,
         vote,
         reserved: reserved::load(path)?,
+        floor,
         rotated_by: None,
         terms,
     })

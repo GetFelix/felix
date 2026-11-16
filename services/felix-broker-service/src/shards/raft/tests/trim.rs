@@ -7,7 +7,7 @@ use felix_storage::log::AppendOnlyLog;
 use super::*;
 
 /// Trim `orders` on `member` at `term`, as the control stream does.
-async fn trim(
+pub(super) async fn trim(
     broker: &Arc<Broker>,
     engine: &crate::shards::routing::StreamEngine,
     term: u64,
@@ -39,7 +39,7 @@ async fn trim(
 }
 
 /// Publish `payload` to `orders` at `term` and return its offset.
-async fn publish(
+pub(super) async fn publish(
     broker: &Arc<Broker>,
     engine: &crate::shards::routing::StreamEngine,
     term: u64,
@@ -65,7 +65,7 @@ async fn publish(
 }
 
 /// Whether a resume from `offset` on `broker` is refused as too old.
-async fn too_old(broker: &Broker, offset: u64) -> bool {
+pub(super) async fn too_old(broker: &Broker, offset: u64) -> bool {
     matches!(
         broker
             .subscribe_from("t1", "ns", "orders", 0, StartPosition::Offset(offset))

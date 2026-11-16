@@ -97,6 +97,15 @@ impl RaftShards {
                         refused = Some(why);
                     }
                 }
+                // Every member purges its own log below the floor it applied;
+                // a fleet with an older member would refuse the snapshot.
+                if shards
+                    .fleet
+                    .supports(felix_common::fleet::RAFT_STREAM_PURGE)
+                    && let Some(at) = shards.runtime.purge_below_floor(&key).await
+                {
+                    tracing::debug!(shard = ?key, through = at, "purged the Raft log below its floor");
+                }
             }
         })
     }
