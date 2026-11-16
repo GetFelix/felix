@@ -684,13 +684,17 @@ async fn a_batch_written_partway_acknowledges_what_was_written() {
     assert_eq!(sequences, [0, 1, 3]);
 }
 
-/// Collects what a connection task logs on this thread.
-#[derive(Clone, Default)]
-struct LogSink(Arc<std::sync::Mutex<Vec<u8>>>);
+thread_local! {
+    static LOG: std::cell::RefCell<Vec<u8>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Writes what this thread logs into `LOG`.
+#[derive(Clone, Copy)]
+struct LogSink;
 
 impl std::io::Write for LogSink {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
+        LOG.with(|l| l.borrow_mut().extend_from_slice(buf));
         Ok(buf.len())
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -701,18 +705,27 @@ impl std::io::Write for LogSink {
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogSink {
     type Writer = LogSink;
     fn make_writer(&'a self) -> LogSink {
-        self.clone()
+        *self
     }
+}
+
+/// A scoped subscriber loses a race with callsite caching when other tests
+/// log first, so install one global subscriber and read per-thread buffers.
+fn capture_logs() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(LogSink)
+            .with_ansi(false)
+            .finish();
+        let _ = tracing::subscriber::set_global_default(subscriber);
+    });
+    LOG.with(|l| l.borrow_mut().clear());
 }
 
 #[test]
 fn a_refused_publish_that_closes_a_3_1_1_connection_is_logged() {
-    let sink = LogSink::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_writer(sink.clone())
-        .with_ansi(false)
-        .finish();
-    let _guard = tracing::subscriber::set_default(subscriber);
+    capture_logs();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
         .start_paused(true)
@@ -740,7 +753,7 @@ fn a_refused_publish_that_closes_a_3_1_1_connection_is_logged() {
             .await;
         assert!(h.client.closed().await);
     });
-    let log = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
+    let log = String::from_utf8(LOG.with(|l| l.borrow().clone())).unwrap();
     assert_eq!(log.matches("WARN").count(), 1, "{log}");
     assert!(log.contains("not_owner"), "{log}");
     assert!(log.contains("no credential to forward"), "{log}");
