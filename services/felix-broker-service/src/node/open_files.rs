@@ -159,7 +159,7 @@ fn set_soft(limit: &libc::rlimit, soft: u64) -> io::Result<()> {
 /// could not be raised. `after` is what the kernel reports once the change
 /// is made, not what was asked for.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-fn raise() -> Result<(u64, u64), (u64, io::Error)> {
+pub(crate) fn raise() -> Result<(u64, u64), (u64, io::Error)> {
     let limit = limits().map_err(|err| (0, err))?;
     let before = limit.rlim_cur as u64;
     let wanted = target(before, limit.rlim_max as u64, ceiling());
@@ -182,7 +182,7 @@ fn raise() -> Result<(u64, u64), (u64, io::Error)> {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn raise() -> Result<(u64, u64), (u64, io::Error)> {
+pub(crate) fn raise() -> Result<(u64, u64), (u64, io::Error)> {
     Ok((u64::MAX, u64::MAX))
 }
 

@@ -104,6 +104,7 @@ pub(crate) async fn registered(
     consistency: ConsistencyLevel,
     config: LogConfig,
 ) -> Arc<Broker> {
+    raise_open_file_limit();
     let storage = felix_broker::DurableStorage::open(root, config).expect("storage");
     let broker = broker.with_durable_storage(storage);
     broker.require_registered_streams();
@@ -138,6 +139,26 @@ pub(crate) async fn registered(
         .await
         .expect("scratch");
     Arc::new(broker)
+}
+
+/// Take the hard open-file limit, as a broker's start does. These tests run
+/// many brokers in one process at once, together past a soft limit of 1,024
+/// (256 on macOS), and a member that cannot open a file never serves.
+fn raise_open_file_limit() {
+    static RAISED: std::sync::Once = std::sync::Once::new();
+    RAISED.call_once(|| {
+        let _ = crate::node::open_files::raise();
+    });
+}
+
+/// **The brokers these tests start run at the hard open-file limit**, as a
+/// started broker does, not at whatever soft limit the test process got.
+#[tokio::test]
+async fn test_brokers_run_at_the_hard_open_file_limit() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let _broker = broker(root.path()).await;
+    let (before, after) = crate::node::open_files::raise().expect("the limit");
+    assert_eq!(before, after, "a broker was started below the hard limit");
 }
 
 /// `broker`'s Raft shards, with its readers bound by them as startup does.
