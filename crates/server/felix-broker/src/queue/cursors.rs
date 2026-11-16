@@ -248,6 +248,39 @@ impl ConsumerGroups {
         }
     }
 
+    /// Move `group` to `offset` for a seek that cleared dead letters on the
+    /// way. `requires` is the dead-letter log holding those clears, synced by
+    /// the caller first: a copy of this cursor without them is put back by
+    /// [`Self::normalize`] rather than served at `offset` over dead letters it
+    /// would skip. The caller holds the shard's lock.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn place_locked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+        requires: DeadLetterMark,
+    ) -> Result<()> {
+        let origin = match self
+            .stored(tenant_id, namespace, stream, shard, group)
+            .await?
+        {
+            _ if requires.end == 0 => offset,
+            Some(current) => current.origin,
+            None => 0,
+        };
+        let stored = Stored {
+            offset,
+            requires,
+            origin,
+        };
+        self.write(tenant_id, namespace, stream, shard, group, stored)
+            .await
+    }
+
     /// Put each group on this shard whose latest record no longer stands on
     /// `dead_letters` back where one does: its latest record that still
     /// stands, or else its origin. Returns how many moved.

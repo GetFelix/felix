@@ -606,7 +606,8 @@ impl GroupReader {
     /// Every claim standing at the seek is void. The tracker is replaced by
     /// one at `offset` that inherits nothing, and the old one can no longer
     /// commit, so a late ack from before the seek cannot move the new cursor
-    /// or mark a record the group now owes as finished. Dead letters are kept.
+    /// or mark a record the group now owes as finished. Dead letters below
+    /// `offset` are kept; those at or above it are cleared and delivered again.
     ///
     /// The caller picks `offset`; this does not check it against the log.
     pub async fn seek(&self, key: &GroupKey, offset: u64, if_new: bool) -> Result<Seek> {
@@ -627,14 +628,21 @@ impl GroupReader {
                 });
             }
         }
+        // A seek delivers everything from `offset` again, dead letters
+        // included. Their entries are cleared and synced before the cursor
+        // moves: a crash in between redelivers them at the old cursor, where
+        // the other order would leave them settled below a cursor moved back.
+        self.dead_letters.clear_from(key, offset).await?;
+        let requires = self.dead_letter_mark(key).await?;
         self.cursors
-            .set_locked(
+            .place_locked(
                 &key.tenant_id,
                 &key.namespace,
                 &key.stream,
                 key.shard,
                 &key.group,
-                Some(offset),
+                offset,
+                requires,
             )
             .await?;
         self.replace(key, offset, &slot).await?;
@@ -923,12 +931,14 @@ impl GroupReader {
             // everything published before the group first connected.
             .unwrap_or(0);
         let mut tracker = GroupTracker::new(committed, self.max_attempts);
-        for offset in self.dead_letters.redriven(key).await? {
+        let listed = self.dead_letters.listed(key).await?;
+        for offset in listed.redriven {
             tracker.restore_redrive(offset);
         }
         // A dead letter is listed before the cursor advances over it, so a
         // leader change in between leaves it above the cursor. It is settled.
-        for offset in self.dead_letters.list(key).await? {
+        // A seek clears those at or above its target, so none is skipped.
+        for offset in listed.dead {
             if offset >= committed {
                 tracker.ack(offset);
             }

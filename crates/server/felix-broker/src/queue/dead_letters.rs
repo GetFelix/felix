@@ -56,6 +56,17 @@ pub struct DeadLetters {
     pub(crate) fail_next_record: std::sync::atomic::AtomicBool,
 }
 
+/// One group's dead letters and the redriven ones it still owes, each lowest
+/// first.
+#[derive(Debug, Default)]
+pub(crate) struct Listed {
+    pub(crate) dead: Vec<u64>,
+    pub(crate) redriven: Vec<u64>,
+    /// The dead offsets each layout holds, for a caller deleting them.
+    in_shard: Vec<u64>,
+    in_legacy: Vec<u64>,
+}
+
 /// The value of an entry whose record was redriven and is not yet finished.
 const REDRIVEN: &[u8] = b"redriven";
 
@@ -108,9 +119,48 @@ impl DeadLetters {
     /// Offsets `group` has given up on, lowest first. Redriven ones are not
     /// listed: they are back in the queue.
     pub async fn list(&self, key: &GroupKey) -> Result<Vec<u64>> {
-        let mut offsets = self.entries_in_state(key, false).await?;
+        Ok(self.listed(key).await?.dead)
+    }
+
+    /// Offsets `group` had redriven and has not finished, lowest first.
+    ///
+    /// What a leader rebuilding the group reads to owe them again.
+    pub async fn redriven(&self, key: &GroupKey) -> Result<Vec<u64>> {
+        Ok(self.listed(key).await?.redriven)
+    }
+
+    /// Both of `group`'s lists from one read of its entries.
+    ///
+    /// An offset redriven out of the legacy layout is still in it until the
+    /// legacy delete lands, so a crash in between leaves it in both. It is
+    /// redriven: that write came first.
+    pub(crate) async fn listed(&self, key: &GroupKey) -> Result<Listed> {
+        let prefix = format!("{}\u{1f}", key.group);
+        let mut dead = Vec::new();
+        let mut redriven = Vec::new();
+        for entry in self
+            .entries
+            .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .map_err(BrokerError::from)?
+        {
+            let Some(offset) = entry
+                .key
+                .strip_prefix(&prefix)
+                .and_then(|offset| offset.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            if entry.value.as_ref() == REDRIVEN {
+                redriven.push(offset);
+            } else {
+                dead.push(offset);
+            }
+        }
+        redriven.sort_unstable();
+        let mut in_legacy = Vec::new();
         if let Some(legacy) = self.legacy(key) {
-            offsets.extend(
+            in_legacy.extend(
                 legacy
                     .keys(
                         &key.tenant_id,
@@ -121,21 +171,59 @@ impl DeadLetters {
                     .await
                     .map_err(BrokerError::from)?
                     .into_iter()
-                    .filter_map(|entry| entry.parse::<u64>().ok()),
+                    .filter_map(|entry| entry.parse::<u64>().ok())
+                    .filter(|offset| redriven.binary_search(offset).is_err()),
             );
         }
-        offsets.sort_unstable();
-        offsets.dedup();
-        Ok(offsets)
+        let in_shard = dead.clone();
+        dead.extend_from_slice(&in_legacy);
+        dead.sort_unstable();
+        dead.dedup();
+        Ok(Listed {
+            dead,
+            redriven,
+            in_shard,
+            in_legacy,
+        })
     }
 
-    /// Offsets `group` had redriven and has not finished, lowest first.
-    ///
-    /// What a leader rebuilding the group reads to owe them again.
-    pub async fn redriven(&self, key: &GroupKey) -> Result<Vec<u64>> {
-        let mut offsets = self.entries_in_state(key, true).await?;
-        offsets.sort_unstable();
-        Ok(offsets)
+    /// Clear `group`'s dead letters at or above `from`, so a seek to `from`
+    /// delivers those records again. Redriven entries are kept: they are
+    /// still owed. Returns how many were cleared.
+    pub(crate) async fn clear_from(&self, key: &GroupKey, from: u64) -> Result<usize> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        let listed = self.listed(key).await?;
+        let mut cleared = 0;
+        for &offset in listed.in_shard.iter().filter(|&&offset| offset >= from) {
+            self.entries
+                .delete_checked(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &entry_key(&key.group, offset),
+                )
+                .await
+                .map_err(BrokerError::from)?;
+            cleared += 1;
+        }
+        if let Some(legacy) = self.legacy(key) {
+            for &offset in listed.in_legacy.iter().filter(|&&offset| offset >= from) {
+                legacy
+                    .delete_checked(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &legacy_scope(key),
+                        key.shard,
+                        &offset.to_string(),
+                    )
+                    .await
+                    .map_err(BrokerError::from)?;
+                cleared += 1;
+            }
+        }
+        Ok(cleared)
     }
 
     /// Put a dead letter back in the queue: flip its entry to [`REDRIVEN`].
@@ -460,20 +548,6 @@ impl DeadLetters {
             )
             .await
             .map_err(BrokerError::from)
-    }
-
-    /// This group's entries in the per-shard log that are redriven, or not.
-    async fn entries_in_state(&self, key: &GroupKey, redriven: bool) -> Result<Vec<u64>> {
-        let prefix = format!("{}\u{1f}", key.group);
-        Ok(self
-            .entries
-            .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            .await
-            .map_err(BrokerError::from)?
-            .into_iter()
-            .filter(|entry| (entry.value.as_ref() == REDRIVEN) == redriven)
-            .filter_map(|entry| entry.key.strip_prefix(&prefix)?.parse().ok())
-            .collect())
     }
 
     fn lock_for(&self, key: &GroupKey) -> Arc<tokio::sync::Mutex<()>> {

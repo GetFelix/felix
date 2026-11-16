@@ -232,3 +232,69 @@ async fn a_legacy_layout_is_read_and_discarded_but_never_written() {
         Vec::<u64>::new(),
     );
 }
+
+/// A crash between a legacy redrive's two writes leaves the offset in both
+/// layouts. It is redriven, and only redriven: listed as dead too, a rebuilt
+/// group would settle it and the owed record would never be delivered.
+#[tokio::test]
+async fn a_legacy_redrive_cut_short_is_only_redriven() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = key("jobs", "workers");
+    {
+        let legacy = LogCache::open(dir.path(), config()).expect("open legacy");
+        legacy
+            .put_checked(
+                &key.tenant_id,
+                &key.namespace,
+                &format!("{}\u{1f}{}", key.stream, key.group),
+                key.shard,
+                "4",
+                bytes::Bytes::new(),
+                None,
+            )
+            .await
+            .expect("legacy record");
+    }
+    let dead = DeadLetters::open(dir.path(), config()).expect("open");
+    // The redrive's first write, without the legacy delete after it.
+    dead.put(&key, &entry_key(&key.group, 4), REDRIVEN)
+        .await
+        .expect("redriven");
+
+    assert_eq!(dead.list(&key).await.expect("list"), Vec::<u64>::new());
+    assert_eq!(dead.redriven(&key).await.expect("redriven"), vec![4]);
+}
+
+/// Clearing from an offset drops the dead letters at or above it in both
+/// layouts and keeps the ones below and the redriven ones.
+#[tokio::test]
+async fn clear_from_keeps_what_is_below_and_what_is_owed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = key("jobs", "workers");
+    {
+        let legacy = LogCache::open(dir.path(), config()).expect("open legacy");
+        for offset in [2u64, 8] {
+            legacy
+                .put_checked(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &format!("{}\u{1f}{}", key.stream, key.group),
+                    key.shard,
+                    &offset.to_string(),
+                    bytes::Bytes::new(),
+                    None,
+                )
+                .await
+                .expect("legacy record");
+        }
+    }
+    let dead = DeadLetters::open(dir.path(), config()).expect("open");
+    for offset in [3, 5, 6] {
+        dead.record(&key, offset).await.expect("record");
+    }
+    assert!(dead.redrive(&key, 6).await.expect("redrive"));
+
+    assert_eq!(dead.clear_from(&key, 5).await.expect("clear"), 2);
+    assert_eq!(dead.list(&key).await.expect("list"), vec![2, 3]);
+    assert_eq!(dead.redriven(&key).await.expect("redriven"), vec![6]);
+}

@@ -307,3 +307,41 @@ async fn a_dead_letter_above_the_cursor_is_not_redelivered_after_a_leader_change
     successor.ack(&key, 0).await.expect("ack");
     assert_eq!(successor.committed(&key).await.expect("cursor"), Some(2));
 }
+
+/// A seek back over a dead letter delivers it again, whether or not the
+/// tracker is rebuilt before the next poll.
+#[tokio::test]
+async fn a_seek_back_over_a_dead_letter_delivers_it_again_after_a_leader_change() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    let records: Vec<String> = (0..10).map(|i| format!("r{i}")).collect();
+    let records: Vec<&str> = records.iter().map(String::as_str).collect();
+    publish(&fx.log, &records).await;
+    let base = Instant::now();
+    assert_eq!(poll_at(&fx, &key, base, 0).await.len(), 10);
+    assert!(fx.reader.dead_letter(&key, 5).await.expect("dead letter"));
+    for offset in (0..10).filter(|&offset| offset != 5) {
+        fx.reader.ack(&key, offset).await.expect("ack");
+    }
+    assert_eq!(fx.reader.committed(&key).await.expect("cursor"), Some(10));
+
+    fx.reader.seek(&key, 0, false).await.expect("seek");
+
+    let successor = GroupReader::new(
+        Arc::clone(&fx.reader.cursors),
+        Arc::clone(&fx.reader.dead_letters),
+        VIS,
+        MANY,
+    );
+    let polled = successor
+        .poll(&key, &fx.log, 10, base + Duration::from_secs(1))
+        .await
+        .expect("poll");
+    assert_eq!(offsets(&polled), (0..10).collect::<Vec<_>>());
+    // The marker is gone, not just skipped over.
+    assert_eq!(
+        fx.reader.dead_letters.list(&key).await.expect("list"),
+        [0u64; 0]
+    );
+}

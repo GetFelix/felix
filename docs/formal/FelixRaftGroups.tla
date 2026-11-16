@@ -190,6 +190,7 @@ Live(T, e) == [T EXCEPT !.exists = TRUE, !.cre = IF T.exists THEN @ ELSE e.cre]
 Step(T, e, i) ==
     CASE e.kind = "seek" ->
             [T EXCEPT !.exists = TRUE, !.cre = e.cre, !.cursor = e.to,
+                      !.dead = {o \in @ : o < e.to},
                       !.from = e.to, !.reset = i, !.gfloor = i]
       [] e.kind = "delete" ->
             [T0 EXCEPT !.lastDel = i, !.gfloor = i]
