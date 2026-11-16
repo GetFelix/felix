@@ -98,13 +98,16 @@ class Run(unittest.TestCase):
         res = s.summarize(self.write(rows))
         self.assertEqual(res["verdict"], "FAIL")
 
-    def resume(self, p50, p99, msg_s=50000, errors=0):
-        return {"replayed_throughput_msg_s": msg_s, "errors": errors,
+    def resume(self, p50, p99, msg_s=50000, errors=0, short_reads=0, bad_first=0, held=20000):
+        return {"replayed_throughput_msg_s": msg_s, "errors": errors, "short_reads": short_reads,
+                "bad_first_offsets": bad_first,
+                "publish_throughput_msg_s": held, "publish_target_msg_s": 20000,
                 "resume_latency_us": {"p50": p50, "p99": p99, "p999": p99 * 2},
                 "replay_latency_us": {"p50": p50 * 2, "p99": p99 * 2}}
 
-    def tail(self, msg_s, p50, p99, gaps=0):
+    def tail(self, msg_s, p50, p99, gaps=0, held=20000):
         return {"delivered_throughput_msg_s": msg_s, "gaps": gaps,
+                "publish_throughput_msg_s": held, "publish_target_msg_s": 20000,
                 "delivery_latency_us": {"p50": p50, "p99": p99}}
 
     def test_slower_raft_resume_fails(self):
@@ -132,14 +135,74 @@ class Run(unittest.TestCase):
             rows.append((rnd, "rf3-follower-tail", "raft", "ok", self.tail(20000, 800, 2500, gaps=4)))
         self.assertEqual(s.summarize(self.write(rows))["verdict"], "FAIL")
 
+    def kafka_tail(self, consumed=20000, produced=20000, rate=20000, held=20000):
+        return {"consumed_throughput_msg_s": rate, "consumed_records": consumed,
+                "produced_records": produced, "publish_throughput_msg_s": held,
+                "publish_target_msg_s": 20000}
+
+    def verdicts(self, res):
+        return {m["id"]: m["verdict"] for m in res["cells"][0]["metrics"] if m["gates"]}
+
     def test_kafka_tail_gates_consumed_throughput(self):
         rows = []
         for rnd in (1, 2, 3):
-            rows.append((rnd, "rf3-kafka-tail", "hybrid", "ok",
-                         {"consumed_throughput_msg_s": 40000, "throughput_msg_s": 40000}))
-            rows.append((rnd, "rf3-kafka-tail", "raft", "ok",
-                         {"consumed_throughput_msg_s": 20000, "throughput_msg_s": 40000}))
-        self.assertEqual(s.summarize(self.write(rows))["verdict"], "FAIL")
+            rows.append((rnd, "rf3-kafka-tail", "hybrid", "ok", self.kafka_tail(rate=40000)))
+            rows.append((rnd, "rf3-kafka-tail", "raft", "ok", self.kafka_tail(rate=20000)))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(self.verdicts(res)["consume_msg_s"], "FAIL")
+
+    def test_kafka_tail_must_consume_everything_produced(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-kafka-tail", "hybrid", "ok", self.kafka_tail()))
+            rows.append((rnd, "rf3-kafka-tail", "raft", "ok", self.kafka_tail(consumed=19000)))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(self.verdicts(res)["completeness"], "FAIL")
+
+    def test_a_publisher_under_95_percent_of_target_invalidates_the_cell(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-resume", "hybrid", "ok", self.resume(300, 900)))
+            rows.append((rnd, "rf3-resume", "raft", "ok", self.resume(300, 900, held=18000)))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(self.verdicts(res)["rate_attain"], "FAIL")
+
+    def test_resume_correctness_counters_must_be_zero_on_both_engines(self):
+        for field in ("errors", "short_reads", "bad_first"):
+            for bad_side in ("hybrid", "raft"):
+                rows = []
+                for rnd in (1, 2, 3):
+                    for side in ("hybrid", "raft"):
+                        extra = {field: 1} if (side == bad_side and rnd == 2) else {}
+                        rows.append((rnd, "rf3-resume", side, "ok", self.resume(300, 900, **extra)))
+                res = s.summarize(self.write(rows))
+                self.assertEqual(res["verdict"], "FAIL", (field, bad_side))
+
+    def test_the_same_failure_on_both_engines_is_still_a_failure(self):
+        # A ratio would call these equal; the absolute gates do not.
+        cases = [("rf3-resume", self.resume(300, 900, short_reads=2), "short_reads"),
+                 ("rf3-resume", self.resume(300, 900, errors=2), "resume_errors"),
+                 ("rf3-resume", self.resume(300, 900, bad_first=2), "bad_first"),
+                 ("rf3-resume", self.resume(300, 900, held=15000), "rate_attain"),
+                 ("rf3-kafka-tail", self.kafka_tail(consumed=19000), "completeness"),
+                 ("rf3-kafka-tail", self.kafka_tail(held=15000), "rate_attain")]
+        for cell, data, metric in cases:
+            rows = [(rnd, cell, side, "ok", data) for rnd in (1, 2, 3) for side in ("hybrid", "raft")]
+            res = s.summarize(self.write(rows))
+            self.assertEqual(self.verdicts(res)[metric], "FAIL", metric)
+            self.assertEqual(res["verdict"], "FAIL", metric)
+
+    def test_a_gap_on_the_hybrid_side_also_fails_the_follower_tail(self):
+        rows = []
+        for rnd in (1, 2, 3):
+            rows.append((rnd, "rf3-follower-tail", "hybrid", "ok", self.tail(20000, 800, 2500, gaps=3)))
+            rows.append((rnd, "rf3-follower-tail", "raft", "ok", self.tail(20000, 800, 2500, gaps=3)))
+        res = s.summarize(self.write(rows))
+        self.assertEqual(res["verdict"], "FAIL")
+        self.assertEqual(self.verdicts(res)["gaps"], "FAIL")
 
 
 if __name__ == "__main__":

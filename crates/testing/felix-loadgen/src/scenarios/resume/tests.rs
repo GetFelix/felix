@@ -1,4 +1,6 @@
-use super::resume_offset;
+use std::time::Duration;
+
+use super::{Tally, resume_offset};
 
 #[test]
 fn offsets_stay_below_the_room_and_repeat_for_a_seed() {
@@ -22,4 +24,30 @@ fn offsets_cover_the_range() {
 fn no_room_resumes_at_zero() {
     let mut state = 1u64;
     assert_eq!(resume_offset(&mut state, 0), 0);
+}
+
+#[test]
+fn a_short_read_records_no_latency() {
+    let mut tally = Tally::default();
+    tally.finish(
+        100,
+        40,
+        Duration::from_micros(500),
+        Duration::from_millis(9),
+    );
+    assert_eq!(
+        (tally.short_reads, tally.resumes, tally.resume.len()),
+        (1, 0, 0)
+    );
+    tally.finish(
+        100,
+        100,
+        Duration::from_micros(500),
+        Duration::from_millis(9),
+    );
+    assert_eq!(
+        (tally.short_reads, tally.resumes, tally.resume.len()),
+        (1, 1, 1)
+    );
+    assert_eq!(tally.records, 100);
 }

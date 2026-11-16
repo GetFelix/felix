@@ -184,6 +184,20 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
       --token-file "$dir/tokens/client.jwt" "$@"
     ;;
 
+  # wait-json <dir> <name> <timeout-secs>: wait for a loadgen-bg run to print its
+  # LOADGEN_JSON and exit, so no publisher outlives its cell. Fails on timeout.
+  wait-json)
+    dir=$1 name=$2 limit=$3; in_run "$dir"
+    for _ in $(seq 1 "$limit"); do
+      if ! kill -0 "$(cat "$dir/$name.pid")" 2>/dev/null; then
+        grep -q '^LOADGEN_JSON ' "$dir/$name.log" && exit 0
+        die "$name exited without LOADGEN_JSON"
+      fi
+      sleep 1
+    done
+    die "$name still running after $limit s"
+    ;;
+
   # stop <dir>: TERM then KILL the processes this script started under <dir>.
   stop)
     dir=$1; in_run "$dir"
@@ -266,29 +280,37 @@ print("LOADGEN_JSON " + json.dumps({"scenario": "kafka", "acked_records": int(n)
       --num-records "$records" --record-size "$bytes" --throughput "$rate" --producer-props \
       bootstrap.servers="$boot" acks=all batch.size=65536 linger.ms=5 compression.type=none \
       max.in.flight.requests.per.connection=5
-    cons=$(timeout -k 10 "$limit" "$R/kafka/bin/kafka-consumer-perf-test.sh" \
+    # A consumer that fails or times out fails the cell; there is nothing to swallow here.
+    cons=$(set -o pipefail; timeout -k 10 "$limit" "$R/kafka/bin/kafka-consumer-perf-test.sh" \
       --bootstrap-server "$boot" --topic "$topic" --messages "$records" --group "tail-$$" \
-      --hide-header --timeout 120000 2>&1 | tee "$dir/kafka-tail-consumer.log" | tail -1) || true
+      --hide-header --timeout 120000 2>&1 | tee "$dir/kafka-tail-consumer.log" | tail -1) \
+      || die "kafka-consumer-perf-test failed or timed out"
     # The producer prints its summary last; give it a moment to finish after the consumer.
     for _ in $(seq 1 60); do
       grep -q 'records sent' "$dir/kafka-tail-producer.log" 2>/dev/null \
         && grep 'records sent' "$dir/kafka-tail-producer.log" | tail -1 | grep -q 'ms 99.9th' && break
       sleep 1
     done
+    # The tool's own fetch rate runs from the consumer's start, so it carries the idle
+    # seconds before the producer begins. The gated rate divides what was consumed by the
+    # producer's own run time instead, and completeness (consumed == produced) is gated apart.
     python3 -c '
 import json, re, sys
-cons, prod = sys.argv[1], open(sys.argv[2]).read()
+cons, prod, target = sys.argv[1], open(sys.argv[2]).read(), float(sys.argv[3])
 f = [x.strip() for x in cons.split(",")]
 if len(f) < 10:
     sys.exit("could not parse consumer line: " + cons)
 m = re.findall(r"(\d+) records sent, ([\d.]+) records/sec", prod)
 if not m:
     sys.exit("producer did not finish")
-sent, rate = m[-1]
-print("LOADGEN_JSON " + json.dumps({"scenario": "kafka-tail", "consumed_records": int(float(f[4])),
-  "consumed_throughput_msg_s": float(f[9]), "consumed_throughput_mb_s": float(f[8]),
-  "produced_records": int(sent), "throughput_msg_s": float(rate), "failed_sends": 0}))' \
-      "$cons" "$dir/kafka-tail-producer.log"
+sent, rate = int(m[-1][0]), float(m[-1][1])
+consumed = int(float(f[4]))
+window = sent / rate
+print("LOADGEN_JSON " + json.dumps({"scenario": "kafka-tail", "consumed_records": consumed,
+  "consumed_throughput_msg_s": consumed / window, "fetch_throughput_msg_s": float(f[9]),
+  "consumed_throughput_mb_s": float(f[8]), "produced_records": sent, "window_s": window,
+  "publish_throughput_msg_s": rate, "publish_target_msg_s": target, "failed_sends": 0}))' \
+      "$cons" "$dir/kafka-tail-producer.log" "$rate"
     ;;
 
   wipe) in_run "$1"; rm -rf "$1" ;;

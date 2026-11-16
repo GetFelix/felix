@@ -27,11 +27,12 @@ shard 0 there, so pointing it at a node that does not lead the shard measures a 
 (`served_directly` counts the rest). The stream must have one shard.
 
 `resume` is the offset-resume loop for durable streams: `--concurrency` loops each subscribe at a
-random offset below the tail (taken once the publisher has left `20 x --resume-span` records), read
+seed-derived offset in `[0, --resume-history - span]` (default `20 x --resume-span`; the run waits until the stream holds that many records), read
 `--resume-span` records (default 100) and drop the subscription. The JSON has `resume_latency_us`
 (subscribe to first record), `replay_latency_us` (subscribe to the last record), `resumes_per_s`,
 `replayed_throughput_msg_s`, and `errors`, `short_reads` and `bad_first_offsets` counts that should be
-zero. Start `ingest` beside it with the same `--start-at`.
+zero (a short read records no latency). Start `ingest` beside it with the same `--start-at`;
+`ingest --rate <n>` holds it to n records a second in total instead of as fast as acks allow.
 
 A `subscribe` run reports what its subscribers were delivered
 (`delivered_throughput_msg_s`, `received`), offset gaps, which are records the

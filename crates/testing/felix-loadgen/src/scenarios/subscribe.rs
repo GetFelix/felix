@@ -382,11 +382,13 @@ fn direct_target(brokers: &[std::net::SocketAddr], index: usize) -> std::net::So
 
 /// The address a `NotLeader` refusal names, when it names a usable one.
 fn redirect_addr(err: &anyhow::Error) -> Option<std::net::SocketAddr> {
-    err.downcast_ref::<NotLeaderError>()?
-        .addr
-        .as_deref()?
-        .parse()
-        .ok()
+    resolve(err.downcast_ref::<NotLeaderError>()?.addr.as_deref()?)
+}
+
+/// `host:port` as a socket address; the redirect may name a host, not an IP.
+fn resolve(addr: &str) -> Option<std::net::SocketAddr> {
+    use std::net::ToSocketAddrs;
+    addr.to_socket_addrs().ok()?.next()
 }
 
 /// Subscribe to shard 0 on `addr` itself. A `NotLeader` answer is followed one
@@ -405,6 +407,7 @@ async fn open_direct(
     {
         Ok(sub) => Ok((sub, false, vec![first])),
         Err(err) => {
+            eprintln!("subscribe on {addr} refused, following the redirect: {err:#}");
             let leader = redirect_addr(&err).with_context(|| {
                 format!("subscribe on {addr} failed without a redirect: {err:#}")
             })?;

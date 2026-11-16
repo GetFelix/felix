@@ -47,10 +47,14 @@ pub(crate) fn usage() -> ! {
                               the shard to its leader. A NotLeader answer is followed one
                               hop and counted as `redirected`. The stream must have one shard
   --resume-span <n>           resume: records read after each resume (default 100)
+  --resume-history <n>        resume: wait for n records, then resume at offsets in
+                              [0, n - span] (default 20 x --resume-span)
   --duration-secs <n>         ingest: publish for n seconds instead of --total records;
                               subscribe, resume: how long to count (required)
   --start-at <unix-secs>      ingest, subscribe: connect, then start at this wall-clock
                               time (fractional seconds), so generators overlap
+  --rate <n>                  ingest: publish n records/s in total across publishers
+                              (default: as fast as acks allow)
   --stamp-send-time           ingest: put the wall-clock send time in each payload's first
                               8 bytes; subscribe: report delivery latency from it (needs
                               the machines' clocks in sync)
@@ -103,6 +107,7 @@ pub(crate) fn parse_args() -> Result<Args> {
     let mut slow_delay_ms = 0u64;
     let mut direct = false;
     let mut resume_span = 100usize;
+    let mut resume_history: Option<u64> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -184,9 +189,17 @@ pub(crate) fn parse_args() -> Result<Args> {
             }
             "--mqtt-topic-prefix" => mqtt_prefix = value("--mqtt-topic-prefix")?,
             "--direct" => direct = true,
+            "--resume-history" => {
+                resume_history = Some(
+                    value("--resume-history")?
+                        .parse()
+                        .context("--resume-history")?,
+                )
+            }
             "--resume-span" => {
                 resume_span = value("--resume-span")?.parse().context("--resume-span")?
             }
+            "--rate" => ingest.rate = Some(value("--rate")?.parse().context("--rate")?),
             "--stamp-send-time" => ingest.stamp_send_time = true,
             "--cluster" => ingest.cluster = true,
             "--concurrency" => {
@@ -234,6 +247,7 @@ pub(crate) fn parse_args() -> Result<Args> {
                 duration: ingest.duration.context("resume needs --duration-secs")?,
                 start_at: ingest.start_at,
                 span: resume_span,
+                history: resume_history.unwrap_or(resume_span as u64 * 20),
             },
         },
         "failover" => Scenario::Failover {

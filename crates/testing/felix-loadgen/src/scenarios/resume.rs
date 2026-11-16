@@ -21,8 +21,8 @@ use crate::stats::{Samples, fmt_us, report};
 const HISTORY_WAIT: Duration = Duration::from_secs(60);
 /// A resume that has not delivered its next record by now counts as a short read.
 const RECORD_WAIT: Duration = Duration::from_secs(10);
-/// History needed before the window opens, in multiples of `span`.
-const HISTORY_SPANS: u64 = 20;
+/// How long to keep retrying a failed subscribe while finding the tail.
+const PROBE_BACKOFF_MAX: Duration = Duration::from_secs(2);
 
 /// The `resume`-only flags.
 pub struct ResumeOptions {
@@ -32,6 +32,10 @@ pub struct ResumeOptions {
     pub start_at: Option<SystemTime>,
     /// Records read after each resume.
     pub span: usize,
+    /// Resume offsets are drawn from `[0, history - span]`, and the run waits
+    /// until the stream holds this many records. A fixed number keeps the
+    /// offsets the same on both engines whatever the publisher manages.
+    pub history: u64,
 }
 
 /// What one worker saw.
@@ -45,6 +49,21 @@ struct Tally {
     bad_first_offsets: u64,
     resume: Samples,
     replay: Samples,
+}
+
+impl Tally {
+    /// Book one finished resume. A resume that read fewer than `span` records is a
+    /// short read and records no latency, so it cannot flatter the percentiles.
+    fn finish(&mut self, span: usize, read: usize, resumed: Duration, replayed: Duration) {
+        if read < span {
+            self.short_reads += 1;
+            return;
+        }
+        self.resumes += 1;
+        self.records += read as u64;
+        self.resume.record(resumed);
+        self.replay.record(replayed);
+    }
 }
 
 /// A resume offset in `[0, room)`, from a xorshift state advanced in place.
@@ -66,14 +85,28 @@ pub(crate) async fn resume(
     let client = Arc::new(cluster(common).await?);
 
     tokio::time::sleep_until(start_instant(opts.start_at, "resume").into()).await;
-    let needed = span as u64 * HISTORY_SPANS;
+    let needed = opts.history.max(span as u64 + 1);
     let history_deadline = Instant::now() + HISTORY_WAIT;
+    let mut backoff = Duration::from_millis(100);
     let tail = loop {
-        let probe = client
+        let tail = match client
             .subscribe(&common.tenant, &common.namespace, stream)
             .await
-            .context("subscribe to find the tail")?;
-        let tail = probe.live_offset().unwrap_or(0);
+        {
+            Ok(probe) => {
+                let tail = probe.live_offset().unwrap_or(0);
+                drop(probe);
+                backoff = Duration::from_millis(100);
+                tail
+            }
+            Err(err) if Instant::now() < history_deadline => {
+                report!(common, "resume: tail probe failed, retrying: {err:#}");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(PROBE_BACKOFF_MAX);
+                continue;
+            }
+            Err(err) => return Err(err).context("subscribe to find the tail"),
+        };
         if tail >= needed {
             break tail;
         }
@@ -84,7 +117,8 @@ pub(crate) async fn resume(
         }
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
-    let room = tail - span as u64;
+    // The offsets stay inside the fixed history, not whatever the tail grew to.
+    let room = needed - span as u64 + 1;
 
     let started = Instant::now();
     let deadline = started + opts.duration;
@@ -113,7 +147,10 @@ pub(crate) async fn resume(
                     .await;
                 let mut sub = match opened {
                     Ok(sub) => sub,
-                    Err(_) => {
+                    Err(err) => {
+                        if tally.errors == 0 {
+                            eprintln!("resume worker {worker}: first subscribe error: {err:#}");
+                        }
                         tally.errors += 1;
                         tokio::time::sleep(Duration::from_millis(5)).await;
                         continue;
@@ -138,11 +175,7 @@ pub(crate) async fn resume(
                     tally.errors += 1;
                     continue;
                 };
-                tally.resumes += 1;
-                tally.records += read as u64;
-                tally.short_reads += u64::from(read < span);
-                tally.resume.record(resumed);
-                tally.replay.record(t0.elapsed());
+                tally.finish(span, read, resumed, t0.elapsed());
             }
             tally
         });
@@ -201,6 +234,7 @@ pub(crate) async fn resume(
         "span": span,
         "duration_s": secs,
         "tail_at_start": tail,
+        "history": needed,
         "resumes": total.resumes,
         "replayed": total.records,
         "errors": total.errors,

@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use super::{Tally, failure, reconnect_with, spread_keys};
+use super::{Tally, failure, pace_interval, reconnect_with, spread_keys};
 
 fn per_shard(keys: &[String], shards: u32, routing: ShardRouting) -> BTreeMap<u32, usize> {
     let mut counts = BTreeMap::new();
@@ -163,4 +163,13 @@ fn tally_counts_failures_and_per_shard_acks() {
     assert_eq!(total.acked, 24);
     assert_eq!(total.acked_sends, 3);
     assert_eq!(total.per_shard.get(&2), Some(&20));
+}
+
+#[test]
+fn pacing_splits_the_rate_over_publishers_and_batches() {
+    // 20000 rec/s over 2 publishers sending 16 at a time: 10000 each, 1.6 ms apart.
+    assert_eq!(pace_interval(20_000, 2, 16), Duration::from_micros(1600));
+    assert_eq!(pace_interval(100, 1, 1), Duration::from_millis(10));
+    // A zero rate or count does not divide by zero.
+    assert!(pace_interval(0, 0, 0) > Duration::ZERO);
 }

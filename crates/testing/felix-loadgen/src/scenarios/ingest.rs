@@ -39,6 +39,17 @@ pub struct IngestOptions {
     /// each shard's records straight to the shard's owner, instead of one
     /// plain connection per publisher whose batches a non-owner forwards.
     pub cluster: bool,
+    /// Publish at this many records per second across all publishers, instead
+    /// of as fast as acks allow. A publisher that falls behind catches up, so
+    /// the achieved rate stays at the target unless the broker cannot keep up.
+    pub rate: Option<u64>,
+}
+
+/// The gap between one publisher's batches for `rate` records a second
+/// shared by `publishers`, `batch` records at a time.
+pub(crate) fn pace_interval(rate: u64, publishers: usize, batch: usize) -> Duration {
+    let per_second = rate.max(1) as f64 / publishers.max(1) as f64;
+    Duration::from_secs_f64(batch.max(1) as f64 / per_second)
 }
 
 /// Where an ingest publisher writes.
@@ -127,12 +138,14 @@ pub(crate) async fn ingest(
         in_flight,
         stamp_send_time: stamp,
         cluster: use_cluster,
+        rate,
         ..
     } = *opts;
     let publishers = common.concurrency.max(1);
     let per = (common.total / publishers).max(1);
     let batch = common.batch.max(1);
     let payload_bytes = common.payload_bytes.max(if stamp { SEND_TIME } else { 1 });
+    let pace = rate.map(|rate| pace_interval(rate, publishers, batch));
 
     // Readiness pre-flight on one connection, so a cold routing snapshot does
     // not land inside the measured window (same discipline as `pubsub`).
@@ -224,6 +237,16 @@ pub(crate) async fn ingest(
                 Some(deadline) => Instant::now() < deadline,
                 None => tally.published < per,
             } {
+                if let Some(pace) = pace {
+                    // Scheduled from the start, so a slow ack is made up later.
+                    let due = started + pace.mul_f64(batches as f64);
+                    if until(deadline, tokio::time::sleep_until(due.into()))
+                        .await
+                        .is_none()
+                    {
+                        break;
+                    }
+                }
                 let this = match deadline {
                     Some(_) => batch,
                     None => batch.min(per - tally.published),
@@ -453,6 +476,7 @@ pub(crate) async fn ingest(
         "throughput_mb_s": mb_s,
         "per_publisher_msg_s": msg_s / publishers as f64,
         "in_flight": in_flight,
+        "target_rate_msg_s": rate,
         "stamp_send_time": stamp,
         "duration_s": secs,
         "finish_ms": finish_ms,

@@ -26,6 +26,15 @@ def _lat(key, q):
     return lambda d: (d.get(key) or {}).get(q)
 
 
+def _ratio(d, num, den):
+    return d[num] / d[den] if d.get(num) is not None and d.get(den) else None
+
+
+# Metrics that are not compared Raft against hybrid: a count that must be zero on both
+# engines, or a ratio that must reach a floor on both. Anything else fails the cell.
+MUST_BE_ZERO = {"resume_errors", "short_reads", "bad_first", "gaps"}
+FLOORS = {"completeness": 1.0, "rate_attain": 0.95}
+
 METRICS = {
     "msg_s": ("throughput (msg/s)", lambda d: d.get("throughput_msg_s"), True),
     "ack_p50": ("ack p50 (us)", _lat("batch_ack_latency_us", "p50"), False),
@@ -43,6 +52,10 @@ METRICS = {
     "resume_p99": ("resume to first record p99 (us)", _lat("resume_latency_us", "p99"), False),
     "replay_p99": ("resume to last record p99 (us)", _lat("replay_latency_us", "p99"), False),
     "resume_errors": ("failed resumes", lambda d: d.get("errors"), False),
+    "short_reads": ("short reads", lambda d: d.get("short_reads"), False),
+    "bad_first": ("first records below the resume offset", lambda d: d.get("bad_first_offsets"), False),
+    "completeness": ("consumed / produced records", lambda d: _ratio(d, "consumed_records", "produced_records"), True),
+    "rate_attain": ("publisher rate / target", lambda d: _ratio(d, "publish_throughput_msg_s", "publish_target_msg_s"), True),
     "consume_msg_s": ("consumed throughput (msg/s)", lambda d: d.get("consumed_throughput_msg_s"), True),
     "first_commit": ("leader kill to first commit (ms)", lambda d: d.get("first_commit_ms"), False),
     "caught_up": ("leader kill to subscriber caught up (ms)", lambda d: d.get("caught_up_ms"), False),
@@ -68,13 +81,15 @@ CELLS["rf3-fanout"] = ("RF 3, Quorum on_commit, consumer fanout",
                        [("deliv_msg_s", True), ("pub_msg_s", False), ("pubsub_ack_p99", True),
                         ("deliv_p99", True)])
 CELLS["rf3-kafka-tail"] = ("RF 3, Quorum on_commit, Kafka consumer tailing a steady produce",
-                           [("consume_msg_s", True), ("pub_msg_s", False)])
+                           [("consume_msg_s", True), ("completeness", True), ("rate_attain", True),
+                            ("pub_msg_s", False)])
 CELLS["rf3-resume"] = ("RF 3, Quorum on_commit, resume and replay on the leader under steady produce",
                        [("replay_msg_s", True), ("resume_p50", True), ("resume_p99", True),
-                        ("replay_p99", False), ("resume_errors", True), ("pub_msg_s", False)])
+                        ("replay_p99", False), ("resume_errors", True), ("short_reads", True),
+                        ("bad_first", True), ("rate_attain", True), ("pub_msg_s", False)])
 CELLS["rf3-follower-tail"] = ("RF 3, Quorum on_commit, tail subscribe on a follower under steady produce",
                               [("deliv_msg_s", True), ("deliv_p50", True), ("deliv_p99", True),
-                               ("gaps", True), ("pub_msg_s", False)])
+                               ("gaps", True), ("rate_attain", True), ("pub_msg_s", False)])
 
 
 def mean_sd(vals):
@@ -111,6 +126,21 @@ def compare(raft, hybrid, higher):
             "noise": noise, "rounds": n,
             "raft": {"mean": rm, "sd": rsd, "min": min(raft), "max": max(raft), "values": raft},
             "hybrid": {"mean": hm, "sd": hsd, "min": min(hybrid), "max": max(hybrid), "values": hybrid}}
+
+
+def _side(vals):
+    return {"mean": sum(vals) / len(vals), "sd": None, "min": min(vals), "max": max(vals), "values": vals}
+
+
+def compare_exact(raft, hybrid, ok, rule):
+    """An absolute rule that has to hold on both sides in every round. Not a ratio:
+    a side that breaks it fails the cell however the other side did."""
+    if not raft or not hybrid:
+        return {"verdict": "FAIL", "reason": "no data on %s" % ("raft" if not raft else "hybrid"),
+                "ratio": None, "tolerance": None}
+    held = all(ok(v) for v in raft + hybrid)
+    return {"verdict": "PASS" if held else "FAIL", "ratio": None, "tolerance": None, "rule": rule,
+            "rounds": min(len(raft), len(hybrid)), "raft": _side(raft), "hybrid": _side(hybrid)}
 
 
 def load_run(run):
@@ -159,7 +189,14 @@ def summarize(run):
                     if v is not None:
                         vals.append(float(v))
                 side_vals[side] = vals
-            res = compare(side_vals["raft"], side_vals["hybrid"], higher)
+            if mid in MUST_BE_ZERO:
+                res = compare_exact(side_vals["raft"], side_vals["hybrid"], lambda v: v == 0, "= 0")
+            elif mid in FLOORS:
+                floor = FLOORS[mid]
+                res = compare_exact(side_vals["raft"], side_vals["hybrid"], lambda v: v >= floor,
+                                    ">= %g" % floor)
+            else:
+                res = compare(side_vals["raft"], side_vals["hybrid"], higher)
             res.update({"id": mid, "label": label, "higher_is_better": higher, "gates": gates})
             cell["metrics"].append(res)
         gating = [m for m in cell["metrics"] if m["gates"]]
@@ -206,6 +243,11 @@ def markdown(res):
             def ms(side):
                 s = m[side]
                 return "%s (%s)" % (fmt(s["mean"]), fmt(s["sd"]) if s["sd"] is not None else "n=1")
+            if m.get("rule"):
+                out.append("| %s | %s | %s | %s | - | must be %s | %s |" % (
+                    m["label"], "yes" if m["gates"] else "no", ms("hybrid"), ms("raft"),
+                    m["rule"], m["verdict"] if m["gates"] else "info"))
+                continue
             out.append("| %s | %s | %s | %s | %.3f | %.1f%% | %s |" % (
                 m["label"], "yes" if m["gates"] else "no", ms("hybrid"), ms("raft"),
                 m["ratio"], m["tolerance"] * 100, m["verdict"] if m["gates"] else "info"))

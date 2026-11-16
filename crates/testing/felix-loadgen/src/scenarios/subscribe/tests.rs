@@ -76,3 +76,14 @@ fn a_redirect_is_followed_only_when_it_names_an_address() {
     assert_eq!(super::redirect_addr(&nameless), None);
     assert_eq!(super::redirect_addr(&anyhow::anyhow!("boom")), None);
 }
+
+#[test]
+fn a_redirect_may_name_a_host() {
+    use felix_client::NotLeaderError;
+    let host = anyhow::Error::new(NotLeaderError {
+        node_id: "broker-1".into(),
+        addr: Some("localhost:15000".into()),
+        generation: 1,
+    });
+    assert_eq!(super::redirect_addr(&host).map(|a| a.port()), Some(15000));
+}
