@@ -12,6 +12,7 @@ use std::path::PathBuf;
 use super::epoch_file::{EpochAt, EpochBase, EpochFile, EpochLogId};
 use super::reform::{BrokerCopies, CopyRead};
 use super::rotated_by::RotatedBy;
+use crate::disk_log::CarriedFloor;
 
 /// An (epoch, term) pair. Every term of an epoch is above every term of an
 /// earlier one.
@@ -127,6 +128,9 @@ pub(crate) struct ReformPlan<B> {
     /// Unmarked, a vote or the floor is above every entry read, and that
     /// cut a copy below what it holds.
     pub(crate) cut_by_vote: bool,
+    /// The highest floor any copy read holds, with its trim's headers.
+    /// Every copy starts with it ([`super::Start::floor`]).
+    pub(crate) floor: Option<CarriedFloor>,
 }
 
 impl<B> ReformPlan<B> {
@@ -420,9 +424,16 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .max()
         .map(|r| r.checked_add(1).ok_or(Refused::NoIndexLeft))
         .transpose()?;
-    // A copy that installed a purge snapshot holds no record below its
-    // carried floor, nor the trim that set it; its `raft-floor` names both.
-    let carried = copies.iter().filter_map(|c| c.read.carried_end).max();
+    // The new epoch keeps the highest floor any copy read holds, so reads
+    // below it stay refused, and gives out nothing at or below the trim that
+    // set it: a copy that installed a purge snapshot holds neither record.
+    let floor = copies
+        .iter()
+        .filter_map(|c| c.read.floor.clone())
+        .max_by_key(|floor| floor.floor);
+    let carried = floor
+        .as_ref()
+        .map(|floor| floor.floor.max(floor.offset.saturating_add(1)));
     let floor_end = record
         .floor
         .map(|floor| floor.index)
@@ -454,6 +465,7 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         top,
         marked,
         cut_by_vote,
+        floor,
     })
 }
 

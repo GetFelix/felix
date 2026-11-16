@@ -3401,8 +3401,13 @@ headers, in the raise-only `raft-floor` file (`docs/storage-format.md`), and
 its own snapshots pass that higher floor on. Without it, a later snapshot
 from a leader that had not applied the newest trim would lower the floor at
 the next restart, and a re-form reading that copy could give out an offset
-again. Built: the install rule and the floor file. Not built: the purge
-itself and the re-form reading the carried floor.
+again. A re-form reads every copy's floor, from `raft-floor` or a trim
+record at or below its saved commit, starts the new epoch past the highest
+floor's trim, and raises that floor and its headers into every started
+copy's `raft-floor`, so reads below it stay refused even when no copy still
+holds the trim. Built: the install rule, the floor file, the re-form floor
+and the purge driver. Not built yet: cluster tests of purge and catch-up,
+and reporting the feature.
 
 On the leader the trim reaches the replay ring in its entry's turn and
 drops the ring's records below the floor, and the answer waits for that, so

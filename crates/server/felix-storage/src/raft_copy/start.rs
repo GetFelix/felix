@@ -23,6 +23,7 @@ use bytes::Bytes;
 
 use super::epoch_file::{self, EpochFile};
 use super::vouch::ReformPlan;
+use crate::disk_log::carried_floor::{self, CarriedFloor};
 use crate::disk_log::{crash_point, durable_mark};
 use crate::log::{AppendOnlyLog, LogConfig};
 use crate::raft_log::snapshot::{SnapshotId, StoredSnapshot};
@@ -59,6 +60,10 @@ pub(crate) struct Start {
     /// A kept directory holding the base, which a voter's log is rebuilt
     /// from in place of its own. It is only read.
     pub(crate) kept: Option<PathBuf>,
+    /// The plan's highest floor ([`ReformPlan::floor`]), raised into the
+    /// copy's `raft-floor` so the new epoch refuses reads below it even
+    /// where the trim that set it is cut or held by no copy.
+    pub(crate) floor: Option<CarriedFloor>,
     /// The meta and data of a voter's snapshot at the end of the gap.
     pub(crate) meta: Bytes,
     pub(crate) data: Bytes,
@@ -243,6 +248,10 @@ pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) ->
                 )));
             }
         }
+    }
+    if let Some(floor) = &start.floor {
+        carried_floor::raise(dir, floor.clone())?;
+        step()?;
     }
     // Before the purged id: a purged id at the gap's end reads as the base
     // only under the epoch that made the gap.

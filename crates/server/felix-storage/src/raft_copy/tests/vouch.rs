@@ -24,7 +24,7 @@ fn copy(name: &str, terms: &[u64], committed: Option<u64>, vote: Option<u64>) ->
         committed,
         vote,
         reserved: None,
-        carried_end: None,
+        floor: None,
         rotated_by: None,
         terms: terms
             .iter()
@@ -864,7 +864,11 @@ fn an_unknown_voter_set_marks_the_group() {
 fn a_reform_after_a_purge_starts_past_the_carried_floor() {
     let rec = record(&["a", "b"], &[], &[], None);
     let mut b = copy("b", &[1, 1], Some(1), Some(1));
-    b.carried_end = Some(10);
+    b.floor = Some(crate::disk_log::CarriedFloor {
+        offset: 9,
+        floor: 7,
+        headers: bytes::Bytes::new(),
+    });
     let a = copy("a", &[1, 1], Some(1), Some(1));
     let plan = plan(
         &rec,
@@ -875,4 +879,29 @@ fn a_reform_after_a_purge_starts_past_the_carried_floor() {
         "first index {} reuses an offset below the carried trim",
         plan.first_index
     );
+}
+
+/// #2602 (ReformKeepsOwnFloor): copies with floors 3 and 5. The plan carries
+/// 5, with the headers of the copy that held it, and gives out nothing at or
+/// below its trim.
+#[test]
+fn a_reform_carries_the_highest_floor_read() {
+    let floor = |offset, floor, headers: &'static [u8]| {
+        Some(crate::disk_log::CarriedFloor {
+            offset,
+            floor,
+            headers: bytes::Bytes::from_static(headers),
+        })
+    };
+    let rec = record(&["a", "b"], &[], &[], None);
+    let mut a = copy("a", &[1, 1], Some(1), Some(1));
+    a.floor = floor(3, 3, b"three");
+    let mut b = copy("b", &[1, 1], Some(1), Some(1));
+    b.floor = floor(5, 5, b"five");
+    let plan = plan(
+        &rec,
+        vec![("a", report(a, vec![])), ("b", report(b, vec![]))],
+    );
+    assert_eq!(plan.floor, floor(5, 5, b"five"));
+    assert!(plan.first_index >= 6, "first index {}", plan.first_index);
 }

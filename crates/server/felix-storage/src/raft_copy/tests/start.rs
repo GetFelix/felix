@@ -50,6 +50,7 @@ fn start(role: Role) -> Start {
         base_terms: vec![(0, 1)],
         accept_loss: AcceptLoss::assumed(false),
         kept: None,
+        floor: None,
         meta: Bytes::from_static(b"meta"),
         data: Bytes::from_static(b"data"),
     }
@@ -237,6 +238,7 @@ fn accept_loss_needs_the_operator_for_a_lossy_plan() {
             crate::raft_copy::VoterSource::Seed,
         )),
         cut_by_vote,
+        floor: None,
     };
     for (marked, cut) in [(true, false), (false, true)] {
         assert_eq!(
@@ -586,4 +588,60 @@ async fn a_voters_own_commit_past_the_base_counts_when_rebuilt_from_a_kept_copy(
     start_copy(dir.path(), &from_kept, &config())
         .await
         .expect("start");
+}
+
+/// #2602 (ReformKeepsOwnFloor): this copy kept floor 3, another copy read
+/// by the plan floor 5. The new epoch refuses every read below 5, with the
+/// trim headers of the copy that held it.
+#[tokio::test]
+async fn a_started_copy_keeps_the_highest_floor_read() {
+    use crate::disk_log::carried_floor::{self, CarriedFloor};
+    use crate::log::{AppendOnlyLog, ReadRange};
+
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 5).await;
+    let own = CarriedFloor {
+        offset: 3,
+        floor: 3,
+        headers: Bytes::from_static(b"three"),
+    };
+    carried_floor::raise(dir.path(), own).expect("own floor");
+    let highest = CarriedFloor {
+        offset: 6,
+        floor: 5,
+        headers: Bytes::from_static(b"five"),
+    };
+    let started = Start {
+        floor: Some(highest.clone()),
+        ..start(Role::Voter)
+    };
+    start_copy(dir.path(), &started, &config())
+        .await
+        .expect("start");
+
+    assert_eq!(
+        carried_floor::load(dir.path()).expect("load"),
+        Some(highest)
+    );
+    let log = DiskLog::open(dir.path(), "t/ns/raft/0", config()).expect("open");
+    for below in [0, 3, 4] {
+        match log
+            .read_range(ReadRange {
+                start: below,
+                max_bytes: usize::MAX,
+            })
+            .await
+        {
+            Err(crate::StorageError::Trimmed {
+                oldest,
+                trim_headers,
+                ..
+            }) => {
+                assert_eq!(oldest, 5, "read at {below}");
+                assert_eq!(trim_headers.as_deref(), Some(&b"five"[..]));
+            }
+            other => panic!("read at {below} below floor 5: {other:?}"),
+        }
+    }
+    log.close().await.expect("close");
 }
