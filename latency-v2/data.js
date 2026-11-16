@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794807048931,
+  "lastUpdate": 1794820233125,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75768,6 +75768,72 @@ window.BENCHMARK_DATA = {
             "range": "238.34",
             "unit": "us",
             "extra": "trials: 5\nmedian: 404.00\nmean: 523.60\nstdev: 238.34\ncv: 45.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "494712e409fbef47e8dc9383efc595e0e691067b",
+          "message": "feat(raft): the broker tells its leading member the target, once per term (#2235, #2591) (#2684)\n\n* feat(replication): a Raft leader acts only on a target told for its term (#2235)\n\nGroupRuntime::retarget and RaftEngine::retarget take the term the target\nis told for. The group holds Told { target, term }; a newer version, or\nthe same version told for a newer term, replaces it. The driver acts only\non a target told for the term it leads, so a new leader waits to be told\nagain (#2591). A re-tell of the same version does not reset transfer\npacing.\n\n* docs(replication): Idle covers a target told for an older term; clarify a test seed (#2235)\n\n* fix(replication): keep transfer pacing on a re-tell and the stuck report across terms (#2235)\n\nA same-version target told for a new term no longer resets the transfer\ncount; a run()-level test drives it. A group stuck on transfers that do\nnot land stays reported stuck while its member does not lead or leads a\nterm not told yet, for as long as the transfers are paced (Pass::Untold,\nDriver::stuck_left).\n\n* chore(replication): note the placement spec is unaffected (#2235)\n\nSpec-Unaffected: FelixRaftPlacement's StaleTargets already lets a leader act on any target ever written, a superset of a target told for its term; the per-term rule and the stuck report are liveness and metrics, not modelled.\n\n* WIP: broker tells the leading Raft member its target per term (#2235, #2591)\n\nFeed items carry the Raft target; the lease records the feed head from\nheartbeats; RaftShards tells each led shard its target once a feed view\nstarted after the term and reached the head bar. Trio test\na_new_leader_tells_its_target_again_once_its_feed_catches_up still fails;\ndocs, changelog fragment and revert checks not done.\n\n* test(broker): stop the first leader, add the #2591 successor test, docs (#2235)\n\n* fix(raft): refuse pre-restore targets, tell no target, pass the CP's members verbatim (#2591)\n\n* test(raft): restore, no-target and heartbeat wiring tests; docs for the retarget rules (#2591)\n\n* fix(raft): the feed says when it withheld targets, and a withheld view untargets nothing (#2591)",
+          "timestamp": "2026-11-16T08:59:57Z",
+          "tree_id": "4ac711e42ff98ce9979264863965e237b84ec304",
+          "url": "https://github.com/GetFelix/felix/commit/494712e409fbef47e8dc9383efc595e0e691067b"
+        },
+        "date": 1794820221731,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 149,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 148.80\nstdev: 0.84\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 200,
+            "range": "8.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 204.80\nstdev: 8.81\ncv: 4.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 273,
+            "range": "369.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 273.00\nmean: 478.00\nstdev: 369.82\ncv: 77.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 195,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 195.00\nstdev: 0.71\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 379,
+            "range": "12.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 379.00\nmean: 384.40\nstdev: 12.86\ncv: 3.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 587,
+            "range": "401.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 587.00\nmean: 742.60\nstdev: 401.21\ncv: 54.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
