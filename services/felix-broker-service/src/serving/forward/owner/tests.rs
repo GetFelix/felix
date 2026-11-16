@@ -1767,13 +1767,14 @@ mod on_raft {
         );
 
         // Cut partway: the first record is held, the second reuses a held
-        // sequence. Answered as a lost leadership, so the requester sends
-        // each again, and the third is not written past the refused one.
+        // sequence. The refusal is permanent, so it is passed on and not sent
+        // again, and the third is not written past the refused one.
         let mut cut = several.clone();
         cut.payloads = ["several", "changed", "later"].map(Bytes::from).to_vec();
         match handler.apply(cut).await {
             InternalMessage::ForwardPublishError(err) => {
-                assert_eq!(err.code, ErrorCode::LeadershipLost, "{}", err.detail);
+                assert_eq!(err.code, ErrorCode::StorageFailed, "{}", err.detail);
+                assert!(err.detail.contains("different payloads"), "{}", err.detail);
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
@@ -1983,6 +1984,105 @@ mod on_raft {
         ) -> std::result::Result<PeerCapabilities, PeerError> {
             Ok(PeerCapabilities::NONE)
         }
+    }
+
+    /// A leader whose answer to a whole batch never arrives, and which
+    /// refuses every record sent alone as not the owner.
+    struct CutThenMoved;
+
+    impl PeerRequester for CutThenMoved {
+        async fn request(
+            &self,
+            node_id: &str,
+            _addr: std::net::SocketAddr,
+            message: InternalMessage,
+        ) -> std::result::Result<InternalMessage, PeerError> {
+            let kind = message.kind();
+            if kind == felix_wire::internal::Kind::RecordSequencedForwardPublish {
+                return Err(PeerError::Disconnected {
+                    node_id: node_id.to_string(),
+                });
+            }
+            Err(PeerError::Unsupported {
+                node_id: node_id.to_string(),
+                kind,
+            })
+        }
+
+        fn recorded_capabilities(&self, _node_id: &str) -> Option<PeerCapabilities> {
+            Some(PeerCapabilities::RECORD_SEQUENCED_FORWARDS)
+        }
+
+        async fn capabilities(
+            &self,
+            _node_id: &str,
+            _addr: std::net::SocketAddr,
+        ) -> std::result::Result<PeerCapabilities, PeerError> {
+            Ok(PeerCapabilities::NONE)
+        }
+    }
+
+    /// **A batch forwarded whole whose answer was lost stays an unknown
+    /// outcome when the records sent again are refused `not_owner`**, as the
+    /// old leader may have committed it. Told `not_owner`, the client would
+    /// be answered that nothing was written. Fails if the lost answer is not
+    /// carried into the per-record sends (`None => lost` made `None => None`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_whole_forward_cut_off_is_not_told_as_not_written_when_a_resend_is_refused() {
+        use crate::serving::mqtt::BrokerWrites;
+        use felix_mqtt::{MountedTopic, Record, WriteBatch, WriteError, Writes};
+
+        let (_net, members, leader) = fixture::trio().await;
+        let orders = fixture::key(STREAM, 0);
+        let credentials = Credentials::new();
+        for member in &members {
+            member.broker.record_headers_when(|| true);
+            member.broker.read_record_headers_when(|| true);
+            member.broker.allow_raft_record_headers_when(|| true);
+        }
+        let follower = &members[(leader + 1) % members.len()];
+        fixture::until("the follower knows who leads", || {
+            matches!(
+                EngineShards::dispatch(&*follower.shards, &orders, &fixture::addr_of),
+                Some(Dispatch::Forward { .. })
+            )
+        })
+        .await;
+        let token = credentials.publisher();
+        let batch = WriteBatch {
+            tenant_id: TENANT.into(),
+            credential: Some(felix_mqtt::Credential::new(&token)),
+            target: MountedTopic {
+                namespace: NAMESPACE.into(),
+                stream: STREAM.into(),
+                shard: 0,
+            },
+            producer_id: 41,
+            sequence: 0,
+            records: ["a", "b"]
+                .iter()
+                .map(|topic| Record {
+                    payload: Bytes::copy_from_slice(topic.as_bytes()),
+                    headers: Bytes::new(),
+                })
+                .collect(),
+            acknowledged: true,
+        };
+        let (_, ingress) = fixture::routes(&follower.shards);
+        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        engine.set_raft(Arc::clone(&follower.shards));
+        let writes = BrokerWrites::new(
+            Arc::clone(&follower.broker),
+            engine,
+            Duration::from_secs(10),
+        )
+        .with_forwarding(Arc::new(CutThenMoved), Duration::from_secs(1));
+
+        assert_eq!(
+            writes.write(batch).await,
+            Err(WriteError::OutcomeUnknown("forward_unanswered"))
+        );
+        fixture::stop(&members).await;
     }
 
     /// **A forward sent to a member that does not lead is answered with the

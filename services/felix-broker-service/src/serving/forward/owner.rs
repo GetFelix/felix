@@ -310,13 +310,7 @@ impl ForwardingHandler {
         // sent again, and `UnsupportedKind` would be read as an owner too old
         // for the request.
         let refused = |refused: RaftRefusal| match refused {
-            RaftRefusal::Broker(
-                err @ (felix_broker::BrokerError::SequenceGap { .. }
-                | felix_broker::BrokerError::UnknownProducer { .. }
-                | felix_broker::BrokerError::SequenceExpired { .. }
-                | felix_broker::BrokerError::SequenceReused { .. }
-                | felix_broker::BrokerError::NotOnEngineStream { .. }),
-            ) => {
+            RaftRefusal::Broker(err) if permanent(&err) => {
                 metrics::record_served(metrics::OUTCOME_ERROR);
                 error(correlation_id, ErrorCode::StorageFailed, err.to_string())
             }
@@ -339,9 +333,14 @@ impl ForwardingHandler {
                 {
                     Records::Committed(Ok(offsets)) => Ok(offsets),
                     Records::Committed(Err(err)) => Err(resendable(err)),
-                    // Some records are written and the rest are not. Told the
-                    // leadership was lost, the requester sends each again and
-                    // has the written ones answered from the log.
+                    // Some records are written and the rest are not. A refusal
+                    // that sending again cannot change is passed on as it is.
+                    // Any other is told as a lost leadership, so the requester
+                    // sends each record again and has the written ones
+                    // answered from the log.
+                    Records::Cut(RaftRefusal::Broker(err)) if permanent(&err) => {
+                        Err((ErrorCode::StorageFailed, err.to_string()))
+                    }
                     Records::Cut(refusal) => Err((
                         ErrorCode::LeadershipLost,
                         format!("partway through the records: {refusal}"),
@@ -1254,4 +1253,16 @@ enum Records {
     NotTaken(RaftRefusal),
     /// The first records committed and the rest were not proposed.
     Cut(RaftRefusal),
+}
+
+/// A refusal of a sequence or batch that sending it again cannot change.
+fn permanent(err: &felix_broker::BrokerError) -> bool {
+    matches!(
+        err,
+        felix_broker::BrokerError::SequenceGap { .. }
+            | felix_broker::BrokerError::UnknownProducer { .. }
+            | felix_broker::BrokerError::SequenceExpired { .. }
+            | felix_broker::BrokerError::SequenceReused { .. }
+            | felix_broker::BrokerError::NotOnEngineStream { .. }
+    )
 }
