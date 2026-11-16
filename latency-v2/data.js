@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794821383826,
+  "lastUpdate": 1794821795876,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75966,6 +75966,72 @@ window.BENCHMARK_DATA = {
             "range": "1411.08",
             "unit": "us",
             "extra": "trials: 5\nmedian: 366.00\nmean: 1020.40\nstdev: 1411.08\ncv: 138.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "95b631305f9102b47bb3d09cf31d514eb58ae659",
+          "message": "fix(raft): re-form voters by copy id, restored ordered lists lost, accept-loss from the plan (#2671) (#2672)\n\n* fix(raft): re-form voters by copy id, restored ordered lists lost, accept-loss from the plan (#2671)\n\nVoter sets are (broker, copy id). A voter id that is neither the broker's\ncurrent copy nor reached from it by a chain of power cuts read from kept\ncopies is unknown, so a replaced disk's new copy never stands for the old\nvoter. An import marks every ordered-target list lost (level 40). Start\ntakes AcceptLoss from ReformPlan::needs_accept_loss. The start's refusal\nnames the commit that refused.\n\n* fix(raft): a rotation carries raft-epoch, a current copy's vote counts only at its epoch, start takes the operator's accept-loss (#2671)\n\nA copy a power cut minted read as epoch 0, so its vote in the group's\nepoch keyed below the terms it decided, and the power-cut excuse counted\nit as known anyway: a re-form could vouch for a stale leader's entry where\nanother was acked. A rotation now carries the newest raft-epoch into the\nnew copy before its copy file, and a current copy with a vote is known only\nwhen it reads as the epoch.\n\nAcceptLoss::of takes the operator's --accept-loss and refuses a plan that\nneeds it without it.\n\n* docs(raft): copies that can still lack raft-epoch, and the voted-copy rule\n\nSpec-Unaffected: documentation only.",
+          "timestamp": "2026-11-16T09:24:49Z",
+          "tree_id": "8ec15ac17d57b5c06f6396af2581feb79e393a72",
+          "url": "https://github.com/GetFelix/felix/commit/95b631305f9102b47bb3d09cf31d514eb58ae659"
+        },
+        "date": 1794821783022,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.20\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 216,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 216.00\nmean: 214.40\nstdev: 3.21\ncv: 1.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 266,
+            "range": "970.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 714.20\nstdev: 970.88\ncv: 135.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 200.40\nstdev: 1.52\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 400,
+            "range": "5.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 400.00\nmean: 397.40\nstdev: 5.55\ncv: 1.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 533,
+            "range": "24.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 533.00\nmean: 535.60\nstdev: 24.03\ncv: 4.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
