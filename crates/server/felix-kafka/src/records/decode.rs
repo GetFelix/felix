@@ -28,6 +28,7 @@ pub(crate) const MAX_BATCH_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) struct Batch {
     /// -1 for a producer that is not idempotent.
     pub(crate) producer_id: i64,
+    pub(crate) producer_epoch: i16,
     pub(crate) base_sequence: i32,
     /// The record values. A null value is stored as an empty payload.
     pub(crate) values: Vec<Bytes>,
@@ -112,6 +113,7 @@ fn batch(
     }
     Ok(Batch {
         producer_id: info.producer_id,
+        producer_epoch: info.producer_epoch,
         base_sequence: info.base_sequence,
         values,
         blocks: Some(blocks).filter(|blocks| blocks.iter().any(Option::is_some)),

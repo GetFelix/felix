@@ -793,3 +793,124 @@ fn an_evicted_cut_is_carried_once_purged() {
     assert_eq!(state.carried().cuts.get(&0), Some(&0));
     assert_eq!(state.carried().cuts.len(), 1);
 }
+
+/// A producer past 2^31 records leaves a 64-bit tombstone, and a wrapped
+/// sequence is lifted toward one past it. Lifted against nothing it would
+/// read as older than the tombstone.
+#[test]
+fn a_tombstone_gives_the_lift_basis_of_a_forgotten_producer() {
+    let mut state = ProducerState::default();
+    assert_eq!(state.lift_basis(7), None);
+    let wrapped = (1u64 << 31) + 4;
+    batch(&mut state, 7, wrapped, 0, 1);
+    assert_eq!(state.lift_basis(7), Some(wrapped + 1));
+    state.prune(1);
+    assert_eq!(state.next_sequence(7), None);
+    assert_eq!(state.lift_basis(7), Some(wrapped + 1));
+    assert_eq!(state.lift_basis(8), None);
+}
+
+/// The ids `highest_known` answers from, found the slow way.
+fn scanned(state: &ProducerState, ids: RangeInclusive<u64>) -> Option<u64> {
+    state
+        .producers
+        .keys()
+        .chain(state.tombstones.keys())
+        .copied()
+        .filter(|id| ids.contains(id))
+        .max()
+}
+
+fn assert_index_matches(state: &ProducerState, step: usize) {
+    let all: BTreeSet<u64> = state
+        .producers
+        .keys()
+        .chain(state.tombstones.keys())
+        .copied()
+        .collect();
+    assert_eq!(state.known, all, "step {step}");
+    for (lo, hi) in [(0, 63), (8, 15), (20, 20), (40, 63), (0, u64::MAX)] {
+        assert_eq!(
+            state.highest_known(lo..=hi),
+            scanned(state, lo..=hi),
+            "step {step} range {lo}..={hi}"
+        );
+    }
+}
+
+/// The index of known ids follows every way the tables change: appends,
+/// purges, a base reset, a snapshot install, a save and reload.
+#[test]
+fn the_known_id_index_matches_a_full_scan_after_any_operations() {
+    let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+    let mut next = move |bound: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % bound
+    };
+    let mut state = ProducerState::keeping_cuts();
+    let mut at: Offset = 0;
+    let mut sequences = [0u64; 64];
+    for step in 0..600 {
+        match next(10) {
+            0..=5 => {
+                let id = next(64);
+                batch(&mut state, id, sequences[id as usize], at, 1);
+                sequences[id as usize] += 1;
+                at += 1;
+            }
+            // Only the first record of a two-record batch: the producer
+            // is known only until a purge, with no tombstone.
+            6 if next(2) == 0 => {
+                let id = next(64);
+                let mark = RecordMark::for_batch(id, sequences[id as usize], 2)
+                    .next()
+                    .expect("a mark");
+                let payload = payloads(id, sequences[id as usize], 2).remove(0);
+                state.observe(at, mark, marked_digest(mark, &payload));
+                sequences[id as usize] += 1;
+                at += 1;
+            }
+            6 => state.prune(next(at + 1)),
+            7 => state.forget_before(next(at + 1)),
+            8 => {
+                let carried = state.carried();
+                let mut other = ProducerState::keeping_cuts();
+                other.install(at, carried);
+                assert_index_matches(&other, step);
+            }
+            _ => {
+                let (loaded, _) = decode(&encode(&state, at)).expect("snapshot");
+                assert_eq!(loaded.known, loaded.producers.keys().copied().collect());
+            }
+        }
+        assert_index_matches(&state, step);
+    }
+}
+
+/// Past the table's bound the coldest producer is evicted, and the index
+/// follows it out.
+#[test]
+fn the_known_id_index_follows_an_eviction() {
+    let mut state = ProducerState::default();
+    for id in 0..=MAX_PRODUCERS as u64 {
+        batch(&mut state, id, 0, id, 1);
+    }
+    assert_eq!(state.len(), MAX_PRODUCERS);
+    assert_eq!(state.highest_known(0..=0), None);
+    assert_index_matches(&state, 0);
+}
+
+/// A purge that removes a producer without a tombstone (its batch is cut
+/// instead) takes it out of the index too.
+#[test]
+fn the_known_id_index_follows_a_purge_that_leaves_no_tombstone() {
+    let mut state = ProducerState::keeping_cuts();
+    pieces(&mut state, 7, 0, 2, &[(0, 0), (1, 1)]);
+    assert_eq!(state.highest_known(0..=63), Some(7));
+    state.prune(1);
+    assert_index_matches(&state, 0);
+    assert_eq!(state.next_sequence(7), None);
+    assert_eq!(state.highest_known(0..=63), scanned(&state, 0..=63));
+}

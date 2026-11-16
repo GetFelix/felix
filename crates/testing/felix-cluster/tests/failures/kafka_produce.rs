@@ -188,12 +188,61 @@ async fn an_idempotent_kafka_producer_on_a_raft_shard_lands_each_record_once_thr
     cluster.shutdown().await;
 }
 
+/// **On a Raft shard, a bumped epoch is written at sequence 0 and the old
+/// epoch is fenced, whoever leads.** The epoch is in each record's producer
+/// mark, so the next leader derives it from the log.
+#[serial]
+#[tokio::test]
+async fn a_kafka_epoch_bump_on_a_raft_shard_survives_failover() {
+    if !super::raft::opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        kafka: true,
+        broker_env: vec![super::raft::engine()],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let topic = format!("{}.{STREAM}", cluster.namespace);
+    let nodes = cluster.node_ids();
+
+    let first = super::raft::leader_among(&cluster, &nodes).await;
+    let mut producer = Producer::connect(&cluster, &first, &topic).await;
+    producer.send_until_served(0).await;
+    producer.send_ok(1).await;
+    let mut producer = producer.with_epoch(1);
+    let bumped = producer.send_ok(0).await;
+    // Acknowledged on a majority (`acks=-1`), so the next leader holds it.
+    let id = producer.id;
+    cluster.stop_node(&first).await.expect("kill the leader");
+    let live: Vec<String> = nodes.into_iter().filter(|node| node != &first).collect();
+    let second = super::raft::leader_among(&cluster, &live).await;
+    let mut stale = Producer::connect(&cluster, &second, &topic)
+        .await
+        .with_id(id);
+    let (error, _) = stale.send_until_served(2).await;
+    assert_eq!(error, 47, "the next leader took the fenced epoch");
+    let mut producer = stale.with_epoch(1);
+    let (error, again) = producer.send(0).await;
+    assert_eq!((error, again), (0, bumped), "the bump's re-send");
+    producer.send_ok(1).await;
+
+    let read = read_back(&cluster, &second).await;
+    let payloads: Vec<&str> = read.iter().map(|(_, payload)| payload.as_str()).collect();
+    assert_eq!(payloads, ["r0", "r1", "r0", "r1"]);
+    cluster.shutdown().await;
+}
+
 /// A Kafka connection speaking as one idempotent producer.
 struct Producer {
     stream: TcpStream,
     next_correlation: i32,
     topic: String,
     id: i64,
+    epoch: i16,
 }
 
 impl Producer {
@@ -214,6 +263,7 @@ impl Producer {
             next_correlation: 1,
             topic: topic.to_string(),
             id: -1,
+            epoch: 0,
         };
         let handshake = producer
             .call(
@@ -245,6 +295,12 @@ impl Producer {
         self
     }
 
+    /// Keep producing as the same id at `epoch`, as a KIP-360 bump does.
+    fn with_epoch(mut self, epoch: i16) -> Self {
+        self.epoch = epoch;
+        self
+    }
+
     /// Send record `r{sequence}` as a one-record batch at that sequence, and
     /// return the answer's error and base offset.
     async fn send(&mut self, sequence: i32) -> (i16, i64) {
@@ -267,7 +323,7 @@ impl Producer {
             delete_horizon: false,
             partition_leader_epoch: NO_PARTITION_LEADER_EPOCH,
             producer_id: self.id,
-            producer_epoch: 0,
+            producer_epoch: self.epoch,
             timestamp_type: TimestampType::Creation,
             offset: 0,
             sequence,

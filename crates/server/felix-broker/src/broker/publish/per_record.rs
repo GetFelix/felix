@@ -43,7 +43,8 @@ impl Broker {
     /// the rest is written. A sequence ahead of what the producer owes is
     /// [`BrokerError::SequenceGap`], a producer the log does not know starting
     /// anywhere but zero is [`BrokerError::UnknownProducer`], and a duplicate
-    /// too old to say where it landed is [`BrokerError::SequenceExpired`].
+    /// too old to say where it landed, or at or below a forgotten producer's
+    /// tombstone, is [`BrokerError::SequenceExpired`].
     ///
     /// `headers` is each record's key and headers block, as for
     /// [`Broker::claim_publish`]. A broker that does not accept headers
@@ -84,10 +85,15 @@ impl Broker {
         let _turn = turn.lock().await;
 
         let owed = log.producer_next_sequence(producer_id);
-        let first = lift(first_sequence, owed);
+        let first = lift(first_sequence, log.producer_lift_basis(producer_id));
         let count = payloads.len() as u64;
         let last = first + count - 1;
         let written = match owed {
+            // A forgotten producer's tombstone: this may be a re-send of
+            // records the log no longer remembers, so it is not written again.
+            None if log.producer_sequence(producer_id, first) == ProducerSequence::Retired => {
+                return Err(BrokerError::SequenceExpired { sequence: first });
+            }
             None if first == 0 => 0,
             None => return Err(BrokerError::UnknownProducer { producer_id }),
             Some(owed) if owed < first => return Err(BrokerError::SequenceGap { expected: owed }),
@@ -164,7 +170,7 @@ impl Broker {
             .state
             .durable
             .as_ref()
-            .and_then(|log| log.producer_next_sequence(producer_id));
+            .and_then(|log| log.producer_lift_basis(producer_id));
         lift(sequence, owed)
     }
 }
