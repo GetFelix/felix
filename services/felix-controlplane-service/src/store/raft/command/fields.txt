@@ -1468,6 +1468,7 @@
 34 accept_seal_report.sealer
 34 give_up_seal.sealer
 35 import_state.raise_incarnation
+40 import_state.lose_ordered
 35 import_state.state.placement_incarnation
 35 import_state.state.placement_acks
 35 import_state.state.placement_acks[][].incarnation

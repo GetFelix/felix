@@ -270,11 +270,12 @@ async fn each_target_is_listed_in_the_write_that_stores_it(store: &dyn ControlPl
             None => assert!(listed.is_empty()),
         }
     }
-    let both: std::collections::BTreeSet<String> =
-        ["broker-x".to_string(), "broker-y".to_string()].into();
+    let voters = |y: u64| -> std::collections::BTreeSet<(String, u64)> {
+        [("broker-x".to_string(), 31), ("broker-y".to_string(), y)].into()
+    };
     assert_eq!(
         read(store, &shard.key).await.ordered_voter_sets(),
-        Some(vec![both.clone(), both])
+        Some(vec![voters(32), voters(33)])
     );
     clear(store).await;
 }

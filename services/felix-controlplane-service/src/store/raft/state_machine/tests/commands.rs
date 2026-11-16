@@ -177,6 +177,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
             overwrite: false,
             mark_unplaced: false,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import into unused store");
@@ -232,6 +233,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
             overwrite: false,
             mark_unplaced: false,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await;
     assert!(matches!(refused, Err(MetaError::Conflict(_))));
@@ -243,6 +245,7 @@ async fn an_import_replaces_everything_and_respects_the_guard() {
         overwrite: true,
         mark_unplaced: false,
         raise_incarnation: false,
+        lose_ordered: false,
     })
     .await
     .expect("overwrite import");
@@ -273,6 +276,7 @@ async fn an_import_raises_the_placement_incarnation_past_both_sides() {
         overwrite: true,
         mark_unplaced: true,
         raise_incarnation: true,
+        lose_ordered: true,
     };
     let incarnation = || async { machine.store().placement_incarnation().await.expect("read") };
 
@@ -304,6 +308,7 @@ async fn an_import_raises_the_placement_incarnation_past_both_sides() {
             overwrite: true,
             mark_unplaced: true,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import unraised");
@@ -353,6 +358,7 @@ async fn after_a_restore_the_gate_waits_for_every_broker() {
             overwrite: true,
             mark_unplaced: true,
             raise_incarnation: true,
+            lose_ordered: true,
         })
         .await
         .expect("import");
@@ -397,6 +403,7 @@ async fn an_import_at_the_incarnation_limit_is_refused() {
             overwrite: true,
             mark_unplaced: true,
             raise_incarnation: true,
+            lose_ordered: true,
         })
         .await;
     assert!(
@@ -526,6 +533,7 @@ async fn an_import_forgets_the_brokers_placed_in_each_epoch() {
             overwrite: false,
             mark_unplaced: false,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import");
@@ -581,6 +589,7 @@ async fn a_shard_first_assigned_after_an_import_starts_no_record() {
             overwrite: false,
             mark_unplaced: true,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import");

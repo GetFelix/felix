@@ -137,6 +137,8 @@ struct Net {
     lose_answers: std::sync::atomic::AtomicBool,
     /// Calls to a cut broker.
     cut_calls: std::sync::atomic::AtomicU64,
+    /// Written reports handed to the transport, each with its sender.
+    written_reports: parking_lot::Mutex<Vec<String>>,
     /// A cut broker that comes back just after the next heartbeat to it is
     /// refused, and when it did.
     heal_after_beat: parking_lot::Mutex<Option<String>>,
@@ -176,6 +178,9 @@ fn sender(request: &Request) -> Option<&str> {
 impl RaftTransport for Net {
     async fn send(&self, mut request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
+        if let Request::Written { from, .. } = &request.body {
+            self.written_reports.lock().push(from.broker.to_string());
+        }
         if self.gigabit.load(Relaxed) {
             super::wire::fit(&mut request);
             let bytes = super::wire::encode_request(&request).expect("encode").len();
@@ -344,8 +349,30 @@ impl Cluster {
 
     /// Open group `n` on every broker, without forming it.
     async fn open(&mut self, n: u32) {
+        self.open_relaxed(n, &[]).await;
+    }
+
+    /// As [`Self::open`], with the brokers in `relaxed` on a relaxed run:
+    /// their logs count written entries toward the commit and fsync only
+    /// on a timer that does not come during a test.
+    async fn open_relaxed(&mut self, n: u32, relaxed: &[&str]) {
         for broker in BROKERS {
-            let log = open_log(self.root.path(), broker, n, log_config());
+            let config = if relaxed.contains(&broker) {
+                let root = self.root.path().join(broker);
+                std::fs::create_dir_all(&root).expect("root");
+                let begun =
+                    felix_storage::run_state::begin(&root, true, None, None, || false, || [7; 16]);
+                begun.expect("a relaxed run");
+                LogConfig {
+                    fsync_mode: FsyncMode::Periodic {
+                        interval: Duration::from_secs(3600),
+                    },
+                    ..log_config()
+                }
+            } else {
+                log_config()
+            };
+            let log = open_log(self.root.path(), broker, n, config);
             self.logs.insert((broker.into(), n), log.clone());
             self.runtime(broker)
                 .open(group(n), 1, log)
@@ -359,7 +386,12 @@ impl Cluster {
     /// test that forms many groups does not wait out an election timeout,
     /// and a storm of vote fsyncs, for each.
     async fn form(&mut self, n: u32) {
-        self.open(n).await;
+        self.form_relaxed(n, &[]).await;
+    }
+
+    /// As [`Self::form`], with [`Self::open_relaxed`]'s `relaxed` brokers.
+    async fn form_relaxed(&mut self, n: u32, relaxed: &[&str]) {
+        self.open_relaxed(n, relaxed).await;
         for runtime in self.runtimes() {
             runtime
                 .initialize(&shard(n), members())
@@ -1180,7 +1212,7 @@ async fn a_dropped_append_does_not_keep_its_leader_fast() {
         Arc::new(Stalls),
         Arc::clone(&pace),
         Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
-        Arc::new(super::written::Reports::new()),
+        Arc::new(super::written::Reports::new(false)),
         Arc::new(super::reach::Reach::new(
             tokio::time::Instant::now(),
             Duration::from_secs(1),
@@ -1975,7 +2007,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
         group: group(0),
         to: MemberId::new(behind, 1),
         beat: 0,
-        report: false,
+        report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: Request::Snapshot {
             vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true),
@@ -2150,7 +2182,7 @@ async fn a_message_for_another_member_is_refused() {
         group,
         to,
         beat: 0,
-        report: false,
+        report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: vote(),
     };
@@ -2205,7 +2237,7 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
         group: group(0),
         to: MemberId::new("a", 1),
         beat: 0,
-        report: false,
+        report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_millis(50),
         body: Request::Vote(VoteRequest::new(vote, None)),
     };
@@ -2300,7 +2332,7 @@ async fn a_failed_vote_does_not_replace_the_scout() {
             Arc::new(Net::default()),
             Arc::new(pace),
             Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
-            Arc::new(super::written::Reports::new()),
+            Arc::new(super::written::Reports::new(false)),
             Arc::clone(&reach),
             Arc::new(super::reach::Refusals::new(id)),
             Arc::clone(&config),
@@ -2524,7 +2556,7 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
         group: group(0),
         to: MemberId::new(to, 1),
         beat: 0,
-        report: false,
+        report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: Request::PreVote(VoteRequest::new(
             <VoteOf<ShardTypes> as RaftVote>::from_leader_id(stands.clone(), false),
@@ -2625,7 +2657,7 @@ async fn an_idle_group_elects_soon_after_a_transfer_to_a_dead_target() {
         group: group(0),
         to: MemberId::new(other, 1),
         beat: 0,
-        report: false,
+        report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(1),
         body: Request::PreVote(VoteRequest::new(
             <VoteOf<ShardTypes> as RaftVote>::from_leader_id(stands.clone(), false),
