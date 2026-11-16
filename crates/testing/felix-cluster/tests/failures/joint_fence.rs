@@ -426,6 +426,7 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_ordered: None,
         })
         .await
         .expect("assign the new shard");

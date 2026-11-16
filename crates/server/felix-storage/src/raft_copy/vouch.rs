@@ -35,7 +35,8 @@ pub(crate) struct GroupRecord<B> {
     /// group's first voters at epoch 0. `None` when not recorded.
     pub(crate) seed: Option<BTreeSet<B>>,
     /// Every voter target the control plane ordered in the epoch, recorded
-    /// before the leader was asked. `None` when not recorded.
+    /// before the leader was asked: the control plane's
+    /// `ShardAssignment::ordered_voter_sets`. `None` when not recorded.
     pub(crate) ordered: Option<Vec<BTreeSet<B>>>,
 }
 

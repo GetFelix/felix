@@ -316,6 +316,7 @@ fn a_shard_switch_needs_level_34() {
             voters: Default::default(),
         },
         sealer: "b".to_string(),
+        keep_ordered: false,
     };
     let give_up = MetaCommand::GiveUpSeal {
         key: key.clone(),
@@ -351,6 +352,7 @@ fn a_shard_switch_needs_level_34() {
         node_registered_at_millis: 1,
         node_incarnation: 1,
         copy_id: 1,
+        keep_ordered: false,
     });
     // Matched by name too.
     assert_eq!(op_of(&copy_id).as_deref(), Some(COPY_ID_OP));
@@ -491,4 +493,27 @@ fn a_floor_report_is_refused_below_level_38() {
         "{refused:?}"
     );
     assert_eq!(settle_for_level(&floors, level), Ok(None));
+}
+
+/// A copy id report and a seal report keep the epoch's ordered targets only
+/// once every member applies level 39; a flag sent below it is taken off.
+#[test]
+fn ordered_targets_are_kept_from_level_39() {
+    let level = super::super::RAFT_ORDERED_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    for op in [COPY_ID_OP, ACCEPT_SEAL_OP] {
+        let bare = format!(r#"{{"v":1,"op":"{op}"}}"#);
+        let flag = |raw: &[u8], level| -> Option<serde_json::Value> {
+            let settled = settle_for_level(raw, level).expect("settles")?;
+            Some(serde_json::from_slice::<serde_json::Value>(&settled).expect("json")["keep_ordered"].clone())
+        };
+        assert_eq!(flag(bare.as_bytes(), level - 1), None, "{op}");
+        assert_eq!(flag(bare.as_bytes(), level), Some(true.into()), "{op}");
+        let sent = format!(r#"{{"v":1,"op":"{op}","keep_ordered":true}}"#);
+        assert_eq!(
+            flag(sent.as_bytes(), level - 1),
+            Some(serde_json::Value::Null),
+            "{op}"
+        );
+    }
 }

@@ -315,6 +315,13 @@ pub struct ShardAssignment {
     /// Under Raft it needs metadata level 38.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_floor: Option<RaftFloor>,
+    /// Every target ordered in the group's current epoch: see
+    /// [`RaftOrdered`]. Store-owned like `generation`: started when the
+    /// switch to Raft is recorded, appended with each new target, kept by a
+    /// write at the same incarnation; whatever a caller passes is replaced.
+    /// Under Raft it needs metadata level 39.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_ordered: Option<RaftOrdered>,
 }
 
 /// A stream or cache at one incarnation. An import marks every one it
@@ -1373,6 +1380,8 @@ pub(crate) fn check_elected_generation(current: u64, elected: u64) -> Result<(),
 
 mod raft_floor;
 pub use raft_floor::{RaftFloor, RaftFloorError, RaftFloorReport};
+mod raft_ordered;
+pub use raft_ordered::RaftOrdered;
 mod raft_target;
 pub use raft_target::{RaftTarget, RaftTargetError};
 mod switch;

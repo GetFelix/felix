@@ -18,6 +18,7 @@ async fn copy_id(
         node_registered_at_millis: status.registered_at_millis,
         node_incarnation: status.incarnation,
         copy_id,
+        keep_ordered: true,
     }
 }
 
@@ -109,6 +110,101 @@ async fn a_restore_keeps_the_backups_counter_and_raises_the_incarnation() {
             "a target went out before the brokers acknowledged the restore: {refused:?}"
         );
         assert_eq!(counter(&machine, &shard.key).await, Some(1));
+    })
+    .await;
+}
+
+/// Switch a sealed shard through the log; `keep` is what `settle_for_level`
+/// would have set.
+async fn switch(machine: &MetadataStateMachine, keep: bool) -> crate::model::ShardKey {
+    let store: &dyn ControlPlaneStore = machine.store().as_ref();
+    let order = crate::store::contract::switch::sealed(store, 0).await;
+    machine
+        .dispatch(MetaCommand::AcceptSealReport {
+            key: order.key.clone(),
+            report: crate::store::contract::switch::both(order.generation),
+            sealer: "broker-x".to_string(),
+            keep_ordered: keep,
+        })
+        .await
+        .expect("report");
+    order.key
+}
+
+async fn kept(
+    machine: &MetadataStateMachine,
+    key: &crate::model::ShardKey,
+    node: &str,
+    id: u64,
+    keep: bool,
+) {
+    let mut command = copy_id(machine, key, node, id).await;
+    if let MetaCommand::RecordRaftCopyId { keep_ordered, .. } = &mut command {
+        *keep_ordered = keep;
+    }
+    machine.dispatch(command).await.expect("copy id");
+}
+
+async fn ordered(
+    machine: &MetadataStateMachine,
+    key: &crate::model::ShardKey,
+) -> Option<Vec<std::collections::BTreeSet<String>>> {
+    machine
+        .store()
+        .get_shard_assignment(key)
+        .await
+        .expect("assignment")
+        .ordered_voter_sets()
+}
+
+/// A shard that switched below level 39 has no list for the epoch, so later
+/// kept targets do not make one: it reads as unknown.
+#[tokio::test]
+async fn a_switch_below_the_level_leaves_the_epoch_unknown() {
+    let machine = machine();
+    on_streams_of_its_own(machine.store().as_ref(), async {
+        let key = switch(&machine, false).await;
+        kept(&machine, &key, "broker-x", 1, true).await;
+        kept(&machine, &key, "broker-y", 2, true).await;
+        assert_eq!(ordered(&machine, &key).await, None);
+    })
+    .await;
+}
+
+/// A target written by an entry settled below the level is not on the list.
+#[tokio::test]
+async fn a_target_written_below_the_level_marks_the_list() {
+    let machine = machine();
+    on_streams_of_its_own(machine.store().as_ref(), async {
+        let key = switch(&machine, true).await;
+        kept(&machine, &key, "broker-x", 1, true).await;
+        kept(&machine, &key, "broker-y", 2, true).await;
+        assert_eq!(
+            ordered(&machine, &key).await.map(|sets| sets.len()),
+            Some(1)
+        );
+        kept(&machine, &key, "broker-y", 3, false).await;
+        assert_eq!(ordered(&machine, &key).await, None);
+    })
+    .await;
+}
+
+/// The list is in the replicated record, so a member restored from a
+/// snapshot, as a restarted or new control-plane member is, reads the same.
+#[tokio::test]
+async fn a_snapshot_keeps_the_list() {
+    let original = machine();
+    on_streams_of_its_own(original.store().as_ref(), async {
+        let key = switch(&original, true).await;
+        kept(&original, &key, "broker-x", 1, true).await;
+        kept(&original, &key, "broker-y", 2, true).await;
+        kept(&original, &key, "broker-y", 3, true).await;
+        let held = ordered(&original, &key).await;
+        assert_eq!(held.as_ref().map(Vec::len), Some(2));
+
+        let restored = machine();
+        restored.restore(&original.snapshot().await).await;
+        assert_eq!(ordered(&restored, &key).await, held);
     })
     .await;
 }
