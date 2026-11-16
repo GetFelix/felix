@@ -627,7 +627,9 @@ A seek voids every claim standing when it lands. The group's in-flight state is
 replaced, and the new state takes no settle from a claim made before it: an ack
 or nack for an offset at or above the new position is refused with
 `stale_claim`, and the record is delivered again from there. One below it is a
-duplicate and is taken. A seek keeps the group's dead letters.
+duplicate and is taken. A seek keeps the group's dead letters below the new
+position; those at or above it are cleared and delivered again from there, and
+one that fails again is dead-lettered again.
 
 `group_describe` is answered with `group_info`. `group_delete` removes the
 group's cursor and dead letters and drops its in-flight state, and is answered

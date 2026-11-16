@@ -85,7 +85,10 @@ impl ConsumerGroups {
         *self.dependencies.0.write() = Arc::new(enabled);
     }
 
-    fn dependencies(&self) -> bool {
+    /// Whether cursor values carry their dependency now. A seek's clear and
+    /// a rebuild settling dead letters above the cursor rely on it, so both
+    /// wait for it too.
+    pub(crate) fn dependencies(&self) -> bool {
         (self.dependencies.0.read())()
     }
 
@@ -246,6 +249,39 @@ impl ConsumerGroups {
                 .map(drop)
                 .map_err(BrokerError::from),
         }
+    }
+
+    /// Move `group` to `offset` for a seek. `requires` is the dead-letter log
+    /// holding the seek's clear marker, synced by the caller first: a copy of
+    /// this cursor without it is put back by [`Self::normalize`]. The caller holds the shard's lock.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn place_locked(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        group: &str,
+        offset: u64,
+        requires: DeadLetterMark,
+    ) -> Result<()> {
+        let origin = match self
+            .stored(tenant_id, namespace, stream, shard, group)
+            .await?
+        {
+            _ if requires.end == 0 => offset,
+            // Never above where the group now is: falling back to an origin
+            // past a backward seek would skip what the seek asked for again.
+            Some(current) => current.origin.min(offset),
+            None => 0,
+        };
+        let stored = Stored {
+            offset,
+            requires,
+            origin,
+        };
+        self.write(tenant_id, namespace, stream, shard, group, stored)
+            .await
     }
 
     /// Put each group on this shard whose latest record no longer stands on
