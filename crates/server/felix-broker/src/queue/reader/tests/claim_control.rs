@@ -279,3 +279,31 @@ async fn a_tracker_with_a_standing_claim_is_not_evicted() {
     // Gone once the claim has lapsed.
     assert_eq!(fx.reader.evict_idle(base + hours * 2), 1);
 }
+
+/// A dead letter above the cursor stays settled when a new leader rebuilds
+/// the group before the cursor advances over it.
+#[tokio::test]
+async fn a_dead_letter_above_the_cursor_is_not_redelivered_after_a_leader_change() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a", "poisoned"]).await;
+    let base = Instant::now();
+    assert_eq!(offsets(&poll_at(&fx, &key, base, 0).await), [0, 1]);
+    assert!(fx.reader.dead_letter(&key, 1).await.expect("dead letter"));
+    assert_eq!(fx.reader.committed(&key).await.expect("cursor"), None);
+
+    let successor = GroupReader::new(
+        Arc::clone(&fx.reader.cursors),
+        Arc::clone(&fx.reader.dead_letters),
+        VIS,
+        MANY,
+    );
+    let polled = successor
+        .poll(&key, &fx.log, 10, base + Duration::from_secs(1))
+        .await
+        .expect("poll");
+    assert_eq!(offsets(&polled), [0], "the dead letter was delivered again");
+    successor.ack(&key, 0).await.expect("ack");
+    assert_eq!(successor.committed(&key).await.expect("cursor"), Some(2));
+}

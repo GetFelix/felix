@@ -926,6 +926,13 @@ impl GroupReader {
         for offset in self.dead_letters.redriven(key).await? {
             tracker.restore_redrive(offset);
         }
+        // A dead letter is listed before the cursor advances over it, so a
+        // leader change in between leaves it above the cursor. It is settled.
+        for offset in self.dead_letters.list(key).await? {
+            if offset >= committed {
+                tracker.ack(offset);
+            }
+        }
         Ok(Arc::new(Mutex::new(tracker)))
     }
 }

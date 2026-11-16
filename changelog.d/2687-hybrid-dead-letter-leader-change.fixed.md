@@ -1,0 +1,1 @@
+A consumer group no longer hands out a dead-lettered record again after a leader change that lands before the cursor advances over it. A rebuilt group settles every dead letter at or above its cursor (#2687).
