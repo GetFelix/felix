@@ -3632,18 +3632,12 @@ Membership changes are not built yet
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
-- The broker that formed a group hands its first leadership to the broker
-  placement names as the shard's leader. It is the lowest id of the set
-  and wins the first election, so without this the lowest broker would
-  lead every group it formed and take every write while the others only
-  follow. Once it leads, it closes the shard for that term and asks for
-  the transfer when that broker holds its whole log, because openraft
-  hands over only to a member whose log matches. A transfer that does not
-  go through ends the term after an election timeout like any other, and
-  whoever wins leads. It gives up
-  after 10 s. Only the first term is placed this way: a later election, a
-  restart or a failover leaves leadership where the vote puts it, and
-  leaders do not move back to placement's leader afterwards (issue #2649).
+- Leaders follow placement. Placement names one broker as each shard's
+  leader, and the member that leads the group hands the leadership to that
+  broker's member when nothing else is going on. See "Leaders follow
+  placement" below. That covers the first term too: the broker that formed
+  the group is the lowest id of its set and wins the first election, so
+  without this one broker would lead every group it formed.
 - A formed group keeps its members. A member that placement drops stays
   open and keeps voting, and it opens again after a restart: the broker
   reads the `engine` marker of each shard placed elsewhere, and opens the
@@ -3662,9 +3656,8 @@ an older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
-  staged or copied. The group's leader moves there once brokers follow
-  placement ([#2649](https://github.com/GetFelix/felix/issues/2649)). Until
-  then it stays where it was elected, and requests still reach it.
+  staged or copied. The group's leader then hands its leadership there (see
+  "Leaders follow placement").
 - A drain moves every shard the draining broker leads to a live member, so
   its shutdown hand-off finishes. Its follower copies stay, since a member
   leaves a group only through a membership change. A shard with no other
@@ -3987,7 +3980,7 @@ as idle, settled, converging or stuck with a reason. Across the broker:
 | --- | --- |
 | `felix_broker_raft_membership_converging` | Groups this broker leads that are on the way to their target |
 | `felix_broker_raft_membership_stuck` | Groups this broker leads where no step has gone through. Not zero for long means a target cannot be reached |
-| `felix_broker_raft_membership_steps_total` | Steps written, by `step`: `add_learner`, `change`, `stamp`, `leave_joint`, `transfer` |
+| `felix_broker_raft_membership_steps_total` | Steps written, by `step`: `add_learner`, `change`, `stamp`, `leave_joint`, `transfer`, `placed_transfer` |
 | `felix_broker_raft_membership_refusals_total` | Steps not written, by `kind`: `transient`, `permanent`, or `broken` for a failed rule check |
 
 Only the leader acts, one change at a time, and the steps can be repeated
@@ -4004,7 +3997,69 @@ offset; those reports are not built yet. The routing table
 uses the leader as a hint, and the offset is the floor a re-form starts
 from. A broker that gets a write
 for a shard it does not lead answers with the leader it knows. To balance
-leaders the control plane asks the current leader for a transfer.
+leaders the control plane names another leader in placement, and the
+group's leader hands it over, as the next section describes.
+
+#### Leaders follow placement
+
+Placement names one broker as each shard's leader. Every broker tells its
+member of the group which broker that is on each feed pass. The member that
+leads hands its leadership to that broker's member once handing it over is
+safe and cheap. The rule runs in the membership driver, after everything
+else: any membership step, and any transfer a membership step needs, comes
+first.
+
+A leader hands over only when all of these hold:
+
+1. The membership is not joint, it is committed, an entry of this term is
+   committed, and no transfer is in flight.
+2. Placement's broker holds a voter of the group. A broker the group does
+   not hold, or holds only as a learner, is no preference at all.
+3. That voter is caught up (within the learner lag threshold) and has
+   answered lately, and has stayed so for `settle` (5 s). A broker that just
+   restarted is still opening members and may go away again.
+4. Every other voter is caught up and answering too. A group with a voter
+   down keeps its leader: a transfer then could leave a bare majority with
+   no leader.
+5. This member has led its term for `led_min` (10 s), so a group that just
+   elected does not elect again at once. A group's first term is exempt,
+   along with `settle`, for its first `led_min`: the broker that formed the
+   group wins it, and there is no earlier leader to churn with.
+6. The last transfer is not inside its backoff, and the broker's budget has
+   a permit.
+
+The transfer closes the shard for the term first (the lease is given up),
+waits up to the shortest election timeout for the target to hold the whole
+log, then asks openraft. Publishes in that window are told the shard is not
+ready, and the client retries. The target campaigns while the other
+followers still hear the old leader, so their pre-vote check lets a
+transfer target through.
+
+Pacing keeps this from churning:
+
+- **Backoff.** If the leader still leads after the term ends (the transfer
+  failed, or it won the election again), it waits `backoff` (30 s) before
+  the next try, doubling up to `backoff_cap` (10 min), with 20% jitter. A
+  new placement leader, or the leadership landing elsewhere, starts it
+  again. A target that lags never passes rule 3, so it costs nothing.
+  A member counts as answering for about 5 s after its last answer, so a
+  broker that died just now can still get one transfer, which fails and
+  starts the backoff.
+- **Budget.** Each broker runs at most `permits` (2) placement transfers at
+  once and starts at most `starts_per_second` (5). Waiters are served in
+  order, so a group that just finished cannot take its permit again ahead
+  of the others, and a group waiting its turn still takes a new target. When
+  placement names a restarted broker leader again, the others hand its
+  shards back a few at a time.
+
+The values are fields of `RuntimeConfig::placement`. Placement's leader is
+only a preference: routing follows the group's real leader.
+
+| Metric | Meaning |
+| --- | --- |
+| `felix_broker_raft_shards_led_off_placement` | Shards this broker leads whose placement names another leader. Above zero for long means a hand-over is held back, or placement names a broker that holds no voter of the group |
+| `felix_broker_raft_membership_steps_total{step="placed_transfer"}` | Placement transfers asked |
+| `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
 
 #### Where a target comes from
 

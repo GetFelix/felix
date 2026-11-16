@@ -43,9 +43,11 @@ use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
+use placed::Placement;
 
 pub(crate) mod driver;
 pub(crate) mod membership;
+pub(crate) mod placed;
 
 use driver::MembershipProgress;
 
@@ -116,6 +118,11 @@ pub(crate) struct Group {
     progress: Arc<tokio::sync::watch::Sender<MembershipProgress>>,
     /// How far behind a learner may be when it is promoted.
     lag_threshold: u64,
+    /// The broker placement names as this group's leader. The member that
+    /// leads hands it the leadership.
+    preferred: tokio::sync::watch::Sender<Option<String>>,
+    placement: Placement,
+    placed_budget: Arc<placed::Budget>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -358,6 +365,20 @@ impl Pace {
         }
     }
 
+    /// The peers that answered lately: within the time after which a peer
+    /// counts as silent, and never less than two idle heartbeats, which an
+    /// idle group sends that far apart.
+    pub(crate) fn live(&self) -> BTreeSet<MemberId> {
+        let timers = &self.timers;
+        let now = timers.now();
+        let silent = timers
+            .silent()
+            .max(2 * timers.idle_heartbeat + timers.election_min);
+        let peers = self.peers.lock();
+        let live = peers.iter().filter(|peer| now < peer.answered + silent);
+        live.map(|peer| peer.id.clone()).collect()
+    }
+
     /// How long a leader waits until its next heartbeat.
     pub(super) fn leader_gap(&self, now: u64) -> u64 {
         let timers = &self.timers;
@@ -541,6 +562,9 @@ pub(crate) struct Host {
     /// Who is told when the shard opens and closes here.
     pub(crate) engine: Option<Arc<dyn EngineHost>>,
     pub(crate) clock: Clock,
+    pub(crate) placement: Placement,
+    /// The broker's placement transfers, shared by all its groups.
+    pub(crate) placed_budget: Arc<placed::Budget>,
 }
 
 /// [`Pace`]'s mark for a time that has not come yet.
@@ -571,6 +595,8 @@ impl Group {
         let Host {
             engine: host,
             clock,
+            placement,
+            placed_budget,
         } = host;
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
@@ -701,6 +727,9 @@ impl Group {
             target: tokio::sync::watch::Sender::default(),
             progress: Arc::default(),
             lag_threshold,
+            preferred: tokio::sync::watch::Sender::new(None),
+            placement,
+            placed_budget,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             leads_since: parking_lot::Mutex::new(None),
@@ -717,18 +746,39 @@ impl Group {
     /// target while this member leads. It ends on `stop`, or when the
     /// group's core is gone.
     pub(crate) fn drive(self: &Arc<Self>) {
+        let timers = &self.pace.timers;
+        let placing = placed::Placing::new(
+            self.placement.clone(),
+            Duration::from_millis(timers.election_min),
+            Duration::from_millis(timers.election_min + timers.election_max),
+            Arc::clone(&self.placed_budget),
+        );
         let driver = driver::Driver::new(
             Arc::clone(self),
             self.lag_threshold,
             driver::Retry::default(),
             Arc::clone(&self.progress),
+            placing,
         );
         self.runtime.spawn(driver::run(
             driver,
             self.target.subscribe(),
             self.leadership.changes(),
+            self.preferred.subscribe(),
             self.stop.clone(),
         ));
+    }
+
+    /// Placement names `broker` as this group's leader. Returns whether
+    /// that is new.
+    pub(crate) fn prefer(&self, broker: &str) -> bool {
+        self.preferred.send_if_modified(|held| {
+            let new = held.as_deref() != Some(broker);
+            if new {
+                *held = Some(broker.to_owned());
+            }
+            new
+        })
     }
 
     /// The control plane's target for this group, told for `term`. A

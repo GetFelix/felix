@@ -21,6 +21,7 @@ use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::driver::MembershipProgress;
+use super::group::placed::{self, Placement};
 use super::group::{self, Group, Timers};
 use super::membership::Target;
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
@@ -39,11 +40,6 @@ const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 /// How long a shutdown waits for its last batch of log marks, all roots
 /// together.
 const LAST_MARK_LIMIT: Duration = Duration::from_secs(5);
-/// How often [`GroupRuntime::hand_over`] looks at a new group again.
-const HAND_OVER_POLL: Duration = Duration::from_millis(20);
-/// The least [`GroupRuntime::hand_over`] lets the target catch up once the
-/// shard is closed.
-const HAND_OVER_MIN_WAIT: Duration = Duration::from_secs(1);
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +99,8 @@ pub struct RuntimeConfig {
     /// with two lagging followers each. Larger records are bounded by bytes:
     /// by the log reader's 4 MiB page and by `wire::fit`.
     pub append_entries: u64,
+    /// How a leader hands its leadership to the broker placement names.
+    pub placement: Placement,
 }
 
 impl Default for RuntimeConfig {
@@ -125,6 +123,7 @@ impl Default for RuntimeConfig {
             log_mark: LogMarkMode::Batched(Duration::from_secs(1)),
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
             append_entries: 1024,
+            placement: Placement::default(),
         }
     }
 }
@@ -468,6 +467,8 @@ struct Inner {
     /// Every data root a member opened here keeps marks at, once each. The
     /// shutdown writes their last batch even after the members closed.
     mark_roots: parking_lot::Mutex<Vec<MarkLog>>,
+    placement: Placement,
+    placed_budget: Arc<placed::Budget>,
 }
 
 impl GroupRuntime {
@@ -521,6 +522,8 @@ impl GroupRuntime {
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
                 mark_roots: parking_lot::Mutex::default(),
+                placed_budget: Arc::new(placed::Budget::new(&config.placement)),
+                placement: config.placement,
             }),
         })
     }
@@ -765,6 +768,8 @@ impl GroupRuntime {
         let host = group::Host {
             engine: inner.host.get().cloned(),
             clock: Arc::clone(&inner.clock.read()),
+            placement: inner.placement.clone(),
+            placed_budget: Arc::clone(&inner.placed_budget),
         };
         let raft = match group.shard.kind {
             ShardKind::Stream => &inner.raft,
@@ -832,52 +837,6 @@ impl GroupRuntime {
             .initialize(members)
             .await
             .map_err(InitializeError::Raft)
-    }
-
-    /// Hand the first leadership of `shard`, a group this broker just
-    /// formed, to `to`. The broker that forms a group is the lowest id in
-    /// its set and wins its first election, so without this one broker
-    /// would lead every group it forms and take every write. Once this
-    /// member leads, the shard closes and the request waits for `to` to
-    /// hold the whole log, since openraft hands over only to a member whose
-    /// log matches. Returns whether the
-    /// transfer was asked for. One that does not go through ends the term
-    /// after an election timeout, as any transfer does.
-    pub async fn hand_over(&self, shard: &ShardKey, to: MemberId, within: Duration) -> bool {
-        let Some(group) = self.inner.registry.get(shard) else {
-            return false;
-        };
-        if to == group.member {
-            return false;
-        }
-        let deadline = tokio::time::Instant::now() + within;
-        loop {
-            let status = group.status();
-            match status.role {
-                Role::Leader => {
-                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-                    return group
-                        .transfer_in_caught_up(status.term, to, left.max(HAND_OVER_MIN_WAIT))
-                        .await
-                        .is_some();
-                }
-                // Learner too: a member's metrics can still show the state
-                // it had before the group formed.
-                Role::Candidate | Role::Follower | Role::Learner => {}
-                Role::Stopped => return false,
-            }
-            if status
-                .leader
-                .as_ref()
-                .is_some_and(|leader| *leader != group.member)
-            {
-                return false;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return false;
-            }
-            tokio::time::sleep(HAND_OVER_POLL).await;
-        }
     }
 
     /// Ask every other member of `members` whether it has heard from a
@@ -1135,6 +1094,21 @@ impl GroupRuntime {
     pub fn retarget(&self, shard: &ShardKey, target: Target, term: u64) -> bool {
         self.group(shard)
             .is_some_and(|group| group.retarget(target, term))
+    }
+
+    /// Placement names `broker` as the leader of `shard`. The member that
+    /// leads the group hands it the leadership once that broker's member
+    /// is a voter and has caught up, paced as [`Placement`] says. A
+    /// preference only: the group still elects whoever it can. False if
+    /// the preference is not new, or the shard has no group here.
+    pub fn prefer(&self, shard: &ShardKey, broker: &str) -> bool {
+        self.group(shard).is_some_and(|group| group.prefer(broker))
+    }
+
+    /// The most placement transfers this broker ever had in flight at once.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn placed_transfers_peak(&self) -> usize {
+        self.inner.placed_budget.peak()
     }
 
     /// Stop the ticker and every group, then write the batched log marks

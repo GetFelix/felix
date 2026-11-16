@@ -12,8 +12,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::*;
 use crate::raft::group::Group;
+use crate::raft::group::driver::Placed;
 use crate::raft::group::driver::{self, Driver, Look, Member, MembershipProgress, Pass, Retry};
 use crate::raft::group::membership::{Basis, Replication, StepError};
+use crate::raft::group::placed::{Budget, Placement, Placing};
 use crate::raft::lead::Lead;
 use crate::raft::membership::{Step, Told, View, Wait};
 use crate::raft::types::Membership;
@@ -70,6 +72,10 @@ struct Log {
     hangs: bool,
     /// No entry of this term is committed yet.
     fresh: bool,
+    /// Members that have not answered the leader lately.
+    silent: BTreeSet<MemberId>,
+    /// Placement transfers asked, after the target caught up.
+    placed: Vec<(u64, MemberId)>,
     /// A transfer never lands, and this member leads the next term, as
     /// when no successor answers.
     transfers_fail: bool,
@@ -97,6 +103,8 @@ impl Fake {
                 keeps_leavers: false,
                 hangs: false,
                 fresh: false,
+                silent: BTreeSet::new(),
+                placed: Vec::new(),
                 transfers_fail: false,
             }),
         })
@@ -134,8 +142,14 @@ impl Member for Arc<Fake> {
             .membership
             .voter_ids()
             .chain(log.membership.learner_ids());
+        let members: Vec<MemberId> = members.filter(|member| *member != self.me).collect();
+        let live = members
+            .iter()
+            .filter(|member| !log.silent.contains(*member))
+            .cloned()
+            .collect();
         let matched: BTreeMap<MemberId, u64> = members
-            .filter(|member| *member != self.me)
+            .into_iter()
             .map(|member| {
                 let at = if log.behind.contains(&member) {
                     0
@@ -161,6 +175,7 @@ impl Member for Arc<Fake> {
             replication: Replication {
                 last_index: LAST,
                 matched,
+                live,
             },
         })
     }
@@ -218,6 +233,14 @@ impl Member for Arc<Fake> {
         }
         asked
     }
+
+    async fn transfer_caught_up(&self, term: u64, to: MemberId, _within: Duration) -> Option<u64> {
+        let mut log = self.log.lock();
+        (log.leads && log.term == term).then(|| {
+            log.placed.push((term, to));
+            term
+        })
+    }
 }
 
 type Progress = watch::Receiver<MembershipProgress>;
@@ -225,8 +248,19 @@ type Progress = watch::Receiver<MembershipProgress>;
 fn driving(fake: &Arc<Fake>) -> (Driver<Arc<Fake>>, Progress) {
     let progress = Arc::new(watch::Sender::default());
     let seen = progress.subscribe();
-    let driver = Driver::new(Arc::clone(fake), 2, Retry::default(), progress);
+    let driver = Driver::new(Arc::clone(fake), 2, Retry::default(), progress, placing());
     (driver, seen)
+}
+
+fn placing() -> Placing {
+    let placement = Placement::default();
+    let budget = Arc::new(Budget::new(&placement));
+    Placing::new(
+        placement,
+        Duration::from_secs(1),
+        Duration::from_secs(3),
+        budget,
+    )
 }
 
 #[tokio::test]
@@ -523,8 +557,9 @@ async fn a_target_told_again_keeps_the_transfer_pacing() {
     let (driver, progress) = driving(&fake);
     let (goal, goals) = watch::channel(None);
     let (_lead, leads) = watch::channel(Lead::default());
+    let (_preferred, preference) = watch::channel(None);
     let stop = CancellationToken::new();
-    let running = tokio::spawn(driver::run(driver, goals, leads, stop.clone()));
+    let running = tokio::spawn(driver::run(driver, goals, leads, preference, stop.clone()));
     let retry = Retry::default();
     let term = || fake.log.lock().term;
     let asked = || fake.log.lock().transfers.len();
@@ -567,7 +602,8 @@ async fn a_deposed_leader_writes_nothing_more() {
     let (goal, goals) = watch::channel(None);
     let (lead, leads) = watch::channel(Lead::default());
     let stop = CancellationToken::new();
-    let running = tokio::spawn(driver::run(driver, goals, leads, stop.clone()));
+    let (_preferred, preference) = watch::channel(None);
+    let running = tokio::spawn(driver::run(driver, goals, leads, preference, stop.clone()));
 
     // A member that does not lead takes no step for a target.
     goal.send_replace(Some(told(&["a", "b", "c"], 2, 1)));
@@ -606,6 +642,254 @@ async fn a_deposed_leader_writes_nothing_more() {
     stop.cancel();
     running.await.expect("the driver");
     assert_eq!(*progress.borrow(), MembershipProgress::Idle);
+}
+
+/// A leader of `term` over a, b and c that placement would move to `to`.
+fn placed_on(term: u64, to: &str) -> (Arc<Fake>, Driver<Arc<Fake>>) {
+    let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
+    fake.log.lock().term = term;
+    let (mut driver, _) = driving(&fake);
+    driver.placing.prefer(Some(to.into()));
+    (fake, driver)
+}
+
+/// Look until a placement transfer is asked, as `run` does: taking a permit
+/// when queued and sleeping each hold. How long that took, or `None` if
+/// none was asked within `limit`.
+async fn hands_over(
+    driver: &mut Driver<Arc<Fake>>,
+    goal: Option<&Target>,
+    limit: Duration,
+) -> Option<Duration> {
+    let start = tokio::time::Instant::now();
+    while start.elapsed() < limit {
+        let pass = driver.pass_any(goal).await;
+        let again = driver.after(&pass);
+        match pass {
+            Pass::Placed(_, Placed::Asked) => return Some(start.elapsed()),
+            Pass::Placed(_, Placed::Queued) => {
+                let permit = driver.placing.budget.take().await;
+                driver.placing.ready = Some(permit);
+            }
+            _ => tokio::time::sleep(again.unwrap_or(Duration::from_secs(1))).await,
+        }
+    }
+    None
+}
+
+/// **A leader hands its leadership to placement's leader** once that
+/// member has stayed caught up for the settle window and this leader has
+/// led its term for the least time. Nothing is asked before.
+#[tokio::test(start_paused = true)]
+async fn a_leader_hands_over_to_placement_once_settled() {
+    let (fake, mut driver) = placed_on(2, "b");
+    let took = hands_over(&mut driver, None, Duration::from_secs(60)).await;
+    let placement = Placement::default();
+    let took = took.expect("a transfer to placement's leader");
+    assert!(took >= placement.led_min.max(placement.settle), "{took:?}");
+    assert!(
+        took < placement.led_min + Duration::from_secs(2),
+        "{took:?}"
+    );
+    assert_eq!(fake.log.lock().placed, [(2, m("b"))]);
+    assert_eq!(fake.log.lock().transfers, []);
+}
+
+/// The broker that formed a group wins its first term, so that term is
+/// handed over at once: there is no earlier leader to churn with.
+#[tokio::test(start_paused = true)]
+async fn a_first_term_is_handed_over_at_once() {
+    let (fake, mut driver) = placed_on(1, "c");
+    let took = hands_over(&mut driver, None, Duration::from_secs(60)).await;
+    assert_eq!(took, Some(Duration::ZERO));
+    assert_eq!(fake.log.lock().placed, [(1, m("c"))]);
+}
+
+/// **A target that lags never gets a transfer**: no shard is closed for
+/// it and nothing is asked, however long it lags. Once it catches up it
+/// still waits out the settle window.
+#[tokio::test(start_paused = true)]
+async fn a_lagging_target_gets_no_transfer() {
+    let (fake, mut driver) = placed_on(2, "b");
+    fake.log.lock().behind.insert(m("b"));
+    let took = hands_over(&mut driver, None, Duration::from_secs(600)).await;
+    assert_eq!(took, None);
+    assert_eq!(fake.log.lock().placed, []);
+
+    fake.log.lock().behind.clear();
+    let took = hands_over(&mut driver, None, Duration::from_secs(60)).await;
+    let took = took.expect("a transfer once caught up");
+    assert!(took >= Placement::default().settle, "{took:?}");
+}
+
+/// **The settle window is continuous.** A target that was caught up, then
+/// fell behind, waits out the whole window again once it is back.
+#[tokio::test(start_paused = true)]
+async fn a_target_that_falls_behind_settles_again() {
+    let (fake, mut driver) = placed_on(2, "b");
+    let settle = Placement::default().settle;
+    // Caught up long enough before the leader has led its least time.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(matches!(
+        driver.pass(None).await,
+        Pass::Placed(_, Placed::Held(_))
+    ));
+    tokio::time::sleep(Duration::from_secs(8)).await;
+    fake.log.lock().behind.insert(m("b"));
+    assert!(matches!(
+        driver.pass(None).await,
+        Pass::Placed(_, Placed::Held(_))
+    ));
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    fake.log.lock().behind.clear();
+    let took = hands_over(&mut driver, None, Duration::from_secs(60)).await;
+    let took = took.expect("a transfer once settled again");
+    assert!(took >= settle, "{took:?}");
+}
+
+/// A first term is handed over at once only while it is young: a
+/// preference that comes later waits out the settle window.
+#[tokio::test(start_paused = true)]
+async fn a_late_preference_in_a_first_term_settles() {
+    let (_fake, mut driver) = placed_on(1, "c");
+    driver.placing.prefer(None);
+    assert_eq!(driver.pass(None).await, Pass::Parked(Wait::NoTarget));
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    driver.placing.prefer(Some("c".into()));
+    let took = hands_over(&mut driver, None, Duration::from_secs(60)).await;
+    assert!(took.expect("asked") >= Placement::default().settle);
+}
+
+/// A group with a voter down or behind keeps its leader: a transfer then
+/// could leave a bare majority with no leader.
+#[tokio::test(start_paused = true)]
+async fn a_degraded_group_keeps_its_leader() {
+    let (fake, mut driver) = placed_on(2, "b");
+    fake.log.lock().silent.insert(m("c"));
+    assert_eq!(
+        hands_over(&mut driver, None, Duration::from_secs(120)).await,
+        None
+    );
+    // A silent target is a lagging one.
+    let (fake, mut driver) = placed_on(2, "b");
+    fake.log.lock().silent.insert(m("b"));
+    assert_eq!(
+        hands_over(&mut driver, None, Duration::from_secs(120)).await,
+        None
+    );
+    assert_eq!(fake.log.lock().placed, []);
+}
+
+/// Placement that names a broker with no voter in the group, or this
+/// leader, asks nothing and parks the driver.
+#[tokio::test(start_paused = true)]
+async fn no_transfer_to_a_broker_that_is_not_a_voter() {
+    for to in ["d", "a"] {
+        let (fake, mut driver) = placed_on(2, to);
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(driver.pass(None).await, Pass::Parked(Wait::NoTarget));
+        assert_eq!(fake.log.lock().placed, []);
+    }
+}
+
+/// Membership work always comes first: a target's step is written before
+/// any placement transfer, and the transfer follows once settled.
+#[tokio::test(start_paused = true)]
+async fn a_membership_step_comes_before_placement() {
+    let fake = Fake::leading(settled(&["a", "b"], &[], 1));
+    let (mut driver, _) = driving(&fake);
+    driver.placing.prefer(Some("b".into()));
+    let goal = target(&["a", "b", "c"], 2);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Stepped);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Stepped);
+    assert_eq!(fake.log.lock().placed, []);
+    assert!(
+        hands_over(&mut driver, Some(&goal), Duration::from_secs(5))
+            .await
+            .is_some()
+    );
+    assert_eq!(
+        fake.written(),
+        [
+            settled(&["a", "b"], &["c"], 1),
+            settled(&["a", "b", "c"], &[], 2)
+        ]
+    );
+}
+
+/// **A transfer that leaves this member leading backs off**: the next one
+/// is asked no sooner than the backoff, less its jitter, and the backoff
+/// doubles. A new preference starts again.
+#[tokio::test(start_paused = true)]
+async fn a_transfer_that_does_not_land_backs_off() {
+    let (fake, mut driver) = placed_on(2, "b");
+    let limit = Duration::from_secs(3600);
+    assert!(hands_over(&mut driver, None, limit).await.is_some());
+    let placement = Placement::default();
+    let mut least = placement.backoff;
+    for term in [3, 4] {
+        // It won the election the transfer ended its term with.
+        fake.log.lock().term = term;
+        let took = hands_over(&mut driver, None, limit)
+            .await
+            .expect("asked again");
+        assert!(took >= least * 8 / 10, "term {term}: {took:?}");
+        assert!(
+            took <= least * 12 / 10 + Duration::from_secs(2),
+            "term {term}: {took:?}"
+        );
+        least *= 2;
+    }
+    assert_eq!(fake.log.lock().placed.len(), 3);
+
+    fake.log.lock().term = 5;
+    driver.placing.prefer(Some("c".into()));
+    let took = hands_over(&mut driver, None, limit).await.expect("asked");
+    assert!(took < placement.backoff, "{took:?}");
+}
+
+/// **A group waiting for the broker's budget still reacts**: a new target
+/// wakes it and its step is written, and the transfer follows once a
+/// permit is free.
+#[tokio::test(start_paused = true)]
+async fn a_group_waiting_for_a_permit_takes_a_target() {
+    let fake = Fake::leading(settled(&["a", "b"], &[], 1));
+    fake.log.lock().term = 2;
+    let placement = Placement {
+        permits: 1,
+        ..Placement::default()
+    };
+    let budget = Arc::new(Budget::new(&placement));
+    let taken = budget.take().await;
+    let progress = Arc::new(watch::Sender::default());
+    let placing = Placing::new(
+        placement,
+        Duration::from_secs(1),
+        Duration::from_secs(3),
+        Arc::clone(&budget),
+    );
+    let driver = Driver::new(Arc::clone(&fake), 2, Retry::default(), progress, placing);
+    let (goal, goals) = watch::channel(None);
+    let (_lead, leads) = watch::channel(leading(2));
+    let (_preferred, preference) = watch::channel(Some("b".to_owned()));
+    let stop = CancellationToken::new();
+    let running = tokio::spawn(driver::run(driver, goals, leads, preference, stop.clone()));
+
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(fake.log.lock().placed, []);
+    goal.send_replace(Some(told(&["a", "b", "c"], 2, 2)));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        fake.written().last(),
+        Some(&settled(&["a", "b", "c"], &[], 2))
+    );
+    assert_eq!(fake.log.lock().placed, []);
+
+    drop(taken);
+    tokio::time::sleep(Duration::from_secs(30)).await;
+    assert_eq!(fake.log.lock().placed, [(2, m("b"))]);
+    stop.cancel();
+    running.await.expect("the driver");
 }
 
 /// The member of group 0 that leads, once an entry of its term is
@@ -890,4 +1174,42 @@ async fn a_removal_is_finished_under_a_leader_change() {
     progress_of(&cluster, MembershipProgress::Settled).await;
     watch.check().await;
     cluster.stop().await;
+}
+
+/// **A leader does not hand over while a target told for an earlier term
+/// is held.** Membership work may be pending behind it.
+#[tokio::test(start_paused = true)]
+async fn a_leader_does_not_place_while_a_target_is_untold() {
+    let (fake, mut driver) = placed_on(2, "b");
+    let held = told(&["a", "b", "c"], 1, 1);
+    for _ in 0..40 {
+        let pass = driver.pass(Some(&held)).await;
+        assert_eq!(pass, Pass::Untold);
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    assert_eq!(fake.log.lock().placed, []);
+    assert!(!driver.placing.holds_permit());
+}
+
+/// **An untold pass in a later term gives back a permit held for placement
+/// and counts a transfer asked earlier as failed**, so backoff applies.
+#[tokio::test(start_paused = true)]
+async fn an_untold_pass_settles_an_earlier_transfer() {
+    let (fake, mut driver) = placed_on(2, "b");
+    let permit = driver.placing.budget.take().await;
+    driver.placing.ready = Some(permit);
+    driver.placing.asked(2);
+    assert!(driver.placing.holds_permit());
+    fake.log.lock().term = 3;
+    let held = told(&["a", "b", "c"], 1, 1);
+    assert_eq!(driver.pass(Some(&held)).await, Pass::Untold);
+    assert!(!driver.placing.holds_permit());
+    assert_eq!(driver.placing.failures(), 1);
+
+    // A permit taken and not used goes back too, without a second failure.
+    let permit = driver.placing.budget.take().await;
+    driver.placing.ready = Some(permit);
+    assert_eq!(driver.pass(Some(&held)).await, Pass::Untold);
+    assert!(!driver.placing.holds_permit());
+    assert_eq!(driver.placing.failures(), 1);
 }
