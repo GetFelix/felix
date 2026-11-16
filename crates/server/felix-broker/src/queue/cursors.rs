@@ -248,11 +248,9 @@ impl ConsumerGroups {
         }
     }
 
-    /// Move `group` to `offset` for a seek that cleared dead letters on the
-    /// way. `requires` is the dead-letter log holding those clears, synced by
-    /// the caller first: a copy of this cursor without them is put back by
-    /// [`Self::normalize`] rather than served at `offset` over dead letters it
-    /// would skip. The caller holds the shard's lock.
+    /// Move `group` to `offset` for a seek. `requires` is the dead-letter log
+    /// holding the seek's clear marker, synced by the caller first: a copy of
+    /// this cursor without it is put back by [`Self::normalize`]. The caller holds the shard's lock.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn place_locked(
         &self,
@@ -269,7 +267,9 @@ impl ConsumerGroups {
             .await?
         {
             _ if requires.end == 0 => offset,
-            Some(current) => current.origin,
+            // Never above where the group now is: falling back to an origin
+            // past a backward seek would skip what the seek asked for again.
+            Some(current) => current.origin.min(offset),
             None => 0,
         };
         let stored = Stored {

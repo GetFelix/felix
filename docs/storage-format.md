@@ -2555,3 +2555,29 @@ broker writes it from the start. Until then cursors are legacy values, and
 a crash that keeps a cursor's tail and loses the dead letter it passed a
 record on is not caught. See `docs/replication-design.md` ("Group state at
 promotion").
+
+## Dead-letter entries
+
+A hybrid shard's dead letters are cache-log entries in its `dead-letters/`
+log, keyed by group name, the byte 0x1f, and a suffix:
+
+```text
+<group> 0x1f <offset, decimal>   empty value: a dead letter
+                                 "redriven": put back, not yet finished
+<group> 0x1f clear               16 bytes: a seek's clear, begun
+   0   8  from     u64 BE  the seek's target
+   8   8  floor    u64 BE  the dead-letter log's end when it was written
+```
+
+A seek back over dead letters delivers them again. It writes the `clear`
+entry, then its cursor, which needs the dead-letter log past `floor`, then
+deletes the group's dead letters at or above `from` and the `clear` entry.
+Before a shard is served, a `clear` entry left by a seek that crashed,
+failed or was cancelled is finished if the group's cursor needs the log past
+`floor` (the seek landed) and dropped otherwise. A dropped clear deletes
+nothing: the dead letters stay listed and redrivable, and the group resumes
+where it was. A cursor that carries no dependency (`dlq_end` 0) drops it.
+
+A build before the `clear` entry skips it when it lists dead letters, since
+its suffix is not a number, and deletes it with the group. Reading a log
+part way through a seek, it sees the dead letters not yet deleted as dead.

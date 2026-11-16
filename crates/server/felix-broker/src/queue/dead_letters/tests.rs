@@ -268,7 +268,7 @@ async fn a_legacy_redrive_cut_short_is_only_redriven() {
 /// Clearing from an offset drops the dead letters at or above it in both
 /// layouts and keeps the ones below and the redriven ones.
 #[tokio::test]
-async fn clear_from_keeps_what_is_below_and_what_is_owed() {
+async fn a_finished_clear_keeps_what_is_below_and_what_is_owed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let key = key("jobs", "workers");
     {
@@ -294,7 +294,40 @@ async fn clear_from_keeps_what_is_below_and_what_is_owed() {
     }
     assert!(dead.redrive(&key, 6).await.expect("redrive"));
 
-    assert_eq!(dead.clear_from(&key, 5).await.expect("clear"), 2);
+    let clear = dead
+        .begin_clear(&key, 5)
+        .await
+        .expect("begin")
+        .expect("clear");
+    // Begun is not cleared: the seek has not landed.
+    assert_eq!(dead.list(&key).await.expect("list"), vec![2, 3, 5, 8]);
+    assert_eq!(dead.finish_clear(&key, clear).await.expect("finish"), 2);
     assert_eq!(dead.list(&key).await.expect("list"), vec![2, 3]);
     assert_eq!(dead.redriven(&key).await.expect("redriven"), vec![6]);
+}
+
+/// A voided clear deletes nothing, and a clear with nothing at or above its
+/// offset writes no marker.
+#[tokio::test]
+async fn a_voided_clear_keeps_every_dead_letter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = key("jobs", "workers");
+    let dead = DeadLetters::open(dir.path(), config()).expect("open");
+    for offset in [3, 5] {
+        dead.record(&key, offset).await.expect("record");
+    }
+    assert!(dead.begin_clear(&key, 6).await.expect("begin").is_none());
+    let clear = dead
+        .begin_clear(&key, 4)
+        .await
+        .expect("begin")
+        .expect("clear");
+    let pending = dead
+        .pending_clears(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+        .await
+        .expect("pending");
+    assert_eq!(pending, vec![(key.group.clone(), clear)]);
+    dead.void_clear(&key, clear).await.expect("void");
+    assert_eq!(dead.finish_clear(&key, clear).await.expect("finish"), 0);
+    assert_eq!(dead.list(&key).await.expect("list"), vec![3, 5]);
 }

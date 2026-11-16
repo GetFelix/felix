@@ -345,3 +345,130 @@ async fn a_seek_back_over_a_dead_letter_delivers_it_again_after_a_leader_change(
         [0u64; 0]
     );
 }
+
+/// Ten records consumed, offset 5 dead-lettered and the rest acked: the
+/// cursor at 10 with one dead letter below it.
+async fn consumed_with_a_dead_letter(fx: &Fixture, key: &GroupKey) -> Instant {
+    let records: Vec<String> = (0..10).map(|i| format!("r{i}")).collect();
+    let records: Vec<&str> = records.iter().map(String::as_str).collect();
+    publish(&fx.log, &records).await;
+    let base = Instant::now();
+    assert_eq!(poll_at(fx, key, base, 0).await.len(), 10);
+    assert!(fx.reader.dead_letter(key, 5).await.expect("dead letter"));
+    for offset in (0..10).filter(|&offset| offset != 5) {
+        fx.reader.ack(key, offset).await.expect("ack");
+    }
+    assert_eq!(fx.reader.committed(key).await.expect("cursor"), Some(10));
+    base
+}
+
+/// The broker after a crash: same disk, nothing in memory.
+fn restarted(fx: &Fixture) -> GroupReader {
+    GroupReader::new(
+        Arc::clone(&fx.reader.cursors),
+        Arc::clone(&fx.reader.dead_letters),
+        VIS,
+        MANY,
+    )
+}
+
+/// A seek that crashes after beginning its clear and before its cursor is
+/// written clears nothing: the dead letter is still listed and redrivable,
+/// and the group resumes where it was.
+#[tokio::test]
+async fn a_seek_that_crashes_before_its_cursor_clears_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    let base = consumed_with_a_dead_letter(&fx, &key).await;
+    fx.reader
+        .dead_letters
+        .begin_clear(&key, 0)
+        .await
+        .expect("begin")
+        .expect("something to clear");
+    fx.reader.dead_letter_mark(&key).await.expect("sync");
+
+    let restarted = restarted(&fx);
+    assert_eq!(restarted.committed(&key).await.expect("cursor"), Some(10));
+    assert_eq!(restarted.dead_lettered(&key).await.expect("list"), [5]);
+    // A commit after the restart passes the marker; the clear is still void.
+    publish(&fx.log, &["r10"]).await;
+    let polled = restarted
+        .poll(&key, &fx.log, 10, base + Duration::from_secs(1))
+        .await
+        .expect("poll");
+    assert_eq!(offsets(&polled), [10]);
+    restarted.ack(&key, 10).await.expect("ack");
+    let again = self::restarted(&fx);
+    assert_eq!(again.dead_lettered(&key).await.expect("list"), [5]);
+    assert!(again.redrive(&key, 5).await.expect("redrive"));
+}
+
+/// A seek that crashes after its cursor is written and before its clear
+/// finishes is finished on restart: the dead letter is gone and delivered
+/// again.
+#[tokio::test]
+async fn a_seek_that_crashes_after_its_cursor_is_finished_on_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    let base = consumed_with_a_dead_letter(&fx, &key).await;
+    fx.reader
+        .dead_letters
+        .begin_clear(&key, 0)
+        .await
+        .expect("begin")
+        .expect("something to clear");
+    let requires = fx.reader.dead_letter_mark(&key).await.expect("sync");
+    fx.reader
+        .cursors
+        .place_locked(
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            &key.group,
+            0,
+            requires,
+        )
+        .await
+        .expect("cursor");
+
+    let restarted = restarted(&fx);
+    assert_eq!(
+        restarted.dead_lettered(&key).await.expect("list"),
+        [0u64; 0]
+    );
+    let polled = restarted
+        .poll(&key, &fx.log, 10, base + Duration::from_secs(1))
+        .await
+        .expect("poll");
+    assert_eq!(offsets(&polled), (0..10).collect::<Vec<_>>());
+}
+
+/// A dead letter from a tracker a seek has retired is not recorded: it
+/// would land above the new cursor, after the seek's clear, and the next
+/// rebuild would settle it unread.
+#[tokio::test]
+async fn a_retired_tracker_records_no_dead_letter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    publish(&fx.log, &["a", "b"]).await;
+    assert_eq!(poll_at(&fx, &key, Instant::now(), 0).await.len(), 2);
+    let (held, locked) = fx.reader.current(&key).await.expect("tracker");
+    drop(locked);
+    fx.reader.seek(&key, 0, false).await.expect("seek");
+
+    assert!(
+        !fx.reader
+            .record_dead_letter(&key, &held, 1)
+            .await
+            .expect("record")
+    );
+    assert_eq!(
+        fx.reader.dead_lettered(&key).await.expect("list"),
+        [0u64; 0]
+    );
+}
