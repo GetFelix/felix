@@ -87,6 +87,17 @@ impl DurableStorage {
             .map_err(BrokerError::from)
     }
 
+    /// The bounds one stream's logs are held to: its own, with the
+    /// broker-wide ones for any it leaves unset.
+    pub fn stream_retention(
+        &self,
+        tenant: &str,
+        namespace: &str,
+        stream: &str,
+    ) -> felix_storage::log::Retention {
+        self.provider.stream_retention(tenant, namespace, stream)
+    }
+
     /// Hold one stream's logs at the commit offset, open and future, or
     /// lift the hold. See `DiskLogProvider::set_stream_retention_hold`.
     pub async fn set_stream_retention_hold(
@@ -646,18 +657,26 @@ impl StreamLog {
     /// gaps. A page is empty only at the tail, never because every record it
     /// read was one of them. A commit record is returned as its event.
     pub async fn read_from(&self, start: Offset, max_bytes: usize) -> Result<Vec<LogRecord>> {
+        let records = self.read_data_from(start, max_bytes).await?;
+        Ok(records
+            .into_iter()
+            .map(crate::commit::client_record)
+            .collect())
+    }
+
+    /// [`Self::read_from`] with a commit record left whole, for a reader
+    /// that applies its state updates.
+    pub(crate) async fn read_data_from(
+        &self,
+        start: Offset,
+        max_bytes: usize,
+    ) -> Result<Vec<LogRecord>> {
         let mut start = start;
         loop {
             let page = self.read_log_from(start, max_bytes).await?;
             let mut records = page.records;
             records.retain(|record| record.mark.is_data());
-            if !records.is_empty() {
-                return Ok(records
-                    .into_iter()
-                    .map(crate::commit::client_record)
-                    .collect());
-            }
-            if page.next <= start {
+            if !records.is_empty() || page.next <= start {
                 return Ok(records);
             }
             start = page.next;

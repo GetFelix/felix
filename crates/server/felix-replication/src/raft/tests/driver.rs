@@ -15,7 +15,7 @@ use crate::raft::group::Group;
 use crate::raft::group::driver::{self, Driver, Look, Member, MembershipProgress, Pass, Retry};
 use crate::raft::group::membership::{Basis, Replication, StepError};
 use crate::raft::lead::Lead;
-use crate::raft::membership::{Step, View, Wait};
+use crate::raft::membership::{Step, Told, View, Wait};
 use crate::raft::types::Membership;
 
 fn m(broker: &str) -> MemberId {
@@ -37,6 +37,13 @@ fn target(brokers: &[&str], counter: u64) -> Target {
     Target {
         voters: set(brokers),
         version: v(counter),
+    }
+}
+
+fn told(brokers: &[&str], counter: u64, term: u64) -> Told {
+    Told {
+        target: target(brokers, counter),
+        term,
     }
 }
 
@@ -63,6 +70,9 @@ struct Log {
     hangs: bool,
     /// No entry of this term is committed yet.
     fresh: bool,
+    /// A transfer never lands, and this member leads the next term, as
+    /// when no successor answers.
+    transfers_fail: bool,
 }
 
 struct Fake {
@@ -87,6 +97,7 @@ impl Fake {
                 keeps_leavers: false,
                 hangs: false,
                 fresh: false,
+                transfers_fail: false,
             }),
         })
     }
@@ -198,10 +209,14 @@ impl Member for Arc<Fake> {
 
     async fn transfer(&self, term: u64, to: MemberId) -> Option<u64> {
         let mut log = self.log.lock();
-        (log.leads && log.term == term).then(|| {
+        let asked = (log.leads && log.term == term).then(|| {
             log.transfers.push((term, to));
             term
-        })
+        });
+        if asked.is_some() && log.transfers_fail {
+            log.term += 1;
+        }
+        asked
     }
 }
 
@@ -222,7 +237,7 @@ async fn the_driver_steps_until_the_membership_is_the_target() {
 
     let mut passes = Vec::new();
     loop {
-        let pass = driver.pass(Some(&goal)).await;
+        let pass = driver.pass_any(Some(&goal)).await;
         let again = driver.after(&pass);
         passes.push(pass);
         if again.is_none() {
@@ -253,7 +268,7 @@ async fn a_busy_step_is_tried_again_and_a_refused_one_is_not() {
     // openraft has a change in progress: the same step goes through later.
     let busy = StepError::Busy("a change is in progress".into());
     fake.log.lock().refusals.push_back(busy.clone());
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert_eq!(pass, Pass::Again(busy));
     assert_eq!(driver.after(&pass), Some(Retry::default().first));
     assert_eq!(*progress.borrow(), MembershipProgress::Converging);
@@ -261,7 +276,7 @@ async fn a_busy_step_is_tried_again_and_a_refused_one_is_not() {
     // openraft refused the membership itself: asking again changes nothing.
     let refused = StepError::Refused("no such learner".into());
     fake.log.lock().refusals.push_back(refused.clone());
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert_eq!(pass, Pass::Refused(refused));
     assert_eq!(driver.after(&pass), None);
     assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
@@ -288,13 +303,13 @@ async fn no_membership_without_its_leader_is_written() {
     driver.decide = without_the_leader;
     let goal = target(&["b", "c"], 2);
 
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
     assert_eq!(driver.after(&pass), None);
     assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
     // Nothing more in this term, whatever the decision says now.
     driver.decide = crate::raft::membership::next_step;
-    let pass = driver.pass(Some(&target(&["a", "b"], 3))).await;
+    let pass = driver.pass_any(Some(&target(&["a", "b"], 3))).await;
     assert_eq!(pass, Pass::Halted);
     assert_eq!(fake.written(), []);
 
@@ -307,7 +322,7 @@ async fn no_membership_without_its_leader_is_written() {
     let fake = Fake::leading(joint);
     let (mut driver, _progress) = driving(&fake);
     driver.decide = leave;
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
     assert_eq!(fake.written(), []);
 }
@@ -329,14 +344,14 @@ async fn no_stamp_without_the_leader_and_no_transfer_to_itself() {
     let fake = Fake::leading(settled(&["b", "c"], &[], 1));
     let (mut driver, _progress) = driving(&fake);
     driver.decide = stamp_without_the_leader;
-    let pass = driver.pass(Some(&target(&["b", "c"], 2))).await;
+    let pass = driver.pass_any(Some(&target(&["b", "c"], 2))).await;
     assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
     assert_eq!(fake.written(), []);
 
     let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
     let (mut driver, _progress) = driving(&fake);
     driver.decide = transfer_to_itself;
-    let pass = driver.pass(Some(&target(&["b", "c"], 2))).await;
+    let pass = driver.pass_any(Some(&target(&["b", "c"], 2))).await;
     assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
     assert_eq!(fake.log.lock().transfers, []);
 }
@@ -348,7 +363,7 @@ async fn a_fresh_leader_with_no_target_is_idle() {
     let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
     fake.log.lock().fresh = true;
     let (mut driver, progress) = driving(&fake);
-    let pass = driver.pass(None).await;
+    let pass = driver.pass_any(None).await;
     assert_eq!(pass, Pass::Parked(Wait::NoTarget));
     assert_eq!(driver.after(&pass), None);
     assert_eq!(*progress.borrow(), MembershipProgress::Idle);
@@ -360,18 +375,18 @@ async fn a_voter_kept_as_a_learner_stops_the_driver() {
     fake.log.lock().keeps_leavers = true;
     let (mut driver, progress) = driving(&fake);
 
-    let pass = driver.pass(Some(&target(&["a", "b"], 2))).await;
+    let pass = driver.pass_any(Some(&target(&["a", "b"], 2))).await;
     assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
     assert_eq!(driver.after(&pass), None);
     assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
-    let pass = driver.pass(Some(&target(&["a", "b", "c"], 3))).await;
+    let pass = driver.pass_any(Some(&target(&["a", "b", "c"], 3))).await;
     assert_eq!(pass, Pass::Halted);
     assert_eq!(fake.written().len(), 1);
 
     // A new term starts clean.
     fake.log.lock().term = 2;
     fake.log.lock().keeps_leavers = false;
-    let pass = driver.pass(Some(&target(&["a", "b", "c"], 3))).await;
+    let pass = driver.pass_any(Some(&target(&["a", "b", "c"], 3))).await;
     assert_eq!(pass, Pass::Stepped);
 }
 
@@ -381,13 +396,13 @@ async fn a_transfer_that_expires_is_asked_again_and_never_becomes_a_change() {
     let (mut driver, _progress) = driving(&fake);
     let goal = target(&["b", "c"], 2);
 
-    assert_eq!(driver.pass(Some(&goal)).await, Pass::Stepped);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Stepped);
     // Nothing is asked twice in one term.
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert_eq!(pass, Pass::Waiting(Wait::Transferring));
     // The transfer expired and this member won the next term.
     fake.log.lock().term = 2;
-    assert_eq!(driver.pass(Some(&goal)).await, Pass::Stepped);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Stepped);
 
     assert_eq!(fake.log.lock().transfers, [(1, m("b")), (2, m("b"))]);
     assert_eq!(fake.written(), []);
@@ -403,7 +418,7 @@ async fn the_wait_doubles_and_then_the_group_is_reported_stuck() {
 
     let mut waits = Vec::new();
     for _ in 0..retry.attempts {
-        let pass = driver.pass(Some(&goal)).await;
+        let pass = driver.pass_any(Some(&goal)).await;
         assert_eq!(pass, Pass::Waiting(Wait::CatchingUp));
         waits.push(driver.after(&pass).expect("a wait"));
         assert_eq!(*progress.borrow(), MembershipProgress::Converging);
@@ -413,13 +428,13 @@ async fn the_wait_doubles_and_then_the_group_is_reported_stuck() {
     assert!(waits.windows(2).all(|pair| pair[0] <= pair[1]));
     assert!(waits.iter().all(|wait| *wait <= retry.cap));
 
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert_eq!(driver.after(&pass), Some(retry.stuck));
     assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
 
     // The learner catches up: the count starts again.
     fake.log.lock().behind.clear();
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert_eq!(pass, Pass::Stepped);
     assert_eq!(driver.after(&pass), Some(Duration::ZERO));
     assert_eq!(*progress.borrow(), MembershipProgress::Converging);
@@ -430,7 +445,7 @@ async fn a_step_that_does_not_commit_is_looked_at_again() {
     let fake = Fake::leading(settled(&["a", "b"], &[], 1));
     fake.log.lock().hangs = true;
     let (mut driver, _progress) = driving(&fake);
-    let pass = driver.pass(Some(&target(&["a", "b", "c"], 2))).await;
+    let pass = driver.pass_any(Some(&target(&["a", "b", "c"], 2))).await;
     assert_eq!(pass, Pass::Slow);
     assert!(driver.after(&pass).is_some());
 }
@@ -451,10 +466,10 @@ async fn a_step_that_commits_late_is_still_checked() {
     fake.log.lock().hangs = true;
     let (mut driver, _progress) = driving(&fake);
     let goal = target(&["a", "b"], 2);
-    assert_eq!(driver.pass(Some(&goal)).await, Pass::Slow);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Slow);
 
     // Still not written: nothing to check yet.
-    assert_eq!(driver.pass(Some(&goal)).await, Pass::Slow);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Slow);
     // Written late, with the voter that left kept as a learner.
     {
         let mut log = fake.log.lock();
@@ -463,9 +478,9 @@ async fn a_step_that_commits_late_is_still_checked() {
         let late = log.membership.clone();
         log.written.push(late);
     }
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert!(matches!(pass, Pass::Broken(_)), "{pass:?}");
-    assert_eq!(driver.pass(Some(&goal)).await, Pass::Halted);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Halted);
 }
 
 /// Every transfer closes the shard for up to an election timeout, so a
@@ -479,22 +494,61 @@ async fn transfers_that_never_land_are_paced_and_reported() {
 
     for term in 1..=u64::from(retry.attempts) {
         fake.log.lock().term = term;
-        let pass = driver.pass(Some(&goal)).await;
+        let pass = driver.pass_any(Some(&goal)).await;
         assert_eq!(pass, Pass::Stepped, "term {term}");
         driver.after(&pass);
     }
     assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
     // Elected again at once: no transfer is asked yet.
     fake.log.lock().term += 1;
-    let pass = driver.pass(Some(&goal)).await;
+    let pass = driver.pass_any(Some(&goal)).await;
     assert_eq!(pass, Pass::Waiting(Wait::NoSuccessor));
     assert_eq!(driver.after(&pass), Some(retry.stuck));
     assert!(matches!(*progress.borrow(), MembershipProgress::Stuck(_)));
     assert_eq!(fake.log.lock().transfers.len(), retry.attempts as usize);
 
     tokio::time::sleep(retry.stuck).await;
-    assert_eq!(driver.pass(Some(&goal)).await, Pass::Stepped);
+    assert_eq!(driver.pass_any(Some(&goal)).await, Pass::Stepped);
     assert_eq!(fake.written(), []);
+}
+
+/// Each failed transfer ends a term, and the target is told again for the
+/// next. Told again, the same target keeps the pacing of the transfers, and
+/// the group stays reported stuck while the new term waits for it; a new
+/// target starts the count again.
+#[tokio::test(start_paused = true)]
+async fn a_target_told_again_keeps_the_transfer_pacing() {
+    let fake = Fake::leading(settled(&["a", "b", "c"], &[], 1));
+    fake.log.lock().transfers_fail = true;
+    let (driver, progress) = driving(&fake);
+    let (goal, goals) = watch::channel(None);
+    let (_lead, leads) = watch::channel(Lead::default());
+    let stop = CancellationToken::new();
+    let running = tokio::spawn(driver::run(driver, goals, leads, stop.clone()));
+    let retry = Retry::default();
+    let term = || fake.log.lock().term;
+    let asked = || fake.log.lock().transfers.len();
+    let stuck = || matches!(*progress.borrow(), MembershipProgress::Stuck(_));
+
+    for _ in 0..retry.attempts {
+        goal.send_replace(Some(told(&["b", "c"], 2, term())));
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    assert_eq!(asked(), retry.attempts as usize);
+    // The new term has been told nothing yet.
+    assert!(stuck(), "{:?}", *progress.borrow());
+
+    goal.send_replace(Some(told(&["b", "c"], 2, term())));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(asked(), retry.attempts as usize);
+    assert!(stuck(), "{:?}", *progress.borrow());
+
+    goal.send_replace(Some(told(&["b", "c"], 3, term())));
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(asked(), retry.attempts as usize + 1);
+
+    stop.cancel();
+    running.await.expect("the driver");
 }
 
 #[allow(clippy::field_reassign_with_default)]
@@ -516,7 +570,7 @@ async fn a_deposed_leader_writes_nothing_more() {
     let running = tokio::spawn(driver::run(driver, goals, leads, stop.clone()));
 
     // A member that does not lead takes no step for a target.
-    goal.send_replace(Some(target(&["a", "b", "c"], 2)));
+    goal.send_replace(Some(told(&["a", "b", "c"], 2, 1)));
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(fake.written(), []);
     assert_eq!(*progress.borrow(), MembershipProgress::Idle);
@@ -532,10 +586,17 @@ async fn a_deposed_leader_writes_nothing_more() {
     tokio::time::sleep(Duration::from_secs(60)).await;
     assert_eq!(fake.written(), []);
 
-    // Elected again, it finishes from what the log holds.
+    // Elected again, it takes no step on the target told for term 1: a
+    // newer one may have been acted on since.
     fake.log.lock().term = 2;
     fake.log.lock().leads = true;
     lead.send_replace(leading(2));
+    tokio::time::sleep(Duration::from_secs(60)).await;
+    assert_eq!(fake.written(), []);
+    assert_eq!(*progress.borrow(), MembershipProgress::Idle);
+
+    // Told the same target for term 2, it finishes from what the log holds.
+    goal.send_replace(Some(told(&["a", "b", "c"], 2, 2)));
     reported(&mut progress, MembershipProgress::Settled).await;
     assert_eq!(
         fake.written().last(),
@@ -603,10 +664,8 @@ async fn held_by(cluster: &Cluster, brokers: &[&str], want: &Membership) {
     }
 }
 
-fn tell_all(cluster: &Cluster, target: &Target) {
-    for broker in BROKERS {
-        assert!(cluster.runtime(broker).retarget(&shard(0), target.clone()));
-    }
+fn tell_all(cluster: &Cluster, target: &Target) -> Telling {
+    Telling::start(cluster.runtimes(), shard(0), target.clone())
 }
 
 /// Watches every member until it is dropped. A member that leads with a
@@ -680,16 +739,20 @@ async fn a_target_adds_a_voter() {
     drop(leader);
     let watch = Watch::start(&cluster, set(&["a", "b"]));
 
-    tell_all(&cluster, &target(&["a", "b", "c"], 2));
+    let telling = tell_all(&cluster, &target(&["a", "b", "c"], 2));
     held_by(&cluster, &BROKERS, &settled(&["a", "b", "c"], &[], 2)).await;
     progress_of(&cluster, MembershipProgress::Settled).await;
+    drop(telling);
 
-    // An older target changes nothing, and is not kept.
-    assert!(
-        !cluster
-            .runtime("a")
-            .retarget(&shard(0), target(&["a", "b"], 1))
-    );
+    // An older target changes nothing, and is not kept, even told in a
+    // newer term. The same version is kept again only for a newer term.
+    let a = cluster.runtime("a");
+    // Seed `a` at term 0, so what follows holds whether or not it led.
+    a.retarget(&shard(0), target(&["a", "b", "c"], 2), 0);
+    assert!(!a.retarget(&shard(0), target(&["a", "b"], 1), u64::MAX));
+    assert!(a.retarget(&shard(0), target(&["a", "b", "c"], 2), u64::MAX - 1));
+    assert!(!a.retarget(&shard(0), target(&["a", "b", "c"], 2), u64::MAX - 1));
+    assert!(a.retarget(&shard(0), target(&["a", "b", "c"], 2), u64::MAX));
     watch.check().await;
     cluster.stop().await;
 }
@@ -708,7 +771,7 @@ async fn a_target_removes_a_voter_and_keeps_no_learner() {
     let watch = Watch::start(&cluster, set(&BROKERS));
 
     let kept = [&*lead, stays];
-    tell_all(&cluster, &target(&kept, 2));
+    let _telling = tell_all(&cluster, &target(&kept, 2));
     held_by(&cluster, &kept, &settled(&kept, &[], 2)).await;
     progress_of(&cluster, MembershipProgress::Settled).await;
     watch.check().await;
@@ -745,6 +808,8 @@ async fn a_transfer_for_a_term_not_led_is_not_asked() {
         headers: None,
         publisher: None,
         trim: None,
+        commit: false,
+        group: false,
     };
     leader.raft().client_write(record).await.expect("write");
     drop(leader);
@@ -766,6 +831,8 @@ async fn a_move_off_the_leader_grows_transfers_and_shrinks() {
         headers: None,
         publisher: None,
         trim: None,
+        commit: false,
+        group: false,
     };
     let written = leader.raft().client_write(record).await.expect("write");
     let before = written.log_id.index;
@@ -774,7 +841,7 @@ async fn a_move_off_the_leader_grows_transfers_and_shrinks() {
     let watch = Watch::start(&cluster, set(&["a", "b"]));
 
     let moved = [other, "c"];
-    tell_all(&cluster, &target(&moved, 2));
+    let _telling = tell_all(&cluster, &target(&moved, 2));
     held_by(&cluster, &moved, &settled(&moved, &[], 2)).await;
     let leads = leader_of(&cluster).await.member.broker.to_string();
     assert_ne!(leads, lead, "the member moved out still leads");
@@ -805,16 +872,20 @@ async fn a_removal_is_finished_under_a_leader_change() {
     cluster.net.muted.lock().insert(lead.clone());
     cluster.net.cut.lock().insert(lead.clone());
     // Only the member the target drops can ask for a vote, so it is the
-    // one elected, and it has to hand over before the removal.
+    // one elected, and it has to hand over before the removal. Its handover
+    // is lost until it has been seen leading: a muted successor cannot win,
+    // and the new leader hands over within milliseconds of its election.
     cluster.net.muted.lock().insert(stays.into());
+    cluster.net.lose_transfers.store(true, Ordering::Relaxed);
     let kept = [&*lead, stays];
-    tell_all(&cluster, &target(&kept, 2));
+    let _telling = tell_all(&cluster, &target(&kept, 2));
     let next = cluster.elected(0).await;
     assert_eq!(&*next.broker, leaves);
 
     // The new set needs the old leader's answer to commit.
     cluster.net.muted.lock().clear();
     cluster.net.cut.lock().clear();
+    cluster.net.lose_transfers.store(false, Ordering::Relaxed);
     held_by(&cluster, &kept, &settled(&kept, &[], 2)).await;
     progress_of(&cluster, MembershipProgress::Settled).await;
     watch.check().await;

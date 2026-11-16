@@ -1133,8 +1133,8 @@ fn headers_longer_than_their_body_are_refused() {
     }
 }
 
-/// The v9 kinds: bits 30 and 29, 30 and 28, and 30, 29 and 28. Each round
-/// trips in a v9 segment with no tag and its body intact.
+/// The v9 kinds: bits 30 and 29, 30 and 28, 30, 29 and 28, and 31, 30 and
+/// 29. Each round trips in a v9 segment with no tag and its body intact.
 #[test]
 fn the_v9_kinds_round_trip_in_a_v9_segment() {
     for (mark, kind, bits) in [
@@ -1145,6 +1145,7 @@ fn the_v9_kinds_round_trip_in_a_v9_segment() {
             RecordKind::CounterCheckpoint,
             0x70,
         ),
+        (RecordMark::Group, RecordKind::Group, 0xE0),
     ] {
         let mut buf = Vec::new();
         let len = encode_record_at(
@@ -1188,6 +1189,7 @@ fn the_v9_kinds_are_record_flags_before_v9() {
         RecordMark::Membership,
         RecordMark::CounterDelta,
         RecordMark::CounterCheckpoint,
+        RecordMark::Group,
     ] {
         let mut buf = Vec::new();
         encode_record(&mut buf, 4, 1, b"x", None, None, &mark);
@@ -1215,7 +1217,7 @@ fn the_v9_kinds_are_record_flags_before_v9() {
             );
         }
     }
-    for kinds in [0xA0u8, 0x90, 0xB0, 0xD0, 0xE0, 0xF0] {
+    for kinds in [0xA0u8, 0x90, 0xB0, 0xD0, 0xF0] {
         let mut buf = Vec::new();
         encode_record_at(&mut buf, Some(1), 4, 1, b"x", None, None, &RecordMark::None);
         buf[0] |= kinds;

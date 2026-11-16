@@ -98,8 +98,13 @@ pub struct Batch {
     /// Never set with `producer`.
     pub expected: Option<u64>,
     /// Set on a head trim: the floor below which reads stop once its one
-    /// record, the trim's headers, is committed. Always with `expected`.
+    /// record, the trim's headers, is committed. With `expected` for a
+    /// client's trim; without it for retention's, whose floor is at or
+    /// below the tail it was proposed at.
     pub trim: Option<u64>,
+    /// Set on an atomic commit: its one record is the encoded commit,
+    /// stored with the commit mark. Never with `producer` or `trim`.
+    pub commit: bool,
     /// The principal publishing the batch, stored with each record.
     pub publisher: Option<Bytes>,
 }
@@ -333,6 +338,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         producer,
         expected,
         trim,
+        commit,
         publisher,
     } = batch;
     let count = records.len();
@@ -340,9 +346,13 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         return Err(lost(EMPTY));
     }
     // One entry, so its index alone says whether it landed where expected.
-    if (expected.is_some() || trim.is_some())
-        && (count != 1 || producer.is_some() || expected.is_none())
-    {
+    // A trim with no expected offset is retention's: its floor is at or
+    // below the tail it was proposed at, so below any index it can take.
+    if (expected.is_some() || trim.is_some()) && (count != 1 || producer.is_some()) {
+        return Err(lost(CONDITIONAL_SHAPE));
+    }
+    // A commit is one record, so it lands whole or not at all.
+    if commit && (count != 1 || producer.is_some() || trim.is_some()) {
         return Err(lost(CONDITIONAL_SHAPE));
     }
     let first = match producer {
@@ -384,6 +394,8 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                 }),
                 expected,
                 trim,
+                commit,
+                group: false,
                 publisher: publisher.clone(),
                 headers: record.headers.map(Box::new),
                 written: None,
@@ -391,6 +403,30 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         })
         .collect();
     queued(commands, Vec::new(), term, bytes, ack)
+}
+
+/// The same for one consumer-group write: one entry, its payload the
+/// encoded [`felix_broker::GroupEntry`], stored with the log's group mark.
+/// Acknowledged once written; its caller waits for the apply.
+pub(crate) fn split_group(
+    entry: Bytes,
+    timestamp_micros: u64,
+    term: u64,
+) -> Result<(Proposal, Waiting), CommitError> {
+    let bytes = entry.len();
+    let command = Command {
+        timestamp_micros,
+        payload: entry,
+        producer: None,
+        expected: None,
+        trim: None,
+        commit: false,
+        group: true,
+        publisher: None,
+        headers: None,
+        written: None,
+    };
+    queued(vec![command], Vec::new(), Some(term), bytes, AckAt::Written)
 }
 
 /// The same for a cache shard's writes. Each is one entry, and the batch
@@ -404,6 +440,8 @@ pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting),
             producer: None,
             expected: None,
             trim: None,
+            commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,

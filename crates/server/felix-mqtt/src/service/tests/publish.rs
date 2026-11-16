@@ -137,6 +137,36 @@ async fn publishes_that_arrive_while_a_batch_is_out_go_as_one_batch() {
     assert_eq!(batches[0].producer_id, batches[1].producer_id);
 }
 
+/// A broker that takes one record per batch (a Raft shard's) gets each
+/// queued message as its own batch, numbered in order.
+#[tokio::test(start_paused = true)]
+async fn queued_publishes_go_one_per_batch_when_the_broker_says_so() {
+    let writes = FakeWrites::new();
+    writes
+        .max_batch_records
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    writes.hold();
+    let mut h = connected_with(Version::V311, Settings::default(), Arc::clone(&writes)).await;
+    for id in 1..=3 {
+        h.client
+            .send(
+                Packet::Publish(publish(QoS::AtLeastOnce, Some(id))),
+                Version::V311,
+            )
+            .await;
+        settle_down().await;
+    }
+    writes.release(3);
+    for id in 1..=3 {
+        assert_eq!(puback(h.client.recv().await).packet_id, id);
+    }
+    let batches = writes.batches();
+    let sizes: Vec<_> = batches.iter().map(|b| b.records.len()).collect();
+    assert_eq!(sizes, [1, 1, 1]);
+    let sequences: Vec<_> = batches.iter().map(|b| b.sequence).collect();
+    assert_eq!(sequences, [0, 1, 2]);
+}
+
 #[tokio::test(start_paused = true)]
 async fn a_qos_0_publish_is_written_with_nothing_to_wait_for() {
     let writes = FakeWrites::new();
@@ -360,25 +390,6 @@ async fn a_broker_without_record_headers_refuses_with_a_reason() {
     assert_eq!(
         ack.properties.reason_string.as_ref().map(|s| s.as_str()),
         Some("record_headers_disabled")
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn a_stream_that_takes_no_mqtt_message_refuses_with_a_reason() {
-    let writes = FakeWrites::new();
-    writes.fail_with(Err(WriteError::Refused(Refusal::Unsupported)));
-    let mut h = connected_with(Version::V5, Settings::default(), writes).await;
-    h.client
-        .send(
-            Packet::Publish(publish(QoS::AtLeastOnce, Some(2))),
-            Version::V5,
-        )
-        .await;
-    let ack = puback(h.client.recv().await);
-    assert_eq!(ack.reason, ReasonCode::ImplementationSpecificError);
-    assert_eq!(
-        ack.properties.reason_string.as_ref().map(|s| s.as_str()),
-        Some("raft_stream")
     );
 }
 

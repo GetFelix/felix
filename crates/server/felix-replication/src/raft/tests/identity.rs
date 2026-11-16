@@ -177,9 +177,7 @@ async fn a_target_names_the_copy_a_new_broker_holds() {
             counter: 1,
         },
     };
-    for runtime in cluster.runtimes() {
-        runtime.retarget(&key, target.clone());
-    }
+    let _telling = Telling::start(cluster.runtimes(), key.clone(), target);
     eventually(|| {
         BROKERS
             .iter()
@@ -579,6 +577,7 @@ async fn a_written_report_leaves_only_after_the_roots_marker_is_synced() {
         let batch = Batch {
             expected: None,
             trim: None,
+            commit: false,
             records: vec![Record {
                 timestamp_micros: 1_700_000_000,
                 payload: Bytes::from_static(b"relaxed"),
@@ -652,6 +651,7 @@ async fn a_slow_marker_sync_does_not_hold_the_commit_or_the_timeout() {
     let batch = |payload: &'static [u8]| Batch {
         expected: None,
         trim: None,
+        commit: false,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
@@ -814,6 +814,7 @@ async fn power_cut_keeps(acked: Acked) {
     let batch = |payload: &'static [u8]| Batch {
         expected: None,
         trim: None,
+        commit: false,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),
@@ -1124,6 +1125,7 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
     let batch = |payload: &'static [u8]| Batch {
         expected: None,
         trim: None,
+        commit: false,
         records: vec![Record {
             timestamp_micros: 1_700_000_000,
             payload: Bytes::from_static(payload),

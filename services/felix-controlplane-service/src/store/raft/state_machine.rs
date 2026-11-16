@@ -350,8 +350,11 @@ impl MetadataStateMachine {
                 .await
                 .map(|node| MetaResponse::Node { node })
                 .map_err(Into::into),
-            MetaCommand::DeleteNode { node_id } => {
-                store.delete_node(&node_id).await?;
+            MetaCommand::DeleteNode {
+                node_id,
+                forget_reports,
+            } => {
+                store.apply_delete_node(&node_id, forget_reports).await?;
                 self.node_reset(Some(&node_id));
                 Ok(MetaResponse::Unit)
             }
@@ -444,8 +447,9 @@ impl MetadataStateMachine {
                 key,
                 report,
                 sealer,
+                keep_ordered,
             } => store
-                .apply_accept_seal_report(&key, report, &sealer)
+                .apply_accept_seal_report(&key, report, &sealer, keep_ordered)
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
@@ -496,12 +500,16 @@ impl MetadataStateMachine {
                 .await
                 .map(|_| MetaResponse::Unit)
                 .map_err(Into::into),
+            MetaCommand::RecordRaftFloors { node_id, floors } => Ok(MetaResponse::Count {
+                count: u64::from(store.apply_record_raft_floors(&node_id, &floors).await),
+            }),
             MetaCommand::RecordRaftCopyId {
                 key,
                 node_id,
                 node_registered_at_millis,
                 node_incarnation,
                 copy_id,
+                keep_ordered,
             } => store
                 .apply_record_raft_copy_id(
                     &key,
@@ -509,6 +517,7 @@ impl MetadataStateMachine {
                     node_registered_at_millis,
                     node_incarnation,
                     copy_id,
+                    keep_ordered,
                 )
                 .await
                 .map(|changed| MetaResponse::Count {

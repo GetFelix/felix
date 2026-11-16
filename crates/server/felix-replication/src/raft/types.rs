@@ -186,10 +186,20 @@ pub(crate) struct Command {
     /// from the log, which holds only the outcome.
     pub(crate) expected: Option<u64>,
     /// Set on a head trim: the floor reads stop below once the entry is
-    /// committed. The payload is the trim's headers. A trim is always
-    /// conditional, so it is proposed with `expected` set, and read back
-    /// from the log it holds `trim` alone.
+    /// committed. The payload is the trim's headers. A client's trim is
+    /// conditional, proposed with `expected` set; retention's is not, since
+    /// its floor is at or below the tail it was proposed at, so at or below
+    /// any index the entry takes. Read back from the log it holds `trim`
+    /// alone.
     pub(crate) trim: Option<u64>,
+    /// Set on an atomic commit: the payload is the encoded commit record (an
+    /// event and its state updates), stored with the log's commit mark so
+    /// every member's state view is rebuilt from the same record.
+    pub(crate) commit: bool,
+    /// Set on a consumer group's write: the payload is the encoded group
+    /// entry (`felix_broker::GroupEntry`), stored with the log's group mark
+    /// so every member folds the same writes into its group table.
+    pub(crate) group: bool,
     /// The principal that published the record, stored with it.
     pub(crate) publisher: Option<Bytes>,
     /// The record's encoded key and headers block, stored as given. Boxed
@@ -214,6 +224,8 @@ impl PartialEq for Command {
             producer,
             expected,
             trim,
+            commit,
+            group,
             publisher,
             headers,
             written: _,
@@ -223,6 +235,8 @@ impl PartialEq for Command {
             && *producer == other.producer
             && *expected == other.expected
             && *trim == other.trim
+            && *commit == other.commit
+            && *group == other.group
             && *publisher == other.publisher
             && *headers == other.headers
     }
@@ -241,9 +255,10 @@ impl Command {
     }
 
     /// Whether the command, written at `index`, holds a client record. A
-    /// trim holds only its floor and headers.
+    /// trim holds only its floor and headers, and a group's write only the
+    /// group's.
     pub(crate) fn holds_record_at(&self, index: u64) -> bool {
-        self.trim.is_none() && !self.blank_at(index)
+        self.trim.is_none() && !self.group && !self.blank_at(index)
     }
 }
 
@@ -251,6 +266,8 @@ impl fmt::Display for Command {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.trim {
             Some(before) => write!(f, "trim below {before}"),
+            None if self.commit => write!(f, "commit of {} bytes", self.payload.len()),
+            None if self.group => write!(f, "group write of {} bytes", self.payload.len()),
             None => write!(f, "record of {} bytes", self.payload.len()),
         }
     }

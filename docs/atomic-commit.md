@@ -136,6 +136,11 @@ version; see below. `Client::commit_if` follows the leader the way
 the client refuses to send the request otherwise. See
 [Conditional writes](semantics.md#conditional-writes).
 
+On a shard that runs on Raft a refused `commit_if` still takes one offset,
+which readers skip, so the `tail` it answers is one past it. Re-read from
+`tail` as usual. See "Atomic commits" in the
+[per-shard Raft design](per-shard-raft.md).
+
 ## A commit to a named shard
 
 A writer that owns its partitioning can name the shard instead of letting

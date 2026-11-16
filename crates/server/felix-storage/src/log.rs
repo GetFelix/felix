@@ -141,6 +141,11 @@ pub enum RecordMark {
     /// compacted. The payload is the counter store's. v9 only, and nothing
     /// writes one yet.
     CounterCheckpoint,
+    /// A consumer group's write on a Raft stream shard: an acknowledgement
+    /// run closing, a dead letter, a seek, a delete. Every member folds them
+    /// in log order into the same group table. The payload is the broker's
+    /// (`GroupEntry`). v9 only, and only a Raft log takes one.
+    Group,
 }
 
 /// An idempotent producer's batch, as its first record describes it.
@@ -166,8 +171,8 @@ pub struct BatchPiece {
 
 impl RecordMark {
     /// Whether a client reads the record: an event or cache entry, or a
-    /// commit record holding one. Generation-start, trim, membership and
-    /// counter records belong to storage and replication, and every client
+    /// commit record holding one. Generation-start, trim, membership,
+    /// counter and group records belong to storage and replication, and every client
     /// read skips them. A skipped record keeps its offset, so a reader sees
     /// the gap and can tell it from a drop; see `docs/storage-format.md`,
     /// "Record kinds".
@@ -178,7 +183,8 @@ impl RecordMark {
             | Self::Trim { .. }
             | Self::Membership
             | Self::CounterDelta
-            | Self::CounterCheckpoint => false,
+            | Self::CounterCheckpoint
+            | Self::Group => false,
         }
     }
 
@@ -186,7 +192,11 @@ impl RecordMark {
     pub fn needs_generation(&self) -> bool {
         matches!(
             self,
-            Self::Piece(_) | Self::Membership | Self::CounterDelta | Self::CounterCheckpoint
+            Self::Piece(_)
+                | Self::Membership
+                | Self::CounterDelta
+                | Self::CounterCheckpoint
+                | Self::Group
         )
     }
 
@@ -199,6 +209,11 @@ impl RecordMark {
     /// Whether the record is an atomic commit.
     pub fn is_commit(&self) -> bool {
         matches!(self, Self::Commit)
+    }
+
+    /// Whether the record is a consumer group's write.
+    pub fn is_group(&self) -> bool {
+        matches!(self, Self::Group)
     }
 
     /// Whether the record is a head trim.

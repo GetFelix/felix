@@ -432,6 +432,8 @@ async fn seed_shard(store: &InMemoryStore, leader: &str, generation: u64) {
                 switch: None,
                 raft_copy_ids: Default::default(),
                 raft_target: None,
+                raft_floor: None,
+                raft_ordered: None,
             })
             .await
             .expect("assign");

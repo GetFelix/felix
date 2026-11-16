@@ -66,6 +66,20 @@ impl ReadBound {
 pub trait ReadBounds: Send + Sync + std::fmt::Debug {
     fn stream_bound(&self, tenant_id: &str, namespace: &str, stream: &str, shard: u32)
     -> ReadBound;
+
+    /// `end`, a bound this returned, less the offsets just below it that hold
+    /// no record. Those reach the ring only once a record follows them, so a
+    /// reader waiting for the ring to reach `end` waits for this instead.
+    fn records_end(
+        &self,
+        _tenant_id: &str,
+        _namespace: &str,
+        _stream: &str,
+        _shard: u32,
+        end: u64,
+    ) -> u64 {
+        end
+    }
 }
 
 /// Batches durable on this broker that readers may not see yet.
@@ -114,6 +128,23 @@ impl CommitHold {
             &source.namespace,
             &source.stream,
             source.shard,
+        )
+    }
+
+    /// [`ReadBounds::records_end`] for this shard.
+    pub(crate) fn records_end(&self, end: u64) -> u64 {
+        let Some(source) = self.source.get() else {
+            return end;
+        };
+        let Some(bounds) = source.bounds.get() else {
+            return end;
+        };
+        bounds.records_end(
+            &source.tenant_id,
+            &source.namespace,
+            &source.stream,
+            source.shard,
+            end,
         )
     }
 
@@ -289,8 +320,9 @@ pub(crate) struct HeldBatch {
     /// The floor of a trim record, which is the batch's one record and is
     /// applied to the ring rather than appended to it.
     pub(crate) trim: Option<u64>,
-    /// Told once the trim's floor reaches the ring.
-    pub(crate) trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+    /// Told once the batch reaches the ring: a trim's floor, or a commit's
+    /// state updates.
+    pub(crate) ring_applied: Option<tokio::sync::oneshot::Sender<()>>,
     /// Offsets just below the batch that hold no record, which subscribers
     /// are told were skipped.
     pub(crate) skipped_before: u64,
@@ -319,7 +351,7 @@ impl HeldBatch {
             first_offset: 0,
             commit: None,
             trim: None,
-            trim_applied: None,
+            ring_applied: None,
             skipped_before: 0,
             gap: true,
             gap_end: written_end,

@@ -1,13 +1,15 @@
 //! The state machine of a shard group. A stream shard's state is its log,
-//! so this keeps only what openraft asks every state machine for: the last
-//! applied entry and the membership in force. A cache shard's group also
-//! folds its entries into a [`CacheState`].
+//! so this keeps what openraft asks every state machine for (the last
+//! applied entry and the membership in force) and the shard's consumer
+//! groups, folded from its group entries ([`ShardGroups`]). A cache shard's
+//! group folds its entries into a [`CacheState`] instead.
 //!
 //! All of it is kept in memory. A member starts from the snapshot in the
 //! group's [`SnapshotStore`] and openraft applies the log above it again.
 //! A stream shard's snapshot holds no records, only the cut batches its log
-//! refuses by name ([`ForgottenCuts`]); a cache shard's is its projection
-//! as of the snapshot's last entry.
+//! refuses by name and the group table as of its last entry
+//! ([`StreamSnapshot`]); a cache shard's is its projection as of the
+//! snapshot's last entry.
 
 use std::io;
 use std::num::NonZeroUsize;
@@ -15,8 +17,8 @@ use std::sync::{Arc, LazyLock};
 
 use bytes::Bytes;
 
+use felix_broker::{GroupEntry, GroupTable, ShardGroups};
 use felix_storage::DiskLog;
-use felix_storage::disk_log::ForgottenCuts;
 use felix_storage::log::FsyncMode;
 use felix_storage::raft_log::{LogPoint, SnapshotId, SnapshotStore, StoredSnapshot};
 use felix_storage::waiters::{Queue, Waiters};
@@ -30,12 +32,17 @@ use tokio::sync::{Semaphore, watch};
 use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{StoredMembership, invalid};
 use super::commit::Commits;
+use super::stream_snapshot::StreamSnapshot;
 use super::types::{Applied, ShardTypes};
 use crate::ShardKind;
 
 /// A cache group's projection, shared by its state machine, which writes
 /// it, and the member's read and answer paths.
 pub(crate) type Cache = Arc<parking_lot::RwLock<CacheState>>;
+
+/// A stream shard's consumer groups, shared by its state machine, which
+/// folds them, and the member's group paths.
+pub(crate) type Groups = Arc<parking_lot::RwLock<ShardGroups>>;
 
 #[derive(Clone, Default)]
 struct State {
@@ -55,6 +62,8 @@ pub(crate) struct Machine {
     applied: Queue<u64>,
     /// `None` in a stream shard's group.
     cache: Option<Cache>,
+    /// `None` in a cache shard's group.
+    groups: Option<Groups>,
     /// A stream shard's log, `None` in a cache shard's group.
     log: Option<DiskLog>,
     /// The Raft log, of either kind of shard.
@@ -75,18 +84,24 @@ impl Machine {
         snapshots: SnapshotStore,
         kind: ShardKind,
         log: Option<&DiskLog>,
-    ) -> io::Result<(Self, watch::Receiver<Commits>, Waiters<u64>, Option<Cache>)> {
+    ) -> io::Result<Opened> {
         let stored = snapshots.current().await?;
         let state = match &stored {
             Some(stored) => StoredMeta::state(&stored.meta)?,
             None => State::default(),
         };
-        let cache = match kind {
-            ShardKind::Stream => None,
+        let data = stored.map(|stored| stored.data).unwrap_or_default();
+        let (cache, groups) = match kind {
+            // The table as of the snapshot's last entry; openraft applies
+            // the group entries above it again.
+            ShardKind::Stream => {
+                let mut groups = ShardGroups::default();
+                groups.reset(StreamSnapshot::decode(&data)?.groups);
+                (None, Some(Arc::new(parking_lot::RwLock::new(groups))))
+            }
             ShardKind::Cache => {
-                let data = stored.map(|stored| stored.data).unwrap_or_default();
                 let restored = restore(data, state.last_applied.is_some()).await?;
-                Some(Arc::new(parking_lot::RwLock::new(restored)))
+                (Some(Arc::new(parking_lot::RwLock::new(restored))), None)
             }
         };
         let commits = Commits::resumed(state.last_applied.as_ref().map(point));
@@ -100,6 +115,7 @@ impl Machine {
             published,
             applied,
             cache: cache.clone(),
+            groups: groups.clone(),
             log: log.filter(|_| matches!(kind, ShardKind::Stream)).cloned(),
             raft_log: log.cloned(),
             #[cfg(test)]
@@ -107,7 +123,13 @@ impl Machine {
             #[cfg(test)]
             fold_hold: Arc::default(),
         };
-        Ok((machine, watched, waiters, cache))
+        Ok(Opened {
+            machine,
+            commits: watched,
+            applied: waiters,
+            cache,
+            groups,
+        })
     }
 
     fn publish(&self) {
@@ -123,6 +145,16 @@ impl Machine {
                 .advance(self.commits.applied().map(|applied| applied.index));
         }
     }
+}
+
+/// A state machine as [`Machine::open`] opened it, and what the member's
+/// other paths share with it.
+pub(crate) struct Opened {
+    pub(crate) machine: Machine,
+    pub(crate) commits: watch::Receiver<Commits>,
+    pub(crate) applied: Waiters<u64>,
+    pub(crate) cache: Option<Cache>,
+    pub(crate) groups: Option<Groups>,
 }
 
 /// A snapshot's data as openraft carries it.
@@ -291,6 +323,8 @@ pub(crate) struct Builder {
     /// The projection as of `state.last_applied`. Let go, the apply task
     /// folds the writes made since back into the live maps.
     cut: Option<Cut>,
+    /// A stream shard's group table as of `state.last_applied`.
+    groups: Option<GroupTable>,
     /// A stream shard's log.
     log: Option<DiskLog>,
     /// The Raft log, synced before a snapshot is stored.
@@ -318,7 +352,10 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
         // write a cut batch again.
         let data = match (self.cut.take(), &self.log) {
             (Some(cut), _) => cpu(move || cut.snapshot()).await?,
-            (None, Some(log)) => stream_data(log, &self.state).await?,
+            (None, Some(log)) => {
+                let groups = self.groups.take().unwrap_or_default();
+                stream_data(log, &self.state, groups).await?
+            }
             (None, None) => Bytes::new(),
         };
         // A log that counts written entries can have applied one it has not
@@ -338,34 +375,21 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
 }
 
 /// A stream shard's snapshot data: the cut batches a member whose log starts
-/// right after the snapshot's last entry has to refuse by name. A member
-/// that installs the snapshot holds no record below it, so the batches the
-/// log forgot, or would forget once purged there, are known to it only from
-/// here. Built from the committed records up to the snapshot's last entry
-/// and what earlier purges and installs carried, never from refusals only
-/// this member has, so every member's snapshot at one entry carries the
-/// same. Empty when there are none.
-async fn stream_data(log: &DiskLog, state: &State) -> io::Result<Bytes> {
+/// right after the snapshot's last entry has to refuse by name, and
+/// `groups`, the group table folded up to that entry. A member that
+/// installs the snapshot holds no record below it, so the batches the log
+/// forgot, or would forget once purged there, and the group writes below
+/// it are known to it only from here. Built from the committed records up
+/// to the snapshot's last entry and what earlier purges and installs
+/// carried, never from refusals only this member has, so every member's
+/// snapshot at one entry carries the same. Empty when there is nothing.
+async fn stream_data(log: &DiskLog, state: &State, groups: GroupTable) -> io::Result<Bytes> {
     let base = state.last_applied.map_or(0, |id| id.index + 1);
     let cuts = log
         .forgotten_cuts_from(base)
         .await
         .map_err(io::Error::other)?;
-    Ok(if cuts.is_empty() {
-        Bytes::new()
-    } else {
-        cuts.encode().into()
-    })
-}
-
-/// The cut batches a stream shard's snapshot carries. Empty data carries
-/// none: a base snapshot, or one taken with nothing forgotten.
-fn carried_cuts(data: &[u8]) -> io::Result<ForgottenCuts> {
-    if data.is_empty() {
-        return Ok(ForgottenCuts::default());
-    }
-    ForgottenCuts::decode(data)
-        .ok_or_else(|| invalid("a stream snapshot's forgotten cut batches do not parse".into()))
+    Ok(StreamSnapshot { cuts, groups }.encode())
 }
 
 impl Machine {
@@ -382,6 +406,10 @@ impl Machine {
             snapshots: self.snapshots.clone(),
             state: self.state.clone(),
             cut,
+            groups: self
+                .groups
+                .as_ref()
+                .map(|groups| groups.read().table().clone()),
             log: self.log.clone(),
             raft_log: self.raft_log.clone(),
         }
@@ -457,6 +485,23 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     .apply(entry.log_id.index, command.0, &command.1);
                 written += 1;
             }
+            if let (Some(groups), EntryPayload::Normal(command)) = (&self.groups, &entry.payload)
+                && command.group
+            {
+                // Refused like a cache entry: every member folds every
+                // group write, or their tables differ.
+                let decoded = match GroupEntry::decode(&command.payload) {
+                    Ok(decoded) => decoded,
+                    Err(err) => {
+                        applied = Err(invalid(format!("a group entry does not decode: {err}")));
+                        break;
+                    }
+                };
+                // Before the commit table moves, so a write that waits on
+                // its apply finds it folded.
+                let (term, index) = term_index(&entry.log_id);
+                groups.write().apply(term, index, &decoded);
+            }
             // openraft applies entries read back from the log, where a
             // conditional publish off its offset is already a blank. Checked
             // again in case one ever reaches apply as the command.
@@ -525,20 +570,33 @@ impl RaftStateMachine<ShardTypes> for Machine {
             (Some(_), None) => Some(restore(data.clone(), meta.last_log_id.is_some()).await?),
             (None, _) => None,
         };
+        let carried = match &self.log {
+            Some(_) => Some(StreamSnapshot::decode(&data)?),
+            None => None,
+        };
         // Saved in the log before the snapshot is stored, so this member
         // refuses a re-send of a batch it was never sent from the moment
         // it holds nothing below the snapshot. A crash in between leaves
         // the old snapshot and only more refusals, which the next install
         // repeats.
-        if let Some(log) = &self.log {
-            let base = meta.last_log_id.map_or(0, |id| id.index + 1);
-            log.remember_forgotten_cuts(base, carried_cuts(&data)?)
-                .await
-                .map_err(io::Error::other)?;
-        }
+        let groups = match (&self.log, carried) {
+            (Some(log), Some(StreamSnapshot { cuts, groups })) => {
+                let base = meta.last_log_id.map_or(0, |id| id.index + 1);
+                log.remember_forgotten_cuts(base, cuts)
+                    .await
+                    .map_err(io::Error::other)?;
+                Some(groups)
+            }
+            _ => None,
+        };
         store(&self.snapshots, meta, data).await?;
         if let (Some(cache), Some(restored)) = (&self.cache, restored) {
             *cache.write() = restored;
+        }
+        // The table as of the snapshot's last entry, which openraft applies
+        // above from here. Trackers go with the old table.
+        if let (Some(live), Some(groups)) = (&self.groups, groups) {
+            live.write().reset(groups);
         }
         self.state = State {
             last_applied: meta.last_log_id,

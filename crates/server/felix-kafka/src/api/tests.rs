@@ -53,6 +53,8 @@ pub(super) struct FakeCluster {
     pub(super) consistency_error: Mutex<Option<WriteError>>,
     /// What `admit_write` answers, when not by placement.
     pub(super) admit_error: Mutex<Option<WriteError>>,
+    /// What `refuses_record_headers` answers.
+    pub(super) headers_refused: Mutex<Option<&'static str>>,
     /// Commit points by `(stream, shard)`; a shard without one is unbounded.
     committed: Mutex<HashMap<(String, u32), Result<u64, Unreadable>>>,
     /// What `admit_produce` answers.
@@ -114,6 +116,14 @@ impl Cluster for FakeCluster {
             Placement::Local { .. } => Ok(WritePermit::default()),
             _ => Err(WriteError::NotLeader),
         }
+    }
+
+    fn refuses_record_headers(
+        &self,
+        _broker: &felix_broker::Broker,
+        _shard: &ShardRef<'_>,
+    ) -> Option<&'static str> {
+        *self.headers_refused.lock().expect("lock")
     }
 
     async fn await_consistency(
@@ -259,6 +269,7 @@ impl Fixture {
             consistency_waits: AtomicUsize::new(0),
             consistency_error: Mutex::new(None),
             admit_error: Mutex::new(None),
+            headers_refused: Mutex::new(None),
             committed: Mutex::new(HashMap::new()),
             produce_hold: Mutex::new(std::time::Duration::ZERO),
             produce_charges: Mutex::new(Vec::new()),

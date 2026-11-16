@@ -25,7 +25,7 @@ use bytes::Bytes;
 use super::{ClaimedDurable, ClaimedPublish, PublishOutcome};
 use crate::broker::AppendedShards;
 use crate::broker::shards::StreamHandle;
-use crate::commit::StateOp;
+use crate::commit::{CommitRecord, StateOp};
 use crate::error::{BrokerError, Result};
 use crate::stream::{
     DeliveryEnvelope, HeldBatch, HeldBytes, Pass, QueuedDelivery, StreamState, SubQueuePolicy,
@@ -49,7 +49,7 @@ pub(super) struct Completion {
     /// A trim record's floor. Its one record is applied to the ring in its
     /// turn instead of appended and fanned out.
     trim: Option<u64>,
-    trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+    ring_applied: Option<tokio::sync::oneshot::Sender<()>>,
     /// Holds the commit turn until the batch is fanned out.
     durable: Option<ClaimedDurable>,
     sample: bool,
@@ -95,7 +95,7 @@ impl Delivery {
 impl Completion {
     pub(super) fn new(
         claimed: ClaimedPublish,
-        trim_applied: Option<tokio::sync::oneshot::Sender<()>>,
+        ring_applied: Option<tokio::sync::oneshot::Sender<()>>,
         log_capacity: usize,
         replication: Arc<AppendedShards>,
     ) -> Self {
@@ -118,7 +118,7 @@ impl Completion {
             timestamp_micros,
             commit,
             trim,
-            trim_applied,
+            ring_applied,
             durable,
             sample,
             log_capacity,
@@ -140,7 +140,7 @@ impl Completion {
             timestamp_micros: batch.timestamp_micros,
             commit: batch.commit,
             trim: batch.trim,
-            trim_applied: batch.trim_applied,
+            ring_applied: batch.ring_applied,
             durable: None,
             sample: false,
             log_capacity,
@@ -223,7 +223,7 @@ impl Completion {
             first_offset,
             commit: self.commit.take(),
             trim: self.trim,
-            trim_applied: self.trim_applied.take(),
+            ring_applied: self.ring_applied.take(),
             skipped_before: 0,
             gap: false,
             gap_end: None,
@@ -253,7 +253,7 @@ impl Completion {
         if !self.handle.state.apply_trim(first_offset, floor, turn) {
             return Err(BrokerError::PublishSuperseded { first_offset });
         }
-        if let Some(applied) = self.trim_applied.take() {
+        if let Some(applied) = self.ring_applied.take() {
             let _ = applied.send(());
         }
         Ok(PublishOutcome {
@@ -375,6 +375,10 @@ impl Completion {
                 first_offset: first_offset.unwrap_or_default(),
             })?;
         let skipped_before = skipped_before.max(self.skipped_before);
+        // A commit's state updates are in the view now.
+        if let Some(applied) = self.ring_applied.take() {
+            let _ = applied.send(());
+        }
         if let Some(start) = append_start {
             let append_ns = start.elapsed().as_nanos() as u64;
             timings::record_append_ns(append_ns);
@@ -722,7 +726,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
     }
     while next < bound {
         let mut records = log
-            .read_from(next, LOG_PAGE_BYTES)
+            .read_data_from(next, LOG_PAGE_BYTES)
             .await?
             .into_iter()
             .take_while(|record| record.offset < bound)
@@ -733,15 +737,31 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
         while let Some(first) = records.next() {
             let timestamp_micros = first.timestamp_micros;
             let mut headers = vec![first.headers.map(|headers| *headers)];
+            // A commit's event goes to readers and its state updates to the
+            // state view, at its offset, as on the broker that wrote it.
+            // One that does not decode goes out as it is, as
+            // `client_record` returns it.
+            let is_commit = first.mark.is_commit();
+            // Committed, so it cannot be cut: a trim may rely on it.
+            if is_commit {
+                state.commits.seen.store(true, Ordering::Release);
+            }
+            let decoded = is_commit
+                .then(|| CommitRecord::decode(&first.payload).ok())
+                .flatten();
+            let (payload, commit) = match decoded {
+                Some(record) => (record.event, Some(Arc::from(record.ops))),
+                None => (first.payload, None),
+            };
             let mut batch = HeldBatch {
-                payloads: vec![first.payload],
+                payloads: vec![payload],
                 publisher: first.publisher,
                 record_headers: None,
                 timestamp_micros: Some(timestamp_micros),
                 first_offset: first.offset,
-                commit: None,
+                commit,
                 trim: None,
-                trim_applied: None,
+                ring_applied: None,
                 skipped_before: first.offset.saturating_sub(next),
                 gap: false,
                 gap_end: None,
@@ -749,9 +769,12 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
             };
             next = first.offset + 1;
             // A batch names one publisher, so a record of another starts
-            // the next.
+            // the next. A commit is a batch of its own: its state updates
+            // apply at the batch's first offset.
             while let Some(more) = records.next_if(|more| {
-                more.offset == next
+                !is_commit
+                    && !more.mark.is_commit()
+                    && more.offset == next
                     && more.timestamp_micros == timestamp_micros
                     && more.publisher == batch.publisher
             }) {

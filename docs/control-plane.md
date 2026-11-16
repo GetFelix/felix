@@ -1105,7 +1105,10 @@ retry of a wiped copy's old id cannot replace its successor's. A restore can
 bring back ids a broker has since replaced, so a broker has to report its ids
 again once it acknowledges a new placement incarnation. Today only a copy-id report moves
 the counter; a set change will too once Raft shards are placed. Both are written
-in place, at the shard's generation. A target change is refused while some
+in place, at the shard's generation. A placement write that names the same
+brokers, such as a leader move, keeps the ids and the target with its counter,
+so it does not cancel a membership change in flight. One that changes the set
+drops both, since the target named the old members. A target change is refused while some
 registered broker, serving or not, has not acknowledged the placement
 incarnation. The assignment feeds leave the record's `raft_target` out and
 send `target` instead, with `version: {incarnation, counter}`, only while
@@ -1116,6 +1119,29 @@ stream deleted and created again starts its counter at 1 under the same key,
 so a broker keys a target by shard key and stream incarnation, and a
 recreated stream is a new group. The Raft store needs every member known at
 metadata level 36 (`docs/per-shard-raft.md`, "Where a target comes from").
+
+A Raft shard also carries `raft_floor`, built from what its leaders report
+through `POST /v1/nodes/{node_id}/raft-floors`, per stream `incarnation`:
+`offset_floor`, the highest committed index of any reform epoch, which the
+re-form start reads as the bound for new offsets, and `epoch`, `index` and
+`term`, the exact last committed log id of the current epoch. Each broker sends one
+batch a second, at most 1024 entries, and keeps an entry owed until a 200
+answers a batch that carried it, so the first accepted report after level 38
+covers every group it leads, idle ones included. Cache groups are in the
+batch too; the control plane skips them without failing it. `offset_floor` only rises. A new
+reform epoch replaces the exact log id and never lowers `offset_floor`. It is written in place without a
+change on the feed. A placement write at the same incarnation keeps it. The
+feeds do not send it. The Raft store needs every member known at metadata
+level 38 (`docs/per-shard-raft.md`, "Offset floor").
+
+A Raft shard also carries `raft_ordered`: every distinct target ordered in
+its current group epoch, at most 64, started empty when the switch to Raft is
+recorded and added to in the same write that stores each new target. A set
+change and a counter bump keep it; a new epoch or stream incarnation replaces
+it. A re-form reads it as the targets it must count, and treats a list from
+another epoch, a `lost` one, or none as unknown. The feeds do not send it. The
+Raft store keeps it from metadata level 39 (`docs/per-shard-raft.md`,
+"Targets ordered in an epoch").
 
 Under `joint_fence` an assignment also carries `learners`: the members the
 control plane holds as learners because their storage was replaced. Empty
@@ -1390,6 +1416,19 @@ expire while placement is slow (#1250). All of these are plain data written as
 received. Under Raft they need metadata levels 12 and 13 and are
 dropped by the proposer below them. See
 [replication-design.md](replication-design.md#who-may-be-promoted).
+
+**A deleted node leaves no stamp behind.** A node deleted and registered
+again starts at incarnation 0, the same number its old process may have been
+stamped at. So deleting a node also removes it from `node_incarnations` in
+every held report, and the API stamps only the nodes the shard's assignment
+names, none of which can be deleted while that assignment stands. A report
+taken before the delete then never counts the new registration through the
+incarnation check. The rest of the report stays, because it still speaks for
+the shard's other members. Under Raft the delete clears stamps only once every
+member is at metadata level 37; below it a report from before a delete can
+still count a re-registered node that has no storage identity (#2619). Reaching
+level 37 does not clear a stamp a delete left at 36: it goes when the node is
+deleted again or the shard's leader sends a new report.
 
 A leader also reports, for each follower it has not reached yet at its
 generation, the identity it inherited for it: the one the failover that
@@ -1725,6 +1764,43 @@ it a write carrying a pending set is refused with 409 before it reaches the
 log, rather than written as a cut-over that takes the new set at once, and a
 report's joint start is dropped, which keeps a change pending; finalizing
 `replica_election` itself needs level 26.
+
+#### Raft shards
+
+On a cluster whose `shard_engine` is `raft` (read from the cluster identity,
+so every instance agrees), a durable stream's shard is run by a Raft group
+that elects its own leader and keeps its own members. Placement places a new
+shard as above, and the brokers form its group from that set. After that it
+only says which member it wants leading:
+
+| Event | Hybrid shard | Raft shard |
+| --- | --- | --- |
+| Balance, drain or operator move | Stage, fence, cut over | One write that changes only `leader`, to another member |
+| Destination outside the set | Copied in first | Refused (`not_a_member`), never chosen |
+| Leader down | Failover to a caught-up follower, or `Unplaceable` | One write that names a live member as leader; the group elects on its own |
+| Follower on a draining broker | Replaced | Stays |
+
+A leader-only write copies nothing, so it takes no move slot. One pass names
+at most 64 new Raft leaders: once brokers follow placement
+([#2649](https://github.com/GetFelix/felix/issues/2649)) each asks for a
+leadership transfer, which closes the shard for an election. Until then the
+group's leader stays where it was elected, so a drained broker's shutdown
+costs its groups an election rather than a hand-off. Pausing placement holds them, and balance
+waits while a broker is down, as for the hybrid. A down leader is renamed even
+while paused, as the hybrid still replaces a failed leader: a broker with no
+member forwards requests to the leader placement names. The set changes only
+through the group's membership target
+([#2235](https://github.com/GetFelix/felix/issues/2235)). A shard switched
+from the hybrid is not placed here at all. See
+[per-shard-raft.md](per-shard-raft.md), "What placement does with a Raft
+shard".
+
+> `services/felix-controlplane-service/src/cluster/placement/tests/raft_leaders.rs`,
+> `a_balance_pass_moves_a_raft_leader_in_one_write`,
+> `a_drain_moves_every_raft_leader_off_the_broker_in_one_pass`,
+> `a_dead_raft_leader_is_renamed_to_a_live_member`,
+> `an_operator_moves_a_raft_leader_only_to_a_member` and
+> `a_drain_on_a_raft_cluster_finishes_through_the_store`.
 
 #### Adopting an elected leader
 
@@ -2205,7 +2281,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake` and `discard` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
@@ -2255,6 +2331,7 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded shard's log and place it afresh; `?kind=cache` for a cache shard. **Loses data** |
 | `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to Raft. 409 `raft_unavailable` until the fleet has finalized `shard_raft`, `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only. See `per-shard-raft.md`, "Moving a shard from the hybrid to Raft" |
 | `POST /v1/nodes/{node_id}/raft-copy-id` | a broker reports the Raft copy id it holds for a shard that switched to Raft (`{"key": ..., "copy_id": n, "incarnation": i, "registered_at_millis": t}`, the `incarnation` and `registered_at_millis` from the reporting process's registration; both, because a node deleted and registered again starts at incarnation 0 again). Answers `changed`, false when the id was already held; 409 for a hybrid shard, a broker outside the set, a report from a process other than the one the node is registered as (so a delayed retry from before a restart, or from before a delete and new registration, cannot replace the id the new process reported), a target change while some registered broker has not acknowledged the placement incarnation, or a member below metadata version 36. Takes `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/raft-floors` | a broker reports the committed log id of each Raft group it leads (`{"floors": [{"key": ..., "incarnation": i, "epoch": e, "index": n, "term": t}]}`, `epoch` left out while 0). Each entry sets the shard's exact last committed log id for the current epoch when higher and raises its `offset_floor`, which never drops; one for a missing or hybrid shard, another stream incarnation or reform epoch, or a higher index at a lower term is skipped and the rest still apply. Answers `raised`, how many floors moved; 400 for more than 1024 entries; 409 for the whole batch when a member is below metadata version 38. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 
@@ -2290,7 +2367,10 @@ where placement would not make it: the destination not registered (404
 already moving (`already_moving`); its leader down (`leader_unavailable`,
 failover places it); or a move limit reached (`move_limit`). A start, a
 cancel and an abandon on a shard that switched to Raft are all refused (409
-`switched`): the control plane no longer places it. It is held to
+`switched`): the control plane no longer places it. On a Raft shard
+(see [Raft shards](#raft-shards)) the destination must be a member of the
+set (409 `not_a_member`), the start is the whole move (`raft_leader`), and
+it takes no move slot. Any other move is held to
 the move limits but not to a pause. From there it runs like any other move,
 through the fence and the cut-over, and a timeout abandons it the same way.
 

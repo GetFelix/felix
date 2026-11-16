@@ -717,7 +717,7 @@ impl ControlPlaneStore for InMemoryStore {
     }
 
     async fn delete_node(&self, node_id: &str) -> StoreResult<()> {
-        nodes::delete_node(self, node_id).await
+        nodes::delete_node(self, node_id, true).await
     }
 
     async fn record_node_heartbeat(
@@ -824,7 +824,8 @@ impl ControlPlaneStore for InMemoryStore {
         report: crate::model::SealReport,
         sealer: &str,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        self.apply_accept_seal_report(key, report, sealer).await
+        self.apply_accept_seal_report(key, report, sealer, true)
+            .await
     }
 
     async fn record_raft_copy_id(
@@ -841,8 +842,17 @@ impl ControlPlaneStore for InMemoryStore {
             node_registered_at_millis,
             node_incarnation,
             copy_id,
+            true,
         )
         .await
+    }
+
+    async fn record_raft_floors(
+        &self,
+        node_id: &str,
+        floors: Vec<crate::model::RaftFloorReport>,
+    ) -> StoreResult<u32> {
+        Ok(self.apply_record_raft_floors(node_id, &floors).await)
     }
 
     async fn give_up_seal(

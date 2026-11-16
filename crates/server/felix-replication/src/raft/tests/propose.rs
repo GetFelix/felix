@@ -34,6 +34,7 @@ fn batch(payloads: &[&'static [u8]], ack: AckAt) -> Batch {
     Batch {
         expected: None,
         trim: None,
+        commit: false,
         records: records.collect(),
         ack,
         term: None,
@@ -315,6 +316,7 @@ fn a_drain_stops_at_its_bounds() {
     let sized = |records: usize, bytes: usize| Batch {
         expected: None,
         trim: None,
+        commit: false,
         records: (0..records)
             .map(|_| Record {
                 timestamp_micros: 1,
@@ -570,6 +572,8 @@ async fn a_token_does_not_leave_with_an_append() {
     let command = Command {
         expected: None,
         trim: None,
+        commit: false,
+        group: false,
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
         producer: None,
@@ -697,6 +701,8 @@ pub(super) async fn cut_after_first(
         producer: None,
         expected: None,
         trim: None,
+        commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,
@@ -757,6 +763,8 @@ async fn a_term_bound_drain_lands_as_one_run_beside_another_writer() {
         producer: None,
         expected: None,
         trim: None,
+        commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,

@@ -82,11 +82,29 @@ impl EntryCodec<ShardTypes> for ShardCodec {
         if data.trim.is_some() && (data.publisher.is_some() || data.headers.is_some()) {
             return Err(invalid("a trim names a publisher or headers".into()));
         }
+        if data.commit && (data.trim.is_some() || data.producer.is_some()) {
+            return Err(invalid("a commit names a trim or a producer".into()));
+        }
+        if data.group
+            && (data.commit
+                || data.trim.is_some()
+                || data.producer.is_some()
+                || data.expected.is_some()
+                || data.publisher.is_some()
+                || data.headers.is_some())
+        {
+            return Err(invalid(
+                "a group write names a commit, a trim, a producer, an offset, a publisher or headers"
+                    .into(),
+            ));
+        }
         Ok(AppendRecord {
             payload: data.payload.clone(),
             timestamp_micros: data.timestamp_micros,
             mark: match data.trim {
                 Some(floor) => RecordMark::Trim { floor },
+                None if data.commit => RecordMark::Commit,
+                None if data.group => RecordMark::Group,
                 None => ProducerMark::record_mark(data.producer),
             },
             publisher: data.publisher.clone(),
@@ -95,6 +113,12 @@ impl EntryCodec<ShardTypes> for ShardCodec {
     }
 
     fn decode_data(&self, record: LogRecord) -> io::Result<Command> {
+        // Refused here too, so a record no leader would send is never served.
+        if record.mark.is_group() && (record.publisher.is_some() || record.headers.is_some()) {
+            return Err(invalid(
+                "a group record names a publisher or headers".into(),
+            ));
+        }
         let trim = match record.mark {
             RecordMark::Trim { floor } => Some(floor),
             _ => None,
@@ -105,6 +129,8 @@ impl EntryCodec<ShardTypes> for ShardCodec {
             producer: ProducerMark::of_record(record.mark)?,
             expected: None,
             trim,
+            commit: record.mark.is_commit(),
+            group: record.mark.is_group(),
             publisher: record.publisher,
             headers: record.headers,
             written: None,

@@ -667,6 +667,27 @@ pub trait ControlPlaneStore: Send + Sync {
         ))
     }
 
+    /// Raise each reported shard's offset floor
+    /// ([`crate::model::ShardAssignment::raft_floor`]) where the report is
+    /// above it, and return how many moved. Decided per entry against the
+    /// record it lands on ([`crate::model::ShardAssignment::raise_raft_floor`]):
+    /// an entry for a missing shard, a shard not on Raft, another stream
+    /// incarnation or reform epoch, or a lower term is skipped on its own,
+    /// so one stale entry never costs the batch.
+    ///
+    /// [`StoreError::Conflict`] for the whole batch when a control-plane
+    /// member is below metadata level 38 or its level is unknown.
+    async fn record_raft_floors(
+        &self,
+        node_id: &str,
+        floors: Vec<crate::model::RaftFloorReport>,
+    ) -> StoreResult<u32> {
+        let _ = (node_id, floors);
+        Err(StoreError::Conflict(
+            "this store keeps no Raft offset floors".to_string(),
+        ))
+    }
+
     /// The identity the metadata group recorded at formation. The default is
     /// a backend with no group, which forgets everything at restart.
     async fn group_identity(&self) -> StoreResult<identity::GroupIdentity> {

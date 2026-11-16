@@ -7,6 +7,7 @@ use std::sync::Arc;
 use super::copy_file::{self, CopyFile};
 use super::gate::GatePassed;
 use super::marks::{CopyMarks, MarkLog};
+use super::rotated_by::{self, RotatedBy};
 use super::{VoteMark, log_below};
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::disk_log::{crash_point, engine_marker};
@@ -130,6 +131,13 @@ impl CopyRoot {
                 format!("a shard name of {} bytes is too long", shard.len()),
             ));
         }
+        // A re-form start that did not finish has to be run again first.
+        if super::start::building(dir)? {
+            return Err(io::Error::other(format!(
+                "{}: a re-form start did not finish; run it again before opening",
+                dir.display()
+            )));
+        }
         let shard: Arc<str> = Arc::from(shard);
         let label = label.into();
         let (found, reason) = self.judge_files(&shard, dir)?;
@@ -159,7 +167,7 @@ impl CopyRoot {
             (None, None) => unreachable!("a directory with no copy file has a reason"),
         };
         let replaced = copy_file::load(dir).ok().flatten().map(|found| found.copy);
-        let (copy, kept) = self.rotate(&shard, dir, replaced).await?;
+        let (copy, kept) = self.rotate(&shard, dir, replaced, reason).await?;
         tracing::info!(
             %shard,
             dir = %dir.display(),
@@ -215,6 +223,7 @@ impl CopyRoot {
         shard: &Arc<str>,
         dir: &Path,
         replaced: Option<u64>,
+        reason: RotateReason,
     ) -> io::Result<(u64, Option<PathBuf>)> {
         let parent = parent_of(dir)?;
         let step = || crash_point::reached(&parent);
@@ -225,6 +234,13 @@ impl CopyRoot {
         // The engine marker goes into `.kept` with the directory, and the
         // new directory is as much a Raft member's as the old one.
         let marked = engine_marker::claimed_for_raft(dir, shard).map_err(io::Error::other)?;
+        // Minted first, so the kept copy can name the copy it speaks for.
+        let copy = loop {
+            let copy = (self.mint)();
+            if copy != 0 && Some(copy) != replaced {
+                break copy;
+            }
+        };
         let kept = if holds_no_records(dir)? {
             None
         } else {
@@ -233,6 +249,13 @@ impl CopyRoot {
             step()?;
             crate::io::sync_dir(&parent.join(KEPT_DIR))?;
             crate::io::sync_dir(&parent)?;
+            // After the rename, so a crash leaves a kept copy without it,
+            // which reads as a restore, never a live directory with one.
+            // A crash before copy_file::store below leaves this naming a copy id
+            // that was never written. The retry mints a new id, so a real power cut
+            // reads as a restore and only asks for --accept-loss.
+            rotated_by::store(&kept, RotatedBy::of(reason, copy))?;
+            step()?;
             crate::incarnation::kept_gauges::refresh(&parent);
             Some(kept)
         };
@@ -248,15 +271,11 @@ impl CopyRoot {
         // Synced before the copy file, so a directory with a copy file
         // always carries the reservations it replaced.
         if let Some(index) = carried {
+            reserved::mark_carried(dir)?;
+            step()?;
             reserved::store(dir, index)?;
             step()?;
         }
-        let copy = loop {
-            let copy = (self.mint)();
-            if copy != 0 && Some(copy) != replaced {
-                break copy;
-            }
-        };
         copy_file::store(
             dir,
             &CopyFile {
@@ -284,23 +303,29 @@ pub fn highest_reserved(dir: &Path) -> io::Result<Option<u64>> {
 }
 
 /// Whether a group reached an earlier copy of `dir`: one rotations moved
-/// aside holds a log entry, or a reservation was carried. A group formed
-/// on the rotated copies alone would start at index 0 and give out offsets
-/// the old one acknowledged. A kept copy that cannot be read is an error.
+/// aside holds a log entry or a reservation, or a rotation carried a
+/// reservation into `dir` and it holds no entry yet. A group formed on the rotated
+/// copies alone would start at index 0 and give out offsets the old one
+/// acknowledged. A kept copy that cannot be read is an error.
 pub fn reached_before(dir: &Path, index_spacing_bytes: u64) -> io::Result<bool> {
-    if highest_reserved(dir)?.is_some() {
-        return Ok(true);
-    }
     for kept in kept_copies(dir)? {
         let label = kept.path.display().to_string();
-        if held::read(&kept.path, &label, index_spacing_bytes)?
-            .last
-            .is_some()
+        if reserved::load(&kept.path)?.is_some()
+            || held::read(&kept.path, &label, index_spacing_bytes)?
+                .last
+                .is_some()
         {
             return Ok(true);
         }
     }
-    Ok(false)
+    // Every copy reserves before its first write, so its own reservation
+    // says nothing about an earlier copy, even with no entry after a crash.
+    // Entries in a carried copy came from a group it is then a member of.
+    if !reserved::carried(dir)? || reserved::load(dir)?.is_none() {
+        return Ok(false);
+    }
+    let label = dir.display().to_string();
+    Ok(held::read(dir, &label, index_spacing_bytes)?.last.is_none())
 }
 
 /// The directories rotations moved aside from `dir`, by name.

@@ -55,8 +55,24 @@ fn copies(held: &[Vec<u8>], payload: &[u8]) -> usize {
 /// The broker that leads the shard: the one that reports serving its Raft
 /// term. A follower accepts subscribes too, so a subscribe cannot tell them
 /// apart. Waits until exactly one broker in `among` says so, since a deposed
-/// leader's gauge trails by one feed pass. Only brokers in `among` are asked.
+/// leader's gauge trails by one feed pass, and until it still says so a
+/// little later: the broker that forms a group leads it only until it hands
+/// the first leadership to placement's leader. Only brokers in `among` are
+/// asked.
 async fn leader_among(cluster: &Cluster, among: &[String]) -> String {
+    loop {
+        let first = one_leader(cluster, among).await;
+        tokio::time::sleep(LEADER_SETTLES).await;
+        if one_leader(cluster, among).await == first {
+            return first;
+        }
+    }
+}
+
+/// How long a leader must keep leading before [`leader_among`] names it.
+const LEADER_SETTLES: Duration = Duration::from_secs(2);
+
+async fn one_leader(cluster: &Cluster, among: &[String]) -> String {
     felix_cluster::wait::until_some(ELECTED_WITHIN, "a broker to lead the shard", || async {
         let mut leading = Vec::new();
         for node in among {
@@ -931,4 +947,114 @@ async fn report_publish_latency() {
         at(50),
         at(99)
     );
+}
+
+/// **An atomic commit on a Raft shard is applied whole on every member.**
+/// Committed through the leader, it is read back by `state_get` at its own
+/// offset, a `commit_if` off its offset writes nothing of it, and every
+/// broker replays the event, not the commit record, from its own log.
+#[tokio::test]
+#[serial]
+async fn an_atomic_commit_on_a_raft_shard_reaches_every_member() {
+    use felix_client::{CommitOp, ConditionalWrite};
+
+    if !opted_in() {
+        return;
+    }
+    let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(
+            &["atomic_commit", "raft_atomic_commit"],
+            Duration::from_secs(30),
+        )
+        .await
+        .expect("finalize the commit features");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    let addr = cluster.node(&leader).expect("node").client_addr;
+    let client = felix_cluster::client::connect_with(
+        addr,
+        &cluster.tenant_id,
+        &cluster.client_token(),
+        |_| {},
+    )
+    .await
+    .expect("connect");
+    let ops = |value: &'static str| {
+        vec![
+            CommitOp::publish(STREAM, "placed"),
+            CommitOp::put(STREAM, "status", value),
+        ]
+    };
+    let (tenant, namespace) = (&cluster.tenant_id, &cluster.namespace);
+    let last_error = std::sync::Mutex::new(None);
+    let receipt = felix_cluster::wait::until_some(ELECTED_WITHIN, "the commit", || async {
+        match client
+            .commit(tenant, namespace, b"order-42", ops("placed"))
+            .await
+        {
+            Ok(receipt) => Some(receipt),
+            Err(err) => {
+                *last_error.lock().unwrap() = Some(err.to_string());
+                None
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|err| panic!("{err}; last refusal: {:?}", last_error.lock().unwrap()));
+    let state = client
+        .state_get(tenant, namespace, STREAM, b"order-42", "status")
+        .await
+        .expect("state read");
+    assert_eq!(state.value.as_deref(), Some(&b"placed"[..]));
+    assert_eq!(state.version, Some(receipt.offset));
+    let stale = client
+        .commit_if(tenant, namespace, b"order-42", ops("stale"), receipt.offset)
+        .await
+        .expect("answered");
+    assert!(
+        matches!(stale, ConditionalWrite::Refused { .. }),
+        "{stale:?}"
+    );
+    let state = client
+        .state_get(tenant, namespace, STREAM, b"order-42", "status")
+        .await
+        .expect("state read");
+    assert_eq!(
+        state.version,
+        Some(receipt.offset),
+        "a refused commit moved state"
+    );
+
+    for node in &nodes {
+        let addr = cluster.node(node).expect("node").client_addr;
+        let reader = felix_cluster::client::connect_with(
+            addr,
+            &cluster.tenant_id,
+            &cluster.client_token(),
+            |_| {},
+        )
+        .await
+        .expect("connect");
+        let mut subscription = reader
+            .subscribe_from(
+                &cluster.tenant_id,
+                &cluster.namespace,
+                STREAM,
+                Some(felix_client::StartPosition::Earliest),
+            )
+            .await
+            .expect("replay");
+        loop {
+            let event = tokio::time::timeout(Duration::from_secs(10), subscription.next_event())
+                .await
+                .unwrap_or_else(|_| panic!("{node} never replayed the commit"))
+                .expect("delivery")
+                .expect("the subscription stays open");
+            if event.offset == Some(receipt.offset) {
+                assert_eq!(event.payload.as_ref(), b"placed", "{node}");
+                break;
+            }
+        }
+    }
 }

@@ -408,6 +408,8 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
+            raft_ordered: None,
         })
         .await
         .expect("staged move");
@@ -557,6 +559,8 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
+            raft_ordered: None,
         })
         .await
         .expect("placed");

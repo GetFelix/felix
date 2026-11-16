@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 36;
+pub const METADATA_VERSION: u16 = 39;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -193,6 +193,12 @@ pub enum MetaCommand {
     },
     DeleteNode {
         node_id: String,
+        /// Level 37: drop the node's incarnation from every held replica
+        /// report, so a stamp from before the delete never vouches for the
+        /// node registered again at incarnation 0. Set by
+        /// `settle_for_level`, as `raise_incarnation` is.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        forget_reports: bool,
     },
     /// `at_millis` is the leader's clock, whichever instance the broker's
     /// heartbeat happened to land on: the proposer fills in its own reading
@@ -523,6 +529,18 @@ pub enum MetaCommand {
         node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
+        /// Level 39: add a new target to the epoch's ordered list
+        /// (`ShardAssignment::raft_ordered`); without it the list is marked
+        /// lost. Set by `settle_for_level`, so every member does the same.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_ordered: bool,
+    },
+    /// Raise the offset floor of each shard a leader reports, where the
+    /// report is above it; the others are skipped one by one
+    /// ([`crate::store::ControlPlaneStore::record_raft_floors`]). Level 38.
+    RecordRaftFloors {
+        node_id: String,
+        floors: Vec<crate::model::RaftFloorReport>,
     },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
@@ -537,6 +555,10 @@ pub enum MetaCommand {
         report: crate::model::SealReport,
         /// The node reporting, checked against the order as it applies.
         sealer: String,
+        /// Level 39: start the ordered list of epoch 0. Set by
+        /// `settle_for_level`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        keep_ordered: bool,
     },
     /// Give up the seal standing at `generation`
     /// ([`crate::store::ControlPlaneStore::give_up_seal`]). Level 34.
@@ -640,6 +662,9 @@ impl MetaCommand {
             // A member before level 36 would refuse the command and keep no
             // target where the others hold one.
             Self::RecordRaftCopyId { .. } => 36,
+            // A member before level 38 would refuse the command and keep no
+            // floor where the others hold one.
+            Self::RecordRaftFloors { .. } => 38,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -977,11 +1002,21 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// sealed or switched one. A Raft copy id report (`record_raft_copy_id`,
 /// level 36) is refused the same way: a member that could not apply it would
 /// later, once elected, count targets for a different member set.
+///
+/// A floor report (`record_raft_floors`, level 38) is refused the same way.
+///
+/// From level 39 a copy id report and a seal report carry `keep_ordered`, so
+/// the shard keeps every target ordered in the epoch; below it they never do.
+///
+/// From level 37 a node delete also forgets the node's report stamps, and
+/// below it never does.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
     let op = op_of(command);
     if let Some(gated) = op.as_deref().filter(|op| is_gated(op)) {
         let what = if gated == COPY_ID_OP {
             "a Raft copy id report"
+        } else if gated == FLOORS_OP {
+            "a Raft offset floor report"
         } else {
             "a shard's switch to Raft"
         };
@@ -994,8 +1029,30 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
                     crate::store::UPGRADE_HINT
                 )))))
             }
+            _ if gated == COPY_ID_OP || gated == ACCEPT_SEAL_OP => {
+                let keep = level >= super::RAFT_ORDERED_LEVEL;
+                Ok(edit_command_json(command, |object| {
+                    if keep {
+                        object.insert("keep_ordered".to_string(), true.into()) != Some(true.into())
+                    } else {
+                        object.remove("keep_ordered").is_some()
+                    }
+                }))
+            }
             _ => Ok(None),
         };
+    }
+    if op.as_deref() == Some(DELETE_NODE_OP) {
+        // Settled either way: one sent with the flag below the level would
+        // be refused by the members that cannot apply it.
+        let forget = level >= super::FORGET_REPORTS_LEVEL;
+        return Ok(edit_command_json(command, |object| {
+            if forget {
+                object.insert("forget_reports".to_string(), true.into()) != Some(true.into())
+            } else {
+                object.remove("forget_reports").is_some()
+            }
+        }));
     }
     if op.as_deref() != Some(IMPORT_STATE_OP) {
         return Ok(None);
@@ -1026,21 +1083,30 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     Ok(settled)
 }
 
-/// Whether `command` is an import, a switch command or a copy id report,
-/// read without decoding what it carries.
+/// Whether `command` is an import, a node delete, a switch command, a copy
+/// id report or a floor report, read without decoding what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
-    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || is_gated(&op))
+    op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || op == DELETE_NODE_OP || is_gated(&op))
 }
+
+/// A node delete, whose report stamps go from level 37.
+const DELETE_NODE_OP: &str = "delete_node";
 
 /// The commands of a shard's switch to Raft, by op.
 const SWITCH_OPS: [&str; 3] = ["seal_shard", "accept_seal_report", "give_up_seal"];
 
+/// A seal report, which starts the ordered list of epoch 0 from level 39.
+const ACCEPT_SEAL_OP: &str = "accept_seal_report";
+
 /// A broker's Raft copy id report, by op.
 const COPY_ID_OP: &str = "record_raft_copy_id";
 
+/// A broker's Raft offset floor report, by op.
+const FLOORS_OP: &str = "record_raft_floors";
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
-    SWITCH_OPS.contains(&op) || op == COPY_ID_OP
+    SWITCH_OPS.contains(&op) || op == COPY_ID_OP || op == FLOORS_OP
 }
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.

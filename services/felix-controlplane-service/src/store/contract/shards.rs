@@ -93,6 +93,8 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
+        raft_ordered: None,
     }
 }
 
@@ -230,6 +232,7 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     replica_reports::a_joint_start_is_kept(store).await;
     replica_reports::start_holders_are_kept(store).await;
     replica_reports::a_refusal_is_kept(store).await;
+    replica_reports::a_deleted_node_leaves_no_report_stamp(store).await;
     a_conditional_write_lands_only_at_the_expected_generation(store).await;
     a_write_at_least_a_generation_lands_there_within_the_window(store).await;
     a_write_past_the_next_generation_names_the_one_it_replaced(store).await;
@@ -281,6 +284,8 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
+        raft_ordered: None,
     }
 }
 
@@ -403,6 +408,8 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
+        raft_ordered: None,
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -1809,6 +1816,8 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
+        raft_ordered: None,
     };
     for shard in 0..2 {
         store
@@ -2099,6 +2108,8 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
+        raft_ordered: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -2219,6 +2230,8 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
+        raft_ordered: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

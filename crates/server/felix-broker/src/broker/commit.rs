@@ -5,15 +5,18 @@
 //! readers exactly as a one-event batch does. Its state updates ride along
 //! and are applied where the event enters the ring. See `crate::commit`.
 
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 
 use super::Broker;
-use super::publish::{Append, PublishOutcome};
+use super::publish::{Append, Attribution, Expected, PublishOutcome};
 use super::shards::StreamHandle;
 use crate::commit::{CommitRecord, StateOp, StateView};
 use crate::error::{BrokerError, Result};
+use crate::{ProposalCommitted, ProposalFailed, ProposedPublish};
 
 /// Bytes read from the log per page while rebuilding a state view.
 const REBUILD_PAGE_BYTES: usize = 1 << 20;
@@ -22,6 +25,10 @@ const REBUILD_PAGE_BYTES: usize = 1 << 20;
 /// rebuild loses only to a commit landing while it read, so this is only
 /// reached under a steady stream of commits.
 const MAX_REBUILDS: usize = 8;
+
+/// How often [`Broker::await_state_view`] looks at the ring again when
+/// nothing wakes it.
+const VIEW_RECHECK: Duration = Duration::from_millis(50);
 
 /// A state read: a key's value and the commit that wrote it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +96,102 @@ impl Broker {
             .expect("a commit claims or is refused");
         claimed.set_commit(Arc::from(record.ops));
         self.complete_publish(claimed).await
+    }
+
+    /// [`Self::commit_to_handle_at`] on a shard an engine writes: `propose`
+    /// hands the engine the commit, its record encoded as
+    /// [`CommitRecord::encode`] lays it out, which the engine stores with
+    /// the commit mark as one entry.
+    ///
+    /// The event reaches the replay ring and `ops` the state view together,
+    /// once the engine has committed the entry, as a publish's batch does.
+    /// With `expected`, the engine's log stores a blank in place of the
+    /// commit when its entry does not land at that offset, and the answer is
+    /// `mismatch` with the offset after it, as
+    /// [`Self::propose_publish_at`] answers. See `docs/per-shard-raft.md`,
+    /// "Atomic commits".
+    #[allow(clippy::too_many_arguments)]
+    pub fn propose_commit<F, E>(
+        &self,
+        handle: &StreamHandle,
+        event: Bytes,
+        ops: Arc<[StateOp]>,
+        attribution: Attribution,
+        expected: Option<u64>,
+        stalled_after: Duration,
+        mismatch: impl FnOnce(u64) -> E + Send + 'static,
+        propose: impl FnOnce(u64) -> F,
+    ) -> Result<ProposedPublish<E>>
+    where
+        F: Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>>
+            + Send
+            + 'static,
+        E: Send + 'static,
+    {
+        if handle.log().is_none() {
+            return Err(BrokerError::CommitNeedsDurableStream);
+        }
+        // Before the proposal, as the hybrid sets it before its append, so a
+        // trim checked after this refuses.
+        handle
+            .state
+            .commits
+            .seen
+            .store(true, std::sync::atomic::Ordering::Release);
+        let expected = expected.map(|offset| Expected {
+            offset,
+            mismatch: Box::new(mismatch) as Box<dyn FnOnce(u64) -> E + Send>,
+        });
+        self.propose(
+            handle,
+            vec![event],
+            attribution,
+            expected,
+            None,
+            Some(ops),
+            stalled_after,
+            propose,
+        )
+    }
+
+    /// Wait, up to `wait`, until the shard's state view holds every record
+    /// the read bound covers now. History reads stop at that bound, but the
+    /// view moves only when a held batch is released into the ring, so a
+    /// state read that skipped this could miss an event a reader already saw.
+    ///
+    /// Fails with [`BrokerError::StateNotReadable`] when the bound is not
+    /// known or the view does not get there in time.
+    pub async fn await_state_view(&self, handle: &StreamHandle, wait: Duration) -> Result<()> {
+        let state = &handle.state;
+        let end = match state.read_bound() {
+            crate::ReadBound::Committed(bound) => bound,
+            crate::ReadBound::Unbounded => return Ok(()),
+            crate::ReadBound::Refused => {
+                return Err(BrokerError::StateNotReadable(crate::NotReadable::Refused));
+            }
+            crate::ReadBound::Settling => {
+                return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling));
+            }
+        };
+        // Entries at the bound's tail that hold no record leave the ring
+        // below it until the next publish; on an idle shard that is forever.
+        let end = state.records_end(end);
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let moved = state.ring_moved.notified();
+            tokio::pin!(moved);
+            moved.as_mut().enable();
+            if state.tail_seq() >= end {
+                return Ok(());
+            }
+            // The recheck covers the few moves of the ring that do not wake.
+            let recheck = deadline.min(tokio::time::Instant::now() + VIEW_RECHECK);
+            if tokio::time::timeout_at(recheck, moved).await.is_err()
+                && tokio::time::Instant::now() >= deadline
+            {
+                return Err(BrokerError::StateNotReadable(crate::NotReadable::Settling));
+            }
+        }
     }
 
     /// `key` in the shard's state, as of the last commit readers can see.

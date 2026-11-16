@@ -642,6 +642,17 @@ would stop at the entry. A single broker allows them from the start.
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_atomic_commit`
+
+Once finalized, a stream shard that runs on Raft accepts atomic commits
+(`commit` and `commit_if`). It needs `atomic_commit`. Until then a broker in a
+cluster refuses a commit to a Raft shard with `invalid_request` and proposes
+nothing. A commit is an entry of its own kind that a broker built before it
+refuses, and replication to that broker would stop at the entry. A single
+broker allows them from the start.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_generations`
 
 Groundwork for running each shard on Raft, which needs the term of every

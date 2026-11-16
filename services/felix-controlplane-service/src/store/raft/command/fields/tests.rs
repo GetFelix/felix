@@ -211,6 +211,22 @@ fn assignment() -> ShardAssignment {
             counter: 1,
             members: any_map(1),
         }),
+        raft_floor: Some(crate::model::RaftFloor {
+            incarnation: 1,
+            offset_floor: 1,
+            epoch: 1,
+            index: 1,
+            term: 1,
+        }),
+        raft_ordered: Some(crate::model::RaftOrdered {
+            incarnation: 1,
+            epoch: 1,
+            targets: vec![crate::model::RaftTarget {
+                counter: 1,
+                members: any_map(1),
+            }],
+            lost: true,
+        }),
     }
 }
 
@@ -521,7 +537,10 @@ fn commands() -> Vec<MetaCommand> {
             node_id: s("b"),
             patch: node_patch(),
         },
-        MetaCommand::DeleteNode { node_id: s("b") },
+        MetaCommand::DeleteNode {
+            node_id: s("b"),
+            forget_reports: true,
+        },
         MetaCommand::RecordNodeHeartbeat {
             node_id: s("b"),
             incarnation: 1,
@@ -591,6 +610,17 @@ fn commands() -> Vec<MetaCommand> {
             node_registered_at_millis: 1,
             node_incarnation: 1,
             copy_id: 1,
+            keep_ordered: true,
+        },
+        MetaCommand::RecordRaftFloors {
+            node_id: s("b"),
+            floors: vec![crate::model::RaftFloorReport {
+                key: shard_key(),
+                incarnation: 1,
+                epoch: 1,
+                index: 1,
+                term: 1,
+            }],
         },
         MetaCommand::SealShard {
             key: shard_key(),
@@ -600,6 +630,7 @@ fn commands() -> Vec<MetaCommand> {
             key: shard_key(),
             report: seal_report(),
             sealer: s("b"),
+            keep_ordered: true,
         },
         MetaCommand::GiveUpSeal {
             key: shard_key(),
@@ -789,6 +820,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::RecordRootSequence { .. } => "record_root_sequence",
         MetaCommand::RecordPlacementAck { .. } => "record_placement_ack",
         MetaCommand::RecordRaftCopyId { .. } => "record_raft_copy_id",
+        MetaCommand::RecordRaftFloors { .. } => "record_raft_floors",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",
         MetaCommand::GiveUpSeal { .. } => "give_up_seal",

@@ -6,13 +6,19 @@ use axum::http::HeaderMap;
 
 use super::require_node_manage;
 use crate::api::AppState;
-use crate::api::error::{ApiError, api_conflict, api_internal, api_not_found};
+use crate::api::error::{
+    ApiError, api_conflict, api_internal, api_not_found, api_validation_error,
+};
 use crate::api::types::{
     NodeHeartbeatRequest, NodeHeartbeatResponse, RaftCopyIdRequest, RaftCopyIdResponse,
-    ReplicaStatusRequest, ReplicaStatusResponse, ReportOutcome, ShardReplicaStatus,
-    ShardReportOutcome,
+    RaftFloorsRequest, RaftFloorsResponse, ReplicaStatusRequest, ReplicaStatusResponse,
+    ReportOutcome, ShardReplicaStatus, ShardReportOutcome,
 };
 use crate::store::{ReportWrite, StoreError};
+
+/// Most floors one request may carry: what a broker sends in one tick, so
+/// one request is one bounded proposal.
+const MAX_RAFT_FLOORS: usize = 1024;
 
 #[utoipa::path(
     post,
@@ -323,6 +329,53 @@ pub(crate) async fn report_raft_copy_id(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/nodes/{node_id}/raft-floors",
+    tag = "nodes",
+    params(("node_id" = String, Path, description = "Broker node identifier")),
+    request_body = RaftFloorsRequest,
+    responses(
+        (status = 200, description = "Every entry was decided", body = RaftFloorsResponse),
+        (status = 400, description = "More than 1024 floors in one request", body = crate::api::types::ErrorResponse),
+        (status = 409, description = "A control-plane member is below metadata version 38", body = crate::api::types::ErrorResponse)
+    )
+)]
+/// Report the committed log id of each Raft group the broker leads.
+///
+/// The control plane keeps the highest per shard, stream incarnation and
+/// reform epoch as the shard's offset floor, and only raises it. Each entry
+/// is decided on its own: one for a missing shard, a shard not on Raft,
+/// another incarnation or epoch, or a higher index at a lower term is
+/// skipped and not counted, and the rest still apply.
+///
+/// # Errors
+/// - 400 for more than 1024 entries, the most a broker sends at once.
+/// - 409 for the whole batch when a control-plane member is below metadata
+///   version 38 or its level is unknown. Nothing in it was recorded.
+pub(crate) async fn report_raft_floors(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(node_id): Path<String>,
+    Json(request): Json<RaftFloorsRequest>,
+) -> Result<Json<RaftFloorsResponse>, ApiError> {
+    require_node_manage(&state, &headers, &node_id).await?;
+    if request.floors.len() > MAX_RAFT_FLOORS {
+        return Err(api_validation_error(&format!(
+            "at most {MAX_RAFT_FLOORS} floors in one request"
+        )));
+    }
+    match state
+        .store
+        .record_raft_floors(&node_id, request.floors)
+        .await
+    {
+        Ok(raised) => Ok(Json(RaftFloorsResponse { raised })),
+        Err(StoreError::Conflict(ref message)) => Err(api_conflict("conflict", message)),
+        Err(ref err) => Err(api_internal("record the Raft offset floors", err)),
+    }
+}
+
 async fn current_incarnation(
     state: &AppState,
     node_id: &str,
@@ -516,7 +569,15 @@ async fn record_one(
         by_round: shard.by_round && leader_incarnation.is_some(),
         leader_incarnation: leader_incarnation.filter(|_| shard.by_round),
         leader: Some(node_id.to_string()),
-        node_incarnations: node_incarnations(node_id, shard, incarnations),
+        node_incarnations: node_incarnations(node_id, shard, incarnations)
+            .into_iter()
+            // Only nodes the assignment names: none of them can be deleted
+            // before this report lands at its generation, so no stamp read
+            // before a delete outlives the delete's clearing (#2619). The
+            // delete refuses on the same `named_nodes`, which covers the
+            // successor, joining nodes and learners.
+            .filter(|(id, _)| assignment.named_nodes().any(|named| named == id))
+            .collect(),
         given_up: shard.given_up,
         // A malformed identity is no evidence either way, so it is left out
         // and the follower is judged as one that sent none.

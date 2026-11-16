@@ -46,6 +46,7 @@ fn commands_without_a_clock_are_left_alone() {
     // the log, so a command from a newer build cannot be reshaped in passing.
     let encoded = encode_command(&MetaCommand::DeleteNode {
         node_id: "broker-1".to_string(),
+        forget_reports: false,
     });
     assert!(restamp(&encoded, 9_000).is_none());
 }
@@ -315,6 +316,7 @@ fn a_shard_switch_needs_level_34() {
             voters: Default::default(),
         },
         sealer: "b".to_string(),
+        keep_ordered: false,
     };
     let give_up = MetaCommand::GiveUpSeal {
         key: key.clone(),
@@ -350,6 +352,7 @@ fn a_shard_switch_needs_level_34() {
         node_registered_at_millis: 1,
         node_incarnation: 1,
         copy_id: 1,
+        keep_ordered: false,
     });
     // Matched by name too.
     assert_eq!(op_of(&copy_id).as_deref(), Some(COPY_ID_OP));
@@ -418,4 +421,99 @@ fn an_escaped_import_op_is_still_settled() {
     assert!(!depends_on_level(
         br#"{"v":1,"op":"record_node_heartbeat"}"#
     ));
+}
+
+/// A node delete forgets the node's report stamps only once every member
+/// applies level 37 (#2619); below it the delete is appended as sent.
+#[test]
+fn a_delete_forgets_report_stamps_from_level_37() {
+    let delete = encode_command(&MetaCommand::DeleteNode {
+        node_id: "broker-b".to_string(),
+        forget_reports: false,
+    });
+    let level = super::super::FORGET_REPORTS_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    assert!(depends_on_level(&delete));
+    assert!(
+        settle_for_level(&delete, level - 1)
+            .expect("settles")
+            .is_none()
+    );
+    let flagged = br#"{"v":1,"op":"delete_node","node_id":"broker-b","forget_reports":true}"#;
+    let stripped = settle_for_level(flagged, level - 1)
+        .expect("settles")
+        .expect("rewritten");
+    assert!(decode_command_with_level(&stripped).expect("decodes").1 < level);
+    let settled = settle_for_level(&delete, level)
+        .expect("settles")
+        .expect("rewritten");
+    let (settled, needs) = decode_command_with_level(&settled).expect("decodes");
+    assert_eq!(needs, level);
+    assert!(matches!(
+        settled,
+        MetaCommand::DeleteNode {
+            forget_reports: true,
+            ..
+        }
+    ));
+}
+
+/// A floor report is refused below level 38 however it reached the leader,
+/// raw peer bytes included: a member that cannot apply it would keep no
+/// floor where the others hold one.
+#[test]
+fn a_floor_report_is_refused_below_level_38() {
+    let floors = encode_command(&MetaCommand::RecordRaftFloors {
+        node_id: "b".to_string(),
+        floors: vec![crate::model::RaftFloorReport {
+            key: crate::model::ShardKey {
+                tenant_id: "t".to_string(),
+                namespace: "n".to_string(),
+                stream: "s".to_string(),
+                shard: 0,
+                kind: crate::model::ShardKind::Stream,
+            },
+            incarnation: 0,
+            epoch: 0,
+            index: 1,
+            term: 1,
+        }],
+    });
+    let level = super::super::RAFT_FLOOR_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    // Matched by name too.
+    assert_eq!(op_of(&floors).as_deref(), Some(FLOORS_OP));
+    assert!(depends_on_level(&floors));
+    let refused = settle_for_level(&floors, level - 1).expect_err("below the level");
+    assert!(
+        matches!(
+            decode_result(&refused),
+            Ok(Err(MetaError::Conflict(message))) if message.contains("offset floor")
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(settle_for_level(&floors, level), Ok(None));
+}
+
+/// A copy id report and a seal report keep the epoch's ordered targets only
+/// once every member applies level 39; a flag sent below it is taken off.
+#[test]
+fn ordered_targets_are_kept_from_level_39() {
+    let level = super::super::RAFT_ORDERED_LEVEL;
+    assert!(METADATA_VERSION >= level);
+    for op in [COPY_ID_OP, ACCEPT_SEAL_OP] {
+        let bare = format!(r#"{{"v":1,"op":"{op}"}}"#);
+        let flag = |raw: &[u8], level| -> Option<serde_json::Value> {
+            let settled = settle_for_level(raw, level).expect("settles")?;
+            Some(serde_json::from_slice::<serde_json::Value>(&settled).expect("json")["keep_ordered"].clone())
+        };
+        assert_eq!(flag(bare.as_bytes(), level - 1), None, "{op}");
+        assert_eq!(flag(bare.as_bytes(), level), Some(true.into()), "{op}");
+        let sent = format!(r#"{{"v":1,"op":"{op}","keep_ordered":true}}"#);
+        assert_eq!(
+            flag(sent.as_bytes(), level - 1),
+            Some(serde_json::Value::Null),
+            "{op}"
+        );
+    }
 }

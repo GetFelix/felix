@@ -81,6 +81,9 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     engine                                   ← only in a Raft shard's directory: which engine writes it
     raft-purged                              ← a Raft log's last purged id
     raft-reserved                            ← a Raft copy's reserved index, once it took one
+    raft-reserved-carried                    ← empty; a rotation carried raft-reserved in
+    raft-epoch                               ← a Raft copy's group epoch, once a re-form started one
+    rotated-by                               ← only in a kept directory: why the rotation moved it aside
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
     poisoned                                 ← only after a failed fsync: the mark as of the failure
@@ -527,12 +530,14 @@ None of them has a tag, so the step to the next record is still
 `36 + payload_len`. Bit 30 alone means "continues a producer batch", so every
 build before v9 refuses these codes as `RecordFlags`, and so does a v9 reader
 in a segment older than v9. Bits 31 and 30 together are a batch piece from
-v9 ("Producer marks", above). The other pairs that include bit 31 (31 and
-29, 31 and 28) and the triples that include it stay `RecordFlags` in every
-version.
+v9 ("Producer marks", above). Bits 31, 30 and 29 are a group record from
+v9 ("Group records", below). The other pairs that include bit 31 (31 and
+29, 31 and 28) and the other triples that include it stay `RecordFlags` in
+every version.
 
-Only a v9 segment holds them, and nothing writes them yet. An append that
-holds one is refused (`Unsupported`) before it can roll the log onto v9. They
+Only a v9 segment holds them. A Raft log writes membership records (see
+"Records as Raft entries"); nothing writes counter records yet. A stream
+log's append that holds one is refused (`Unsupported`) before it can roll the log onto v9. They
 exist so the replication engine and the cache shard's single log (see
 `docs/replication-engine.md`, decisions 1 and 4) have kinds to write once the
 fleet reads v9. Recovery treats them like any other record: one cut short is a
@@ -543,12 +548,47 @@ the first such record (`kind_unsupported` in
 `felix_broker_replication_shipped_total`) rather than send it under another
 mark.
 
+### Group records
+
+Bits 31, 30 and 29 mark a consumer group's write on a Raft stream shard: a
+cursor advance, a dead letter, a redrive or its finish, a discard, a seek or
+a delete. The record has no tag, so the step to the next record is still
+`36 + payload_len`. The body is the broker's group entry (`GroupEntry` in
+`felix-broker`):
+
+```text
+u8   version (1)
+u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
+         4 discard, 5 seek, 6 delete
+u32  group name length, then the name (UTF-8, never empty)
+creation token                                    (ops 0 to 4)
+  u64  term
+  u64  index
+  u8   by: 0 hydrate, 1 seek
+u64  offset: the advance's or seek's target, or the record (ops 0 to 5)
+u8   flags: bit 0 if_new                          (op 5 only)
+```
+
+Big-endian, like the rest of the format. A reader refuses an unknown
+version, operation, creation kind or flag, and any byte past the end, rather
+than skip it: every member must fold the same writes.
+
+Only a v9 segment holds one, as with the membership and counter codes, and
+only a Raft log writes one. A stream log refuses the append (`Unsupported`)
+before it can roll onto v9. Every build before v9 reads the bits as
+`RecordFlags`, and so does a v9 reader in an older segment. So does a v9
+build from before group records: a Raft member downgraded to one refuses
+to open a log that holds a group record, at the tail too, rather than drop
+it. Nothing writes
+one yet: groups are not served on Raft shards (`docs/per-shard-raft.md`,
+"Consumer groups").
+
 ### Record kinds
 
 Every kind takes an offset, and offsets stay contiguous whatever the kind.
 Only **data** records reach a client: plain records, producer batch records
 and commit records (returned as their event). Generation-start, trim,
-membership and counter records are skipped by every client read:
+membership, counter and group records are skipped by every client read:
 subscriptions and replay, `StreamRead`, Kafka fetch and offset lookups,
 consumer groups, cache watches, and the cache and counter projections. One
 predicate, `RecordMark::is_data`, makes that call at each of those sites, so
@@ -560,7 +600,7 @@ subscriber that negotiated event offsets and skip counts (`docs/protocol.md`,
 so a jump it covers is not a drop and any other jump is. A consumer group's
 record reports the same count. A Kafka consumer is moved past a trailing run
 by an empty batch. Replication reads every kind (`read_replicated_from`),
-but cannot yet ship membership and counter records (see above).
+but cannot yet ship membership, counter and group records (see above).
 
 ### Records as Raft entries
 
@@ -603,7 +643,7 @@ in eight ways:
   the directory already holds older segments, the first append starts a
   version 9 segment; the old ones are left as they are and their records
   are not entries.
-- **It takes membership records.** A stream log still refuses them.
+- **It takes membership and group records.** A stream log still refuses them.
 - **No retention bounds.** Retention deletes head segments on a timer, which
   would look like a purge nothing asked for. Bounds are refused at open and
   when set later.
@@ -654,6 +694,7 @@ command stored as a trim record is refused.
 | membership | 30 and 29 | v9 | no |
 | counter delta | 30 and 28 | v9 | no |
 | counter checkpoint | 30, 29 and 28 | v9 | no |
+| group | 31, 30 and 29 | v9 | no |
 
 ### Keys and headers
 
@@ -801,7 +842,7 @@ delete the file and sync the directory first.
 | Short read | `Truncated { needed, available }`: the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
-| More than one kind bit set, other than bits 29 and 28 together from v7, or the membership and counter codes from v9 | `RecordFlags` |
+| More than one kind bit set, other than bits 29 and 28 together from v7, or the batch piece, membership, counter and group codes from v9 | `RecordFlags` |
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
 | A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
@@ -971,7 +1012,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
-| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta, counter checkpoint and group records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log, as are group records. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -1237,18 +1278,37 @@ highest Raft index it may report as flushed before it raises the file again.
 16   4  crc          u32  crc32 over bytes 0..16
 ```
 
-It is for a broker whose `fsync_mode` is `periodic` or `none`, where a
-copy will be able to count an entry toward a commit once it is written and
-before it is synced. A power cut of a majority can then lose committed
-entries, and a re-form must start above every index that was counted. The
-reservation is synced before any count above it, so it bounds them. The
-design is in `docs/per-shard-raft.md`, "Proposal: commit on a written
-majority on relaxed brokers". A Raft log opened with `periodic` or
-`none` raises it, synced, to a million entries past an append it does not
-cover, before Raft counts the append; that happens only once the fleet
-finalizes `raft_written_commit`, which no build reports yet. A rotation
-also writes it, when the copies it replaced had one. Every open loads it,
-and a file that does not decode fails the open.
+A re-form must start above every index that was counted toward a commit.
+On a broker whose `fsync_mode` is `periodic` or `none`, a copy will be
+able to count an entry once it is written and before it is synced, so a
+power cut of a majority can lose committed entries. On any broker, a
+re-form can cut a copy back to its saved commit index, below an entry it
+fsynced and counted. The reservation is synced before any count above it,
+so it bounds them. The design is in `docs/per-shard-raft.md`, "Proposal:
+commit on a written majority on relaxed brokers".
+
+Every Raft log writes it, in every fsync mode. An append it does not cover
+raises it, synced, to a million entries past the append before the write,
+so before Raft counts the append. Every open raises it over the entries
+already on disk before Raft sees them, and loads it; a file that does not
+decode, or a raise that fails, fails the open. A rotation also writes it,
+when the copies it replaced had one.
+
+A rotation that carries a reservation first writes an empty
+`raft-reserved-carried` beside it, synced the same way. A copy's own
+reservation and a carried one hold the same bytes, and only a carried one
+means a group reached the shard before: a copy whose broker died between
+its first raise and its first entry's fsync holds a reservation and no
+entry, and no group reached it. A copy with the mark and no entry yet does
+not answer that it is blank (`docs/per-shard-raft.md`, "Re-forming a
+group"). The mark is never removed; once the copy
+holds an entry from a group it no longer matters.
+
+A build of `main` from after `raft-reserved` (#2609) and before this mark
+carried reservations without it, so a copy it rotated and that holds no
+entry yet reads as never reached. No released build has either file. Wipe
+the data root of such a build, or re-form its Raft shards, before
+upgrading.
 
 Written through a temporary, an fsync, a rename and a directory sync. A
 rotation reads the highest reservation of the old directory and every kept
@@ -1270,8 +1330,8 @@ stops depends on where it is:
   the kept file while it was still whole and carried its value, and a
   reservation is never lowered after that. A copy raising its own value
   does not prove the carry by itself: an older build could have rotated
-  without it. That is the downgrade the fleet feature rules out (below),
-  so this holds only while no broker of the fleet ran a build without the
+  without it. That is the downgrade ruled out below, so this holds only
+  while no broker of the fleet ran a build without the
   file after the shard took a reservation. Then stop the
   broker and delete only the damaged `raft-reserved` file in that kept
   directory, not the directory. An absent file reads as no reservation,
@@ -1295,11 +1355,78 @@ A build older than this file counts it as a record and does not carry it, so
 going back to such a build after any copy has reserved can lose a
 reservation. Its rotation also leaves a kept directory whose reservation is
 above the new copy's, and reclaim holds that directory as reserved. A
-broker with strict fsync never reserves, so only another rotation would
-cover it: until then the directory stays on disk, and the only sign is its
-line in the held report. Taking reservations will wait on a fleet
-feature that is finalized only once every broker carries this file, and a
-downgrade after that is unsafe (#2611).
+copy raises its own reservation only as its log grows, so until it passes
+the kept one or another rotation carries it, the directory stays on
+disk, and the only sign is its line in the held report. A copy takes a reservation from its first open
+or append by a build that carries this file, with no fleet gate: no
+released build runs Raft shards (the engine is behind the `raft` build
+feature), so no older build meets the file. Going back to a build
+without it after any copy reserved is unsafe (#2611).
+
+A build that carries this file but reserves only under `periodic` or
+`none` leaves an `on_commit` copy unreserved. The first open by a build
+that reserves in every mode raises it over the copy's whole log before
+Raft counts anything, so an upgraded copy is covered. No released build
+has the file at all (above), so only an unreleased build can leave such a
+copy.
+
+## `raft-epoch`: a Raft copy's group epoch
+
+A group re-formed by the operator starts a new group epoch, and every copy
+in it keeps a `raft-epoch` file: the stream incarnation and, for each
+re-form its log went through, where that epoch began. A copy without the
+file is at epoch 0. Nothing writes it yet: the re-form start that will is
+not built, but the re-form's reads already take it.
+
+```text
+ 0   4  magic        u32  "FLEP"
+ 4   2  version      u16  1
+ 6   2  epochs       u16  E, the copy's group epoch
+ 8   8  incarnation  u64  the stream incarnation
+16  40  base 1..E    one per epoch, in order:
+          0   1  flags        u8   1 when the base holds an entry, else 0
+          1   7  reserved          zero
+          8   8  base index   u64  the base's last log id: index,
+         16   8  base epoch   u64    group epoch
+         24   8  base term    u64    and term
+         32   8  first index  u64  the epoch's first index
+16+40E 4  crc          u32  crc32 over every byte before it
+```
+
+A record carries its term but not its epoch, so the epoch of the entry at
+an index is derived from these bases: in a copy at epoch E, it is the
+highest epoch e at or below E whose first index is at or below the index.
+An index from epoch e's base end up to its first index is a gap that no
+record takes. Below every base, it is epoch 0. Log ids are compared by
+(epoch, term), then index, so every term of an epoch is above every term
+of an earlier one.
+
+Written through a temporary, an fsync, a rename and a directory sync. A
+rotation moves it into the kept directory with the rest of the copy. One
+that does not decode fails the re-form's reads, and so does one whose
+reserved bytes are not zero, whose first index is below its base's end,
+or whose base n + 1 ends on an entry of an epoch above n. A kept copy whose file
+names another incarnation vouches for nothing in a re-form; its
+reservation still counts.
+
+## `rotated-by`: why a kept copy was rotated
+
+A rotation that moves a shard directory into `.kept/` writes one word into
+it: `power-cut <copy>\n`, where `<copy>` is the copy id the rotation
+minted in 16 hex digits, or `restore\n`. Only a log below its log mark is
+`power-cut`, and it speaks only for the copy it names: a later rotation
+of an empty or wiped directory keeps nothing, so a re-form must not let
+an older power cut vouch for the copy after it. The vote mark is checked first, so such a copy still holds
+the newest vote it took, and a re-form may read it to learn how high the
+group's terms went. Every other reason (no copy file, another storage id,
+no marks or another copy's, a vote below its mark, a poisoned log) is
+`restore`, since the directory can hold an older vote than one the copy
+gave, or less than it reported.
+
+It is written and synced after the rename, so a crash leaves a kept
+directory without it, never a live directory with one. A missing file
+reads as `restore`, which covers every kept directory from before the
+file existed. Any other content is an error for the re-form's reads.
 
 ## `raft-snapshot`: a Raft group's snapshot
 
@@ -1332,6 +1459,24 @@ it. A snapshot received from another member is written to
 once it is whole and its checksum matches. It has its own name because a
 local build can finish while a receive is in flight. The open deletes a
 `raft-snapshot.recv` a crash left, and it is never read.
+
+A stream shard's snapshot data is empty, or the cut batches alone in the
+`producers.forgotten` layout, or, once the shard has group writes, both
+together:
+
+```text
+0   4  magic          u32  "FLST"
+4   4  crc            u32  crc32 over the rest
+8   4  cuts length    u32  zero for none
+12     cut batches (producers.forgotten layout), then the group table to the end
+```
+
+The group table is the shard's consumer groups as of the snapshot's last
+entry (`felix-broker`, `GroupTable::encode`): a version byte (1), the last
+group entry applied and the latest delete (`u64` each), then per group in
+name order its name, creation token, cursor, and its dead letters and
+redriven records in ascending order. A reader refuses names or offsets out
+of order, so one table has one encoding.
 
 ## `member`: a metadata store's member file
 

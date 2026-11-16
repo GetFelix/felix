@@ -111,6 +111,83 @@ async fn an_idempotent_kafka_producer_lands_each_record_once_through_failover_an
     cluster.shutdown().await;
 }
 
+/// **On a Raft shard, an idempotent Kafka producer's re-send lands once,
+/// whoever leads.** As above, with the shard run by a Raft group. A batch of
+/// five records is in flight when the leader is killed, so the group may hold
+/// any prefix of it; its re-send to the next leader writes only the rest, an
+/// older re-send is answered with its original offset, and a reader sees
+/// every record once, in order.
+#[serial]
+#[tokio::test]
+async fn an_idempotent_kafka_producer_on_a_raft_shard_lands_each_record_once_through_failover() {
+    if !super::raft::opted_in() {
+        return;
+    }
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        kafka: true,
+        broker_env: vec![super::raft::engine()],
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    let topic = format!("{}.{STREAM}", cluster.namespace);
+    let nodes = cluster.node_ids();
+
+    let first = super::raft::leader_among(&cluster, &nodes).await;
+    let mut producer = Producer::connect(&cluster, &first, &topic).await;
+    let mut offsets = vec![producer.send_until_served(0).await.1];
+    for sequence in 1..5 {
+        offsets.push(producer.send_ok(sequence).await);
+    }
+    let (error, offset) = producer.send(4).await;
+    assert_eq!(
+        (error, offset),
+        (0, offsets[4]),
+        "the leader wrote a re-send"
+    );
+    let id = producer.id;
+
+    // A batch of several records goes out as the leader is killed, so the
+    // group may hold any prefix of it.
+    let cut = tokio::spawn(async move { producer.send_batch(5, 5).await });
+    cluster.stop_node(&first).await.expect("kill the leader");
+    let _ = cut.await;
+    let live: Vec<String> = nodes.into_iter().filter(|node| node != &first).collect();
+    let second = super::raft::leader_among(&cluster, &live).await;
+    let mut producer = Producer::connect(&cluster, &second, &topic)
+        .await
+        .with_id(id);
+    let (error, resent) = producer.send_batch_until_served(5, 5).await;
+    assert_eq!(error, 0, "the next leader refused the cut batch's re-send");
+    let (error, again) = producer.send(4).await;
+    assert_eq!(
+        (error, again),
+        (0, offsets[4]),
+        "the next leader did not answer an old re-send with its original offset"
+    );
+    let next = producer.send_ok(10).await;
+
+    let read = read_back(&cluster, &second).await;
+    let payloads: Vec<String> = read.iter().map(|(_, payload)| payload.clone()).collect();
+    let expected: Vec<String> = (0..11).map(|i| format!("r{i}")).collect();
+    assert_eq!(payloads, expected, "every record once, in order");
+    let at = |payload: &str| {
+        read.iter()
+            .find(|(_, held)| held == payload)
+            .map(|(offset, _)| *offset as i64)
+    };
+    assert_eq!(at("r0"), Some(offsets[0]));
+    assert_eq!(
+        at("r5"),
+        Some(resent),
+        "the re-send answered with another offset"
+    );
+    assert_eq!(at("r10"), Some(next));
+    cluster.shutdown().await;
+}
+
 /// A Kafka connection speaking as one idempotent producer.
 struct Producer {
     stream: TcpStream,
@@ -171,7 +248,20 @@ impl Producer {
     /// Send record `r{sequence}` as a one-record batch at that sequence, and
     /// return the answer's error and base offset.
     async fn send(&mut self, sequence: i32) -> (i16, i64) {
-        let record = Record {
+        self.send_batch(sequence, 1).await
+    }
+
+    /// Send records `r{first}` to `r{first + count - 1}` as one batch, each
+    /// at its own sequence, and return the answer's error and base offset.
+    async fn send_batch(&mut self, first: i32, count: i32) -> (i16, i64) {
+        let records: Vec<Record> = (first..first + count)
+            .map(|sequence| self.record(sequence))
+            .collect();
+        self.send_records(&records).await
+    }
+
+    fn record(&self, sequence: i32) -> Record {
+        Record {
             transactional: false,
             control: false,
             delete_horizon: false,
@@ -185,11 +275,14 @@ impl Producer {
             key: None,
             value: Some(Bytes::from(format!("r{sequence}"))),
             headers: Default::default(),
-        };
+        }
+    }
+
+    async fn send_records(&mut self, records: &[Record]) -> (i16, i64) {
         let mut batch = BytesMut::new();
         RecordBatchEncoder::encode(
             &mut batch,
-            [&record],
+            records,
             &RecordEncodeOptions {
                 version: 2,
                 compression: Compression::None,
@@ -223,9 +316,13 @@ impl Producer {
     /// on: a promoted leader or a move's destination opens it a moment after
     /// placement names it.
     async fn send_until_served(&mut self, sequence: i32) -> (i16, i64) {
+        self.send_batch_until_served(sequence, 1).await
+    }
+
+    async fn send_batch_until_served(&mut self, first: i32, count: i32) -> (i16, i64) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
-            let answer = self.send(sequence).await;
+            let answer = self.send_batch(first, count).await;
             if !RETRIABLE.contains(&answer.0) || tokio::time::Instant::now() >= deadline {
                 return answer;
             }

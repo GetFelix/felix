@@ -116,6 +116,17 @@ impl Commits {
             .map_or(0, |run| run.end - run.start)
     }
 
+    /// `end` less the run of applied entries just below it that hold no
+    /// record. `end` need not be the bound now: a run that grew since still
+    /// covers it.
+    pub(crate) fn records_end(&self, end: u64) -> u64 {
+        self.quiet
+            .iter()
+            .rev()
+            .find(|run| run.start < end && end <= run.end)
+            .map_or(end, |run| run.start)
+    }
+
     pub(crate) fn term_at(&self, index: u64) -> TermAt {
         if self.applied.is_none_or(|applied| index > applied.index) {
             return TermAt::Pending;

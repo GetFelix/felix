@@ -16,6 +16,7 @@ pub(crate) struct FakeLink {
     calls: Arc<Mutex<Vec<&'static str>>>,
     replies: Arc<Mutex<HashMap<&'static str, serde_json::Value>>>,
     statuses: Arc<Mutex<HashMap<&'static str, StatusCode>>>,
+    floors: Arc<Mutex<Vec<Vec<felix_replication::controlplane_link::RaftFloor>>>>,
 }
 
 impl FakeLink {
@@ -29,6 +30,18 @@ impl FakeLink {
     pub(crate) fn status(self, call: &'static str, status: StatusCode) -> Self {
         self.statuses.lock().unwrap().insert(call, status);
         self
+    }
+
+    /// Each raft-floors report's entries, in the order they were sent.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn floors(&self) -> Vec<Vec<felix_replication::controlplane_link::RaftFloor>> {
+        self.floors.lock().unwrap().clone()
+    }
+
+    /// Answer `call` by its reply again, not by a status set earlier.
+    #[cfg_attr(not(feature = "raft"), allow(dead_code))]
+    pub(crate) fn clear_status(&self, call: &'static str) {
+        self.statuses.lock().unwrap().remove(call);
     }
 
     pub(crate) fn calls(&self) -> Vec<&'static str> {
@@ -108,6 +121,16 @@ impl ControlPlaneLink for FakeLink {
         _: &(impl Serialize + Sync),
     ) -> Result<LinkResponse> {
         self.answer("replica_status")
+    }
+
+    async fn report_raft_floors(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        floors: &[felix_replication::controlplane_link::RaftFloor],
+    ) -> Result<LinkResponse> {
+        self.floors.lock().unwrap().push(floors.to_vec());
+        self.answer("report_raft_floors")
     }
 
     async fn confirmed_assignment(

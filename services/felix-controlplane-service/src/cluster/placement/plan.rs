@@ -6,6 +6,7 @@ use super::leadership::{Leadership, Owner, Shares};
 use super::moves::{
     DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, keep_copy_pins, keeps_destination, move_step,
 };
+use super::raft_leaders;
 use super::rendezvous::{choose, choose_replicas, promote};
 use super::restore::{self, replication};
 use super::zones;
@@ -339,6 +340,7 @@ fn plan_once(
     let joint_fence = policy.joint_fence;
     let election_hold = policy.election_hold_millis;
     let departed = policy.departed.clone();
+    let raft_streams = policy.raft_streams;
     let mut moves = Moves::counting(existing, policy, &|assignment| {
         let replication_factor = placeable_of
             .get(owner_of(&assignment.key).as_str())
@@ -419,6 +421,26 @@ fn plan_once(
             placeable.map_or(1, |p| p.shards),
             eligible.len(),
         );
+
+        // A Raft group elects and keeps its own members: placement only
+        // names the member it wants leading. A new shard is placed below like
+        // any other, and the brokers form its group from that set.
+        if let Some(existing) = current.get(&key)
+            && raft_leaders::on_raft(existing, raft_streams, durable)
+        {
+            let decision = raft_leaders::raft_step(
+                existing,
+                replication_factor,
+                &is_live,
+                &is_serving,
+                &counted,
+                &mut leaders,
+                &mut moves,
+            );
+            shards.push(ShardPlan { key, decision });
+            note_spread(&mut unspread, shards.last(), &current, &eligible);
+            continue;
+        }
 
         // A majority of the set says the leader is gone, though the control
         // plane still hears from it. Only where a promoted leader fences a
@@ -842,6 +864,8 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
+        raft_ordered: None,
     }
 }
 

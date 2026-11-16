@@ -313,12 +313,12 @@ supports and the ones an operator has enabled:
   "enabled": [], "serving_nodes": 3 }
 ```
 
-A broker reports fifteen features: `generation_start`, `majority_ack`,
+A broker reports sixteen features: `generation_start`, `majority_ack`,
 `lease_free_reads`, `jump_hash_routing`, `atomic_commit`,
 `publisher_principal`, `fenced_caches`, `stream_incarnations`,
 `group_cursor_dependencies`, `cache_incarnations`, `head_trim`,
-`raft_head_trim`, `record_headers`, `raft_record_headers` and
-`record_generations`. Two more, `joint_fence` and
+`raft_head_trim`, `record_headers`, `raft_record_headers`,
+`record_generations` and `raft_atomic_commit`. Two more, `joint_fence` and
 `replica_election`, are never reported: an operator finalizes them once the
 brokers offer the peer capabilities they need (see
 [Failover without the control plane](/deployment/failover-without-control-plane/#turning-it-on)).
@@ -328,7 +328,8 @@ Support turns nothing on. `POST /v1/fleet/features/{feature}/finalize`
 every live or draining broker supports it. It is also refused before the
 features it only works alongside: `majority_ack` and `record_generations`
 before `generation_start`, `raft_head_trim` before `head_trim`,
-`raft_record_headers` before `record_headers`,
+`raft_record_headers` before `record_headers`, `raft_atomic_commit` before
+`atomic_commit`,
 `lease_free_reads` or `fenced_caches` before both
 `generation_start` and `majority_ack`, `joint_fence` before `generation_start`,
 `stream_incarnations` and `cache_incarnations`, and `replica_election` before
@@ -426,7 +427,10 @@ A start is refused where placement would not make the move: 404
 `move_limit`. A cancel answers `cancel` before the fence and `retake` after
 it, when the leader that stopped serves again at a new generation; with no
 move in progress it is 409 `not_moving`. A start, a cancel and an abandon on
-a shard that switched to Raft are 409 `switched`. Under `replica_election`, a start is
+a shard that switched to Raft are 409 `switched`. On a cluster that runs
+durable streams on Raft, a start names another member of the shard's set
+leader in one write, answered with step `raft_leader`, and a destination
+outside the set is 409 `not_a_member`. Under `replica_election`, a start is
 409 `set_change_pending` while a cut-over's change of replica set waits for
 the leader to report it on both sets; a cancel drops that change and keeps
 the old set (`pending_set_cancelled`).
@@ -699,6 +703,7 @@ The endpoints not covered above:
 | `POST /v1/nodes/{node_id}/heartbeat` | renew a broker's liveness; the body is `{"incarnation": n}` from its last registration, plus `"suspects"`, the leaders it cannot reach, when there are any, and `"placement_incarnation"`, the restore incarnation it has acknowledged, once a Raft data root is open; the answer carries the control plane's `placement_incarnation` once a restore has raised it | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/replica-status` | a leader reports which replicas hold each shard it leads, which failover reads to pick a successor, and per shard `by_round` when it serves without its lease, which placement needs before it acts on its followers' word (kept only when the body's `incarnation` is the node's current one); 409 if any shard's report was refused | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/raft-copy-id` | a broker reports the Raft copy id it holds for a shard that switched to Raft. Once every broker in the set has one, the control plane writes the shard's target from them. The body carries `key`, `copy_id`, and the `incarnation` and `registered_at_millis` from the reporting process's registration. The time is there because a node deleted and registered again starts at incarnation 0 again. Answers `changed`, false when the id was already held; 409 for a hybrid shard, a broker outside the set, a report from an earlier process of the node, a target change while some registered broker has not acknowledged the placement incarnation, or a member below metadata version 36 | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/raft-floors` | a broker reports the committed log id of each Raft group it leads, once a second in one batch. Each entry in `floors` carries `key`, the stream `incarnation`, the reform `epoch` (left out while 0), and the commit's `index` and `term`. It sets the shard's exact last committed log id for the current epoch when higher, and raises its `offset_floor`, the highest committed index of any epoch, which never drops. An entry the control plane cannot use (a missing or hybrid shard, another incarnation or epoch, a higher index at a lower term) is skipped and the rest still apply. Answers `raised`, how many floors moved; 400 for more than 1024 entries; 409 for the whole batch when a member is below metadata version 38 | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-report` | a seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | a seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on | `node.manage` over the node |
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |

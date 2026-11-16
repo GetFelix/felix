@@ -103,6 +103,12 @@ pub trait Engine: Send + Sync {
     /// `Quorum` streams. See [`crate::quorum::committed_bound`].
     fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound;
 
+    /// `end`, a bound of `shard`, less the offsets just below it that hold
+    /// no record. See `felix_broker::ReadBounds::records_end`.
+    fn records_end(&self, _shard: &ShardKey, end: u64) -> u64 {
+        end
+    }
+
     /// Confirm, after a read of `shard`'s state took its value, that this
     /// broker still leads `shard`. See [`crate::quorum::confirm_state_read`].
     fn confirm_read(&self, shard: &ShardKey) -> impl Future<Output = anyhow::Result<()>> + Send;
@@ -542,6 +548,24 @@ impl<E: Engine> felix_broker::ReadBounds for CommittedReads<E> {
             kind: crate::ShardKind::Stream,
         };
         self.engine.committed_bound(&key)
+    }
+
+    fn records_end(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        end: u64,
+    ) -> u64 {
+        let key = ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            kind: crate::ShardKind::Stream,
+        };
+        self.engine.records_end(&key, end)
     }
 }
 

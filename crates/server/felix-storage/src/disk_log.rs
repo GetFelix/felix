@@ -742,6 +742,22 @@ impl DiskLog {
         Ok(())
     }
 
+    /// Where `retention` would start the log: one past the last head
+    /// segment it would delete, so always a segment boundary. `None` when it
+    /// would delete nothing. Nothing is deleted, and the log's own bounds
+    /// are not consulted.
+    ///
+    /// A Raft log takes no bounds, since only a purge may drop its entries,
+    /// so its leader hides what this names with a head trim instead.
+    pub async fn retention_cut(&self, retention: crate::log::Retention) -> Result<Option<Offset>> {
+        let inner = Arc::clone(&self.inner);
+        // An age bound reads the newest record of each candidate, which may
+        // be cold.
+        felix_common::blocking::spawn(move || inner.retention_cut(retention))
+            .await
+            .map_err(|err| StorageError::Io(std::io::Error::other(err)))?
+    }
+
     /// The bounds retention enforces now.
     pub fn retention(&self) -> crate::log::Retention {
         *self.inner.retention_bounds.lock()
@@ -1698,6 +1714,30 @@ pub(crate) enum OtherCommit {
 pub(crate) fn saved_commit(dir: &std::path::Path) -> Result<(Offset, u64)> {
     let replica = replica_state::load(dir)?;
     Ok((replica.commit_offset, replica.committed_generation))
+}
+
+/// Save `offset` and its generation as `dir`'s commit, read back by
+/// [`saved_commit`]. For a directory no log has open; it may lower the
+/// commit, as a re-form start does.
+#[cfg(feature = "raft")]
+pub(crate) fn store_saved_commit(
+    dir: &std::path::Path,
+    offset: Offset,
+    generation: u64,
+) -> Result<()> {
+    let mut replica = replica_state::load(dir)?;
+    replica.commit_offset = offset;
+    replica.committed_generation = generation;
+    replica_state::store(dir, &replica)
+}
+
+/// The generation of the vote `dir` saved, as an open reads it from its
+/// `replica` state and its ballot, read without opening the log. Zero for a
+/// directory that never voted.
+#[cfg(feature = "raft")]
+pub(crate) fn saved_vote_generation(dir: &std::path::Path) -> Result<u64> {
+    let replica = replica_state::load(dir)?;
+    Ok(ballot::reconcile(dir, &replica)?.generation)
 }
 
 /// The generation of the record below a Raft log's saved commit offset, or

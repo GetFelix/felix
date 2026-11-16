@@ -11,9 +11,9 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use felix_broker::{
-    Attribution, Broker, BrokerError, IdempotentOutcome, IdempotentProposal, LogDelivery,
-    ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome,
-    ReadBound, SequenceReuse, StreamHandle,
+    Attribution, Broker, BrokerError, CommitRecord, IdempotentOutcome, IdempotentProposal,
+    LogDelivery, ProducerTurn, ProposalCommitted, ProposalFailed, ProposedPublish, ProposedTrim,
+    PublishOutcome, ReadBound, SequenceReuse, StateOp, StreamHandle,
 };
 use futures::future::BoxFuture;
 use tokio::sync::oneshot;
@@ -154,6 +154,7 @@ impl RaftEngine {
                 attribution,
                 None,
                 None,
+                false,
                 ack,
                 on_lease,
                 on_majority,
@@ -219,6 +220,7 @@ impl RaftEngine {
                 attribution,
                 Some(expected),
                 None,
+                false,
                 ack,
                 None,
                 None,
@@ -228,6 +230,69 @@ impl RaftEngine {
         Ok(
             proposed.answer_within(timeout, move || CommitError::TimedOut {
                 what: "batch",
+                timeout,
+            }),
+        )
+    }
+
+    /// Commit `event` and `ops` as one entry: an atomic commit, with the
+    /// hybrid's guarantee that every reader sees all of it or none of it.
+    ///
+    /// The entry's record is the commit record, stored with the commit mark
+    /// on every member, so a member's state view is rebuilt from its own
+    /// log after a restart or a catch-up, and a follower's delivery applies
+    /// the state updates with the event. With `expected`, it is decided as
+    /// [`Self::publish_at`] decides: off its offset, the leader's log stores
+    /// a blank in its place and the answer is
+    /// [`CommitError::OffsetMismatch`]. The answer waits for the commit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn commit_at(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: Option<u64>,
+        event: Bytes,
+        ops: Vec<StateOp>,
+        publisher: Option<Bytes>,
+        expected: Option<u64>,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        let attribution = broker.admit_attribution(
+            std::slice::from_ref(&event),
+            Attribution {
+                publisher,
+                headers: None,
+            },
+        )?;
+        let record = CommitRecord { event, ops };
+        let stored = record.encode();
+        let proposed = broker.propose_commit(
+            stream,
+            record.event,
+            record.ops.into(),
+            attribution.clone(),
+            expected,
+            timeout,
+            |tail| CommitError::OffsetMismatch { tail },
+            self.proposer(
+                shard,
+                term,
+                vec![stored],
+                attribution,
+                expected,
+                None,
+                true,
+                ack,
+                None,
+                None,
+                timeout,
+            ),
+        )?;
+        Ok(
+            proposed.answer_within(timeout, move || CommitError::TimedOut {
+                what: "commit",
                 timeout,
             }),
         )
@@ -272,6 +337,52 @@ impl RaftEngine {
                     Attribution::default(),
                     Some(expected),
                     Some(before),
+                    false,
+                    ack,
+                    None,
+                    None,
+                    timeout,
+                ),
+            )
+            .await?;
+        Ok(
+            proposed.answer_within(timeout, move || CommitError::TimedOut {
+                what: "trim",
+                timeout,
+            }),
+        )
+    }
+
+    /// Hide the shard's records below `before` wherever the trim lands
+    /// ([`Broker::propose_trim_below`]): for a `before` at or below the
+    /// tail, which no index the entry can take is below. Retention's cut is
+    /// one. Never stored as a blank, so a busy shard cannot keep refusing it.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn trim_below(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        shard: &ShardKey,
+        term: Option<u64>,
+        before: u64,
+        headers: Bytes,
+        ack: AckAt,
+        timeout: Duration,
+    ) -> Result<ProposedTrim<CommitError>, BrokerError> {
+        let proposed = broker
+            .propose_trim_below(
+                stream,
+                before,
+                headers.clone(),
+                timeout,
+                self.proposer(
+                    shard,
+                    term,
+                    vec![headers],
+                    Attribution::default(),
+                    None,
+                    Some(before),
+                    false,
                     ack,
                     None,
                     None,
@@ -297,6 +408,7 @@ impl RaftEngine {
         attribution: Attribution,
         expected: Option<u64>,
         trim: Option<u64>,
+        commit: bool,
         ack: AckAt,
         on_lease: Option<oneshot::Sender<u64>>,
         on_majority: Option<(AckAt, oneshot::Sender<u64>)>,
@@ -315,6 +427,7 @@ impl RaftEngine {
                 producer: None,
                 expected,
                 trim,
+                commit,
                 publisher,
             };
             let written = engine.propose_reaching(&shard, batch);
@@ -400,6 +513,7 @@ impl RaftEngine {
                     producer: Some(producer),
                     expected: None,
                     trim: None,
+                    commit: false,
                     publisher,
                 };
                 let written = self.propose_reaching(shard, batch);
@@ -686,5 +800,23 @@ impl felix_broker::ReadBounds for RaftReads {
             Ok(bound) => ReadBound::Committed(bound),
             Err(_) => ReadBound::Refused,
         }
+    }
+
+    fn records_end(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        end: u64,
+    ) -> u64 {
+        let key = ShardKey {
+            tenant_id: tenant_id.to_string(),
+            namespace: namespace.to_string(),
+            stream: stream.to_string(),
+            shard,
+            kind: ShardKind::Stream,
+        };
+        self.engine.records_end(&key, end)
     }
 }
