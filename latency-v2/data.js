@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794806261515,
+  "lastUpdate": 1794806602677,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75636,6 +75636,72 @@ window.BENCHMARK_DATA = {
             "range": "982.93",
             "unit": "us",
             "extra": "trials: 5\nmedian: 768.00\nmean: 1270.60\nstdev: 982.93\ncv: 77.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c673d689fbf1cfc92d89d7ee68dc4b27d0115288",
+          "message": "fix(broker): handle an exhausted open-file limit without failing the shard (#2657) (#2674)\n\n* fix(storage): handle an exhausted open-file limit without failing the shard (#2657)\n\nAn open that runs out of file descriptors fails with StorageError::OpenFileLimit,\nwhich names the limit. The shard lifecycle keeps such a shard opening and retries\nit on the next pass instead of failing it, and a Raft member no longer holds its\ngroup when its kept-copy scan runs out of descriptors. The raise-to-hard code moves\nto felix_storage::open_files; test binaries raise their own soft limit.\n\n* test: satisfy clippy in the open-file limit test (#2657)\n\n* fix(broker): keep every EMFILE in a shard open typed and retried (#2657)\n\nTyped errors through the open steps (ballot, generation history,\ngeneration-start record), so an exhausted limit leaves the shard opening\ninstead of failed. A held open keeps its error: inspect shows it and\nrouting refuses at once. Raft opens count and name the limit. The\ngeneration history changes in memory only after its file does. Test\nruns out of descriptors at each open step in turn.\n\n* fix(broker): keep marker-write errors typed; pause Kafka accept on error (#2657)\n\nAn accept that fails for want of descriptors fails again at once while\nthe connection stays queued, so the loop waits 50 ms as MQTT's does.\n\n* fix(shards): report a long-held open to the control plane, wake held writes on open errors, throttle the warning (#2657)\n\n* chore: record spec pairing for the open-file-limit change (#2657)\n\nSpec-Unaffected: the change only reports a long-held open through the existing open-failed report and wakes held writes; no modelled transition, state or message changes.",
+          "timestamp": "2026-11-15T21:11:09-08:00",
+          "tree_id": "a64f01f4ca5e550dcfc456401b5d94759b6bc676",
+          "url": "https://github.com/GetFelix/felix/commit/c673d689fbf1cfc92d89d7ee68dc4b27d0115288"
+        },
+        "date": 1794806587742,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 70.80\nstdev: 0.84\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 123,
+            "range": "2.24",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 123.00\nstdev: 2.24\ncv: 1.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 148,
+            "range": "4.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 149.80\nstdev: 4.49\ncv: 3.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.00\nstdev: 0.71\ncv: 0.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 177,
+            "range": "24.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 177.00\nmean: 191.40\nstdev: 24.03\ncv: 12.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 255,
+            "range": "981.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 831.20\nstdev: 981.17\ncv: 118.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
