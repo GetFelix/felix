@@ -2241,8 +2241,11 @@ would never hold for it by the majority half, and every `Leader` write
 on a single-node shard would be answered as a `Quorum` one. It needs no
 answer. Every membership is written to the log by the leader, and
 openraft's effective membership is the newest one appended, so the rule
-stops holding the moment a membership with a second voter is appended,
-before it commits. Until then no majority can leave this member out:
+stops holding once a membership with a second voter is appended, before it
+commits. The member reads it from openraft's metrics, which publish once
+per core loop, so a write in the same loop as the change can still be
+answered locally; that is safe because the first membership after `{a}`
+still needs `a`'s vote, and voting voids the lease. Until then no majority can leave this member out:
 openraft writes a change from `{a}` as one entry only when every majority
 of the new set holds `a`, and otherwise writes a joint membership first,
 which already has more than one voter and needs `a` in both halves. A zero lease turns this off with the rest.

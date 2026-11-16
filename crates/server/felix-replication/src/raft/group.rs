@@ -1741,8 +1741,10 @@ impl Group {
             let metrics = self.raft.metrics();
             let metrics = metrics.borrow_watched();
             let leads = metrics.state == ServerState::Leader;
-            // openraft's effective membership is the newest one appended,
-            // so a change that adds a voter ends this at its append.
+            // openraft's effective membership is the newest one appended, but
+            // metrics publish it once per core loop, so a change that adds a
+            // voter ends this at the next flush. Safe: the next membership
+            // still needs this member's vote, and voting voids the lease.
             let voters = metrics.membership_config.membership().get_joint_config();
             let sole = matches!(voters.as_slice(), [only] if only.len() == 1 && only.contains(&self.member));
             View {
