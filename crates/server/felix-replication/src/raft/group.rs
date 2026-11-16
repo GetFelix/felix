@@ -24,7 +24,7 @@ use bytes::Bytes;
 
 use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
-use super::commit::{self, Commits};
+use super::commit::{self, Commits, SkipClaim, Skips};
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
@@ -89,6 +89,9 @@ pub(crate) struct Group {
     commits: tokio::sync::watch::Receiver<Commits>,
     /// Waits on the applied index, woken only once it reaches theirs.
     applied: Waiters<u64>,
+    /// What the records the state machine applied had below them that
+    /// holds no record.
+    skips: Skips,
     /// The member's log, and its first index read live: a purge held only in
     /// memory counts.
     copy: felix_storage::raft_copy::CurrentCopy,
@@ -642,6 +645,7 @@ impl Group {
             machine,
             commits,
             applied,
+            skips,
             cache,
             groups,
         } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
@@ -717,6 +721,7 @@ impl Group {
             flushed_waiters,
             commits,
             applied,
+            skips,
             copy,
             leadership,
             reached_before: AtomicBool::new(false),
@@ -1398,6 +1403,17 @@ impl Group {
     /// The commit table as the state machine publishes it.
     pub(crate) fn commits(&self) -> tokio::sync::watch::Receiver<Commits> {
         self.commits.clone()
+    }
+
+    /// Hold the skip counts of the records about to be proposed. See
+    /// [`Skips`].
+    pub(crate) fn claim_skips(&self) -> SkipClaim {
+        self.skips.claim(&self.commits)
+    }
+
+    /// See [`Skips::skipped_before`].
+    pub(crate) fn skipped_before(&self, first: u64) -> u64 {
+        self.skips.skipped_before(first)
     }
 
     /// One past the last offset this member knows committed. It moves when

@@ -31,7 +31,7 @@ use tokio::sync::{Semaphore, watch};
 
 use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{StoredMembership, invalid};
-use super::commit::Commits;
+use super::commit::{Commits, Skips};
 use super::stream_snapshot::StreamSnapshot;
 use super::types::{Applied, ShardTypes};
 use crate::ShardKind;
@@ -60,6 +60,11 @@ pub(crate) struct Machine {
     published: watch::Sender<Commits>,
     /// Woken by the applied index, beside `published`.
     applied: Queue<u64>,
+    /// What each record of a run has below it that holds no record.
+    skips: Skips,
+    /// The run of applied entries holding no record that ends at the last
+    /// applied entry, as `start..end`, empty after a record.
+    quiet: std::ops::Range<u64>,
     /// `None` in a stream shard's group.
     cache: Option<Cache>,
     /// `None` in a cache shard's group.
@@ -108,12 +113,15 @@ impl Machine {
         let (published, watched) = watch::channel(commits.clone());
         let applied = Queue::new();
         let waiters = applied.waiters();
+        let skips = Skips::default();
         let machine = Self {
             snapshots,
             state,
             commits,
             published,
             applied,
+            skips: skips.clone(),
+            quiet: 0..0,
             cache: cache.clone(),
             groups: groups.clone(),
             log: log.filter(|_| matches!(kind, ShardKind::Stream)).cloned(),
@@ -127,6 +135,7 @@ impl Machine {
             machine,
             commits: watched,
             applied: waiters,
+            skips,
             cache,
             groups,
         })
@@ -153,6 +162,7 @@ pub(crate) struct Opened {
     pub(crate) machine: Machine,
     pub(crate) commits: watch::Receiver<Commits>,
     pub(crate) applied: Waiters<u64>,
+    pub(crate) skips: Skips,
     pub(crate) cache: Option<Cache>,
     pub(crate) groups: Option<Groups>,
 }
@@ -460,6 +470,10 @@ impl RaftStateMachine<ShardTypes> for Machine {
         let _held = Arc::clone(&self.hold).lock_owned().await;
         let mut applied = Ok(());
         let mut written = 0;
+        let bound = self.commits.read_bound();
+        // Counted here, entry by entry, so each record's count rides to its
+        // publisher however long the run.
+        let mut skipped = Vec::new();
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {
                 Ok(next) => next,
@@ -514,8 +528,18 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);
             }
             self.commits.advance(point(&entry.log_id));
-            if !record {
-                self.commits.holds_no_record(entry.log_id.index);
+            let index = entry.log_id.index;
+            if record {
+                if self.quiet.end == index && !self.quiet.is_empty() {
+                    skipped.push((index, index - self.quiet.start));
+                }
+                self.quiet = index + 1..index + 1;
+            } else {
+                self.commits.holds_no_record(index);
+                if self.quiet.end != index {
+                    self.quiet.start = index;
+                }
+                self.quiet.end = index + 1;
             }
             self.state.last_applied = Some(entry.log_id);
             if let Some(responder) = responder {
@@ -524,7 +548,8 @@ impl RaftStateMachine<ShardTypes> for Machine {
         }
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
-        self.publish();
+        let skips = self.skips.clone();
+        skips.applied(bound, &skipped, || self.publish());
         // After the publish, so the run's waiters are not held by it.
         self.fold_back(written);
         applied

@@ -310,6 +310,20 @@ impl RaftEngine {
         Some(self.runtime.group(shard)?.commits())
     }
 
+    /// Hold `shard`'s skip counts for a batch about to be proposed, so its
+    /// publisher can ask [`Self::skipped_before`] after the commit.
+    pub(crate) fn claim_skips(&self, shard: &ShardKey) -> Option<super::commit::SkipClaim> {
+        Some(self.runtime.group(shard)?.claim_skips())
+    }
+
+    /// How many offsets just below the applied record at `first` hold no
+    /// record. Exact while a claim taken before its proposal is held.
+    pub(crate) fn skipped_before(&self, shard: &ShardKey, first: u64) -> u64 {
+        self.runtime
+            .group(shard)
+            .map_or(0, |group| group.skipped_before(first))
+    }
+
     // HOOK(#2238 broker routing): the broker's cache and counter paths call
     // the four below once a shard is routed to Raft.
 

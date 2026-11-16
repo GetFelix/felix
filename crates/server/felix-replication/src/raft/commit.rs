@@ -6,7 +6,8 @@
 //! change on every heartbeat answer and would wake every waiter. See
 //! `docs/per-shard-raft.md`, "Reads" and "Acknowledging a write".
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 use std::time::Duration;
 
 use felix_storage::raft_log::LogPoint;
@@ -22,9 +23,8 @@ use crate::engine::{CommitError, Written};
 /// it, and that wait is answered as an unknown outcome.
 const TERMS_KEPT: usize = 8;
 
-/// Runs of entries that hold no record remembered. One is written per term
-/// and per membership change; a batch committed past more than this many
-/// runs back reports none skipped, which a subscriber reads as a drop.
+/// Runs of entries that hold no record remembered, for [`Commits::records_end`].
+/// One is written per term, per membership change and per group write.
 const QUIET_KEPT: usize = 64;
 
 const NOT_LEADING: &str = "this broker stopped leading the shard";
@@ -43,6 +43,79 @@ pub(crate) struct Commits {
     /// Runs of applied entries that hold no record (a leader's blank entry,
     /// a membership change), as `start..end`, oldest first.
     quiet: VecDeque<std::ops::Range<u64>>,
+}
+
+/// How many offsets just below each applied record hold no record, as the
+/// apply counted them walking its run, kept until no publisher can ask.
+///
+/// A publisher claims before it proposes and asks after its commit, so
+/// nothing it needs is dropped however many runs land in between: an
+/// offset-counting subscriber reads a count that is short as a drop.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Skips(Arc<parking_lot::Mutex<SkipTable>>);
+
+#[derive(Debug, Default)]
+struct SkipTable {
+    /// The read bound each live claim saw, with how many saw it.
+    claims: BTreeMap<u64, usize>,
+    /// Offsets of records with entries holding no record just below them,
+    /// and how many.
+    below: BTreeMap<u64, u64>,
+}
+
+/// A publisher's hold on [`Skips`] for the records it is about to propose.
+#[derive(Debug)]
+pub(crate) struct SkipClaim {
+    skips: Skips,
+    floor: u64,
+}
+
+impl Skips {
+    /// Hold every count from the read bound `commits` shows on. Taken
+    /// before the proposal, whose records all land at or above it.
+    pub(crate) fn claim(&self, commits: &watch::Receiver<Commits>) -> SkipClaim {
+        let mut table = self.0.lock();
+        // Read under the lock, so a run published meanwhile either sees
+        // this claim or moved the bound past what it drops.
+        let floor = commits.borrow().read_bound();
+        *table.claims.entry(floor).or_default() += 1;
+        SkipClaim {
+            skips: self.clone(),
+            floor,
+        }
+    }
+
+    /// How many offsets just below the record at `first` hold no record.
+    /// Asked once everything below `first` is applied.
+    pub(crate) fn skipped_before(&self, first: u64) -> u64 {
+        self.0.lock().below.get(&first).copied().unwrap_or(0)
+    }
+
+    /// Add a run's counts and `publish` it. `bound` is the read bound as
+    /// published before the run: counts below it and below every claim
+    /// can no longer be asked for.
+    pub(crate) fn applied(&self, bound: u64, run: &[(u64, u64)], publish: impl FnOnce()) {
+        let mut table = self.0.lock();
+        let floor = table
+            .claims
+            .first_key_value()
+            .map_or(bound, |(floor, _)| bound.min(*floor));
+        table.below = table.below.split_off(&floor);
+        table.below.extend(run.iter().copied());
+        publish();
+    }
+}
+
+impl Drop for SkipClaim {
+    fn drop(&mut self) {
+        let mut table = self.skips.0.lock();
+        if let Some(count) = table.claims.get_mut(&self.floor) {
+            *count -= 1;
+            if *count == 0 {
+                table.claims.remove(&self.floor);
+            }
+        }
+    }
 }
 
 /// The term of the committed entry at an index.
@@ -103,17 +176,6 @@ impl Commits {
                 self.quiet.push_back(index..index + 1);
             }
         }
-    }
-
-    /// How many offsets just below `first` hold no record, so a subscriber
-    /// whose next record is at `first` is told they were skipped, not
-    /// dropped. Asked once everything below `first` is applied.
-    pub(crate) fn skipped_before(&self, first: u64) -> u64 {
-        self.quiet
-            .iter()
-            .rev()
-            .find(|run| run.end == first)
-            .map_or(0, |run| run.end - run.start)
     }
 
     /// `end` less the run of applied entries just below it that hold no

@@ -169,23 +169,39 @@ fn at(term: u64, index: u64) -> LogPoint {
     LogPoint { term, index }
 }
 
-/// **The run of entries holding no record just below a record is counted,
-/// and only that run.** A leader's blank entry and a membership change in a
-/// row are one run of two; one further down does not count.
+/// **A publisher's claim keeps its record's skip count through any number
+/// of later runs, and once no claim is left the counts go.** Each run here
+/// holds one group entry and one record, far more runs than a short history
+/// keeps; a count dropped before its publisher asks reads as a drop.
 #[test]
-fn the_commit_table_counts_the_entries_just_below_a_record_that_hold_none() {
+fn a_claimed_skip_count_outlives_any_number_of_runs() {
+    use super::super::commit::Skips;
     let mut commits = Commits::default();
-    for (index, record) in [(0, false), (1, false), (2, true), (3, false), (4, false)] {
-        commits.advance(at(1, index));
-        if !record {
-            commits.holds_no_record(index);
-        }
+    let (published, watched) = tokio::sync::watch::channel(commits.clone());
+    let skips = Skips::default();
+    let claim = skips.claim(&watched);
+    let mut bound = 0;
+    for run in 0..200 {
+        let record = 2 * run + 1;
+        skips.applied(bound, &[(record, 1)], || {
+            commits.advance(at(1, record));
+            published.send_replace(commits.clone());
+        });
+        bound = record + 1;
     }
-    commits.advance(at(1, 5));
-    assert_eq!(commits.skipped_before(2), 2);
-    assert_eq!(commits.skipped_before(5), 2);
-    assert_eq!(commits.skipped_before(3), 0);
-    assert_eq!(commits.skipped_before(6), 0);
+    assert_eq!(skips.skipped_before(1), 1);
+    assert_eq!(skips.skipped_before(399), 1);
+    assert_eq!(skips.skipped_before(2), 0);
+
+    drop(claim);
+    skips.applied(bound, &[], || {});
+    assert_eq!(skips.skipped_before(1), 0, "no claim is left to ask");
+    assert_eq!(skips.skipped_before(399), 0);
+    // A claim taken now holds from the published bound on.
+    let _claim = skips.claim(&watched);
+    skips.applied(bound, &[(401, 1)], || {});
+    skips.applied(bound + 10, &[], || {});
+    assert_eq!(skips.skipped_before(401), 1);
 }
 
 #[test]
