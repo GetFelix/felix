@@ -260,8 +260,9 @@ impl SegmentHeader {
 /// before it belongs to. Bit 29 marks a generation-start record and
 /// bit 28 a commit record (see `RecordMark::Commit`). Bits 29 and 28 together
 /// mark a trim record (see `RecordMark::Trim`). From v9, bits 30 and 29 mark
-/// a membership record, bits 30 and 28 a counter delta, and bits 30, 29 and 28
-/// a counter checkpoint. Bit 27 is not a kind:
+/// a membership record, bits 30 and 28 a counter delta, bits 30, 29 and 28
+/// a counter checkpoint, and bits 31, 30 and 29 a consumer group's write.
+/// Bit 27 is not a kind:
 /// it says the body ends with the principal that published the record,
 /// followed by that principal's length in one byte. Bit 26 is not a kind
 /// either: it says the body starts with the record's key and headers. Bodies
@@ -318,6 +319,8 @@ pub enum RecordKind {
     CounterDelta,
     /// Bits 30, 29 and 28, from v9: every counter's running sum.
     CounterCheckpoint,
+    /// Bits 31, 30 and 29, from v9: a consumer group's write.
+    Group,
 }
 
 impl RecordKind {
@@ -333,7 +336,8 @@ impl RecordKind {
             | Self::Commit
             | Self::Membership
             | Self::CounterDelta
-            | Self::CounterCheckpoint => 0,
+            | Self::CounterCheckpoint
+            | Self::Group => 0,
         }
     }
 }
@@ -349,6 +353,7 @@ const FLAG_TRIM: u32 = FLAG_GENERATION_START | FLAG_COMMIT;
 const FLAG_MEMBERSHIP: u32 = FLAG_CONTINUES_BATCH | FLAG_GENERATION_START;
 const FLAG_COUNTER_DELTA: u32 = FLAG_CONTINUES_BATCH | FLAG_COMMIT;
 const FLAG_COUNTER_CHECKPOINT: u32 = FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
+const FLAG_GROUP: u32 = FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START;
 const FLAG_PIECE: u32 = FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH;
 const KIND_MASK: u32 =
     FLAG_OPENS_BATCH | FLAG_CONTINUES_BATCH | FLAG_GENERATION_START | FLAG_COMMIT;
@@ -401,7 +406,8 @@ pub fn record_len_in(body_len: usize, mark: &RecordMark, version: u16) -> u64 {
         | RecordMark::Commit
         | RecordMark::Membership
         | RecordMark::CounterDelta
-        | RecordMark::CounterCheckpoint => 0,
+        | RecordMark::CounterCheckpoint
+        | RecordMark::Group => 0,
     };
     record_header_len(version) + tag + body_len as u64
 }
@@ -469,6 +475,7 @@ impl RecordHeader {
             FLAG_COUNTER_CHECKPOINT if version >= GENERATION_VERSION => {
                 RecordKind::CounterCheckpoint
             }
+            FLAG_GROUP if version >= GENERATION_VERSION => RecordKind::Group,
             _ => {
                 return Err(Corruption::new(CorruptionKind::RecordFlags {
                     found: len_and_flags,
@@ -513,7 +520,8 @@ impl RecordHeader {
             RecordKind::Piece
             | RecordKind::Membership
             | RecordKind::CounterDelta
-            | RecordKind::CounterCheckpoint => GENERATION_VERSION,
+            | RecordKind::CounterCheckpoint
+            | RecordKind::Group => GENERATION_VERSION,
             _ => 0,
         };
         if version < needs {
@@ -543,6 +551,7 @@ impl RecordHeader {
             RecordKind::Membership => FLAG_MEMBERSHIP,
             RecordKind::CounterDelta => FLAG_COUNTER_DELTA,
             RecordKind::CounterCheckpoint => FLAG_COUNTER_CHECKPOINT,
+            RecordKind::Group => FLAG_GROUP,
         };
         let flag = |set: bool, bit: u32| if set { bit } else { 0 };
         self.payload_len
@@ -608,6 +617,7 @@ pub fn encode_record_at(
         RecordMark::Membership => FLAG_MEMBERSHIP,
         RecordMark::CounterDelta => FLAG_COUNTER_DELTA,
         RecordMark::CounterCheckpoint => FLAG_COUNTER_CHECKPOINT,
+        RecordMark::Group => FLAG_GROUP,
     };
     let flag = |set: bool, bit: u32| if set { bit } else { 0 };
     let flags =
@@ -648,7 +658,8 @@ pub fn encode_record_at(
         | RecordMark::Commit
         | RecordMark::Membership
         | RecordMark::CounterDelta
-        | RecordMark::CounterCheckpoint => &[],
+        | RecordMark::CounterCheckpoint
+        | RecordMark::Group => &[],
     };
     let (publisher, publisher_len): (&[u8], &[u8]) = match publisher {
         Some(publisher) => (publisher, &[publisher.len() as u8][..]),
@@ -792,6 +803,7 @@ pub(crate) fn decode_record_after(
         RecordKind::Membership => RecordMark::Membership,
         RecordKind::CounterDelta => RecordMark::CounterDelta,
         RecordKind::CounterCheckpoint => RecordMark::CounterCheckpoint,
+        RecordKind::Group => RecordMark::Group,
     };
     Ok((
         DecodedRecord {

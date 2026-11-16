@@ -379,6 +379,7 @@ async fn a_snapshot_crosses_the_peer_transport_in_pieces() {
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,

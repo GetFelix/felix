@@ -3067,7 +3067,8 @@ A member that installs a snapshot holds no record below it, so it cannot
 read those refusals from its log. They travel in the snapshot instead. A
 stream shard's snapshot data is the list of cut batches, by producer and
 sequence, that a log starting right after the snapshot's last entry has to
-refuse. It is what the committed records up to that entry say, and nothing
+refuse, and the group table as of that entry ("Consumer groups", below).
+It is what the committed records up to that entry say, and nothing
 else: the cut batches in those records, plus the ones earlier purges and
 installs carried. The sender's own refusals do not go in. A batch evicted
 from a full table of cut batches goes in only once a purge passes its
@@ -3389,6 +3390,73 @@ refused (`stream_has_commits`), as on the hybrid.
 > `a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid`.
+
+**Consumer groups.** Not served on a Raft shard yet: a group operation on
+one is refused as `invalid_request`. What is built is the entry the groups
+will write and the table every member folds from those entries. A group's writes (a cursor advance, a dead letter, a redrive and
+its finish, a discard, a seek, a delete) are entries in the shard's own Raft
+log, stored as group records (`docs/storage-format.md`, "Group records").
+Every member folds them, in log order, into the same group table, so a
+new leader serves the group from exactly the state the old one committed.
+`docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
+leaves out discard, which only drops a dead letter, and `if_new`, which the
+leader decides before it proposes the seek.
+
+The group table is the shard's consumer groups as one member has applied
+them: per group, its creation token, its cursor (everything below it is
+settled, dead or redriven), its dead letters, and the dead letters redriven
+but not yet settled. The shard also keeps the index of its latest delete.
+The state machine folds a group entry when it applies it, before the commit
+table moves, so a write that waits for its apply finds it folded. It is
+kept in memory, and every member gets there the same way:
+
+- At apply, only committed entries fold. A log truncation never touches
+  the table, because nothing above the commit index is in it.
+- After a restart, the member loads the table its stored snapshot carries
+  (none without one) and openraft applies the log above the snapshot
+  again, which folds the group entries there.
+- At a snapshot install, the member replaces its table with the one the
+  snapshot carries and forgets its trackers. The entries above the snapshot
+  fold on top. A stream member refuses every install today ("Group
+  runtime"), so this is for the purge that will send them (#2602).
+
+A shard switched from the hybrid starts with an empty table: its cursors
+and dead letters stay in the hybrid's side logs until the switch seeds
+them ([#2659](https://github.com/GetFelix/felix/issues/2659)), which has
+to land before groups are served on a switched shard.
+
+So the stream snapshot carries the table as of its last entry, beside the
+cut batches ("Idempotent publishes"): a member that installs it holds no
+group entry below it to fold. A snapshot with no group writes is still the
+older layout, cut batches only. A group entry a member cannot decode stops
+the member, as a cache entry does: skipping it would leave that member's
+table unlike the others'.
+
+The payload is a `GroupEntry` (`felix-broker`, `queue/entry.rs`): the
+group's name, the operation, and for every write a tracker decides, the
+group's creation token. The token names the incarnation of the group the
+write was decided for (the term and index of the seek that created or last
+reset it, or of the hydrate that created it), so a write that lands after a
+seek or a delete of its group is dropped rather than applied to the group
+that replaced it. A seek's own token is its entry's log id.
+
+A group entry has its own tag, 9, in the Raft wire's entry payloads, and a
+member built before it refuses the whole append by that tag. Serving groups
+on Raft will wait for the fleet feature `raft_consumer_groups`, which no
+build reports yet.
+
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_group_write_round_trips_through_its_record`;
+> `crates/server/felix-broker/src/queue/entry/tests.rs`,
+> `the_layout_is_the_documented_one`;
+> `crates/server/felix-replication/src/raft/tests/groups.rs`,
+> `every_member_folds_the_same_group_table_and_keeps_it_across_a_restart`,
+> `an_installed_snapshot_carries_the_group_table`,
+> `a_group_entry_that_does_not_decode_stops_the_apply`;
+> `crates/server/felix-broker/src/queue/table/tests.rs`,
+> `the_same_entries_fold_to_the_same_table`.
 
 **Publishers and record headers.** A record on a Raft shard keeps what it
 keeps on the hybrid: the publisher id (the principal that published it,
@@ -3714,10 +3782,12 @@ as #2413 extends it) guard by guard.
 
 Each group has one task, the driver (`raft/group/driver.rs`), that makes
 the membership match the target. A broker is told a target with
-`GroupRuntime::retarget`: the voters the group should have, and the
-target's version. It keeps only the newest target it was told, in memory.
-Every member can be told. Only the one that leads acts, and one elected
-later acts on the target it holds.
+`GroupRuntime::retarget`: the voters the group should have, the
+target's version, and the term it is told for. It keeps only the newest
+target it was told, or the same one told for a newer term, in memory.
+Every member can be told. Only the one that leads acts, and only on a
+target told for the term it leads: one elected later does nothing until
+it is told again.
 
 A target names members, not brokers, and a member is a copy id. The copy
 id of a broker the group does not have yet is minted on that broker, when
@@ -3808,7 +3878,12 @@ Transfers are counted separately, because each one closes the shard for
 writes until the next term opens. After eight transfers that did not go
 through, the group is reported stuck and the next transfer is asked no
 sooner than 30 seconds after the last. A written step or a new target
-starts that count again.
+starts that count again; the same target told again for a new term does
+not. Each failed transfer ends a term, and the member that leads the next
+one waits to be told the target for it, so for those 30 seconds the group
+stays reported stuck while this member does not lead or has not been told
+yet. Without that, the stuck gauge would drop to zero once a term during
+the very failure it reports.
 
 **The two rules, checked again.** The decision never names a set without
 the leader, and the step writers refuse one. The driver checks a third

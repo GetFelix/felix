@@ -377,7 +377,8 @@ impl ProducerState {
             | RecordMark::Trim { .. }
             | RecordMark::Membership
             | RecordMark::CounterDelta
-            | RecordMark::CounterCheckpoint => self.cut_open(),
+            | RecordMark::CounterCheckpoint
+            | RecordMark::Group => self.cut_open(),
         }
     }
 
@@ -1126,7 +1127,8 @@ pub(crate) fn marked_digest(mark: RecordMark, payload: &[u8]) -> u64 {
         | RecordMark::Trim { .. }
         | RecordMark::Membership
         | RecordMark::CounterDelta
-        | RecordMark::CounterCheckpoint => 0,
+        | RecordMark::CounterCheckpoint
+        | RecordMark::Group => 0,
         RecordMark::Opens(_) | RecordMark::Continues | RecordMark::Piece(_) => {
             crate::log::record_digest(payload)
         }

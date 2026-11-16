@@ -28,8 +28,8 @@ use super::commit::{self, Commits};
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
-use super::machine::{self, Cache, Machine, SnapshotData};
-use super::membership::Target;
+use super::machine::{self, Cache, Groups, Machine, SnapshotData};
+use super::membership::{Target, Told};
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
@@ -99,6 +99,8 @@ pub(crate) struct Group {
     reached_before: AtomicBool,
     /// A cache shard's projection, as this member has applied it.
     cache: Option<Cache>,
+    /// A stream shard's consumer groups, as this member has applied them.
+    groups: Option<Groups>,
     /// The snapshot a cache shard's member is being sent.
     incoming: Arc<Incoming>,
     /// What a cache shard's leader stamps entries and judges expiry by.
@@ -107,9 +109,10 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
-    /// The newest target this member was told, kept in memory only: after
-    /// a restart nothing changes until the control plane speaks again.
-    target: tokio::sync::watch::Sender<Option<Target>>,
+    /// The newest target this member was told and the term it was told
+    /// in, kept in memory only: after a restart nothing changes until the
+    /// control plane speaks again.
+    target: tokio::sync::watch::Sender<Option<Told>>,
     /// Where the membership stands against the target, as the driver
     /// reports it.
     progress: Arc<tokio::sync::watch::Sender<MembershipProgress>>,
@@ -631,8 +634,13 @@ impl Group {
             copy_id,
             log.first_index_reader(),
         );
-        let (machine, commits, applied, cache) =
-            Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
+        let machine::Opened {
+            machine,
+            commits,
+            applied,
+            cache,
+            groups,
+        } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
@@ -709,6 +717,7 @@ impl Group {
             leadership,
             reached_before: AtomicBool::new(false),
             cache,
+            groups,
             incoming: Arc::default(),
             clock,
             #[cfg(test)]
@@ -772,15 +781,16 @@ impl Group {
         })
     }
 
-    /// The control plane's target for this group. Only a target newer than
-    /// the one held replaces it. Returns whether it did.
-    pub(crate) fn retarget(&self, target: Target) -> bool {
+    /// The control plane's target for this group, told for `term`. A
+    /// newer target replaces the one held, and so does the same version
+    /// told in a newer term. Returns whether it did.
+    pub(crate) fn retarget(&self, target: Target, term: u64) -> bool {
         self.target.send_if_modified(|held| {
             let newer = held
                 .as_ref()
-                .is_none_or(|held| target.version > held.version);
+                .is_none_or(|held| (target.version, term) > (held.target.version, held.term));
             if newer {
-                *held = Some(target);
+                *held = Some(Told { target, term });
             }
             newer
         })
@@ -1286,6 +1296,27 @@ impl Group {
             None => propose::split(batch),
         };
         self.queue(split)
+    }
+
+    /// Queue one consumer-group write, `entry` being its encoded
+    /// [`felix_broker::GroupEntry`], written only while this member leads
+    /// `term`. A cache shard has no groups and refuses it.
+    pub(crate) fn propose_group(
+        &self,
+        entry: Bytes,
+        timestamp_micros: u64,
+        term: u64,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+        let split = match self.cache {
+            Some(_) => Err(propose::not_a_stream()),
+            None => propose::split_group(entry, timestamp_micros, term),
+        };
+        self.queue(split)
+    }
+
+    /// A stream shard's consumer groups, as this member has applied them.
+    pub(crate) fn groups(&self) -> Option<Groups> {
+        self.groups.clone()
     }
 
     fn queue(

@@ -177,9 +177,7 @@ async fn a_target_names_the_copy_a_new_broker_holds() {
             counter: 1,
         },
     };
-    for runtime in cluster.runtimes() {
-        runtime.retarget(&key, target.clone());
-    }
+    let _telling = Telling::start(cluster.runtimes(), key.clone(), target);
     eventually(|| {
         BROKERS
             .iter()
