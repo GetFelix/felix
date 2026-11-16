@@ -90,6 +90,13 @@ async fn satisfies_the_raft_target_contract() {
 }
 
 #[tokio::test]
+async fn satisfies_the_raft_floor_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = single_node_store(dir.path()).await;
+    crate::store::contract::raft_floors::run_raft_floor_contract(store).await;
+}
+
+#[tokio::test]
 async fn satisfies_the_shard_store_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;
@@ -815,6 +822,7 @@ async fn shard_renewal_waits_for_every_member() {
                     switch: None,
                     raft_copy_ids: Default::default(),
                     raft_target: None,
+                    raft_floor: None,
                 })
                 .await
                 .expect("assign");
@@ -907,6 +915,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     switch: None,
                     raft_copy_ids: Default::default(),
                     raft_target: None,
+                    raft_floor: None,
                 })
                 .await
                 .expect("assign");
@@ -1111,6 +1120,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -1235,6 +1245,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1373,6 +1384,7 @@ async fn a_previous_generation_waits_for_every_member() {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1472,6 +1484,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -1607,6 +1620,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     let first = |shard: u32| {
         let store = Arc::clone(&store);
@@ -1855,6 +1869,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     let assigned = store
         .put_shard_assignment(assignment.clone())
@@ -1969,6 +1984,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
 
     let written = store
@@ -2052,6 +2068,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -2186,6 +2203,7 @@ async fn pending_sets_wait_for_every_member() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -2359,6 +2377,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -2466,6 +2485,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -2574,6 +2594,7 @@ async fn inherited_storage_waits_for_every_member() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -2695,6 +2716,7 @@ async fn learners_wait_for_every_member() {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     let assigned = store
         .put_shard_assignment(learning.clone())
@@ -2846,6 +2868,7 @@ async fn a_refusal_waits_for_every_member() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -2986,6 +3009,7 @@ async fn storage_ids_wait_for_every_member() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -3316,6 +3340,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -4234,6 +4259,7 @@ async fn adoption_waits_for_every_member() {
             switch: None,
             raft_copy_ids: Default::default(),
             raft_target: None,
+            raft_floor: None,
         })
         .await
         .expect("assign");
@@ -4856,4 +4882,111 @@ async fn a_delete_clears_report_stamps_only_from_level_37() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
     assert!(!stamp_survives_a_delete().await);
+}
+
+/// Refused while any member's level is unknown or below 38, through the
+/// store, the HTTP route (409 for the whole batch) and raw peer bytes alike.
+#[tokio::test]
+async fn raft_floors_wait_for_every_member_known_at_level_38() {
+    use crate::store::AuthStore;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), RAFT_FLOOR_LEVEL - 1).await;
+    let keys = crate::auth::keys::generate_signing_keys().expect("keys");
+    store
+        .set_tenant_signing_keys("t1", keys.clone())
+        .await
+        .expect("keys");
+    let shared: &dyn ControlPlaneStore = store.as_ref();
+    crate::store::contract::shards::on_streams_of_its_own(shared, async {
+        let shard = crate::store::contract::raft_targets::switched(shared).await;
+        let floors = vec![crate::store::contract::raft_floors::entry(&shard, 4, 1)];
+        let refused = shared.record_raft_floors("broker-x", floors.clone()).await;
+        assert!(
+            matches!(&refused, Err(StoreError::Conflict(_))),
+            "proposed below level 38: {refused:?}"
+        );
+
+        let post = || async {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/v1/nodes/broker-x/raft-floors")
+                .header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        crate::test_support::token(&keys, &["node.manage:node:broker-x"])
+                    ),
+                )
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({ "floors": floors }).to_string(),
+                ))
+                .expect("request");
+            let state = crate::test_support::app_state_ready(Arc::clone(&store) as _);
+            let response = crate::api::build_router(state)
+                .oneshot(request)
+                .await
+                .expect("response");
+            let status = response.status();
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("body");
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&body).expect("json"),
+            )
+        };
+        assert_eq!(post().await.0, StatusCode::CONFLICT);
+
+        // Raw bytes through the peer route skip the store's check; the
+        // leader refuses them too.
+        let raw = crate::store::raft::command::encode_command(&MetaCommand::RecordRaftFloors {
+            node_id: "broker-x".to_string(),
+            floors: floors.clone(),
+        });
+        let answer = store.handle.write(raw).await.expect("answered");
+        let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
+        assert!(
+            matches!(&result, Err(MetaError::Conflict(message)) if message.contains("version 38")),
+            "{result:?}"
+        );
+        assert_eq!(
+            shared
+                .get_shard_assignment(&shard.key)
+                .await
+                .expect("read")
+                .raft_floor,
+            None
+        );
+
+        version.store(RAFT_FLOOR_LEVEL, std::sync::atomic::Ordering::SeqCst);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match post().await {
+                (StatusCode::OK, body) => {
+                    assert_eq!(body["raised"], 1, "{body}");
+                    break;
+                }
+                other => assert!(
+                    std::time::Instant::now() < deadline,
+                    "still refused at level 38: {other:?}"
+                ),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            shared
+                .get_shard_assignment(&shard.key)
+                .await
+                .expect("read")
+                .raft_floor
+                .map(|floor| floor.index),
+            Some(4)
+        );
+    })
+    .await;
 }

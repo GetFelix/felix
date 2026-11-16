@@ -36,6 +36,8 @@ use super::routing::{Dispatch, EngineShards, Reason, Taken};
 use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
 
+pub(crate) mod floor;
+
 /// How long a leader that could not move its stream to the committed tail
 /// waits before it tries again.
 const LEAD_RETRY: Duration = Duration::from_millis(50);
@@ -43,6 +45,9 @@ const LEAD_RETRY: Duration = Duration::from_millis(50);
 /// How long the broker that forms a group waits for each other member to
 /// say its log is empty. One that does not is asked again on the next pass.
 const ASK_WITHIN: Duration = Duration::from_secs(5);
+/// How long a broker that formed a group waits to lead it before it
+/// gives up handing the first leadership to placement's leader.
+const HAND_OVER_WITHIN: Duration = Duration::from_secs(10);
 
 /// How many engine markers a pass reads at once.
 const MARKER_READS: usize = 16;
@@ -103,6 +108,9 @@ pub(crate) struct RaftShards {
     reads_under_lock: AtomicU64,
     #[cfg(test)]
     marker_reads: AtomicU64,
+    /// Holds a retention pass between its plan and its proposal.
+    #[cfg(test)]
+    retention_gate: retention::Gate,
     /// Held across a whole pass, after its marker reads, and a whole
     /// close, so a stream's delete never runs between a member's claim of
     /// its directory and its open.
@@ -144,6 +152,9 @@ struct Member {
     incarnation: u64,
     log: DiskLog,
     follow: Option<tokio::task::JoinHandle<()>>,
+    /// The leader's retention timer (`retention`), run on every member so
+    /// a member that wins a term enforces it at once.
+    retention: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RaftShards {
@@ -187,6 +198,8 @@ impl RaftShards {
             reads_under_lock: AtomicU64::new(0),
             #[cfg(test)]
             marker_reads: AtomicU64::new(0),
+            #[cfg(test)]
+            retention_gate: retention::Gate::default(),
             carried_over: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
             wake: std::sync::OnceLock::new(),
@@ -211,6 +224,16 @@ impl RaftShards {
     /// The Raft engine, when this broker holds a member of `shard`.
     pub(crate) fn engine_for(&self, shard: &ShardKey) -> Option<&RaftEngine> {
         self.runtime.status(shard).map(|_| &self.engine)
+    }
+
+    /// The committed log id of every group this broker leads, with the
+    /// stream incarnation the group runs.
+    pub(crate) fn led_floors(&self) -> Vec<(ShardKey, u64, felix_replication::raft::LogPoint)> {
+        self.runtime
+            .led_commits()
+            .into_iter()
+            .map(|(group, at)| ((*group.shard).clone(), group.epoch, at))
+            .collect()
     }
 
     /// The term this broker leads `shard` in with its stream brought up to
@@ -258,9 +281,13 @@ impl RaftShards {
                 raft_log: true,
                 fsync_mode: raft_fsync_mode(storage.config().fsync_mode, written_commit, &dir),
                 // A Raft log refuses retention bounds, so the broker-wide
-                // ones are left off it (#2602).
+                // ones are left off it: its leader enforces the stream's
+                // with head trims (`retention`).
                 retention_bytes: None,
                 retention_age: None,
+                // Only a purge may drop a Raft log's entries, and tiered
+                // reads assume a stream log's layout.
+                offload: None,
                 ..storage.config().clone()
             };
             Ok((dir, config))
@@ -271,6 +298,7 @@ impl RaftShards {
         // it; the only caller awaits `take` to the end.
         self.claims.fetch_add(1, Ordering::AcqRel);
         let (dir, config) = claim.context("claim task")??;
+        let retention_interval = config.retention_check_interval;
         let opened = self
             .runtime
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
@@ -280,6 +308,7 @@ impl RaftShards {
             incarnation,
             log: opened.log,
             follow: None,
+            retention: None,
         };
         let handle = self
             .broker
@@ -294,6 +323,17 @@ impl RaftShards {
             .context("open the stream on the member's log");
         match handle {
             Ok(handle) => {
+                // A zero interval is a valid setting when no log takes
+                // retention, and a timer cannot run on it.
+                member.retention = (!retention_interval.is_zero()).then(|| {
+                    Self::spawn_retention(
+                        self.me.clone(),
+                        key.clone(),
+                        member.log.clone(),
+                        handle.clone(),
+                        retention_interval,
+                    )
+                });
                 member.follow = self.engine.follow_commits(key, handle);
                 Ok(member)
             }
@@ -431,7 +471,10 @@ impl RaftShards {
     /// the set gets here, so a set is formed by one broker or by none, and
     /// only once every other broker has named its copy and said no group
     /// reached it. The rest join when the leader's first append arrives.
-    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, incarnation: u64) {
+    ///
+    /// Once formed, the first leadership goes to `leader`, the broker
+    /// placement names, so leaders spread the way placement spreads them.
+    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, leader: String, incarnation: u64) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
@@ -448,13 +491,25 @@ impl RaftShards {
                     // Under the pass's lock, so the member formed is the one
                     // the others were asked about.
                     me.put_off.lock().remove(&key);
+                    let to = members
+                        .iter()
+                        .find(|member| *member.broker == *leader)
+                        .cloned();
                     let open = me.open.lock().await;
-                    if open
+                    let formed = open
                         .get(&key)
                         .is_some_and(|member| member.incarnation == incarnation)
-                        && let Err(err) = me.runtime.initialize(&key, members).await
-                    {
-                        tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                        && match me.runtime.initialize(&key, members).await {
+                            Ok(()) => true,
+                            Err(err) => {
+                                tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                                false
+                            }
+                        };
+                    drop(open);
+                    if formed && let Some(to) = to {
+                        let handed = me.runtime.hand_over(&key, to, HAND_OVER_WITHIN).await;
+                        tracing::debug!(shard = ?key, %leader, handed, "handed the first leadership of a formed group");
                     }
                 }
                 Err(err) => {
@@ -509,6 +564,9 @@ impl RaftShards {
         self.leading.forget(key);
         if let Some(follow) = member.follow {
             follow.abort();
+        }
+        if let Some(retention) = member.retention {
+            retention.abort();
         }
         if let Err(err) = member.log.close().await {
             self.close_failed
@@ -758,7 +816,12 @@ impl EngineShards for RaftShards {
                     .is_some_and(|status| status.term == 0 && status.last_index.is_none());
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
-                    self.form(key.clone(), brokers, assignment.incarnation);
+                    self.form(
+                        key.clone(),
+                        brokers,
+                        assignment.leader.clone(),
+                        assignment.incarnation,
+                    );
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
@@ -783,8 +846,10 @@ impl EngineShards for RaftShards {
         if let Some(term) = self.leading(key) {
             return Some(Dispatch::Local { generation: term });
         }
+        // The hint, not the heard leader: a restarted follower forwards at
+        // once, and a forward to a leader that is gone fails and is retried.
         let leader = status
-            .leader
+            .leader_hint
             .filter(|leader| *leader.broker != *self.local)
             .map(|leader| leader.broker);
         Some(match leader {
@@ -809,6 +874,14 @@ impl EngineShards for RaftShards {
         self.runtime
             .status(key)
             .is_some_and(|status| status.leader.is_some())
+    }
+
+    fn leads_unheard(&self, key: &ShardKey) -> bool {
+        self.leading(key).is_some()
+            && self
+                .runtime
+                .status(key)
+                .is_some_and(|status| status.leader.is_none())
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
@@ -1009,5 +1082,6 @@ impl WriteFence for Leading {
     }
 }
 
+mod retention;
 #[cfg(test)]
 pub(crate) mod tests;

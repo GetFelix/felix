@@ -15,6 +15,7 @@ mod moves;
 mod operator;
 mod pacing;
 mod pending_set;
+mod raft_leaders;
 mod readmit;
 mod reconciler;
 mod recovering;
@@ -148,6 +149,7 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     }
 }
 
@@ -179,5 +181,6 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     }
 }

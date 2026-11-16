@@ -543,8 +543,8 @@ pub struct RoutedShardAssignment {
     /// The voters the shard's Raft group should have, with the version a
     /// broker compares targets by. Absent for a hybrid shard, for one with
     /// no target yet, and while some registered broker has not acknowledged
-    /// the placement incarnation. The record's own `raft_target` and
-    /// `raft_copy_ids` are never sent here. The version counts within the
+    /// the placement incarnation. The record's own `raft_target`,
+    /// `raft_copy_ids` and `raft_floor` are never sent here. The version counts within the
     /// shard at the stream incarnation `incarnation` beside it, so a broker
     /// keys a target by shard key and stream incarnation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -694,6 +694,19 @@ pub struct RaftCopyIdResponse {
     /// The id was new for this broker and is now on the shard's record.
     /// False when the record already held it.
     pub changed: bool,
+}
+
+/// The committed log id of each Raft group a broker leads.
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RaftFloorsRequest {
+    pub floors: Vec<crate::model::RaftFloorReport>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+pub struct RaftFloorsResponse {
+    /// How many entries raised a shard's floor. An entry at or below the
+    /// floor, or one the control plane skipped, is not counted.
+    pub raised: u32,
 }
 
 /// A seal leader giving up the seal ordered at `generation`.

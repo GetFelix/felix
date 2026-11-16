@@ -31,6 +31,12 @@ async fn satisfies_the_raft_target_contract() {
     crate::store::contract::raft_targets::run_raft_target_contract(store).await;
 }
 
+#[tokio::test]
+async fn satisfies_the_raft_floor_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000));
+    crate::store::contract::raft_floors::run_raft_floor_contract(store).await;
+}
+
 /// The contract allows a backend to leave a future stamp; this one must not,
 /// or a broker dying after a clock step back stays live for the step.
 #[tokio::test]
@@ -548,6 +554,7 @@ async fn a_shard_write_holds_its_cache_until_it_lands() {
                     switch: None,
                     raft_copy_ids: Default::default(),
                     raft_target: None,
+                    raft_floor: None,
                 })
                 .await
                 .expect("assign")
@@ -618,6 +625,52 @@ async fn a_store_at_the_top_generation_refuses_to_issue() {
     }
 }
 
+/// A leader move keeps a shard's Raft target and copy ids, so it does not
+/// cancel a membership change in flight. A write that changes the set drops
+/// them, since the target named the old set.
+#[tokio::test]
+async fn a_leader_only_write_keeps_the_raft_target() {
+    use crate::model::RaftTarget;
+    use crate::store::contract::shards::{assignment, key, seed};
+    let store = store_with_limits(100, 1000);
+    seed(&store).await;
+    let mut set = assignment(0, "broker-x");
+    set.replicas = vec!["broker-y".to_string()];
+    store.put_shard_assignment(set.clone()).await.expect("put");
+    let ids: std::collections::BTreeMap<String, u64> =
+        [("broker-x".to_string(), 3), ("broker-y".to_string(), 4)].into();
+    let target = RaftTarget {
+        counter: 5,
+        members: ids.clone(),
+    };
+    {
+        let mut shards = store.shards.write().await;
+        let record = shards.records.get_mut(&key(0)).expect("record");
+        record.raft_copy_ids = ids.clone();
+        record.raft_target = Some(target.clone());
+    }
+
+    let mut moved = set.clone();
+    moved.leader = "broker-y".to_string();
+    moved.replicas = vec!["broker-x".to_string()];
+    store.put_shard_assignment(moved).await.expect("move");
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.leader, "broker-y");
+    assert_eq!(
+        read.raft_target,
+        Some(target),
+        "the target and its counter stay"
+    );
+    assert_eq!(read.raft_copy_ids, ids);
+
+    let mut shrunk = assignment(0, "broker-y");
+    shrunk.replicas.clear();
+    store.put_shard_assignment(shrunk).await.expect("shrink");
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.raft_target, None, "a set change drops the target");
+    assert!(read.raft_copy_ids.is_empty());
+}
+
 /// A reader that sees an import's restored shard records sees its
 /// placement incarnation too: the feed stamps targets with the incarnation
 /// read around the records, and restored records under the old one would
@@ -675,4 +728,54 @@ async fn an_import_shows_its_records_only_with_its_incarnation() {
         );
     })
     .await;
+}
+
+/// A placement write at the floor's incarnation keeps it, and a floor a
+/// caller passes is never stored. A switched shard takes no placement
+/// write today, so the held floor is put on the record directly.
+#[tokio::test]
+async fn a_placement_write_keeps_the_floor_at_its_incarnation() {
+    use crate::store::contract::shards::{assignment, seed};
+    let store = store_with_limits(100, 1000);
+    seed(&store).await;
+    let first = store
+        .put_shard_assignment(assignment(0, "broker-x"))
+        .await
+        .expect("assign");
+    let held = crate::model::RaftFloor {
+        incarnation: first.incarnation,
+        offset_floor: 12,
+        epoch: 0,
+        index: 12,
+        term: 2,
+    };
+    store
+        .shards
+        .write()
+        .await
+        .records
+        .get_mut(&first.key)
+        .expect("record")
+        .raft_floor = Some(held.clone());
+
+    let passed = crate::model::RaftFloor {
+        index: 99,
+        ..held.clone()
+    };
+    let next = store
+        .put_shard_assignment(ShardAssignment {
+            raft_floor: Some(passed),
+            ..assignment(0, "broker-y")
+        })
+        .await
+        .expect("move");
+    assert_eq!(next.raft_floor, Some(held.clone()));
+    assert_eq!(
+        store
+            .get_shard_assignment(&first.key)
+            .await
+            .expect("read")
+            .raft_floor,
+        Some(held)
+    );
 }

@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 37;
+pub const METADATA_VERSION: u16 = 38;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -530,6 +530,13 @@ pub enum MetaCommand {
         node_incarnation: u64,
         copy_id: u64,
     },
+    /// Raise the offset floor of each shard a leader reports, where the
+    /// report is above it; the others are skipped one by one
+    /// ([`crate::store::ControlPlaneStore::record_raft_floors`]). Level 38.
+    RecordRaftFloors {
+        node_id: String,
+        floors: Vec<crate::model::RaftFloorReport>,
+    },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
@@ -646,6 +653,9 @@ impl MetaCommand {
             // A member before level 36 would refuse the command and keep no
             // target where the others hold one.
             Self::RecordRaftCopyId { .. } => 36,
+            // A member before level 38 would refuse the command and keep no
+            // floor where the others hold one.
+            Self::RecordRaftFloors { .. } => 38,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -984,6 +994,8 @@ const IMPORT_STATE_OP: &str = "import_state";
 /// level 36) is refused the same way: a member that could not apply it would
 /// later, once elected, count targets for a different member set.
 ///
+/// A floor report (`record_raft_floors`, level 38) is refused the same way.
+///
 /// From level 37 a node delete also forgets the node's report stamps, and
 /// below it never does.
 pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, Vec<u8>> {
@@ -991,6 +1003,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     if let Some(gated) = op.as_deref().filter(|op| is_gated(op)) {
         let what = if gated == COPY_ID_OP {
             "a Raft copy id report"
+        } else if gated == FLOORS_OP {
+            "a Raft offset floor report"
         } else {
             "a shard's switch to Raft"
         };
@@ -1047,8 +1061,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
     Ok(settled)
 }
 
-/// Whether `command` is an import, a node delete, a switch command or a
-/// copy id report, read without decoding what it carries.
+/// Whether `command` is an import, a node delete, a switch command, a copy
+/// id report or a floor report, read without decoding what it carries.
 pub fn depends_on_level(command: &[u8]) -> bool {
     op_of(command).is_some_and(|op| op == IMPORT_STATE_OP || op == DELETE_NODE_OP || is_gated(&op))
 }
@@ -1062,9 +1076,12 @@ const SWITCH_OPS: [&str; 3] = ["seal_shard", "accept_seal_report", "give_up_seal
 /// A broker's Raft copy id report, by op.
 const COPY_ID_OP: &str = "record_raft_copy_id";
 
+/// A broker's Raft offset floor report, by op.
+const FLOORS_OP: &str = "record_raft_floors";
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
-    SWITCH_OPS.contains(&op) || op == COPY_ID_OP
+    SWITCH_OPS.contains(&op) || op == COPY_ID_OP || op == FLOORS_OP
 }
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.

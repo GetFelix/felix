@@ -110,6 +110,9 @@ pub enum Refused {
     /// The shard's engine is Raft. The control plane no longer places it, so
     /// there is nothing to move, cancel or give up here.
     Switched,
+    /// A Raft shard's leader moves only to a voting member of its set, and
+    /// the destination is not one.
+    NotAMember(String),
 }
 
 impl Refused {
@@ -131,6 +134,7 @@ impl Refused {
             Self::Unplaceable(_) => "unplaceable",
             Self::SetChangePending => "set_change_pending",
             Self::Switched => "switched",
+            Self::NotAMember(_) => "not_a_member",
         }
     }
 }
@@ -179,6 +183,10 @@ impl std::fmt::Display for Refused {
             Self::Switched => write!(
                 f,
                 "this shard switched to Raft; its leader and members are no longer placed by the control plane"
+            ),
+            Self::NotAMember(node) => write!(
+                f,
+                "node {node} is not a voting member of this Raft shard; its leader moves only within its set"
             ),
         }
     }
@@ -233,6 +241,9 @@ pub fn start_move(
     if moving(existing) {
         return Err(Refused::Moving);
     }
+    if super::raft_leaders::on_raft(existing, catalog.policy.raft_streams, durable) {
+        return raft_leader_move(catalog, existing, destination, replication_factor, home);
+    }
     // The same condition that sends a shard down placement's move path: a
     // leader still serving, and a log to move unless the leader is live.
     let leader_live = lifecycle_of(catalog, &existing.leader) == Some(NodeLifecycle::Live);
@@ -280,6 +291,40 @@ pub fn start_move(
     Ok(OperatorStep {
         step,
         assignment,
+        expected_generation: existing.generation,
+        zones,
+    })
+}
+
+/// Name `destination`, a member of a Raft shard's set, its leader: one write
+/// that changes nothing else. Nothing is copied, so no move slot is taken. A leader that is down may be moved too,
+/// since this only says which member placement wants leading.
+fn raft_leader_move(
+    catalog: &Catalog<'_>,
+    existing: &ShardAssignment,
+    destination: &str,
+    replication_factor: u32,
+    home: Option<&String>,
+) -> Result<OperatorStep, Refused> {
+    if !existing.replicas.iter().any(|node| node == destination)
+        || existing.learners.contains(destination)
+    {
+        return Err(Refused::NotAMember(destination.to_string()));
+    }
+    // The set stays, so the spread does too.
+    let zones =
+        zone_impact(catalog, existing, destination, replication_factor, home).map(|zones| {
+            ZoneImpact {
+                after: zones.before,
+                ..zones
+            }
+        });
+    Ok(OperatorStep {
+        step: MoveStep::RaftLeader {
+            from: existing.leader.clone(),
+            to: destination.to_string(),
+        },
+        assignment: super::raft_leaders::led_by(existing, destination),
         expected_generation: existing.generation,
         zones,
     })

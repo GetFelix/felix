@@ -80,6 +80,7 @@ fn every_request() -> Vec<RaftRequest> {
                 expected: None,
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -100,6 +101,7 @@ fn every_request() -> Vec<RaftRequest> {
                 expected: None,
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -119,6 +121,7 @@ fn every_request() -> Vec<RaftRequest> {
                 expected: None,
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -133,6 +136,7 @@ fn every_request() -> Vec<RaftRequest> {
                 expected: Some(10),
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -147,6 +151,7 @@ fn every_request() -> Vec<RaftRequest> {
                 expected: None,
                 trim: Some(7),
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -495,6 +500,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
                 expected: Some(10),
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -511,7 +517,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
     const { assert!(ENTRY_CONDITIONAL > ENTRY_PIECE) };
     // An older build takes 5 the way this one takes any tag it lacks.
     let mut unknown = BytesMut::from(&bytes[..]);
-    unknown[at] = ENTRY_COMMIT + 1;
+    unknown[at] = ENTRY_GROUP + 1;
     let refused = decode_request(unknown.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
@@ -531,6 +537,7 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
         expected,
         trim: Some(7),
         commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,
@@ -552,7 +559,7 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
     // Tags 0 to 5 are what the build before this one reads.
     const { assert!(ENTRY_TRIM == ENTRY_CONDITIONAL + 1) };
     let mut older = BytesMut::from(&bytes[..]);
-    older[at] = ENTRY_COMMIT + 1;
+    older[at] = ENTRY_GROUP + 1;
     let refused = decode_request(older.freeze()).expect_err("refused");
     assert!(
         refused.to_string().contains("is not an entry payload"),
@@ -585,6 +592,7 @@ fn a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
         expected,
         trim: None,
         commit: true,
+        group: false,
         publisher,
         headers: None,
         written: None,
@@ -612,7 +620,7 @@ fn a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
         let at = bytes.len() - payload.len() - 4 - 8 - 1;
         assert_eq!(bytes[at], ENTRY_COMMIT);
         let mut older = BytesMut::from(&bytes[..]);
-        older[at] = ENTRY_COMMIT + 1;
+        older[at] = ENTRY_GROUP + 1;
         let refused = decode_request(older.freeze()).expect_err("refused");
         assert!(refused.to_string().contains("is not"), "{refused}");
     }
@@ -626,6 +634,95 @@ fn a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
         commit(Some(12), None, None),
         commit(None, Some(producer), None),
     ] {
+        encode_request(&append(command)).expect_err("not sent");
+    }
+}
+
+/// A consumer group's write is a new tag too. A build without it refuses the
+/// entry by its tag rather than store the write as a client record that no
+/// group table folds. Read back from the log it is never conditional and
+/// names no producer, publisher or headers, so none of those is sent.
+#[test]
+fn a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
+    let payload = Bytes::from_static(b"an encoded group entry");
+    let group = || Command {
+        timestamp_micros: 105,
+        payload: payload.clone(),
+        producer: None,
+        expected: None,
+        trim: None,
+        commit: false,
+        group: true,
+        publisher: None,
+        headers: None,
+        written: None,
+    };
+    let append = |command| {
+        request(Request::Append(AppendEntriesRequest {
+            vote: vote(2, true),
+            prev_log_id: None,
+            entries: vec![EntryOf::<ShardTypes>::new_normal(log_id(2, 13), command)],
+            leader_commit: None,
+        }))
+    };
+    let written = group();
+    let bytes = encode_request(&append(written.clone())).expect("encode");
+    assert_eq!(bytes[0], 5, "the layout is unchanged");
+    let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
+        panic!("not an append");
+    };
+    let EntryPayload::Normal(command) = &read.entries[0].payload else {
+        panic!("not a record");
+    };
+    assert_eq!(*command, written);
+    assert!(command.group && !command.commit);
+    // The tag, then the append time, the length and the entry.
+    let at = bytes.len() - payload.len() - 4 - 8 - 1;
+    assert_eq!(bytes[at], ENTRY_GROUP);
+    // Tags 0 to 8 are what the build before this one reads.
+    const { assert!(ENTRY_GROUP == ENTRY_COMMIT + 1) };
+    let mut older = BytesMut::from(&bytes[..]);
+    older[at] = ENTRY_GROUP + 1;
+    let refused = decode_request(older.freeze()).expect_err("refused");
+    assert!(
+        refused.to_string().contains("is not an entry payload"),
+        "{refused}"
+    );
+    // The same frame as a plain record differs only in its tag.
+    let mut plain = group();
+    plain.group = false;
+    let plain = encode_request(&append(plain)).expect("encode");
+    assert_eq!(plain[at], ENTRY_RECORD);
+    assert_eq!(
+        (&bytes[..at], &bytes[at + 1..]),
+        (&plain[..at], &plain[at + 1..])
+    );
+    // A group write inside the publisher wrapper is never written.
+    let mut wrapped = BytesMut::from(&bytes[..at]);
+    wrapped.put_u8(ENTRY_ATTRIBUTED);
+    wrapped.put_u8(HAS_PUBLISHER);
+    wrapped.put_u32(1);
+    wrapped.put_u8(b'a');
+    wrapped.extend_from_slice(&bytes[at..]);
+    let refused = decode_request(wrapped.freeze()).expect_err("refused");
+    assert!(refused.to_string().contains("not a record"), "{refused}");
+    let producer = ProducerMark {
+        producer_id: 1,
+        sequence: 1,
+        position: 0,
+        len: 1,
+    };
+    let refusals: [fn(&mut Command, ProducerMark); 6] = [
+        |c, _| c.commit = true,
+        |c, _| c.trim = Some(3),
+        |c, p| c.producer = Some(p),
+        |c, _| c.expected = Some(13),
+        |c, _| c.publisher = Some(Bytes::from_static(b"alice")),
+        |c, _| c.headers = Some(Box::new(Bytes::from_static(b"h"))),
+    ];
+    for refuse in refusals {
+        let mut command = group();
+        refuse(&mut command, producer);
         encode_request(&append(command)).expect_err("not sent");
     }
 }
@@ -646,6 +743,7 @@ fn an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() 
         expected,
         trim: None,
         commit: false,
+        group: false,
         publisher,
         headers: headers.map(Box::new),
         written: None,
@@ -705,7 +803,7 @@ fn an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() 
             // Tags 0 to 6 are what the build before this one reads.
             const { assert!(ENTRY_ATTRIBUTED == ENTRY_TRIM + 1) };
             let mut older = BytesMut::from(&bytes[..]);
-            older[at] = ENTRY_COMMIT + 1;
+            older[at] = ENTRY_GROUP + 1;
             let refused = decode_request(older.freeze()).expect_err("refused");
             assert!(
                 refused.to_string().contains("is not an entry payload"),
@@ -792,6 +890,7 @@ fn a_large_append_is_cut_to_fit_a_frame() {
                     expected: None,
                     trim: None,
                     commit: false,
+                    group: false,
                     publisher: None,
                     headers: None,
                     written: None,
@@ -843,6 +942,7 @@ fn an_append_is_cut_to_what_crosses_a_gigabit_link_in_time() {
                     expected: None,
                     trim: None,
                     commit: false,
+                    group: false,
                     publisher: None,
                     headers: None,
                     written: None,
@@ -944,6 +1044,7 @@ fn an_entry_that_continues_a_batch_is_refused() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,

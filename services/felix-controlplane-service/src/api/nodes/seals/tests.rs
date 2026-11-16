@@ -38,6 +38,7 @@ async fn active(store: &InMemoryStore) -> ShardAssignment {
         switch: None,
         raft_copy_ids: Default::default(),
         raft_target: None,
+        raft_floor: None,
     };
     store
         .put_shard_assignment(assignment.clone())
