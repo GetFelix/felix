@@ -25,7 +25,7 @@ fn to(broker: &str, body: Request) -> RaftRequest {
         group: group(0),
         to: MemberId::new(broker, 1),
         beat: 0,
-        report: false,
+        report: crate::raft::network::Ask::Nothing,
         deadline: Duration::from_secs(5),
         body,
     }

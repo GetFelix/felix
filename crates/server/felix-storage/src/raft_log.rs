@@ -406,6 +406,12 @@ where
         Ok(())
     }
 
+    /// Whether an append's callback fires at the write, before its fsync,
+    /// so Raft counts this copy's written entries toward the commit.
+    pub fn written_commit(&self) -> bool {
+        self.shared.written_commit
+    }
+
     /// The log's written and flushed positions, as they change.
     pub fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.shared.positions.sent.subscribe()

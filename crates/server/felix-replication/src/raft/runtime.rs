@@ -1023,7 +1023,7 @@ impl GroupRuntime {
             group: group.id.clone(),
             to: member,
             beat: 0,
-            report: false,
+            report: crate::raft::network::Ask::Nothing,
             deadline: within,
             body: Request::PreVote(VoteRequest::new(
                 Vote {

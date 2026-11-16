@@ -5462,6 +5462,13 @@ not move.
 - A broker opens a shard's Raft log with its own fsync mode only when the
   fleet has finalized `raft_written_commit` and the root's run is relaxed;
   otherwise `OnCommit`.
+- The written report follows "What each signal means": a leader on a
+  written-commit log asks with `Ask::WrittenIfStrict`, a follower on one
+  skips that ask (no marker sync, no `Request::Written`), and a follower
+  that fsyncs first reports as before. A leader that fsyncs first asks with
+  `Ask::Written`, which every follower answers. Neither keeps the other's
+  mode, so a follower restarted in another mode answers by its new one.
+  Skipping a report can only make a `Quorum` write wait for the commit.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
   (`first_free_index`, `kept_logs`): the first index the new epoch may give
   out, above the base, the stored floor and every reservation in the shard
@@ -5507,9 +5514,7 @@ floor ("Re-forming a group"). The feature waits for them, since they are
 what would call the reads above. It also waits for a fix to the first
 form: a shard whose every copy rotated has blank members, and the broker
 forms it again from empty logs at index 0, which gives acknowledged
-offsets out again (#2620). Also not built: the written-report rules
-(a relaxed leader still asks every follower, which is safe and only
-redundant, #2612); the perf measurement.
+offsets out again (#2620). Also not built: the perf measurement.
 
 ### Code changes it would take
 
@@ -5520,7 +5525,7 @@ redundant, #2612); the perf measurement.
 | Batched log mark on relaxed roots, fed by `flushed` | `felix-replication/src/raft/runtime.rs:111`, `felix-storage/src/raft_copy/marks.rs:314-323` | the mark never names an unsynced id |
 | The reservation: a synced file per shard directory, raised before the write and at open, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
 | Open the shard's Raft log with the broker's own fsync mode instead of `OnCommit` | `felix-broker-service/src/shards/raft.rs:227` | a relaxed broker's shard commits before any fsync |
-| The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | `felix-replication/src/raft/group.rs:740-775`, `group.rs:1025-1050`, `raft/engine.rs:152` | no `Request::Written` from a relaxed leader to a relaxed follower; a relaxed leader with strict followers acknowledges a `Quorum` write on their written reports, before their fsync |
+| The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | Built: `Ask` in `felix-replication/src/raft/network.rs`, `Reports::ask` in `raft/written.rs`, `Group::answer` in `raft/group.rs` | `raft/tests/written.rs`: `a_relaxed_leader_gets_no_report_from_relaxed_followers`, `a_relaxed_leader_acknowledges_on_strict_followers_reports` |
 | A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (item 6 above) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
 | A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (item 8 above) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last entry that decodes is cut at the entry, not at the saved index |
