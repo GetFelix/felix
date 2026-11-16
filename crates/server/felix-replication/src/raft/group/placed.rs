@@ -360,6 +360,29 @@ impl Placing {
         }
     }
 
+    /// The leader of `term` waits on a target told for an earlier term.
+    /// Placement work is dropped as in `busy`, and a transfer asked in an
+    /// earlier term counts as failed, as `decide` would have counted it.
+    pub(crate) fn untold(&mut self, me: &MemberId, term: u64) {
+        self.busy(term);
+        if self.asked.is_some_and(|asked| asked != term) {
+            self.asked = None;
+            self.failed(me, Instant::now());
+        }
+    }
+
+    /// Whether a permit is held, ready or in flight.
+    #[cfg(test)]
+    pub(crate) fn holds_permit(&self) -> bool {
+        self.ready.is_some() || self.in_flight.is_some()
+    }
+
+    /// Failed transfers counted since the last landing or new preference.
+    #[cfg(test)]
+    pub(crate) fn failures(&self) -> u32 {
+        self.failures
+    }
+
     /// How long a transfer asked may take before its permit is given back.
     pub(crate) fn hold_for(&self) -> Duration {
         self.hold_for

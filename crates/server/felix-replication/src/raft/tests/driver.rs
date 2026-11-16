@@ -1188,4 +1188,28 @@ async fn a_leader_does_not_place_while_a_target_is_untold() {
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     assert_eq!(fake.log.lock().placed, []);
+    assert!(!driver.placing.holds_permit());
+}
+
+/// **An untold pass in a later term gives back a permit held for placement
+/// and counts a transfer asked earlier as failed**, so backoff applies.
+#[tokio::test(start_paused = true)]
+async fn an_untold_pass_settles_an_earlier_transfer() {
+    let (fake, mut driver) = placed_on(2, "b");
+    let permit = driver.placing.budget.take().await;
+    driver.placing.ready = Some(permit);
+    driver.placing.asked(2);
+    assert!(driver.placing.holds_permit());
+    fake.log.lock().term = 3;
+    let held = told(&["a", "b", "c"], 1, 1);
+    assert_eq!(driver.pass(Some(&held)).await, Pass::Untold);
+    assert!(!driver.placing.holds_permit());
+    assert_eq!(driver.placing.failures(), 1);
+
+    // A permit taken and not used goes back too, without a second failure.
+    let permit = driver.placing.budget.take().await;
+    driver.placing.ready = Some(permit);
+    assert_eq!(driver.pass(Some(&held)).await, Pass::Untold);
+    assert!(!driver.placing.holds_permit());
+    assert_eq!(driver.placing.failures(), 1);
 }

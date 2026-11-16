@@ -336,7 +336,12 @@ impl<M: Member> Driver<M> {
         let written = match step {
             // Placement is the last thing a leader looks at: any membership
             // work comes first.
-            Step::Wait(Wait::NoTarget) if untold => return Pass::Untold,
+            Step::Wait(Wait::NoTarget) if untold => {
+                // Nothing re-looks on a timer, so a permit or an earlier
+                // term's transfer is settled here.
+                self.placing.untold(&me, basis.term);
+                return Pass::Untold;
+            }
             Step::Wait(wait @ (Wait::NoTarget | Wait::Settled)) => {
                 return self.placed(&me, &view, &look, wait).await;
             }
