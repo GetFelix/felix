@@ -9,6 +9,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -17,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 use super::Group;
 use super::membership::{Basis, Replication, StepError};
 use crate::raft::lead::Lead;
-use crate::raft::membership::{Config, Step, Target, TargetVersion, View, Wait};
+use crate::raft::membership::{Config, Step, Target, TargetVersion, Told, View, Wait};
 use crate::raft::types::MemberId;
 
 pub(crate) const CONVERGING: &str = "felix_broker_raft_membership_converging";
@@ -29,8 +30,8 @@ pub(crate) const REFUSALS_TOTAL: &str = "felix_broker_raft_membership_refusals_t
 /// that leads it last saw.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum MembershipProgress {
-    /// This member does not lead the group, or has no target newer than
-    /// the membership.
+    /// This member does not lead the group, holds no target told for the
+    /// term it leads, or holds none newer than the membership.
     #[default]
     Idle,
     /// The membership is the target.
@@ -167,6 +168,9 @@ pub(crate) enum Pass {
     Stepped,
     /// Nothing to do until the target or the term changes.
     Parked(Wait),
+    /// A target is held, but it was not told for the term this member
+    /// leads. Nothing to do until it is told again.
+    Untold,
     /// Something this leader cannot hurry: a commit, a learner catching
     /// up, a transfer.
     Waiting(Wait),
@@ -235,12 +239,39 @@ impl<M: Member> Driver<M> {
         }
     }
 
-    /// Look once and take at most one step toward `target`.
-    pub(crate) async fn pass(&mut self, target: Option<&Target>) -> Pass {
+    /// Look once and take at most one step toward the target, if it was
+    /// told for the term this member leads. One told in an earlier term may
+    /// be older than what an earlier leader of this term's view acted on.
+    pub(crate) async fn pass(&mut self, told: Option<&Told>) -> Pass {
+        let untold = AtomicBool::new(false);
+        let pass = self
+            .pass_for(|term| {
+                untold.store(
+                    told.is_some_and(|told| told.term != term),
+                    Ordering::Relaxed,
+                );
+                told.filter(|told| told.term == term)
+                    .map(|told| &told.target)
+            })
+            .await;
+        match pass {
+            Pass::Parked(Wait::NoTarget) if untold.load(Ordering::Relaxed) => Pass::Untold,
+            pass => pass,
+        }
+    }
+
+    /// `pass` with a target taken whatever term it was told in.
+    #[cfg(test)]
+    pub(crate) async fn pass_any(&mut self, target: Option<&Target>) -> Pass {
+        self.pass_for(|_| target).await
+    }
+
+    async fn pass_for<'t>(&mut self, target: impl FnOnce(u64) -> Option<&'t Target>) -> Pass {
         let Some(look) = self.member.look().await else {
             return Pass::NotLeading;
         };
         let basis = &look.basis;
+        let target = target(basis.term);
         if self.halted == Some(basis.term) {
             return Pass::Halted;
         }
@@ -347,7 +378,15 @@ impl<M: Member> Driver<M> {
     /// next look, or `None` to wait for the target or the term to change.
     pub(crate) fn after(&mut self, pass: &Pass) -> Option<Duration> {
         let stalled = match pass {
-            Pass::NotLeading | Pass::Closed => {
+            Pass::NotLeading | Pass::Untold => {
+                self.idle_looks = 0;
+                if let Some(left) = self.stuck_left() {
+                    return Some(left);
+                }
+                self.progress.set(MembershipProgress::Idle);
+                return None;
+            }
+            Pass::Closed => {
                 self.idle_looks = 0;
                 self.progress.set(MembershipProgress::Idle);
                 return None;
@@ -404,6 +443,25 @@ impl<M: Member> Driver<M> {
         Some(doubled.min(self.retry.cap))
     }
 
+    /// How much longer a group stuck on transfers that do not land stays
+    /// reported stuck while this member does not lead, or leads a term no
+    /// target was told for. Each failed transfer ends a term, so without
+    /// this the report would clear once a term during the very failure it
+    /// is for. It lasts as long as the transfers are paced: after that the
+    /// member that leads reports for itself.
+    fn stuck_left(&self) -> Option<Duration> {
+        if !matches!(*self.progress.0.borrow(), MembershipProgress::Stuck(_))
+            || self.transfers < self.retry.attempts
+        {
+            return None;
+        }
+        let since = self.last_transfer?.elapsed();
+        self.retry
+            .stuck
+            .checked_sub(since)
+            .filter(|left| !left.is_zero())
+    }
+
     /// A new target starts every count again.
     fn retargeted(&mut self) {
         self.idle_looks = 0;
@@ -420,7 +478,7 @@ impl<M: Member> Driver<M> {
 /// Drive `driver`'s group until `stop`, or until the group's core is gone.
 pub(crate) async fn run<M: Member>(
     mut driver: Driver<M>,
-    mut target: watch::Receiver<Option<Target>>,
+    mut target: watch::Receiver<Option<Told>>,
     mut lead: watch::Receiver<Lead>,
     stop: CancellationToken,
 ) {
@@ -457,7 +515,12 @@ pub(crate) async fn run<M: Member>(
                 if changed.is_err() {
                     break;
                 }
-                driver.retargeted();
+                // The same target told again for a new term must not reset
+                // the pacing of transfers that keep failing.
+                let version = |told: Option<&Told>| told.map(|told| told.target.version);
+                if version(target.borrow().as_ref()) != version(goal.as_ref()) {
+                    driver.retargeted();
+                }
             }
             changed = lead.changed() => {
                 if changed.is_err() {

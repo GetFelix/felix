@@ -355,7 +355,8 @@ impl SegmentWriter {
                 RecordMark::Piece(_)
                 | RecordMark::Membership
                 | RecordMark::CounterDelta
-                | RecordMark::CounterCheckpoint => self.holds_generations(),
+                | RecordMark::CounterCheckpoint
+                | RecordMark::Group => self.holds_generations(),
             };
             mark && (record.publisher.is_none() || self.holds_publishers())
                 && (record.headers.is_none() || self.holds_headers())
