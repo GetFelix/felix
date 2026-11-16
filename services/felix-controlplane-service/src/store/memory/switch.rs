@@ -65,6 +65,7 @@ pub(super) async fn accept_seal_report(
     key: &ShardKey,
     report: SealReport,
     sealer: &str,
+    keep_ordered: bool,
 ) -> StoreResult<AssignmentWrite> {
     let mut state = store.shards.write().await;
     let Some(existing) = state.records.get(key) else {
@@ -104,6 +105,12 @@ pub(super) async fn accept_seal_report(
         report: Some(report),
         ..switch.clone()
     });
+    // Epoch 0 of the Raft group starts here, before any target. Below the
+    // level that keeps the list none is started, so the shard reads as
+    // unknown for the whole epoch.
+    if keep_ordered {
+        stored.start_raft_ordered();
+    }
     // In place, at the seal's generation: a later one would be a hybrid
     // promotion, and the base every voter starts from is this generation's.
     state.records.insert(key.clone(), stored.clone());
@@ -121,6 +128,7 @@ pub(super) async fn record_raft_copy_id(
     node_registered_at_millis: u64,
     node_incarnation: u64,
     copy_id: u64,
+    keep_ordered: bool,
 ) -> StoreResult<bool> {
     // Nodes, then shards, then acknowledgements, the order a node delete
     // takes them in. Held to the write, so no registration or ack lands
@@ -161,6 +169,11 @@ pub(super) async fn record_raft_copy_id(
     let moved = stored
         .settle_raft_target()
         .map_err(|err| StoreError::Conflict(err.to_string()))?;
+    // In the same write as the target, so the list holds it before any
+    // broker can read it.
+    if moved {
+        stored.order_raft_target(keep_ordered);
+    }
     if moved && !super::all_registered_acked(&nodes, &placement) {
         return Err(StoreError::Conflict(
             "a registered broker has not acknowledged the placement incarnation; \
@@ -242,6 +255,7 @@ impl InMemoryStore {
         node_registered_at_millis: u64,
         node_incarnation: u64,
         copy_id: u64,
+        keep_ordered: bool,
     ) -> StoreResult<bool> {
         record_raft_copy_id(
             self,
@@ -250,6 +264,7 @@ impl InMemoryStore {
             node_registered_at_millis,
             node_incarnation,
             copy_id,
+            keep_ordered,
         )
         .await
     }
@@ -267,8 +282,9 @@ impl InMemoryStore {
         key: &ShardKey,
         report: SealReport,
         sealer: &str,
+        keep_ordered: bool,
     ) -> StoreResult<AssignmentWrite> {
-        accept_seal_report(self, key, report, sealer).await
+        accept_seal_report(self, key, report, sealer, keep_ordered).await
     }
 
     pub(crate) async fn apply_give_up_seal(

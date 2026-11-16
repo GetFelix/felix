@@ -700,6 +700,7 @@ fn led_by_a(generation: u64) -> ShardAssignment {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     }
 }
 

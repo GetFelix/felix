@@ -4227,6 +4227,38 @@ A broker is to refuse a delete told at an incarnation below the highest it
 has seen, its acknowledgement or any membership in the copy's log
 (`copy_delete_is_void`). That check lands with the delete itself.
 
+#### Targets ordered in an epoch
+
+A re-form counts every target the control plane ordered in the group's epoch
+as a voter set (`GroupRecord::ordered` in `raft_copy/vouch.rs`), so the control
+plane keeps them all on the shard's record as `raft_ordered`: the stream
+`incarnation`, the group `epoch`, and each distinct target (`counter` and
+`members`) in the order it was written.
+
+- **When an epoch starts.** Epoch 0 starts when the switch to Raft is recorded
+  (`accept_seal_report` in `store/memory/switch.rs`), before any target can be
+  written, and the list starts empty there. A re-form starts the next epoch
+  where it writes `PlacedInEpoch::next_epoch` and must start a new list in the
+  same write. A recreated stream is a new incarnation and a new group; a
+  placement write drops a list from another incarnation.
+- **Listed before a leader hears of it.** A new target is added in the same
+  write that stores it (`record_raft_copy_id`). Brokers read a target only from
+  the stored record, so it is on the list before any leader is asked for it.
+- **Kept through the epoch.** A copy-id change, a counter bump and a set change
+  (which drops the target and restarts its counter) all leave the list as it
+  is. Only a new epoch or a new incarnation replaces it.
+- **Bounded.** At most 64 distinct targets per epoch; a target ordered again is
+  listed once. The 65th marks the list `lost`.
+- **Unknown reads as unknown.** `ShardAssignment::ordered_voter_sets` answers
+  `None`, and the re-form stays marked, when the list is from another epoch or
+  incarnation, is `lost`, or was never started. A shard that switched before
+  level 39 has no list for the rest of its epoch.
+
+The list is metadata level 39. Below it, `settle_for_level` leaves
+`keep_ordered` off `accept_seal_report` and `record_raft_copy_id`, so no member
+starts a list, and a target written by such an entry marks a started list
+`lost`. The feeds do not send it.
+
 #### Offset floor
 
 The control plane keeps `raft_floor` on each Raft shard's record, per stream

@@ -314,6 +314,7 @@ pub(super) async fn write_shard_assignment(
     let existing = state.records.get(&stored.key);
     stored.carry_raft_target(existing);
     stored.carry_raft_floor(existing);
+    stored.carry_raft_ordered(existing);
     let held = existing
         .map(|existing| existing.readmitted.clone())
         .unwrap_or_default();
