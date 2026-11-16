@@ -2566,17 +2566,25 @@ log, keyed by group name, the byte 0x1f, and a suffix:
                                  "redriven": put back, not yet finished
 <group> 0x1f clear               16 bytes: a seek's clear, begun
    0   8  from     u64 BE  the seek's target
-   8   8  floor    u64 BE  the dead-letter log's end when it was written
+   8   8  floor    u64 BE  the entry's own offset in the dead-letter log
 ```
 
 A seek back over dead letters delivers them again. It writes the `clear`
-entry, then its cursor, which needs the dead-letter log past `floor`, then
-deletes the group's dead letters at or above `from` and the `clear` entry.
-Before a shard is served, a `clear` entry left by a seek that crashed,
-failed or was cancelled is finished if the group's cursor needs the log past
-`floor` (the seek landed) and dropped otherwise. A dropped clear deletes
-nothing: the dead letters stay listed and redrivable, and the group resumes
-where it was. A cursor that carries no dependency (`dlq_end` 0) drops it.
+entry, then its cursor at `from` with `dlq_end` `floor + 1` and the
+generation that wrote the entry, then deletes the group's dead letters at or
+above `from` and the `clear` entry. Before a shard is served, a `clear` entry
+left by a seek that crashed, failed or was cancelled is finished only if the
+group's cursor is exactly that one: offset `from` and that `dlq_end` and
+generation. Any other cursor drops it, including a commit by a build that
+ignores the entry and has moved past it, since that cursor may stand above
+the dead letters. A dropped clear deletes nothing: the dead letters stay
+listed and redrivable.
+
+The clear, and a rebuilt group settling dead letters at or above its
+cursor, apply only once the fleet has finalized `group_cursor_dependencies`.
+Before that a seek keeps every dead letter and writes no `clear` entry, and a
+dead letter recorded just before a leader change is delivered again
+(at-least-once).
 
 A build before the `clear` entry skips it when it lists dead letters, since
 its suffix is not a number, and deletes it with the group. Reading a log

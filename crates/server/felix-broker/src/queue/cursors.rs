@@ -85,7 +85,10 @@ impl ConsumerGroups {
         *self.dependencies.0.write() = Arc::new(enabled);
     }
 
-    fn dependencies(&self) -> bool {
+    /// Whether cursor values carry their dependency now. A seek's clear and
+    /// a rebuild settling dead letters above the cursor rely on it, so both
+    /// wait for it too.
+    pub(crate) fn dependencies(&self) -> bool {
         (self.dependencies.0.read())()
     }
 

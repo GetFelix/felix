@@ -316,7 +316,8 @@ A seek voids every claim standing when it lands. An ack for a record the group
 now owes is refused as `stale_claim`, and the record is delivered again from
 the new position; an ack below the new position is a harmless duplicate.
 Dead letters below the new position are kept; those at or above it are
-cleared and delivered again. The in-flight and owed counts are the
+cleared and delivered again. A hybrid cluster does this once every broker
+supports cursor dependencies; until then a seek keeps them all. The in-flight and owed counts are the
 leader's memory, so they start again from zero when the shard changes leader.
 
 These calls work on one shard. On `Client`, `group_create_stream`,

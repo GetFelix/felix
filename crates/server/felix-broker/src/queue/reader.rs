@@ -132,10 +132,10 @@ impl GroupReader {
     }
 
     /// Finish or void each seek's clear left part way on this shard. One whose
-    /// cursor is in force (it needs the dead-letter log past the clear's
-    /// marker) is finished; otherwise the seek never landed and the dead
-    /// letters stay listed. Run before the shard is served, so no commit from
-    /// before the seek can make it look landed.
+    /// seek's cursor is in force, the exact offset and mark that seek wrote,
+    /// is finished; otherwise the seek never landed and the dead letters stay
+    /// listed. Any other cursor, such as a commit from a build that ignores
+    /// the marker, voids it: it may stand above the dead letters.
     async fn resolve_clears(&self, key: &GroupKey) -> Result<()> {
         let pending = self
             .dead_letters
@@ -150,6 +150,7 @@ impl GroupReader {
                 group,
                 ..key.clone()
             };
+            let mark = self.dead_letters.clear_mark(&key, clear).await?;
             let landed = self
                 .cursors
                 .stored(
@@ -160,7 +161,7 @@ impl GroupReader {
                     &key.group,
                 )
                 .await?
-                .is_some_and(|stored| stored.requires.end > clear.floor);
+                .is_some_and(|stored| stored.offset == clear.from && stored.requires == mark);
             if landed {
                 self.dead_letters.finish_clear(&key, clear).await?;
             } else {
@@ -673,6 +674,27 @@ impl GroupReader {
                 });
             }
         }
+        // A fleet whose cursors cannot carry the clear's mark keeps dead
+        // letters across a seek, as builds before the clear did.
+        if !self.cursors.dependencies() {
+            self.cursors
+                .set_locked(
+                    &key.tenant_id,
+                    &key.namespace,
+                    &key.stream,
+                    key.shard,
+                    &key.group,
+                    Some(offset),
+                )
+                .await?;
+            self.replace(key, offset, &slot).await?;
+            drop(old);
+            self.wake(key);
+            return Ok(Seek {
+                offset,
+                moved: true,
+            });
+        }
         // A seek delivers everything from `offset` again, dead letters
         // included. The clear is begun before the cursor moves and finished
         // after, and counts only once the cursor is in force: a seek that
@@ -685,7 +707,10 @@ impl GroupReader {
             cell: &slot,
         };
         let clear = self.dead_letters.begin_clear(key, offset).await?;
-        let requires = self.dead_letter_mark(key).await?;
+        let requires = match clear {
+            Some(clear) => self.dead_letters.clear_mark(key, clear).await?,
+            None => self.dead_letter_mark(key).await?,
+        };
         self.cursors
             .place_locked(
                 &key.tenant_id,
@@ -1023,9 +1048,12 @@ impl GroupReader {
         // A dead letter is listed before the cursor advances over it, so a
         // leader change in between leaves it above the cursor. It is settled.
         // A seek clears those at or above its target, so none is skipped.
-        for offset in listed.dead {
-            if offset >= committed {
-                tracker.ack(offset);
+        // Without cursor dependencies a seek keeps them, so they stay owed.
+        if self.cursors.dependencies() {
+            for offset in listed.dead {
+                if offset >= committed {
+                    tracker.ack(offset);
+                }
             }
         }
         Ok(Arc::new(Mutex::new(tracker)))

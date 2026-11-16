@@ -414,13 +414,19 @@ async fn a_seek_that_crashes_after_its_cursor_is_finished_on_restart() {
     let fx = open(dir.path());
     let key = key();
     let base = consumed_with_a_dead_letter(&fx, &key).await;
-    fx.reader
+    let clear = fx
+        .reader
         .dead_letters
         .begin_clear(&key, 0)
         .await
         .expect("begin")
         .expect("something to clear");
-    let requires = fx.reader.dead_letter_mark(&key).await.expect("sync");
+    let requires = fx
+        .reader
+        .dead_letters
+        .clear_mark(&key, clear)
+        .await
+        .expect("mark");
     fx.reader
         .cursors
         .place_locked(
@@ -470,5 +476,100 @@ async fn a_retired_tracker_records_no_dead_letter() {
     assert_eq!(
         fx.reader.dead_lettered(&key).await.expect("list"),
         [0u64; 0]
+    );
+}
+
+/// A build that ignores clear markers takes over after a seek's marker and
+/// before its cursor, consumes past the marker and records another dead
+/// letter. Its cursor needs the log past the marker but is not the seek's,
+/// so the clear is voided: deleting would lose dead letters below it.
+#[tokio::test]
+async fn a_cursor_from_a_build_without_clears_voids_the_clear() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    let key = key();
+    consumed_with_a_dead_letter(&fx, &key).await;
+    fx.reader
+        .dead_letters
+        .begin_clear(&key, 0)
+        .await
+        .expect("begin")
+        .expect("something to clear");
+    // The older build: dead letter 12, then a commit at 15 that passes it.
+    fx.reader
+        .dead_letters
+        .record(&key, 12)
+        .await
+        .expect("record");
+    let requires = fx.reader.dead_letter_mark(&key).await.expect("sync");
+    fx.reader
+        .cursors
+        .commit_unless(
+            &key.tenant_id,
+            &key.namespace,
+            &key.stream,
+            key.shard,
+            &key.group,
+            15,
+            &AtomicBool::new(false),
+            requires,
+        )
+        .await
+        .expect("commit");
+
+    let restarted = restarted(&fx);
+    assert_eq!(restarted.dead_lettered(&key).await.expect("list"), [5, 12]);
+    assert_eq!(restarted.committed(&key).await.expect("cursor"), Some(15));
+    assert!(
+        fx.reader
+            .dead_letters
+            .pending_clears(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .expect("pending")
+            .is_empty()
+    );
+}
+
+/// Until the fleet finalizes cursor dependencies, a rebuild does not settle
+/// a dead letter above the cursor: it is delivered again, as before.
+#[tokio::test]
+async fn without_cursor_dependencies_a_rebuild_settles_no_dead_letter() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    fx.reader.cursors.record_dependencies_when(|| false);
+    let key = key();
+    publish(&fx.log, &["a", "poisoned"]).await;
+    let base = Instant::now();
+    assert_eq!(offsets(&poll_at(&fx, &key, base, 0).await), [0, 1]);
+    assert!(fx.reader.dead_letter(&key, 1).await.expect("dead letter"));
+
+    let polled = restarted(&fx)
+        .poll(&key, &fx.log, 10, base + Duration::from_secs(1))
+        .await
+        .expect("poll");
+    assert_eq!(offsets(&polled), [0, 1]);
+}
+
+/// Until the fleet finalizes cursor dependencies, a seek clears no dead
+/// letters and writes no marker.
+#[tokio::test]
+async fn without_cursor_dependencies_a_seek_keeps_dead_letters() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let fx = open(dir.path());
+    fx.reader.cursors.record_dependencies_when(|| false);
+    let key = key();
+    consumed_with_a_dead_letter(&fx, &key).await;
+
+    fx.reader.seek(&key, 0, false).await.expect("seek");
+
+    assert_eq!(fx.reader.committed(&key).await.expect("cursor"), Some(0));
+    assert_eq!(fx.reader.dead_lettered(&key).await.expect("list"), [5]);
+    assert!(
+        fx.reader
+            .dead_letters
+            .pending_clears(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .expect("pending")
+            .is_empty()
     );
 }

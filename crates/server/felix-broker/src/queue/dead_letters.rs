@@ -35,6 +35,7 @@ use felix_storage::LogCache;
 use felix_storage::log::LogConfig;
 use parking_lot::Mutex as SyncMutex;
 
+use super::cursors::DeadLetterMark;
 use super::reader::GroupKey;
 use crate::error::{BrokerError, Result};
 
@@ -73,8 +74,8 @@ pub(crate) struct Listed {
 pub(crate) struct Clear {
     /// The seek's target: the dead letters at or above it go.
     pub(crate) from: u64,
-    /// The dead-letter log's end when the marker was written. The seek's
-    /// cursor needs the log past it; an older cursor does not.
+    /// The marker's own offset in the dead-letter log. The seek's cursor
+    /// carries exactly [`DeadLetters::clear_mark`]: the log just past it.
     pub(crate) floor: u64,
 }
 
@@ -224,11 +225,12 @@ impl DeadLetters {
     /// the seek delivers those records again: write the marker that names it,
     /// and nothing else yet. `None` when there is nothing to clear.
     ///
-    /// The marker is written at the log's current end, its `floor`. The seek's
-    /// cursor, written after it, needs the log past `floor`; a cursor from
-    /// before the seek does not. [`Self::finish_clear`] deletes the entries
-    /// only once that cursor is in force, so a seek that never lands clears
-    /// nothing. Redriven entries are never cleared: they are still owed.
+    /// The marker is written at the log's current end, its `floor`, and the
+    /// seek's cursor carries [`Self::clear_mark`]. [`Self::finish_clear`]
+    /// deletes the entries only once a cursor with exactly that offset and
+    /// mark is in force, so a seek that never lands clears nothing, whatever
+    /// another build commits meanwhile. Redriven entries are never cleared:
+    /// they are still owed.
     pub(crate) async fn begin_clear(&self, key: &GroupKey, from: u64) -> Result<Option<Clear>> {
         let lock = self.lock_for(key);
         let _guard = lock.lock().await;
@@ -241,12 +243,11 @@ impl DeadLetters {
         {
             return Ok(None);
         }
-        let floor = crate::durable::StreamLog::from_log(
+        let log = crate::durable::StreamLog::from_log(
             self.shard_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await?,
-        )
-        .tail_offset()
-        .await?;
+        );
+        let floor = log.tail_offset().await?;
         let clear = Clear { from, floor };
         self.entries
             .put_checked(
@@ -260,7 +261,26 @@ impl DeadLetters {
             )
             .await
             .map_err(BrokerError::from)?;
+        // Every write to this log takes the shard's lock, so the marker is at
+        // `floor`. Were it not, its cursor's mark would not name it; the seek
+        // fails and its clear is voided.
+        let end = log.tail_offset().await?;
+        if end != floor + 1 {
+            return Err(BrokerError::Storage(format!(
+                "a clear marker written at {floor} left the dead-letter log ending at {end}"
+            )));
+        }
         Ok(Some(clear))
+    }
+
+    /// The mark a seek's cursor carries for `clear`: the dead-letter log just
+    /// past its marker. A cursor from another seek or commit carries a
+    /// different offset or mark, so equality binds the clear to its seek.
+    pub(crate) async fn clear_mark(&self, key: &GroupKey, clear: Clear) -> Result<DeadLetterMark> {
+        let log = self
+            .synced_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await?;
+        Ok(DeadLetterMark::of(clear.floor + 1, &log.epochs))
     }
 
     /// Delete the dead letters `clear` names, then its marker. For a clear
