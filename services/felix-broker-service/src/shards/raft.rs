@@ -96,6 +96,8 @@ pub(crate) struct RaftShards {
     off_placement: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Shards whose directory holds a log with no copy id, logged once.
     carried_over: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Limits the warning for a shard whose open waits on the open-file limit.
+    held_warn: parking_lot::Mutex<super::lifecycle::WarnThrottle>,
     /// The data root, once the restore gate has passed it. No member opens
     /// before.
     root: std::sync::OnceLock<Arc<CopyRoot>>,
@@ -205,6 +207,7 @@ impl RaftShards {
             #[cfg(test)]
             retention_gate: retention::Gate::default(),
             carried_over: parking_lot::Mutex::default(),
+            held_warn: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
             wake: std::sync::OnceLock::new(),
             open: tokio::sync::Mutex::default(),
@@ -804,12 +807,23 @@ impl EngineShards for RaftShards {
                     match self.open_member(key, assignment, root).await {
                         Ok(member) => {
                             self.carried_over.lock().remove(key);
+                            self.held_warn.lock().clear(key);
                             open.insert(key.clone(), member);
                         }
                         // Tried again on the next pass.
                         Err(err) if err.is::<CarriedOver>() => {
                             if self.carried_over.lock().insert(key.clone()) {
                                 tracing::error!(shard = ?key, error = %err, "not opening a Raft shard");
+                            }
+                            continue;
+                        }
+                        // Also tried again on the next pass; counted with
+                        // the stream shards that hit the same limit.
+                        Err(err) if super::lifecycle::out_of_files(&err) => {
+                            super::lifecycle::metrics::record_open_failure();
+                            super::lifecycle::metrics::record_open_file_limit();
+                            if self.held_warn.lock().due(key) {
+                                tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not open a Raft shard: the open-file limit is exhausted; opening on a later pass");
                             }
                             continue;
                         }

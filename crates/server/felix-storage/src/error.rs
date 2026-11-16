@@ -96,6 +96,10 @@ pub enum StorageError {
     /// The device or the quota is out of space. Nothing was written, so the
     /// same request can succeed once space is freed.
     Full(std::io::Error),
+    /// The process or the system ran out of file descriptors (`EMFILE`,
+    /// `ENFILE`). Nothing was opened, so the same open can succeed once
+    /// files close or the limit is raised. The log is not poisoned.
+    OpenFileLimit(std::io::Error),
     Io(std::io::Error),
 }
 
@@ -151,6 +155,16 @@ impl fmt::Display for StorageError {
                 )
             }
             StorageError::Full(err) => write!(f, "storage full: {err}"),
+            StorageError::OpenFileLimit(err) | StorageError::Io(err)
+                if crate::open_files::is_exhausted(err) =>
+            {
+                write!(
+                    f,
+                    "the open-file limit is exhausted ({err}); retry once files close, or raise \
+                 the limit (RLIMIT_NOFILE, LimitNOFILE= under systemd)"
+                )
+            }
+            StorageError::OpenFileLimit(err) => write!(f, "open-file limit: {err}"),
             StorageError::Io(err) => write!(f, "io error: {err}"),
         }
     }
@@ -159,7 +173,9 @@ impl fmt::Display for StorageError {
 impl std::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            StorageError::Full(err) | StorageError::Io(err) => Some(err),
+            StorageError::Full(err) | StorageError::OpenFileLimit(err) | StorageError::Io(err) => {
+                Some(err)
+            }
             _ => None,
         }
     }
@@ -172,12 +188,25 @@ impl From<Corruption> for StorageError {
 }
 
 impl StorageError {
+    /// Whether the process or the system ran out of file descriptors:
+    /// [`StorageError::OpenFileLimit`], or an [`StorageError::Io`] built
+    /// from the same error without the conversion that names it.
+    pub fn is_open_file_limit(&self) -> bool {
+        match self {
+            StorageError::OpenFileLimit(_) => true,
+            StorageError::Io(err) => crate::open_files::is_exhausted(err),
+            _ => false,
+        }
+    }
+
     /// Whether this is a flush that failed, however it was wrapped. The log
     /// it happened on must stop: see [`StorageError::Poisoned`].
     pub fn is_sync_failure(&self) -> bool {
         match self {
             StorageError::SyncFailed(_) => true,
-            StorageError::Io(err) | StorageError::Full(err) => crate::io::SyncFailure::is(err),
+            StorageError::Io(err) | StorageError::Full(err) | StorageError::OpenFileLimit(err) => {
+                crate::io::SyncFailure::is(err)
+            }
             _ => false,
         }
     }
@@ -196,6 +225,9 @@ impl From<std::io::Error> for StorageError {
         ) {
             metrics::counter!(crate::metrics_names::STORAGE_FULL_TOTAL).increment(1);
             return StorageError::Full(err);
+        }
+        if crate::open_files::is_exhausted(&err) {
+            return StorageError::OpenFileLimit(err);
         }
         StorageError::Io(err)
     }

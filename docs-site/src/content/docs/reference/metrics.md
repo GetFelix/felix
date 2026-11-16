@@ -165,6 +165,7 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_shard_phase` | gauge | `phase` | Shards this broker holds, by phase. |
 | `felix_broker_shard_transitions_total` | counter | `from`, `to` | Local ownership transitions, by direction. |
 | `felix_broker_shard_open_failures_total` | counter | - | Local logs that could not be opened. Non-zero means a shard the cluster believes is placed here is not being served. |
+| `felix_broker_shard_open_file_limit_total` | counter | - | Shard opens put off because the broker was out of file descriptors. Each shard is opened again on the next assignment pass. See [Open files](/deployment/production/#open-files). |
 | `felix_broker_shard_switchover_seconds` | histogram | - | Seconds from seeing the old leader fenced to serving the shard. Nobody serves the shard during this window. |
 | `felix_broker_shard_move_seconds` | histogram | - | Seconds from first seeing itself named as a shard's destination to serving it, copy included. |
 | `felix_broker_shard_move_held_total` | counter | - | Writes held for a moving shard. |
