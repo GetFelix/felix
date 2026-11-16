@@ -1348,6 +1348,15 @@ impl Group {
             Some(_) => Err(propose::not_a_stream()),
             None => propose::split_group(entry, timestamp_micros, term),
         };
+        #[cfg(test)]
+        let split = match self
+            .gate
+            .unknown_groups
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            true => Err(propose::unknown()),
+            false => split,
+        };
         self.queue(split)
     }
 

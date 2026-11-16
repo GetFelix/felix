@@ -261,8 +261,9 @@ impl RaftEngine {
     ///
     /// Refused unless this member leads `term`. An error means nothing was
     /// appended in `term`, or that this member has closed `term` for good:
-    /// where an append may have happened, the term is closed before the
-    /// error returns, so only a later term's read index can see the entry.
+    /// where an append may have happened, the term is closed and leadership
+    /// handed to another voter before the error returns, so only a later
+    /// term's read index can see the entry.
     pub fn propose_group(
         &self,
         shard: &ShardKey,
@@ -280,11 +281,13 @@ impl RaftEngine {
                 Ok(written) => return Ok(written),
                 Err(unacked) => unacked,
             };
-            // A no-op unless this member still leads `term`.
+            // A no-op unless this member still leads `term`. Stepping down,
+            // not only closing, so the shard is served again in a new term
+            // instead of staying closed until something else moves it.
             if !unacked.refused_on_lease()
                 && let Some(group) = group
             {
-                group.transfer_starting_in(Some(term)).await;
+                group.step_down_in(term).await;
             }
             Err(unacked.error)
         }

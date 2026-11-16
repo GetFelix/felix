@@ -287,6 +287,14 @@ pub(crate) struct Gate {
     pub(crate) shut: tokio::sync::Mutex<()>,
     /// Drains stamped so far.
     pub(crate) stamped: AtomicU64,
+    /// Answer every group write as not known to be written.
+    pub(crate) unknown_groups: std::sync::atomic::AtomicBool,
+}
+
+/// A write this member cannot say whether it appended.
+#[cfg(test)]
+pub(crate) fn unknown() -> CommitError {
+    lost(UNKNOWN)
 }
 
 impl Stamper {

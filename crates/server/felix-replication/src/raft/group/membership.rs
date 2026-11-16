@@ -139,6 +139,24 @@ impl Group {
         Some(term)
     }
 
+    /// Close `term` and hand leadership to the other voter furthest along,
+    /// preferring one that answered lately, so a new term starts without
+    /// waiting for placement to notice. Nothing happens unless this member
+    /// leads `term`; with no other voter the term stays closed.
+    pub(crate) async fn step_down_in(&self, term: u64) -> Option<u64> {
+        let term = self.transfer_starting_in(Some(term)).await?;
+        let log = self.replication();
+        let to = self
+            .voters()
+            .into_iter()
+            .filter(|voter| *voter != self.member)
+            .max_by_key(|voter| (log.live.contains(voter), log.matched.get(voter).copied()));
+        if let Some(to) = to {
+            let _ = self.raft.trigger().transfer_leader(to).await;
+        }
+        Some(term)
+    }
+
     /// [`Self::transfer_in`], with the request held until `to` holds this
     /// leader's whole log, for at most `within`. The shard closes first, so
     /// no new write lands meanwhile and a busy log stops growing away from
