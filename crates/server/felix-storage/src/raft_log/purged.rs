@@ -18,7 +18,7 @@ const MAGIC: u32 = 0x464C_5047;
 const VERSION: u16 = 1;
 /// magic(4) + version(2) + reserved(2) + index(8) + generation(8) + crc(4)
 const ENCODED_LEN: usize = 28;
-const FILE_NAME: &str = "raft-purged";
+pub(crate) const FILE_NAME: &str = "raft-purged";
 
 /// The last purged entry: its index and the generation that stands for its
 /// term.

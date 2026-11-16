@@ -1716,6 +1716,30 @@ pub(crate) fn saved_commit(dir: &std::path::Path) -> Result<(Offset, u64)> {
     Ok((replica.commit_offset, replica.committed_generation))
 }
 
+/// Save `offset` and its generation as `dir`'s commit, read back by
+/// [`saved_commit`]. For a directory no log has open; it may lower the
+/// commit, as a re-form start does.
+#[cfg(feature = "raft")]
+pub(crate) fn store_saved_commit(
+    dir: &std::path::Path,
+    offset: Offset,
+    generation: u64,
+) -> Result<()> {
+    let mut replica = replica_state::load(dir)?;
+    replica.commit_offset = offset;
+    replica.committed_generation = generation;
+    replica_state::store(dir, &replica)
+}
+
+/// The generation of the vote `dir` saved, as an open reads it from its
+/// `replica` state and its ballot, read without opening the log. Zero for a
+/// directory that never voted.
+#[cfg(feature = "raft")]
+pub(crate) fn saved_vote_generation(dir: &std::path::Path) -> Result<u64> {
+    let replica = replica_state::load(dir)?;
+    Ok(ballot::reconcile(dir, &replica)?.generation)
+}
+
 /// The generation of the record below a Raft log's saved commit offset, or
 /// `None` when that record is some other entry than the one that was
 /// committed: its generation is not the one saved with the offset.

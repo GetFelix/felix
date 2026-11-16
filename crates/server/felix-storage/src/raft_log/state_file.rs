@@ -38,6 +38,15 @@ pub(crate) fn load(dir: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
     }
 }
 
+/// Delete `name` in `dir`, if it is there, and sync the directory.
+pub(crate) fn remove(dir: &Path, name: &str) -> io::Result<()> {
+    match crate::fs::remove_file(dir.join(name)) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    crate::io::sync_dir(dir)
+}
+
 /// Delete the temporary a crash left while replacing `name` in `dir`, if
 /// there is one. It can be as large as the file and hold the same secrets.
 pub(crate) fn remove_temporary(dir: &Path, name: &str) -> io::Result<()> {

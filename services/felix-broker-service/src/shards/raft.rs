@@ -45,6 +45,9 @@ const LEAD_RETRY: Duration = Duration::from_millis(50);
 /// How long the broker that forms a group waits for each other member to
 /// say its log is empty. One that does not is asked again on the next pass.
 const ASK_WITHIN: Duration = Duration::from_secs(5);
+/// How long a broker that formed a group waits to lead it before it
+/// gives up handing the first leadership to placement's leader.
+const HAND_OVER_WITHIN: Duration = Duration::from_secs(10);
 
 /// How many engine markers a pass reads at once.
 const MARKER_READS: usize = 16;
@@ -112,6 +115,10 @@ pub(crate) struct RaftShards {
     /// close, so a stream's delete never runs between a member's claim of
     /// its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
+    /// The group epoch of each open member, read from its copy at open. The
+    /// floor report sends it, and only a re-form changes it, which needs the
+    /// member closed.
+    epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -201,6 +208,7 @@ impl RaftShards {
             root: std::sync::OnceLock::new(),
             wake: std::sync::OnceLock::new(),
             open: tokio::sync::Mutex::default(),
+            epochs: parking_lot::Mutex::default(),
         });
         shards
             .broker
@@ -224,12 +232,22 @@ impl RaftShards {
     }
 
     /// The committed log id of every group this broker leads, with the
-    /// stream incarnation the group runs.
-    pub(crate) fn led_floors(&self) -> Vec<(ShardKey, u64, felix_replication::raft::LogPoint)> {
+    /// stream incarnation the group runs and the group epoch of its copy.
+    /// A group whose epoch is not known yet is left out until it is.
+    pub(crate) fn led_floors(&self) -> Vec<floor::Led> {
+        let epochs = self.epochs.lock();
         self.runtime
             .led_commits()
             .into_iter()
-            .map(|(group, at)| ((*group.shard).clone(), group.epoch, at))
+            .filter_map(|(group, at)| {
+                let epoch = *epochs.get(&*group.shard)?;
+                Some(floor::Led {
+                    key: (*group.shard).clone(),
+                    incarnation: group.epoch,
+                    epoch,
+                    at,
+                })
+            })
             .collect()
     }
 
@@ -301,6 +319,20 @@ impl RaftShards {
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
             .await
             .context("open the Raft member")?;
+        let epoch = {
+            let dir = dir.clone();
+            tokio::task::spawn_blocking(move || felix_storage::raft_copy::group_epoch(&dir)).await
+        };
+        match epoch {
+            Ok(Ok(epoch)) => {
+                self.epochs.lock().insert(key.clone(), epoch);
+            }
+            // The member still serves; only its floor report waits.
+            Ok(Err(err)) => {
+                tracing::warn!(shard = ?key, error = %err, "could not read a Raft member's group epoch; its floor is not reported")
+            }
+            Err(err) => tracing::warn!(shard = ?key, error = %err, "group epoch read task"),
+        }
         let mut member = Member {
             incarnation,
             log: opened.log,
@@ -468,7 +500,10 @@ impl RaftShards {
     /// the set gets here, so a set is formed by one broker or by none, and
     /// only once every other broker has named its copy and said no group
     /// reached it. The rest join when the leader's first append arrives.
-    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, incarnation: u64) {
+    ///
+    /// Once formed, the first leadership goes to `leader`, the broker
+    /// placement names, so leaders spread the way placement spreads them.
+    fn form(&self, key: ShardKey, brokers: BTreeSet<String>, leader: String, incarnation: u64) {
         let Some(me) = self.me.upgrade() else {
             return;
         };
@@ -485,13 +520,25 @@ impl RaftShards {
                     // Under the pass's lock, so the member formed is the one
                     // the others were asked about.
                     me.put_off.lock().remove(&key);
+                    let to = members
+                        .iter()
+                        .find(|member| *member.broker == *leader)
+                        .cloned();
                     let open = me.open.lock().await;
-                    if open
+                    let formed = open
                         .get(&key)
                         .is_some_and(|member| member.incarnation == incarnation)
-                        && let Err(err) = me.runtime.initialize(&key, members).await
-                    {
-                        tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                        && match me.runtime.initialize(&key, members).await {
+                            Ok(()) => true,
+                            Err(err) => {
+                                tracing::warn!(shard = ?key, error = %err, "could not form a Raft group");
+                                false
+                            }
+                        };
+                    drop(open);
+                    if formed && let Some(to) = to {
+                        let handed = me.runtime.hand_over(&key, to, HAND_OVER_WITHIN).await;
+                        tracing::debug!(shard = ?key, %leader, handed, "handed the first leadership of a formed group");
                     }
                 }
                 Err(err) => {
@@ -543,6 +590,7 @@ impl RaftShards {
     /// until it has stopped.
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
+        self.epochs.lock().remove(key);
         self.leading.forget(key);
         if let Some(follow) = member.follow {
             follow.abort();
@@ -798,7 +846,12 @@ impl EngineShards for RaftShards {
                     .is_some_and(|status| status.term == 0 && status.last_index.is_none());
                 if *full && blank && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
-                    self.form(key.clone(), brokers, assignment.incarnation);
+                    self.form(
+                        key.clone(),
+                        brokers,
+                        assignment.leader.clone(),
+                        assignment.incarnation,
+                    );
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
@@ -823,8 +876,10 @@ impl EngineShards for RaftShards {
         if let Some(term) = self.leading(key) {
             return Some(Dispatch::Local { generation: term });
         }
+        // The hint, not the heard leader: a restarted follower forwards at
+        // once, and a forward to a leader that is gone fails and is retried.
         let leader = status
-            .leader
+            .leader_hint
             .filter(|leader| *leader.broker != *self.local)
             .map(|leader| leader.broker);
         Some(match leader {
@@ -849,6 +904,14 @@ impl EngineShards for RaftShards {
         self.runtime
             .status(key)
             .is_some_and(|status| status.leader.is_some())
+    }
+
+    fn leads_unheard(&self, key: &ShardKey) -> bool {
+        self.leading(key).is_some()
+            && self
+                .runtime
+                .status(key)
+                .is_some_and(|status| status.leader.is_none())
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {

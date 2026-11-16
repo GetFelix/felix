@@ -954,6 +954,7 @@ the field itself, on every member alike, or refuses the command:
 | `seal_shard`, `accept_seal_report`, `give_up_seal`, assignment `switch`, and in the snapshot; finalizing `shard_raft` | 34 | the three commands are refused with 409 before they reach the log, by the member that proposes one and again by the leader that appends it, so no member holds a sealed or switched shard that another holds as a hybrid one. No assignment carries `switch` below 34, since only these commands set it |
 | delete `forget_reports` | 37 | the delete keeps the node's incarnation in every held replica report, on every member alike, so a report from before a delete can still count the node registered again when it has no storage identity (#2619) |
 | `record_raft_floors`, assignment `raft_floor`, and in the snapshot | 38 | the command is refused with 409 before it reaches the log, by the member that proposes it and again by the leader that appends it, so no member holds a floor another lacks. No assignment carries `raft_floor` below 38, since only this command sets it |
+| `accept_seal_report` and `record_raft_copy_id` `keep_ordered`, assignment `raft_ordered`, and in the snapshot | 39 | the commands are settled without the flag, so no member starts a shard's list of ordered targets, and a target written without it marks a started list lost. The re-form then reads the epoch's ordered targets as unknown and stays marked |
 
 **A member refuses what it would drop.** From level 3 on, a member that
 decodes an entry carrying a non-empty field it does not know answers

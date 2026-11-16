@@ -224,6 +224,11 @@ async fn a_directory_restored_to_a_shorter_log_rotates() {
         assert_ne!(restored.copy, old);
         let kept = rotation.kept.expect("kept");
         assert_eq!(
+            rotated_by::load(&kept).expect("by"),
+            RotatedBy::PowerCut { to: restored.copy },
+            "batched {batched}"
+        );
+        assert_eq!(
             kept_copies(&root.shard_dir()).expect("kept"),
             vec![KeptCopy {
                 path: kept,
@@ -617,4 +622,49 @@ async fn a_log_with_no_copy_file_is_told_apart() {
 
     std::fs::remove_file(dir.join(super::super::copy_file::FILE_NAME)).expect("no copy file");
     assert!(holds_log_without_copy(&dir).expect("a log alone"));
+}
+
+/// A re-form counts a power-cut copy's vote as read, so the vote has to be
+/// on disk once `save_vote` returns and move with the directory into
+/// `.kept` when a power cut rotates it.
+#[tokio::test]
+async fn a_power_cut_rotation_keeps_the_vote() {
+    let root = Root::new();
+    let copies = root.open();
+    let backup = tempfile::tempdir().expect("backup");
+    let opened = open_copy(&copies, &root.shard_dir()).await;
+    save_vote(&opened, 3).await;
+    let old = close(opened).await;
+    copy_tree(&root.shard_dir(), backup.path());
+
+    let opened = open_copy(&copies, &root.shard_dir()).await;
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    log.mark_with(opened.marks.clone(), LogMarkMode::Exact)
+        .expect("marks");
+    let flushed = append(&mut log, &[normal(3, 0, "a")])
+        .await
+        .expect("append");
+    flushed.await.expect("flush");
+    drop(log);
+    close(opened).await;
+
+    restore(backup.path(), &root.shard_dir());
+    let restored = open_copy(&copies, &root.shard_dir()).await;
+    let rotation = restored.rotation.clone().expect("rotated");
+    assert_eq!(rotation.reason, RotateReason::LogBelowMark);
+    let kept = rotation.kept.expect("kept");
+    assert_eq!(
+        rotated_by::load(&kept).expect("by"),
+        RotatedBy::PowerCut { to: restored.copy }
+    );
+    close(restored).await;
+
+    let read =
+        read_copies(&root.shard_dir(), 4096, &std::collections::BTreeSet::new()).expect("read");
+    let [kept_read] = &read.kept[..] else {
+        panic!("one kept copy: {:?}", read.kept);
+    };
+    assert_eq!(kept_read.copy, Some(old));
+    assert_eq!(kept_read.vote, Some(2), "generation 3 holds term 2");
+    assert_eq!(read.current.vote, None, "the new copy never voted");
 }

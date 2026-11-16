@@ -884,6 +884,28 @@ async fn a_group_restarted_whole_has_its_leader_back_within_one_vote_round() {
     cluster.stop().await;
 }
 
+/// **When every member restarts and the old leader opens first**, its
+/// first request finds nobody. It asks again with a pre-vote, which the
+/// held followers drop, so the group waits out their hold.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_restarted_whole_with_its_leader_first_has_a_leader_within_its_holds() {
+    let (mut cluster, leader, _, followers) = stopped_whole(true).await;
+    let started = tokio::time::Instant::now();
+    open_on(&mut cluster, &leader.broker).await;
+    for broker in followers {
+        open_on(&mut cluster, broker).await;
+    }
+    let again = cluster.elected(0).await;
+    let took = started.elapsed();
+    eprintln!("leader first: a leader again after {took:?}");
+    assert!(
+        took < timers().election_max * 3,
+        "the group took {took:?} to have a leader again"
+    );
+    assert!(BROKERS.contains(&&*again.broker));
+    cluster.stop().await;
+}
+
 /// **A held member handed the leadership stands, and is ticked once it
 /// leads**, so it heartbeats inside its hold. Standing replaces its
 /// stored vote, so the old leader is let through no more.
