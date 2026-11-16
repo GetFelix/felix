@@ -1728,6 +1728,7 @@ async fn an_import_is_refused_below_the_placed_level_and_marked_at_it() {
         overwrite: true,
         mark_unplaced,
         raise_incarnation: false,
+        lose_ordered: false,
     };
     assert_eq!(import(true).version(), PLACED_LEVEL);
     let refused = store.propose(import(true)).await;
@@ -1795,6 +1796,7 @@ async fn an_import_carrying_an_identity_waits_for_the_identity_level() {
         overwrite: true,
         mark_unplaced: true,
         raise_incarnation: false,
+        lose_ordered: false,
     };
     let refused = store.propose(import.clone()).await;
     assert!(

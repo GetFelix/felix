@@ -64,6 +64,7 @@ async fn an_export_and_import_carry_the_floor() {
                 overwrite: true,
                 mark_unplaced: true,
                 raise_incarnation: true,
+                lose_ordered: true,
             })
             .await
             .expect("import");

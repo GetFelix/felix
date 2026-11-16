@@ -711,6 +711,7 @@ impl MetadataStateMachine {
                 overwrite,
                 mark_unplaced,
                 raise_incarnation,
+                lose_ordered,
             } => {
                 // A store with any history has consumers whose checkpoints
                 // this would silently invalidate; only an operator saying
@@ -728,6 +729,9 @@ impl MetadataStateMachine {
                 let kept = store.recorded_identity().await;
                 let mut state = *state;
                 state.forget_placed(mark_unplaced);
+                if lose_ordered {
+                    state.lose_ordered();
+                }
                 if raise_incarnation {
                     // From the store before the import, so every member raises
                     // to the same value. An acknowledgement above it, from

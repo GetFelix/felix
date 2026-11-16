@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 39;
+pub const METADATA_VERSION: u16 = 40;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -412,6 +412,11 @@ pub enum MetaCommand {
         /// same value. Set by `settle_for_level`, as `mark_unplaced` is.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         raise_incarnation: bool,
+        /// Level 40: mark every shard's list of ordered targets lost
+        /// (`ExportedState::lose_ordered`), so a list as old as the backup
+        /// is never read as complete. Set by `settle_for_level`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        lose_ordered: bool,
     },
     /// Refresh-token writes.
     ///
@@ -1071,6 +1076,9 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
         object.insert("mark_unplaced".to_string(), true.into());
         if level >= super::PLACEMENT_INCARNATION_LEVEL {
             object.insert("raise_incarnation".to_string(), true.into());
+        }
+        if level >= super::RESTORED_ORDERED_LEVEL {
+            object.insert("lose_ordered".to_string(), true.into());
         }
         true
     });
