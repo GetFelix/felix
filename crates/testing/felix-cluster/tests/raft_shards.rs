@@ -679,8 +679,9 @@ async fn a_short_placement_acknowledges_nothing() {
 }
 
 /// **Until the fleet finalizes `raft_consumer_groups`, a group on a Raft
-/// shard is refused by name**, on the leader and on a follower. The refusal
-/// names the fleet feature so an operator knows what to finalize.
+/// shard is refused by name** by the leader, which alone serves groups. The
+/// refusal names the fleet feature so an operator knows what to finalize; a
+/// follower redirects to the leader.
 #[tokio::test]
 #[serial]
 async fn a_consumer_group_on_a_raft_shard_is_refused_until_the_fleet_finalizes_it() {
@@ -692,22 +693,30 @@ async fn a_consumer_group_on_a_raft_shard_is_refused_until_the_fleet_finalizes_i
     let leader = leader_among(&cluster, &nodes).await;
     publish_acked(&cluster, &leader, b"work").await;
 
-    for node in &nodes {
+    let err = cluster
+        .group_poll_via(&leader, STREAM, 0, "workers", 10)
+        .await
+        .expect_err("a group was served before the fleet finalized the feature");
+    assert!(
+        format!("{err:#}").contains("raft_consumer_groups"),
+        "the leader's refusal does not name the fleet feature: {err:#}"
+    );
+    for node in nodes.iter().filter(|node| **node != leader) {
         let err = cluster
             .group_poll_via(node, STREAM, 0, "workers", 10)
             .await
-            .expect_err("a group was served before the fleet finalized the feature");
+            .expect_err("a follower served a group");
         assert!(
-            format!("{err:#}").contains("raft_consumer_groups"),
-            "{node}'s refusal does not name the fleet feature: {err:#}"
+            format!("{err:#}").contains(&format!("owned by {leader}")),
+            "{node} does not redirect to the leader {leader}: {err:#}"
         );
     }
 }
 
 /// **A consumer group on a Raft shard works once the fleet finalizes
-/// `raft_consumer_groups`.** Records are claimed through the leader and
-/// through a follower, an acknowledged record is not handed out again, and
-/// the group state survives being read through another broker.
+/// `raft_consumer_groups`.** Records are claimed and acknowledged through
+/// the leader, an acknowledged record is not handed out again, and a
+/// follower redirects to the leader.
 #[tokio::test]
 #[serial]
 async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
@@ -735,14 +744,10 @@ async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
         .await
         .expect("ack through the leader");
 
-    let follower = nodes
-        .iter()
-        .find(|node| **node != leader)
-        .expect("a follower");
     let rest = cluster
-        .group_poll_records_via(follower, STREAM, 0, "workers", 10)
+        .group_poll_records_via(&leader, STREAM, 0, "workers", 10)
         .await
-        .expect("a follower serves the group");
+        .expect("the leader serves the rest");
     assert!(
         rest.iter().all(|record| record.offset != first[0].offset),
         "an acknowledged record was handed out again: {rest:?}"
@@ -750,10 +755,23 @@ async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
     assert_eq!(rest.len(), 2, "the other two records: {rest:?}");
     for record in &rest {
         cluster
-            .group_ack_via(follower, STREAM, 0, "workers", record.offset)
+            .group_ack_via(&leader, STREAM, 0, "workers", record.offset)
             .await
-            .expect("ack through the follower");
+            .expect("ack through the leader");
     }
+
+    let follower = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .expect("a follower");
+    let err = cluster
+        .group_poll_records_via(follower, STREAM, 0, "workers", 10)
+        .await
+        .expect_err("a follower served the group");
+    assert!(
+        format!("{err:#}").contains(&format!("owned by {leader}")),
+        "{follower} does not redirect to the leader {leader}: {err:#}"
+    );
     let drained = cluster
         .group_poll_records_via(&leader, STREAM, 0, "workers", 10)
         .await
