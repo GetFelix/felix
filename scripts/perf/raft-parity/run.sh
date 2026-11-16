@@ -29,10 +29,11 @@
 #   SECS=60 LAT_SECS=30 FAIL_SECS=40 PAYLOAD=1024 BATCH=16 PUBLISHERS=8 IN_FLIGHT=4
 #   LAT_PUBLISHERS=1 SHARDS=6 KEYS=$((SHARDS*8)) FANOUT=4 FANOUT_TOTAL=200000
 #   KAFKA_RECORDS=1000000 MQTT_CONNS=8 MQTT_WINDOW=64
-#   TAIL_SECS=30 TAIL_PUBLISHERS=4 TAIL_IN_FLIGHT=4 KAFKA_TAIL_RATE=20000   read cells: the
+#   TAIL_SECS=30 TAIL_PUBLISHERS=4 TAIL_IN_FLIGHT=4 KAFKA_TAIL_RATE=15000   read cells: the
 #   window, and a background publisher held to KAFKA_TAIL_RATE records/s (the same rate for the
 #   Kafka producer and the Felix publisher) for exactly that window. A cell fails if either
 #   engine publishes under 95% of it, if the publisher fails a send, or if it does not finish.
+#   15000 because Raft's Kafka produce on one shard holds about 17000 (#2704).
 #   RESUME_SPAN=100 RESUME_WORKERS=4 TAIL_SUBS=4 RESUME_HISTORY=20000
 #                 records per resume, resume loops, follower subscribers, records prefilled
 #                 before a resume cell measures (offsets are drawn from them)
@@ -57,7 +58,7 @@ fi
 : "${PAYLOAD:=1024}" "${BATCH:=16}" "${PUBLISHERS:=8}" "${IN_FLIGHT:=4}" "${LAT_PUBLISHERS:=1}" "${SHARDS:=6}"
 : "${KEYS:=$((SHARDS * 8))}" "${FANOUT:=4}" "${FANOUT_TOTAL:=200000}"
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
-: "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=20000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
+: "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
 : "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}"
 if [ -z "${CELLS:-}" ]; then
   CELLS=""
