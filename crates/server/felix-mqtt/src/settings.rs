@@ -31,8 +31,12 @@ pub struct Settings {
     /// Most QoS 1 publishes a client may have unacknowledged. Advertised to
     /// 5.0 clients as `Receive Maximum`; a client past it is disconnected.
     /// Also the most publishes of any QoS held for the broker before the
-    /// connection stops reading.
+    /// connection stops reading, and the most QoS 1 messages sent to a client
+    /// unacknowledged (less if the client's `Receive Maximum` is lower).
     pub max_inflight: u16,
+    /// Messages one session's delivery queue holds. A QoS 0 message that
+    /// finds it full is dropped; a QoS 1 message waits in the log.
+    pub session_queue_messages: usize,
 }
 
 impl Default for Settings {
@@ -46,6 +50,7 @@ impl Default for Settings {
             max_subscriptions: 64,
             keepalive_max_secs: 600,
             max_inflight: 64,
+            session_queue_messages: 256,
         }
     }
 }

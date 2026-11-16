@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use super::Shared;
 use super::connect::Session;
 use super::publish::{MAX_QUOTA_HOLD, Publishing};
+use super::subscribe::Subscriptions;
 use crate::metrics;
 
 /// A write that has not finished by now means the peer has stopped reading.
@@ -95,6 +96,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let silent = sleep_until(Instant::now() + keepalive);
         tokio::pin!(silent);
         let mut publishing = Publishing::new(shared, &session);
+        let mut subs = Subscriptions::new(shared, &session);
         // Reading stops until then, to hold the tenant to its publish quota.
         let mut muted_until: Option<Instant> = None;
 
@@ -104,7 +106,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             while publishing.pending() <= max_inflight
                 && let Some(packet) = self.next_packet(Some(version), &limits)?
             {
-                self.handle(shared, &session, &mut publishing, packet)?;
+                self.handle(shared, &session, &mut publishing, &mut subs, packet)
+                    .await?;
             }
             if let Some(hold) = publishing.start(&shared.writes)
                 && !hold.is_zero()
@@ -147,6 +150,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 }
                 result = publishing.completed(), if publishing.is_writing() => {
                     self.settle(&mut publishing, version, result)?;
+                }
+                fetched = subs.recv(), if subs.can_take() => {
+                    self.deliver(&mut subs, fetched)?;
                 }
                 _ = unmute => {}
                 read = self.io.read_buf(&mut self.inbound), if reading => {

@@ -24,6 +24,9 @@ pub(super) struct Session {
     /// Whether the client allows reason strings on acknowledgements (5.0
     /// `Request Problem Information`).
     pub(super) reason_strings: bool,
+    /// Most QoS 1 messages sent to the client unacknowledged: the lower of its
+    /// `Receive Maximum` and the listener's own limit.
+    pub(super) receive_maximum: u16,
 }
 
 impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
@@ -84,6 +87,12 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             principal,
             producer_id: shared.writes.new_producer_id(),
             reason_strings,
+            receive_maximum: connect
+                .properties
+                .receive_maximum
+                .map_or(shared.settings.max_inflight, |max| {
+                    max.min(shared.settings.max_inflight)
+                }),
         })
     }
 

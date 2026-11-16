@@ -5,8 +5,11 @@ The packet codec, `felix-mqtt-wire`, is built (#1687), and so is the listener,
 which authenticates connections, mounts streams at topic prefixes and accepts
 PUBLISH at QoS 0 and 1 (#1689, `docs/mqtt-compatibility.md`), with record
 headers and forwarding to the shard's owner, and MQTT over WebSockets (#1700).
-Subscribe, retained messages, persistent sessions, QoS 2 and will messages are
-not built yet.
+Subscribe works for clean sessions at QoS 0 and 1 on shards this broker holds
+(#1692); each session runs its own reader per shard and its own filter trie,
+where the design below shares one reader and one trie per broker, which is
+follow-up work. Retained messages, persistent sessions, QoS 2 and will messages
+are not built yet.
 
 Devices speak MQTT. This page designs a native MQTT listener, built the way the Kafka listener is
 (`crates/server/felix-kafka`, `docs/kafka-compatibility.md`), under one hard

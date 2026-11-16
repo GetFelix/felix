@@ -29,3 +29,14 @@ pub(crate) fn refused(reason: &'static str) {
 pub(crate) fn published(qos: &'static str, count: u64) {
     metrics::counter!("felix_mqtt_published_total", "qos" => qos).increment(count);
 }
+
+/// A message sent to a subscriber. `qos` is `"0"` or `"1"`.
+pub(crate) fn delivered(qos: &'static str, count: u64) {
+    metrics::counter!("felix_mqtt_delivered_total", "qos" => qos).increment(count);
+}
+
+/// A message a subscriber did not get: `queue_full` (QoS 0 only), `expired`,
+/// or `retention` (the log no longer held it).
+pub(crate) fn dropped(reason: &'static str) {
+    metrics::counter!("felix_mqtt_dropped_total", "reason" => reason).increment(1);
+}

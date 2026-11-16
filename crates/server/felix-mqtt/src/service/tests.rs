@@ -19,6 +19,7 @@ use crate::settings::Settings;
 use crate::write::{WriteBatch, WriteError, Writes};
 
 mod publish;
+mod subscribe;
 
 /// Tenant `acme` has one mount, `plant/`, on stream `ns/plant`. Another
 /// tenant would have its own, so the tenant is checked.
@@ -133,6 +134,7 @@ impl Authenticator for FakeAuth {
                 ])
                 .unwrap(),
             )),
+            ("acme", "nogrant") => Ok(Principal::new("acme")),
             (_, "down") => Err(AuthError::Unavailable),
             (_, "slow") => std::future::pending().await,
             _ => Err(AuthError::Rejected("no".into())),
@@ -202,6 +204,15 @@ fn start(settings: Settings, expires_at: Option<i64>) -> Harness {
 }
 
 fn start_with(settings: Settings, expires_at: Option<i64>, writes: Arc<FakeWrites>) -> Harness {
+    start_full(settings, expires_at, writes, None)
+}
+
+fn start_full(
+    settings: Settings,
+    expires_at: Option<i64>,
+    writes: Arc<FakeWrites>,
+    reads: Option<Arc<dyn crate::read::Reads>>,
+) -> Harness {
     let (client_io, server_io) = duplex(64 * 1024);
     let revoke = Arc::new(Notify::new());
     let service = MqttService::new(
@@ -213,6 +224,10 @@ fn start_with(settings: Settings, expires_at: Option<i64>, writes: Arc<FakeWrite
         Arc::clone(&writes) as Arc<dyn Writes>,
         settings,
     );
+    let service = match reads {
+        Some(reads) => service.with_reads(reads),
+        None => service,
+    };
     let shutdown = CancellationToken::new();
     let ended = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&ended);

@@ -1,0 +1,181 @@
+//! What a subscription reads from the log: committed records by offset, with
+//! their headers, from the tail a clean session starts at.
+
+use bytes::Bytes;
+use felix_broker::{DurableStorage, StreamMetadata};
+use felix_mqtt::{MountedTopic, Record, WriteBatch, Writes};
+use felix_storage::EphemeralCache;
+use felix_storage::log::{FsyncMode, LogConfig};
+use felix_wire::RecordHeaders;
+
+use super::*;
+use crate::serving::mqtt::BrokerWrites;
+
+fn batch(sequence: u64, producer_id: u64, topic: &str, stream: &str) -> WriteBatch {
+    WriteBatch {
+        tenant_id: "acme".into(),
+        credential: None,
+        target: MountedTopic {
+            namespace: "ns".into(),
+            stream: stream.into(),
+            shard: 0,
+        },
+        producer_id,
+        sequence,
+        records: vec![Record {
+            payload: Bytes::from(format!("payload of {topic}")),
+            headers: RecordHeaders {
+                key: Some(Bytes::copy_from_slice(topic.as_bytes())),
+                headers: vec![("felix.mqtt.qos".to_string(), Bytes::from_static(b"1"))],
+            }
+            .encode()
+            .expect("headers"),
+        }],
+        acknowledged: true,
+    }
+}
+
+async fn topics_read(reads: &BrokerReads, stream: &str, from: u64) -> (Vec<String>, u64) {
+    let page = reads
+        .read(
+            "acme",
+            "ns",
+            stream,
+            0,
+            from,
+            1 << 20,
+            Duration::from_millis(50),
+        )
+        .await
+        .expect("read");
+    let topics = page
+        .messages
+        .iter()
+        .map(|message| {
+            let block =
+                RecordHeaders::decode(message.headers.clone().expect("headers")).expect("block");
+            String::from_utf8(block.key.expect("key").to_vec()).expect("utf8")
+        })
+        .collect();
+    (topics, page.next)
+}
+
+#[tokio::test]
+async fn reads_start_at_the_tail_and_return_what_is_written_after() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let storage = DurableStorage::open(
+        dir.path(),
+        LogConfig {
+            fsync_mode: FsyncMode::None,
+            preallocate_segments: false,
+            ..LogConfig::default()
+        },
+    )
+    .expect("storage");
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
+    broker.record_headers_when(|| true);
+    broker.read_record_headers_when(|| true);
+    broker.register_tenant("acme").await.expect("tenant");
+    broker.register_namespace("acme", "ns").await.expect("ns");
+    broker
+        .register_stream(
+            "acme",
+            "ns",
+            "plant",
+            StreamMetadata {
+                durable: true,
+                ..StreamMetadata::default()
+            },
+        )
+        .await
+        .expect("stream");
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(crate::shards::routing::StreamEngine::default()),
+        Duration::from_secs(1),
+    );
+    let reads = BrokerReads::new(Arc::clone(&broker), None);
+    let producer = writes.new_producer_id();
+    writes
+        .write(batch(0, producer, "plant/old", "plant"))
+        .await
+        .expect("write");
+
+    let tail = reads.tail("acme", "ns", "plant", 0).await.expect("tail");
+    assert_eq!(tail, 1);
+    assert_eq!(reads.shard_count("acme", "ns", "plant"), 1);
+    // Nothing past the tail yet: the read waits, then comes back empty.
+    assert_eq!(topics_read(&reads, "plant", tail).await, (vec![], tail));
+
+    writes
+        .write(batch(1, producer, "plant/a", "plant"))
+        .await
+        .expect("write");
+    writes
+        .write(batch(2, producer, "plant/b", "plant"))
+        .await
+        .expect("write");
+    let (topics, next) = topics_read(&reads, "plant", tail).await;
+    assert_eq!(topics, ["plant/a", "plant/b"]);
+    assert_eq!(next, 3);
+}
+
+/// **On Raft a subscription reads what the group has committed**, with the
+/// headers it was proposed with, from the tail.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_raft_shard_is_read_up_to_its_commit_index() {
+    use crate::shards::raft::tests as fixture;
+    use crate::shards::routing::EngineShards;
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = fixture::broker(root.path()).await;
+    broker.record_headers_when(|| true);
+    broker.read_record_headers_when(|| true);
+    broker.allow_raft_record_headers_when(|| true);
+    let shards = fixture::shards(&broker);
+    let orders = fixture::key("orders", 0);
+    let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+    shards.take(&mut fixture::assignments([assigned])).await;
+    fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+    let writes = BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(fixture::engine(&shards)),
+        Duration::from_secs(1),
+    );
+    let reads = BrokerReads::new(Arc::clone(&broker), None);
+    let producer = writes.new_producer_id();
+    let message = |sequence, topic| {
+        let mut message = batch(sequence, producer, topic, "orders");
+        message.tenant_id = "t1".into();
+        message
+    };
+    writes
+        .write(message(0, "plant/old"))
+        .await
+        .expect("written");
+
+    let tail = reads.tail("t1", "ns", "orders", 0).await.expect("tail");
+    // The group's own entries take offsets too, so the tail is past the
+    // record, not at its offset.
+    assert!(tail >= 1);
+    writes.write(message(1, "plant/a")).await.expect("written");
+    let page = reads
+        .read(
+            "t1",
+            "ns",
+            "orders",
+            0,
+            tail,
+            1 << 20,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("read");
+    assert_eq!(page.messages.len(), 1);
+    assert!(page.messages[0].offset >= tail);
+    let block =
+        RecordHeaders::decode(page.messages[0].headers.clone().expect("headers")).expect("block");
+    assert_eq!(block.key, Some(Bytes::from_static(b"plant/a")));
+    EngineShards::shutdown(&*shards).await;
+}

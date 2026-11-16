@@ -149,6 +149,22 @@ impl Principal {
         }
     }
 
+    /// Whether this principal may subscribe to a stream: `stream.subscribe`.
+    pub(crate) fn may_subscribe(&self, namespace: &str, stream: &str) -> bool {
+        match &self.access {
+            Access::Anonymous => true,
+            Access::Token(None) => false,
+            Access::Token(Some(matcher)) => matcher.allows(
+                Action::StreamSubscribe,
+                &stream_resource(
+                    &TenantId::new(&self.tenant_id),
+                    &Namespace::new(namespace),
+                    &StreamName::new(stream),
+                ),
+            ),
+        }
+    }
+
     pub(crate) fn expires_at(&self) -> Option<i64> {
         self.expires_at
     }

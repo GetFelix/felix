@@ -137,6 +137,7 @@ impl MqttListenerConfig {
                 1,
                 65_535,
             )? as u16,
+            session_queue_messages: defaults.session_queue_messages,
         };
         let ws = ws_config(&get, &number)?;
         Ok(Some(Self {

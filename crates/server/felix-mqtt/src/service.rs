@@ -9,6 +9,7 @@ mod connect;
 mod connection;
 mod publish;
 mod refuse;
+mod subscribe;
 #[cfg(test)]
 mod tests;
 
@@ -19,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auth::Authenticator;
 use crate::mount::Mounts;
+use crate::read::{NoReads, Reads};
 use crate::settings::Settings;
 use crate::write::Writes;
 
@@ -33,6 +35,7 @@ pub(crate) struct Shared {
     pub(crate) auth: Arc<dyn Authenticator>,
     pub(crate) mounts: Arc<dyn Mounts>,
     pub(crate) writes: Arc<dyn Writes>,
+    pub(crate) reads: Arc<dyn Reads>,
     pub(crate) settings: Settings,
 }
 
@@ -48,9 +51,17 @@ impl MqttService {
                 auth,
                 mounts,
                 writes,
+                reads: Arc::new(NoReads),
                 settings,
             }),
         }
+    }
+
+    /// Serve SUBSCRIBE from `reads`. Without it every SUBSCRIBE is refused.
+    pub fn with_reads(mut self, reads: Arc<dyn Reads>) -> Self {
+        let shared = Arc::get_mut(&mut self.shared).expect("set before the service is cloned");
+        shared.reads = reads;
+        self
     }
 
     /// Serve one connection until the client closes it, it breaks the
