@@ -1253,6 +1253,15 @@ impl GroupRuntime {
         self.inner.registry.ticker_restarts.load(Ordering::Relaxed)
     }
 
+    /// Purge this broker's member of the stream shard `shard` below its
+    /// floor: a snapshot at the purge point, then the log through it.
+    /// Returns the point once purged, `None` when there was nothing to
+    /// purge or the pass gave up. The caller gates it on the fleet having
+    /// finalized `raft_stream_purge`.
+    pub async fn purge_below_floor(&self, shard: &ShardKey) -> Option<u64> {
+        self.group(shard)?.purge_below_floor().await
+    }
+
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         self.inner.registry.get(shard)
     }

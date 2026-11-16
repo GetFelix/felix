@@ -56,12 +56,18 @@ use driver::MembershipProgress;
 pub(super) const REACHED_BEFORE: &str =
     "an earlier copy of this shard held records, so no group forms on it until it is re-formed";
 
+/// How long a purge pass waits for its snapshot before the next pass tries
+/// again.
+const PURGE_SNAPSHOT_WITHIN: Duration = Duration::from_secs(30);
+
 pub(crate) struct Group {
     pub(crate) id: GroupId,
     pub(crate) member: MemberId,
     raft: Raft<ShardTypes, Machine>,
     /// The member's log, to drain its queued flushes at the stop.
     log: RaftLog<ShardTypes, ShardCodec>,
+    /// Where the next stream snapshot is to be written, for a purge.
+    purge_at: machine::PurgeAt,
     pace: Arc<Pace>,
     lease: Arc<Lease>,
     /// Empty for a member that started with no vote on disk.
@@ -639,12 +645,13 @@ impl Group {
             log.first_index_reader(),
         );
         let machine::Opened {
-            machine,
+            mut machine,
             commits,
             applied,
             cache,
             groups,
         } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
+        let purge_at = machine.purging(log.reader());
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
@@ -704,6 +711,7 @@ impl Group {
             member,
             raft,
             log,
+            purge_at,
             pace,
             lease,
             hold,
@@ -972,6 +980,48 @@ impl Group {
         let vote = self.raft.metrics().borrow_watched().vote.clone();
         let last = self.raft.data_metrics().borrow_watched().last_log;
         VoteResponse::new(vote, last, false)
+    }
+
+    /// One purge pass on a stream shard: write a snapshot at
+    /// `P = min(applied, floor - 1)`, on the leader also at or below every
+    /// other member's match, then drop the log through `P`. Two steps in
+    /// that order, so the log never starts above the snapshot. The cap keeps
+    /// a leader from sending installs to members that are only behind;
+    /// safety does not rest on it. Returns `P` once the log is purged to it.
+    /// See `docs/per-shard-raft.md`, "Purging below the floor".
+    pub(crate) async fn purge_below_floor(&self) -> Option<u64> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        if self.id.shard.kind != ShardKind::Stream || self.stopped.load(Ordering::Relaxed) {
+            return None;
+        }
+        let floor = self.log.disk_log().head_trim()?.floor;
+        let metrics = self.raft.metrics().borrow_watched().clone();
+        let mut at = metrics.last_applied?.index.min(floor.checked_sub(1)?);
+        if metrics.state == ServerState::Leader {
+            for (id, matched) in metrics.replication.as_ref()?.iter() {
+                if *id != self.member {
+                    at = at.min(matched.as_ref()?.index);
+                }
+            }
+        }
+        if metrics
+            .snapshot
+            .is_some_and(|snapshot| snapshot.index >= at)
+        {
+            return None;
+        }
+        *self.purge_at.lock() = Some(at);
+        self.raft.trigger().snapshot().await.ok()?;
+        self.raft
+            .wait(Some(PURGE_SNAPSHOT_WITHIN))
+            .metrics(
+                |m| m.snapshot.is_some_and(|snapshot| snapshot.index >= at),
+                "a purge snapshot",
+            )
+            .await
+            .ok()?;
+        self.raft.trigger().purge_log(at).await.ok()?;
+        Some(at)
     }
 
     fn leads(&self) -> bool {

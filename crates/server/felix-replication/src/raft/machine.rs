@@ -21,17 +21,17 @@ use felix_broker::{GroupEntry, GroupTable, ShardGroups};
 use felix_storage::DiskLog;
 use felix_storage::disk_log::CarriedFloor;
 use felix_storage::log::FsyncMode;
-use felix_storage::raft_log::{LogPoint, SnapshotId, SnapshotStore, StoredSnapshot};
+use felix_storage::raft_log::{LogPoint, LogReader, SnapshotId, SnapshotStore, StoredSnapshot};
 use felix_storage::waiters::{Queue, Waiters};
 use futures::{Stream, StreamExt};
-use openraft::storage::{EntryResponder, RaftSnapshotBuilder, RaftStateMachine};
+use openraft::storage::{EntryResponder, RaftLogReader, RaftSnapshotBuilder, RaftStateMachine};
 use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, SnapshotOf, StoredMembershipOf};
 use openraft::{EntryPayload, OptionalSend};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Semaphore, watch};
 
 use super::cache::{CacheCommand, CacheState, Cut};
-use super::codec::{StoredMembership, invalid};
+use super::codec::{ShardCodec, StoredMembership, invalid};
 use super::commit::Commits;
 use super::stream_snapshot::{PurgeFloors, StreamSnapshot};
 use super::types::{Applied, ShardTypes};
@@ -44,6 +44,13 @@ pub(crate) type Cache = Arc<parking_lot::RwLock<CacheState>>;
 /// A stream shard's consumer groups, shared by its state machine, which
 /// folds them, and the member's group paths.
 pub(crate) type Groups = Arc<parking_lot::RwLock<ShardGroups>>;
+
+/// The entry the next stream snapshot is to be written at, set by the purge
+/// driver (`Group::purge_below_floor`) before it asks openraft for one.
+pub(crate) type PurgeAt = Arc<parking_lot::Mutex<Option<u64>>>;
+
+/// Entries read from the log per chunk while folding up to a purge point.
+const FOLD_READ: u64 = 1024;
 
 #[derive(Clone, Default)]
 struct State {
@@ -69,6 +76,10 @@ pub(crate) struct Machine {
     log: Option<DiskLog>,
     /// The Raft log, of either kind of shard.
     raft_log: Option<DiskLog>,
+    /// Where a purge asked for the next stream snapshot, and the log it
+    /// folds from to get there.
+    purge_at: PurgeAt,
+    reader: Option<LogReader<ShardTypes, ShardCodec>>,
     /// Held by a test to keep this member from applying.
     #[cfg(test)]
     pub(crate) hold: Arc<tokio::sync::Mutex<()>>,
@@ -119,6 +130,8 @@ impl Machine {
             groups: groups.clone(),
             log: log.filter(|_| matches!(kind, ShardKind::Stream)).cloned(),
             raft_log: log.cloned(),
+            purge_at: PurgeAt::default(),
+            reader: None,
             #[cfg(test)]
             hold: Arc::default(),
             #[cfg(test)]
@@ -330,6 +343,9 @@ pub(crate) struct Builder {
     log: Option<DiskLog>,
     /// The Raft log, synced before a snapshot is stored.
     raft_log: Option<DiskLog>,
+    /// Set for a purge snapshot: the entry it is written at, below the
+    /// applied one, and the log it folds the state up to there from.
+    purge: Option<(u64, LogReader<ShardTypes, ShardCodec>)>,
 }
 
 /// Overlay writes folded per hold of the cache lock, so apply and reads
@@ -345,6 +361,9 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
     type SnapshotData = SnapshotData;
 
     async fn build_snapshot(&mut self) -> io::Result<SnapshotOf<ShardTypes, SnapshotData>> {
+        if let (Some((at, reader)), Some(log)) = (self.purge.take(), self.log.clone()) {
+            return self.build_purge(at, reader, &log).await;
+        }
         let meta = meta(&self.state);
         // A panic or JoinError in the encode fails the build, which stops
         // the member. A cache member whose parse fails in `Group::dispatch`
@@ -367,6 +386,103 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
         {
             log.sync().await.map_err(io::Error::other)?;
         }
+        store(&self.snapshots, &meta, data.clone()).await?;
+        Ok(SnapshotOf::<ShardTypes, SnapshotData> {
+            meta,
+            snapshot: SnapshotData::bytes(data),
+        })
+    }
+}
+
+impl Builder {
+    /// A purge snapshot at entry `at`, at or below the applied one and below
+    /// the floor: the group table and membership folded from the stored
+    /// snapshot over the log up to `at`, the floor as of `at` for the
+    /// tables, and the highest applied floor as the carried one. Written at
+    /// `at` rather than at the applied entry so a member behind the purge can
+    /// install it: one at or above the floor would skip records still
+    /// served. When there is nothing to write (the stored snapshot is at or
+    /// past `at`, or `at` is not below the floor) the stored one is returned.
+    async fn build_purge(
+        &mut self,
+        at: u64,
+        mut reader: LogReader<ShardTypes, ShardCodec>,
+        log: &DiskLog,
+    ) -> io::Result<SnapshotOf<ShardTypes, SnapshotData>> {
+        let stored = self.snapshots.current().await?;
+        let (mut state, data) = match &stored {
+            Some(stored) => (StoredMeta::state(&stored.meta)?, stored.data.clone()),
+            None => (State::default(), Bytes::new()),
+        };
+        let carried = log.head_trim();
+        let from = state.last_applied.map_or(0, |id| id.index + 1);
+        let below_floor = carried.as_ref().is_some_and(|trim| at < trim.floor);
+        if from > at || !below_floor {
+            return Ok(SnapshotOf::<ShardTypes, SnapshotData> {
+                meta: meta(&state),
+                snapshot: SnapshotData::bytes(data),
+            });
+        }
+        let previous = StreamSnapshot::decode(&data)?;
+        let mut groups = ShardGroups::default();
+        groups.reset(previous.groups);
+        let mut next = from;
+        while next <= at {
+            let end = at.min(next.saturating_add(FOLD_READ - 1));
+            let entries = reader.try_get_log_entries(next..end + 1).await?;
+            if entries.len() as u64 != end + 1 - next {
+                return Err(io::Error::other(format!(
+                    "the log has no entries {next}..={end} to fold a purge snapshot from"
+                )));
+            }
+            for entry in entries {
+                match &entry.payload {
+                    EntryPayload::Normal(command) if command.group => {
+                        let decoded = GroupEntry::decode(&command.payload).map_err(|err| {
+                            invalid(format!("a group entry does not decode: {err}"))
+                        })?;
+                        let (term, index) = term_index(&entry.log_id);
+                        groups.apply(term, index, &decoded);
+                    }
+                    EntryPayload::Membership(membership) => {
+                        state.membership = StoredMembershipOf::<ShardTypes>::new(
+                            Some(entry.log_id),
+                            membership.clone(),
+                        );
+                    }
+                    _ => {}
+                }
+                state.last_applied = Some(entry.log_id);
+            }
+            next = end + 1;
+        }
+        let cuts = log
+            .forgotten_cuts_from(at + 1)
+            .await
+            .map_err(io::Error::other)?;
+        let tables = log
+            .floor_as_of(at)
+            .max(previous.purge.map_or(0, |purge| purge.tables));
+        let trim = carried.expect("checked below the floor");
+        let data = StreamSnapshot {
+            cuts,
+            groups: groups.table().clone(),
+            purge: Some(PurgeFloors {
+                tables,
+                carried: CarriedFloor {
+                    offset: trim.offset,
+                    floor: trim.floor,
+                    headers: trim.headers,
+                },
+            }),
+        }
+        .encode();
+        if let Some(raft_log) = &self.raft_log
+            && raft_log.config().fsync_mode != FsyncMode::OnCommit
+        {
+            raft_log.sync().await.map_err(io::Error::other)?;
+        }
+        let meta = meta(&state);
         store(&self.snapshots, &meta, data.clone()).await?;
         Ok(SnapshotOf::<ShardTypes, SnapshotData> {
             meta,
@@ -453,7 +569,14 @@ impl Machine {
     /// apply them twice. The cut copies nothing; encoding it is the cost,
     /// and happens in the build, off this task.
     fn builder(&self, cut: Option<Cut>) -> Builder {
+        let purge = self
+            .purge_at
+            .lock()
+            .take()
+            .zip(self.reader.clone())
+            .filter(|_| self.log.is_some());
         Builder {
+            purge,
             snapshots: self.snapshots.clone(),
             state: self.state.clone(),
             cut,
@@ -464,6 +587,13 @@ impl Machine {
             log: self.log.clone(),
             raft_log: self.raft_log.clone(),
         }
+    }
+
+    /// Let the purge driver ask for a stream snapshot below the applied
+    /// entry, folded from `reader`. Returns where it asks.
+    pub(crate) fn purging(&mut self, reader: LogReader<ShardTypes, ShardCodec>) -> PurgeAt {
+        self.reader = Some(reader);
+        Arc::clone(&self.purge_at)
     }
 
     /// Fold part of the overlay a released cut left back into the live
