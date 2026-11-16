@@ -1995,7 +1995,9 @@ tombstone: it is refused as a cut batch, as a copy that starts at the base
 sees it. At most 4096 tombstones are kept, and past that the one with the
 lowest `last` goes. A producer whose tombstone went that way and that then
 re-sends its sequence 0 is written again: the one case the tombstones do not
-cover. Tombstones are derived from committed records below the base, so they
+cover. Only the native idempotent path is refused: a Kafka producer keeps its
+id across an epoch bump and restarts at sequence 0, so its re-send is written
+as before (see issue 2702). Tombstones are derived from committed records below the base, so they
 are carried like `carried` entries. A hybrid log keeps them too: it reads only
 the tombstones from this file and ignores the rest.
 

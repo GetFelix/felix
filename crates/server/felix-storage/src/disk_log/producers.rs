@@ -76,6 +76,11 @@ pub enum ProducerSequence {
     Gap { expected: u64 },
     /// Older than the batches still remembered.
     Expired,
+    /// The producer was forgotten and only its tombstone remains: a batch at
+    /// or below the last it sent may have been written and cannot be told
+    /// apart from a new one. A caller that cannot read the refusal may treat
+    /// it as [`Self::Unknown`].
+    Retired,
 }
 
 /// A batch the log holds some records of and not all: open at the tail, or
@@ -314,7 +319,7 @@ impl ProducerState {
         }
         let Some(producer) = self.producers.get(&producer_id) else {
             return match self.tombstones.get(&producer_id) {
-                Some(tombstone) if sequence <= tombstone.sequence => ProducerSequence::Expired,
+                Some(tombstone) if sequence <= tombstone.sequence => ProducerSequence::Retired,
                 _ => ProducerSequence::Unknown,
             };
         };
@@ -1333,10 +1338,11 @@ pub(crate) struct SavedForgotten {
 // The file is the forgotten batches in the layout below, then the carried
 // ones the same way, then the installed base u64 (u64::MAX for none), then
 // the tombstones when there are any: count u32, then per producer
-// producer_id u64, sequence u64, last u64. The crc covers all of it. A file with the forgotten batches alone predates the
-// carried set and cannot say which were this copy's own, so it carries all
-// of them: refusing too much is safe, since every copy that holds or purged
-// the records refuses them too.
+// producer_id u64, sequence u64, last u64. The crc covers all of it. A file
+// with the forgotten batches alone predates the carried set and cannot say
+// which were this copy's own, so it carries all of them: refusing too much
+// is safe, since every copy that holds or purged the records refuses them
+// too.
 fn encode_saved(saved: &SavedForgotten) -> Vec<u8> {
     let mut out = encode_forgotten(&saved.forgotten);
     let mut body = out.split_off(8);

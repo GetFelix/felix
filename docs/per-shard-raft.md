@@ -3189,7 +3189,9 @@ forgotten.
 A producer whose batches a purge removed altogether is not just dropped. Its
 newest sequence stays as a tombstone, carried in the snapshot data with the
 cut batches, so a re-send of its first batch is refused as expired instead of
-being written a second time. Up to 4096 are kept per shard, oldest out first;
+being written a second time. Kafka producers are the exception: they
+restart at sequence 0 under the same id after an epoch bump, so their re-send
+is written. Up to 4096 are kept per shard, oldest out first;
 see "`producers`: the producer snapshot" in `docs/storage-format.md`.
 
 The sender reads its log from its base to build the list, a chunk at a

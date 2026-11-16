@@ -167,8 +167,8 @@ fn a_producer_forgotten_by_a_purge_refuses_its_first_batch_again() {
     batch(&mut state, 2, 0, 3, 1);
 
     state.prune(3);
-    assert_eq!(state.classify(1, 0), ProducerSequence::Expired);
-    assert_eq!(state.classify(1, 1), ProducerSequence::Expired);
+    assert_eq!(state.classify(1, 0), ProducerSequence::Retired);
+    assert_eq!(state.classify(1, 1), ProducerSequence::Retired);
     assert_eq!(state.classify(1, 2), ProducerSequence::Unknown);
     assert_eq!(state.classify(2, 0), held(2, 0, 3, 3));
     assert_eq!(
@@ -195,8 +195,8 @@ fn past_the_bound_the_oldest_tombstone_is_dropped() {
 
     assert_eq!(state.tombstones().len(), MAX_PRODUCERS);
     assert_eq!(state.classify(0, 0), ProducerSequence::Unknown);
-    assert_eq!(state.classify(1, 0), ProducerSequence::Expired);
-    assert_eq!(state.classify(count, 0), ProducerSequence::Expired);
+    assert_eq!(state.classify(1, 0), ProducerSequence::Retired);
+    assert_eq!(state.classify(count, 0), ProducerSequence::Retired);
 }
 
 #[test]
@@ -212,7 +212,7 @@ fn tombstones_round_trip_in_the_forgotten_file_and_the_snapshot_data() {
 
     let mut restored = ProducerState::default();
     restored.restore_tombstones(&decode_saved(&file).expect("file"));
-    assert_eq!(restored.classify(5, 0), ProducerSequence::Expired);
+    assert_eq!(restored.classify(5, 0), ProducerSequence::Retired);
 
     let carried = state.carried();
     assert_eq!(
@@ -224,7 +224,7 @@ fn tombstones_round_trip_in_the_forgotten_file_and_the_snapshot_data() {
     assert_eq!(cuts.encode(), encode_forgotten(&HashMap::default()));
     let mut installed = ProducerState::keeping_cuts();
     installed.install(2, carried);
-    assert_eq!(installed.classify(6, 0), ProducerSequence::Expired);
+    assert_eq!(installed.classify(6, 0), ProducerSequence::Retired);
 }
 
 #[test]
