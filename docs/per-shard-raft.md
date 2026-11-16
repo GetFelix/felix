@@ -2784,7 +2784,8 @@ subscribe, a history page and a stream read follow the rules in "Head
 trims": until the fleet finalizes `raft_follower_read` a follower
 redirects them to the leader, and after it the follower first applies a
 read index asked of the leader. The leader confirms by a read-index round
-that it still leads before each of them but a tail subscribe. The
+that it still leads before each of them but a tail subscribe, or skips
+the round while its lease holds. The
 broker's lease and the hybrid's fence are not asked.
 
 - A member with no known leader serves no subscriber: a new subscribe is
@@ -3276,19 +3277,34 @@ a majority confirms it still leads) and one past the last write it
 answered once a majority had written it: the same value `confirm_read`
 waits for. Every trim
 answered before the read began is then committed in the follower's log,
-so its floor applies there. A tail subscribe asks too: it starts at the
-follower's committed tail, which can be below a floor it has not
-received, and the records between would reach the subscriber live. Once
-the index is applied the tail is past the trim, so past its floor.
+so its floor applies there. A tail subscribe asks too, with or without
+event offsets: it starts at the follower's committed tail, which can be
+below a floor it has not received, and the records between would reach
+the subscriber live. Once the index is applied the tail is past the trim,
+so past its floor.
 
-The leader runs a read-index round of its own (`confirm_read`) before the
-same reads, a Kafka fetch below its tail included, but not before a tail
-subscribe. A deposed leader cannot get a majority's answer, so it refuses
-the read as retryable instead of serving a log its successor has trimmed.
-A deposed leader's tail subscribers end with its term. Concurrent reads
-share one round. That costs a leader read one round trip to a majority,
-which the reads it already confirms (`state_get`, cache reads) paid
-already; a fetch at the tail and live delivery pay nothing.
+The leader needs a read index of its own before the same reads, a Kafka
+fetch below its tail included, but not before a tail subscribe. While its
+leader lease holds (`admit_local_ack`, "Acknowledging a write") it takes
+its own commit index with no round. The lease is shorter than
+`election_max` by the clock drift bound, and every voter in the majority
+that answered refuses a vote for `election_max` after that answer, so no
+successor can have been elected and trimmed yet. This rests on the same
+clock assumption as the `Leader` acknowledgement: no broker's clock
+drifts by more than `clock_drift_ppm` (10%), checked at start by
+`lease * (1 + p) / (1 - p) <= election_max`. With the lease lapsed, void
+or just woken from a suspend, the leader runs a read-index round
+(`confirm_read`). A deposed leader cannot get a majority's answer, so it
+refuses the read as retryable instead of serving a log its successor has
+trimmed. Concurrent rounds are shared. Under steady traffic the lease
+holds, so a leader read pays no round trip; an idle leader pays one.
+
+A deposed leader's tail subscribers end with its term. The leader lets a
+tail subscribe through with no round, so once the subscriber is
+registered it checks it still leads the same term. If it stepped down in
+between, the end of its term's subscribers may have run before the
+registration, so the subscribe is asked again as a follower's: a read
+index, or `not_ready` before `raft_follower_read`.
 
 A member cut off from its leader refuses these reads with a retryable
 `not_ready` for as long as it is cut off. The Rust client, and the

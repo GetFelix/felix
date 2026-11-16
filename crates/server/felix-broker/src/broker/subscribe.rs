@@ -7,7 +7,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use felix_wire::StartPosition;
 
-use super::Broker;
+use super::{Broker, StreamHandle};
 use crate::error::{BrokerError, NotReadable, Result};
 use crate::stream::{ReadBound, Subscription, SubscriptionGuard};
 
@@ -47,10 +47,15 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
+        // Before the catch-up: a lagging follower's tail can sit below a
+        // trim the leader answered, and the catch-up would deliver what it
+        // then applies below the floor.
+        let at = (tenant_id, namespace, stream, shard);
+        let unconfirmed = self.before_floor_read(&handle.state, at, true).await?;
         handle.catch_up_unwatched().await;
         let stream_state = handle.state;
         let (subscriber_id, receiver) = stream_state.register_subscriber_sized(queue_capacity);
-        Ok(Subscription {
+        let subscription = Subscription {
             receiver,
             guard: SubscriptionGuard {
                 stream_state: Arc::downgrade(&stream_state),
@@ -58,7 +63,9 @@ impl Broker {
             },
             pending: VecDeque::new(),
             skip_below: None,
-        })
+        };
+        self.after_tail_join(at, unconfirmed).await?;
+        Ok(subscription)
     }
 
     /// A cursor positioned at the tail of the stream shard.
@@ -204,7 +211,8 @@ impl Broker {
         let durable = stream_state.durable.clone();
 
         let at = (tenant_id, namespace, stream, shard);
-        self.before_floor_read(&stream_state, at, start == StartPosition::Latest)
+        let unconfirmed = self
+            .before_floor_read(&stream_state, at, start == StartPosition::Latest)
             .await?;
         let Position {
             requested,
@@ -246,6 +254,7 @@ impl Broker {
         if let Some(log) = &durable {
             refuse_below_floor(log, requested)?;
         }
+        self.after_tail_join(at, unconfirmed).await?;
 
         Ok(ResumedSubscription {
             history,
@@ -294,6 +303,8 @@ impl Broker {
             });
         };
         let at = (tenant_id, namespace, stream, shard);
+        // Nothing registers, so a leader deposed after this has nothing
+        // to end: the bound is still one it led at.
         self.before_floor_read(&handle.state, at, start == StartPosition::Latest)
             .await?;
         let position = resolve_position(&handle.state, stream, shard, start).await?;
@@ -342,6 +353,8 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_floor_read(&handle.state, at, false).await?;
         log.read_from(from_offset, max_bytes).await
     }
 
@@ -465,30 +478,61 @@ impl Broker {
         let handle = self
             .resolve_stream_handle(tenant_id, namespace, stream, shard)
             .await?;
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_handle_read(&handle, at, from).await
+    }
+
+    /// [`Broker::before_history_read`] on a handle the caller already
+    /// resolved for the shard `at` names.
+    pub async fn before_handle_read(
+        &self,
+        handle: &StreamHandle,
+        at: (&str, &str, &str, u32),
+        from: u64,
+    ) -> Result<()> {
         let Some(log) = &handle.state.durable else {
             return Ok(());
         };
-        let at = (tenant_id, namespace, stream, shard);
         self.before_floor_read(&handle.state, at, false).await?;
-        await_pending_trim(log, Some(from), stream, shard).await
+        await_pending_trim(log, Some(from), at.2, at.3).await
     }
 
     /// Ask the engine, when one serves `stream`'s log here, whether a read
     /// may be served now. `tail` for one that starts at the committed tail.
+    /// `Some(term)` when a leader let a tail read through on `term` with no
+    /// round: a subscriber it registers goes to [`Broker::after_tail_join`].
     pub(super) async fn before_floor_read(
         &self,
         state: &crate::stream::StreamState,
         (tenant_id, namespace, stream, shard): (&str, &str, &str, u32),
         tail: bool,
-    ) -> Result<()> {
+    ) -> Result<Option<u64>> {
         let Some(reads) = self.follower_reads.get() else {
-            return Ok(());
+            return Ok(None);
         };
         if !state.engine_log || state.durable.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         reads
             .before_read(tenant_id, namespace, stream, shard, tail)
+            .await
+            .map_err(|reason| not_readable(stream, shard, reason))
+    }
+
+    /// Once a tail subscriber is registered: the leader that let it through
+    /// may have been deposed before it registered, after its term's
+    /// subscribers were ended. On an error the caller drops the
+    /// subscription, which releases the registration.
+    async fn after_tail_join(
+        &self,
+        (tenant_id, namespace, stream, shard): (&str, &str, &str, u32),
+        unconfirmed: Option<u64>,
+    ) -> Result<()> {
+        let (Some(term), Some(reads)) = (unconfirmed, self.follower_reads.get()) else {
+            return Ok(());
+        };
+        reads
+            .after_tail_join(tenant_id, namespace, stream, shard, term)
             .await
             .map_err(|reason| not_readable(stream, shard, reason))
     }

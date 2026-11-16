@@ -720,6 +720,37 @@ async fn a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard() {
     led.cluster.stop().await;
 }
 
+/// A leader inside its lease passes the read barrier with no read-index
+/// round: no successor can have been elected, so no trim it lacks was
+/// answered. Cut off past its lease, it runs the round and is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_inside_its_lease_passes_the_read_barrier_with_no_round() {
+    let mut led = led().await;
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    let group = runtime.group(&shard(0)).expect("group");
+    let mut leased = false;
+    for _ in 0..50 {
+        if led.engine.admit_local_ack(&shard(0), led.term).is_ok() {
+            assert_eq!(runtime.read_barrier(&shard(0)).await, Ok(()));
+            leased = group.lease_reads.load(Relaxed) > 0;
+            if leased {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(leased, "no read was served on the lease");
+
+    led.cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+    let served = group.lease_reads.load(Relaxed);
+    assert!(runtime.read_barrier(&shard(0)).await.is_err());
+    assert_eq!(group.lease_reads.load(Relaxed), served);
+
+    led.heal();
+    led.cluster.stop().await;
+}
+
 /// A reader takes the open term, then its value. The broker is deposed,
 /// another leader commits a record the value does not have, and the broker
 /// is elected and opens again. The read must not be confirmed.

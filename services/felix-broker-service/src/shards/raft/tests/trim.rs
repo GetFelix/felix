@@ -707,6 +707,79 @@ async fn a_tail_read_on_a_follower_behind_a_trim_starts_at_or_above_its_floor() 
     stop(&members).await;
 }
 
+/// **A plain subscribe on a follower behind a trim delivers nothing below
+/// its floor.** The subscriber joins at the follower's committed tail, below
+/// the floor, and would be handed what the follower applies from there once
+/// entries flow again. A subscriber without event offsets cannot see the
+/// gap, so the follower applies the leader's read index before it joins.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plain_subscribe_on_a_follower_behind_a_trim_delivers_nothing_below_its_floor() {
+    let (net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = &members[leader];
+    let lagger = &members[(leader + 1) % 3];
+    lead.broker.allow_raft_head_trims_when(|| true);
+    let first = lead.publish(term, b"r0").await;
+    let log = lagger.shards.log_of(&orders).await.expect("log");
+    until("the lagger has the first publish", || {
+        log.commit_offset() == first + 1
+    })
+    .await;
+
+    net.starved.lock().insert(lagger.name.to_string());
+    lead.publish(term, b"r1").await;
+    let floor = lead.publish(term, b"r2").await;
+    let tail = lead.publish(term, b"r3").await + 1;
+    trim(&lead.broker, &lead.engine, term, floor, tail)
+        .await
+        .expect("trimmed");
+
+    let early = lagger.broker.subscribe("t1", "ns", "orders", 0).await;
+    let mut subscription = match early {
+        Ok(subscription) => subscription,
+        Err(BrokerError::NotReadable {
+            reason: felix_broker::NotReadable::Settling,
+            ..
+        }) => {
+            net.starved.lock().clear();
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            loop {
+                match lagger.broker.subscribe("t1", "ns", "orders", 0).await {
+                    Ok(subscription) => break subscription,
+                    Err(BrokerError::NotReadable {
+                        reason: felix_broker::NotReadable::Settling,
+                        ..
+                    }) => {}
+                    Err(err) => panic!("a tail subscribe was refused: {err}"),
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "the lagger never caught up"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+        Err(err) => panic!("a tail subscribe was refused: {err}"),
+    };
+    net.starved.lock().clear();
+    lead.publish(term, b"r4").await;
+    let mut seen = Vec::new();
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(10), subscription.recv()).await;
+        let payload = next.expect("r4 in time").expect("open");
+        if payload.as_ref() == b"r4" {
+            break;
+        }
+        seen.push(payload);
+    }
+    assert!(
+        !seen.iter().any(|payload| payload.as_ref() == b"r1"),
+        "a record below the floor reached a plain subscriber: {seen:?}"
+    );
+    stop(&members).await;
+}
+
 /// A leader cut off both ways while its successor trims below `floor`.
 /// Returns the members, the deposed leader's index, the offset of its first
 /// record and the floor.
@@ -803,6 +876,35 @@ async fn a_deposed_leader_that_missed_the_trim_is_not_read_below_it() {
     refuses_reads_below(&members[old].broker, first, floor + 1).await;
     net.cut.lock().clear();
     net.muted.lock().clear();
+    stop(&members).await;
+}
+
+/// **A leader's tail read is checked again once its subscriber registers.**
+/// It is let through with no round while the member leads, then the member
+/// steps down before the subscriber registers, so the deposal's end of the
+/// term's subscribers can miss it. The check after the registration sees a
+/// follower and asks as one: with `raft_follower_read` off, it is refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tail_subscriber_registered_after_its_leader_stepped_down_is_asked_again() {
+    use felix_broker::FollowerReads as _;
+    let (net, members, old, _, _) = deposed_after_a_trim(true).await;
+    let orders = key("orders", 0);
+    let shards = &members[old].shards;
+    let term = shards.leading(&orders).expect("still leads its term");
+    let let_through = shards
+        .before_read("t1", "ns", "orders", 0, true)
+        .await
+        .expect("a leader's tail read");
+    assert_eq!(let_through, Some(term));
+
+    net.cut.lock().clear();
+    net.muted.lock().clear();
+    until("the old leader follows", || {
+        shards.leading(&orders).is_none() && shards.runtime.follows(&orders)
+    })
+    .await;
+    let rejoined = shards.after_tail_join("t1", "ns", "orders", 0, term).await;
+    assert_eq!(rejoined, Err(felix_broker::NotReadable::OnLeader));
     stop(&members).await;
 }
 

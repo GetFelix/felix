@@ -936,8 +936,10 @@ impl felix_broker::EngineLogs for RaftShards {
 /// A follower's log may lack a head trim the leader already answered, and
 /// so may a leader cut off from a successor that trimmed. A read that could
 /// start below a floor therefore waits for a read index: a follower asks
-/// the leader for one, a leader runs its own round. Before the fleet can
-/// send the follower's message, the leader serves the read. See
+/// the leader for one, a leader runs its own round unless its lease holds.
+/// A leader's tail read is checked again once its subscriber registers.
+/// Before the fleet can send the follower's message, the leader serves the
+/// read. See
 /// `docs/per-shard-raft.md`, "Head trims".
 impl felix_broker::FollowerReads for RaftShards {
     fn before_read<'a>(
@@ -947,31 +949,70 @@ impl felix_broker::FollowerReads for RaftShards {
         stream: &'a str,
         shard: u32,
         tail: bool,
-    ) -> Pin<Box<dyn Future<Output = Result<(), felix_broker::NotReadable>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Option<u64>, felix_broker::NotReadable>> + Send + 'a>>
+    {
         Box::pin(async move {
-            let key = ShardKey {
-                tenant_id: tenant_id.to_string(),
-                namespace: namespace.to_string(),
-                stream: stream.to_string(),
-                shard,
-                kind: ShardKind::Stream,
-            };
+            let key = stream_key(tenant_id, namespace, stream, shard);
             if self.runtime.status(&key).is_none() {
-                return Ok(());
+                return Ok(None);
             }
             if self.runtime.follows(&key) {
                 if !self.broker.raft_follower_reads_allowed() {
                     return Err(felix_broker::NotReadable::OnLeader);
                 }
-            } else if tail {
-                // A deposed leader's tail subscribers end with its term.
+            } else if tail && let Some(term) = self.runtime.led_term(&key) {
+                // A deposed leader's tail subscribers end with its term,
+                // so one registered while it still leads needs no round.
+                return Ok(Some(term));
+            }
+            self.read_barrier(&key, stream, shard).await.map(|()| None)
+        })
+    }
+
+    fn after_tail_join<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        shard: u32,
+        term: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<(), felix_broker::NotReadable>> + Send + 'a>> {
+        Box::pin(async move {
+            let key = stream_key(tenant_id, namespace, stream, shard);
+            // Still leading `term` after the registration: the deposal, if
+            // it comes, ends this subscriber with the term's others.
+            if self.runtime.led_term(&key) == Some(term) {
                 return Ok(());
             }
-            self.runtime.read_barrier(&key).await.map_err(|why| {
-                tracing::debug!(stream, shard, why, "a read was refused");
-                felix_broker::NotReadable::Settling
-            })
+            if self.runtime.follows(&key) && !self.broker.raft_follower_reads_allowed() {
+                return Err(felix_broker::NotReadable::OnLeader);
+            }
+            self.read_barrier(&key, stream, shard).await
         })
+    }
+}
+
+impl RaftShards {
+    async fn read_barrier(
+        &self,
+        key: &ShardKey,
+        stream: &str,
+        shard: u32,
+    ) -> Result<(), felix_broker::NotReadable> {
+        self.runtime.read_barrier(key).await.map_err(|why| {
+            tracing::debug!(stream, shard, why, "a read was refused");
+            felix_broker::NotReadable::Settling
+        })
+    }
+}
+
+fn stream_key(tenant_id: &str, namespace: &str, stream: &str, shard: u32) -> ShardKey {
+    ShardKey {
+        tenant_id: tenant_id.to_string(),
+        namespace: namespace.to_string(),
+        stream: stream.to_string(),
+        shard,
+        kind: ShardKind::Stream,
     }
 }
 

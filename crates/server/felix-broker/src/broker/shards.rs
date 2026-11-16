@@ -48,10 +48,11 @@ pub trait EngineLogs: Send + Sync + std::fmt::Debug {
 /// refuses the read.
 pub trait FollowerReads: Send + Sync + std::fmt::Debug {
     /// Ok when this broker may serve the read now. `tail` is a read that
-    /// starts at the committed tail, a `Latest` subscribe: a leader serves
-    /// it at once, a follower still applies the read index, since its own
-    /// tail can be below a floor the leader answered. Live delivery is
-    /// never asked.
+    /// starts at the committed tail, a `Latest` or plain subscribe: a
+    /// leader serves it at once and answers `Some` of the term it leads, a
+    /// follower still applies the read index, since its own tail can be
+    /// below a floor the leader answered. Live delivery is never asked.
+    #[allow(clippy::type_complexity)]
     fn before_read<'a>(
         &'a self,
         tenant_id: &'a str,
@@ -59,6 +60,21 @@ pub trait FollowerReads: Send + Sync + std::fmt::Debug {
         stream: &'a str,
         shard: u32,
         tail: bool,
+    ) -> std::pin::Pin<
+        Box<dyn Future<Output = std::result::Result<Option<u64>, NotReadable>> + Send + 'a>,
+    >;
+
+    /// After a tail subscriber that [`FollowerReads::before_read`] let
+    /// through on a leader's `term` is registered. Ok when the member still
+    /// leads `term`, so a later deposal ends the subscriber. Otherwise the
+    /// read is asked again as a follower's.
+    fn after_tail_join<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        namespace: &'a str,
+        stream: &'a str,
+        shard: u32,
+        term: u64,
     ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<(), NotReadable>> + Send + 'a>>;
 }
 
@@ -830,10 +846,10 @@ impl StreamHandle {
         }
         let handle = self.clone();
         let pass = tokio::spawn(async move {
-            // A pass already running is bringing it up anyway.
-            let Ok(_pass) = handle.state.log_pass.try_lock() else {
-                return;
-            };
+            // Waits out a pass already running rather than skipping: that
+            // pass may hand a subscriber registered after this returns what
+            // was applied before the caller's read index, below a floor.
+            let _pass = handle.state.log_pass.lock().await;
             let _ = super::publish::deliver_from_log(&handle).await;
         });
         let _ = pass.await;

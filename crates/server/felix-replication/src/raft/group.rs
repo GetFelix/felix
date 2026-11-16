@@ -106,6 +106,9 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
+    /// Reads below a floor this leader served on its lease, with no round.
+    #[cfg(test)]
+    pub(crate) lease_reads: AtomicU64,
     /// The newest target this member was told, kept in memory only: after
     /// a restart nothing changes until the control plane speaks again.
     target: tokio::sync::watch::Sender<Option<Target>>,
@@ -690,6 +693,8 @@ impl Group {
             gate: Arc::default(),
             #[cfg(test)]
             apply_hold,
+            #[cfg(test)]
+            lease_reads: AtomicU64::new(0),
             target: tokio::sync::watch::Sender::default(),
             progress: Arc::default(),
             lag_threshold,
@@ -1420,6 +1425,9 @@ impl Group {
             let Some(term) = self.open_term() else {
                 return Err("this member leads but has not opened its term");
             };
+            if let Some(bound) = self.leased_index(term) {
+                return self.lease_read(term, bound).await;
+            }
             return self
                 .confirm_read(term)
                 .await
@@ -1458,6 +1466,51 @@ impl Group {
         self.applied_through(last, deadline, timed_out)
             .await
             .map_err(|_| "the read index was not applied in time")
+    }
+
+    /// The read index of `term` with no round, while this member holds its
+    /// leader lease for `term` ([`Group::admit_local_ack`]). The lease is
+    /// shorter than `election_max` by the clock drift bound, so no voter
+    /// that answered within it grants a successor a vote yet: no other
+    /// leader exists and every answered trim is in this log. That rests on
+    /// the clocks drifting no more than `clock_drift_ppm` (see
+    /// `docs/per-shard-raft.md`, "Head trims").
+    fn leased_index(&self, term: u64) -> Option<u64> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        self.admit_local_ack(term).ok()?;
+        // Read after the check: a commit index seen before it could be of
+        // a term already over.
+        let committed = {
+            let metrics = self.raft.metrics();
+            let metrics = metrics.borrow_watched();
+            metrics.local_committed.map_or(0, |id| id.index + 1)
+        };
+        let answered = *self.answered.lock();
+        let answered = answered
+            .filter(|at| at.term == term)
+            .map_or(0, |at| at.index + 1);
+        #[cfg(test)]
+        self.lease_reads.fetch_add(1, Ordering::Relaxed);
+        Some(committed.max(answered))
+    }
+
+    /// Wait to apply `bound` from [`Group::leased_index`], then check the
+    /// term is still open, as [`Group::confirm_read`] does.
+    async fn lease_read(&self, term: u64, bound: u64) -> Result<(), &'static str> {
+        if let Some(last) = bound.checked_sub(1) {
+            let patience = Duration::from_millis(self.pace.timers.election_max);
+            let timed_out = CommitError::TimedOut {
+                what: "read",
+                timeout: patience,
+            };
+            self.applied_through(last, tokio::time::Instant::now() + patience, timed_out)
+                .await
+                .map_err(|_| "the read index was not applied in time")?;
+        }
+        if self.open_term() != Some(term) {
+            return Err("the shard closed while the read waited for its apply");
+        }
+        Ok(())
     }
 
     /// One past the index a reader of `term` must have applied: the read

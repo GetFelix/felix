@@ -87,6 +87,7 @@ pub(super) async fn resolve(
         located.stream.stream.clone(),
         located.shard,
     ));
+    let confirmed = handle.clone();
     Ok(Readable {
         log,
         appended,
@@ -94,10 +95,11 @@ pub(super) async fn resolve(
         confirm: Arc::new(move |from| {
             let broker = Arc::clone(&broker);
             let at = Arc::clone(&at);
+            let handle = confirmed.clone();
             Box::pin(async move {
                 let (tenant_id, namespace, stream, shard) = &*at;
                 broker
-                    .before_history_read(tenant_id, namespace, stream, *shard, from)
+                    .before_handle_read(&handle, (tenant_id, namespace, stream, *shard), from)
                     .await
             })
         }),

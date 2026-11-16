@@ -1212,6 +1212,14 @@ impl GroupRuntime {
         self.group(shard).is_some_and(|group| !group.leads())
     }
 
+    /// The term this broker's member leads `shard` in and has it open,
+    /// if it does.
+    pub fn led_term(&self, shard: &ShardKey) -> Option<u64> {
+        self.group(shard)
+            .filter(|group| group.leads())
+            .and_then(|group| group.open_term())
+    }
+
     /// Before this broker serves a read of `shard` that could start below
     /// a head trim's floor: a follower applies the leader's read index, and
     /// a leader confirms by a read-index round that it still leads, so
