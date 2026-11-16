@@ -698,6 +698,9 @@ where
             let assignments_changed = Arc::new(tokio::sync::Notify::new());
             if let Some(engine_shards) = &engine_shards {
                 engine_shards.wake_with(Arc::clone(&assignments_changed));
+                if let Some(lease) = ingress.fence().lease() {
+                    engine_shards.follow_lease(Arc::clone(lease));
+                }
             }
             let routes_changed = Arc::new(tokio::sync::Notify::new());
             // Leaderships the replicas elect, only where this broker checks

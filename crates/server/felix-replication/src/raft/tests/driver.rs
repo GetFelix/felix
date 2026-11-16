@@ -44,7 +44,7 @@ fn target(brokers: &[&str], counter: u64) -> Target {
 
 fn told(brokers: &[&str], counter: u64, term: u64) -> Told {
     Told {
-        target: target(brokers, counter),
+        target: Some(target(brokers, counter)),
         term,
     }
 }

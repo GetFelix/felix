@@ -3866,17 +3866,16 @@ it is told again.
 A target names members, not brokers, and a member is a copy id. The copy
 id of a broker the group does not have yet is minted on that broker, when
 it opens its shard directory with `GroupRuntime::open_copy`, so it is
-asked for, never guessed. `GroupRuntime::target_members` turns a list of
-brokers into the members a target names, the way the first members are
-asked for ("Forming a group"): a question to copy 0 is refused with the
-copy the broker holds. A broker that does not answer keeps the member the
-membership already names on it, so a down voter that stays does not block
-a change; a new broker that does not answer stops the call. The asking
-broker's own member is named only when the list names its broker, so a
-target can drain the leader's broker. A broker
-whose copy was wiped answers with its new id, so the target names the new
-copy: the driver adds it as a learner and drops the old id once the new
-copy has caught up.
+asked for, never guessed: each broker reports its copy id to the control
+plane, and the target the control plane stores names it. The leader is
+told exactly that stored set. A broker whose copy was wiped reports its
+new id, so the next target names the new copy: the driver adds it as a
+learner and drops the old id once the new copy has caught up.
+
+`GroupRuntime::target_members` asks the brokers for their copies the way
+the first members are asked for ("Forming a group"). It exists only in
+test builds, standing in for the control plane: a set it derives may be
+one the control plane never ordered, which no re-form source holds.
 
 Where a broker's targets come from is in "Where a target comes from"
 below.
@@ -4141,19 +4140,63 @@ that started leading at time `since`:
 2. **A view that reaches it.** A feed answer whose request started after
    `since` and whose checkpoint is at or past that head.
 
+On the broker, `LeaseState::record_head` keeps the newest head a heartbeat
+brought with the time that heartbeat was sent, the heartbeat asks for one
+while a led shard has no bar (`LeaseState::wants_head`), and
+`Lead::met_by` in `shards/raft.rs` is the check above. The broker tells
+each leading member its target on every feed pass that meets it; the
+member keeps only a newer version, or the same one for a newer term.
+
+The members told are the control plane's stored `target.members`, copy ids
+included, never a set the broker derives from the copies it sees. A set
+the control plane never ordered is in no re-form source, so a leader that
+wrote it and then lost a majority of it would leave nothing to re-form
+from.
+
+A view that meets the bar and carries no target for a led shard is told
+too, as "no target" for that term (`GroupRuntime::untarget`). Placement
+moves a leader only once the target is told for its term, and a leader
+that still holds a target from an earlier term would otherwise wait for a
+tell that never comes while the control plane has no target for the shard.
+
+"No target" is told only from a view that says it has none. While some
+registered broker has not acknowledged the placement incarnation, or a
+restore landed during the read, or the read was a confirmed one, the feed
+leaves every target out and sets `targets_withheld` on each item. A broker
+reads that as no view at all and tells nothing, so a leader keeps the
+target it holds and does not hand leadership away by placement during a
+restore. The field is absent whenever targets are not withheld.
+
+A new leader waits for a feed request that started after its term began.
+A long poll already in flight does not count, so with nothing changing on
+the feed the wait can be a whole long poll, about 20 s (#2679).
+
 A target write is a shard-record change, so it is on the assignment feed
 with its own sequence. A restore brings the feed's sequence back with the
 backup, so a head taken before it can sit above every sequence the new
-feed reaches. When the broker acknowledges a new incarnation it drops
-every bar and moves each `since` to that moment, so it takes a new head
-and a view of the restored feed.
+feed reaches. When the broker acknowledges a new incarnation it should
+drop every bar and move each `since` to that moment, so it takes a new
+head and a view of the restored feed. That is not built yet: today a head
+lower than a shard's bar replaces the bar and moves its `since`, which
+reaches the same state once a heartbeat brings the restored feed's head.
 
 Moving `since` does not let an old target through. A control-plane
 follower that has not applied the restore can still answer with
-checkpoint 41, past a new head of 12, and with target (0, 9). The driver
-refuses a target whose incarnation is below the one its broker has
-acknowledged or its log holds (`Wait::StaleTarget`), so (0, 9) is never
-acted on, and the restored feed's (1, 0) replaces it.
+checkpoint 41, past a new head of 12, and with target (0, 9). The
+heartbeat that brought head 12 also brought placement incarnation 1, and
+the broker records the incarnation before the head
+(`LeaseState::record_placement`), so any pass that sees the new bar sees
+incarnation 1 too. Two checks then hold (0, 9) back:
+
+- The broker does not tell a target whose incarnation is below the one the
+  heartbeat reported. That view came from a member that has not applied
+  the restore, so it is not fresh at all (`RaftShards::answered`).
+- The broker hands the same incarnation to every leader it runs
+  (`GroupRuntime::ack_incarnation`), and the driver refuses a target below
+  it or below the one its log holds (`Wait::StaleTarget`). This covers a
+  target told before the restore that the leader still holds.
+
+So (0, 9) is never acted on, and the restored feed's (1, 0) replaces it.
 
 Why the versions leaders act on never go back: a leader acts on a target
 only after the control plane committed it. It hands leadership over after
@@ -4208,10 +4251,11 @@ the id back as a voter.
 
 What placement does not do yet for a Raft shard:
 
-- **Brokers do not report copy ids or read targets yet.** The control
-  plane keeps the records and the route (`raft_copy_ids`, `raft_target`,
-  `POST /v1/nodes/{node_id}/raft-copy-id`) and the feed carries the target
-  as `target`, but no broker sends an id or hands a target to its leader.
+- **Brokers do not report copy ids yet.** The control plane keeps the
+  records and the route (`raft_copy_ids`, `raft_target`,
+  `POST /v1/nodes/{node_id}/raft-copy-id`), but no broker sends an id. A
+  broker does read the feed's `target` and tells it to the member it leads
+  ("A target lasts one term").
 - **A dropped copy keeps its directory.** Deleting it needs the control
   plane's doomed set and the leaders' membership reports ("Membership"
   above, `DoomGuard` in the model), which are new metadata.

@@ -92,6 +92,31 @@ pub struct ShardAssignment {
     /// [`felix_router::Route::readmitted`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub readmitted: Vec<Readmitted>,
+    /// The voters a Raft shard's group should have. Absent for a hybrid
+    /// shard, before every broker acknowledged the placement incarnation,
+    /// and from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<RaftTarget>,
+    /// The control plane left the target out on purpose, so an absent
+    /// `target` here says nothing about the shard. Absent from a control
+    /// plane that predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub targets_withheld: bool,
+}
+
+/// A Raft shard's target as the control plane sends it.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RaftTarget {
+    pub version: RaftTargetVersion,
+    /// Copy id by node id.
+    pub members: std::collections::BTreeMap<String, u64>,
+}
+
+/// Compared by `incarnation`, then `counter`.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RaftTargetVersion {
+    pub incarnation: u64,
+    pub counter: u64,
 }
 
 /// One entry of [`ShardAssignment::readmitted`].
@@ -192,6 +217,8 @@ impl PreviousSet {
             pending_set: None,
             previous_generation: None,
             readmitted: Default::default(),
+            target: None,
+            targets_withheld: false,
         }
     }
 }

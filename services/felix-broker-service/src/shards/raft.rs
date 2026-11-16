@@ -26,7 +26,7 @@ use felix_common::fleet::{self, FleetGate};
 use felix_common::random::{HashMap, HashSet};
 use felix_replication::driver::WriteFence;
 use felix_replication::quorum::ShardServing;
-use felix_replication::raft::{GroupId, GroupRuntime, RaftEngine};
+use felix_replication::raft::{GroupId, GroupRuntime, MemberId, RaftEngine, Target, TargetVersion};
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
 use felix_storage::raft_copy::{CopyRoot, holds_log_without_copy};
@@ -35,6 +35,7 @@ use futures::StreamExt;
 use super::routing::{Dispatch, EngineShards, Reason, Taken};
 use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
+use crate::cluster::lease::{Head, LeaseState};
 
 pub(crate) mod floor;
 
@@ -101,8 +102,13 @@ pub(crate) struct RaftShards {
     /// The data root, once the restore gate has passed it. No member opens
     /// before.
     root: std::sync::OnceLock<Arc<CopyRoot>>,
-    /// The feed's wake, so the pass after the root opens comes at once.
-    wake: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+    /// What the last pass's feed view carried for each member open at that
+    /// view's stream incarnation: its target, or `None` for no target.
+    targets: parking_lot::Mutex<HashMap<ShardKey, Option<Target>>>,
+    /// Every target a member kept, with the term it was told for. `None`
+    /// is a kept "no target".
+    #[cfg(test)]
+    told: parking_lot::Mutex<Vec<(ShardKey, Option<Target>, u64)>>,
     /// While true, a marker read does not return.
     #[cfg(test)]
     stall_reads: tokio::sync::watch::Sender<bool>,
@@ -176,6 +182,8 @@ impl RaftShards {
             broker: Arc::clone(&broker),
             terms: Arc::default(),
             ending: Arc::default(),
+            wake: std::sync::OnceLock::new(),
+            lease: std::sync::OnceLock::new(),
             #[cfg(test)]
             stall: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
@@ -209,7 +217,9 @@ impl RaftShards {
             carried_over: parking_lot::Mutex::default(),
             held_warn: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
-            wake: std::sync::OnceLock::new(),
+            targets: parking_lot::Mutex::default(),
+            #[cfg(test)]
+            told: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
             epochs: parking_lot::Mutex::default(),
         });
@@ -223,7 +233,7 @@ impl RaftShards {
     /// first call counts.
     pub(crate) fn set_root(&self, root: Arc<CopyRoot>) {
         if self.root.set(root).is_ok()
-            && let Some(wake) = self.wake.get()
+            && let Some(wake) = self.leading.wake.get()
         {
             wake.notify_one();
         }
@@ -549,8 +559,8 @@ impl RaftShards {
     }
 
     /// Whether `key`'s group here has voters other than the brokers
-    /// placement names. Placement cannot change a formed group yet, so the
-    /// group keeps the members it formed with and this says so.
+    /// placement names. Its leader moves it to the target the control plane
+    /// derives from placement, so this lasts until the group converges.
     fn off_placement(&self, key: &ShardKey, placed: &BTreeSet<&str>) -> bool {
         let voters = self.runtime.voters(key).unwrap_or_default();
         let differs = !voters.is_empty()
@@ -566,9 +576,8 @@ impl RaftShards {
                 shard = ?key,
                 ?voters,
                 ?placed,
-                "a Raft shard's placement differs from its group's members; the group keeps \
-                 its members, because moves, drains and replacement are not supported on \
-                 Raft shards yet"
+                "a Raft shard's placement differs from its group's members; the group is \
+                 converging to its target"
             );
         }
         differs
@@ -852,6 +861,36 @@ impl EngineShards for RaftShards {
                 }
             }
             metrics::gauge!(OFF_PLACEMENT).set(f64::from(off_placement));
+            // Kept only for the incarnation the member runs: a version counts
+            // within one stream incarnation.
+            let targets = fed
+                .iter()
+                .filter(|(key, (assignment, _))| {
+                    // A withheld view tells nothing: the shard keeps the
+                    // target it holds instead of being told there is none.
+                    !assignment.targets_withheld
+                        && open
+                            .get(*key)
+                            .is_some_and(|member| member.incarnation == assignment.incarnation)
+                })
+                .map(|(key, (assignment, _))| {
+                    // The control plane's members verbatim, copy ids too: a
+                    // set it never stored is in no re-form source.
+                    let target = assignment.target.as_ref().map(|target| Target {
+                        voters: target
+                            .members
+                            .iter()
+                            .map(|(node, copy)| MemberId::new(node.as_str(), *copy))
+                            .collect(),
+                        version: TargetVersion {
+                            incarnation: target.version.incarnation,
+                            counter: target.version.counter,
+                        },
+                    });
+                    (key.clone(), target)
+                })
+                .collect();
+            *self.targets.lock() = targets;
             let led: Vec<&ShardKey> = open
                 .keys()
                 .filter(|key| self.leading(key).is_some())
@@ -917,7 +956,65 @@ impl EngineShards for RaftShards {
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {
-        let _ = self.wake.set(wake);
+        if let Some(lease) = self.leading.lease.get() {
+            lease.wake_on_head(Arc::clone(&wake));
+        }
+        let _ = self.leading.wake.set(wake);
+    }
+
+    fn follow_lease(&self, lease: Arc<LeaseState>) {
+        if let Some(wake) = self.leading.wake.get() {
+            lease.wake_on_head(Arc::clone(wake));
+        }
+        let _ = self.leading.lease.set(lease);
+    }
+
+    /// Tells each member that leads the target the view carries, or that it
+    /// carries none, once the view is fresh enough for its term (see
+    /// [`Lead::met_by`]). Told on every pass: the member keeps only a newer
+    /// version, or the same one for a newer term.
+    fn answered(&self, as_of: Option<tokio::time::Instant>, checkpoint: Option<u64>) {
+        let Some(lease) = self.leading.lease.get() else {
+            return;
+        };
+        let head = lease.head();
+        // Read after the head: the heartbeat records it first, so a bar
+        // from a restored control plane comes with its incarnation.
+        let placement = lease.placement();
+        self.runtime.ack_incarnation(placement);
+        let mut tell = Vec::new();
+        {
+            let targets = self.targets.lock();
+            let mut terms = self.leading.terms.lock();
+            for (key, lead) in terms.iter_mut() {
+                lead.take_bar(head);
+                if !lead.met_by(as_of, checkpoint) {
+                    continue;
+                }
+                match targets.get(key) {
+                    // From a control-plane member that has not applied the
+                    // restore its leader reported: not a fresh view at all.
+                    Some(Some(target)) if target.version.incarnation < placement => {}
+                    Some(target) => tell.push((key.clone(), target.clone(), lead.term)),
+                    None => {}
+                }
+            }
+            // Under the lock `opened` sets it under, so a new term's want
+            // is not lost.
+            lease.want_head(terms.values().any(|lead| lead.bar.is_none()));
+        }
+        for (key, target, term) in tell {
+            let kept = match &target {
+                Some(target) => self.runtime.retarget(&key, target.clone(), term),
+                None => self.runtime.untarget(&key, term),
+            };
+            if kept {
+                let version = target.as_ref().map(|target| target.version);
+                tracing::debug!(shard = ?key, ?version, term, "told the shard's Raft leader its target");
+                #[cfg(test)]
+                self.told.lock().push((key, target, term));
+            }
+        }
     }
 
     fn shutdown(&self) -> Pin<Box<dyn Future<Output = bool> + Send + '_>> {
@@ -970,6 +1067,11 @@ struct Leading {
     /// later term is served while one is left: its subscribers would be
     /// ended with the deposed term's.
     ending: Arc<parking_lot::Mutex<HashMap<ShardKey, usize>>>,
+    /// The feed's wake, so the pass after the root opens, or after a term
+    /// begins, comes at once.
+    wake: std::sync::OnceLock<Arc<tokio::sync::Notify>>,
+    /// Brings the feed's head a new term's target waits for.
+    lease: std::sync::OnceLock<Arc<LeaseState>>,
     /// While true, a new term's move to the committed tail does not start.
     #[cfg(test)]
     stall: tokio::sync::watch::Sender<bool>,
@@ -983,6 +1085,52 @@ struct Lead {
     /// The stream is at the committed tail, so a write of this term may be
     /// handed over.
     open: bool,
+    /// When the term began here. A feed view fetched earlier may hold a
+    /// target older than one an earlier leader acted on.
+    since: tokio::time::Instant,
+    /// The feed's head from a heartbeat sent at or after `since`. A view
+    /// fetched after `since` from a control-plane member that lags can
+    /// still miss a target written before it, but cannot reach this.
+    bar: Option<u64>,
+}
+
+impl Lead {
+    fn new(term: u64) -> Self {
+        Self {
+            term,
+            open: false,
+            since: tokio::time::Instant::now(),
+            bar: None,
+        }
+    }
+
+    /// Take the bar from `head`, the newest a heartbeat brought, once one
+    /// sent at or after `since` has. Heads only grow on one feed, so a lower
+    /// one means it was reset: it becomes the bar, and `since` moves to now
+    /// so a view of the old feed does not meet it.
+    fn take_bar(&mut self, head: Option<Head>) {
+        let Some(head) = head.filter(|head| head.sent >= self.since) else {
+            return;
+        };
+        match self.bar {
+            None => self.bar = Some(head.seq),
+            Some(bar) if head.seq < bar => {
+                self.bar = Some(head.seq);
+                self.since = tokio::time::Instant::now();
+            }
+            Some(_) => {}
+        }
+    }
+
+    /// Whether a feed view fetched by a request that started at `as_of`,
+    /// and that reached `checkpoint`, may tell this term its target. Never
+    /// before there is a bar: a control plane that sends no head gives none.
+    fn met_by(&self, as_of: Option<tokio::time::Instant>, checkpoint: Option<u64>) -> bool {
+        self.bar.is_some_and(|bar| {
+            as_of.is_some_and(|as_of| as_of >= self.since)
+                && checkpoint.is_some_and(|checkpoint| checkpoint >= bar)
+        })
+    }
 }
 
 impl Leading {
@@ -1023,7 +1171,13 @@ impl WriteFence for Leading {
             if terms.get(key).is_some_and(|lead| lead.term >= term) {
                 return;
             }
-            terms.insert(key.clone(), Lead { term, open: false });
+            terms.insert(key.clone(), Lead::new(term));
+            if let Some(lease) = self.lease.get() {
+                lease.want_head(true);
+            }
+        }
+        if let Some(wake) = self.wake.get() {
+            wake.notify_one();
         }
         let (broker, terms, ending, key) = (
             Arc::clone(&self.broker),

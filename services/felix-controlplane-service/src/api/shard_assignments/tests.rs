@@ -8,6 +8,7 @@ use tower::ServiceExt;
 
 use super::MAX_CHANGES_WAIT_MS;
 use crate::api::build_router;
+use crate::api::types::RoutedShardAssignment;
 use crate::model::{ShardAssignment, ShardState};
 use crate::store::ControlPlaneStore;
 use crate::store::memory::InMemoryStore;
@@ -406,6 +407,7 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
     );
     assert!(item.get("raft_target").is_none(), "{item}");
     assert!(item.get("raft_copy_ids").is_none(), "{item}");
+    assert!(item.get("targets_withheld").is_none(), "{item}");
 
     // A broker holds an incarnation this store never issued: the store
     // moves past it, and nobody has acknowledged the new one.
@@ -426,9 +428,14 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
         snapshot().await["items"][0]["target"],
         serde_json::Value::Null
     );
+    assert_eq!(
+        snapshot().await["items"][0]["targets_withheld"],
+        serde_json::json!(true)
+    );
     let changes = fixture.changes("since=0".to_string()).await;
     for change in changes["items"].as_array().expect("items") {
         assert_eq!(change["assignment"]["target"], serde_json::Value::Null);
+        assert_eq!(change["assignment"]["targets_withheld"], true);
     }
 
     for node in &nodes {
@@ -441,6 +448,11 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
     assert_eq!(
         snapshot().await["items"][0]["target"]["version"],
         serde_json::json!({"incarnation": current, "counter": 3})
+    );
+    assert!(
+        snapshot().await["items"][0]
+            .get("targets_withheld")
+            .is_none()
     );
     // Records read before a restore that landed during the read go out
     // without their target, even once everyone has acknowledged.
@@ -456,4 +468,25 @@ async fn the_feed_leaves_a_target_out_until_every_broker_acknowledged() {
             .expect("gate"),
         None
     );
+}
+
+/// A restore that lands during a read withholds the targets as well, and the
+/// flag is absent from the JSON whenever they are not withheld.
+#[tokio::test]
+async fn a_withheld_view_says_so_and_an_open_one_does_not() {
+    let fixture = fixture().await;
+    fixture.assign("broker-x").await;
+    let items = fixture.store.list_shard_assignments().await.expect("list");
+    let routings = Default::default();
+    let open = super::routed(&routings, items[0].clone(), Some(4));
+    let withheld = super::routed(&routings, items[0].clone(), None);
+    assert!(!open.targets_withheld);
+    assert!(withheld.targets_withheld);
+    let json = |item: &RoutedShardAssignment| serde_json::to_value(item).expect("json");
+    assert!(json(&open).get("targets_withheld").is_none());
+    assert_eq!(json(&withheld)["targets_withheld"], true);
+    let back: RoutedShardAssignment = serde_json::from_value(json(&withheld)).expect("back");
+    assert_eq!(back, withheld);
+    let old: RoutedShardAssignment = serde_json::from_value(json(&open)).expect("old");
+    assert!(!old.targets_withheld);
 }

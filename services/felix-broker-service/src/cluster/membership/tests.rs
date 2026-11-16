@@ -34,6 +34,8 @@ struct Calls {
     lookup: Option<(u64, String)>,
     /// The placement incarnation every answer carries, left out when unset.
     placement_incarnation: Option<u64>,
+    /// The feed head an answer carries when the beat asks for it.
+    assignment_seq: Option<u64>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -109,6 +111,12 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                     });
                     if let Some(told) = calls.placement_incarnation {
                         answer["placement_incarnation"] = told.into();
+                    }
+                    if let Some(seq) = calls.assignment_seq
+                        && calls.heartbeat_bodies.last().expect("pushed")["want_assignment_seq"]
+                            == true
+                    {
+                        answer["assignment_seq"] = seq.into();
                     }
                     Ok(Json(answer))
                 },
@@ -662,6 +670,73 @@ async fn the_heartbeat_reports_a_placement_incarnation_only_once_it_is_on_disk()
     assert_eq!(
         felix_storage::raft_copy::acked_placement_incarnation(root.path()).expect("read"),
         3
+    );
+
+    shutdown.cancel();
+    beating.await.expect("heartbeat task");
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// While a led Raft shard waits for the feed's head, every beat asks for
+/// it, and the head and placement incarnation an answer brings reach the
+/// lease. Once nothing waits, beats stop asking.
+#[tokio::test]
+async fn the_heartbeat_asks_for_the_head_while_a_led_shard_wants_it() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        placement_incarnation: Some(2),
+        assignment_seq: Some(17),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let registration = register(
+        &link(&client, &base_url),
+        &config(),
+        &crate::cluster::credential::NodeCredential::new("a-node-token"),
+        None,
+    )
+    .await
+    .expect("register");
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(
+        std::time::Duration::from_secs(30),
+    ));
+    lease.want_head(true);
+    let shutdown = CancellationToken::new();
+    let beating = tokio::spawn(run_heartbeat(
+        link(&client, &base_url),
+        registration,
+        shutdown.clone(),
+        Arc::new(AtomicU64::new(0)),
+        Arc::clone(&lease),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+    ));
+    let beats = || calls.lock().expect("lock").heartbeat_bodies.clone();
+    for _ in 0..400 {
+        if lease.head().is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(lease.head().map(|head| head.seq), Some(17), "{:?}", beats());
+    assert_eq!(lease.placement(), 2);
+    assert_eq!(beats()[0]["want_assignment_seq"], true);
+
+    lease.want_head(false);
+    let len = beats().len();
+    for _ in 0..400 {
+        if beats().len() >= len + 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let after = beats();
+    assert!(
+        after[len + 1..]
+            .iter()
+            .all(|body| body.get("want_assignment_seq").is_none()),
+        "{after:?}"
     );
 
     shutdown.cancel();

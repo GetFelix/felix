@@ -10,6 +10,7 @@
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -242,6 +243,9 @@ pub(crate) struct Driver<M> {
     unchecked: Option<(u64, Basis)>,
     progress: Reported,
     pub(crate) placing: Placing,
+    /// The highest placement incarnation the broker has heard of. A target
+    /// from a lower one was ordered before a restore and is never acted on.
+    pub(crate) acked: Arc<AtomicU64>,
 }
 
 impl<M: Member> Driver<M> {
@@ -266,6 +270,7 @@ impl<M: Member> Driver<M> {
             unchecked: None,
             progress: Reported(progress),
             placing,
+            acked: Arc::default(),
         }
     }
 
@@ -274,7 +279,7 @@ impl<M: Member> Driver<M> {
     /// be older than what an earlier leader of this term's view acted on.
     pub(crate) async fn pass(&mut self, told: Option<&Told>) -> Pass {
         self.pass_for(|term| match told {
-            Some(told) if told.term == term => (Some(&told.target), false),
+            Some(told) if told.term == term => (told.target.as_ref(), false),
             Some(_) => (None, true),
             None => (None, false),
         })
@@ -323,7 +328,8 @@ impl<M: Member> Driver<M> {
             self.idle_looks = 0;
         }
         let transferring = self.transfer == Some(basis.term);
-        let view = view(&me, &look, transferring, self.lag_threshold);
+        let acked = self.acked.load(Ordering::Acquire);
+        let view = view(&me, &look, transferring, self.lag_threshold, acked);
         let step = (self.decide)(&view, target);
         if let Err(broken) = allowed(&view, &step) {
             self.halted = Some(basis.term);
@@ -596,7 +602,8 @@ pub(crate) async fn run<M: Member>(
                 }
                 // The same target told again for a new term must not reset
                 // the pacing of transfers that keep failing.
-                let version = |told: Option<&Told>| told.map(|told| told.target.version);
+                let version =
+                    |told: Option<&Told>| told.and_then(|told| told.target.as_ref()).map(|target| target.version);
                 if version(target.borrow().as_ref()) != version(goal.as_ref()) {
                     driver.retargeted();
                 }
@@ -617,7 +624,13 @@ pub(crate) async fn run<M: Member>(
     }
 }
 
-fn view(me: &MemberId, look: &Look, transferring: bool, lag_threshold: u64) -> View {
+fn view(
+    me: &MemberId,
+    look: &Look,
+    transferring: bool,
+    lag_threshold: u64,
+    acked_incarnation: u64,
+) -> View {
     let basis = &look.basis;
     let sets = basis.membership.get_joint_config();
     let old = sets.first().cloned().unwrap_or_default();
@@ -632,8 +645,7 @@ fn view(me: &MemberId, look: &Look, transferring: bool, lag_threshold: u64) -> V
         config_committed: basis.committed,
         own_term_committed: basis.own_term_committed,
         transferring,
-        // No broker acknowledges a restore incarnation yet.
-        acked_incarnation: 0,
+        acked_incarnation,
         last_index: look.replication.last_index,
         commit_index: basis.commit_index,
         matched: look.replication.matched.clone(),

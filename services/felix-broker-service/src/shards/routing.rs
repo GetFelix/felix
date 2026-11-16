@@ -873,6 +873,15 @@ pub trait EngineShards: Send + Sync {
     /// between passes that the next pass must act on.
     fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
 
+    /// Hands over the broker's lease, whose heartbeats bring the
+    /// assignment feed's head.
+    fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+
+    /// Called after each [`Self::take`] with the view it was given: the
+    /// instant the request that fetched it started, and the feed sequence
+    /// it reached.
+    fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+
     /// Stop every member and close its log. The broker calls it once, when
     /// it stops, before storage is flushed. False when a log failed to
     /// close, here or earlier, so the stop may have left it unsynced.
@@ -1027,7 +1036,11 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 )
             };
             let taken = match &engine_shards {
-                Some(engine_shards) => engine_shards.take(&mut assignments).await,
+                Some(engine_shards) => {
+                    let taken = engine_shards.take(&mut assignments).await;
+                    engine_shards.answered(as_of, checkpoint);
+                    taken
+                }
                 None => Taken::new(),
             };
             let assignments = match &elections {

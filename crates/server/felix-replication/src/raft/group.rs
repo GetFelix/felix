@@ -123,6 +123,7 @@ pub(crate) struct Group {
     preferred: tokio::sync::watch::Sender<Option<String>>,
     placement: Placement,
     placed_budget: Arc<placed::Budget>,
+    acked: Arc<AtomicU64>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -565,6 +566,8 @@ pub(crate) struct Host {
     pub(crate) placement: Placement,
     /// The broker's placement transfers, shared by all its groups.
     pub(crate) placed_budget: Arc<placed::Budget>,
+    /// The highest placement incarnation the broker has heard of.
+    pub(crate) acked: Arc<AtomicU64>,
 }
 
 /// [`Pace`]'s mark for a time that has not come yet.
@@ -597,6 +600,7 @@ impl Group {
             clock,
             placement,
             placed_budget,
+            acked,
         } = host;
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
@@ -730,6 +734,7 @@ impl Group {
             preferred: tokio::sync::watch::Sender::new(None),
             placement,
             placed_budget,
+            acked,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             leads_since: parking_lot::Mutex::new(None),
@@ -753,13 +758,14 @@ impl Group {
             Duration::from_millis(timers.election_min + timers.election_max),
             Arc::clone(&self.placed_budget),
         );
-        let driver = driver::Driver::new(
+        let mut driver = driver::Driver::new(
             Arc::clone(self),
             self.lag_threshold,
             driver::Retry::default(),
             Arc::clone(&self.progress),
             placing,
         );
+        driver.acked = Arc::clone(&self.acked);
         self.runtime.spawn(driver::run(
             driver,
             self.target.subscribe(),
@@ -783,14 +789,39 @@ impl Group {
 
     /// The control plane's target for this group, told for `term`. A
     /// newer target replaces the one held, and so does the same version
-    /// told in a newer term. Returns whether it did.
+    /// told in a newer term, or any target told in the term the held "no
+    /// target" was. Returns whether it did.
     pub(crate) fn retarget(&self, target: Target, term: u64) -> bool {
         self.target.send_if_modified(|held| {
-            let newer = held
-                .as_ref()
-                .is_none_or(|held| (target.version, term) > (held.target.version, held.term));
+            let newer = match held.as_ref() {
+                None => true,
+                Some(Told {
+                    target: Some(held),
+                    term: held_term,
+                }) => (target.version, term) > (held.version, *held_term),
+                Some(Told {
+                    target: None,
+                    term: held_term,
+                }) => term >= *held_term,
+            };
             if newer {
-                *held = Some(Told { target, term });
+                *held = Some(Told {
+                    target: Some(target),
+                    term,
+                });
+            }
+            newer
+        })
+    }
+
+    /// The control plane holds no target for this group, as of a view fresh
+    /// enough for `term`. Kept only for a term newer than the one held, so
+    /// the leader of `term` knows no target waits and placement may move it.
+    pub(crate) fn untarget(&self, term: u64) -> bool {
+        self.target.send_if_modified(|held| {
+            let newer = held.as_ref().is_none_or(|held| term > held.term);
+            if newer {
+                *held = Some(Told { target: None, term });
             }
             newer
         })

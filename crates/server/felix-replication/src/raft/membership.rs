@@ -39,9 +39,11 @@ pub struct Target {
 
 /// A target and the term it was told in. A leader acts only on one told in
 /// the term it leads (`docs/per-shard-raft.md`, "A target lasts one term").
+/// No target is told too: the control plane holds none for the shard, so
+/// placement may move the leadership in that term.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Told {
-    pub(crate) target: Target,
+    pub(crate) target: Option<Target>,
     pub(crate) term: u64,
 }
 
