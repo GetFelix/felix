@@ -277,7 +277,6 @@ expectations=(
   "FelixAtomicCommit pass"
   "FelixAtomicCommitSplitRecords violates NoPartialCommit"
   "FelixAtomicCommitPartialApply violates NoPartialCommit"
-  "FelixHeadTrim pass"
   "FelixHeadTrimCrash pass"
   "FelixHeadTrimTwoPromotions pass"
   "FelixHeadTrimCrashTwoPromotions pass"
@@ -289,6 +288,9 @@ expectations=(
   "FelixHeadTrimHiddenTrims violates StaleTrimRefused"
   "FelixHeadTrimNoOpUnchecked violates StaleTrimRefused"
   "FelixHeadTrimRetention violates StaleTrimRefused"
+  "FelixHeadTrimFollowerNoReadIndex violates NoReadBelowAckedTrim"
+  "FelixHeadTrimLeaderNoReadIndex violates NoReadBelowAckedTrim"
+  "FelixHeadTrimTailNoReadIndex violates NoReadBelowAckedTrim"
   "FelixShardFencedAckTwoPromotionsStart pass"
   "FelixShardFencedAckStagedMoveDestination violates AckedHeldByLeader"
   "FelixShardFencedAckMoveShort pass"
@@ -1181,6 +1183,9 @@ fi
 # dispatch run gives its declared outcome.
 # FelixRaftPlacementPlacedTarget, Placed with one target change, is not
 # registered until a dispatch run passes it.
+# FelixHeadTrim is not registered: its dispatch (run 43870273108) passed 29 of
+# 30 shards and shard 0 hit the six hour limit at depth 34 with no violation
+# (1.75B states, 244M distinct).
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -1212,8 +1217,7 @@ weights=(
   "FelixGroupsSplitSources 17"
   "FelixShardFencedAck 28"
   "FelixGroups 24"
-  "FelixHeadTrim 17"
-  "FelixHeadTrimCrash 12"
+  "FelixHeadTrimCrash 240"
   "FelixHeadTrimTwoPromotions 2"
   "FelixHeadTrimCrashTwoPromotions 3"
   "FelixShardFigure8CutOver 19"

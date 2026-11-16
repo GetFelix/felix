@@ -757,7 +757,8 @@ pub(crate) fn subscribe_error_message(err: felix_broker::BrokerError) -> Message
 /// [`subscribe_error_message`], except for a resume offset this broker's log
 /// has not reached on a shard it serves as a follower. The offset came from
 /// a broker that is ahead, so the answer is a redirect to the leader, not
-/// "in the future".
+/// "in the future". A read this follower leaves to the leader
+/// (`NotReadable::OnLeader`) is redirected the same way.
 fn subscribe_refusal(
     err: felix_broker::BrokerError,
     ingress: Option<&crate::shards::routing::IngressRouter>,
@@ -765,7 +766,14 @@ fn subscribe_refusal(
     (tenant_id, namespace, stream, shard): (&str, &str, &str, u32),
     peer_features: u32,
 ) -> Message {
-    if matches!(err, felix_broker::BrokerError::CursorInFuture { .. }) {
+    if matches!(
+        err,
+        felix_broker::BrokerError::CursorInFuture { .. }
+            | felix_broker::BrokerError::NotReadable {
+                reason: felix_broker::NotReadable::OnLeader,
+                ..
+            }
+    ) {
         let key = crate::shards::ShardKey {
             tenant_id: tenant_id.to_string(),
             namespace: namespace.to_string(),

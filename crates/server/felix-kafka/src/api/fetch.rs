@@ -177,11 +177,18 @@ async fn read_partition(
     answer: PartitionData,
 ) -> PartitionData {
     let log = &readable.log;
-    let base = log.readable_base();
     let tail = match log.tail_offset().await {
         Ok(tail) => tail,
         Err(err) => return answer.with_error_code(crate::errors::from_broker(&err).code()),
     };
+    // A fetch at the tail reads nothing below a floor and is not asked.
+    if let Ok(from) = u64::try_from(fetch_offset)
+        && from < tail
+        && let Err(err) = readable.confirm(from).await
+    {
+        return answer.with_error_code(crate::errors::from_broker(&err).code());
+    }
+    let base = log.readable_base();
     // Consumers read to the high watermark, which on a `Quorum` shard is the
     // commit point rather than the log's end. An offset between the two is
     // not out of range, only not readable yet, so it is answered empty.
