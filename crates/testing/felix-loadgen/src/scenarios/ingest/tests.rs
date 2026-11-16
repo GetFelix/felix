@@ -6,7 +6,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use super::{Tally, failure, reconnect_with, spread_keys};
+use super::{Sent, Tally, failure, reconnect_with, retry_reason, spread_keys};
 
 fn per_shard(keys: &[String], shards: u32, routing: ShardRouting) -> BTreeMap<u32, usize> {
     let mut counts = BTreeMap::new();
@@ -149,9 +149,9 @@ async fn reconnect_retries_then_gives_up() {
 #[test]
 fn tally_counts_failures_and_per_shard_acks() {
     let mut tally = Tally::default();
-    tally.acked_one(0, Duration::from_millis(1), 10, 2);
-    tally.acked_one(0, Duration::from_millis(1), 10, 2);
-    tally.acked_one(1, Duration::from_millis(1), 4, 0);
+    tally.acked_one(sent(&[]), Duration::from_millis(1), 10, 2);
+    tally.acked_one(sent(&[]), Duration::from_millis(1), 10, 2);
+    tally.acked_one(sent(&["lease"]), Duration::from_millis(1), 4, 0);
     assert_eq!(tally.per_shard.get(&2), Some(&20));
     assert_eq!(tally.per_shard.get(&0), Some(&4));
     assert_eq!(tally.acked_sends, 3);
@@ -163,4 +163,36 @@ fn tally_counts_failures_and_per_shard_acks() {
     assert_eq!(total.acked, 24);
     assert_eq!(total.acked_sends, 3);
     assert_eq!(total.per_shard.get(&2), Some(&20));
+}
+
+fn sent(reasons: &[&str]) -> Sent {
+    let mut counted = BTreeMap::new();
+    for reason in reasons {
+        *counted.entry(reason.to_string()).or_default() += 1;
+    }
+    Sent {
+        retries: reasons.len() as u64,
+        reasons: counted,
+    }
+}
+
+/// **A retry is counted with its reason**, so a run with retries says what
+/// the broker refused, and the reasons survive merging publishers' tallies.
+#[test]
+fn retries_are_tallied_by_reason() {
+    let refused = anyhow::Error::new(felix_client::BrokerError::new(
+        felix_wire::ErrorCode::ShardUnavailable,
+        felix_client::RetryClass::Retry,
+        "no lease",
+    ));
+    let reason = retry_reason(&refused);
+    assert!(reason.contains("no lease"), "{reason}");
+    let mut one = Tally::default();
+    one.acked_one(sent(&["a", "a", "b"]), Duration::from_millis(1), 1, 0);
+    let mut two = Tally::default();
+    two.add_retries(sent(&["a"]));
+    one.merge(two);
+    assert_eq!(one.retries, 4);
+    assert_eq!(one.retry_reasons.get("a"), Some(&3));
+    assert_eq!(one.retry_reasons.get("b"), Some(&1));
 }

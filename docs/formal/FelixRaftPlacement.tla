@@ -182,6 +182,10 @@
 (*                          the reports, and a learner entry takes the     *)
 (*                          target's version                               *)
 (*                          (FelixRaftPlacementRewindSpareCommitted.cfg).  *)
+(*   PlacedLeaders       -- a settled leader hands its leadership to any   *)
+(*                          caught-up voter, as it does to the broker      *)
+(*                          placement names (FelixRaftPlacementPlaced.cfg, *)
+(*                          FelixRaftPlacementReachPlaced.cfg).            *)
 (*                                                                         *)
 (* FelixRaftMembership.tla has the twins for a change before the last one  *)
 (* is committed and for a learner that counts.                             *)
@@ -235,6 +239,7 @@ CONSTANTS
     RewindSameInc,  \* a restore keeps the incarnation
     NoIncAck,       \* targets and dooms go out before every broker has the incarnation
     DoomOnCommitted,\* a doom reads the committed history, not reports, and a learner entry takes the target's version
+    PlacedLeaders,  \* a settled leader may hand its leadership to any caught-up voter, as placement asks
     LogWipes        \* a wipe may take the log and vote alone, keeping the rest
 
 ASSUME FirstBoot => Forming
@@ -620,8 +625,11 @@ LeaveJoint(i) ==
 
 \* `transfer_leader` to a caught-up voter j: from a joint membership that
 \* leaves the leader out, to a voter of its new set; from a settled one, to
-\* a voter of both it and a target that leaves the leader out. Writes and
-\* membership calls stop until the transfer ends.
+\* a voter of both it and a target that leaves the leader out. With
+\* PlacedLeaders, also from a settled one with an entry of its term
+\* committed, to any voter: the hand-over to the broker placement names,
+\* whose rule the model leaves free. Writes and membership calls stop until
+\* the transfer ends.
 Transfer(i, j) ==
     /\ i # j
     /\ role[i] = "leader"
@@ -636,6 +644,10 @@ Transfer(i, j) ==
                 /\ VerOK(i, T)
                 /\ Me(i) \notin T.set
                 /\ Me(j) \in Cfg(i).new \cap T.set
+       \/ /\ PlacedLeaders
+          /\ Settled(i)
+          /\ OwnCommitted(i)
+          /\ Me(j) \in Cfg(i).new
     /\ xfer' = [xfer EXCEPT ![i] = j]
     /\ UNCHANGED <<role, term, votedFor, granted, elected, raft, ident, plane, delivered, used>>
 

@@ -155,7 +155,16 @@ when it starts, so the hard limit is the one to set:
 (limit - 1,024 - the sealed-segment cache) / 5 is about how many shards fit
 under it, so 65,536 holds about 12,000 ((65,536 - 1,024 - 1,024) / 5). A broker whose
 limit holds fewer than 2,000 shards logs a warning at start with that
-number. Past it, opening a shard fails with "Too many open files".
+number.
+
+Past the limit, a shard that cannot open is not served, and the broker logs
+"shard could not open: the open-file limit is exhausted". The error names the
+open-file limit. The broker does not crash, and every shard it already holds
+keeps serving. The shard opens again on the next assignment pass, so it
+starts serving on its own once files close or the limit is raised.
+`felix_broker_shard_open_file_limit_total` counts these put-off opens, and
+`felix_broker_shard_open_failures_total` counts them along with every other
+failed open.
 
 ## Choosing durability
 

@@ -686,6 +686,7 @@ async fn run_heartbeat_checked(
 
         // Before the request, not after the answer: see `LeaseState::renew_at`.
         let sent = lease.now();
+        let sent_at = tokio::time::Instant::now();
         // Read per heartbeat, so a refresh between beats is picked up without
         // this loop knowing refresh exists.
         match send_heartbeat(
@@ -695,7 +696,7 @@ async fn run_heartbeat_checked(
             HeartbeatRequest {
                 incarnation: registration.incarnation,
                 suspects,
-                want_assignment_seq: lease.awaits_routes(),
+                want_assignment_seq: lease.awaits_routes() || lease.wants_head(),
                 root: registration
                     .root
                     .read()
@@ -720,6 +721,10 @@ async fn run_heartbeat_checked(
                         lease.adopt(Duration::from_millis(expiry.max(1)));
                     }
                     lease.renew_at(sent, response.assignment_seq);
+                    lease.record_placement(response.placement_incarnation.unwrap_or(0));
+                    if let Some(seq) = response.assignment_seq {
+                        lease.record_head(sent_at, seq);
+                    }
                 }
                 mm::record_heartbeat_success();
                 for feature in fleet.observe(response.fleet_features.iter().map(String::as_str)) {

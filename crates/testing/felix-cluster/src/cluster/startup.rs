@@ -30,6 +30,9 @@ impl Cluster {
         if config.nodes == 0 {
             bail!("a cluster needs at least one broker");
         }
+        // Raised here, before any child starts, so the control plane and
+        // brokers it spawns inherit it along with the test process.
+        felix_storage::open_files::raise_soft_limit_once();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .no_proxy()

@@ -2,9 +2,9 @@
 //!
 //! The group elects its own leader and keeps its own members, so none of the
 //! hybrid's steps apply: there is no fence to wait on, no drained report, and
-//! no failover to decide. Placement only names the member it wants leading;
-//! once brokers follow placement (#2649) the group's leader moves there. Moving a leader is one write that
-//! changes `leader` to another member of the set; the set itself never
+//! no failover to decide. Placement only names the member it wants leading,
+//! and the group's leader hands its leadership there. Moving a leader is one
+//! write that changes `leader` to another member of the set; the set itself never
 //! changes here. `docs/control-plane.md`, "Raft shards".
 use super::leadership::{Leadership, Owner};
 use super::moves::Moves;

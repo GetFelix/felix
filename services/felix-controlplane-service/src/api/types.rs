@@ -235,6 +235,20 @@ pub struct NamespaceChangesResponse {
     pub group_id: Option<String>,
 }
 
+/// A created stream, and any warnings about it. `warnings` is left out when
+/// empty, so a create with nothing to warn about answers the stream's own
+/// fields and nothing else.
+#[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
+pub struct StreamCreateResponse {
+    #[serde(flatten)]
+    pub stream: Stream,
+    /// Advisory only: the stream was created. Set when its replication factor
+    /// exceeds the live brokers, since no Raft group forms until
+    /// placement names that many.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize, ToSchema, Clone)]
 pub struct StreamListResponse {
     pub items: Vec<Stream>,
@@ -549,6 +563,13 @@ pub struct RoutedShardAssignment {
     /// keys a target by shard key and stream incarnation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<RaftTargetView>,
+    /// The target was left out on purpose: some registered broker has not
+    /// acknowledged the placement incarnation, a restore landed during the
+    /// read, or the read was a confirmed one. A broker then learns nothing
+    /// about the shard's target and keeps what it holds. Absent otherwise,
+    /// and from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub targets_withheld: bool,
 }
 
 /// A Raft target as a broker reads it.

@@ -190,6 +190,7 @@ Live(T, e) == [T EXCEPT !.exists = TRUE, !.cre = IF T.exists THEN @ ELSE e.cre]
 Step(T, e, i) ==
     CASE e.kind = "seek" ->
             [T EXCEPT !.exists = TRUE, !.cre = e.cre, !.cursor = e.to,
+                      !.dead = {o \in @ : o < e.to},
                       !.from = e.to, !.reset = i, !.gfloor = i]
       [] e.kind = "delete" ->
             [T0 EXCEPT !.lastDel = i, !.gfloor = i]
@@ -267,13 +268,21 @@ Init ==
     /\ badIfNew = FALSE
     /\ changes = 0
 
+\* A dead letter at or above the cursor starts settled: it is listed before
+\* the advance over it, so a leader change in between leaves it there.
+Rebuilt(k, T) ==
+    LET D == {o \in T.dead : o >= T.cursor}
+        p == RunEnd(T.cursor, D)
+        t == Tracker(k, T.cre, p, T.red)
+    IN [t EXCEPT !.done = {o \in D : o >= p}]
+
 \* A poll on a group with no tracker.
 Hydrate ==
     /\ Lead.none
     /\ Ready
     /\ \E k \in Views :
         LET T == View(k) IN
-        LET t == IF T.exists THEN Tracker(k, T.cre, T.cursor, T.red)
+        LET t == IF T.exists THEN Rebuilt(k, T)
                  ELSE Tracker(k, Cre(k, "hydrate"), 1, {})
         IN trk' = [trk EXCEPT ![leader] = [t EXCEPT !.any = Lead.any]]
     /\ UNCHANGED <<log, tail, pend, leader, acks, served, badIfNew, changes>>

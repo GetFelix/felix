@@ -205,15 +205,14 @@ pub(crate) fn judge(seen: Observed<'_>) -> DiskEvent {
 }
 
 /// Note which copies of acknowledged records a fault took. A faulted disk
-/// that held a record before and not after lost a copy. A record no fault
-/// judged (acknowledged while the fault ran, in `late`) counts as lost by
-/// every faulted disk that does not hold it after, since what those disks
-/// held is not known. A record two disks hold again is dropped.
+/// that held a record at the fault (`before`) and not after lost a copy.
+/// That holds for a record acknowledged while the fault ran too: a disk
+/// that never held it took no copy with it. A record two disks hold again
+/// is dropped.
 pub(crate) fn thin(
     thinned: &mut Thinned,
     faulted: &[usize],
     acked: &BTreeMap<u32, Vec<u64>>,
-    late: &[u64],
     before: &[BTreeSet<u64>],
     after: &[BTreeSet<u64>],
 ) {
@@ -224,13 +223,6 @@ pub(crate) fn thin(
     for &value in acked.values().flatten() {
         for &node in faulted {
             if before[node].contains(&value) && !after[node].contains(&value) {
-                thinned.entry(value).or_default().insert(node);
-            }
-        }
-    }
-    for &value in late {
-        for &node in faulted {
-            if !after[node].contains(&value) {
                 thinned.entry(value).or_default().insert(node);
             }
         }

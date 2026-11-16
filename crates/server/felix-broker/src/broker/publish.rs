@@ -592,7 +592,7 @@ impl Broker {
                 ProducerSequence::Gap { expected } => {
                     return Err(BrokerError::SequenceGap { expected });
                 }
-                ProducerSequence::Expired => {
+                ProducerSequence::Expired | ProducerSequence::Retired => {
                     return Err(BrokerError::SequenceExpired { sequence });
                 }
             }

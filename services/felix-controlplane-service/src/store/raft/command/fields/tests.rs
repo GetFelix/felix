@@ -704,6 +704,7 @@ fn commands() -> Vec<MetaCommand> {
             overwrite: true,
             mark_unplaced: true,
             raise_incarnation: true,
+            lose_ordered: true,
         },
         MetaCommand::InsertRefreshToken {
             token: refresh_token(),

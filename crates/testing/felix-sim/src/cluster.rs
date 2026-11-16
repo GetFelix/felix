@@ -288,6 +288,8 @@ impl SimCluster {
     /// Installs the virtual lease clock for this thread, so call it on the
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
+        // A sweep runs many clusters at once, each holding real sockets.
+        felix_storage::open_files::raise_soft_limit_once();
         let clock_plan = config.clock_plan.clone().unwrap_or_else(|| {
             ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window)
         });
@@ -500,6 +502,15 @@ impl SimCluster {
     /// one. Returns whether it landed in an append. A no-op that returns
     /// `false` on a broker that is down.
     pub async fn power_loss(self: &Arc<Self>, index: usize) -> bool {
+        self.cut_one(index).await.0
+    }
+
+    /// [`Self::power_loss`], with every broker's stream shards as they were
+    /// when the power went (see `cut_one`).
+    pub(crate) async fn power_loss_read(
+        self: &Arc<Self>,
+        index: usize,
+    ) -> (bool, Vec<BTreeSet<u64>>) {
         self.cut_one(index).await
     }
 
@@ -508,13 +519,23 @@ impl SimCluster {
     /// their devices held. Returns the brokers it cut. Nothing awaits before
     /// the cut, so the caller can read the disks just before it.
     pub async fn power_loss_together(self: &Arc<Self>, nodes: &[usize]) -> Vec<usize> {
+        self.power_loss_together_read(nodes).await.0
+    }
+
+    /// [`Self::power_loss_together`], with every broker's stream shards as
+    /// they were at the cut.
+    pub(crate) async fn power_loss_together_read(
+        self: &Arc<Self>,
+        nodes: &[usize],
+    ) -> (Vec<usize>, Vec<BTreeSet<u64>>) {
+        let before = self.disk_values();
         let running: Vec<usize> = nodes
             .iter()
             .copied()
             .filter(|&index| !self.nodes[index].is_down())
             .collect();
         if running.is_empty() {
-            return running;
+            return (running, before);
         }
         let at = self.elapsed();
         // No await until every device is fixed: it is one instant.
@@ -536,7 +557,7 @@ impl SimCluster {
                 restarted_at: None,
             });
         }
-        running
+        (running, before)
     }
 
     /// Stop the brokers in `nodes` as an operator would, then empty what
@@ -600,9 +621,16 @@ impl SimCluster {
         self.disk_events.lock().clone()
     }
 
-    async fn cut_one(self: &Arc<Self>, index: usize) -> bool {
+    /// Cut the power under the broker at `index`, and read every broker's
+    /// stream shards at the cut: a record acknowledged while the cut waited
+    /// for an append is judged by what the disks held then, not credited to
+    /// the faulted disk blind. A cut inside an append is read once the
+    /// broker has stopped, since the write that cut it must not touch the
+    /// filesystem; its device takes nothing written after the cut, and its
+    /// peers heard nothing from it after.
+    async fn cut_one(self: &Arc<Self>, index: usize) -> (bool, Vec<BTreeSet<u64>>) {
         if self.nodes[index].is_down() {
-            return false;
+            return (false, self.disk_values());
         }
         self.note_state().await;
         let at = self.elapsed();
@@ -627,6 +655,8 @@ impl SimCluster {
             () = tokio::time::sleep(power::APPEND_WITHIN) => false,
         };
         let torn = torn_slot.lock().take();
+        // No await between this and the cut.
+        let before = self.disk_values();
         if !mid_append {
             node.cut_power(seed);
             node.power_off(&self.net);
@@ -651,7 +681,7 @@ impl SimCluster {
             opened_before,
             restarted_at: None,
         });
-        mid_append
+        (mid_append, before)
     }
 
     /// The data directory of the broker at `index`.

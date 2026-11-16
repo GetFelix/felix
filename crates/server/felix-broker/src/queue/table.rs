@@ -106,6 +106,9 @@ impl GroupTable {
                     Some(state) => {
                         state.cre = cre;
                         state.cursor = to;
+                        // A seek delivers everything from `to` again, dead
+                        // letters included. Redriven ones are still owed.
+                        state.dead.split_off(&to);
                     }
                     None => {
                         self.groups.insert(group.clone(), fresh(cre, to));

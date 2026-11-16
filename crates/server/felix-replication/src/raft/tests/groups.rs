@@ -263,3 +263,75 @@ async fn a_group_entry_that_does_not_decode_stops_the_apply() {
     assert!(applied.is_err());
     assert_eq!(groups.read().table(), &GroupTable::default());
 }
+
+/// **A group write is refused unless this member leads the term it was
+/// decided in, and nothing is appended for it: the next write lands right
+/// after the last one, and the term stays open.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_write_outside_its_term_is_refused_and_appends_nothing() {
+    let led = led().await;
+    let write = entry("a", GroupOp::Advance { cre: CRE, to: 1 });
+    let propose = |term| {
+        led.engine
+            .propose_group(&shard(0), term, 1_700_000_000, &write)
+    };
+    let first = propose(led.term).await.expect("written");
+    for other in [led.term + 1, led.term - 1] {
+        let refused = propose(other).await;
+        assert!(
+            matches!(
+                refused,
+                Err(crate::engine::CommitError::LeadershipLost { .. })
+            ),
+            "term {other}: {refused:?}"
+        );
+    }
+    let next = propose(led.term).await.expect("the term is still open");
+    assert_eq!(next.generation, led.term);
+    assert_eq!(next.end, first.end + 1, "a refused write took an index");
+    led.engine
+        .await_commit(&shard(0), next, PATIENCE)
+        .await
+        .expect("committed");
+    let mut cluster = led.cluster;
+    cluster.stop().await;
+}
+
+/// **A group write this member cannot say it appended ends its term: it
+/// stops leading, another member leads a later term, and the shard takes
+/// group writes again there.** Only closing the term would leave the
+/// shard closed on a member that still leads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_ambiguous_group_write_steps_the_leader_down() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let led = led().await;
+    let write = entry("a", GroupOp::Advance { cre: CRE, to: 1 });
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    let group = runtime.group(&shard(0)).expect("group");
+    group.gate.unknown_groups.store(true, Relaxed);
+    let unknown = led
+        .engine
+        .propose_group(&shard(0), led.term, 1_700_000_000, &write)
+        .await;
+    assert!(unknown.is_err(), "{unknown:?}");
+    group.gate.unknown_groups.store(false, Relaxed);
+    let next = eventually(|| {
+        let leader = led.cluster.leader(0)?;
+        (leader != led.leader).then_some(leader)
+    })
+    .await;
+    let runtime = led.cluster.runtime(&next.broker);
+    let term = eventually(|| runtime.group(&shard(0))?.open_term()).await;
+    assert!(term > led.term, "term {term} after {}", led.term);
+    let engine = RaftEngine::new(runtime);
+    let written = engine
+        .propose_group(&shard(0), term, 1_700_000_000, &write)
+        .await
+        .expect("the next leader takes group writes");
+    engine
+        .await_commit(&shard(0), written, PATIENCE)
+        .await
+        .expect("committed");
+    let mut cluster = led.cluster;
+    cluster.stop().await;
+}

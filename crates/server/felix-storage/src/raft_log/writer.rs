@@ -570,7 +570,7 @@ impl Batch {
 /// A storage error as openraft takes it, keeping an I/O error's kind.
 pub(super) fn io_error(err: StorageError) -> io::Error {
     match err {
-        StorageError::Io(err) => err,
+        StorageError::Io(err) | StorageError::OpenFileLimit(err) => err,
         other => io::Error::other(other),
     }
 }

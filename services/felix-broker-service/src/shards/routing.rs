@@ -146,8 +146,6 @@ pub struct IngressRouter {
     router: Arc<ShardRouter>,
     view: ArcSwap<View>,
     fence: Arc<ShardFence>,
-    /// Woken on every new view, for writes held while their shard moves.
-    changed: tokio::sync::Notify,
     hold: MoveHold,
     /// Routes for the shards the hybrid does not run. They never reach the
     /// view, so they are asked for first.
@@ -184,7 +182,6 @@ impl IngressRouter {
             router,
             view,
             fence,
-            changed: tokio::sync::Notify::new(),
             hold: MoveHold::disabled(),
             engine_shards: std::sync::OnceLock::new(),
             #[cfg(test)]
@@ -415,7 +412,7 @@ impl IngressRouter {
         }
         let mut held = None;
         loop {
-            let changed = self.changed.notified();
+            let changed = self.fence.changed().notified();
             tokio::pin!(changed);
             // Registered before the view is read, so a view published in
             // between still wakes this.
@@ -475,7 +472,7 @@ impl IngressRouter {
     pub(crate) async fn settle(&self, key: &ShardKey, generation: u64, incarnation: Option<u64>) {
         let mut held = None;
         loop {
-            let changed = self.changed.notified();
+            let changed = self.fence.changed().notified();
             tokio::pin!(changed);
             changed.as_mut().enable();
             let view = self.view.load();
@@ -516,13 +513,15 @@ impl IngressRouter {
     /// Whether this broker has just taken `key` and is opening or fencing it,
     /// which usually takes a round trip. `Active` too: the lifecycle settles
     /// the fence a moment before the servable set that says so is published.
+    /// Not an open held for a retry (it keeps its error): that waits for
+    /// descriptors to free up, which is no round trip, so it is refused now.
     fn taking_over(&self, key: &ShardKey) -> bool {
         self.fence.awaiting_promotion(key).is_some()
             || self.fence.phase_of(key).is_some_and(|record| {
                 matches!(
                     record.phase,
                     Phase::Opening | Phase::Fencing | Phase::Active
-                )
+                ) && !(record.phase == Phase::Opening && record.error.is_some())
             })
     }
 
@@ -568,7 +567,7 @@ impl IngressRouter {
 
     fn store(&self, view: View) {
         self.view.store(Arc::new(view));
-        self.changed.notify_waiters();
+        self.fence.changed().notify_waiters();
     }
 }
 
@@ -874,6 +873,15 @@ pub trait EngineShards: Send + Sync {
     /// between passes that the next pass must act on.
     fn wake_with(&self, _wake: Arc<tokio::sync::Notify>) {}
 
+    /// Hands over the broker's lease, whose heartbeats bring the
+    /// assignment feed's head.
+    fn follow_lease(&self, _lease: Arc<crate::cluster::lease::LeaseState>) {}
+
+    /// Called after each [`Self::take`] with the view it was given: the
+    /// instant the request that fetched it started, and the feed sequence
+    /// it reached.
+    fn answered(&self, _as_of: Option<tokio::time::Instant>, _checkpoint: Option<u64>) {}
+
     /// Stop every member and close its log. The broker calls it once, when
     /// it stops, before storage is flushed. False when a log failed to
     /// close, here or earlier, so the stop may have left it unsynced.
@@ -1028,7 +1036,11 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 )
             };
             let taken = match &engine_shards {
-                Some(engine_shards) => engine_shards.take(&mut assignments).await,
+                Some(engine_shards) => {
+                    let taken = engine_shards.take(&mut assignments).await;
+                    engine_shards.answered(as_of, checkpoint);
+                    taken
+                }
                 None => Taken::new(),
             };
             let assignments = match &elections {

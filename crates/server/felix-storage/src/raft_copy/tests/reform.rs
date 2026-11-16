@@ -467,7 +467,7 @@ async fn replan(extra: &[(u64, u64)]) -> Result<ReformPlan<&'static str>, Refuse
         offset_floor: None,
         placed: Some(BTreeSet::from(["a", "b", "c"])),
         dead: BTreeSet::new(),
-        seed: Some(BTreeSet::from(["a", "b", "c"])),
+        seed: Some(BTreeSet::from([("a", 1), ("b", 2), ("c", 3)])),
         ordered: Some(Vec::new()),
     };
     plan_reform(&record, &reports)

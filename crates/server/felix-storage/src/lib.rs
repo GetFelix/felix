@@ -45,7 +45,8 @@
 //!   registers those directories and cuts their power.
 //! - Ordering and reporting: `commit_order` ([`CommitSequencer`]),
 //!   [`metrics_names`], and the errors every call returns ([`StorageError`],
-//!   [`Corruption`]).
+//!   [`Corruption`]). [`open_files`] raises the process's open-file limit
+//!   and recognises an exhausted one.
 //! - `raft_log`, behind the `raft` feature: a [`DiskLog`] as an openraft
 //!   log, one record per entry. `metadata_store`, behind the same feature:
 //!   the member file the control plane keeps beside that log, and whether a
@@ -79,6 +80,7 @@ pub mod log;
 #[cfg(feature = "raft")]
 pub mod metadata_store;
 pub mod metrics_names;
+pub mod open_files;
 #[cfg(feature = "raft")]
 pub mod raft_copy;
 #[cfg(feature = "raft")]

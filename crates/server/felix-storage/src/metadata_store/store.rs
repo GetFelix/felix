@@ -190,7 +190,7 @@ where
 /// A storage error as an I/O error, keeping an I/O error's kind.
 fn io_error(err: StorageError) -> io::Error {
     match err {
-        StorageError::Io(err) => err,
+        StorageError::Io(err) | StorageError::OpenFileLimit(err) => err,
         other => io::Error::other(other),
     }
 }

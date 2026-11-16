@@ -102,6 +102,7 @@ async fn an_import_adopts_the_exports_identity_and_keeps_its_own_when_it_has_non
             overwrite: true,
             mark_unplaced: false,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import without identity");
@@ -117,6 +118,7 @@ async fn an_import_adopts_the_exports_identity_and_keeps_its_own_when_it_has_non
             overwrite: true,
             mark_unplaced: false,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import with identity");
@@ -222,6 +224,7 @@ async fn an_import_with_no_identity_over_streams_adopts_existing_data() {
             overwrite: true,
             mark_unplaced: true,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import without identity");
@@ -269,6 +272,7 @@ async fn an_import_with_an_identity_keeps_it_and_marks_streams_unplaced() {
             overwrite: true,
             mark_unplaced: true,
             raise_incarnation: false,
+            lose_ordered: false,
         })
         .await
         .expect("import");

@@ -104,7 +104,7 @@ fn a_report_at_another_term_is_not_counted() {
 /// the leader hold more than a voter set's worth of senders.
 #[test]
 fn the_furthest_report_of_each_sender_is_kept() {
-    let reports = Reports::new();
+    let reports = Reports::new(false);
     reports.heard(member("b"), at(3, 9));
     reports.heard(member("b"), at(3, 7));
     assert_eq!(reports.from(&member("b")), Some(at(3, 9)));
@@ -165,7 +165,7 @@ async fn settle() {
 #[tokio::test(flavor = "current_thread")]
 async fn a_report_wakes_only_the_writes_it_can_complete() {
     const WRITES: u64 = 300;
-    let reports = Arc::new(Reports::new());
+    let reports = Arc::new(Reports::new(false));
     let voters = [set(&["a", "b", "c", "d", "e"])];
     let deposed = Arc::new(AtomicBool::new(false));
     let (waits, looks) = waiting(&reports, &voters, WRITES, &deposed);
@@ -196,7 +196,7 @@ async fn no_report_is_lost_between_a_look_and_a_sleep() {
     const WRITES: u64 = 200;
     let voters = [set(&["a", "b", "c"])];
     for _ in 0..20 {
-        let reports = Arc::new(Reports::new());
+        let reports = Arc::new(Reports::new(false));
         let deposed = Arc::new(AtomicBool::new(false));
         let (waits, _) = waiting(&reports, &voters, WRITES, &deposed);
         let reporter = {
@@ -223,7 +223,7 @@ async fn no_report_is_lost_between_a_look_and_a_sleep() {
 /// not wake those waits; the commit arm of the caller ends them.
 #[tokio::test(flavor = "current_thread")]
 async fn a_report_of_a_newer_term_ends_a_wait_on_a_lost_term() {
-    let reports = Arc::new(Reports::new());
+    let reports = Arc::new(Reports::new(false));
     let voters = [set(&["a", "b", "c"])];
     let deposed = Arc::new(AtomicBool::new(false));
     let (waits, _) = waiting(&reports, &voters, 20, &deposed);
@@ -240,7 +240,7 @@ async fn a_report_of_a_newer_term_ends_a_wait_on_a_lost_term() {
 /// the write waits on, and a later one in its own term completes it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_report_at_another_term_does_not_end_the_wait() {
-    let reports = Arc::new(Reports::new());
+    let reports = Arc::new(Reports::new(false));
     let voters = [set(&["a", "b", "c"])];
     let deposed = Arc::new(AtomicBool::new(false));
     let (mut waits, _) = waiting(&reports, &voters, 1, &deposed);
@@ -283,7 +283,7 @@ fn waiting_on_changing_voters(
 /// moves it to the longer wait instead of answering.
 #[tokio::test(flavor = "current_thread")]
 async fn more_voters_raise_the_count_a_wait_needs() {
-    let reports = Arc::new(Reports::new());
+    let reports = Arc::new(Reports::new(false));
     let (voters, wait) = waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c"])]);
     settle().await;
     *voters.lock() = vec![set(&["a", "b", "c", "d", "e"])];
@@ -299,7 +299,7 @@ async fn more_voters_raise_the_count_a_wait_needs() {
 /// already written is a majority, and the next report wakes the wait.
 #[tokio::test(flavor = "current_thread")]
 async fn fewer_voters_lower_the_count_a_wait_needs() {
-    let reports = Arc::new(Reports::new());
+    let reports = Arc::new(Reports::new(false));
     let (voters, wait) =
         waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c", "d", "e"])]);
     settle().await;
@@ -316,7 +316,7 @@ async fn fewer_voters_lower_the_count_a_wait_needs() {
 /// follower of the old half alone does not answer, one of the new half does.
 #[tokio::test(flavor = "current_thread")]
 async fn a_joint_change_needs_both_halves_to_answer() {
-    let reports = Arc::new(Reports::new());
+    let reports = Arc::new(Reports::new(false));
     let (voters, wait) = waiting_on_changing_voters(&reports, vec![set(&["a", "b", "c"])]);
     settle().await;
     *voters.lock() = vec![set(&["a", "b", "c"]), set(&["a", "d", "e"])];
@@ -333,7 +333,7 @@ async fn a_joint_change_needs_both_halves_to_answer() {
 /// wakes.
 #[tokio::test(flavor = "current_thread")]
 async fn a_learner_ahead_does_not_hide_a_voters_report() {
-    let reports = Arc::new(Reports::new());
+    let reports = Arc::new(Reports::new(false));
     let voters = [set(&["a", "b", "c"])];
     let deposed = Arc::new(AtomicBool::new(false));
     let (mut waits, _) = waiting(&reports, &voters, 5, &deposed);
@@ -447,7 +447,7 @@ impl Led {
             group: group(0),
             to: self.leader.clone(),
             beat: 0,
-            report: false,
+            report: crate::raft::network::Ask::Nothing,
             deadline: Duration::from_secs(1),
             body: Request::Written {
                 from: member(from),
@@ -483,7 +483,7 @@ impl Led {
             group: group(0),
             to: member(voter),
             beat: 0,
-            report: false,
+            report: crate::raft::network::Ask::Nothing,
             deadline: Duration::from_secs(1),
             body: Request::Vote(rpc),
         };
@@ -502,6 +502,24 @@ async fn led() -> Led {
     let committed = cluster.write(0, b"committed").await;
     cluster.committed_everywhere(0, committed).await;
     let leader = cluster.elected(0).await;
+    let engine = RaftEngine::new(cluster.runtime(&leader.broker));
+    Led {
+        cluster,
+        leader,
+        engine,
+    }
+}
+
+/// Three voters with the brokers in `relaxed` on written-commit logs
+/// ([`Cluster::open_relaxed`]), a committed record and an engine on the
+/// leader, which is a: [`Cluster::form`] elects the first broker it tells.
+async fn led_relaxed(relaxed: &[&str]) -> Led {
+    let mut cluster = Cluster::new(true);
+    cluster.form_relaxed(0, relaxed).await;
+    let committed = cluster.write(0, b"committed").await;
+    cluster.committed_everywhere(0, committed).await;
+    let leader = cluster.elected(0).await;
+    assert_eq!(&*leader.broker, "a", "the test needs a to lead");
     let engine = RaftEngine::new(cluster.runtime(&leader.broker));
     Led {
         cluster,
@@ -776,5 +794,91 @@ async fn a_follower_that_has_written_a_record_refuses_a_candidate_without_it() {
     assert!(holding, "{voter} refused a log that holds the record");
 
     drop(held);
+    led.cluster.stop().await;
+}
+
+/// A relaxed leader's followers on relaxed logs answer an append at the
+/// write, and that answer counts toward the commit, so a written report
+/// would say nothing more: none is sent, and `Quorum` writes are
+/// acknowledged at their commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relaxed_leader_gets_no_report_from_relaxed_followers() {
+    let mut led = led_relaxed(&BROKERS).await;
+    let primed = led.prime().await;
+    let ask = led.group().reports().ask();
+    assert_eq!(ask, super::super::network::Ask::WrittenIfStrict);
+    led.cluster.committed_everywhere(0, primed.end - 1).await;
+    for _ in 0..20 {
+        let written = led.propose().await;
+        let acked = led.acked(written, AckAt::Written).await;
+        acked.expect("acknowledged");
+    }
+    let reports = led.cluster.net.written_reports.lock().clone();
+    assert!(reports.is_empty(), "written reports sent: {reports:?}");
+    led.cluster.stop().await;
+}
+
+/// A relaxed leader still asks followers that fsync before they answer, and
+/// acknowledges a `Quorum` write on their reports, before their fsync and
+/// so before the commit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relaxed_leader_acknowledges_on_strict_followers_reports() {
+    let mut led = led_relaxed(&["a"]).await;
+    let others = led.others();
+    let before = led.prime().await;
+    led.cluster.committed_everywhere(0, before.end - 1).await;
+
+    let logs: Vec<DiskLog> = others
+        .iter()
+        .map(|broker| led.cluster.logs[&(broker.to_string(), 0)].clone())
+        .collect();
+    let held = futures::future::join_all(logs.iter().map(|log| log.hold_flushes())).await;
+    let written = led.propose().await;
+    let acked = tokio::time::timeout(PATIENCE, led.acked(written, AckAt::Written)).await;
+    acked.expect("acknowledged in time").expect("acknowledged");
+
+    let index = written.end - 1;
+    let leader = led.status(&led.leader.broker);
+    assert_eq!(leader.committed, Some(before.end - 1), "it committed");
+    for broker in &others {
+        let flushed = led.status(broker).flushed;
+        assert!(
+            flushed.is_none_or(|at| at.index < index),
+            "{broker} fsynced"
+        );
+    }
+    let reports = led.cluster.net.written_reports.lock().clone();
+    assert!(
+        reports.iter().all(|from| others.contains(&from.as_str())),
+        "{reports:?}"
+    );
+
+    drop(held);
+    let committed = led.engine.await_commit(&shard(0), written, PATIENCE).await;
+    committed.expect("committed");
+    led.cluster.stop().await;
+}
+
+/// A relaxed leader counts nobody's write but its own while strict
+/// followers have not written: `Quorum` is not acknowledged on the ask
+/// alone, and is once they do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relaxed_leader_waits_for_strict_followers_to_write() {
+    let mut led = led_relaxed(&["a"]).await;
+    let primed = led.prime().await;
+    led.cluster.committed_everywhere(0, primed.end - 1).await;
+
+    // Neither strict follower has the entry: held before the write.
+    led.cluster
+        .net
+        .cut
+        .lock()
+        .extend(led.others().iter().map(|broker| broker.to_string()));
+    let written = led.propose().await;
+    led.not_acked(written).await;
+
+    led.cluster.net.cut.lock().clear();
+    let acked = led.acked(written, AckAt::Written).await;
+    acked.expect("acknowledged");
     led.cluster.stop().await;
 }

@@ -4,6 +4,7 @@ use super::*;
 mod cache_incarnation;
 mod dropped_hold;
 mod every_change;
+mod held_open;
 mod off_runtime;
 mod promotion;
 mod refused;
@@ -35,6 +36,8 @@ fn assigned_to(leader: &str, generation: u64) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        target: None,
+        targets_withheld: false,
     }
 }
 

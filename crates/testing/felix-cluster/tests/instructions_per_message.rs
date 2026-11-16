@@ -113,9 +113,30 @@ fn run_ingest(cluster: &Cluster, batch: usize, total: usize, must_be_clean: bool
     let acked = row["acked_records"].as_u64().unwrap_or(0);
     let failed = row["failed_sends"].as_u64().unwrap_or(0);
     if must_be_clean && (failed > 0 || row["publish_retries"].as_u64().unwrap_or(0) > 0) {
-        bail!("the run was not clean, so its count is not comparable: {row}");
+        bail!(
+            "the run was not clean, so its count is not comparable ({}): {row}",
+            lease_counters(cluster)
+        );
     }
     Ok(acked)
+}
+
+/// The broker's lease lapses and lease refusals so far: a retry the broker
+/// asked for is most often one of these.
+fn lease_counters(cluster: &Cluster) -> String {
+    let node = &cluster.nodes[0].node_id;
+    let handle = tokio::runtime::Handle::current();
+    [
+        "felix_broker_lease_expiries_total",
+        "felix_broker_lease_refusals_total",
+    ]
+    .iter()
+    .map(|name| match handle.block_on(cluster.metric(node, name)) {
+        Ok(value) => format!("{name} = {}", value.unwrap_or(0.0)),
+        Err(err) => format!("{name} unreadable: {err:#}"),
+    })
+    .collect::<Vec<_>>()
+    .join(", ")
 }
 
 /// The Ir recorded in the newest callgrind dump for `pid`, after asking the
@@ -212,6 +233,11 @@ async fn measure_cells(
         // the work it does scales with wall time, not messages, so a slow
         // tick keeps it out of the per-message figure.
         sync_interval_ms: 2000,
+        // The harness's 1 s expiry leaves the broker a 750 ms lease. Callgrind
+        // runs it tens of times slower, and under load a heartbeat can slip
+        // past that: the lease lapses and publishes are refused as fenced and
+        // retried. A deployment's expiry keeps that out of the measured run.
+        node_expiry: Duration::from_secs(15),
         ..Default::default()
     })
     .await

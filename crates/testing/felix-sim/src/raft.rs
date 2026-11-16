@@ -30,8 +30,8 @@ use felix_cluster::history::model::{
 };
 use felix_cluster::history::rng::Rng;
 use felix_replication::raft::{
-    AckAt, AnswerAt, GroupId, GroupRuntime, LogPoint, MemberId, RaftEngine, RaftReads, Role,
-    RuntimeConfig,
+    AckAt, AnswerAt, GroupId, GroupRuntime, LogPoint, MemberId, Placement, RaftEngine, RaftReads,
+    Role, RuntimeConfig,
 };
 use felix_replication::{ShardKey, ShardKind};
 use felix_storage::log::{AppendOnlyLog, FsyncMode, LogConfig, ReadRange, RecordMark};
@@ -334,6 +334,13 @@ fn timers(rate_ppm: u64) -> RuntimeConfig {
         cache_log_keep: shipped.cache_log_keep,
         tail_cache_bytes: shipped.tail_cache_bytes,
         append_entries: shipped.append_entries,
+        placement: Placement {
+            settle: at(shipped.placement.settle),
+            led_min: at(shipped.placement.led_min),
+            backoff: at(shipped.placement.backoff),
+            backoff_cap: at(shipped.placement.backoff_cap),
+            ..shipped.placement
+        },
     }
 }
 
@@ -407,6 +414,10 @@ impl Sim {
                     .initialize(&key(shard), voters.clone())
                     .await
                     .map_err(|err| anyhow::anyhow!("initialize: {err:?}"))?;
+                // Placement names a leader per shard, so the runs include
+                // the hand-overs brokers make to follow it.
+                let placed = name(shard as usize % count);
+                member.runtime.prefer(&key(shard), &placed);
             }
         }
         let mut history = History::default();

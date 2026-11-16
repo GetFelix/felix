@@ -165,3 +165,28 @@ async fn a_commit_records_the_dead_letters_beneath_it() {
     assert_eq!(stored.requires.end, 1);
     assert_eq!(stored.origin, 0);
 }
+
+/// **A seek whose cleared dead letters were lost is undone**, not served
+/// over the dead letters it was meant to deliver again.
+#[tokio::test]
+async fn a_seek_left_without_its_cleared_dead_letters_falls_back() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let key = key();
+    let before_seek = {
+        let fx = open_with_attempts(dir.path(), 1);
+        dead_letter_the_only_record(&fx, &key, Instant::now()).await;
+        let (_dead, log) = dead_letter_log(dir.path()).await;
+        let end = log.tail_offset().await.expect("tail");
+        fx.reader.seek(&key, 0, false).await.expect("seek");
+        end
+    };
+    {
+        let (_dead, log) = dead_letter_log(dir.path()).await;
+        log.truncate(before_seek).await.expect("lose the clear");
+    }
+
+    let fx = open(dir.path());
+
+    assert_eq!(fx.reader.committed(&key).await.expect("cursor"), Some(1));
+    assert_eq!(fx.reader.dead_lettered(&key).await.expect("list"), vec![0]);
+}

@@ -880,7 +880,19 @@ then end at the base's last index in the base's term, or the start fails.
 
 A voter's saved commit is set to `first_index`. One saved above it claims
 entries past the base that the copy does not hold, so it is lowered only by
-a re-form that accepts the loss, and the start refuses otherwise.
+a re-form that accepts the loss, and the start refuses otherwise. A start
+takes both the plan and the operator's `--accept-loss` (`AcceptLoss::of`):
+a marked plan, or one a vote cut, is refused unless the operator accepted
+the loss, and an unmarked plan never lowers a commit.
+
+A saved commit in `(base_end, first_index]` on a voter holding no record past
+the base is overwritten with `first_index` without accepting a loss. On a
+relaxed broker the commit is saved behind openraft and can name entries the
+last sync never covered, so it is not evidence of a record this disk holds;
+the plan already read each copy's commit cut to what it holds. That saved
+commit can still be the only trace that an acknowledged entry existed. The
+start does not refuse here, because every relaxed power cut would then need
+an operator to accept a loss of records no reached disk holds.
 
 A learner keeps its log only when all of it is a prefix of the base: no
 record past the base's last index, no purged id, and every record in the
@@ -964,9 +976,27 @@ the highest term read vouches for everything it holds, unless the group is
 marked. Every elected term took votes from a majority of some voter set of
 the epoch, and a vote is fsynced before the reply and kept across a power
 cut, so while the unknown votes are a minority of every voter set, some
-vote read is at least as new as every elected term. The unknown votes are
-those of dead brokers, of brokers whose current copy is not of the epoch or
-lost its vote, and of brokers with a copy of the epoch a restore rotated.
+vote read is at least as new as every elected term.
+
+A voter is a copy, named by its broker and copy id, not a broker. A broker
+whose disk was replaced runs a new copy that never gave the old one's votes,
+even after it saves votes of its own as a learner. The unknown votes are
+those of:
+
+- voters on dead brokers;
+- voters on a broker with a copy of the epoch a restore rotated;
+- a voter whose copy id is not the broker's current copy and no chain of
+  power cuts leads from it to the current copy. The chain is read from the
+  kept copies of the epoch: each holds its own copy id and a `rotated-by`
+  of `power-cut <to>`, and a power cut keeps its copy's newest vote. A
+  replaced disk keeps nothing, and an empty rotation keeps no directory, so
+  their old ids have no chain and stay unknown;
+- the current copy when it never voted, unless a power cut of the epoch
+  rotated into it (the kept copy holds its newest vote), and when it voted
+  but is not of the epoch. A rotation carries `raft-epoch` into the new
+  copy, so a copy a power cut minted votes as of its epoch. A copy that
+  reads as an older epoch than the one it voted in would key its vote
+  below the terms it decided, so its vote is never counted.
 
 The voter sets are the epoch's seed voters, both halves of every membership
 entry of the epoch in every copy read (uncommitted ones included), and every
@@ -2608,7 +2638,9 @@ way a held `Quorum` batch is released on the hybrid.
   state machine remembers each run of them, and a batch right after one
   tells its subscribers how many offsets it skipped (`skipped_before`), so
   the jump is not read as a drop. This is the rule `FelixRaft.tla` checks;
-  its twin `FelixRaftSkipsNotCounted` must fail.
+  its twin `FelixRaftSkipsNotCounted` must fail. The run is counted in
+  memory, so after a restart or a snapshot install the first record above
+  the cut is told too few, by the blank entries just under the cut.
 - Every reader of the stream is bounded by `read_bound`, at every
   consistency level (`StreamHandle::bound_every_level`, answered by
   `RaftReads`). On a follower that bound is what the follower has applied,
@@ -2906,12 +2938,13 @@ never ends a subscriber of the new term.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_term_led_again_keeps_its_subscribers`.
 
-Consumer-group operations on a Raft shard are refused by name before they
-reach the hybrid's fence (#2446). A head trim and an atomic commit go to
-the shard's engine ("Head trims" and "Atomic commits", above).
+Consumer-group operations on a Raft shard go to the shard's own groups
+("Consumer groups", below), and are refused by name until the fleet
+finalizes `raft_consumer_groups` (#2446). A head trim and an atomic commit
+go to the shard's engine ("Head trims" and "Atomic commits", above).
 
-> `services/felix-broker-service/src/serving/group_ops/tests.rs`,
-> `a_group_operation_on_a_raft_shard_is_refused_by_name`.
+> `services/felix-broker-service/src/serving/quic/streams/tests/raft_groups.rs`,
+> `group_operations_on_a_raft_shard_are_answered_as_on_the_hybrid`.
 
 **Kafka produce and MQTT publish.** Both work on a Raft shard and get the
 same answers as on the hybrid.
@@ -3155,6 +3188,14 @@ it answers a re-send the way a member that holds the records does. A crash
 in between leaves the old snapshot and only more refusals. Empty data
 carries none: a switch's base snapshot, or a snapshot taken with nothing
 forgotten.
+
+A producer whose batches a purge removed altogether is not just dropped. Its
+newest sequence stays as a tombstone, carried in the snapshot data with the
+cut batches, so a re-send of its first batch is refused as expired instead of
+being written a second time. Kafka producers are the exception: they
+restart at sequence 0 under the same id after an epoch bump, so their re-send
+is written. Up to 4096 are kept per shard, oldest out first;
+see "`producers`: the producer snapshot" in `docs/storage-format.md`.
 
 The sender reads its log from its base to build the list, a chunk at a
 time, so appends go on while it does. That read is as long as the log.
@@ -3465,9 +3506,21 @@ refused (`stream_has_commits`), as on the hybrid.
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid`.
 
-**Consumer groups.** Not served on a Raft shard yet: a group operation on
-one is refused as `invalid_request`. What is built is the entry the groups
-will write and the table every member folds from those entries. A group's writes (a cursor advance, a dead letter, a redrive and
+**Consumer groups.** Served on a Raft shard once the cluster finalizes
+`raft_consumer_groups` (a new cluster starts with it); until then a group
+operation on one is refused as `invalid_request`, since an older member
+refuses the entry. Only the shard's leader serves its groups. Every
+operation, read or write, first confirms the leader's term by a read index
+and waits for this member to apply it, so it sees every group write
+committed before it. A write is proposed at that term, refused by openraft
+if the member no longer leads it, and answered only once applied. If the
+append's outcome is unknown, the leader closes the term before answering, so
+only a later term's read index can see the entry. Claims are the leader's
+memory: when it stops leading a shard it drops the shard's trackers, and the
+next leader hands out what was in flight again at once, without waiting out
+the visibility timeout (at least once; #2644 tracks keeping claims across a
+failover). Group writes are log entries, so they
+take stream offsets that readers skip. A group's writes (a cursor advance, a dead letter, a redrive and
 its finish, a discard, a seek, a delete) are entries in the shard's own Raft
 log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
@@ -3515,9 +3568,9 @@ seek or a delete of its group is dropped rather than applied to the group
 that replaced it. A seek's own token is its entry's log id.
 
 A group entry has its own tag, 9, in the Raft wire's entry payloads, and a
-member built before it refuses the whole append by that tag. Serving groups
-on Raft will wait for the fleet feature `raft_consumer_groups`, which no
-build reports yet.
+member built before it refuses the whole append by that tag. Groups are
+served on Raft once the fleet finalizes `raft_consumer_groups`, which every
+broker on this build reports.
 
 > `crates/server/felix-replication/src/raft/wire/tests.rs`,
 > `a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
@@ -3612,7 +3665,11 @@ Membership changes are not built yet
   answers "not ready". Placement fills a short set only after the shard's
   leader has reported to it, which a Raft shard does not do, so today a
   shard placed short stays short: create a stream once as many brokers as
-  its replication factor are registered.
+  its replication factor are registered. The hold is not silent: the broker
+  warns once per shard and placement generation, naming the shard, the
+  replication factor and the brokers placed, and counts held shards in
+  `felix_broker_raft_shards_short_placement`. The control plane's create
+  response warns when the replication factor exceeds the registered brokers.
 - One broker forms the group: the one with the lowest id in the set. It
   first asks every other broker which copy of the shard it holds and
   whether a group has reached that copy, with Raft pre-votes, which change
@@ -3632,18 +3689,12 @@ Membership changes are not built yet
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
-- The broker that formed a group hands its first leadership to the broker
-  placement names as the shard's leader. It is the lowest id of the set
-  and wins the first election, so without this the lowest broker would
-  lead every group it formed and take every write while the others only
-  follow. Once it leads, it closes the shard for that term and asks for
-  the transfer when that broker holds its whole log, because openraft
-  hands over only to a member whose log matches. A transfer that does not
-  go through ends the term after an election timeout like any other, and
-  whoever wins leads. It gives up
-  after 10 s. Only the first term is placed this way: a later election, a
-  restart or a failover leaves leadership where the vote puts it, and
-  leaders do not move back to placement's leader afterwards (issue #2649).
+- Leaders follow placement. Placement names one broker as each shard's
+  leader, and the member that leads the group hands the leadership to that
+  broker's member when nothing else is going on. See "Leaders follow
+  placement" below. That covers the first term too: the broker that formed
+  the group is the lowest id of its set and wins the first election, so
+  without this one broker would lead every group it formed.
 - A formed group keeps its members. A member that placement drops stays
   open and keeps voting, and it opens again after a restart: the broker
   reads the `engine` marker of each shard placed elsewhere, and opens the
@@ -3662,9 +3713,8 @@ an older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
-  staged or copied. The group's leader moves there once brokers follow
-  placement ([#2649](https://github.com/GetFelix/felix/issues/2649)). Until
-  then it stays where it was elected, and requests still reach it.
+  staged or copied. The group's leader then hands its leadership there (see
+  "Leaders follow placement").
 - A drain moves every shard the draining broker leads to a live member, so
   its shutdown hand-off finishes. Its follower copies stay, since a member
   leaves a group only through a membership change. A shard with no other
@@ -3873,17 +3923,16 @@ it is told again.
 A target names members, not brokers, and a member is a copy id. The copy
 id of a broker the group does not have yet is minted on that broker, when
 it opens its shard directory with `GroupRuntime::open_copy`, so it is
-asked for, never guessed. `GroupRuntime::target_members` turns a list of
-brokers into the members a target names, the way the first members are
-asked for ("Forming a group"): a question to copy 0 is refused with the
-copy the broker holds. A broker that does not answer keeps the member the
-membership already names on it, so a down voter that stays does not block
-a change; a new broker that does not answer stops the call. The asking
-broker's own member is named only when the list names its broker, so a
-target can drain the leader's broker. A broker
-whose copy was wiped answers with its new id, so the target names the new
-copy: the driver adds it as a learner and drops the old id once the new
-copy has caught up.
+asked for, never guessed: each broker reports its copy id to the control
+plane, and the target the control plane stores names it. The leader is
+told exactly that stored set. A broker whose copy was wiped reports its
+new id, so the next target names the new copy: the driver adds it as a
+learner and drops the old id once the new copy has caught up.
+
+`GroupRuntime::target_members` asks the brokers for their copies the way
+the first members are asked for ("Forming a group"). It exists only in
+test builds, standing in for the control plane: a set it derives may be
+one the control plane never ordered, which no re-form source holds.
 
 Where a broker's targets come from is in "Where a target comes from"
 below.
@@ -3987,7 +4036,7 @@ as idle, settled, converging or stuck with a reason. Across the broker:
 | --- | --- |
 | `felix_broker_raft_membership_converging` | Groups this broker leads that are on the way to their target |
 | `felix_broker_raft_membership_stuck` | Groups this broker leads where no step has gone through. Not zero for long means a target cannot be reached |
-| `felix_broker_raft_membership_steps_total` | Steps written, by `step`: `add_learner`, `change`, `stamp`, `leave_joint`, `transfer` |
+| `felix_broker_raft_membership_steps_total` | Steps written, by `step`: `add_learner`, `change`, `stamp`, `leave_joint`, `transfer`, `placed_transfer` |
 | `felix_broker_raft_membership_refusals_total` | Steps not written, by `kind`: `transient`, `permanent`, or `broken` for a failed rule check |
 
 Only the leader acts, one change at a time, and the steps can be repeated
@@ -4004,7 +4053,69 @@ offset; those reports are not built yet. The routing table
 uses the leader as a hint, and the offset is the floor a re-form starts
 from. A broker that gets a write
 for a shard it does not lead answers with the leader it knows. To balance
-leaders the control plane asks the current leader for a transfer.
+leaders the control plane names another leader in placement, and the
+group's leader hands it over, as the next section describes.
+
+#### Leaders follow placement
+
+Placement names one broker as each shard's leader. Every broker tells its
+member of the group which broker that is on each feed pass. The member that
+leads hands its leadership to that broker's member once handing it over is
+safe and cheap. The rule runs in the membership driver, after everything
+else: any membership step, and any transfer a membership step needs, comes
+first.
+
+A leader hands over only when all of these hold:
+
+1. The membership is not joint, it is committed, an entry of this term is
+   committed, and no transfer is in flight.
+2. Placement's broker holds a voter of the group. A broker the group does
+   not hold, or holds only as a learner, is no preference at all.
+3. That voter is caught up (within the learner lag threshold) and has
+   answered lately, and has stayed so for `settle` (5 s). A broker that just
+   restarted is still opening members and may go away again.
+4. Every other voter is caught up and answering too. A group with a voter
+   down keeps its leader: a transfer then could leave a bare majority with
+   no leader.
+5. This member has led its term for `led_min` (10 s), so a group that just
+   elected does not elect again at once. A group's first term is exempt,
+   along with `settle`, for its first `led_min`: the broker that formed the
+   group wins it, and there is no earlier leader to churn with.
+6. The last transfer is not inside its backoff, and the broker's budget has
+   a permit.
+
+The transfer closes the shard for the term first (the lease is given up),
+waits up to the shortest election timeout for the target to hold the whole
+log, then asks openraft. Publishes in that window are told the shard is not
+ready, and the client retries. The target campaigns while the other
+followers still hear the old leader, so their pre-vote check lets a
+transfer target through.
+
+Pacing keeps this from churning:
+
+- **Backoff.** If the leader still leads after the term ends (the transfer
+  failed, or it won the election again), it waits `backoff` (30 s) before
+  the next try, doubling up to `backoff_cap` (10 min), with 20% jitter. A
+  new placement leader, or the leadership landing elsewhere, starts it
+  again. A target that lags never passes rule 3, so it costs nothing.
+  A member counts as answering for about 5 s after its last answer, so a
+  broker that died just now can still get one transfer, which fails and
+  starts the backoff.
+- **Budget.** Each broker runs at most `permits` (2) placement transfers at
+  once and starts at most `starts_per_second` (5). Waiters are served in
+  order, so a group that just finished cannot take its permit again ahead
+  of the others, and a group waiting its turn still takes a new target. When
+  placement names a restarted broker leader again, the others hand its
+  shards back a few at a time.
+
+The values are fields of `RuntimeConfig::placement`. Placement's leader is
+only a preference: routing follows the group's real leader.
+
+| Metric | Meaning |
+| --- | --- |
+| `felix_broker_raft_shards_led_off_placement` | Shards this broker leads whose placement names another leader. Above zero for long means a hand-over is held back, or placement names a broker that holds no voter of the group |
+| `felix_broker_raft_membership_steps_total{step="placed_transfer"}` | Placement transfers asked |
+| `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
 
 #### Where a target comes from
 
@@ -4086,19 +4197,63 @@ that started leading at time `since`:
 2. **A view that reaches it.** A feed answer whose request started after
    `since` and whose checkpoint is at or past that head.
 
+On the broker, `LeaseState::record_head` keeps the newest head a heartbeat
+brought with the time that heartbeat was sent, the heartbeat asks for one
+while a led shard has no bar (`LeaseState::wants_head`), and
+`Lead::met_by` in `shards/raft.rs` is the check above. The broker tells
+each leading member its target on every feed pass that meets it; the
+member keeps only a newer version, or the same one for a newer term.
+
+The members told are the control plane's stored `target.members`, copy ids
+included, never a set the broker derives from the copies it sees. A set
+the control plane never ordered is in no re-form source, so a leader that
+wrote it and then lost a majority of it would leave nothing to re-form
+from.
+
+A view that meets the bar and carries no target for a led shard is told
+too, as "no target" for that term (`GroupRuntime::untarget`). Placement
+moves a leader only once the target is told for its term, and a leader
+that still holds a target from an earlier term would otherwise wait for a
+tell that never comes while the control plane has no target for the shard.
+
+"No target" is told only from a view that says it has none. While some
+registered broker has not acknowledged the placement incarnation, or a
+restore landed during the read, or the read was a confirmed one, the feed
+leaves every target out and sets `targets_withheld` on each item. A broker
+reads that as no view at all and tells nothing, so a leader keeps the
+target it holds and does not hand leadership away by placement during a
+restore. The field is absent whenever targets are not withheld.
+
+A new leader waits for a feed request that started after its term began.
+A long poll already in flight does not count, so with nothing changing on
+the feed the wait can be a whole long poll, about 20 s (#2679).
+
 A target write is a shard-record change, so it is on the assignment feed
 with its own sequence. A restore brings the feed's sequence back with the
 backup, so a head taken before it can sit above every sequence the new
-feed reaches. When the broker acknowledges a new incarnation it drops
-every bar and moves each `since` to that moment, so it takes a new head
-and a view of the restored feed.
+feed reaches. When the broker acknowledges a new incarnation it should
+drop every bar and move each `since` to that moment, so it takes a new
+head and a view of the restored feed. That is not built yet: today a head
+lower than a shard's bar replaces the bar and moves its `since`, which
+reaches the same state once a heartbeat brings the restored feed's head.
 
 Moving `since` does not let an old target through. A control-plane
 follower that has not applied the restore can still answer with
-checkpoint 41, past a new head of 12, and with target (0, 9). The driver
-refuses a target whose incarnation is below the one its broker has
-acknowledged or its log holds (`Wait::StaleTarget`), so (0, 9) is never
-acted on, and the restored feed's (1, 0) replaces it.
+checkpoint 41, past a new head of 12, and with target (0, 9). The
+heartbeat that brought head 12 also brought placement incarnation 1, and
+the broker records the incarnation before the head
+(`LeaseState::record_placement`), so any pass that sees the new bar sees
+incarnation 1 too. Two checks then hold (0, 9) back:
+
+- The broker does not tell a target whose incarnation is below the one the
+  heartbeat reported. That view came from a member that has not applied
+  the restore, so it is not fresh at all (`RaftShards::answered`).
+- The broker hands the same incarnation to every leader it runs
+  (`GroupRuntime::ack_incarnation`), and the driver refuses a target below
+  it or below the one its log holds (`Wait::StaleTarget`). This covers a
+  target told before the restore that the leader still holds.
+
+So (0, 9) is never acted on, and the restored feed's (1, 0) replaces it.
 
 Why the versions leaders act on never go back: a leader acts on a target
 only after the control plane committed it. It hands leadership over after
@@ -4153,10 +4308,11 @@ the id back as a voter.
 
 What placement does not do yet for a Raft shard:
 
-- **Brokers do not report copy ids or read targets yet.** The control
-  plane keeps the records and the route (`raft_copy_ids`, `raft_target`,
-  `POST /v1/nodes/{node_id}/raft-copy-id`) and the feed carries the target
-  as `target`, but no broker sends an id or hands a target to its leader.
+- **Brokers do not report copy ids yet.** The control plane keeps the
+  records and the route (`raft_copy_ids`, `raft_target`,
+  `POST /v1/nodes/{node_id}/raft-copy-id`), but no broker sends an id. A
+  broker does read the feed's `target` and tells it to the member it leads
+  ("A target lasts one term").
 - **A dropped copy keeps its directory.** Deleting it needs the control
   plane's doomed set and the leaders' membership reports ("Membership"
   above, `DoomGuard` in the model), which are new metadata.
@@ -4253,6 +4409,11 @@ plane keeps them all on the shard's record as `raft_ordered`: the stream
   `None`, and the re-form stays marked, when the list is from another epoch or
   incarnation, is `lost`, or was never started. A shard that switched before
   level 39 has no list for the rest of its epoch.
+
+A control-plane restore brings back each list as the backup had it, with the
+same incarnation and epoch, so a target ordered after the backup would be
+missing. From metadata level 40 an import marks every list `lost`
+(`ImportState::lose_ordered`), and the re-form stays marked for that epoch.
 
 The list is metadata level 39. Below it, `settle_for_level` leaves
 `keep_ordered` off `accept_seal_report` and `record_raft_copy_id`, so no member
@@ -5408,6 +5569,13 @@ not move.
 - A broker opens a shard's Raft log with its own fsync mode only when the
   fleet has finalized `raft_written_commit` and the root's run is relaxed;
   otherwise `OnCommit`.
+- The written report follows "What each signal means": a leader on a
+  written-commit log asks with `Ask::WrittenIfStrict`, a follower on one
+  skips that ask (no marker sync, no `Request::Written`), and a follower
+  that fsyncs first reports as before. A leader that fsyncs first asks with
+  `Ask::Written`, which every follower answers. Neither keeps the other's
+  mode, so a follower restarted in another mode answers by its new one.
+  Skipping a report can only make a `Quorum` write wait for the commit.
 - What a re-form reads from a broker's copies, in `felix_storage::raft_copy`
   (`first_free_index`, `kept_logs`): the first index the new epoch may give
   out, above the base, the stored floor and every reservation in the shard
@@ -5439,7 +5607,8 @@ not move.
   or has no copy file marks the group unless a power-cut kept copy names
   that current copy as the one it rotated into: a wiped directory or an
   empty rotation leaves nothing kept, so an older power cut does not
-  count. The first index is also
+  count. A current copy that voted counts only if it reads as the group's
+  epoch, which a rotation carries into it before its copy file. The first index is also
   never below an earlier epoch's first index or any record a copy of the
   incarnation holds. A later epoch's gap counts as holding the floor's
   entry only on a copy with a record past the gap, so the start, not
@@ -5453,9 +5622,7 @@ floor ("Re-forming a group"). The feature waits for them, since they are
 what would call the reads above. It also waits for a fix to the first
 form: a shard whose every copy rotated has blank members, and the broker
 forms it again from empty logs at index 0, which gives acknowledged
-offsets out again (#2620). Also not built: the written-report rules
-(a relaxed leader still asks every follower, which is safe and only
-redundant, #2612); the perf measurement.
+offsets out again (#2620). Also not built: the perf measurement.
 
 ### Code changes it would take
 
@@ -5466,7 +5633,7 @@ redundant, #2612); the perf measurement.
 | Batched log mark on relaxed roots, fed by `flushed` | `felix-replication/src/raft/runtime.rs:111`, `felix-storage/src/raft_copy/marks.rs:314-323` | the mark never names an unsynced id |
 | The reservation: a synced file per shard directory, raised before the write and at open, inherited by the rotated copy | new `felix-storage/src/raft_log/reserved.rs` (on `state_file.rs:12`), `raft_copy/reclaim.rs` | no callback past the reservation; a failed reservation write fails the append; a rotation carries it |
 | Open the shard's Raft log with the broker's own fsync mode instead of `OnCommit` | `felix-broker-service/src/shards/raft.rs:227` | a relaxed broker's shard commits before any fsync |
-| The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | `felix-replication/src/raft/group.rs:740-775`, `group.rs:1025-1050`, `raft/engine.rs:152` | no `Request::Written` from a relaxed leader to a relaxed follower; a relaxed leader with strict followers acknowledges a `Quorum` write on their written reports, before their fsync |
+| The written report: a relaxed leader skips the ask and its marker sync for relaxed followers and still asks strict ones; a strict follower keeps answering it; a relaxed follower answers appends at the write | Built: `Ask` in `felix-replication/src/raft/network.rs`, `Reports::ask` in `raft/written.rs`, `Group::answer` in `raft/group.rs` | `raft/tests/written.rs`: `a_relaxed_leader_gets_no_report_from_relaxed_followers`, `a_relaxed_leader_acknowledges_on_strict_followers_reports` |
 | A start after a crash under `periodic` rotates even when the broker now runs `on_commit` (item 6 above) | `felix-storage/src/run_state.rs:193` | crash a relaxed run, restart on `on_commit`: a new storage id before any copy opens |
 | A restored RF 1 copy starting by itself reads the reservations before it writes its epoch (item 8 above) | the RF 1 restart ("Re-forming a group"), with the re-form | the epoch starts above the highest reservation, current or kept |
 | A saved commit index ahead of the durable log is capped in a kept directory too: an open lowers it (`raft_log/writer.rs:91-99`), but the re-form reads kept directories without opening them, so it must cap it the same way | `felix-storage/src/raft_copy/reform.rs` (`read_kept`); the re-form that calls it is not built | a kept directory whose saved commit is past its last entry that decodes is cut at the entry, not at the saved index |

@@ -24,14 +24,14 @@ use bytes::Bytes;
 
 use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
-use super::commit::{self, Commits};
+use super::commit::{self, Commits, SkipClaim, Skips};
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
 use super::machine::{self, Cache, Groups, Machine, SnapshotData};
 use super::membership::{Target, Told};
 use super::network::{
-    Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
+    Addressee, Ask, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
 };
 use super::propose::{
     self, AckAt, Batch, Clock, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
@@ -43,9 +43,11 @@ use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
+use placed::Placement;
 
 pub(crate) mod driver;
 pub(crate) mod membership;
+pub(crate) mod placed;
 
 use driver::MembershipProgress;
 
@@ -77,6 +79,8 @@ pub(crate) struct Group {
     root: Option<MarkLog>,
     /// The brokers on which this group's member refused this one's calls.
     refusals: Arc<Refusals>,
+    /// One past the newest term a failed write already stepped down from.
+    stepped_down: AtomicU64,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// Waits on `positions.written` and `positions.flushed`, woken only
@@ -87,6 +91,9 @@ pub(crate) struct Group {
     commits: tokio::sync::watch::Receiver<Commits>,
     /// Waits on the applied index, woken only once it reaches theirs.
     applied: Waiters<u64>,
+    /// What the records the state machine applied had below them that
+    /// holds no record.
+    skips: Skips,
     /// The member's log, and its first index read live: a purge held only in
     /// memory counts.
     copy: felix_storage::raft_copy::CurrentCopy,
@@ -116,6 +123,12 @@ pub(crate) struct Group {
     progress: Arc<tokio::sync::watch::Sender<MembershipProgress>>,
     /// How far behind a learner may be when it is promoted.
     lag_threshold: u64,
+    /// The broker placement names as this group's leader. The member that
+    /// leads hands it the leadership.
+    preferred: tokio::sync::watch::Sender<Option<String>>,
+    placement: Placement,
+    placed_budget: Arc<placed::Budget>,
+    acked: Arc<AtomicU64>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
@@ -358,6 +371,20 @@ impl Pace {
         }
     }
 
+    /// The peers that answered lately: within the time after which a peer
+    /// counts as silent, and never less than two idle heartbeats, which an
+    /// idle group sends that far apart.
+    pub(crate) fn live(&self) -> BTreeSet<MemberId> {
+        let timers = &self.timers;
+        let now = timers.now();
+        let silent = timers
+            .silent()
+            .max(2 * timers.idle_heartbeat + timers.election_min);
+        let peers = self.peers.lock();
+        let live = peers.iter().filter(|peer| now < peer.answered + silent);
+        live.map(|peer| peer.id.clone()).collect()
+    }
+
     /// How long a leader waits until its next heartbeat.
     pub(super) fn leader_gap(&self, now: u64) -> u64 {
         let timers = &self.timers;
@@ -541,6 +568,11 @@ pub(crate) struct Host {
     /// Who is told when the shard opens and closes here.
     pub(crate) engine: Option<Arc<dyn EngineHost>>,
     pub(crate) clock: Clock,
+    pub(crate) placement: Placement,
+    /// The broker's placement transfers, shared by all its groups.
+    pub(crate) placed_budget: Arc<placed::Budget>,
+    /// The highest placement incarnation the broker has heard of.
+    pub(crate) acked: Arc<AtomicU64>,
 }
 
 /// [`Pace`]'s mark for a time that has not come yet.
@@ -571,6 +603,9 @@ impl Group {
         let Host {
             engine: host,
             clock,
+            placement,
+            placed_budget,
+            acked,
         } = host;
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
@@ -612,6 +647,7 @@ impl Group {
             machine,
             commits,
             applied,
+            skips,
             cache,
             groups,
         } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
@@ -619,7 +655,7 @@ impl Group {
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
-        let reports = Arc::new(Reports::new());
+        let reports = Arc::new(Reports::new(log.written_commit()));
         let refusals = Arc::new(Refusals::new(id.clone()));
         let network = Network {
             router: Router::new(
@@ -682,11 +718,13 @@ impl Group {
             answered: Arc::default(),
             root,
             refusals,
+            stepped_down: AtomicU64::new(0),
             positions,
             written_waiters,
             flushed_waiters,
             commits,
             applied,
+            skips,
             copy,
             leadership,
             reached_before: AtomicBool::new(false),
@@ -701,6 +739,10 @@ impl Group {
             target: tokio::sync::watch::Sender::default(),
             progress: Arc::default(),
             lag_threshold,
+            preferred: tokio::sync::watch::Sender::new(None),
+            placement,
+            placed_budget,
+            acked,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
             leads_since: parking_lot::Mutex::new(None),
@@ -717,30 +759,77 @@ impl Group {
     /// target while this member leads. It ends on `stop`, or when the
     /// group's core is gone.
     pub(crate) fn drive(self: &Arc<Self>) {
-        let driver = driver::Driver::new(
+        let timers = &self.pace.timers;
+        let placing = placed::Placing::new(
+            self.placement.clone(),
+            Duration::from_millis(timers.election_min),
+            Duration::from_millis(timers.election_min + timers.election_max),
+            Arc::clone(&self.placed_budget),
+        );
+        let mut driver = driver::Driver::new(
             Arc::clone(self),
             self.lag_threshold,
             driver::Retry::default(),
             Arc::clone(&self.progress),
+            placing,
         );
+        driver.acked = Arc::clone(&self.acked);
         self.runtime.spawn(driver::run(
             driver,
             self.target.subscribe(),
             self.leadership.changes(),
+            self.preferred.subscribe(),
             self.stop.clone(),
         ));
     }
 
+    /// Placement names `broker` as this group's leader. Returns whether
+    /// that is new.
+    pub(crate) fn prefer(&self, broker: &str) -> bool {
+        self.preferred.send_if_modified(|held| {
+            let new = held.as_deref() != Some(broker);
+            if new {
+                *held = Some(broker.to_owned());
+            }
+            new
+        })
+    }
+
     /// The control plane's target for this group, told for `term`. A
     /// newer target replaces the one held, and so does the same version
-    /// told in a newer term. Returns whether it did.
+    /// told in a newer term, or any target told in the term the held "no
+    /// target" was. Returns whether it did.
     pub(crate) fn retarget(&self, target: Target, term: u64) -> bool {
         self.target.send_if_modified(|held| {
-            let newer = held
-                .as_ref()
-                .is_none_or(|held| (target.version, term) > (held.target.version, held.term));
+            let newer = match held.as_ref() {
+                None => true,
+                Some(Told {
+                    target: Some(held),
+                    term: held_term,
+                }) => (target.version, term) > (held.version, *held_term),
+                Some(Told {
+                    target: None,
+                    term: held_term,
+                }) => term >= *held_term,
+            };
             if newer {
-                *held = Some(Told { target, term });
+                *held = Some(Told {
+                    target: Some(target),
+                    term,
+                });
+            }
+            newer
+        })
+    }
+
+    /// The control plane holds no target for this group, as of a view fresh
+    /// enough for `term`. Kept only for a term newer than the one held, so
+    /// the leader of `term` knows no target waits and placement may move it.
+    pub(crate) fn untarget(&self, term: u64) -> bool {
+        self.target.send_if_modified(|held| {
+            let newer = held.as_ref().is_none_or(|held| term > held.term);
+            if newer {
+                *held = Some(Told { target: None, term });
             }
             newer
         })
@@ -945,7 +1034,7 @@ impl Group {
 
     /// `beat` is the gap a leader's append named. Taking the append or
     /// granting a vote restarts this member's election timer. `report` is
-    /// the leader asking to be told once the append's entries are written.
+    /// what the leader asks to be told once the append's entries are written.
     ///
     /// The timer restarts even if the caller stops waiting: openraft
     /// persists the append or vote either way, and a follower that keeps
@@ -956,7 +1045,7 @@ impl Group {
         self: &Arc<Self>,
         body: Request,
         beat: u64,
-        report: bool,
+        report: Ask,
         deadline: Duration,
     ) -> Result<Reply, Refused> {
         let group = Arc::clone(self);
@@ -988,10 +1077,16 @@ impl Group {
     /// Answer `body`. When it is an append whose leader asked for a report,
     /// the report goes out as soon as the entries are written, while
     /// openraft's answer waits for their fsync. An answer that is ready
-    /// first says more, and the report is dropped.
-    async fn answer(&self, body: Request, report: bool) -> Result<Reply, Refused> {
+    /// first says more, and the report is dropped. A written-commit log
+    /// answers at the write, so it skips a relaxed leader's ask ([`Ask`]).
+    async fn answer(&self, body: Request, report: Ask) -> Result<Reply, Refused> {
         use openraft::entry::RaftEntry;
         use openraft::vote::RaftLeaderId;
+        let report = match report {
+            Ask::Nothing => false,
+            Ask::Written => true,
+            Ask::WrittenIfStrict => !self.log.written_commit(),
+        };
         let asked = match &body {
             Request::Append(rpc) if report => rpc.entries.last().map(|last| {
                 let last = last.log_id();
@@ -1046,7 +1141,7 @@ impl Group {
             group: self.id.clone(),
             to: leader,
             beat: 0,
-            report: false,
+            report: Ask::Nothing,
             deadline,
             body: Request::Written {
                 from: self.member.clone(),
@@ -1261,6 +1356,15 @@ impl Group {
             Some(_) => Err(propose::not_a_stream()),
             None => propose::split_group(entry, timestamp_micros, term),
         };
+        #[cfg(test)]
+        let split = match self
+            .gate
+            .unknown_groups
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            true => Err(propose::unknown()),
+            false => split,
+        };
         self.queue(split)
     }
 
@@ -1302,6 +1406,12 @@ impl Group {
     /// The commit table as the state machine publishes it.
     pub(crate) fn commits(&self) -> tokio::sync::watch::Receiver<Commits> {
         self.commits.clone()
+    }
+
+    /// Hold the skip counts of the records about to be proposed. See
+    /// [`Skips`].
+    pub(crate) fn claim_skips(&self) -> SkipClaim {
+        self.skips.claim(&self.commits)
     }
 
     /// One past the last offset this member knows committed. It moves when

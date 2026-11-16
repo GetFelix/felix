@@ -313,12 +313,12 @@ supports and the ones an operator has enabled:
   "enabled": [], "serving_nodes": 3 }
 ```
 
-A broker reports sixteen features: `generation_start`, `majority_ack`,
+A broker reports seventeen features: `generation_start`, `majority_ack`,
 `lease_free_reads`, `jump_hash_routing`, `atomic_commit`,
 `publisher_principal`, `fenced_caches`, `stream_incarnations`,
 `group_cursor_dependencies`, `cache_incarnations`, `head_trim`,
 `raft_head_trim`, `record_headers`, `raft_record_headers`,
-`record_generations` and `raft_atomic_commit`. Two more, `joint_fence` and
+`record_generations`, `raft_atomic_commit` and `raft_consumer_groups`. Two more, `joint_fence` and
 `replica_election`, are never reported: an operator finalizes them once the
 brokers offer the peer capabilities they need (see
 [Failover without the control plane](/deployment/failover-without-control-plane/#turning-it-on)).
@@ -707,7 +707,7 @@ The endpoints not covered above:
 | `POST /v1/nodes/{node_id}/seal-report` | a seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | a seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on | `node.manage` over the node |
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |
-| `GET /v1/shard-assignments/{snapshot,changes}` | the assignment feed brokers follow | `node.view:cluster:*` |
+| `GET /v1/shard-assignments/{snapshot,changes}` | the assignment feed brokers follow. A Raft shard's `target` is left out, and the item carries `targets_withheld: true`, while some registered broker has not acknowledged the placement incarnation or a restore landed during the read; the field is absent otherwise | `node.view:cluster:*` |
 | `GET /v1/regions`, `GET /v1/regions/{region_id}` | the region this control plane serves (`FELIX_REGION_ID`, default `local`) | none |
 | `GET /v1/cluster/identity` | the cluster's identity, recorded once when the metadata group forms: `{"group_id": "...", "shard_engine": "hybrid"}`, plus `"adopts_existing": true` when the group recorded it over streams or caches it already held (an in-place upgrade), so brokers with older data adopt the group. 503 `identity_pending` under Raft until the group has recorded it, and 503 `unavailable` from a member catching up after a restart, so a broker retries. The in-memory backend has no group and leaves `group_id` out | `node.view:cluster:*` |
 | `GET /v1/system/info` | region, API version and feature flags | none |

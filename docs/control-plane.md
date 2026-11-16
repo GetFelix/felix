@@ -58,6 +58,18 @@ On update:
 - `ReportHealth(node_id, status)` -> node liveness signals. **Implemented** as
   `POST /v1/nodes/{node_id}/heartbeat`; see [Broker liveness](#broker-liveness).
 
+### Stream create warnings
+
+`POST .../streams` answers the stream's own fields. When the stream is durable
+and its `replication_factor` is greater than the number of live brokers (registered, not draining or down),
+the response also carries `warnings`, a list of strings, and the control plane
+logs the same text at warn when it creates the stream, not when a repeat
+of the same request answers `200`. The stream is still created: brokers register
+after streams when a cluster bootstraps, so refusing would break that order.
+Until that many brokers are placed no Raft group forms for its shards. With
+nothing to warn about the field is absent, so a client that predates it sees
+the same body as before.
+
 ## Broker liveness
 
 A broker registers on boot and then reports health on an interval. Nothing
@@ -1781,11 +1793,8 @@ only says which member it wants leading:
 | Follower on a draining broker | Replaced | Stays |
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
-at most 64 new Raft leaders: once brokers follow placement
-([#2649](https://github.com/GetFelix/felix/issues/2649)) each asks for a
-leadership transfer, which closes the shard for an election. Until then the
-group's leader stays where it was elected, so a drained broker's shutdown
-costs its groups an election rather than a hand-off. Pausing placement holds them, and balance
+at most 64 new Raft leaders, since brokers follow placement: each one is a
+leadership transfer, which closes the shard for an election. Pausing placement holds them, and balance
 waits while a broker is down, as for the hybrid. A down leader is renamed even
 while paused, as the hybrid still replaces a failed leader: a broker with no
 member forwards requests to the leader placement names. The set changes only

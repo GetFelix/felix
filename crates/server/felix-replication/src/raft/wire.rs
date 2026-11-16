@@ -24,7 +24,7 @@ use openraft::{EntryPayload, LogId, StoredMembership, Vote};
 
 use super::codec::invalid;
 use super::membership::TargetVersion;
-use super::network::{Addressee, RaftReply, RaftRequest, Refused, Reply, Request};
+use super::network::{Addressee, Ask, RaftReply, RaftRequest, Refused, Reply, Request};
 use super::types::{Command, GroupId, MemberId, Membership, ProducerMark, ShardTypes};
 use crate::{ShardKey, ShardKind};
 
@@ -148,7 +148,14 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
     put_group(&mut buf, &request.group)?;
     put_member(&mut buf, &request.to)?;
     buf.put_u64(request.beat);
-    buf.put_u8(u8::from(request.report));
+    // 0 and 1 read as the boolean older builds take. Only a written-commit
+    // log sends 2, and that needs the fleet to finalize `raft_written_commit`,
+    // which no build without this byte reports.
+    buf.put_u8(match request.report {
+        Ask::Nothing => 0,
+        Ask::Written => 1,
+        Ask::WrittenIfStrict => 2,
+    });
     match &request.body {
         Request::Append(rpc) => {
             put_vote(&mut buf, &rpc.vote)?;
@@ -209,7 +216,12 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     let group = take_group(&mut buf)?;
     let to = take_member(&mut buf)?;
     let beat = take_u64(&mut buf)?;
-    let report = take_bool(&mut buf)?;
+    let report = match take_u8(&mut buf)? {
+        0 => Ask::Nothing,
+        1 => Ask::Written,
+        2 => Ask::WrittenIfStrict,
+        other => return Err(invalid(format!("{other} is not a report ask"))),
+    };
     let body = match tag {
         APPEND | APPEND_ENTRIES => {
             let vote = take_vote(&mut buf)?;

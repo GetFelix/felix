@@ -2,7 +2,8 @@ use std::path::Path;
 
 use felix_broker::{ConsistencyLevel, StreamMetadata};
 use felix_replication::raft::{
-    AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
+    AgreeingPeers, MembershipProgress, RaftReply, RaftRequest, RaftTransport, Refused, Role,
+    RuntimeConfig,
 };
 
 use super::*;
@@ -34,6 +35,8 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        target: None,
+        targets_withheld: false,
     }
 }
 
@@ -1818,6 +1821,26 @@ async fn a_request_off_the_leader_is_routed_to_it() {
     EngineShards::shutdown(&*outside.shards).await;
 }
 
+/// **A Raft shard's leader follows placement.** The feed names another
+/// leader, and the group hands it the leadership; publishes go on there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_placement_leader_change_moves_the_raft_leader() {
+    let (_net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    assert_eq!(members[leader].name, "broker-a");
+    let mut moved = replicated();
+    moved.leader = "broker-c".to_string();
+    for member in &members {
+        member.shards.take(&mut assignments([moved.clone()])).await;
+    }
+    until("placement's leader serves the shard", || {
+        members[2].shards.leading(&orders).is_some()
+    })
+    .await;
+    publishes_again(&members).await;
+    stop(&members).await;
+}
+
 /// **A restarted follower forwards to the leader its stored vote names,
 /// before it hears from it.** It serves no reader until it does: the hint
 /// is enough to forward to, not to read from.
@@ -1882,6 +1905,45 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     assert_eq!(
         route(&shards, &orders),
         Some(Dispatch::Unavailable(Reason::NotReady))
+    );
+    EngineShards::shutdown(&*shards).await;
+}
+
+/// **An MQTT subscription over a Raft shard whose leader this member has not
+/// heard is paused, not ended**: nothing is read from a commit index that may
+/// have stopped moving, and the session survives a missed heartbeat round.
+#[tokio::test]
+async fn an_mqtt_reader_of_a_leaderless_raft_member_waits() {
+    use felix_mqtt::{ReadError, Reads};
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .placed
+        .lock()
+        .insert(orders.clone(), "broker-a".to_string());
+    let reads = crate::serving::mqtt::BrokerReads::new(Arc::clone(&broker), Some(ingress(&shards)));
+
+    assert_eq!(
+        reads.tail("t1", "ns", "orders", 0).await,
+        Err(ReadError::Unavailable)
+    );
+    assert_eq!(
+        reads
+            .read(
+                "t1",
+                "ns",
+                "orders",
+                0,
+                0,
+                1 << 20,
+                Duration::from_millis(50)
+            )
+            .await
+            .map(|_| ()),
+        Err(ReadError::Unavailable)
     );
     EngineShards::shutdown(&*shards).await;
 }
@@ -2402,5 +2464,8 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
     );
 }
 
+mod groups;
+mod retarget;
 mod retention;
+mod short_placement;
 mod trim;

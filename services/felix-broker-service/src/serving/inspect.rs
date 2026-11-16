@@ -295,7 +295,10 @@ fn not_serving(
     match phase.phase {
         Phase::Unassigned | Phase::Opening => (
             Some("opening"),
-            Some("recovering the local log before it serves".to_string()),
+            Some(match &phase.error {
+                Some(error) => format!("opening again on a later pass: {error}"),
+                None => "recovering the local log before it serves".to_string(),
+            }),
         ),
         Phase::Fencing => (
             Some("fencing"),
