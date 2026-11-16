@@ -150,6 +150,7 @@ fn pinned(stream: &str, shard: u32, leader: &str) -> ShardAssignment {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     }
 }
 
@@ -182,5 +183,6 @@ fn assigned(stream: &str, leader: &str, replicas: &[&str]) -> ShardAssignment {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     }
 }

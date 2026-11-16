@@ -218,6 +218,15 @@ fn assignment() -> ShardAssignment {
             index: 1,
             term: 1,
         }),
+        raft_ordered: Some(crate::model::RaftOrdered {
+            incarnation: 1,
+            epoch: 1,
+            targets: vec![crate::model::RaftTarget {
+                counter: 1,
+                members: any_map(1),
+            }],
+            lost: true,
+        }),
     }
 }
 
@@ -601,6 +610,7 @@ fn commands() -> Vec<MetaCommand> {
             node_registered_at_millis: 1,
             node_incarnation: 1,
             copy_id: 1,
+            keep_ordered: true,
         },
         MetaCommand::RecordRaftFloors {
             node_id: s("b"),
@@ -620,6 +630,7 @@ fn commands() -> Vec<MetaCommand> {
             key: shard_key(),
             report: seal_report(),
             sealer: s("b"),
+            keep_ordered: true,
         },
         MetaCommand::GiveUpSeal {
             key: shard_key(),

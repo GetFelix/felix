@@ -82,6 +82,8 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     raft-purged                              ← a Raft log's last purged id
     raft-reserved                            ← a Raft copy's reserved index, once it took one
     raft-reserved-carried                    ← empty; a rotation carried raft-reserved in
+    raft-epoch                               ← a Raft copy's group epoch, once a re-form started one
+    rotated-by                               ← only in a kept directory: why the rotation moved it aside
     raft-snapshot                            ← a Raft group's snapshot
     durable.mark                             ← how far the active segment was synced
     poisoned                                 ← only after a failed fsync: the mark as of the failure
@@ -1367,6 +1369,64 @@ that reserves in every mode raises it over the copy's whole log before
 Raft counts anything, so an upgraded copy is covered. No released build
 has the file at all (above), so only an unreleased build can leave such a
 copy.
+
+## `raft-epoch`: a Raft copy's group epoch
+
+A group re-formed by the operator starts a new group epoch, and every copy
+in it keeps a `raft-epoch` file: the stream incarnation and, for each
+re-form its log went through, where that epoch began. A copy without the
+file is at epoch 0. Nothing writes it yet: the re-form start that will is
+not built, but the re-form's reads already take it.
+
+```text
+ 0   4  magic        u32  "FLEP"
+ 4   2  version      u16  1
+ 6   2  epochs       u16  E, the copy's group epoch
+ 8   8  incarnation  u64  the stream incarnation
+16  40  base 1..E    one per epoch, in order:
+          0   1  flags        u8   1 when the base holds an entry, else 0
+          1   7  reserved          zero
+          8   8  base index   u64  the base's last log id: index,
+         16   8  base epoch   u64    group epoch
+         24   8  base term    u64    and term
+         32   8  first index  u64  the epoch's first index
+16+40E 4  crc          u32  crc32 over every byte before it
+```
+
+A record carries its term but not its epoch, so the epoch of the entry at
+an index is derived from these bases: in a copy at epoch E, it is the
+highest epoch e at or below E whose first index is at or below the index.
+An index from epoch e's base end up to its first index is a gap that no
+record takes. Below every base, it is epoch 0. Log ids are compared by
+(epoch, term), then index, so every term of an epoch is above every term
+of an earlier one.
+
+Written through a temporary, an fsync, a rename and a directory sync. A
+rotation moves it into the kept directory with the rest of the copy. One
+that does not decode fails the re-form's reads, and so does one whose
+reserved bytes are not zero, whose first index is below its base's end,
+or whose base n + 1 ends on an entry of an epoch above n. A kept copy whose file
+names another incarnation vouches for nothing in a re-form; its
+reservation still counts.
+
+## `rotated-by`: why a kept copy was rotated
+
+A rotation that moves a shard directory into `.kept/` writes one word into
+it: `power-cut <copy>\n`, where `<copy>` is the copy id the rotation
+minted in 16 hex digits, or `restore\n`. Only a log below its log mark is
+`power-cut`, and it speaks only for the copy it names: a later rotation
+of an empty or wiped directory keeps nothing, so a re-form must not let
+an older power cut vouch for the copy after it. The vote mark is checked first, so such a copy still holds
+the newest vote it took, and a re-form may read it to learn how high the
+group's terms went. Every other reason (no copy file, another storage id,
+no marks or another copy's, a vote below its mark, a poisoned log) is
+`restore`, since the directory can hold an older vote than one the copy
+gave, or less than it reported.
+
+It is written and synced after the rename, so a crash leaves a kept
+directory without it, never a live directory with one. A missing file
+reads as `restore`, which covers every kept directory from before the
+file existed. Any other content is an error for the re-form's reads.
 
 ## `raft-snapshot`: a Raft group's snapshot
 

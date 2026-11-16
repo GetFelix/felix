@@ -795,9 +795,10 @@ What `plan` works out for one group, and `apply` then does:
 command reached is at or below the base, or is cut as uncommitted. What is
 lost is a record that only brokers declared dead held, and, when no copy
 holds the floor's entry, a record that no copy holding it can vouch for
-(see "Offsets are not reused" below). `plan` marks every
-group where a dead broker was a voter, since those are the groups that may
-have lost something. On Linux a process crash does not rotate ids and never
+(see "Offsets are not reused" below). `plan` marks a group when the
+brokers whose votes it cannot read are a majority of some voter set of the
+epoch, since only then can a term have been elected that no vote it read
+knows of (see "When a copy vouches for its whole log" below). On Linux a process crash does not rotate ids and never
 needs a re-form. A power cut rotates a broker's copy only when its run was
 relaxed or a copy in its root had vouched, and the old voter seat then
 stays empty until membership changes exist, so a group that loses a
@@ -903,6 +904,25 @@ no offset is reused (`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes;
 `FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg`, with an offset-only
 floor, does not), and the loss above can happen
 (`FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg`).
+
+**When a copy vouches for its whole log.** A copy whose last entry has
+the highest term read vouches for everything it holds, unless the group is
+marked. Every elected term took votes from a majority of some voter set of
+the epoch, and a vote is fsynced before the reply and kept across a power
+cut, so while the unknown votes are a minority of every voter set, some
+vote read is at least as new as every elected term. The unknown votes are
+those of dead brokers, of brokers whose current copy is not of the epoch or
+lost its vote, and of brokers with a copy of the epoch a restore rotated.
+
+The voter sets are the epoch's seed voters, both halves of every membership
+entry of the epoch in every copy read (uncommitted ones included), and every
+target the control plane ordered in the epoch, which it records before it
+asks the leader. If any of these is not known, the group is marked. The set
+of placed brokers is never used: learners and brokers not yet added inflate
+it. With one of three seeded voters dead, a read follower that holds a
+committed entry it has not yet seen committed keeps it in the base; with two
+of three dead, or a dead single seed voter, or a joint target whose new half
+is mostly dead, the group is marked and the plan names the voter set.
 
 What the implementation stores for this:
 
@@ -4153,6 +4173,38 @@ A broker is to refuse a delete told at an incarnation below the highest it
 has seen, its acknowledgement or any membership in the copy's log
 (`copy_delete_is_void`). That check lands with the delete itself.
 
+#### Targets ordered in an epoch
+
+A re-form counts every target the control plane ordered in the group's epoch
+as a voter set (`GroupRecord::ordered` in `raft_copy/vouch.rs`), so the control
+plane keeps them all on the shard's record as `raft_ordered`: the stream
+`incarnation`, the group `epoch`, and each distinct target (`counter` and
+`members`) in the order it was written.
+
+- **When an epoch starts.** Epoch 0 starts when the switch to Raft is recorded
+  (`accept_seal_report` in `store/memory/switch.rs`), before any target can be
+  written, and the list starts empty there. A re-form starts the next epoch
+  where it writes `PlacedInEpoch::next_epoch` and must start a new list in the
+  same write. A recreated stream is a new incarnation and a new group; a
+  placement write drops a list from another incarnation.
+- **Listed before a leader hears of it.** A new target is added in the same
+  write that stores it (`record_raft_copy_id`). Brokers read a target only from
+  the stored record, so it is on the list before any leader is asked for it.
+- **Kept through the epoch.** A copy-id change, a counter bump and a set change
+  (which drops the target and restarts its counter) all leave the list as it
+  is. Only a new epoch or a new incarnation replaces it.
+- **Bounded.** At most 64 distinct targets per epoch; a target ordered again is
+  listed once. The 65th marks the list `lost`.
+- **Unknown reads as unknown.** `ShardAssignment::ordered_voter_sets` answers
+  `None`, and the re-form stays marked, when the list is from another epoch or
+  incarnation, is `lost`, or was never started. A shard that switched before
+  level 39 has no list for the rest of its epoch.
+
+The list is metadata level 39. Below it, `settle_for_level` leaves
+`keep_ordered` off `accept_seal_report` and `record_raft_copy_id`, so no member
+starts a list, and a target written by such an entry marks a started list
+`lost`. The feeds do not send it.
+
 #### Offset floor
 
 The control plane keeps `raft_floor` on each Raft shard's record, per stream
@@ -5308,6 +5360,37 @@ not move.
   without opening it, its last index and the commit it can vouch for, its
   saved commit cut to the last entry that decodes as an open cuts it, or
   its purged id if that is higher.
+- The re-form rule, pure and not yet called (`raft_copy::plan_reform`, with
+  `read_copies` for the survey and `probes` for the indexes it needs): per
+  copy, current and kept, it reads the epoch (`raft-epoch`), last log id,
+  vote, saved commit, reservation and `rotated-by`, which every rotation
+  now writes. A crash in the middle of a rotation can turn a power cut into
+  a restore, which only asks for `--accept-loss`. It keys log ids by (epoch, term), takes T as the highest key
+  of any vote or entry read and of the floor, and vouches each copy for
+  its saved commit, the floor's index if it holds the floor's entry, and
+  its whole log if its last key is T and the group is unmarked, capped at
+  the lowest base end of the later epochs. The base is the longest
+  vouched prefix; the voters are the brokers with a copy that holds its
+  last log id; the first index is above the base, the floor and every
+  reservation read. It marks the group when a broker placed in the epoch
+  is dead, has no vote of the epoch read or has a copy of the epoch a
+  restore rotated, and flags a vote above every entry that cut a copy below what it holds. Either
+  needs the operator to accept the loss. It refuses on an unanswered
+  placed broker, a leader, a voter off the record, a copy ahead of the
+  record's epoch or whose bases differ from it, a record inside a gap, and
+  an index nobody was asked about, and a base that ends below what its
+  source purged. A broker with no copy id is never a voter, and a plan
+  with no voter refuses. A placed broker whose current copy never voted
+  or has no copy file marks the group unless a power-cut kept copy names
+  that current copy as the one it rotated into: a wiped directory or an
+  empty rotation leaves nothing kept, so an older power cut does not
+  count. The first index is also
+  never below an earlier epoch's first index or any record a copy of the
+  incarnation holds. A later epoch's gap counts as holding the floor's
+  entry only on a copy with a record past the gap, so the start, not
+  built, must save each voter's commit at or above the base end and
+  reserve through the first index minus one (#2640). This is `ReformKept` in
+  `docs/formal/FelixRaftReform.tla`.
 
 Not built: the re-form command and the RF 1 restore themselves (item 8
 under "Every start that must rotate first"), and with them the offset

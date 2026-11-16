@@ -447,8 +447,9 @@ impl MetadataStateMachine {
                 key,
                 report,
                 sealer,
+                keep_ordered,
             } => store
-                .apply_accept_seal_report(&key, report, &sealer)
+                .apply_accept_seal_report(&key, report, &sealer, keep_ordered)
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
@@ -508,6 +509,7 @@ impl MetadataStateMachine {
                 node_registered_at_millis,
                 node_incarnation,
                 copy_id,
+                keep_ordered,
             } => store
                 .apply_record_raft_copy_id(
                     &key,
@@ -515,6 +517,7 @@ impl MetadataStateMachine {
                     node_registered_at_millis,
                     node_incarnation,
                     copy_id,
+                    keep_ordered,
                 )
                 .await
                 .map(|changed| MetaResponse::Count {

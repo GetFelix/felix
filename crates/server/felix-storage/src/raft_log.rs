@@ -524,6 +524,19 @@ pub(crate) fn first_after_purged(dir: &std::path::Path) -> io::Result<Option<Off
     Ok(purged::load(dir)?.map(|purged| purged.index + 1))
 }
 
+/// The purged id saved in `dir`, as a log id. For a directory no log has
+/// open.
+pub(crate) fn purged_point(dir: &std::path::Path) -> io::Result<Option<LogPoint>> {
+    purged::load(dir)?
+        .map(|purged| {
+            Ok(LogPoint {
+                term: term_of(Some(purged.generation), purged.index)?,
+                index: purged.index,
+            })
+        })
+        .transpose()
+}
+
 /// The last entry `log` holds as a Raft log, or the purged id when it holds
 /// none above it. What a member opening the directory would report as its
 /// last log id.

@@ -22,16 +22,36 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod copy_file;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the re-form command, not built yet, calls it")
+)]
+mod epoch_file;
 mod gate;
 mod judge;
 mod marks;
 mod placement_ack;
 mod reclaim;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the re-form command, not built yet, calls it")
+)]
 mod reform;
+mod rotated_by;
 #[cfg(test)]
 pub(crate) mod tests;
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "the re-form command, not built yet, calls it")
+)]
+mod vouch;
 
 pub use copy_file::CopyFile;
+#[allow(
+    unused_imports,
+    reason = "the re-form command, not built yet, uses them"
+)]
+pub(crate) use epoch_file::{EpochAt, EpochBase, EpochFile, EpochLogId};
 pub use gate::{Behind, ControlPlaneCopy, Evidence, Gate, GatePassed, Unchecked, check};
 pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
@@ -44,7 +64,26 @@ pub use placement_ack::{
     restored_placement_incarnation,
 };
 pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
-pub use reform::{KeptLog, first_free_index, kept_logs, read_kept};
+#[allow(
+    unused_imports,
+    reason = "the re-form command, not built yet, uses them"
+)]
+pub(crate) use reform::{
+    BrokerCopies, CopyRead, KeptLog, first_free_index, kept_logs, read_copies, read_copy, read_kept,
+};
+#[allow(
+    unused_imports,
+    reason = "the re-form command, not built yet, uses them"
+)]
+pub(crate) use rotated_by::RotatedBy;
+#[allow(
+    unused_imports,
+    reason = "the re-form command, not built yet, uses them"
+)]
+pub(crate) use vouch::{
+    BrokerReport, GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource,
+    plan_reform, probes,
+};
 
 use std::sync::Arc;
 use std::time::Duration;

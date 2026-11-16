@@ -1134,6 +1134,15 @@ change on the feed. A placement write at the same incarnation keeps it. The
 feeds do not send it. The Raft store needs every member known at metadata
 level 38 (`docs/per-shard-raft.md`, "Offset floor").
 
+A Raft shard also carries `raft_ordered`: every distinct target ordered in
+its current group epoch, at most 64, started empty when the switch to Raft is
+recorded and added to in the same write that stores each new target. A set
+change and a counter bump keep it; a new epoch or stream incarnation replaces
+it. A re-form reads it as the targets it must count, and treats a list from
+another epoch, a `lost` one, or none as unknown. The feeds do not send it. The
+Raft store keeps it from metadata level 39 (`docs/per-shard-raft.md`,
+"Targets ordered in an epoch").
+
 Under `joint_fence` an assignment also carries `learners`: the members the
 control plane holds as learners because their storage was replaced. Empty
 otherwise, so a write is what it was before. The Raft store writes it only
