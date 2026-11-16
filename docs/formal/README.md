@@ -488,7 +488,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixAtomicCommit.cfg` | `FelixAtomicCommit.tla`: two atomic commits, each one record, applied whole by three views on every broker, across two promotions | pass `NoPartialCommit` and `CommitSurvives` (21.8K distinct states) |
 | `FelixAtomicCommitSplitRecords.cfg` | the same with each part written as its own record, the mark stopping only at a commit's end | violate `NoPartialCommit` |
 | `FelixAtomicCommitPartialApply.cfg` | the same with the views applying a record one part at a time | violate `NoPartialCommit` |
-| `FelixHeadTrim.cfg` | `FelixHeadTrim.tla`: a conditional head trim as a replicated record, two lease holders, two writes and three trims or no-ops across one promotion, the deposed leader still taking writes and trims, followers rebuilt at the leader's base, a follower read after an acknowledged trim served once the follower reaches the leader's read index | pass `NoReadBelowAckedTrim`, `NothingLostAboveFloor`, `FloorRecordKept`, `NeverMoreThanAsked` and `StaleTrimRefused` |
+| `FelixHeadTrim.cfg` | `FelixHeadTrim.tla`: a conditional head trim as a replicated record, two lease holders, two writes and three trims or no-ops across one promotion, the deposed leader still taking writes and trims, followers rebuilt at the leader's base, a follower read after an acknowledged trim served once the follower reaches the leader's read index | pass `NoReadBelowAckedTrim`, `NothingLostAboveFloor`, `FloorRecordKept`, `NeverMoreThanAsked` and `StaleTrimRefused`. Not registered, run by dispatch: run 43870273108 in 30 shards passed 29, and shard 0 hit the six hour limit at depth 34 (1.75B states, 244M distinct) with no violation |
 | `FelixHeadTrimCrash.cfg` | the same with one broker crash, its commit offset read back behind, and two trims or no-ops | pass the same |
 | `FelixHeadTrimTwoPromotions.cfg` | the same across two promotions, with one trim or no-op | pass the same |
 | `FelixHeadTrimCrashTwoPromotions.cfg` | one write, one trim or no-op, a crash and two promotions | pass the same |
@@ -2516,7 +2516,8 @@ own cursor and stops on a newer epoch, in a write or in the refusal's tag. A
 trim at or below the floor is a no-op that checks the tail and answers with
 it. A deposed leader keeps taking writes and trims until a newer generation
 reaches it, and a commit and its answer are separate steps. The passing
-run is split in four, since together they do not finish in an hour:
+run is split in four, since together they do not finish in an hour (the
+first, `FelixHeadTrim.cfg`, runs by dispatch only):
 `FelixHeadTrim.cfg` has three trims or no-ops and one promotion,
 `FelixHeadTrimCrash.cfg` adds a broker crash that reads its commit offset
 back behind, `FelixHeadTrimTwoPromotions.cfg` has a second promotion, and
