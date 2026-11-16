@@ -449,6 +449,7 @@ async fn replan(extra: &[(u64, u64)]) -> Result<ReformPlan<&'static str>, Refuse
             BrokerReport {
                 leads: false,
                 names: BTreeSet::new(),
+                memberships: Some(Vec::new()),
                 copies: BrokerCopies {
                     current,
                     kept: vec![],
@@ -466,6 +467,8 @@ async fn replan(extra: &[(u64, u64)]) -> Result<ReformPlan<&'static str>, Refuse
         offset_floor: None,
         placed: Some(BTreeSet::from(["a", "b", "c"])),
         dead: BTreeSet::new(),
+        seed: Some(BTreeSet::from(["a", "b", "c"])),
+        ordered: Some(Vec::new()),
     };
     plan_reform(&record, &reports)
 }
@@ -475,7 +478,7 @@ async fn replan(extra: &[(u64, u64)]) -> Result<ReformPlan<&'static str>, Refuse
 #[tokio::test]
 async fn a_started_voter_re_formed_again_vouches_its_whole_base() {
     let plan = replan(&[]).await.expect("a plan");
-    assert!(!plan.marked);
+    assert_eq!(plan.marked, None);
     assert_eq!(plan.base_end(), 5);
 }
 
