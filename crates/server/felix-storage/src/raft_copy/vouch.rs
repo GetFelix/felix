@@ -420,6 +420,9 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .max()
         .map(|r| r.checked_add(1).ok_or(Refused::NoIndexLeft))
         .transpose()?;
+    // A copy that installed a purge snapshot holds no record below its
+    // carried floor, nor the trim that set it; its `raft-floor` names both.
+    let carried = copies.iter().filter_map(|c| c.read.carried_end).max();
     let floor_end = record
         .floor
         .map(|floor| floor.index)
@@ -438,7 +441,8 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         .max(floor_end.unwrap_or(0))
         .max(reserved.unwrap_or(0))
         .max(earlier.unwrap_or(0))
-        .max(held.unwrap_or(0));
+        .max(held.unwrap_or(0))
+        .max(carried.unwrap_or(0));
 
     Ok(ReformPlan {
         epoch: epoch + 1,

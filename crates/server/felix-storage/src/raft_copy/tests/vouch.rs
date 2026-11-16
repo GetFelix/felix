@@ -24,6 +24,7 @@ fn copy(name: &str, terms: &[u64], committed: Option<u64>, vote: Option<u64>) ->
         committed,
         vote,
         reserved: None,
+        carried_end: None,
         rotated_by: None,
         terms: terms
             .iter()
@@ -853,5 +854,25 @@ fn an_unknown_voter_set_marks_the_group() {
     assert_eq!(
         plan(&record(&["a"], &[], &[], None), read).marked,
         Some(Marked::Unknown(VoterSource::Membership("a")))
+    );
+}
+
+/// #2602: `b` installed a purge snapshot whose trim was at 9 with floor 7,
+/// then lost its log above it. The new epoch gives out nothing at or below
+/// the trim, though no copy holds a record there.
+#[test]
+fn a_reform_after_a_purge_starts_past_the_carried_floor() {
+    let rec = record(&["a", "b"], &[], &[], None);
+    let mut b = copy("b", &[1, 1], Some(1), Some(1));
+    b.carried_end = Some(10);
+    let a = copy("a", &[1, 1], Some(1), Some(1));
+    let plan = plan(
+        &rec,
+        vec![("a", report(a, vec![])), ("b", report(b, vec![]))],
+    );
+    assert!(
+        plan.first_index >= 10,
+        "first index {} reuses an offset below the carried trim",
+        plan.first_index
     );
 }

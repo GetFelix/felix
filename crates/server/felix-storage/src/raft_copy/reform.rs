@@ -120,6 +120,10 @@ pub(crate) struct CopyRead {
     pub(crate) vote: Option<u64>,
     /// Its `raft-reserved`.
     pub(crate) reserved: Option<u64>,
+    /// The first index its `raft-floor` rules out giving again: past the
+    /// carried trim and at or above its floor. A copy that installed a purge
+    /// snapshot holds neither record, so only this file names them.
+    pub(crate) carried_end: Option<u64>,
     /// Why it was rotated; `None` for the current copy.
     pub(crate) rotated_by: Option<RotatedBy>,
     /// The term of the entry at each index the plan asked about, `None`
@@ -174,6 +178,7 @@ pub(crate) fn read_copy(
             committed: None,
             vote: None,
             reserved: None,
+            carried_end: None,
             rotated_by: None,
             terms: probes.iter().map(|index| (*index, None)).collect(),
         });
@@ -255,6 +260,8 @@ pub(crate) fn read_copy(
         committed: kept.committed,
         vote,
         reserved: reserved::load(path)?,
+        carried_end: crate::disk_log::carried_floor::load(path)?
+            .map(|carried| carried.floor.max(carried.offset.saturating_add(1))),
         rotated_by: None,
         terms,
     })

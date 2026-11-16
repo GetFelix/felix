@@ -330,6 +330,19 @@ impl DiskLog {
         self.inner.head_trim()
     }
 
+    /// The floor in force as of entry `index`: the highest floor a trim at
+    /// or below `index` set, counting a carried one by its trim's offset.
+    pub fn floor_as_of(&self, index: Offset) -> Offset {
+        let head = self.inner.head.lock();
+        head.entries()
+            .iter()
+            .chain(head.carried())
+            .filter(|entry| entry.offset <= index)
+            .map(|entry| entry.floor)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// The floor this Raft log keeps without its trim record, if it ever
     /// installed one ([`Self::carry_floor`]).
     pub fn carried_floor(&self) -> Option<CarriedFloor> {
