@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794834646546,
+  "lastUpdate": 1794835766422,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76230,6 +76230,72 @@ window.BENCHMARK_DATA = {
             "range": "694.57",
             "unit": "us",
             "extra": "trials: 5\nmedian: 867.00\nmean: 1122.20\nstdev: 694.57\ncv: 61.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d82aa58aadc8d3fed35fd517dd570378ce38f7b9",
+          "message": "Say why a Raft group is held back for a short placement (#2700)\n\n* feat(raft): say why a group is held back for a short placement (#2695)\n\nThe broker warns once per shard and placement generation and counts held\nshards in a gauge. The control plane's stream create response carries an\nadvisory warnings field when the replication factor exceeds registered\nbrokers.\n\nSpec-Unaffected: logging, a metric and an advisory API field only\n\n* fix(raft): review fixes for the short-placement warning (#2695)",
+          "timestamp": "2026-11-16T13:21:08Z",
+          "tree_id": "17ad468d32fe6725aab3ce0d8105939d2fdff888",
+          "url": "https://github.com/GetFelix/felix/commit/d82aa58aadc8d3fed35fd517dd570378ce38f7b9"
+        },
+        "date": 1794835753748,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.20\nstdev: 0.45\ncv: 0.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 213,
+            "range": "9.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 213.00\nmean: 211.80\nstdev: 9.04\ncv: 4.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 308,
+            "range": "1117.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 308.00\nmean: 891.60\nstdev: 1117.35\ncv: 125.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "3.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 201.40\nstdev: 3.97\ncv: 1.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 397,
+            "range": "161.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 397.00\nmean: 468.20\nstdev: 161.09\ncv: 34.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 570,
+            "range": "759.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 570.00\nmean: 938.20\nstdev: 759.98\ncv: 81.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
