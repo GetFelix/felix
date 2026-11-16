@@ -57,7 +57,7 @@ impl Broker {
         // below the read index when this registers, so the subscriber
         // starts where the barrier left the member.
         let skip_below = match unconfirmed {
-            None => barrier_start(&handle.state, stream, shard).await?,
+            None => barrier_start(&handle.state).await?,
             Some(_) => None,
         };
         let stream_state = handle.state;
@@ -698,26 +698,13 @@ pub(super) async fn await_pending_trim(
     Ok(())
 }
 
-/// Refuse a durable read from `requested` below the readable base, checked
-/// after the reader registered.
-///
-/// The ring only knows its own oldest entry. A trim held for the committed
-/// mark has raised the log's floor but not yet dropped the ring below it, and
-/// retention moves the base without touching the ring at all. Checked after
-/// registration, a trim acknowledged before the reader registered is always
-/// seen here.
 /// Where a tail subscriber on an engine's log starts once the read barrier
 /// passed: the member's committed tail, and never below its floor. `None`
 /// for any other stream.
-async fn barrier_start(
-    state: &crate::stream::StreamState,
-    stream: &str,
-    shard: u32,
-) -> Result<Option<u64>> {
+async fn barrier_start(state: &crate::stream::StreamState) -> Result<Option<u64>> {
     let Some(log) = state.durable.as_ref().filter(|_| state.engine_log) else {
         return Ok(None);
     };
-    await_pending_trim(log, Some(u64::MAX), stream, shard).await?;
     let tail = log.tail_offset().await?;
     let committed = match state.read_bound() {
         ReadBound::Committed(mark) => mark.min(tail),
@@ -727,6 +714,14 @@ async fn barrier_start(
     Ok(Some(committed.max(log.readable_base())))
 }
 
+/// Refuse a durable read from `requested` below the readable base, checked
+/// after the reader registered.
+///
+/// The ring only knows its own oldest entry. A trim held for the committed
+/// mark has raised the log's floor but not yet dropped the ring below it, and
+/// retention moves the base without touching the ring at all. Checked after
+/// registration, a trim acknowledged before the reader registered is always
+/// seen here.
 fn refuse_below_floor(log: &crate::StreamLog, requested: u64) -> Result<()> {
     let oldest = log.readable_base();
     if requested < oldest {

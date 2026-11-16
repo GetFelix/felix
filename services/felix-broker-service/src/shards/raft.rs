@@ -1151,8 +1151,9 @@ impl WriteFence for Leading {
         // The deposed term's subscribers are ended: a batch it was handed
         // may settle as a gap, which they would see as a drop. Ended after
         // the term is gone, on a task, so a reader that registers before
-        // that task runs is ended with them and resubscribes; one after it
-        // is served from the log as a follower's.
+        // that task runs is ended with them and resubscribes. One the
+        // leader admitted before the term change but that registers after
+        // it is dropped with Settling by `after_tail_join`.
         let (broker, ending, key) = (
             Arc::clone(&self.broker),
             Arc::clone(&self.ending),
