@@ -313,7 +313,9 @@ read, and then waits for its commit while the broker reads the next request,
 so a producer that keeps several requests in flight pays about one commit
 round trip for them, not one each. Answers still go out in request order. Up
 to 8 answers are waited on at once; past that the broker stops reading the
-connection until one is written.
+connection until one is written. A claimed batch runs to durability whether or
+not its answer can be written, so a client that stops reading its answers, or
+goes away, never holds up other writers on the partition or a shard move.
 
 An idempotent producer's batches keep their order through this. A batch is
 checked against the records the log holds or has claimed, so the next one is

@@ -1,16 +1,18 @@
 //! A connection's requests overlap their commit waits and are answered in
 //! request order.
 
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use bytes::{Buf, Bytes};
 use kafka_protocol::messages::{MetadataRequest, ProduceResponse};
 use kafka_protocol::protocol::Decodable;
 
-use super::produce::{idempotent, request};
+use super::produce::{at_epoch, idempotent, plain, request};
 use super::{Client, Fixture};
 use crate::cluster::WriteError;
 use crate::service::connection::MAX_PIPELINED;
+use tokio_util::sync::CancellationToken;
 
 const PRODUCER: i64 = 7;
 
@@ -175,4 +177,107 @@ async fn a_long_poll_is_not_overtaken_by_a_produce_behind_it() {
     assert!(started.elapsed() >= Duration::from_millis(250));
     let (id, body) = answer(&mut client).await;
     assert_eq!((id, produced(body)), (produce, (0, 0)));
+}
+
+/// Wait until no fence permit is held.
+async fn permits_released(fixture: &Fixture) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while fixture.cluster.live_permits.load(Ordering::SeqCst) > 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("every fence permit dropped");
+}
+
+/// **A client that stops reading its answers holds up nobody else.** Its
+/// writer is stuck on the first answer while the batches behind it are
+/// claimed on the log; they still become durable, so another publisher on
+/// the log is not stuck behind their commit turns, and a move is not stuck
+/// behind their fence permits. Covers both hybrid claims: idempotent and
+/// plain.
+#[tokio::test]
+async fn a_client_that_stops_reading_holds_up_no_other_write() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    // Smaller than one answer, so the writer blocks writing the first.
+    let mut client = fixture.connect_buffered(16, Vec::new(), CancellationToken::new());
+
+    client
+        .send(&request(1, 0, idempotent(PRODUCER, 0, &["a"])), 9)
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    client
+        .send(&request(1, 0, idempotent(PRODUCER, 1, &["b"])), 9)
+        .await;
+    client.send(&request(1, 0, plain(&["c"])), 9).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        fixture.publish("orders", "created", 0, &["d"]),
+    )
+    .await
+    .expect("another publisher on the log is not held up");
+    permits_released(&fixture).await;
+}
+
+/// **A connection reset mid-pipeline leaves its claimed batches holding the
+/// fence until they are durable.** The writer fails on the first answer;
+/// the second batch, still waiting on its commit, keeps its permit until
+/// that commit, so a move cannot overtake it.
+#[tokio::test]
+async fn a_reset_mid_pipeline_holds_the_fence_until_durable() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.gate_commits();
+    let mut client = fixture.connect();
+
+    client
+        .send(&request(1, 0, idempotent(PRODUCER, 0, &["a"])), 9)
+        .await;
+    client
+        .send(&request(1, 0, idempotent(PRODUCER, 1, &["b"])), 9)
+        .await;
+    claimed(&fixture, 2).await;
+    drop(client);
+    fixture.cluster.release(0, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        fixture.cluster.live_permits.load(Ordering::SeqCst),
+        1,
+        "the uncommitted batch still holds its permit"
+    );
+    fixture.cluster.release(1, None);
+    permits_released(&fixture).await;
+}
+
+/// **On a Raft shard, an older epoch is checked only once a newer epoch's
+/// batch is written.** The newer epoch's batch is handed to the group but
+/// not yet on the log; the older epoch's batch, from another connection,
+/// is not checked against the log until then, so it cannot slip in behind.
+#[tokio::test]
+async fn an_older_epoch_waits_for_a_proposed_newer_one() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.gate_writes();
+    let mut newer = fixture.connect();
+    let mut older = fixture.connect();
+
+    newer
+        .send(&request(1, 0, at_epoch(PRODUCER, 1, 0, &["a"])), 9)
+        .await;
+    claimed(&fixture, 1).await;
+    older
+        .send(&request(1, 0, at_epoch(PRODUCER, 0, 5, &["b"])), 9)
+        .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        fixture.cluster.claimed(),
+        1,
+        "the older epoch waits for the newer one's write"
+    );
+
+    fixture.cluster.release(0, None);
+    assert_eq!(produced(answer(&mut newer).await.1), (0, 0));
 }

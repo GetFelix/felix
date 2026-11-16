@@ -20,10 +20,7 @@
 //! still takes Kafka produces. Producer timestamps are
 //! always dropped: a Felix record's time is the broker's append time.
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
-use std::task::{Context, Poll, ready};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
@@ -265,11 +262,21 @@ async fn write<'a>(
             }
         }
     }
-    Ok(Box::pin(async move {
-        let generation = permit.generation();
+    let generation = permit.generation();
+    // Run to durability on its own task, holding the fence permit, so it
+    // neither waits on the connection's writer (a client that stops reading
+    // would otherwise hold the log's commit turn and the shard's fence) nor
+    // is cut short when the connection goes away.
+    let durable = tokio::spawn(async move {
         let outcomes = join_all(claimed).await;
-        // Held until the records are durable, so a move waits for them.
         drop(permit);
+        outcomes
+    });
+    Ok(Box::pin(async move {
+        let outcomes = durable.await.map_err(|_| Failure {
+            error: ResponseError::UnknownServerError,
+            message: None,
+        })?;
         let mut written: Option<(u64, u64)> = None;
         // The first failure in batch order is the answer: a later batch's
         // refusal can follow from it.
@@ -300,13 +307,13 @@ async fn write<'a>(
 }
 
 /// Claim one batch's place, returning its commit wait.
-async fn publish<'a>(
-    shared: &'a Shared,
+async fn publish(
+    shared: &Shared,
     shard: &ShardRef<'_>,
     handle: &StreamHandle,
     permit: &WritePermit,
     batch: &Batch,
-) -> Result<Pending<'a, PublishOutcome>, Failure> {
+) -> Result<Pending<'static, PublishOutcome>, Failure> {
     // Blocks are built only when the listener opted in and the broker accepts
     // them, and any key or header makes one, so none means these were not kept.
     if batch.blocks.is_none() {
@@ -385,7 +392,7 @@ async fn publish<'a>(
             .map_err(|err| publish_failure(&err))?;
         let broker = Arc::clone(&shared.broker);
         let handle = handle.clone();
-        finishing(async move {
+        Box::pin(async move {
             broker
                 .complete_records_idempotent(&handle, claim)
                 .await
@@ -398,7 +405,7 @@ async fn publish<'a>(
             .await
             .map_err(|err| publish_failure(&err))?;
         let broker = Arc::clone(&shared.broker);
-        finishing(async move {
+        Box::pin(async move {
             broker
                 .complete_publish(claimed)
                 .await
@@ -420,41 +427,6 @@ async fn publish<'a>(
         }
         Ok(outcome)
     }))
-}
-
-/// `completion` as a pending batch that runs to the end even if the
-/// connection goes away before awaiting it. A claim's offsets are taken, so
-/// its records exist; dropped unfinished, they would never be fanned out.
-fn finishing<F>(completion: F) -> Pending<'static, IdempotentOutcome>
-where
-    F: Future<Output = Result<IdempotentOutcome, Failure>> + Send + 'static,
-{
-    struct Finishing<F: Future + Send + 'static>(Option<Pin<Box<F>>>);
-
-    impl<F: Future + Send + 'static> Future for Finishing<F> {
-        type Output = F::Output;
-
-        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
-            let inner = self.0.as_mut().expect("polled after it finished");
-            let done = ready!(inner.as_mut().poll(cx));
-            self.0 = None;
-            Poll::Ready(done)
-        }
-    }
-
-    impl<F: Future + Send + 'static> Drop for Finishing<F> {
-        fn drop(&mut self) {
-            if let Some(inner) = self.0.take()
-                && let Ok(runtime) = tokio::runtime::Handle::try_current()
-            {
-                runtime.spawn(async move {
-                    let _ = inner.await;
-                });
-            }
-        }
-    }
-
-    Box::pin(Finishing(Some(Box::pin(completion))))
 }
 
 fn publish_failure(err: &BrokerError) -> Failure {
