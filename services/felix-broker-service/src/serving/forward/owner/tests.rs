@@ -1623,7 +1623,7 @@ mod on_raft {
         let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
         engine.set_raft(Arc::clone(&shards));
         let handler = ForwardingHandler::new(
-            broker,
+            Arc::clone(&broker),
             engine,
             router,
             "10.0.0.1:7001".to_string(),
@@ -1684,27 +1684,46 @@ mod on_raft {
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
-        // So is a sequenced batch of several records, with nothing written.
+        // A sequenced batch of several records takes a sequence per record
+        // and lands in order; sent again, it is answered from the log.
         let mut several = plain(b"several");
         several.payloads.push(Bytes::from_static(b"records"));
+        several.headers = None;
         if let Some(producer) = several.producer.as_mut() {
             producer.sequence += 1;
         }
-        match handler.apply(several).await {
-            InternalMessage::ForwardPublishError(err) => {
-                // Not `UnsupportedKind`, which the requester answers by
-                // sending the batch again in the older form.
-                assert_eq!(err.code, ErrorCode::StorageFailed);
-                assert!(err.detail.contains("more than one"), "{}", err.detail);
+        let both = (third.0 + 2, third.0 + 3);
+        for _ in 0..2 {
+            match handler.apply(several.clone()).await {
+                InternalMessage::ForwardPublishOk(ok) => assert_eq!(ok.offsets(), Some(both)),
+                other => panic!("expected an acknowledgement, got {other:?}"),
             }
-            other => panic!("expected a refusal, got {other:?}"),
         }
-        match handler.apply(forwarded()).await {
+        // The second record took the next sequence, so a batch after them
+        // continues from there.
+        let mut after = plain(b"after");
+        if let Some(producer) = after.producer.as_mut() {
+            producer.sequence += 3;
+        }
+        match handler.apply(after).await {
             InternalMessage::ForwardPublishOk(ok) => {
-                assert_eq!(ok.offsets(), Some((third.0 + 2, third.0 + 2)));
+                assert_eq!(ok.offsets(), Some((third.0 + 4, third.0 + 4)));
             }
             other => panic!("expected an acknowledgement, got {other:?}"),
         }
+        let stored: Vec<_> = broker
+            .read_durable(TENANT, NAMESPACE, STREAM, 0, both.0, 1 << 20)
+            .await
+            .expect("read")
+            .into_iter()
+            .map(|record| record.payload)
+            .collect();
+        assert_eq!(
+            stored,
+            [&b"several"[..], b"records", b"after"]
+                .map(Bytes::from_static)
+                .to_vec()
+        );
         EngineShards::shutdown(&*shards).await;
     }
 

@@ -2996,8 +2996,14 @@ gap, so the log never holds a message without the ones the connection sent
 before it. The messages are settled in order: one whose proposal failed is
 sent again on its own and answered from whichever log holds it by then.
 
-A broker that is not a member forwards each message to the leader under
-its sequence, one at a time, and the leader proposes it. Until
+A member that does not lead the group forwards the whole batch to the
+leader in one forward, and the leader proposes its messages back to back at
+consecutive sequences, so the batch again costs about one commit round trip
+plus the forward, as on the hybrid. That needs a leader that offers
+`RECORD_SEQUENCED_FORWARDS`; to any other, and from a broker that is not a
+member, each message is forwarded on its own under its sequence. A forward
+that fails partway is answered as a lost leadership, and the sender sends
+each message again on its own, answered from the log. Until
 the cluster finalizes `raft_record_headers` an MQTT message, which always
 carries headers, is refused `record_headers_disabled`. While the shard has
 no leader (an election), a broker that is a member of its group waits for
