@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794843849720,
+  "lastUpdate": 1794846291484,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76626,6 +76626,72 @@ window.BENCHMARK_DATA = {
             "range": "878.32",
             "unit": "us",
             "extra": "trials: 5\nmedian: 518.00\nmean: 980.60\nstdev: 878.32\ncv: 89.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9aa3554ea93cee0a9ceff45003808dfc5b0880b4",
+          "message": "formal(raft): re-form across epochs, written commits and power-cut rotation (model for #2250) (#2626)\n\n* formal(raft): written re-form across two terms with the vouch rule (M1 for #2250)\n\n* formal(raft): one process crash in the two-term re-form configs\n\n* formal(raft): reach witness for the two-term cut without a dead broker\n\n* formal(raft): kept copies, power-cut rotation and reservations in the re-form model (M2 for #2250)\n\nFelixRaftReform.tla gains a Kept mode: every rotation keeps the whole copy\nwith its vote, why it rotated and its reservation; PowerCutRotate loses only\nthe unsynced tail and keeps the vote; Rotate is the restore; Return brings a\ndead broker back. The re-form reads current and kept copies and keeps the\nlongest prefix a copy vouches for, keyed by (epoch, term), capped by later\nbase ends, padded past every reservation read, with the epoch-scoped mark.\nExisting configs set Kept FALSE and keep their state spaces.\n\n* docs(formal): kept copies and two re-forms in the README\n\n* formal(raft): shape the two re-form configs so each finishes, with results\n\nTwoReformsShape closes epoch 0 empty, allows one write per later epoch and\nholds the plan that closes epoch 1 until epoch 1 commits a record. All six\ntwo re-form configs now give their declared outcome on a build box in\nunder seven minutes. README rows with state counts and times, weights for\nthe longer configs, and a changelog fragment.\n\n* formal(raft): exercise the cap, T and Return, and bound Kept losses\n\n- TwoReformsOldRestore takes a second write, so epoch 2 writes.\n- NeverPadsByReserve needs both power cuts and a power-cut copy whose\n  reservation is above its log, at a committed epoch-1 record.\n- New Kept configs with a non-empty epoch 0: KeptOldKept (a dead broker\n  returns with its epoch-0 copy; witness KeptOldKeptCap for the cap) and\n  KeptTerms (two terms; witness KeptTermsT for T).\n- KeptLossBound: unmarked, no vote above every entry, no acknowledged\n  record held below its cap is lost.\n- LossNeedsLostDiskAtTop on CommitsReformTerms.\n- Evidence lines on EpochMark and TrailingFloorHappens.\n\n* formal(raft): a fsynced count needs no reservation; long re-form configs run nightly\n\nAn fsynced entry survives a power cut, so the re-form's base covers it.\nOnly a written count needs a reservation, as in raft_log/writer.rs.\nRelaxing Ack and Agree only adds behaviours; every registered\nFelixRaftWritten config keeps its outcome.\n\nFelixRaftWrittenCommitsReformTerms, FelixRaftReformTwoReformsOldRestore\nand FelixRaftReformKeptTerms pass but run past a pull request's hour, so\nthey move to the nightly exhaustive job.\n\n* formal(raft): every count needs a reservation, fsynced ones too\n\nRelaxing Ack and Agree so a fsynced count skips the reservation lets\nFelixRaftWrittenCommitsReformTerms violate OffsetNeverReused in 14\nsteps: the vouch rule keeps only b's saved commit once a is declared\ndead, so the base is cut below a fsynced, committed entry that nothing\nreserved, and the re-form reuses its offset. The code must reserve\nbefore any count (#2632).\n\n* docs(formal): the long re-form configs run in dispatch 43744757023\n\n* formal(raft): pin the vouch rule's dead-broker loss; record the long re-form results\n\nFelixRaftWrittenReformVouchDead violates NeverLosesCommitted in 15 states:\nwith a broker declared dead no copy vouches for its whole log and a\nfollower's saved commit is 0, so a record fsynced and reserved on an\nintact copy is cut (#2661). KeptTerms and TwoReformsOldRestore pass\nexhaustively; ReformTerms leaves the nightly list, a box run checks it.\nThe code reserves in every fsync mode (#2636).\n\n* docs(formal): the vouch-dead trace loses a committed entry; ReformTerms is expected to pass\n\n* docs(formal): record ReformTerms' six-hour reach\n\n* docs(formal): record the ReformTerms pass (1.75B distinct states, 6 h 53 min on a box)",
+          "timestamp": "2026-11-16T08:15:55-08:00",
+          "tree_id": "f351ced03661ff5535ed9370622b908f01d4804c",
+          "url": "https://github.com/GetFelix/felix/commit/9aa3554ea93cee0a9ceff45003808dfc5b0880b4"
+        },
+        "date": 1794846281979,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 71.20\nstdev: 0.45\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "2.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 122.00\nstdev: 2.83\ncv: 2.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 144,
+            "range": "5.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 144.00\nmean: 145.80\nstdev: 5.59\ncv: 3.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 88,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 88.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 194,
+            "range": "7.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 194.00\nmean: 195.00\nstdev: 7.97\ncv: 4.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 422,
+            "range": "186.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 422.00\nmean: 432.80\nstdev: 186.84\ncv: 43.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
