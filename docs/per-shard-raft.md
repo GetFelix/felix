@@ -1921,10 +1921,13 @@ Two settings keep that true until stream shards purge:
 - `max_in_snapshot_log_to_keep` is the largest value there is. openraft's
   default keeps only the last 1,000 entries under a snapshot and purges
   the rest, which here would be records.
-- No member takes a snapshot from a peer. Installing one purges the log up
-  to it, so a member behind its leader would drop records it was never
-  sent. The member answers `NoSnapshots` and logs an error. A leader keeps
-  its whole log, so a member that is behind is sent the entries.
+- A member takes a snapshot from a peer only if every entry the snapshot
+  skips is below the floor that snapshot carries (a purge snapshot, below).
+  Installing one purges the log up to it, so any other snapshot would make a
+  member behind its leader drop records it was never sent, or still serves.
+  The member's own floor does not count. Otherwise it answers `NoSnapshots`
+  and logs an error. Leaders do not purge yet, so a member that is behind
+  is sent the entries.
 
 So the snapshot message between brokers carries its metadata and the cut
 batches its sender refuses by name ("Idempotent publishes"), never records. A
@@ -3407,10 +3410,27 @@ purge may move a Raft log's start, and stream shards are never purged
 today. So a trim on Raft hides records but frees no disk
 ([#2602](https://github.com/GetFelix/felix/issues/2602)). Retention on a Raft
 shard is a trim the leader proposes, so the same holds for it ("Retention",
-above). No snapshot carries a
-floor: a stream shard's snapshot holds no records, and the trim's own index
-is at or below any snapshot that covers it, so the log above the snapshot
-is already past the floor.
+above).
+
+**Purging below the floor** (gated by the `raft_stream_purge` fleet
+feature, which needs `head_trim` and `raft_head_trim`). The design is checked in
+`docs/formal/FelixRaftStreamPurge.tla`. A member purges in two steps: it
+writes and fsyncs a stream snapshot at a point P below its floor, with the
+cut batches and group table as of P and the floor and headers it serves,
+then drops its log up to P. A member behind the purge installs that
+snapshot only when P is below the floor the snapshot carries. On install it
+keeps the higher of its own floor and the snapshot's, with that floor's
+headers, in the raise-only `raft-floor` file (`docs/storage-format.md`), and
+stores the snapshot with that higher floor in place of the one it was sent,
+so the snapshot it sends as leader passes the higher floor on. Without it, a later snapshot
+from a leader that had not applied the newest trim would lower the floor at
+the next restart, and a re-form reading that copy could give out an offset
+again. A re-form reads every copy's floor, from `raft-floor` or a trim
+record at or below its saved commit, starts the new epoch past the highest
+floor's trim, and raises that floor and its headers into every started
+copy's `raft-floor`, so reads below it stay refused even when no copy still
+holds the trim. A leader purges no further than the lowest match it
+still has to feed from its log.
 
 On the leader the trim reaches the replay ring in its entry's turn and
 drops the ring's records below the floor, and the answer waits for that, so

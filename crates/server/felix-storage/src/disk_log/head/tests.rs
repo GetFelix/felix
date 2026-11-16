@@ -111,3 +111,24 @@ fn a_damaged_file_is_not_used() {
     longer.extend_from_slice(&crc.to_be_bytes());
     assert_eq!(decode(&longer), None, "a trailing byte");
 }
+
+/// A carried floor holds against trims applied at or below it: neither the
+/// floor nor the headers a refused read gets change. A higher trim still
+/// raises it, and the carried floor never moves the delete bound.
+#[test]
+fn a_trim_at_or_below_the_carried_floor_changes_nothing() {
+    let mut head = head(&[(5, 3, "low"), (7, 4, "equal"), (12, 6, "high")]);
+    head.carry(entry(9, 4, "carried"));
+    head.carry(entry(8, 2, "lower carried"));
+    assert_eq!(head.floor(), 4);
+    head.apply(10);
+    assert_eq!(head.floor(), 4);
+    assert_eq!(
+        head.setter().map(|e| e.headers.clone()),
+        Some(Bytes::from_static(b"carried"))
+    );
+    assert_eq!(head.delete_bound(), Some(4), "from the record at 7");
+    head.apply(13);
+    assert_eq!(head.floor(), 6);
+    assert_eq!(head.setter().map(|e| e.offset), Some(12));
+}

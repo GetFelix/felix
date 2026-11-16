@@ -665,6 +665,19 @@ a leader change the next leader hands out what was in flight again at once
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_stream_purge`
+
+Once finalized, a stream shard that runs on Raft frees the disk below its head
+trim: each member writes a stream snapshot at a point below its floor and
+deletes its log up to it, and a member that fell behind the purge catches up by
+installing that snapshot. It needs `head_trim` and `raft_head_trim`. A build
+older than this release refuses every stream snapshot, so a purge would leave
+it stuck behind its leader; that is why it waits for the whole fleet. Until
+then a Raft shard keeps its whole log. A single broker allows it from the
+start.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_generations`
 
 Groundwork for running each shard on Raft, which needs the term of every

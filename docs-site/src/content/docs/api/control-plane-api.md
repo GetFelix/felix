@@ -318,7 +318,7 @@ A broker reports seventeen features: `generation_start`, `majority_ack`,
 `publisher_principal`, `fenced_caches`, `stream_incarnations`,
 `group_cursor_dependencies`, `cache_incarnations`, `head_trim`,
 `raft_head_trim`, `record_headers`, `raft_record_headers`,
-`record_generations`, `raft_atomic_commit` and `raft_consumer_groups`. Two more, `joint_fence` and
+`record_generations`, `raft_atomic_commit`, `raft_stream_purge` and `raft_consumer_groups`. Two more, `joint_fence` and
 `replica_election`, are never reported: an operator finalizes them once the
 brokers offer the peer capabilities they need (see
 [Failover without the control plane](/deployment/failover-without-control-plane/#turning-it-on)).
@@ -329,7 +329,7 @@ every live or draining broker supports it. It is also refused before the
 features it only works alongside: `majority_ack` and `record_generations`
 before `generation_start`, `raft_head_trim` before `head_trim`,
 `raft_record_headers` before `record_headers`, `raft_atomic_commit` before
-`atomic_commit`,
+`atomic_commit`, `raft_stream_purge` before `head_trim` and `raft_head_trim`,
 `lease_free_reads` or `fenced_caches` before both
 `generation_start` and `majority_ack`, `joint_fence` before `generation_start`,
 `stream_incarnations` and `cache_incarnations`, and `replica_election` before

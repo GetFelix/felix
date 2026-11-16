@@ -83,6 +83,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_RECORD_HEADERS,
     RECORD_GENERATIONS,
     RAFT_ATOMIC_COMMIT,
+    RAFT_STREAM_PURGE,
     RAFT_CONSUMER_GROUPS,
 ];
 
@@ -195,6 +196,15 @@ pub const RAFT_ATOMIC_COMMIT: FleetFeature = FleetFeature::new("raft_atomic_comm
 /// whole fleet. Until it is finalized a group operation on a Raft shard is
 /// refused. See `docs/per-shard-raft.md` ("Consumer groups").
 pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_groups");
+
+/// A stream shard on the Raft engine frees the disk below its head trim: a
+/// member writes a stream snapshot at a point below its floor and purges its
+/// log up to it, and a member behind the purge installs that snapshot. A
+/// build that predates this refuses every stream snapshot, so a purge would
+/// leave it stuck behind the leader. So it waits for the whole fleet, and
+/// for [`RAFT_HEAD_TRIM`]. See `docs/per-shard-raft.md` ("Purging below the
+/// floor").
+pub const RAFT_STREAM_PURGE: FleetFeature = FleetFeature::new("raft_stream_purge");
 
 /// A stream log starts its next segment in storage format v9, whose record
 /// headers carry a generation, and stamps each record with the generation it
@@ -348,6 +358,8 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         &[GENERATION_START]
     } else if feature == RAFT_HEAD_TRIM.name() {
         &[HEAD_TRIM]
+    } else if feature == RAFT_STREAM_PURGE.name() {
+        &[HEAD_TRIM, RAFT_HEAD_TRIM]
     } else if feature == RAFT_RECORD_HEADERS.name() {
         &[RECORD_HEADERS]
     } else if feature == RAFT_ATOMIC_COMMIT.name() {

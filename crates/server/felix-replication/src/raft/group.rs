@@ -56,12 +56,18 @@ use driver::MembershipProgress;
 pub(super) const REACHED_BEFORE: &str =
     "an earlier copy of this shard held records, so no group forms on it until it is re-formed";
 
+/// How long a purge pass waits for its snapshot before the next pass tries
+/// again.
+const PURGE_SNAPSHOT_WITHIN: Duration = Duration::from_secs(30);
+
 pub(crate) struct Group {
     pub(crate) id: GroupId,
     pub(crate) member: MemberId,
     raft: Raft<ShardTypes, Machine>,
     /// The member's log, to drain its queued flushes at the stop.
     log: RaftLog<ShardTypes, ShardCodec>,
+    /// Where the next stream snapshot is to be written, for a purge.
+    purge_at: machine::PurgeAt,
     pace: Arc<Pace>,
     lease: Arc<Lease>,
     /// Empty for a member that started with no vote on disk.
@@ -644,13 +650,14 @@ impl Group {
             log.first_index_reader(),
         );
         let machine::Opened {
-            machine,
+            mut machine,
             commits,
             applied,
             skips,
             cache,
             groups,
         } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
+        let purge_at = machine.purging(log.reader());
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
@@ -710,6 +717,7 @@ impl Group {
             member,
             raft,
             log,
+            purge_at,
             pace,
             lease,
             hold,
@@ -982,6 +990,49 @@ impl Group {
         VoteResponse::new(vote, last, false)
     }
 
+    /// One purge pass on a stream shard: write a snapshot at
+    /// `P = min(applied, floor - 1)`, on the leader also at or below every
+    /// other member's match, then drop the log through `P`. Two steps in
+    /// that order, so the log never starts above the snapshot. The cap keeps
+    /// a leader from sending installs to members that are only behind;
+    /// safety does not rest on it. Returns `P` once the log is purged to it.
+    /// See `docs/per-shard-raft.md`, "Purging below the floor".
+    pub(crate) async fn purge_below_floor(&self) -> Option<u64> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        if self.id.shard.kind != ShardKind::Stream || self.stopped.load(Ordering::Relaxed) {
+            return None;
+        }
+        let floor = self.log.disk_log().head_trim()?.floor;
+        let metrics = self.raft.metrics().borrow_watched().clone();
+        let mut at = metrics.last_applied?.index.min(floor.checked_sub(1)?);
+        if metrics.state == ServerState::Leader {
+            for (id, matched) in metrics.replication.as_ref()?.iter() {
+                if *id != self.member {
+                    at = at.min(matched.as_ref()?.index);
+                }
+            }
+        }
+        let snapshot = metrics.snapshot.map(|id| id.index);
+        let purged = metrics.purged.map(|id| id.index);
+        match purge_step(snapshot, purged, at)? {
+            PurgeStep::SnapshotThenPurge => {
+                *self.purge_at.lock() = Some(at);
+                self.raft.trigger().snapshot().await.ok()?;
+                self.raft
+                    .wait(Some(PURGE_SNAPSHOT_WITHIN))
+                    .metrics(
+                        |m| m.snapshot.is_some_and(|snapshot| snapshot.index >= at),
+                        "a purge snapshot",
+                    )
+                    .await
+                    .ok()?;
+            }
+            PurgeStep::Purge => {}
+        }
+        self.raft.trigger().purge_log(at).await.ok()?;
+        Some(at)
+    }
+
     fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader
@@ -1236,7 +1287,7 @@ impl Group {
                 data_len,
                 offset,
                 data,
-            } if self.id.shard.kind == ShardKind::Cache => {
+            } => {
                 use openraft::async_runtime::watch::WatchReceiver;
                 // Before the outvoted check: the sender's term ends the
                 // ones below it either way, and an outvoted sender's term
@@ -1255,6 +1306,26 @@ impl Group {
                             self.drop_incoming_when_idle();
                         }
                         Ok(Reply::Snapshot(SnapshotResponse::new(vote)))
+                    }
+                    Piece::Whole(snapshot) if self.id.shard.kind == ShardKind::Stream => {
+                        let bytes = Bytes::from(snapshot);
+                        if let Err(why) = stream_installable(&meta, &bytes) {
+                            tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: {why}");
+                            return Err(Refused::NoSnapshots(Box::new(Addressee {
+                                group: self.id.clone(),
+                                to: self.member.clone(),
+                            })));
+                        }
+                        let snapshot = SnapshotData {
+                            bytes,
+                            restored: None,
+                        };
+                        self.hold.vote_may_change(Some(&vote));
+                        self.raft
+                            .install_full_snapshot(vote, Snapshot { meta, snapshot })
+                            .await
+                            .map(Reply::Snapshot)
+                            .map_err(|err| stopped(err.to_string()))
                     }
                     Piece::Whole(snapshot) => {
                         // openraft takes a snapshot the state machine cannot
@@ -1291,19 +1362,6 @@ impl Group {
                             .map_err(|err| stopped(err.to_string()))
                     }
                 }
-            }
-            // A stream group's snapshot carries no records, only the cut
-            // batches its sender refuses by name, and installing one purges
-            // the log up to it: the member would drop records it was never
-            // sent. Refused until the records below it travel too.
-            Request::Snapshot { vote, meta, .. } => {
-                self.lease.named(term_of(&vote));
-                let member = Box::new(Addressee {
-                    group: self.id.clone(),
-                    to: self.member.clone(),
-                });
-                tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: taking it would purge records this member was not sent");
-                Err(Refused::NoSnapshots(member))
             }
             Request::TransferLeader(req) => self
                 .raft
@@ -2149,4 +2207,53 @@ async fn read_round(raft: Raft<ShardTypes, Machine>, stop: CancellationToken) ->
         }
         Err(RaftError::Fatal(_)) => Round::Stopped,
     }
+}
+
+/// What a purge pass to `at` still has to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PurgeStep {
+    SnapshotThenPurge,
+    /// A snapshot covers `at` but the log was not purged to it: a pass
+    /// stopped between the two steps (a timeout, a failed purge, a
+    /// restart). Without this the log would wait for the floor to move.
+    Purge,
+}
+
+/// `None` once the log is purged through `at`.
+pub(super) fn purge_step(snapshot: Option<u64>, purged: Option<u64>, at: u64) -> Option<PurgeStep> {
+    if purged.is_some_and(|purged| purged >= at) {
+        return None;
+    }
+    if snapshot.is_some_and(|snapshot| snapshot >= at) {
+        return Some(PurgeStep::Purge);
+    }
+    Some(PurgeStep::SnapshotThenPurge)
+}
+
+/// Whether a member may install the stream snapshot `bytes`: only when every
+/// entry it skips is below the floor the snapshot itself carries, so the
+/// member drops nothing a reader could still be served. The member's own
+/// floor does not count: a snapshot cut above its sender's floor would skip
+/// records the sender still serves. A snapshot without purge floors (one no
+/// purge wrote) is never installable. See `docs/per-shard-raft.md`
+/// ("Purging below the floor").
+pub(super) fn stream_installable(
+    meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let snapshot = super::stream_snapshot::StreamSnapshot::decode(bytes)
+        .map_err(|err| format!("a snapshot this member cannot read: {err}"))?;
+    let Some(purge) = snapshot.purge else {
+        return Err("taking it would purge records this member was not sent".into());
+    };
+    let Some(last) = meta.last_log_id.as_ref() else {
+        return Err("a stream snapshot with no last entry".into());
+    };
+    if last.index >= purge.floor {
+        return Err(format!(
+            "it ends at {} but carries floor {}, so it skips records still served",
+            last.index, purge.floor
+        ));
+    }
+    Ok(())
 }

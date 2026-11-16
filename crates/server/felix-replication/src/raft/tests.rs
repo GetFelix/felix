@@ -33,6 +33,7 @@ mod identity;
 mod lease;
 mod membership;
 mod propose;
+mod purge;
 mod read;
 mod root;
 mod switch;
