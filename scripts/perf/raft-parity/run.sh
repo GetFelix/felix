@@ -104,7 +104,19 @@ for b in "${BOXES[@]}"; do
   [ -z "$sums" ] || [ "$s" = "$sums" ] || { echo "!! felix-build-$b has different binaries; run build.sh" >&2; exit 1; }
   sums=$s
 done
-case " $CELLS " in *-kafka*) for b in "${BOXES[@]}"; do on "$b" kafka-install; done ;; esac
+case " $CELLS " in *-kafka*)
+  # Download once on the first box, relay the tarball to the rest.
+  on "${BOXES[0]}" kafka-install
+  kc=/mnt/build/kafka-cache
+  for b in "${BOXES[@]:1}"; do
+    raw "$b" "ls $kc/*.tgz >/dev/null 2>&1" || {
+      raw "$b" "mkdir -p $kc"
+      for f in $(raw "${BOXES[0]}" "ls $kc"); do
+        raw "${BOXES[0]}" "cat $kc/$f" | raw "$b" "cat > $kc/$f"
+      done
+    }
+    on "$b" kafka-install
+  done ;; esac
 {
   echo "runid $RUNID"
   echo "rev $(echo "$sums" | head -1)"
