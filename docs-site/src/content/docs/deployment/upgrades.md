@@ -589,6 +589,20 @@ entry. A single broker allows Raft trims from the start.
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_follower_read`
+
+Once finalized, a follower of a stream shard on Raft serves a resume from an
+offset or from `earliest`, a cursor subscribe, or a history page itself, after
+it has asked the leader for a read index and applied it. That keeps it from
+serving records below a head trim the leader already answered. The read index
+is a Raft message a broker built before it does not know. Until then a
+follower answers such a subscribe with a redirect to the shard's leader, or
+with a retryable `shard_unavailable` (`not_ready`) when it knows none. Tail
+subscribes are served by followers either way. A single broker has it from the
+start.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_headers`
 
 Once finalized, a durable stream in a cluster accepts record keys and headers

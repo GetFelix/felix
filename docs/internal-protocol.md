@@ -1173,7 +1173,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 | Field | Layout |
 | --- | --- |
 | layout | `u8`, 5 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
-| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position |
+| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
 | member | broker (name), copy id `u64` |
@@ -1246,6 +1246,13 @@ After the report byte comes the message:
   member. The leader uses it only to acknowledge a `Quorum` write early on
   a stream that does not fsync on commit (`docs/per-shard-raft.md`,
   "Two signals from one append"). It never moves the commit index.
+- **Read index**: nothing after the header. A follower asks its leader's
+  member for one before it serves a read that could start below a head
+  trim's floor, then waits until it has applied the index
+  (`docs/per-shard-raft.md`, "Head trims"). Adding it left the layout at
+  5. A build without it refuses the message (`8 is not a Raft request`),
+  so a follower sends one only once the fleet has finalized
+  `raft_follower_read`.
 
 A membership is a `u8` count of voter sets (two during a joint change), each
 a `u8` count and that many members, then the members that are not voters the
@@ -1261,6 +1268,7 @@ The answer has the same first byte, then:
 | 3 snapshot | the member's vote |
 | 4 transferred | `u8` 0 accepted; 1 the vote changed (expected and actual votes); 2 the log is not flushed yet (expected and actual last log ids, optional) |
 | 5 written position taken | nothing |
+| 6 read index | the index (optional `u64`): one past the last entry the follower must apply before it reads. Absent when the member cannot give one: it does not lead, or a majority did not confirm in time that it still does |
 | 16 unreachable | a reason (name layout, up to 1,024 bytes) |
 | 17 no such member | the group and member. The broker holds no member for that copy and epoch |
 | 18 stopped | the group and member, and a reason |
