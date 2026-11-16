@@ -664,6 +664,59 @@ fn a_replaced_disks_new_copy_never_stands_for_the_old_voter() {
     assert!(plan.needs_accept_loss());
 }
 
+/// At epoch 1, seed {a1, b1, c1}: b1 power-cuts into b2 and the control
+/// plane orders {a1, b2, c1}. A, in term 5, commits the change, appends x at
+/// 10 and is cut off. C wins term 7 on b2's vote and acks f at 10 on c1 and
+/// b2. C is declared dead. b2's vote is of epoch 1 only if b2 reads as
+/// epoch 1: one that reads as epoch 0 leaves it unknown, so {b2, c1} mark
+/// the group and x is not served whole where f was acked. Read as epoch 1
+/// (a power cut carries `raft-epoch`), b2's vote is the top and f is the base.
+#[test]
+fn a_current_copys_vote_counts_only_at_the_epoch_it_reads() {
+    let bases = [EpochBase {
+        base_last: Some(EpochLogId {
+            index: 0,
+            epoch: 0,
+            term: 1,
+        }),
+        first_index: 1,
+    }];
+    let mut rec = record(&["a", "b", "c"], &["c"], &bases, None);
+    rec.ordered = Some(vec![BTreeSet::from([("a", 1), ("b", 2), ("c", 1)])]);
+    let mut terms = vec![1];
+    terms.extend([5; 10]);
+    let a = at_epoch(copy("a", &terms, Some(9), Some(5)), &bases);
+    let b1 = kept(
+        at_epoch(copy("b1", &terms[..10], Some(8), Some(5)), &bases),
+        RotatedBy::PowerCut { to: 2 },
+    );
+    terms[10] = 7;
+    let mut b2 = copy("b", &terms, Some(9), Some(7));
+    b2.copy = Some(2);
+
+    let without_epoch = plan(
+        &rec,
+        vec![
+            ("a", report(a.clone(), vec![])),
+            ("b", report(b2.clone(), vec![b1.clone()])),
+        ],
+    );
+    assert!(without_epoch.marked.is_some());
+    assert_eq!(without_epoch.base_end(), 10, "x is not in the base");
+    assert!(without_epoch.needs_accept_loss());
+
+    let carried = plan(
+        &rec,
+        vec![
+            ("a", report(a, vec![])),
+            ("b", report(at_epoch(b2, &bases), vec![b1])),
+        ],
+    );
+    assert_eq!(carried.marked, None);
+    assert_eq!(carried.top, (1, 7));
+    assert_eq!(carried.base_last, floor(10, 1, 7), "f is the base");
+}
+
 /// A chain of power cuts from b1 to the running copy keeps b1's vote known:
 /// each kept copy holds its newest vote.
 #[test]

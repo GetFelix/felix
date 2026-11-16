@@ -85,7 +85,7 @@ pub(crate) use rotated_by::RotatedBy;
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
-pub(crate) use start::{AcceptLoss, Role, Start, building, start_copy};
+pub(crate) use start::{AcceptLoss, LossNotAccepted, Role, Start, building, start_copy};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"

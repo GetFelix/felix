@@ -306,15 +306,19 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         if at != now {
             return true;
         }
-        // A power cut speaks for the copy it rotated into and no later one:
-        // a wiped directory or an empty rotation leaves no kept copy, so
-        // an older power cut would otherwise vouch for the copy after it.
-        let cut_into_current = kept
-            .iter()
-            .any(|read| read.rotated_by == Some(RotatedBy::PowerCut { to: now }));
-        // A copy that never voted could be one that lost its votes.
-        let lost_votes = current.vote.is_none();
-        (rule.copy_epoch(current) != Some(epoch) || lost_votes) && !cut_into_current
+        // A copy that never voted could be one that lost its votes, unless
+        // a power cut rotated into it: the kept copy holds its newest vote.
+        // Only while it has none of its own; once it votes, that vote is
+        // known only if the copy reads as of this epoch. A power cut speaks
+        // for the copy it rotated into and no later one: a wiped directory
+        // or an empty rotation leaves no kept copy, so an older power cut
+        // would otherwise vouch for the copy after it.
+        if current.vote.is_none() {
+            return !kept
+                .iter()
+                .any(|read| read.rotated_by == Some(RotatedBy::PowerCut { to: now }));
+        }
+        rule.copy_epoch(current) != Some(epoch)
     };
     let marked = marked_by(record, &live, unknown_vote);
 

@@ -1375,8 +1375,10 @@ copy.
 A group re-formed by the operator starts a new group epoch, and every copy
 in it keeps a `raft-epoch` file: the stream incarnation and, for each
 re-form its log went through, where that epoch began. A copy without the
-file is at epoch 0. Nothing writes it yet: the re-form start that will is
-not built, but the re-form's reads already take it.
+file is at epoch 0. A re-form start writes it, and a rotation carries the
+newest one among the directory and its kept copies into the new copy
+before its copy file, so a copy keeps its epoch across a power cut or a
+restore and never votes without it.
 
 ```text
  0   4  magic        u32  "FLEP"

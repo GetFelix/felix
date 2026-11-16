@@ -221,10 +221,10 @@ async fn a_kept_copy_refusal_names_the_kept_commit() {
     assert!(err.to_string().contains("committed through 6 "), "{err}");
 }
 
-/// The start's accept-loss is the plan's: a marked or vote-cut plan
-/// accepts, an unmarked one does not.
+/// A plan that needs the loss accepted starts only when the operator
+/// accepted it; one that does not never lowers a commit.
 #[test]
-fn accept_loss_comes_from_the_plan() {
+fn accept_loss_needs_the_operator_for_a_lossy_plan() {
     let plan = |marked: bool, cut_by_vote: bool| crate::raft_copy::ReformPlan::<&str> {
         epoch: 1,
         base_last: None,
@@ -238,18 +238,22 @@ fn accept_loss_comes_from_the_plan() {
         )),
         cut_by_vote,
     };
-    assert_eq!(
-        AcceptLoss::of(&plan(true, false)),
-        AcceptLoss::assumed(true)
-    );
-    assert_eq!(
-        AcceptLoss::of(&plan(false, true)),
-        AcceptLoss::assumed(true)
-    );
-    assert_eq!(
-        AcceptLoss::of(&plan(false, false)),
-        AcceptLoss::assumed(false)
-    );
+    for (marked, cut) in [(true, false), (false, true)] {
+        assert_eq!(
+            AcceptLoss::of(&plan(marked, cut), false),
+            Err(crate::raft_copy::LossNotAccepted)
+        );
+        assert_eq!(
+            AcceptLoss::of(&plan(marked, cut), true),
+            Ok(AcceptLoss::assumed(true))
+        );
+    }
+    for accepted in [false, true] {
+        assert_eq!(
+            AcceptLoss::of(&plan(false, false), accepted),
+            Ok(AcceptLoss::assumed(false))
+        );
+    }
 }
 
 /// A plan does not read a copy whose start did not finish.

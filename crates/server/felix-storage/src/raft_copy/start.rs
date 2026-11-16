@@ -64,14 +64,27 @@ pub(crate) struct Start {
     pub(crate) data: Bytes,
 }
 
-/// Whether a start may lower a saved commit. Only made from the plan, so a
-/// plan that needs the operator to accept a loss never starts without it.
+/// Whether a start may lower a saved commit. Only made from the plan and
+/// the operator's `--accept-loss`, so a plan that needs the loss accepted
+/// never starts without it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct AcceptLoss(bool);
 
+/// The plan can drop acknowledged records and the operator did not accept
+/// the loss.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LossNotAccepted;
+
 impl AcceptLoss {
-    pub(crate) fn of<B>(plan: &ReformPlan<B>) -> Self {
-        Self(plan.needs_accept_loss())
+    /// `accepted` is whether the operator named the group with
+    /// `--accept-loss`. A plan that does not need it lowers no commit even
+    /// when the operator accepted, so an unexpected lower still fails.
+    pub(crate) fn of<B>(plan: &ReformPlan<B>, accepted: bool) -> Result<Self, LossNotAccepted> {
+        let needs = plan.needs_accept_loss();
+        if needs && !accepted {
+            return Err(LossNotAccepted);
+        }
+        Ok(Self(needs))
     }
 
     #[cfg(test)]

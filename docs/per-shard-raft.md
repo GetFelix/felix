@@ -880,9 +880,10 @@ then end at the base's last index in the base's term, or the start fails.
 
 A voter's saved commit is set to `first_index`. One saved above it claims
 entries past the base that the copy does not hold, so it is lowered only by
-a re-form that accepts the loss, and the start refuses otherwise. Whether a
-start accepts the loss is taken from the plan (`AcceptLoss::of`), so a
-marked plan, or one a vote cut, cannot start without it.
+a re-form that accepts the loss, and the start refuses otherwise. A start
+takes both the plan and the operator's `--accept-loss` (`AcceptLoss::of`):
+a marked plan, or one a vote cut, is refused unless the operator accepted
+the loss, and an unmarked plan never lowers a commit.
 
 A saved commit in `(base_end, first_index]` on a voter holding no record past
 the base is overwritten with `first_index` without accepting a loss. On a
@@ -990,8 +991,12 @@ those of:
   of `power-cut <to>`, and a power cut keeps its copy's newest vote. A
   replaced disk keeps nothing, and an empty rotation keeps no directory, so
   their old ids have no chain and stay unknown;
-- the current copy when it is not of the epoch or never voted, unless a
-  power cut of the epoch rotated into it.
+- the current copy when it never voted, unless a power cut of the epoch
+  rotated into it (the kept copy holds its newest vote), and when it voted
+  but is not of the epoch. A rotation carries `raft-epoch` into the new
+  copy, so a copy a power cut minted votes as of its epoch. A copy that
+  reads as an older epoch than the one it voted in would key its vote
+  below the terms it decided, so its vote is never counted.
 
 The voter sets are the epoch's seed voters, both halves of every membership
 entry of the epoch in every copy read (uncommitted ones included), and every
