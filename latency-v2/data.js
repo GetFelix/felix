@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794838876595,
+  "lastUpdate": 1794842918258,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76494,6 +76494,72 @@ window.BENCHMARK_DATA = {
             "range": "692.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 563.00\nmean: 864.40\nstdev: 692.12\ncv: 80.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5bd321f1dd2b62672554dc30f9b407e46f176496",
+          "message": "build(deps): bump the cargo-minor-and-patch group across 1 directory with 4 updates (#2685)\n\nBumps the cargo-minor-and-patch group with 4 updates in the / directory: [uuid](https://github.com/uuid-rs/uuid), [arc-swap](https://github.com/vorner/arc-swap), [toml](https://github.com/toml-rs/toml) and [flate2](https://github.com/rust-lang/flate2-rs).\n\n\nUpdates `uuid` from 1.29.0 to 1.29.2\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.0...v1.29.2)\n\nUpdates `arc-swap` from 1.9.3 to 1.9.4\n- [Changelog](https://github.com/vorner/arc-swap/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/vorner/arc-swap/compare/v1.9.3...v1.9.4)\n\nUpdates `toml` from 1.1.8+spec-1.1.0 to 1.2.1+spec-1.1.0\n- [Commits](https://github.com/toml-rs/toml/compare/toml-v1.1.8...toml-v1.2.1)\n\nUpdates `flate2` from 1.1.10 to 1.1.11\n- [Release notes](https://github.com/rust-lang/flate2-rs/releases)\n- [Changelog](https://github.com/rust-lang/flate2-rs/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/flate2-rs/compare/1.1.10...v1.1.11)\n\n---\nupdated-dependencies:\n- dependency-name: arc-swap\n  dependency-version: 1.9.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: flate2\n  dependency-version: 1.1.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: toml\n  dependency-version: 1.2.1+spec-1.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: cargo-minor-and-patch\n- dependency-name: uuid\n  dependency-version: 1.29.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-16T07:11:03-08:00",
+          "tree_id": "0641c8b10a6a63e17086bcc0d2373779f6fc2265",
+          "url": "https://github.com/GetFelix/felix/commit/5bd321f1dd2b62672554dc30f9b407e46f176496"
+        },
+        "date": 1794842908357,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 97.60\nstdev: 1.14\ncv: 1.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 131,
+            "range": "3.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 132.40\nstdev: 3.65\ncv: 2.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 172,
+            "range": "157.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 282.20\nstdev: 157.02\ncv: 55.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.00\nstdev: 0.71\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 264,
+            "range": "8.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 264.20\nstdev: 8.44\ncv: 3.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 368,
+            "range": "599.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 368.00\nmean: 643.40\nstdev: 599.00\ncv: 93.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
