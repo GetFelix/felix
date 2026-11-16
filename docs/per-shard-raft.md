@@ -3389,8 +3389,8 @@ today. So a trim on Raft hides records but frees no disk
 shard is a trim the leader proposes, so the same holds for it ("Retention",
 above).
 
-**Purging below the floor** (in progress, gated by the `raft_stream_purge`
-fleet feature, which no build reports yet). The design is checked in
+**Purging below the floor** (gated by the `raft_stream_purge` fleet
+feature, which needs `head_trim` and `raft_head_trim`). The design is checked in
 `docs/formal/FelixRaftStreamPurge.tla`. A member purges in two steps: it
 writes and fsyncs a stream snapshot at a point P below its floor, with the
 tables (cut batches, groups) as of P and the floor and headers it serves,
@@ -3405,9 +3405,8 @@ again. A re-form reads every copy's floor, from `raft-floor` or a trim
 record at or below its saved commit, starts the new epoch past the highest
 floor's trim, and raises that floor and its headers into every started
 copy's `raft-floor`, so reads below it stay refused even when no copy still
-holds the trim. Built: the install rule, the floor file, the re-form floor
-and the purge driver. Not built yet: cluster tests of purge and catch-up,
-and reporting the feature.
+holds the trim. A leader purges no further than the lowest match it
+still has to feed from its log.
 
 On the leader the trim reaches the replay ring in its entry's turn and
 drops the ring's records below the floor, and the answer waits for that, so
