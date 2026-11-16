@@ -36,6 +36,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         target: None,
+        targets_withheld: false,
     }
 }
 

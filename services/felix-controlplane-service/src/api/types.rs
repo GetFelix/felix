@@ -549,6 +549,13 @@ pub struct RoutedShardAssignment {
     /// keys a target by shard key and stream incarnation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<RaftTargetView>,
+    /// The target was left out on purpose: some registered broker has not
+    /// acknowledged the placement incarnation, a restore landed during the
+    /// read, or the read was a confirmed one. A broker then learns nothing
+    /// about the shard's target and keeps what it holds. Absent otherwise,
+    /// and from a control plane that predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub targets_withheld: bool,
 }
 
 /// A Raft target as a broker reads it.

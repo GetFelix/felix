@@ -88,6 +88,7 @@ async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) ->
             previous_generation: None,
             readmitted: Default::default(),
             target: None,
+            targets_withheld: false,
         },
     )]
     .into_iter()

@@ -4159,6 +4159,14 @@ moves a leader only once the target is told for its term, and a leader
 that still holds a target from an earlier term would otherwise wait for a
 tell that never comes while the control plane has no target for the shard.
 
+"No target" is told only from a view that says it has none. While some
+registered broker has not acknowledged the placement incarnation, or a
+restore landed during the read, or the read was a confirmed one, the feed
+leaves every target out and sets `targets_withheld` on each item. A broker
+reads that as no view at all and tells nothing, so a leader keeps the
+target it holds and does not hand leadership away by placement during a
+restore. The field is absent whenever targets are not withheld.
+
 A new leader waits for a feed request that started after its term began.
 A long poll already in flight does not count, so with nothing changing on
 the feed the wait can be a whole long poll, about 20 s (#2679).

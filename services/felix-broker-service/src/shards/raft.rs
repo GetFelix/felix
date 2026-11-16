@@ -866,8 +866,12 @@ impl EngineShards for RaftShards {
             let targets = fed
                 .iter()
                 .filter(|(key, (assignment, _))| {
-                    open.get(*key)
-                        .is_some_and(|member| member.incarnation == assignment.incarnation)
+                    // A withheld view tells nothing: the shard keeps the
+                    // target it holds instead of being told there is none.
+                    !assignment.targets_withheld
+                        && open
+                            .get(*key)
+                            .is_some_and(|member| member.incarnation == assignment.incarnation)
                 })
                 .map(|(key, (assignment, _))| {
                     // The control plane's members verbatim, copy ids too: a

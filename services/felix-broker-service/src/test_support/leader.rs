@@ -276,5 +276,6 @@ fn assignment(key: &ShardKey, state: &str) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         target: None,
+        targets_withheld: false,
     }
 }

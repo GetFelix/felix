@@ -543,3 +543,46 @@ async fn a_view_with_no_target_lets_a_later_term_move_by_placement() {
     .await;
     stop(&members).await;
 }
+
+/// **A withheld view tells the leader nothing.** The control plane leaves
+/// every target out while a broker has not acknowledged the placement
+/// incarnation. That is not "no target": the broker must not untarget, so
+/// the leader keeps the target it holds.
+#[tokio::test]
+async fn a_withheld_view_does_not_untarget_a_leader() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let lease = lease_of(&shards);
+    let orders = key("orders", 0);
+    lease.record_head(tokio::time::Instant::now() - Duration::from_millis(1), 1);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the member to lead", || shards.leading(&orders).is_some()).await;
+    let voters = shards.runtime.voters(&orders).expect("voters");
+    let fed = with_target(assigned(orders.clone(), INCARNATION), &voters, 1);
+    shards.take(&mut assignments([fed])).await;
+    shards.answered(now(), Some(100));
+    lease.record_head(tokio::time::Instant::now(), 5);
+    shards.answered(now(), Some(100));
+    assert_eq!(told_all(&shards).len(), 1, "the target was told");
+
+    let mut withheld = assigned(orders.clone(), INCARNATION);
+    withheld.targets_withheld = true;
+    shards.take(&mut assignments([withheld])).await;
+    shards.answered(now(), Some(100));
+    assert_eq!(told_all(&shards).len(), 1, "a withheld view told something");
+    assert!(
+        !shards.targets.lock().contains_key(&orders),
+        "a withheld view was read as no target"
+    );
+
+    // A view with no target, not withheld, is "none": it would untarget.
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    assert_eq!(shards.targets.lock().get(&orders), Some(&None));
+
+    shards.runtime.shutdown().await;
+}

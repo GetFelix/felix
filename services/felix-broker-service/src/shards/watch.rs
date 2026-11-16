@@ -97,6 +97,11 @@ pub struct ShardAssignment {
     /// and from a control plane that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<RaftTarget>,
+    /// The control plane left the target out on purpose, so an absent
+    /// `target` here says nothing about the shard. Absent from a control
+    /// plane that predates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub targets_withheld: bool,
 }
 
 /// A Raft shard's target as the control plane sends it.
@@ -213,6 +218,7 @@ impl PreviousSet {
             previous_generation: None,
             readmitted: Default::default(),
             target: None,
+            targets_withheld: false,
         }
     }
 }

@@ -30,6 +30,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         previous_generation: None,
         readmitted: Default::default(),
         target: None,
+        targets_withheld: false,
     }
 }
 
@@ -254,6 +255,7 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         previous_generation: None,
         readmitted: Default::default(),
         target: None,
+        targets_withheld: false,
     }
 }
 

@@ -38,6 +38,7 @@ fn assignment(key: ShardKey, leader: &str, replicas: &[&str]) -> ShardAssignment
         previous_generation: None,
         readmitted: Default::default(),
         target: None,
+        targets_withheld: false,
     }
 }
 
