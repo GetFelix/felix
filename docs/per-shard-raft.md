@@ -3393,12 +3393,13 @@ above).
 feature, which needs `head_trim` and `raft_head_trim`). The design is checked in
 `docs/formal/FelixRaftStreamPurge.tla`. A member purges in two steps: it
 writes and fsyncs a stream snapshot at a point P below its floor, with the
-tables (cut batches, groups) as of P and the floor and headers it serves,
+cut batches and group table as of P and the floor and headers it serves,
 then drops its log up to P. A member behind the purge installs that
 snapshot only when P is below the floor the snapshot carries. On install it
 keeps the higher of its own floor and the snapshot's, with that floor's
 headers, in the raise-only `raft-floor` file (`docs/storage-format.md`), and
-its own snapshots pass that higher floor on. Without it, a later snapshot
+stores the snapshot with that higher floor in place of the one it was sent,
+so the snapshot it sends as leader passes the higher floor on. Without it, a later snapshot
 from a leader that had not applied the newest trim would lower the floor at
 the next restart, and a re-form reading that copy could give out an offset
 again. A re-form reads every copy's floor, from `raft-floor` or a trim

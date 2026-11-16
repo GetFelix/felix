@@ -1406,7 +1406,6 @@ batches. It travels in the snapshot message and is stored in
  4   4  crc          u32  crc32 over the body
  8   4  cuts_len     u32
 12   c  cuts         the cut batches, as `producers.forgotten` lays them out
- .   8  tables       u64  the floor as of the snapshot's entry
  .   8  offset       u64  the carried trim's offset
  .   8  floor        u64  the carried floor (the one a member installs against)
  .   4  headers_len  u32

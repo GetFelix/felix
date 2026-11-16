@@ -92,6 +92,10 @@ pub(crate) fn load(dir: &Path) -> io::Result<Option<CarriedFloor>> {
 /// Store `floor` if it is above the one stored, and answer the floor the
 /// file holds afterwards. Synced before it returns.
 pub(crate) fn raise(dir: &Path, floor: CarriedFloor) -> io::Result<CarriedFloor> {
+    // Load then store: two raises racing could each see the old floor and
+    // the lower one land last. Raises are rare, so one lock for all logs.
+    static RAISING: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+    let _raising = RAISING.lock();
     if let Some(kept) = load(dir)?
         && kept.floor >= floor.floor
     {

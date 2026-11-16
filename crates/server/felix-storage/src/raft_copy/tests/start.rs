@@ -645,3 +645,38 @@ async fn a_started_copy_keeps_the_highest_floor_read() {
     }
     log.close().await.expect("close");
 }
+
+/// #2602: a start made from a plan carries the plan's floor, so the re-form
+/// driver cannot start a copy that serves reads below it.
+#[test]
+fn a_start_from_a_plan_carries_its_floor() {
+    let floor = crate::disk_log::CarriedFloor {
+        offset: 6,
+        floor: 5,
+        headers: Bytes::from_static(b"five"),
+    };
+    let plan = crate::raft_copy::ReformPlan::<&str> {
+        epoch: 1,
+        base_last: None,
+        source: ("a", crate::raft_copy::Source::Current),
+        voters: Vec::new(),
+        learners: Vec::new(),
+        first_index: 7,
+        top: (0, 0),
+        marked: None,
+        cut_by_vote: false,
+        floor: Some(floor.clone()),
+    };
+    let base = start(Role::Voter);
+    let copy = crate::raft_copy::CopyStart {
+        epoch: base.epoch.clone(),
+        role: base.role,
+        base_terms: base.base_terms.clone(),
+        kept: None,
+        meta: base.meta.clone(),
+        data: base.data.clone(),
+    };
+    let started = Start::of(&plan, false, copy).expect("start");
+    assert_eq!(started.floor, Some(floor));
+    assert_eq!(started.accept_loss, AcceptLoss::assumed(false));
+}

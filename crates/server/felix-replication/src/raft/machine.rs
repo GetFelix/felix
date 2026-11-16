@@ -33,7 +33,7 @@ use tokio::sync::{Semaphore, watch};
 use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{ShardCodec, StoredMembership, invalid};
 use super::commit::Commits;
-use super::stream_snapshot::{PurgeFloors, StreamSnapshot};
+use super::stream_snapshot::StreamSnapshot;
 use super::types::{Applied, ShardTypes};
 use crate::ShardKind;
 
@@ -48,6 +48,19 @@ pub(crate) type Groups = Arc<parking_lot::RwLock<ShardGroups>>;
 /// The entry the next stream snapshot is to be written at, set by the purge
 /// driver (`Group::purge_below_floor`) before it asks openraft for one.
 pub(crate) type PurgeAt = Arc<parking_lot::Mutex<Option<u64>>>;
+
+/// Taken by a purge build once it has read the stored snapshot: it says so
+/// on the sender, then waits on the receiver. Lets a test land an install
+/// in between.
+#[cfg(test)]
+pub(crate) type FoldGate = Arc<
+    parking_lot::Mutex<
+        Option<(
+            tokio::sync::oneshot::Sender<()>,
+            tokio::sync::oneshot::Receiver<()>,
+        )>,
+    >,
+>;
 
 /// Entries read from the log per chunk while folding up to a purge point.
 const FOLD_READ: u64 = 1024;
@@ -86,6 +99,9 @@ pub(crate) struct Machine {
     /// Held by a test to keep apply from folding.
     #[cfg(test)]
     pub(crate) fold_hold: Arc<tokio::sync::Mutex<()>>,
+    /// Set by a test to pause the next purge build ([`FoldGate`]).
+    #[cfg(test)]
+    pub(crate) fold_gate: FoldGate,
 }
 
 impl Machine {
@@ -136,6 +152,8 @@ impl Machine {
             hold: Arc::default(),
             #[cfg(test)]
             fold_hold: Arc::default(),
+            #[cfg(test)]
+            fold_gate: Arc::default(),
         };
         Ok(Opened {
             machine,
@@ -346,6 +364,8 @@ pub(crate) struct Builder {
     /// Set for a purge snapshot: the entry it is written at, below the
     /// applied one, and the log it folds the state up to there from.
     purge: Option<(u64, LogReader<ShardTypes, ShardCodec>)>,
+    #[cfg(test)]
+    fold_gate: FoldGate,
 }
 
 /// Overlay writes folded per hold of the cache lock, so apply and reads
@@ -409,71 +429,84 @@ impl Builder {
         mut reader: LogReader<ShardTypes, ShardCodec>,
         log: &DiskLog,
     ) -> io::Result<SnapshotOf<ShardTypes, SnapshotData>> {
-        let stored = self.snapshots.current().await?;
-        let (mut state, data) = match &stored {
-            Some(stored) => (StoredMeta::state(&stored.meta)?, stored.data.clone()),
-            None => (State::default(), Bytes::new()),
-        };
-        let carried = log.head_trim();
-        let from = state.last_applied.map_or(0, |id| id.index + 1);
-        let below_floor = carried.as_ref().is_some_and(|trim| at < trim.floor);
-        if from > at || !below_floor {
-            return Ok(SnapshotOf::<ShardTypes, SnapshotData> {
-                meta: meta(&state),
-                snapshot: SnapshotData::bytes(data),
-            });
-        }
-        let previous = StreamSnapshot::decode(&data)?;
-        let mut groups = ShardGroups::default();
-        groups.reset(previous.groups);
-        let mut next = from;
-        while next <= at {
-            let end = at.min(next.saturating_add(FOLD_READ - 1));
-            let entries = reader.try_get_log_entries(next..end + 1).await?;
-            if entries.len() as u64 != end + 1 - next {
-                return Err(io::Error::other(format!(
-                    "the log has no entries {next}..={end} to fold a purge snapshot from"
-                )));
+        // An install can land while this runs (openraft builds off its
+        // state machine task) and reset the log past the stored snapshot
+        // read here. The entries to fold are then gone, and the build
+        // starts over from the snapshot the install stored.
+        let (state, groups) = 'build: loop {
+            let stored = self.snapshots.current().await?;
+            let (mut state, data) = match &stored {
+                Some(stored) => (StoredMeta::state(&stored.meta)?, stored.data.clone()),
+                None => (State::default(), Bytes::new()),
+            };
+            let from = state.last_applied.map_or(0, |id| id.index + 1);
+            let below_floor = log.head_trim().is_some_and(|trim| at < trim.floor);
+            if from > at || !below_floor {
+                return Ok(SnapshotOf::<ShardTypes, SnapshotData> {
+                    meta: meta(&state),
+                    snapshot: SnapshotData::bytes(data),
+                });
             }
-            for entry in entries {
-                match &entry.payload {
-                    EntryPayload::Normal(command) if command.group => {
-                        let decoded = GroupEntry::decode(&command.payload).map_err(|err| {
-                            invalid(format!("a group entry does not decode: {err}"))
-                        })?;
-                        let (term, index) = term_index(&entry.log_id);
-                        groups.apply(term, index, &decoded);
+            #[cfg(test)]
+            let gate = self.fold_gate.lock().take();
+            #[cfg(test)]
+            if let Some((reached, go)) = gate {
+                let _ = reached.send(());
+                let _ = go.await;
+            }
+            let previous = StreamSnapshot::decode(&data)?;
+            let mut groups = ShardGroups::default();
+            groups.reset(previous.groups);
+            let mut next = from;
+            while next <= at {
+                let end = at.min(next.saturating_add(FOLD_READ - 1));
+                let entries = reader.try_get_log_entries(next..end + 1).await?;
+                if entries.len() as u64 != end + 1 - next {
+                    let now = self.snapshots.current().await?;
+                    if now.as_ref().map(|now| now.last) != stored.as_ref().map(|was| was.last) {
+                        continue 'build;
                     }
-                    EntryPayload::Membership(membership) => {
-                        state.membership = StoredMembershipOf::<ShardTypes>::new(
-                            Some(entry.log_id),
-                            membership.clone(),
-                        );
-                    }
-                    _ => {}
+                    return Err(io::Error::other(format!(
+                        "the log has no entries {next}..={end} to fold a purge snapshot from"
+                    )));
                 }
-                state.last_applied = Some(entry.log_id);
+                for entry in entries {
+                    match &entry.payload {
+                        EntryPayload::Normal(command) if command.group => {
+                            let decoded = GroupEntry::decode(&command.payload).map_err(|err| {
+                                invalid(format!("a group entry does not decode: {err}"))
+                            })?;
+                            let (term, index) = term_index(&entry.log_id);
+                            groups.apply(term, index, &decoded);
+                        }
+                        EntryPayload::Membership(membership) => {
+                            state.membership = StoredMembershipOf::<ShardTypes>::new(
+                                Some(entry.log_id),
+                                membership.clone(),
+                            );
+                        }
+                        _ => {}
+                    }
+                    state.last_applied = Some(entry.log_id);
+                }
+                next = end + 1;
             }
-            next = end + 1;
-        }
+            break (state, groups);
+        };
         let cuts = log
             .forgotten_cuts_from(at + 1)
             .await
             .map_err(io::Error::other)?;
-        let tables = log
-            .floor_as_of(at)
-            .max(previous.purge.map_or(0, |purge| purge.tables));
-        let trim = carried.expect("checked below the floor");
+        let trim = log
+            .head_trim()
+            .ok_or_else(|| io::Error::other("the floor a purge snapshot carries is gone"))?;
         let data = StreamSnapshot {
             cuts,
             groups: groups.table().clone(),
-            purge: Some(PurgeFloors {
-                tables,
-                carried: CarriedFloor {
-                    offset: trim.offset,
-                    floor: trim.floor,
-                    headers: trim.headers,
-                },
+            purge: Some(CarriedFloor {
+                offset: trim.offset,
+                floor: trim.floor,
+                headers: trim.headers,
             }),
         }
         .encode();
@@ -511,17 +544,15 @@ async fn stream_data(log: &DiskLog, state: &State, groups: GroupTable) -> io::Re
         .forgotten_cuts_from(base)
         .await
         .map_err(io::Error::other)?;
-    // Taken at the applied entry, so the tables' floor is the floor now.
+    // Only a member that keeps a carried floor names one, and then the
+    // highest floor it serves.
     let purge = log
         .carried_floor()
         .and(log.head_trim())
-        .map(|trim| PurgeFloors {
-            tables: trim.floor,
-            carried: CarriedFloor {
-                offset: trim.offset,
-                floor: trim.floor,
-                headers: trim.headers,
-            },
+        .map(|trim| CarriedFloor {
+            offset: trim.offset,
+            floor: trim.floor,
+            headers: trim.headers,
         });
     Ok(StreamSnapshot {
         cuts,
@@ -538,9 +569,7 @@ async fn stream_data(log: &DiskLog, state: &State, groups: GroupTable) -> io::Re
 /// the raise-only floor file, synced, before the snapshot is stored. A crash
 /// at any point leaves a durable floor no lower than before: the file never
 /// goes down, and the old snapshot and log still hold what they held.
-/// The snapshot's tables keep their own floor; only the carried one is
-/// raised.
-async fn keep_floor(log: &DiskLog, purge: Option<PurgeFloors>) -> io::Result<()> {
+async fn keep_floor(log: &DiskLog, purge: Option<CarriedFloor>) -> io::Result<()> {
     let log = log.clone();
     cpu(move || {
         if let Some(own) = log.head_trim() {
@@ -552,7 +581,7 @@ async fn keep_floor(log: &DiskLog, purge: Option<PurgeFloors>) -> io::Result<()>
             .map_err(io::Error::other)?;
         }
         if let Some(purge) = purge {
-            log.carry_floor(purge.carried).map_err(io::Error::other)?;
+            log.carry_floor(purge).map_err(io::Error::other)?;
         }
         Ok::<_, io::Error>(())
     })
@@ -586,6 +615,8 @@ impl Machine {
                 .map(|groups| groups.read().table().clone()),
             log: self.log.clone(),
             raft_log: self.raft_log.clone(),
+            #[cfg(test)]
+            fold_gate: Arc::clone(&self.fold_gate),
         }
     }
 
@@ -741,7 +772,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
         snapshot: SnapshotData,
     ) -> io::Result<()> {
         let SnapshotData {
-            bytes: data,
+            bytes: mut data,
             restored,
         } = snapshot;
         // Read before it is stored: a snapshot that does not parse must not
@@ -769,7 +800,20 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     purge,
                 }),
             ) => {
+                let rewrite = purge.is_some();
                 keep_floor(log, purge).await?;
+                // Stored with the floor this member now serves, not the one
+                // it was sent: streams never build a snapshot on their own,
+                // so this is the one it sends as leader, and a lower floor
+                // there would lower the floor of a member installing it.
+                if rewrite {
+                    data = StreamSnapshot {
+                        cuts: cuts.clone(),
+                        groups: groups.clone(),
+                        purge: log.carried_floor(),
+                    }
+                    .encode();
+                }
                 let base = meta.last_log_id.map_or(0, |id| id.index + 1);
                 log.remember_forgotten_cuts(base, cuts)
                     .await

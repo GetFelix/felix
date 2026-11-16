@@ -1004,22 +1004,23 @@ impl Group {
                 }
             }
         }
-        if metrics
-            .snapshot
-            .is_some_and(|snapshot| snapshot.index >= at)
-        {
-            return None;
+        let snapshot = metrics.snapshot.map(|id| id.index);
+        let purged = metrics.purged.map(|id| id.index);
+        match purge_step(snapshot, purged, at)? {
+            PurgeStep::SnapshotThenPurge => {
+                *self.purge_at.lock() = Some(at);
+                self.raft.trigger().snapshot().await.ok()?;
+                self.raft
+                    .wait(Some(PURGE_SNAPSHOT_WITHIN))
+                    .metrics(
+                        |m| m.snapshot.is_some_and(|snapshot| snapshot.index >= at),
+                        "a purge snapshot",
+                    )
+                    .await
+                    .ok()?;
+            }
+            PurgeStep::Purge => {}
         }
-        *self.purge_at.lock() = Some(at);
-        self.raft.trigger().snapshot().await.ok()?;
-        self.raft
-            .wait(Some(PURGE_SNAPSHOT_WITHIN))
-            .metrics(
-                |m| m.snapshot.is_some_and(|snapshot| snapshot.index >= at),
-                "a purge snapshot",
-            )
-            .await
-            .ok()?;
         self.raft.trigger().purge_log(at).await.ok()?;
         Some(at)
     }
@@ -2192,6 +2193,27 @@ async fn read_round(raft: Raft<ShardTypes, Machine>, stop: CancellationToken) ->
 /// records the sender still serves. A snapshot without purge floors (one no
 /// purge wrote) is never installable. See `docs/per-shard-raft.md`
 /// ("Purging below the floor").
+/// What a purge pass to `at` still has to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PurgeStep {
+    SnapshotThenPurge,
+    /// A snapshot covers `at` but the log was not purged to it: a pass
+    /// stopped between the two steps (a timeout, a failed purge, a
+    /// restart). Without this the log would wait for the floor to move.
+    Purge,
+}
+
+/// `None` once the log is purged through `at`.
+pub(super) fn purge_step(snapshot: Option<u64>, purged: Option<u64>, at: u64) -> Option<PurgeStep> {
+    if purged.is_some_and(|purged| purged >= at) {
+        return None;
+    }
+    if snapshot.is_some_and(|snapshot| snapshot >= at) {
+        return Some(PurgeStep::Purge);
+    }
+    Some(PurgeStep::SnapshotThenPurge)
+}
+
 pub(super) fn stream_installable(
     meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
     bytes: &[u8],
@@ -2204,10 +2226,10 @@ pub(super) fn stream_installable(
     let Some(last) = meta.last_log_id.as_ref() else {
         return Err("a stream snapshot with no last entry".into());
     };
-    if last.index >= purge.carried.floor {
+    if last.index >= purge.floor {
         return Err(format!(
             "it ends at {} but carries floor {}, so it skips records still served",
-            last.index, purge.carried.floor
+            last.index, purge.floor
         ));
     }
     Ok(())

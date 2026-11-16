@@ -69,6 +69,47 @@ pub(crate) struct Start {
     pub(crate) data: Bytes,
 }
 
+/// What a copy's start takes from the re-form driver rather than the plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CopyStart {
+    pub(crate) epoch: EpochFile,
+    pub(crate) role: Role,
+    pub(crate) base_terms: Vec<(u64, u64)>,
+    pub(crate) kept: Option<PathBuf>,
+    pub(crate) meta: Bytes,
+    pub(crate) data: Bytes,
+}
+
+impl Start {
+    /// A copy's start under `plan`. The plan's floor and whether a commit
+    /// may be lowered come from the plan here, so a driver cannot start a
+    /// copy without either. `accepted` is the operator's `--accept-loss`.
+    pub(crate) fn of<B>(
+        plan: &ReformPlan<B>,
+        accepted: bool,
+        copy: CopyStart,
+    ) -> Result<Self, LossNotAccepted> {
+        let CopyStart {
+            epoch,
+            role,
+            base_terms,
+            kept,
+            meta,
+            data,
+        } = copy;
+        Ok(Self {
+            epoch,
+            role,
+            base_terms,
+            accept_loss: AcceptLoss::of(plan, accepted)?,
+            kept,
+            floor: plan.floor.clone(),
+            meta,
+            data,
+        })
+    }
+}
+
 /// Whether a start may lower a saved commit. Only made from the plan and
 /// the operator's `--accept-loss`, so a plan that needs the loss accepted
 /// never starts without it.

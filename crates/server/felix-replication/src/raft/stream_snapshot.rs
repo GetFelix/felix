@@ -14,7 +14,6 @@
 //! u32  magic "FLSP"           a purge snapshot (`raft_stream_purge`):
 //! u32  crc32 of the rest
 //! u32  cut batches length, then ForgottenCuts::encode (or nothing)
-//! u64  the tables' floor: the floor as of the snapshot's last entry
 //! u64  carried trim's offset, u64 carried floor
 //! u32  carried headers length, then the headers
 //! GroupTable::encode, to the end
@@ -42,20 +41,10 @@ pub(crate) struct StreamSnapshot {
     /// producer's retry at sequence 0 is written again; #2699 fixes that.
     pub(crate) cuts: ForgottenCuts,
     pub(crate) groups: GroupTable,
-    /// Set on a snapshot written for a purge.
-    pub(crate) purge: Option<PurgeFloors>,
-}
-
-/// The two floors a purge snapshot carries. They are different points: the
-/// tables are folded as of the snapshot's last entry, below the trim that
-/// allowed the purge, while the carried floor is the one that trim set.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PurgeFloors {
-    /// The floor as of the snapshot's last entry, which the tables read.
-    pub(crate) tables: u64,
-    /// The highest floor the writer had applied, with its trim's headers.
-    /// Every entry the snapshot covers is below it.
-    pub(crate) carried: CarriedFloor,
+    /// Set on a snapshot written for a purge: the highest floor its writer
+    /// serves, with its trim's headers. Every entry the snapshot covers is
+    /// below it.
+    pub(crate) purge: Option<CarriedFloor>,
 }
 
 impl StreamSnapshot {
@@ -86,17 +75,15 @@ impl StreamSnapshot {
         out.freeze()
     }
 
-    fn encode_purge(&self, purge: &PurgeFloors) -> Bytes {
+    fn encode_purge(&self, carried: &CarriedFloor) -> Bytes {
         let cuts = if self.cuts.is_empty() {
             Vec::new()
         } else {
             self.cuts.encode()
         };
-        let carried = &purge.carried;
         let mut body = BytesMut::new();
         body.put_u32(cuts.len() as u32);
         body.put_slice(&cuts);
-        body.put_u64(purge.tables);
         body.put_u64(carried.offset);
         body.put_u64(carried.floor);
         body.put_u32(carried.headers.len() as u32);
@@ -176,7 +163,6 @@ fn decode_purge(data: &[u8]) -> io::Result<StreamSnapshot> {
     } else {
         decode_cuts(cuts)?
     };
-    let tables = u64_of(take(8)?);
     let offset = u64_of(take(8)?);
     let floor = u64_of(take(8)?);
     let len = u32_of(take(4)?);
@@ -185,13 +171,10 @@ fn decode_purge(data: &[u8]) -> io::Result<StreamSnapshot> {
     Ok(StreamSnapshot {
         cuts,
         groups,
-        purge: Some(PurgeFloors {
-            tables,
-            carried: CarriedFloor {
-                offset,
-                floor,
-                headers,
-            },
+        purge: Some(CarriedFloor {
+            offset,
+            floor,
+            headers,
         }),
     })
 }

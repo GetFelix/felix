@@ -30,16 +30,12 @@ fn groups() -> GroupTable {
     table
 }
 
-/// A purge snapshot's floors: the tables as of floor 2, the carried trim
-/// at offset 9 naming floor 6.
-fn floors() -> PurgeFloors {
-    PurgeFloors {
-        tables: 2,
-        carried: CarriedFloor {
-            offset: 9,
-            floor: 6,
-            headers: Bytes::from_static(b"trimmed"),
-        },
+/// A purge snapshot's floor: the carried trim at offset 9 naming floor 6.
+fn floors() -> CarriedFloor {
+    CarriedFloor {
+        offset: 9,
+        floor: 6,
+        headers: Bytes::from_static(b"trimmed"),
     }
 }
 
@@ -95,7 +91,7 @@ fn a_damaged_stream_snapshot_is_refused() {
     }
 }
 
-fn refused_when_damaged(purge: Option<PurgeFloors>) {
+fn refused_when_damaged(purge: Option<CarriedFloor>) {
     let bytes = StreamSnapshot {
         cuts: cuts(),
         groups: groups(),
