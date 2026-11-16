@@ -60,6 +60,8 @@ fn four_shard_ingress(routing: felix_wire::routing::ShardRouting) -> Arc<Ingress
                 pending_set: None,
                 previous_generation: None,
                 readmitted: Default::default(),
+                target: None,
+                targets_withheld: false,
             };
             (key, assignment)
         })

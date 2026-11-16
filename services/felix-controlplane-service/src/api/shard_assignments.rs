@@ -435,6 +435,9 @@ fn routed(
         assignment,
         routing,
         target,
+        // Said outright: a broker reads an absent target as "none" and
+        // would hand leadership away by placement during a restore.
+        targets_withheld: incarnation.is_none(),
     }
 }
 

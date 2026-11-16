@@ -985,7 +985,8 @@ record held), `latest` (the committed tail) or `{"offset": n}` between the two;
 anything outside is `invalid_request`. With `if_new` it moves only a group that
 does not exist yet, which is how a group is created somewhere other than offset
 0. A seek voids the claims standing when it lands: an ack for a record the group
-now owes is answered `stale_claim`. Dead letters are kept.
+now owes is answered `stale_claim`. Dead letters below the new position are
+kept; those at or above it are cleared and delivered again.
 
 `group_info` leaves out `committed` for a group with no cursor. `in_flight` and
 `owed` are the leader's memory and start again from zero when the shard changes

@@ -22,7 +22,7 @@ felix-mqtt-wire = { path = "../../protocol/felix-mqtt-wire", version = "0.8.0-pr
 felix-wire = { path = "../../protocol/felix-wire", version = "0.8.0-preview.0" }
 metrics = { workspace = true }
 sha1 = { workspace = true }
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["io-util", "rt", "sync", "time", "macros"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

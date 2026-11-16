@@ -270,3 +270,50 @@ async fn with_dependencies_a_cursor_carries_them() {
         Stored::placed(42)
     );
 }
+
+/// **A seek back never leaves the origin above the cursor**: falling back to
+/// it would skip what the seek asked to read again.
+#[tokio::test]
+async fn a_seek_back_keeps_the_origin_at_or_below_the_cursor() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let groups = groups(dir.path());
+    let requires = DeadLetterMark {
+        end: 3,
+        generation: 1,
+    };
+    for offset in [10, 4] {
+        groups
+            .place_locked("t", "ns", "s", 0, "g", offset, requires)
+            .await
+            .expect("place");
+    }
+    let stored = groups
+        .stored("t", "ns", "s", 0, "g")
+        .await
+        .expect("read")
+        .expect("stored");
+    assert_eq!((stored.offset, stored.origin), (4, 0));
+    groups
+        .commit_unless(
+            "t",
+            "ns",
+            "s",
+            0,
+            "g",
+            20,
+            &AtomicBool::new(false),
+            DeadLetterMark::default(),
+        )
+        .await
+        .expect("commit");
+    groups
+        .place_locked("t", "ns", "s", 0, "g", 8, requires)
+        .await
+        .expect("place");
+    let stored = groups
+        .stored("t", "ns", "s", 0, "g")
+        .await
+        .expect("read")
+        .expect("stored");
+    assert_eq!((stored.offset, stored.origin), (8, 8));
+}

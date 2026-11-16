@@ -39,13 +39,34 @@ pub struct RaftRequest {
     /// On a leader's append: the longest the leader may now stay silent,
     /// in milliseconds. Zero on every other message.
     pub(crate) beat: u64,
-    /// On a leader's append that carries entries: the leader wants to be
-    /// told once they are written, before their fsync.
-    pub(crate) report: bool,
+    /// On a leader's append that carries entries: what the leader asks of
+    /// the follower about telling it, once they are written and before their
+    /// fsync. See [`Ask`] for the three values.
+    pub(crate) report: Ask,
     /// How long the sender waits for the answer. The receiver drops an
     /// answer it cannot give in time, so a stuck member holds nothing.
     pub(crate) deadline: Duration,
     pub(crate) body: Request,
+}
+
+/// What a leader's append asks a follower for: a written report
+/// (`Request::Written`) once its entries are written, before their fsync.
+/// The leader's mode picks the ask and the follower's mode answers it, so
+/// neither keeps the other's mode. See `docs/per-shard-raft.md`, "What each
+/// signal means".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ask {
+    /// No report: not an append with entries, or no write waits on reports.
+    Nothing,
+    /// From a leader whose log fsyncs before Raft counts an entry. Every
+    /// follower reports, since only a report lets a `Quorum` write go
+    /// before the commit.
+    Written,
+    /// From a leader on a written-commit log. A follower on one too answers
+    /// the append at the write, and that answer counts toward the commit,
+    /// so it does not report. A follower that fsyncs first still reports:
+    /// without it a `Quorum` write would wait for that fsync.
+    WrittenIfStrict,
 }
 
 pub(crate) enum Request {
@@ -297,8 +318,10 @@ impl Router {
             group,
             to: to.clone(),
             beat: sent.sent.as_ref().map_or(0, |sent| sent.gap),
-            report: matches!(&body, Request::Append(rpc) if !rpc.entries.is_empty())
-                && self.reports.wanted(),
+            report: match &body {
+                Request::Append(rpc) if !rpc.entries.is_empty() => self.reports.ask(),
+                _ => Ask::Nothing,
+            },
             deadline: option.hard_ttl(),
             body,
         };

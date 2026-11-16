@@ -48,7 +48,7 @@ fn start(role: Role) -> Start {
         },
         role,
         base_terms: vec![(0, 1)],
-        accept_loss: false,
+        accept_loss: AcceptLoss::assumed(false),
         kept: None,
         meta: Bytes::from_static(b"meta"),
         data: Bytes::from_static(b"data"),
@@ -119,7 +119,7 @@ async fn a_voter_cuts_committed_records_past_its_base_only_on_accepted_loss() {
     );
 
     let mut lossy = start(Role::Voter);
-    lossy.accept_loss = true;
+    lossy.accept_loss = AcceptLoss::assumed(true);
     start_copy(dir.path(), &lossy, &config())
         .await
         .expect("start");
@@ -197,10 +197,63 @@ async fn a_kept_copy_committed_past_the_base_is_refused_without_accepted_loss() 
     start_copy(dir.path(), &from_kept, &config())
         .await
         .expect_err("would cut acked records");
-    from_kept.accept_loss = true;
+    from_kept.accept_loss = AcceptLoss::assumed(true);
     start_copy(dir.path(), &from_kept, &config())
         .await
         .expect("start");
+}
+
+/// The refusal names the commit that refused: the kept copy's, not the
+/// voter's own commit at the first index, which covers no record of its own.
+#[tokio::test]
+async fn a_kept_copy_refusal_names_the_kept_commit() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 7).await;
+    crate::disk_log::store_saved_commit(kept.path(), 7, 2).expect("commit");
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 5).await;
+    crate::disk_log::store_saved_commit(dir.path(), 8, 2).expect("commit");
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    let err = start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect_err("would cut acked records");
+    assert!(err.to_string().contains("committed through 6 "), "{err}");
+}
+
+/// A plan that needs the loss accepted starts only when the operator
+/// accepted it; one that does not never lowers a commit.
+#[test]
+fn accept_loss_needs_the_operator_for_a_lossy_plan() {
+    let plan = |marked: bool, cut_by_vote: bool| crate::raft_copy::ReformPlan::<&str> {
+        epoch: 1,
+        base_last: None,
+        source: ("a", crate::raft_copy::Source::Current),
+        voters: Vec::new(),
+        learners: Vec::new(),
+        first_index: 0,
+        top: (0, 0),
+        marked: marked.then_some(crate::raft_copy::Marked::Unknown(
+            crate::raft_copy::VoterSource::Seed,
+        )),
+        cut_by_vote,
+    };
+    for (marked, cut) in [(true, false), (false, true)] {
+        assert_eq!(
+            AcceptLoss::of(&plan(marked, cut), false),
+            Err(crate::raft_copy::LossNotAccepted)
+        );
+        assert_eq!(
+            AcceptLoss::of(&plan(marked, cut), true),
+            Ok(AcceptLoss::assumed(true))
+        );
+    }
+    for accepted in [false, true] {
+        assert_eq!(
+            AcceptLoss::of(&plan(false, false), accepted),
+            Ok(AcceptLoss::assumed(false))
+        );
+    }
 }
 
 /// A plan does not read a copy whose start did not finish.
@@ -455,7 +508,7 @@ async fn a_voter_commit_past_the_first_index_is_lowered_only_on_accepted_loss() 
     assert!(building(dir.path()).expect("marker"));
 
     let mut lossy = start(Role::Voter);
-    lossy.accept_loss = true;
+    lossy.accept_loss = AcceptLoss::assumed(true);
     start_copy(dir.path(), &lossy, &config())
         .await
         .expect("start");
@@ -529,7 +582,7 @@ async fn a_voters_own_commit_past_the_base_counts_when_rebuilt_from_a_kept_copy(
     start_copy(dir.path(), &from_kept, &config())
         .await
         .expect_err("would cut acked records");
-    from_kept.accept_loss = true;
+    from_kept.accept_loss = AcceptLoss::assumed(true);
     start_copy(dir.path(), &from_kept, &config())
         .await
         .expect("start");

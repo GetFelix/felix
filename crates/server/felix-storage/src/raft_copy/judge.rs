@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::copy_file::{self, CopyFile};
+use super::epoch_file::{self, EpochFile};
 use super::gate::GatePassed;
 use super::marks::{CopyMarks, MarkLog};
 use super::rotated_by::{self, RotatedBy};
@@ -234,6 +235,9 @@ impl CopyRoot {
         // The engine marker goes into `.kept` with the directory, and the
         // new directory is as much a Raft member's as the old one.
         let marked = engine_marker::claimed_for_raft(dir, shard).map_err(io::Error::other)?;
+        // The new copy is a member of the same group epoch, and votes in it
+        // are keyed by the epoch it reads.
+        let epoch = carried_epoch(dir)?;
         // Minted first, so the kept copy can name the copy it speaks for.
         let copy = loop {
             let copy = (self.mint)();
@@ -268,6 +272,11 @@ impl CopyRoot {
         if marked && kept.is_some() {
             engine_marker::claim_for_raft(dir, shard).map_err(io::Error::other)?;
         }
+        // Before the copy file, so the new copy never votes without it.
+        if let Some(epoch) = &epoch {
+            epoch_file::store(dir, epoch)?;
+            step()?;
+        }
         // Synced before the copy file, so a directory with a copy file
         // always carries the reservations it replaced.
         if let Some(index) = carried {
@@ -300,6 +309,22 @@ pub fn highest_reserved(dir: &Path) -> io::Result<Option<u64>> {
         highest = highest.max(reserved::load(&kept.path)?);
     }
     Ok(highest)
+}
+
+/// The newest `raft-epoch` among the copy in `dir` and every copy
+/// rotations moved aside from it: a crash after the move leaves it only in
+/// `.kept`. A file that does not decode is an error, never skipped, so a
+/// new copy never reads as an older epoch than the one it replaces.
+fn carried_epoch(dir: &Path) -> io::Result<Option<EpochFile>> {
+    let mut newest = epoch_file::load(dir)?;
+    for kept in kept_copies(dir)? {
+        if let Some(file) = epoch_file::load(&kept.path)?
+            && newest.as_ref().is_none_or(|n| file.epoch() > n.epoch())
+        {
+            newest = Some(file);
+        }
+    }
+    Ok(newest)
 }
 
 /// Whether a group reached an earlier copy of `dir`: one rotations moved
@@ -396,10 +421,16 @@ fn holds_no_records(dir: &Path) -> io::Result<bool> {
         Err(err) => return Err(err),
     };
     let temporary = state_file::temporary(dir, copy_file::FILE_NAME);
+    // The epoch file alone is what a crash after a rotation wrote it and
+    // before the copy file leaves; the next rotation carries it again.
+    let epoch = dir.join(epoch_file::FILE_NAME);
+    let epoch_temporary = state_file::temporary(dir, epoch_file::FILE_NAME);
     for entry in entries {
         let path = entry?.path();
         if path != dir.join(copy_file::FILE_NAME)
             && path != temporary
+            && path != epoch
+            && path != epoch_temporary
             && !reserved::is_reservation(dir, &path)
             && !engine_marker::is_marker(dir, &path)
         {

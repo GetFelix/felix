@@ -5,8 +5,15 @@ The packet codec, `felix-mqtt-wire`, is built (#1687), and so is the listener,
 which authenticates connections, mounts streams at topic prefixes and accepts
 PUBLISH at QoS 0 and 1 (#1689, `docs/mqtt-compatibility.md`), with record
 headers and forwarding to the shard's owner, and MQTT over WebSockets (#1700).
-Subscribe, retained messages, persistent sessions, QoS 2 and will messages are
-not built yet.
+Subscribe works for clean sessions at QoS 0 and 1 on shards this broker holds
+(#1692); each session runs its own reader per shard and its own filter trie,
+where the design below shares one reader and one trie per broker, which is
+follow-up work. Every tail and read passes the ingress router's serving check,
+the one a QUIC subscribe passes; a SUBSCRIBE covering a shard this broker does
+not serve is refused whole, and a reader whose shard moves or loses its leader
+ends the session, woken by the same ending that ends QUIC subscribers. Each
+filter starts at the shard tails taken for its SUBACK. Retained messages,
+persistent sessions, QoS 2 and will messages are not built yet.
 
 Devices speak MQTT. This page designs a native MQTT listener, built the way the Kafka listener is
 (`crates/server/felix-kafka`, `docs/kafka-compatibility.md`), under one hard
@@ -607,6 +614,7 @@ variable the broker does not read today:
 | `FELIX_MQTT_MAX_TOPIC_LEVELS` | 16 | Levels in a topic or filter. |
 | `FELIX_MQTT_MAX_INFLIGHT` | 32 | Unacknowledged QoS 1 and 2 messages in each direction. Advertised as `Receive Maximum`. |
 | `FELIX_MQTT_MAX_SUBSCRIPTIONS` | 64 | Filters per session. |
+| `FELIX_MQTT_MAX_READERS` | 4096 | Subscription reader tasks on the listener. Stands in for a shared reader until one is built; a SUBSCRIBE past it is refused with 0x97. |
 | `FELIX_MQTT_MAX_TOPIC_ALIASES` | 16 | Inbound topic aliases per connection (5.0). *Not built yet.* |
 | `FELIX_MQTT_SESSION_QUEUE_MAX_BYTES` | 1 MiB | A session's delivery queue. QoS 1 detaches to a catch-up read past it; QoS 0 drops. *Not built yet.* |
 | `FELIX_MQTT_QUEUE_MAX_BYTES_TOTAL` | 512 MiB | All session queues on the broker together. *Not built yet.* |

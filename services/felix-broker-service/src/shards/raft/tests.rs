@@ -2,7 +2,8 @@ use std::path::Path;
 
 use felix_broker::{ConsistencyLevel, StreamMetadata};
 use felix_replication::raft::{
-    AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused, Role, RuntimeConfig,
+    AgreeingPeers, MembershipProgress, RaftReply, RaftRequest, RaftTransport, Refused, Role,
+    RuntimeConfig,
 };
 
 use super::*;
@@ -34,6 +35,8 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        target: None,
+        targets_withheld: false,
     }
 }
 
@@ -1906,6 +1909,45 @@ async fn a_shard_placed_here_with_no_member_open_is_not_ready() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// **An MQTT subscription over a Raft shard whose leader this member has not
+/// heard is paused, not ended**: nothing is read from a commit index that may
+/// have stopped moving, and the session survives a missed heartbeat round.
+#[tokio::test]
+async fn an_mqtt_reader_of_a_leaderless_raft_member_waits() {
+    use felix_mqtt::{ReadError, Reads};
+
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .placed
+        .lock()
+        .insert(orders.clone(), "broker-a".to_string());
+    let reads = crate::serving::mqtt::BrokerReads::new(Arc::clone(&broker), Some(ingress(&shards)));
+
+    assert_eq!(
+        reads.tail("t1", "ns", "orders", 0).await,
+        Err(ReadError::Unavailable)
+    );
+    assert_eq!(
+        reads
+            .read(
+                "t1",
+                "ns",
+                "orders",
+                0,
+                0,
+                1 << 20,
+                Duration::from_millis(50)
+            )
+            .await
+            .map(|_| ()),
+        Err(ReadError::Unavailable)
+    );
+    EngineShards::shutdown(&*shards).await;
+}
+
 pub(crate) async fn delivered(
     receiver: &mut felix_broker::SubscriptionReceiver,
 ) -> (u64, bytes::Bytes) {
@@ -2422,5 +2464,8 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
     );
 }
 
+mod groups;
+mod retarget;
 mod retention;
+mod short_placement;
 mod trim;

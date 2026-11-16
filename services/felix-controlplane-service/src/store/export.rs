@@ -172,6 +172,21 @@ impl ExportedState {
         self.unplaced.extend(owners);
     }
 
+    /// Marks every shard's list of ordered Raft targets lost, in the
+    /// assignments and in the change log. A restored list has the epoch it
+    /// had at the backup, so targets ordered since are missing from it and a
+    /// re-form must not count it as every voter set of the epoch.
+    pub(crate) fn lose_ordered(&mut self) {
+        for (_, assignment) in &mut self.shards {
+            assignment.lose_raft_ordered();
+        }
+        for change in &mut self.shard_changes.items {
+            if let Some(assignment) = &mut change.assignment {
+                assignment.lose_raft_ordered();
+            }
+        }
+    }
+
     /// What the operator is about to move, for the tool's own output —
     /// the cheap sanity check before and after a cutover.
     pub fn summary(&self) -> String {

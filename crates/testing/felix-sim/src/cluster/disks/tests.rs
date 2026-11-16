@@ -97,7 +97,7 @@ fn a_copy_the_fault_did_not_take_is_not_thinned() {
     let acked = BTreeMap::from([(0, vec![1])]);
     let mut thinned = Thinned::new();
     let held = sets(&[&[1], &[1], &[]]);
-    thin(&mut thinned, &[0], &acked, &[], &held, &held);
+    thin(&mut thinned, &[0], &acked, &held, &held);
     assert!(thinned.is_empty(), "{thinned:?}");
 
     let before = sets(&[&[], &[1], &[]]);
@@ -126,7 +126,6 @@ fn a_record_two_disks_hold_again_is_no_longer_thinned() {
         &mut thinned,
         &[0],
         &acked,
-        &[],
         &sets(&[&[1], &[1], &[]]),
         &sets(&[&[], &[1], &[]]),
     );
@@ -135,7 +134,6 @@ fn a_record_two_disks_hold_again_is_no_longer_thinned() {
         &mut thinned,
         &[2],
         &acked,
-        &[],
         &sets(&[&[1], &[1], &[]]),
         &sets(&[&[1], &[1], &[]]),
     );
@@ -170,4 +168,50 @@ fn an_acknowledged_record_no_disk_holds_and_no_fault_took_is_missing() {
     let acked = BTreeMap::from([(0, vec![1, 2, 3])]);
     let disks = sets(&[&[1], &[], &[]]);
     assert_eq!(missing(&acked, &disks, &set(&[2])), vec![(0, 3)]);
+}
+
+/// A record acknowledged while a fault ran, with one copy on a disk the
+/// fault left alone, is not counted as lost by the faulted disk: that disk
+/// did not hold it at the fault. A later wipe of the one copy is a finding
+/// (#2349).
+#[test]
+fn a_record_acknowledged_during_a_fault_counts_only_the_copies_the_disks_held() {
+    // Record 7 is acknowledged during the cut of disk 0, held only by disk 1.
+    let late = BTreeMap::from([(0, vec![7])]);
+    let mut thinned = Thinned::new();
+    thin(
+        &mut thinned,
+        &[0],
+        &late,
+        &sets(&[&[], &[7], &[]]),
+        &sets(&[&[], &[7], &[]]),
+    );
+    assert!(thinned.is_empty(), "{thinned:?}");
+
+    let event = judge(Observed {
+        at: Duration::ZERO,
+        what: "wipe b2".into(),
+        faulted: &[1],
+        loses_synced: true,
+        before: &sets(&[&[], &[7], &[]]),
+        after: &sets(&[&[], &[], &[]]),
+        acked: &late,
+        gone: &BTreeSet::new(),
+        thinned: &thinned,
+    });
+    assert_eq!(
+        event.unexcused,
+        vec![(0, 7, "acknowledged with one copy on disk")],
+        "{event:?}"
+    );
+
+    // One the faulted disk held at the cut and lost is its copy.
+    thin(
+        &mut thinned,
+        &[0],
+        &late,
+        &sets(&[&[7], &[7], &[]]),
+        &sets(&[&[], &[7], &[]]),
+    );
+    assert_eq!(thinned, Thinned::from([(7, disks(&[0]))]));
 }

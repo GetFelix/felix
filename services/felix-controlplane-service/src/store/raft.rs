@@ -162,6 +162,10 @@ const RAFT_FLOOR_LEVEL: u16 = 38;
 /// shard's epoch (`ShardAssignment::raft_ordered`).
 const RAFT_ORDERED_LEVEL: u16 = 39;
 
+/// The metadata level whose members mark every shard's ordered targets lost
+/// on an import (`MetaCommand::ImportState::lose_ordered`).
+const RESTORED_ORDERED_LEVEL: u16 = 40;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,

@@ -29,6 +29,8 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        target: None,
+        targets_withheld: false,
     }
 }
 
@@ -252,6 +254,8 @@ fn cache_assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignmen
         pending_set: None,
         previous_generation: None,
         readmitted: Default::default(),
+        target: None,
+        targets_withheld: false,
     }
 }
 
@@ -320,6 +324,39 @@ fn an_assignment_without_a_kind_is_a_stream() {
         assignment.routing,
         felix_wire::routing::ShardRouting::Modulo,
         "a control plane that predates routing only ever had modulo streams"
+    );
+}
+
+/// A Raft shard's target decodes as the control plane sends it, and an
+/// item from a control plane that predates targets has none.
+#[test]
+fn an_assignment_carries_a_raft_target_when_sent() {
+    let old = r#"{"tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+        "leader": "broker-a", "generation": 1, "state": "active"}"#;
+    let old: ShardAssignment = serde_json::from_str(old).expect("an item without a target");
+    assert_eq!(old.target, None);
+    assert!(
+        !serde_json::to_string(&old)
+            .expect("encode")
+            .contains("target")
+    );
+
+    let new = r#"{"tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+        "leader": "broker-a", "generation": 1, "state": "active",
+        "target": {"version": {"incarnation": 2, "counter": 5},
+                   "members": {"broker-a": 11, "broker-b": 12}}}"#;
+    let new: ShardAssignment = serde_json::from_str(new).expect("an item with a target");
+    let target = new.target.expect("a target");
+    assert_eq!(
+        target.version,
+        RaftTargetVersion {
+            incarnation: 2,
+            counter: 5
+        }
+    );
+    assert_eq!(
+        target.members.into_iter().collect::<Vec<_>>(),
+        [("broker-a".to_string(), 11), ("broker-b".to_string(), 12)]
     );
 }
 

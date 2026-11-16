@@ -44,7 +44,7 @@ fn target(brokers: &[&str], counter: u64) -> Target {
 
 fn told(brokers: &[&str], counter: u64, term: u64) -> Told {
     Told {
-        target: target(brokers, counter),
+        target: Some(target(brokers, counter)),
         term,
     }
 }
@@ -1059,6 +1059,22 @@ async fn a_target_removes_a_voter_and_keeps_no_learner() {
     held_by(&cluster, &kept, &settled(&kept, &[], 2)).await;
     progress_of(&cluster, MembershipProgress::Settled).await;
     watch.check().await;
+    cluster.stop().await;
+}
+
+/// Writes failing together for one term step down once: a second caller
+/// picking its own successor could ask two voters to take over.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failing_writes_of_one_term_step_down_once() {
+    let (mut cluster, leader) = pair().await;
+    let term = leader.status().term;
+    let (a, b, c) = tokio::join!(
+        leader.step_down_in(term),
+        leader.step_down_in(term),
+        leader.step_down_in(term)
+    );
+    let stepped = [a, b, c].into_iter().flatten().count();
+    assert_eq!(stepped, 1, "each caller stepped the term down");
     cluster.stop().await;
 }
 

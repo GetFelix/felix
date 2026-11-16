@@ -17,7 +17,7 @@ use crate::cluster::lease::LeaseState;
 use crate::config::{BrokerConfig, KafkaListenerConfig, MqttListenerConfig};
 use crate::serving::kafka::{BrokerCluster, KafkaListener, STANDALONE_NODE_ID};
 use crate::serving::limits::{ListenerLimits, TenantRates};
-use crate::serving::mqtt::{BrokerMounts, BrokerMqttAuth, BrokerWrites, MqttListener};
+use crate::serving::mqtt::{BrokerMounts, BrokerMqttAuth, BrokerReads, BrokerWrites, MqttListener};
 use crate::serving::tls::ClientTls;
 use crate::serving::{auth::BrokerAuth, quic};
 use felix_replication::peer::PeerPool;
@@ -260,6 +260,7 @@ pub(super) fn bind_mqtt(
     tls: &ClientTls,
     auth: &Arc<BrokerAuth>,
     mounts: BrokerMounts,
+    reads: BrokerReads,
     writes: BrokerWrites,
 ) -> Result<Option<MqttListener>> {
     let Some(mqtt) = MqttListenerConfig::from_env()? else {
@@ -285,7 +286,8 @@ pub(super) fn bind_mqtt(
         Arc::new(BrokerMqttAuth::new(Arc::clone(auth))),
         Arc::new(mounts),
         Arc::new(writes),
-    )?;
+    )?
+    .with_reads(Arc::new(reads));
     tracing::info!(
         addr = %listener.local_addr()?,
         worker_threads = mqtt.worker_threads,
