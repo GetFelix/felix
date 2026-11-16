@@ -516,13 +516,15 @@ impl IngressRouter {
     /// Whether this broker has just taken `key` and is opening or fencing it,
     /// which usually takes a round trip. `Active` too: the lifecycle settles
     /// the fence a moment before the servable set that says so is published.
+    /// Not an open held for a retry (it keeps its error): that waits for
+    /// descriptors to free up, which is no round trip, so it is refused now.
     fn taking_over(&self, key: &ShardKey) -> bool {
         self.fence.awaiting_promotion(key).is_some()
             || self.fence.phase_of(key).is_some_and(|record| {
                 matches!(
                     record.phase,
                     Phase::Opening | Phase::Fencing | Phase::Active
-                )
+                ) && !(record.phase == Phase::Opening && record.error.is_some())
             })
     }
 

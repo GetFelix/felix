@@ -654,6 +654,24 @@ impl ShardLifecycle {
         opens
     }
 
+    /// Keep `key` opening after an open that ran out of file descriptors, with
+    /// `error` beside it, and hold the open for the next pass.
+    pub fn open_held(&mut self, open: Action, error: String) {
+        let Action::Open {
+            key, generation, ..
+        } = &open
+        else {
+            return;
+        };
+        if let Some(shard) = self.shards.get(key)
+            && shard.phase == Phase::Opening
+            && shard.generation == *generation
+        {
+            self.fence.record_open_error(key, error);
+            self.await_registration(open);
+        }
+    }
+
     pub fn open_failed(&mut self, key: &ShardKey, generation: u64, error: String) {
         if let Some(shard) = self.shards.get(key)
             && shard.phase == Phase::Opening
@@ -1237,7 +1255,7 @@ impl ShardReaders {
                     .await
             }
         };
-        closed.map_err(|err| anyhow::anyhow!("close shard: {err}"))
+        closed.map_err(|err| anyhow::Error::new(err).context("close shard"))
     }
 
     /// End a shard's readers because this broker stopped serving it, and
@@ -1644,7 +1662,7 @@ impl ShardStore for DurableShardStore {
         if replicated && !reclaimed && unclean.unvouched(key, &log, generation) {
             log.give_up_generation()
                 .await
-                .map_err(|err| anyhow::anyhow!("give up the generation it led: {err}"))?;
+                .map_err(|err| anyhow::Error::new(err).context("give up the generation it led"))?;
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -1717,7 +1735,7 @@ impl ShardStore for DurableShardStore {
         let log = self.open_stream_log(key, 0).await?;
         log.sync()
             .await
-            .map_err(|err| anyhow::anyhow!("flush shard log: {err}"))
+            .map_err(|err| anyhow::Error::new(err).context("flush shard log"))
     }
 
     async fn end_readers(
@@ -1756,7 +1774,7 @@ impl ShardStore for DurableShardStore {
                 .storage
                 .close_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await
-                .map_err(|err| anyhow::anyhow!("close shard log: {err}")),
+                .map_err(|err| anyhow::Error::new(err).context("close shard log")),
             None => Ok(()),
         }
     }
@@ -1994,13 +2012,16 @@ async fn apply_open(
                 error = %format!("{err:#}"),
                 "shard could not open: the open-file limit is exhausted; opening on a later pass",
             );
-            lifecycle.lock().await.await_registration(Action::Open {
-                key,
-                generation,
-                new_term,
-                fence,
-                incarnation,
-            });
+            lifecycle.lock().await.open_held(
+                Action::Open {
+                    key,
+                    generation,
+                    new_term,
+                    fence,
+                    incarnation,
+                },
+                format!("{err:#}"),
+            );
         }
         Err(err) => {
             mm::record_open_failure();
@@ -2039,7 +2060,7 @@ async fn apply_open(
 
 /// Whether an open failed for want of file descriptors, however the error
 /// was wrapped.
-fn out_of_files(err: &anyhow::Error) -> bool {
+pub(crate) fn out_of_files(err: &anyhow::Error) -> bool {
     err.chain().any(|err| {
         felix_storage::open_files::exhausted_in(err)
             || matches!(
@@ -2091,7 +2112,7 @@ pub async fn record_term_start(
     let tail = log
         .tail_offset()
         .await
-        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+        .map_err(|err| anyhow::Error::new(err).context("read shard tail"))?;
     // Writes and fsyncs the generation history, so not on a runtime worker.
     let recorded = {
         let log = log.clone();
@@ -2106,7 +2127,8 @@ pub async fn record_term_start(
     };
     if let Err(err) = recorded {
         if required {
-            anyhow::bail!("record where generation {generation} begins: {err}");
+            return Err(anyhow::Error::new(err)
+                .context(format!("record where generation {generation} begins")));
         }
         // Not fatal. Replication falls back to comparing from the start of
         // the log, which is slow rather than wrong.
@@ -2173,7 +2195,7 @@ async fn accept_led_generation(
             log.lead_at(generation);
             Ok(())
         }
-        Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
+        Err(err) => Err(anyhow::Error::new(err).context("persist the accepted generation")),
     }
 }
 
@@ -2196,7 +2218,9 @@ async fn began_before_the_finalize(
         Ok(first) => first,
         // Retention dropped it between the check above and the read.
         Err(_) if start < log.physical_base() => return Ok(false),
-        Err(err) => anyhow::bail!("read the generation's first record: {err}"),
+        Err(err) => {
+            return Err(anyhow::Error::new(err).context("read the generation's first record"));
+        }
     };
     Ok(first
         .first()
@@ -2227,7 +2251,7 @@ pub async fn write_generation_start(
         let durable = broker
             .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
             .await
-            .map_err(|err| anyhow::anyhow!("resolve the stream: {err}"))?
+            .map_err(|err| anyhow::Error::new(err).context("resolve the stream"))?
             .is_durable();
         if !durable {
             return Ok(());
@@ -2236,7 +2260,7 @@ pub async fn write_generation_start(
     let tail = log
         .tail_offset()
         .await
-        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+        .map_err(|err| anyhow::Error::new(err).context("read shard tail"))?;
     let started = felix_replication::quorum::generation_start(log, generation)
         .await
         .is_some();
@@ -2287,7 +2311,7 @@ pub async fn write_generation_start(
         // records that arrive underneath them, skipping this one.
         ShardKind::Cache => log.append_generation_start(generation).await.map(drop),
     }
-    .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
+    .map_err(|err| anyhow::Error::new(err).context("append the generation-start record"))?;
     Ok(())
 }
 
@@ -2309,7 +2333,7 @@ async fn start_generation(
     let tail = log
         .tail_offset()
         .await
-        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+        .map_err(|err| anyhow::Error::new(err).context("read shard tail"))?;
     let begins = log
         .generations()
         .iter()

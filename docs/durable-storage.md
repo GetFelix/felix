@@ -990,20 +990,27 @@ for the system) fails with `StorageError::OpenFileLimit`, whose message says
 the open-file limit is exhausted. Nothing was opened, the files the open had
 already opened are closed, and the log is not poisoned.
 
-The shard lifecycle treats that failure as temporary. The shard stays in
+The shard lifecycle treats that failure as temporary, whichever step of the
+open hit it: the stream, group, cache or counter log, the ballot, the
+generation history or the generation-start record. The shard stays in
 `Opening`, so it does not serve, and it opens again on the next assignment
-pass, so it starts serving once descriptors free up. Every other shard keeps
+pass, so it starts serving once descriptors free up. Until then `inspect`
+shows the error, and a write sent to the shard is refused at once rather than
+held as if the shard were moments from serving. Every other shard keeps
 serving. Any other open failure marks the shard `Failed` until its next
-assignment. A Raft member that runs out of descriptors while it reads its
+assignment. A Raft shard that cannot open is tried again on the next pass
+too, and counts in the same metric. A Raft member that runs out of descriptors while it reads its
 kept copies fails its open the same way, rather than holding the group as if
 those copies were unreadable. `felix_broker_shard_open_file_limit_total`
 counts the opens put off this way. How to set the limit is in
 [Open files](../docs-site/src/content/docs/deployment/production.md#open-files).
 
 `felix_storage::open_files::raise_soft_limit` raises the soft limit to the
-hard one. The broker calls it at start, and the test suites that open many
-logs at once call `raise_soft_limit_once`, so `cargo test` passes under a
-soft limit of 1,024 without a manual `ulimit -n`. The hard limit stays where
+hard one. The broker calls it at start. The felix-replication and
+broker-service unit test binaries raise it before `main`
+(`raise_soft_limit_at_start!`), and felix-sim and the felix-cluster harness
+call `raise_soft_limit_once`, so those suites pass under a soft limit of 1,024
+without a manual `ulimit -n`. The hard limit stays where
 it was, so a test that leaks descriptors still runs out.
 
 What this does not cover: a log opened while the broker has no role in the
@@ -1816,7 +1823,7 @@ fail rather than print the wrong numbers.
 | `tests/crash_recovery.rs` | a real process `SIGKILL`ed mid-append, per fsync mode, including repeated crash cycles |
 | `tests/format_fuzz.rs` | seeded mutation fuzzing: no panics, no unbounded allocation, no silent loss |
 | `fuzz/` | libFuzzer targets exploring the same properties much further, plus the cache and counter records and the per-shard state files; run nightly (see `docs-site/src/content/docs/development/fuzzing.md`) |
-| `felix-broker-service --test open_file_limit` | a shard opened with no descriptors left fails with the open-file limit error, leaks none, does not serve while the held shard keeps serving, and opens once descriptors free up |
+| `felix-broker-service --test open_file_limit` | a shard opened with no descriptors left fails with the open-file limit error, leaks none, does not serve while the held shard keeps serving, and opens once descriptors free up ; each step of the open, run out of descriptors in turn, leaves the shard opening (never failed) and the retry opens it |
 | `felix-broker/tests/durable_streams.rs` | ordering, restart, rejection without storage, durable vs non-durable isolation |
 | `felix-cluster --test backup` | a backup point taken under load is committed and misses nothing acknowledged before it (`a_point_under_load_is_committed_and_misses_nothing_acknowledged_before_it`), and a live copy restored to it keeps every earlier acknowledgement and nothing past it (`a_live_copy_restored_to_the_point_keeps_every_ack_before_it_and_nothing_after`) |
 | `felix-cluster --test failures writes::` | a real broker whose segment writes fail with `ENOSPC` or `EIO`, every time or once, injected the same way: a refused write is never acknowledged, on a `Leader` or `Quorum` leader, a follower that refuses one is not counted toward a `Quorum` majority, and once the disk takes writes again the log holds exactly what was acknowledged |

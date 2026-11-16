@@ -323,7 +323,7 @@ where
     crate::task::blocking(move || work().map_err(StorageError::Io))
         .await
         .map_err(|err| match err {
-            StorageError::Io(err) => err,
+            StorageError::Io(err) | StorageError::OpenFileLimit(err) => err,
             other => io::Error::other(other),
         })
 }

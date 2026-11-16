@@ -581,7 +581,8 @@ impl std::error::Error for Fenced {}
 pub(crate) struct PhaseRecord {
     pub(crate) phase: Phase,
     pub(crate) generation: u64,
-    /// Why the log could not be opened, while the phase is `Failed`.
+    /// Why the log could not be opened: while the phase is `Failed`, or while
+    /// it stays `Opening` to retry after running out of file descriptors.
     pub(crate) error: Option<String>,
 }
 

@@ -828,6 +828,14 @@ impl EngineShards for RaftShards {
                             }
                             continue;
                         }
+                        // Also tried again on the next pass; counted with
+                        // the stream shards that hit the same limit.
+                        Err(err) if super::lifecycle::out_of_files(&err) => {
+                            super::lifecycle::metrics::record_open_failure();
+                            super::lifecycle::metrics::record_open_file_limit();
+                            tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not open a Raft shard: the open-file limit is exhausted; opening on a later pass");
+                            continue;
+                        }
                         Err(err) => {
                             tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not open a Raft shard");
                             continue;
