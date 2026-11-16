@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794828486499,
+  "lastUpdate": 1794834651058,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60008,6 +60008,58 @@ window.BENCHMARK_DATA = {
             "range": "16311.33",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1202199.31\nmean: 1194910.29\nstdev: 16311.33\ncv: 1.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "79924f59f0a54e499059b238ad995f0e4749759b",
+          "message": "fix(sim): read the disks at a one-broker power cut (#2349) (#2697)\n\nA one-broker cut waits up to APPEND_WITHIN for an append, and the disks\nwere read before that wait. thin() then credited the faulted disk with\nlosing every record acknowledged in the window, with no evidence it held\nthem, so a later loss of a one-copy record was excused.\n\ncut_one now reads every broker's stream shards at the cut, and thin()\ncredits a faulted disk only for records it held at that read, for late\nacks as for judged ones.",
+          "timestamp": "2026-11-16T13:03:09Z",
+          "tree_id": "18387325e5d1fc8b5527f926bc0a501bf73bbf1c",
+          "url": "https://github.com/GetFelix/felix/commit/79924f59f0a54e499059b238ad995f0e4749759b"
+        },
+        "date": 1794834650224,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 494624.94,
+            "range": "15791.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494624.94\nmean: 495036.08\nstdev: 15791.55\ncv: 3.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 494624.94,
+            "range": "15791.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494624.94\nmean: 495036.08\nstdev: 15791.55\ncv: 3.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118990.46,
+            "range": "2400.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118990.46\nmean: 118239.77\nstdev: 2400.90\ncv: 2.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1189904.65,
+            "range": "24008.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1189904.65\nmean: 1182397.70\nstdev: 24008.97\ncv: 2.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
