@@ -30,6 +30,7 @@
 
 use felix_common::random::HashMap;
 use std::collections::VecDeque;
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
 use super::segments::SegmentSet;
@@ -297,6 +298,16 @@ impl ProducerState {
             keeps_cuts: true,
             ..Self::default()
         }
+    }
+
+    /// The highest id in `ids` this log holds batches or a tombstone for.
+    pub(crate) fn highest_known(&self, ids: RangeInclusive<u64>) -> Option<u64> {
+        self.producers
+            .keys()
+            .chain(self.tombstones.keys())
+            .copied()
+            .filter(|id| ids.contains(id))
+            .max()
     }
 
     /// Where `sequence` stands for `producer_id`.

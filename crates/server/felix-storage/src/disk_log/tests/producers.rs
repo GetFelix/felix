@@ -91,6 +91,26 @@ async fn a_producer_is_known_again_after_a_restart() {
     assert_eq!(log.producer_sequence(5, 2), ProducerSequence::Next);
 }
 
+/// The highest producer in a range is read from the records, so a restart
+/// gives the same answer. The Kafka listener fences an older epoch by it.
+#[tokio::test]
+async fn the_highest_known_producer_in_a_range_survives_a_restart() {
+    let dir = tempdir().expect("dir");
+    {
+        let log = open(&dir, FsyncMode::OnCommit);
+        for producer in [0x10, 0x12, 0x20] {
+            log.append(&marked(producer, 0, &["a"]))
+                .await
+                .expect("append");
+        }
+        assert_eq!(log.producer_highest_known(0x10..=0x1f), Some(0x12));
+        log.shutdown().await.expect("shutdown");
+    }
+    let log = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(log.producer_highest_known(0x10..=0x1f), Some(0x12));
+    assert_eq!(log.producer_highest_known(0x13..=0x1f), None);
+}
+
 /// The snapshot saved at each rollover is what keeps an open from reading the
 /// whole log: with it current, the sealed segments are not read at all, which
 /// shows here as a damaged sealed record going unnoticed. Without it the open
@@ -259,6 +279,8 @@ async fn retention_forgets_a_producer_once_its_batches_are_gone() {
     assert_eq!(log.producer_sequence(9, 1), ProducerSequence::Unknown);
     // A re-send of the forgotten batch is not taken as a new producer's.
     assert_eq!(log.producer_sequence(9, 0), ProducerSequence::Retired);
+    // Its tombstone still says it was here.
+    assert_eq!(log.producer_highest_known(9..=9), Some(9));
     assert_eq!(log.producer_sequence(1, 12), ProducerSequence::Next);
     log.shutdown().await.expect("shutdown");
     drop(log);

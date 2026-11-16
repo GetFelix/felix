@@ -19,7 +19,6 @@ use futures::future::BoxFuture;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
-use super::commit::SkipClaim;
 use super::engine::RaftEngine;
 use super::propose::{AckAt, AnswerAt, Batch, Record, Sequenced, Unacknowledged};
 use crate::engine::{CommitError, Written};
@@ -431,10 +430,8 @@ impl RaftEngine {
                 commit,
                 publisher,
             };
-            let skips = engine.claim_skips(&shard);
             let written = engine.propose_reaching(&shard, batch);
             let batch = Proposed {
-                skips,
                 shard,
                 term,
                 count,
@@ -519,7 +516,6 @@ impl RaftEngine {
                     commit: false,
                     publisher,
                 };
-                let skips = self.claim_skips(shard);
                 let written = self.propose_reaching(shard, batch);
                 // On a task of its own, so the turn is given up when
                 // the batch is written whether or not its publisher
@@ -534,7 +530,6 @@ impl RaftEngine {
                     written.await.unwrap_or_else(stopped)
                 };
                 let batch = Proposed {
-                    skips,
                     shard: shard.clone(),
                     term: Some(term),
                     count,
@@ -674,8 +669,6 @@ impl IdempotentPublish {
 
 /// A batch handed to the group, as [`settled`] follows it.
 pub(super) struct Proposed {
-    /// Taken before the proposal, held until its skip count is read.
-    pub(super) skips: Option<SkipClaim>,
     pub(super) shard: ShardKey,
     pub(super) term: Option<u64>,
     /// How many records it holds.
@@ -696,7 +689,6 @@ pub(super) async fn settled(
     written: impl Future<Output = Result<Written, Unacknowledged>>,
 ) -> Result<ProposalCommitted, ProposalFailed<CommitError>> {
     let Proposed {
-        skips,
         shard,
         term,
         count,
@@ -758,10 +750,12 @@ pub(super) async fn settled(
         () = majority => unreachable!("the majority wait never ends"),
     };
     committed.map_err(|err| ProposalFailed::written(err, written.end))?;
-    // Everything below the batch is applied, and the claim, taken before
-    // the proposal, kept its count.
+    // Everything below the batch is applied, so its run of entries holding
+    // no record is known.
     let first = written.end.saturating_sub(count);
-    let skipped_before = skips.map_or(0, |claim| claim.skipped_before(first));
+    let skipped_before = engine
+        .commits(&shard)
+        .map_or(0, |commits| commits.borrow().skipped_before(first));
     Ok(ProposalCommitted {
         end: written.end,
         skipped_before,

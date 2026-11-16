@@ -2547,9 +2547,8 @@ appends another. Each step of a move is a new generation, so a move can leave
 several in a row. A record takes the next
 offset like any other and is never delivered, not to a subscription, a
 consumer group, or a Kafka fetch. A subscriber therefore sees `N-1` and then
-`N+1` across a generation start at `N`. A trim record, the membership and
-counter records storage format v9 defines, and the consumer group writes a
-Raft shard keeps in its log, are skipped the same way and
+`N+1` across a generation start at `N`. A trim record, and the membership and
+counter records storage format v9 defines, are skipped the same way and
 counted in `skipped_before` like a generation start (`docs/storage-format.md`,
 "Record kinds").
 

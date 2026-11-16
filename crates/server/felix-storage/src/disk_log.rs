@@ -502,6 +502,13 @@ impl DiskLog {
         self.inner.producers.lock().next_sequence(producer_id)
     }
 
+    /// The highest producer id in `ids` this log holds batches from, or a
+    /// tombstone for. Derived from the records like the rest of the producer
+    /// state, so every copy of the log gives the same answer.
+    pub fn producer_highest_known(&self, ids: std::ops::RangeInclusive<u64>) -> Option<u64> {
+        self.inner.producers.lock().highest_known(ids)
+    }
+
     /// Assign offsets and write `records`, without waiting for durability.
     ///
     /// Split out of [`AppendOnlyLog::append`] so a caller can learn the offsets

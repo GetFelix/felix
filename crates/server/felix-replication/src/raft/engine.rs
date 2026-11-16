@@ -255,15 +255,10 @@ impl RaftEngine {
     }
 
     /// Write one consumer-group write of `shard` while this broker leads
-    /// `term`. Returns when it is on this leader's log, not committed.
-    /// Every member folds it into its group table once applied
+    /// `term`. Returns when it is on this leader's log; like a publish,
+    /// that is not committed, and an error does not mean it was not
+    /// written. Every member folds it into its group table once applied
     /// ([`Self::groups`]).
-    ///
-    /// Refused unless this member leads `term`. An error means nothing was
-    /// appended in `term`, or that this member has closed `term` for good:
-    /// where an append may have happened, the term is closed and leadership
-    /// handed to another voter before the error returns, so only a later
-    /// term's read index can see the entry.
     pub fn propose_group(
         &self,
         shard: &ShardKey,
@@ -271,26 +266,12 @@ impl RaftEngine {
         timestamp_micros: u64,
         entry: &felix_broker::GroupEntry,
     ) -> impl Future<Output = Result<Written, CommitError>> + Send + use<> {
-        let group = self.runtime.group(shard);
-        let proposed = group
-            .as_ref()
+        let proposed = self
+            .runtime
+            .group(shard)
             .map(|group| group.propose_group(entry.encode(), timestamp_micros, term))
             .ok_or_else(|| propose::lost(NO_GROUP));
-        async move {
-            let unacked = match proposed?.await {
-                Ok(written) => return Ok(written),
-                Err(unacked) => unacked,
-            };
-            // A no-op unless this member still leads `term`. Stepping down,
-            // not only closing, so the shard is served again in a new term
-            // instead of staying closed until something else moves it.
-            if !unacked.refused_on_lease()
-                && let Some(group) = group
-            {
-                group.step_down_in(term).await;
-            }
-            Err(unacked.error)
-        }
+        async move { proposed?.await.map_err(|unacked| unacked.error) }
     }
 
     /// `shard`'s consumer groups as this broker's member has applied them.
@@ -308,12 +289,6 @@ impl RaftEngine {
         shard: &ShardKey,
     ) -> Option<tokio::sync::watch::Receiver<super::commit::Commits>> {
         Some(self.runtime.group(shard)?.commits())
-    }
-
-    /// Hold `shard`'s skip counts for a batch about to be proposed, so its
-    /// publisher can ask [`Self::skipped_before`] after the commit.
-    pub(crate) fn claim_skips(&self, shard: &ShardKey) -> Option<super::commit::SkipClaim> {
-        Some(self.runtime.group(shard)?.claim_skips())
     }
 
     // HOOK(#2238 broker routing): the broker's cache and counter paths call

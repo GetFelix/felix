@@ -619,6 +619,12 @@ impl StreamLog {
         self.log.producer_next_sequence(producer_id)
     }
 
+    /// The highest producer id in `ids` this log holds batches from, or a
+    /// tombstone for.
+    pub fn producer_highest_known(&self, ids: std::ops::RangeInclusive<u64>) -> Option<u64> {
+        self.log.producer_highest_known(ids)
+    }
+
     /// Wait until every record below `offset` is as durable as a commit would
     /// have made it.
     pub async fn wait_durable(&self, offset: Offset) -> Result<()> {

@@ -16,6 +16,13 @@ async fn open(dir: &std::path::Path) -> (Broker, StreamHandle, DurableStorage) {
         preallocate_segments: false,
         ..LogConfig::default()
     };
+    open_with(dir, config).await
+}
+
+async fn open_with(
+    dir: &std::path::Path,
+    config: LogConfig,
+) -> (Broker, StreamHandle, DurableStorage) {
     let storage = DurableStorage::open(dir, config).expect("storage");
     let broker = Broker::new(EphemeralCache::new().into()).with_durable_storage(storage.clone());
     broker.register_tenant("t1").await.expect("tenant");
@@ -351,4 +358,49 @@ async fn a_batch_with_blocks_is_refused_when_headers_are_not_accepted() {
         "{err}"
     );
     assert!(stored(&handle).await.is_empty());
+}
+
+/// **A re-send from a producer the log forgot is refused, not written
+/// again.** Its tombstone says the records may be here already. A Kafka epoch
+/// bump writes under a new producer id, so it never meets this.
+#[tokio::test]
+async fn a_forgotten_producers_re_send_is_refused() {
+    let dir = tempfile::tempdir().expect("dir");
+    let config = LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        preallocate_segments: false,
+        segment_size_bytes: 256,
+        retention_bytes: Some(400),
+        retention_check_interval: std::time::Duration::from_secs(3600),
+        ..LogConfig::default()
+    };
+    let (broker, handle, _storage) = open_with(dir.path(), config).await;
+    broker
+        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a"]), None)
+        .await
+        .expect("written");
+    // Retention forgets producer 7 once its records are gone.
+    for sequence in 0..40 {
+        broker
+            .publish_records_idempotent(&handle, 8, sequence, &bytes(&["filler"]), None)
+            .await
+            .expect("written");
+    }
+    let outcome = log(&handle).disk_log().enforce_retention_now().await;
+    assert!(outcome.expect("retention").segments_deleted > 0);
+    let tail = log(&handle).tail_offset().await.expect("tail");
+
+    let resent = broker
+        .publish_records_idempotent(&handle, 7, 0, &bytes(&["a"]), None)
+        .await;
+    assert!(
+        matches!(resent, Err(BrokerError::SequenceExpired { sequence: 0 })),
+        "{resent:?}"
+    );
+    assert_eq!(log(&handle).tail_offset().await.expect("tail"), tail);
+    // A producer the log never held still starts at 0.
+    broker
+        .publish_records_idempotent(&handle, 9, 0, &bytes(&["b"]), None)
+        .await
+        .expect("written");
 }

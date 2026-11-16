@@ -31,6 +31,7 @@ use kafka_protocol::messages::{ProduceRequest, ProduceResponse};
 use kafka_protocol::protocol::StrBytes;
 
 use super::partition::resolve_write;
+use super::producer_id::{felix_producer, producer_epochs, producer_family};
 use crate::cluster::{Principal, Produce, ProduceError, ShardRef, WriteError, WritePermit};
 use crate::records::decode::{self, Batch, Refused};
 use crate::service::Shared;
@@ -255,14 +256,39 @@ async fn publish(
         crate::metrics::dropped(batch.keyed, batch.with_headers);
     }
     let headers = batch.blocks.as_deref();
+    // Held to the end, so no other epoch of this producer is checked or
+    // written between the fence check and this batch.
+    let mut _family = None;
     let producer = if batch.producer_id >= 0 {
-        let Ok(sequence) = u64::try_from(batch.base_sequence) else {
-            return Err(Failure {
-                error: ResponseError::InvalidRecord,
-                message: Some("an idempotent batch needs a base sequence".to_string()),
-            });
+        let invalid = |message: &str| Failure {
+            error: ResponseError::InvalidRecord,
+            message: Some(message.to_string()),
         };
-        Some((batch.producer_id as u64, sequence))
+        let Ok(sequence) = u64::try_from(batch.base_sequence) else {
+            return Err(invalid("an idempotent batch needs a base sequence"));
+        };
+        if batch.producer_epoch < 0 {
+            return Err(invalid("an idempotent batch needs a producer epoch"));
+        }
+        let id = felix_producer(batch.producer_id, batch.producer_epoch);
+        _family = Some(
+            shared
+                .broker
+                .producer_turn(handle, producer_family(batch.producer_id))
+                .await,
+        );
+        let newest = handle
+            .log()
+            .and_then(|log| log.producer_highest_known(producer_epochs(batch.producer_id)));
+        if newest.is_some_and(|newest| newest > id) {
+            return Err(Failure {
+                error: ResponseError::InvalidProducerEpoch,
+                message: Some(
+                    "this partition holds records from a later epoch of this producer".to_string(),
+                ),
+            });
+        }
+        Some((id, sequence))
     } else {
         None
     };

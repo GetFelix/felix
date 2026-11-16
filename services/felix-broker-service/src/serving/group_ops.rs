@@ -9,9 +9,6 @@
 //! no forwarding: unlike a cache operation, a poll returns records the consumer
 //! then has to acknowledge, and relaying that through a second broker would put
 //! the claim and the acknowledgement on different machines.
-//!
-//! A shard a Raft group runs here is served by [`raft`] instead: its group
-//! state is entries in the shard's own log.
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -92,39 +89,6 @@ async fn poll_rechecking(
     consumer: Option<&felix_broker::GroupConsumer>,
     visibility: Option<Duration>,
 ) -> Result<Vec<GroupRecord>, ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        true,
-    )
-    .await?
-    {
-        let appended = match wait.is_zero() {
-            true => None,
-            false => broker
-                .resolve_stream_handle(tenant_id, namespace, stream, shard)
-                .await
-                .ok()
-                .map(|handle| handle.appended()),
-        };
-        return on_raft
-            .poll(
-                publish_ctx,
-                max_records,
-                wait,
-                appended,
-                recheck,
-                consumer,
-                visibility,
-            )
-            .await;
-    }
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
@@ -183,7 +147,19 @@ async fn poll_rechecking(
             // Claims the consumer never hears of lapse and are handed out
             // again.
             owned.confirm(publish_ctx).await?;
-            return Ok(claimed.into_iter().map(record).collect());
+            return Ok(claimed
+                .into_iter()
+                .map(|claimed| GroupRecord {
+                    offset: claimed.offset,
+                    payload: claimed.payload,
+                    attempts: claimed.attempts,
+                    skipped_before: claimed.skipped_before,
+                    publisher: claimed
+                        .publisher
+                        .map(|publisher| String::from_utf8_lossy(&publisher).into_owned()),
+                    timestamp_micros: Some(claimed.timestamp_micros),
+                })
+                .collect());
         }
         let now = Instant::now();
         if now >= deadline {
@@ -207,19 +183,6 @@ async fn poll_rechecking(
             _ = fired(&mut on_append) => {}
             _ = fired(&mut on_change) => {}
         }
-    }
-}
-
-fn record(claimed: felix_broker::Claimed) -> GroupRecord {
-    GroupRecord {
-        offset: claimed.offset,
-        payload: claimed.payload,
-        attempts: claimed.attempts,
-        skipped_before: claimed.skipped_before,
-        publisher: claimed
-            .publisher
-            .map(|publisher| String::from_utf8_lossy(&publisher).into_owned()),
-        timestamp_micros: Some(claimed.timestamp_micros),
     }
 }
 
@@ -250,21 +213,6 @@ pub(crate) async fn dead_letters(
     shard: u32,
     group: &str,
 ) -> Result<Vec<u64>, ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        false,
-    )
-    .await?
-    {
-        return on_raft.dead_letters().await;
-    }
     let (reader, _log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
@@ -290,24 +238,6 @@ pub(crate) async fn manage_dead_letter(
     offset: u64,
     redrive: bool,
 ) -> Result<(), ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        true,
-    )
-    .await?
-    {
-        return match on_raft.manage_dead_letter(offset, redrive).await? {
-            true => Ok(()),
-            false => Err(not_dead_lettered(offset, group)),
-        };
-    }
     let (reader, _log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
@@ -321,14 +251,12 @@ pub(crate) async fn manage_dead_letter(
     if taken {
         return owned.confirm(publish_ctx).await;
     }
-    Err(not_dead_lettered(offset, group))
-}
-
-// Refused rather than silently accepted. An operator told a redrive
-// succeeded when the offset was never dead-lettered would wait for a
-// delivery that is not coming.
-fn not_dead_lettered(offset: u64, group: &str) -> ClientError {
-    ClientError::invalid(format!("offset {offset} is not a dead letter of {group}"))
+    // Refused rather than silently accepted. An operator told a redrive
+    // succeeded when the offset was never dead-lettered would wait for a
+    // delivery that is not coming.
+    Err(ClientError::invalid(format!(
+        "offset {offset} is not a dead letter of {group}"
+    )))
 }
 
 /// Move a group to `start` on one shard, or with `if_new` create it there.
@@ -345,41 +273,13 @@ pub(crate) async fn seek(
     start: StartPosition,
     if_new: bool,
 ) -> Result<felix_broker::Seek, ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        true,
-    )
-    .await?
-    {
-        return on_raft.seek(publish_ctx, start, if_new).await;
-    }
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
     let _fenced = owned.enter(publish_ctx, &mut admitted)?;
     let earliest = log.readable_base();
     let latest = read_end(broker, publish_ctx, &owned, &log).await?;
-    let offset = seek_offset(start, earliest, latest, shard)?;
-    let seek = reader.seek(&key, offset, if_new).await.map_err(storage)?;
-    owned.confirm(publish_ctx).await?;
-    Ok(seek)
-}
-
-/// Where `start` puts a group on a shard holding `earliest..latest`.
-fn seek_offset(
-    start: StartPosition,
-    earliest: u64,
-    latest: u64,
-    shard: u32,
-) -> Result<u64, ClientError> {
-    Ok(match start {
+    let offset = match start {
         StartPosition::Earliest => earliest,
         StartPosition::Latest => latest,
         // Below the head the records are gone, and the group would count each
@@ -396,7 +296,10 @@ fn seek_offset(
             )));
         }
         StartPosition::Offset(offset) => offset,
-    })
+    };
+    let seek = reader.seek(&key, offset, if_new).await.map_err(storage)?;
+    owned.confirm(publish_ctx).await?;
+    Ok(seek)
 }
 
 /// Where a group stands on one shard, and the shard's committed tail.
@@ -409,21 +312,6 @@ pub(crate) async fn describe(
     shard: u32,
     group: &str,
 ) -> Result<(felix_broker::GroupSnapshot, u64), ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        false,
-    )
-    .await?
-    {
-        return on_raft.describe(publish_ctx).await;
-    }
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
@@ -446,21 +334,6 @@ pub(crate) async fn delete(
     shard: u32,
     group: &str,
 ) -> Result<bool, ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        true,
-    )
-    .await?
-    {
-        return on_raft.delete().await;
-    }
     let (reader, _log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
@@ -542,21 +415,6 @@ pub(crate) async fn settle(
     offset: u64,
     action: Settle,
 ) -> Result<(), ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        true,
-    )
-    .await?
-    {
-        return on_raft.settle(offset, action, group).await;
-    }
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
@@ -619,21 +477,6 @@ pub(crate) async fn extend(
     attempts: u32,
     by: Duration,
 ) -> Result<(), ClientError> {
-    #[cfg(feature = "raft")]
-    if let Some(on_raft) = raft::on_raft(
-        broker,
-        publish_ctx,
-        tenant_id,
-        namespace,
-        stream,
-        shard,
-        group,
-        true,
-    )
-    .await?
-    {
-        return on_raft.extend(offset, attempts, by).await;
-    }
     let (reader, log, owned) =
         reader_and_log(broker, publish_ctx, tenant_id, namespace, stream, shard)?;
     let key = group_key(tenant_id, namespace, stream, shard, group);
@@ -853,7 +696,5 @@ fn no_storage(message: &str) -> ClientError {
     ClientError::internal(message).with_retry(felix_wire::RetryClass::Fatal)
 }
 
-#[cfg(feature = "raft")]
-mod raft;
 #[cfg(test)]
 mod tests;

@@ -28,8 +28,6 @@ mod ingress_wait;
 mod inspect;
 mod pipeline;
 #[cfg(feature = "raft")]
-mod raft_groups;
-#[cfg(feature = "raft")]
 mod raft_publish_if;
 mod uni;
 mod writer;

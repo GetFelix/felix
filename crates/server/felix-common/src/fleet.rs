@@ -83,7 +83,6 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_RECORD_HEADERS,
     RECORD_GENERATIONS,
     RAFT_ATOMIC_COMMIT,
-    RAFT_CONSUMER_GROUPS,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -192,8 +191,9 @@ pub const RAFT_ATOMIC_COMMIT: FleetFeature = FleetFeature::new("raft_atomic_comm
 /// A stream shard on the Raft engine serves consumer groups: each group
 /// write is a Raft entry of its own kind, which a build that predates this
 /// refuses, holding replication to it at that entry. So it waits for the
-/// whole fleet. Until it is finalized a group operation on a Raft shard is
-/// refused. See `docs/per-shard-raft.md` ("Consumer groups").
+/// whole fleet. Not in [`IMPLEMENTED`] yet: this build stores and reads the
+/// entry but does not serve groups on a Raft shard. See
+/// `docs/per-shard-raft.md` ("Consumer groups").
 pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_groups");
 
 /// A stream log starts its next segment in storage format v9, whose record

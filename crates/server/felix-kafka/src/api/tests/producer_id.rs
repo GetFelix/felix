@@ -17,6 +17,8 @@ async fn each_idempotent_producer_gets_its_own_id_at_epoch_zero() {
             .await;
         assert_eq!(response.error_code, 0);
         assert!(response.producer_id.0 > 0);
+        // Fits the bits a Felix producer id keeps beside the epoch.
+        assert!(response.producer_id.0 as u64 <= crate::api::producer_id::KAFKA_ID_MASK);
         assert_eq!(response.producer_epoch, 0);
         ids.push(response.producer_id.0);
     }

@@ -106,12 +106,12 @@ async fn log_from(broker: &Broker, from: u64) -> Vec<Bytes> {
     records.into_iter().map(|record| record.payload).collect()
 }
 
-/// **A Kafka producer that restarts at sequence 0 after the broker forgot it
-/// is written, where a native producer is refused.** Kafka keeps its id
-/// across an epoch bump and sends sequence 0 again; answering that as expired
-/// reads as a duplicate to the Java client and loses the records.
+/// **A forgotten producer's re-send at sequence 0 is refused, whatever the
+/// caller does with a reused sequence.** Kafka's epoch bump restarts at 0
+/// under a new Felix producer id (the listener packs the epoch into it), so
+/// it never meets the old epoch's tombstone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_forgotten_producer_restarting_at_zero_is_written_for_kafka_only() {
+async fn a_forgotten_producer_restarting_at_zero_is_refused() {
     let mut led = led().await;
     let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
     let producer = Producer {
@@ -121,7 +121,7 @@ async fn a_forgotten_producer_restarting_at_zero_is_written_for_kafka_only() {
         term: led.term,
     };
     let sent = producer.publish(0, &[b"a"]).await.expect("committed");
-    let first = offsets(&sent).0;
+    sent.outcome.offsets.expect("offsets");
 
     // The log forgets the producer entirely, as a purge past it does.
     let log = led.cluster.logs[&(led.leader.broker.to_string(), 0)].clone();
@@ -136,9 +136,15 @@ async fn a_forgotten_producer_restarting_at_zero_is_written_for_kafka_only() {
     let kafka = producer
         .propose(0, &[b"b"], SequenceReuse::AnswerDuplicate)
         .await;
-    let kafka = kafka.expect("written").complete().await.expect("committed");
-    assert!(!kafka.duplicate);
-    assert!(offsets(&kafka).0 > first);
+    assert!(matches!(
+        kafka.err().expect("refused"),
+        BrokerError::SequenceExpired { sequence: 0 }
+    ));
+    assert_eq!(
+        log.tail_offset().await.expect("tail"),
+        tail,
+        "nothing written"
+    );
     led.cluster.stop().await;
 }
 
