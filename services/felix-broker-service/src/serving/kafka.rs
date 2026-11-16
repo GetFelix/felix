@@ -15,8 +15,8 @@ use felix_broker::{
     Attribution, Broker, IdempotentOutcome, PublishOutcome, SequenceReuse, StreamHandle,
 };
 use felix_kafka::{
-    Cluster, Endpoint, KafkaService, Placement, Principal, Produce, ProduceError, Proposed, Settings,
-    ShardRef, WriteError, WritePermit,
+    Cluster, Endpoint, KafkaService, Placement, Principal, Produce, ProduceError, Proposed,
+    Settings, ShardRef, WriteError, WritePermit,
 };
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
@@ -354,10 +354,7 @@ impl BrokerCluster {
             );
             let proposed = raft_proposed(proposed, term)?;
             return Ok(Box::pin(async move {
-                let offsets = proposed
-                    .complete_offsets()
-                    .await
-                    .map_err(commit_failure)?;
+                let offsets = proposed.complete_offsets().await.map_err(commit_failure)?;
                 Ok(IdempotentOutcome {
                     outcome: PublishOutcome {
                         subscribers: 0,
@@ -394,15 +391,20 @@ impl BrokerCluster {
                 // them in the log. A refusal that follows from one of them
                 // failing (a gap, which Kafka producers treat as fatal) is
                 // answered with that failure instead.
+                Err(refused) if proposed.is_empty() => return Err(refused),
+                // Answered once the earlier records are settled, so the
+                // connection can go on to its next request meanwhile.
                 Err(refused) => {
-                    let earlier = proposed.into_iter().map(|record| async move {
-                        record
-                            .complete_outcome()
-                            .await
-                            .map(drop)
-                            .map_err(commit_failure)
-                    });
-                    return Err(earlier_failure(earlier, refused).await);
+                    return Ok(Box::pin(async move {
+                        let earlier = proposed.into_iter().map(|record| async move {
+                            record
+                                .complete_outcome()
+                                .await
+                                .map(drop)
+                                .map_err(commit_failure)
+                        });
+                        Err(earlier_failure(earlier, refused).await)
+                    }));
                 }
             }
         }

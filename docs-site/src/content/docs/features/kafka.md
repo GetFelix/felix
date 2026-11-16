@@ -688,8 +688,9 @@ them, this is not the tool for that part of it.
 - Produces count against the tenant's publish quota (`FELIX_TENANT_PUBLISH_*`).
   Over quota, the produce is still written, and the response carries
   `throttle_time_ms` instead of an error.
-- A connection's produces are answered one at a time. For more throughput,
-  spread across partitions, whose leaders are often different brokers.
+- A connection's produces are pipelined: up to 8 wait on their commits at
+  once, and answers go out in request order. For more throughput, spread
+  across partitions, whose leaders are often different brokers.
 
 **Size and time caps**
 

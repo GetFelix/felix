@@ -264,6 +264,8 @@ async fn a_produce_to_a_raft_shard_lands_once() {
                 .produce(broker, &shard, handle, &permit, produce)
                 .await
                 .expect("proposed on Raft")
+                .expect("handed over")
+                .await
                 .expect("written")
         }
     };
@@ -363,7 +365,8 @@ async fn keys_and_headers_for_a_raft_shard_wait_for_the_fleet() {
                 felix_broker::BrokerError::RecordHeadersNotEnabled { .. }
             ))
         ),
-        "{reached:?}"
+        "{:?}",
+        reached.err()
     );
     assert_eq!(cluster.refuses_record_headers(&broker, &shard), None);
     EngineShards::shutdown(&*shards).await;

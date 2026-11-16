@@ -350,7 +350,7 @@ async fn ship_producer_at(
         .expect("adopt");
 }
 
-fn idempotent(id: i64, sequence: i32, values: &[&str]) -> Bytes {
+pub(super) fn idempotent(id: i64, sequence: i32, values: &[&str]) -> Bytes {
     batch(
         Producer::Idempotent { id, sequence },
         values,

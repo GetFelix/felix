@@ -20,11 +20,16 @@
 //! still takes Kafka produces. Producer timestamps are
 //! always dropped: a Felix record's time is the broker's append time.
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll, ready};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use bytes::Bytes;
 use felix_broker::{BrokerError, IdempotentOutcome, PublishOutcome, StreamHandle};
+use futures::future::{BoxFuture, join_all};
 use kafka_protocol::ResponseError;
 use kafka_protocol::messages::produce_response::{PartitionProduceResponse, TopicProduceResponse};
 use kafka_protocol::messages::{ProduceRequest, ProduceResponse};
@@ -36,15 +41,27 @@ use crate::cluster::{Principal, Produce, ProduceError, ShardRef, WriteError, Wri
 use crate::records::decode::{self, Batch, Refused};
 use crate::service::Shared;
 
-/// Answer a produce: the body, or `None` for `acks=0`, which a Kafka broker
-/// never answers; the error it is counted under; and how long the connection
-/// must stay muted to keep the tenant within its publish quota.
-pub(super) async fn answer(
-    shared: &Shared,
+/// A produce whose batches hold their places in their partitions' order.
+pub(super) struct Claimed<'a> {
+    /// How long the connection must stay muted to keep the tenant within its
+    /// publish quota.
+    pub(super) throttle: Duration,
+    /// Resolves once every batch has what `acks` asks for, to the body, or
+    /// `None` for `acks=0`, which a Kafka broker never answers, and the error
+    /// it is counted under.
+    pub(super) answer: BoxFuture<'a, Result<(Option<Bytes>, i16)>>,
+}
+
+/// Claim a produce's place: every batch is checked and takes its offsets,
+/// or is handed to the shard's Raft group, before this returns. The commit
+/// waits are left to [`Claimed::answer`], so the connection can claim the
+/// next request while they run.
+pub(super) async fn claim<'a>(
+    shared: &'a Shared,
     principal: Option<&Principal>,
     request: ProduceRequest,
     version: i16,
-) -> Result<(Option<Bytes>, i16, Duration)> {
+) -> Claimed<'a> {
     let transactional = request
         .transactional_id
         .as_ref()
@@ -69,34 +86,55 @@ pub(super) async fn answer(
                 )
                 .await
             };
-            partitions.push(respond(partition.index, written, version));
+            let index = partition.index;
+            partitions.push(async move {
+                let written = match written {
+                    Ok(pending) => pending.await,
+                    Err(failure) => Err(failure),
+                };
+                respond(index, written, version)
+            });
         }
-        topics.push(
+        topics.push(async move {
             TopicProduceResponse::default()
                 .with_name(topic.name)
-                .with_partition_responses(partitions),
-        );
+                .with_partition_responses(join_all(partitions).await)
+        });
     }
 
-    let error = super::first_error(
-        topics
-            .iter()
-            .flat_map(|topic| topic.partition_responses.iter())
-            .map(|partition| partition.error_code),
-    );
-    if request.acks == 0 {
-        return Ok((None, error, throttled));
+    let acks = request.acks;
+    let answer = Box::pin(async move {
+        // Every partition's wait at once: on the hybrid, group commit can
+        // only coalesce flushes that are in flight together.
+        let topics = join_all(topics).await;
+        let error = super::first_error(
+            topics
+                .iter()
+                .flat_map(|topic| topic.partition_responses.iter())
+                .map(|partition| partition.error_code),
+        );
+        if acks == 0 {
+            return Ok((None, error));
+        }
+        let throttle_time_ms = i32::try_from(throttled.as_millis()).unwrap_or(i32::MAX);
+        let (body, error) = super::encode(
+            &ProduceResponse::default()
+                .with_responses(topics)
+                .with_throttle_time_ms(throttle_time_ms),
+            version,
+            error,
+        )?;
+        Ok((Some(body), error))
+    });
+    Claimed {
+        throttle: throttled,
+        answer,
     }
-    let throttle_time_ms = i32::try_from(throttled.as_millis()).unwrap_or(i32::MAX);
-    let (body, error) = super::encode(
-        &ProduceResponse::default()
-            .with_responses(topics)
-            .with_throttle_time_ms(throttle_time_ms),
-        version,
-        error,
-    )?;
-    Ok((Some(body), error, throttled))
 }
+
+/// A claimed partition or batch, resolving once it is durable and has what
+/// its stream's consistency asks for.
+type Pending<'a, T> = BoxFuture<'a, Result<T, Failure>>;
 
 /// Where a partition's records landed.
 struct Written {
@@ -167,15 +205,15 @@ impl From<WriteError> for Failure {
     }
 }
 
-async fn write(
-    shared: &Shared,
+async fn write<'a>(
+    shared: &'a Shared,
     principal: Option<&Principal>,
     topic: &str,
     partition: i32,
     records: Bytes,
     wait_for_consistency: bool,
     throttled: &mut Duration,
-) -> Result<Written, Failure> {
+) -> Result<Pending<'a, Written>, Failure> {
     let located = resolve_write(shared, principal, topic, partition).await?;
     let keep_headers = shared.settings.record_headers && shared.broker.records_headers();
     let batches = decode::decode(records, keep_headers)?;
@@ -216,48 +254,67 @@ async fn write(
     let permit = shared.cluster.admit_write(&located.shard_ref()).await?;
     let handle = located.handle(shared).await?;
 
-    let mut written: Option<(u64, u64)> = None;
+    let mut claimed = Vec::with_capacity(batches.len());
+    let mut refused = None;
     for batch in &batches {
-        let outcome = publish(shared, &located.shard_ref(), &handle, &permit, batch).await?;
-        if let Some((first, last)) = outcome.offsets {
-            written = Some((written.map_or(first, |(start, _)| start), last));
+        match publish(shared, &located.shard_ref(), &handle, &permit, batch).await {
+            Ok(pending) => claimed.push(pending),
+            Err(failure) => {
+                refused = Some(failure);
+                break;
+            }
         }
     }
-    let generation = permit.generation();
-    // Held until the records are durable, so a move waits for them.
-    drop(permit);
+    Ok(Box::pin(async move {
+        let generation = permit.generation();
+        let outcomes = join_all(claimed).await;
+        // Held until the records are durable, so a move waits for them.
+        drop(permit);
+        let mut written: Option<(u64, u64)> = None;
+        // The first failure in batch order is the answer: a later batch's
+        // refusal can follow from it.
+        for outcome in outcomes {
+            if let Some((first, last)) = outcome?.offsets {
+                written = Some((written.map_or(first, |(start, _)| start), last));
+            }
+        }
+        if let Some(refused) = refused {
+            return Err(refused);
+        }
 
-    if wait_for_consistency && written.is_some() {
-        let outcome = PublishOutcome {
-            subscribers: 0,
-            offsets: written,
-        };
-        shared
-            .cluster
-            .await_consistency(&located.shard_ref(), &handle, &outcome, generation)
-            .await?;
-    }
-    Ok(Written {
-        base_offset: written.map(|(first, _)| first),
-        log_start_offset: handle.log().map_or(0, |log| log.readable_base()),
-    })
+        if wait_for_consistency && written.is_some() {
+            let outcome = PublishOutcome {
+                subscribers: 0,
+                offsets: written,
+            };
+            shared
+                .cluster
+                .await_consistency(&located.shard_ref(), &handle, &outcome, generation)
+                .await?;
+        }
+        Ok(Written {
+            base_offset: written.map(|(first, _)| first),
+            log_start_offset: handle.log().map_or(0, |log| log.readable_base()),
+        })
+    }))
 }
 
-async fn publish(
-    shared: &Shared,
+/// Claim one batch's place, returning its commit wait.
+async fn publish<'a>(
+    shared: &'a Shared,
     shard: &ShardRef<'_>,
     handle: &StreamHandle,
     permit: &WritePermit,
     batch: &Batch,
-) -> Result<PublishOutcome, Failure> {
+) -> Result<Pending<'a, PublishOutcome>, Failure> {
     // Blocks are built only when the listener opted in and the broker accepts
     // them, and any key or header makes one, so none means these were not kept.
     if batch.blocks.is_none() {
         crate::metrics::dropped(batch.keyed, batch.with_headers);
     }
     let headers = batch.blocks.as_deref();
-    // Held to the end, so no other epoch of this producer is checked or
-    // written between the fence check and this batch.
+    // Held until this batch is on the log, so no other epoch of this
+    // producer is checked or written between the fence check and it.
     let mut _family = None;
     let producer = if batch.producer_id >= 0 {
         let invalid = |message: &str| Failure {
@@ -301,37 +358,103 @@ async fn publish(
         .cluster
         .produce(&shared.broker, shard, handle, permit, produce)
         .await;
-    let result = if let Some(produced) = produced {
-        match produced {
-            Ok(produced) => Ok((produced.outcome, produced.duplicate)),
-            Err(ProduceError::Broker(err)) => Err(err),
+    let pending: Pending<'static, IdempotentOutcome> = if let Some(produced) = produced {
+        let proposed = match produced {
+            Ok(proposed) => proposed,
+            Err(ProduceError::Broker(err)) => return Err(publish_failure(&err)),
             Err(ProduceError::Write(err)) => return Err(err.into()),
+        };
+        // A Raft group's log learns a record when it writes it, not when it
+        // is handed over. The producer's turn comes round once the last one
+        // is written here or given up, and only then may another epoch be
+        // checked against the log.
+        if let Some((id, _)) = producer {
+            drop(shared.broker.producer_turn(handle, id).await);
         }
+        Box::pin(async move {
+            proposed.await.map_err(|err| match err {
+                ProduceError::Broker(err) => publish_failure(&err),
+                ProduceError::Write(err) => err.into(),
+            })
+        })
     } else if let Some((producer_id, sequence)) = producer {
-        shared
+        let claim = shared
             .broker
-            .publish_records_idempotent(handle, producer_id, sequence, &batch.values, headers)
+            .claim_records_idempotent(handle, producer_id, sequence, &batch.values, headers)
             .await
-            .map(|IdempotentOutcome { outcome, duplicate }| (outcome, duplicate))
+            .map_err(|err| publish_failure(&err))?;
+        let broker = Arc::clone(&shared.broker);
+        let handle = handle.clone();
+        finishing(async move {
+            broker
+                .complete_records_idempotent(&handle, claim)
+                .await
+                .map_err(|err| publish_failure(&err))
+        })
     } else {
-        shared
+        let claimed = shared
             .broker
-            .publish_batch_with_outcome(handle, &batch.values, None, headers)
+            .claim_publish(handle, &batch.values, None, headers)
             .await
-            .map(|outcome| (outcome, false))
+            .map_err(|err| publish_failure(&err))?;
+        let broker = Arc::clone(&shared.broker);
+        finishing(async move {
+            broker
+                .complete_publish(claimed)
+                .await
+                .map(|outcome| IdempotentOutcome {
+                    outcome,
+                    duplicate: false,
+                })
+                .map_err(|err| publish_failure(&err))
+        })
     };
-    match result {
-        Ok((outcome, true)) => {
-            crate::metrics::duplicate(batch.values.len() as u64);
-            Ok(outcome)
+    let records = batch.values.len() as u64;
+    let bytes = batch.values.iter().map(Bytes::len).sum::<usize>() as u64;
+    Ok(Box::pin(async move {
+        let IdempotentOutcome { outcome, duplicate } = pending.await?;
+        if duplicate {
+            crate::metrics::duplicate(records);
+        } else {
+            crate::metrics::produced(records, bytes);
         }
-        Ok((outcome, false)) => {
-            let bytes = batch.values.iter().map(Bytes::len).sum::<usize>();
-            crate::metrics::produced(batch.values.len() as u64, bytes as u64);
-            Ok(outcome)
+        Ok(outcome)
+    }))
+}
+
+/// `completion` as a pending batch that runs to the end even if the
+/// connection goes away before awaiting it. A claim's offsets are taken, so
+/// its records exist; dropped unfinished, they would never be fanned out.
+fn finishing<F>(completion: F) -> Pending<'static, IdempotentOutcome>
+where
+    F: Future<Output = Result<IdempotentOutcome, Failure>> + Send + 'static,
+{
+    struct Finishing<F: Future + Send + 'static>(Option<Pin<Box<F>>>);
+
+    impl<F: Future + Send + 'static> Future for Finishing<F> {
+        type Output = F::Output;
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+            let inner = self.0.as_mut().expect("polled after it finished");
+            let done = ready!(inner.as_mut().poll(cx));
+            self.0 = None;
+            Poll::Ready(done)
         }
-        Err(err) => Err(publish_failure(&err)),
     }
+
+    impl<F: Future + Send + 'static> Drop for Finishing<F> {
+        fn drop(&mut self) {
+            if let Some(inner) = self.0.take()
+                && let Ok(runtime) = tokio::runtime::Handle::try_current()
+            {
+                runtime.spawn(async move {
+                    let _ = inner.await;
+                });
+            }
+        }
+    }
+
+    Box::pin(Finishing(Some(Box::pin(completion))))
 }
 
 fn publish_failure(err: &BrokerError) -> Failure {

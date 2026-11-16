@@ -11,6 +11,7 @@ mod limits;
 mod list_offsets;
 mod metadata;
 mod parse;
+mod pipeline;
 mod produce;
 mod producer_id;
 mod sasl;
@@ -63,6 +64,41 @@ pub(super) struct FakeCluster {
     pub(super) produce_charges: Mutex<Vec<(String, u64, u64)>>,
     /// The certificate chain each `authenticate_peer` call was handed.
     pub(super) peer_certs_seen: Mutex<Vec<Vec<Vec<u8>>>>,
+    /// Set, `produce` claims each batch on the broker and holds its commit
+    /// until the test releases it, as a Raft group's commit lags its
+    /// proposal.
+    pub(super) gated: Mutex<Option<Gated>>,
+}
+
+/// Commits held by the test, in claim order.
+pub(super) struct Gated {
+    broker: Arc<Broker>,
+    pub(super) releases: Vec<Option<tokio::sync::oneshot::Sender<Result<(), WriteError>>>>,
+}
+
+impl FakeCluster {
+    /// How many batches `produce` has claimed while gated.
+    pub(super) fn claimed(&self) -> usize {
+        self.gated
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .map_or(0, |gated| gated.releases.len())
+    }
+
+    /// Commit claimed batch `at`, or fail it with `error`.
+    pub(super) fn release(&self, at: usize, error: Option<WriteError>) {
+        let release = self
+            .gated
+            .lock()
+            .expect("lock")
+            .as_mut()
+            .expect("gated")
+            .releases[at]
+            .take()
+            .expect("released once");
+        let _ = release.send(error.map_or(Ok(()), Err));
+    }
 }
 
 #[async_trait]
@@ -151,6 +187,45 @@ impl Cluster for FakeCluster {
             .get(&(shard.stream.to_string(), shard.shard))
             .copied()
             .transpose()
+    }
+
+    async fn produce(
+        &self,
+        broker: &Broker,
+        _shard: &ShardRef<'_>,
+        handle: &StreamHandle,
+        _permit: &WritePermit,
+        produce: crate::cluster::Produce<'_>,
+    ) -> Option<Result<crate::cluster::Proposed, crate::cluster::ProduceError>> {
+        use crate::cluster::ProduceError;
+        let arc = Arc::clone(&self.gated.lock().expect("lock").as_ref()?.broker);
+        let (id, sequence) = produce.producer.expect("gated tests produce idempotently");
+        let claim = match broker
+            .claim_records_idempotent(handle, id, sequence, produce.payloads, None)
+            .await
+        {
+            Ok(claim) => claim,
+            Err(err) => return Some(Err(ProduceError::Broker(err))),
+        };
+        let (release, released) = tokio::sync::oneshot::channel();
+        self.gated
+            .lock()
+            .expect("lock")
+            .as_mut()
+            .expect("gated")
+            .releases
+            .push(Some(release));
+        let handle = handle.clone();
+        Some(Ok(Box::pin(async move {
+            match released.await {
+                Ok(Ok(())) => arc
+                    .complete_records_idempotent(&handle, claim)
+                    .await
+                    .map_err(ProduceError::Broker),
+                Ok(Err(error)) => Err(ProduceError::Write(error)),
+                Err(_) => Err(ProduceError::Write(WriteError::LeadershipLost)),
+            }
+        })))
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> std::time::Duration {
@@ -274,6 +349,7 @@ impl Fixture {
             produce_hold: Mutex::new(std::time::Duration::ZERO),
             produce_charges: Mutex::new(Vec::new()),
             peer_certs_seen: Mutex::new(Vec::new()),
+            gated: Mutex::new(None),
         });
         cluster.add_broker(LOCAL, "kafka-a.test", 9092);
         let service = KafkaService::new(Arc::clone(&broker), cluster.clone(), settings);
@@ -284,6 +360,14 @@ impl Fixture {
             headers_accepted,
             _dir: dir,
         }
+    }
+
+    /// Hold every produce's commit until the test releases it.
+    pub(super) fn gate_commits(&self) {
+        *self.cluster.gated.lock().expect("lock") = Some(Gated {
+            broker: Arc::clone(&self.broker),
+            releases: Vec::new(),
+        });
     }
 
     /// Make the broker accept record headers, as a finalized fleet does.

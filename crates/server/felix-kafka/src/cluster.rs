@@ -11,10 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::future::BoxFuture;
 use bytes::Bytes;
 use felix_authz::{Action, Namespace, PermissionMatcher, StreamName, TenantId, stream_resource};
 use felix_broker::{Broker, BrokerError, IdempotentOutcome, PublishOutcome, StreamHandle};
+use futures::future::BoxFuture;
 
 /// The broker's side of the Kafka listener.
 #[async_trait]

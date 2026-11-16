@@ -1,0 +1,1 @@
+- A Kafka connection's produces are pipelined: each claims its place in order as it is read and waits for its commit while the next request is read, with answers still in request order and at most 8 waited on at once. On a Raft shard this lifts single-connection produce from about one commit round trip per request (#2704).

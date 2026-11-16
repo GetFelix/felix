@@ -150,7 +150,10 @@ impl Broker {
             )
             .await?
             .expect("a marked append always claims");
-        Ok(RecordsClaim(Claim::Written { start, claimed }))
+        Ok(RecordsClaim(Claim::Written {
+            start,
+            claimed: Box::new(claimed),
+        }))
     }
 
     /// Wait for a [`Self::claim_records_idempotent`] claim to be durable, and
@@ -184,7 +187,7 @@ impl Broker {
                     duplicate: true,
                 });
             }
-            Claim::Written { start, claimed } => (start, claimed),
+            Claim::Written { start, claimed } => (start, *claimed),
         };
         let outcome = self.complete_publish(claimed).await?;
         // A batch finished after its start was written reports the start's
@@ -230,7 +233,7 @@ enum Claim {
     /// landed, when there was one and it is still known.
     Written {
         start: Option<(u64, u64)>,
-        claimed: super::ClaimedPublish,
+        claimed: Box<super::ClaimedPublish>,
     },
 }
 
