@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794855813920,
+  "lastUpdate": 1794865560658,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60736,6 +60736,58 @@ window.BENCHMARK_DATA = {
             "range": "31476.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1070098.70\nmean: 1070780.05\nstdev: 31476.51\ncv: 2.94%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "348c0c436c9bd23e31402add2c294c5c9e9ef67e",
+          "message": "fix(raft): a follower reads at the leader's read index before serving below a trim floor (#2603) (#2662)\n\n* test(raft): reproduce a follower without the trim serving below its floor (#2603)\n\nIgnored until the follower read index lands: on main the lagging\nfollower serves a resume below the floor after trim_ok.\n\n* fix(raft): followers read below a floor only after the leader's read index (#2603)\n\nA follower serves a resume from an offset or earliest, a cursor subscribe,\nor a history page only once it has applied a read index asked of its\nleader with the new ReadIndex peer message (request tag 8, answer tag 6),\nso it holds every trim answered before the read. The leader answers from\nthe same bound confirm_read waits for. Failure is retryable (Settling).\nUntil the fleet finalizes raft_follower_read a follower refuses such reads\nwith NotReadable::OnLeader, which the subscribe handler turns into a\nredirect to the leader. Un-ignores the #2603 repro.\n\n* test(raft): cover the pending-trim hold on a reachable follower and OnLeader fallbacks (#2603)\n\nAdds a reachable follower holding an uncommitted trim (served at the floor,\nheld below it), a follower with no leader answering OnLeader as not_ready,\nand history_to under OnLeader. Pins the unknown-tag refusal text and\ntightens the per-shard Raft, protocol and site wording.\n\n* spec(raft): follower reads in FelixHeadTrim (#2603)\n\nA follower serves a read that could start below a floor only after it\napplies a read index from a leader a majority confirms.\nNoReadBelowAckedTrim now covers that read, and\nFelixHeadTrimFollowerNoReadIndex.cfg drops the wait and violates it.\n\n* tla: weigh FelixHeadTrim and FelixHeadTrimCrash for the follower-read state space (#2603)\n\n* fix(raft): leader read-index round and follower tail reads before reads below a trim floor (#2603)\n\nA leader cut off from a successor that trimmed still leads in its own view,\nso it now runs its own read-index round (confirm_read) before a read that\ncould start below a floor, including stream reads and Kafka fetches below\nthe tail. A follower's Latest subscribe applies the leader's read index too:\nits committed tail can sit below a floor it has not received.\n\nTLA: LeaderNoReadIndex and TailNoReadIndex knobs, each violating\nNoReadBelowAckedTrim. Client follow-up for not_ready rerouting: #2665.\n\n* fix(raft): gate plain tail subscribes, re-check a leader's tail join, read on the lease (#2603)\n\nA follower's plain subscribe (no event offsets) applies the leader's read\nindex before it joins, and the catch-up waits out a running log pass so\nnothing below a floor reaches it. A leader's tail subscribe checks after\nregistering that it still leads the same term and otherwise asks as a\nfollower. A leader inside its lease takes its commit index with no\nread-index round. read_durable is gated, and the Kafka fetch confirm\nreuses the resolved handle.\n\n* fix(raft): drop a tail subscriber whose term ended before it registered; start plain subscribers at the barrier (#2603)\n\nA leader's tail subscriber registered after its term was deposed is now\nrefused as retryable instead of asking again as a follower, and the term\ncheck reads the terms the deposal clears. A plain subscriber on an engine\nlog starts at the committed tail after the read barrier, never below the\nfloor, so a log pass already running cannot hand it records below a trim;\nthe catch-up no longer waits on that pass. FelixRaftLease gets\nLeaseNoNewerLeader, registered in every pass config.\n\n* fix(raft): tidy read-barrier docs, drop no-op pending-trim wait\n\n* fix(raft): a crash ends a read in FelixHeadTrim; plain-subscribe trim test survives an ended feed (#2603)\n\nFelixHeadTrimCrash let a leader read begun before a crash be served after\nthe broker was re-elected with its commit offset read back. A read dies\nwith its process, so Crash drops it.\n\nThe beside-another test failed when the log pass that carries the lagger\npast its floor ran after the subscriber registered: that pass ends the\nsubscriber to resume, which is safe. The test now resubscribes and waits\nfor a later record; its assertion is unchanged.\n\n* test(raft): cluster follower-read tests finalize raft_follower_read (#2603)\n\nUntil the fleet finalizes it a follower sends a read that could start\nbelow a trim floor to the leader, and these clients do not follow the\nredirect.\n\n* test(raft): run the shard tests at the hard open-file limit\n\nA broker takes the hard open-file limit at start, but the shards::raft\ntests start many brokers in one process without it. The read-floor tests\nadded three-broker groups and pushed the process past a soft limit of\n1,024 (peak 1,164 fds), so members failed to open their logs with EMFILE\nand never served a term.\n\n* formal(raft): run FelixHeadTrim by dispatch only\n\nDispatch 43870273108 ran 30 shards: 29 passed and shard 0 hit the six hour\nlimit at depth 34 (1.75B states, 244M distinct) with no violation. Too long\nfor a pull request shard.\n\nSpec-Unaffected: only the registration and weight of an existing config change",
+          "timestamp": "2026-11-16T21:37:38Z",
+          "tree_id": "3075f8be7f78292087f1e2fcad3abe73ca2e4487",
+          "url": "https://github.com/GetFelix/felix/commit/348c0c436c9bd23e31402add2c294c5c9e9ef67e"
+        },
+        "date": 1794865559949,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358231.14,
+            "range": "7259.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358231.14\nmean: 360205.06\nstdev: 7259.19\ncv: 2.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358231.14,
+            "range": "7259.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358231.14\nmean: 360205.06\nstdev: 7259.19\ncv: 2.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80910.13,
+            "range": "696.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80910.13\nmean: 80961.88\nstdev: 696.07\ncv: 0.86%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809101.25,
+            "range": "6960.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809101.25\nmean: 809618.77\nstdev: 6960.69\ncv: 0.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
