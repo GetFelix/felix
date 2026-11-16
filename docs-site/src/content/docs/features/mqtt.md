@@ -78,7 +78,7 @@ none. The
 A connection with no credentials is refused unless the broker was started with
 `FELIX_MQTT_ANONYMOUS_TENANT=<tenant>`, which is for development only: such a
 connection may publish to every stream mounted for that tenant. It works on a
-single broker only. A broker in a cluster of more than one broker refuses a
+single broker only. A broker in a cluster of more than one live broker, or one that has not yet learned the cluster's size after starting, refuses a
 connection without credentials at `CONNECT` with `CONNACK` 0x87 (3.1.1: 5),
 because a publish forwarded to another broker carries the client's token and
 there is none to carry.

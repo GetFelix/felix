@@ -51,7 +51,7 @@ pub struct BrokerWrites<P = PeerPool> {
     quorum_timeout: Duration,
     quotas: Arc<TenantRates>,
     forwarding: Option<Forwarding<P>>,
-    /// The node catalog's broker count, for [`Writes::may_forward`]. Absent
+    /// The node catalog's live broker count, for [`Writes::may_forward`]. Absent
     /// outside a cluster.
     cluster: Option<Arc<ClientEndpoints>>,
 }
@@ -152,12 +152,15 @@ impl<P: PeerRequester + Send + Sync + 'static> Writes for BrokerWrites<P> {
     /// Read at every `CONNECT`, so a cluster that grows past one broker
     /// refuses credential-less connections from the next refresh on. One
     /// already connected meets the refusal at its first forwarded publish.
+    /// Before the first node catalog pass the size is unknown and counts as
+    /// more than one, so a node that has just started never accepts a
+    /// connection it may have to drop at its first forwarded publish.
     fn may_forward(&self) -> bool {
         self.forwarding.is_some()
             && self
                 .cluster
                 .as_ref()
-                .is_some_and(|cluster| cluster.brokers() > 1)
+                .is_some_and(|cluster| cluster.brokers().is_none_or(|n| n > 1))
     }
 
     async fn write(&self, batch: WriteBatch) -> Result<(), WriteError> {

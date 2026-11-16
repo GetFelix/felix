@@ -229,7 +229,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 }
 
 /// Sent to a 5.0 client refused for having no credential to forward.
-const CREDENTIAL_REQUIRED: &str = "this broker is in a cluster and forwards publishes with the client's token; connect with a tenant token";
+const CREDENTIAL_REQUIRED: &str = "this broker is in a cluster and forwards publishes with the client's token, or has not yet learned how many brokers it has; connect with a tenant token";
 
 /// 5.0 hands back an identifier for an empty one; 3.1.1 may only when the
 /// session is clean.

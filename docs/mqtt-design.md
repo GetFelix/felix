@@ -605,7 +605,7 @@ variable the broker does not read today:
 |---|---|---|
 | `FELIX_MQTT_LISTEN` | unset | `ip:port`. Unset turns the listener off. |
 | `FELIX_MQTT_TLS` | `true` | `false` serves plain TCP and logs that tokens cross in clear text. |
-| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development only. |
+| `FELIX_MQTT_ANONYMOUS_TENANT` | unset | Development only. Refused in a cluster of more than one live broker, and until the node catalog is first read. |
 | `FELIX_MQTT_WORKER_THREADS` | 2 | Threads in the listener's runtime. |
 | `FELIX_MQTT_MAX_CONNECTIONS` | 100000 | Connections served at once; extra ones are closed on arrival. |
 | `FELIX_MQTT_MAX_CONNECTIONS_PER_IP` | 1024 | Higher than Kafka's 128 because fleets sit behind carrier NAT. `0` is unlimited. |

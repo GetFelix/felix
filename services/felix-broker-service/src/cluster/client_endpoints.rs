@@ -15,7 +15,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use arc_swap::ArcSwap;
 use felix_wire::BrokerEndpoint;
 
-#[derive(Debug, Default)]
+/// No refresh has counted the cluster yet.
+const UNKNOWN_BROKERS: usize = usize::MAX;
+
+#[derive(Debug)]
 pub struct ClientEndpoints {
     /// What a client is told it may connect to: eligible brokers only.
     endpoints: ArcSwap<Vec<BrokerEndpoint>>,
@@ -25,13 +28,19 @@ pub struct ClientEndpoints {
     redirects: ArcSwap<Vec<BrokerEndpoint>>,
     /// Kafka listener addresses of every routable broker that runs one.
     kafka: ArcSwap<Vec<BrokerEndpoint>>,
-    /// How many brokers the catalog lists, this one included.
+    /// How many live brokers the catalog lists, this one included;
+    /// `UNKNOWN_BROKERS` until the first refresh.
     brokers: AtomicUsize,
 }
 
 impl ClientEndpoints {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            endpoints: Default::default(),
+            redirects: Default::default(),
+            kafka: Default::default(),
+            brokers: AtomicUsize::new(UNKNOWN_BROKERS),
+        }
     }
 
     /// Replace every list with this refresh of the node catalog.
@@ -46,13 +55,19 @@ impl ClientEndpoints {
         self.redirects
             .store(Arc::new(catalog.redirect_endpoints.clone()));
         self.kafka.store(Arc::new(catalog.kafka_endpoints.clone()));
-        self.brokers.store(catalog.nodes.len(), Ordering::Relaxed);
+        // Live only: a dead stale registration must not make a lone broker
+        // look clustered.
+        let live = catalog.nodes.values().filter(|node| node.live).count();
+        self.brokers.store(live, Ordering::Relaxed);
     }
 
-    /// How many brokers the last refresh listed, live or not; zero before
-    /// the first.
-    pub fn brokers(&self) -> usize {
-        self.brokers.load(Ordering::Relaxed)
+    /// How many live brokers the last refresh listed, or `None` before the
+    /// first.
+    pub fn brokers(&self) -> Option<usize> {
+        match self.brokers.load(Ordering::Relaxed) {
+            UNKNOWN_BROKERS => None,
+            count => Some(count),
+        }
     }
 
     /// The client address to name in a redirect to `node_id`, if the cluster
