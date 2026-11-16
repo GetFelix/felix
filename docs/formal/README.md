@@ -677,7 +677,7 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftStreamPurgeReachTrimPurge.cfg` | witness at the bounds of `FelixRaftStreamPurgeFive.cfg`: a purge drops a trim entry | violate `NeverPurgesATrim` |
 | `FelixRaftStreamPurgeReachWriteAfterReform.cfg` | witness at the bounds of `FelixRaftStreamPurgeFiveReform.cfg`: a write follows a re-form | violate `NeverWritesAfterReform` |
 | `FelixRaftStreamPurgeReachPurgeAfterReform.cfg` | witness at the same bounds: a purge follows a re-form | violate `NeverPurgesAfterReform` |
-| `FelixRaftStreamPurgeReformNoFloorOnce.cfg` | the bounds of `ReformNoFloorTwice` with one re-form: the control | pass the same |
+| `FelixRaftStreamPurgeReformNoFloorOnce.cfg` | the bounds of `ReformNoFloorTwice` with one re-form: the control | pass the same. Not registered, run by dispatch: about 43 minutes in CI, too long for a PR shard |
 | `FelixRaftStreamPurgeReachTrimPurgeFour.cfg` | witness at the bounds of `FourSmall.cfg`: a purge drops a trim entry | violate `NeverPurgesATrim` |
 | `FelixRaftStreamPurgeReachWriteAfterReformFour.cfg`, `...ReachPurgeAfterReformFour.cfg` | witnesses at the bounds of `FourReformSmall.cfg`: a write, and a purge, follow a re-form | violate `NeverWritesAfterReform`, `NeverPurgesAfterReform` |
 | `FelixRaftStreamPurgeReachWriteAfterReformTwo.cfg`, `...ReachPurgeAfterReformTwo.cfg` | witnesses at the bounds of `TwoReformsWrite.cfg`: a write, and a purge, follow a re-form | violate `NeverWritesAfterReform`, `NeverPurgesAfterReform` |

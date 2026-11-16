@@ -604,7 +604,6 @@ expectations=(
   "FelixRaftStreamPurgeFourSmall pass"
   "FelixRaftStreamPurgeFourReformSmall pass"
   "FelixRaftStreamPurgeTwoReformsSmall pass"
-  "FelixRaftStreamPurgeReformNoFloorOnce pass"
   "FelixRaftStreamPurgePastFloor violates NoAckedLoss"
   "FelixRaftStreamPurgeInstallAboveFloor violates NoAckedLoss"
   "FelixRaftStreamPurgeSnapAtApplied violates CatchUpPossible"
