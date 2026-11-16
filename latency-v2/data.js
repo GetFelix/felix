@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794821795876,
+  "lastUpdate": 1794825202945,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76032,6 +76032,72 @@ window.BENCHMARK_DATA = {
             "range": "24.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 533.00\nmean: 535.60\nstdev: 24.03\ncv: 4.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9e8daca41206410cfe053283759c340bd31f9654",
+          "message": "test(ipm): give the measured broker a deployment's lease (Fixes #2564) (#2692)\n\n* test(ipm): say why a measured ingest run retried (#2564)\n\nfelix-loadgen's ingest row gains publish_retry_reasons, each retried\nrefusal counted by code and message, and the IPM gate's not-clean\nerror adds the broker's lease lapse and refusal counters.\n\n* test(ipm): give the measured broker a deployment's lease (#2564)\n\nUnder callgrind the harness's 1 s node expiry (a 750 ms usable lease)\nis tens of native milliseconds, so a heartbeat that slips under load\nlets the lease lapse and publishes are refused as fenced and retried.\nThe IPM run now uses the 15 s expiry a deployment has.",
+          "timestamp": "2026-11-16T10:26:34Z",
+          "tree_id": "60594884dd93fdb7bce97ad4dcd4b36160559033",
+          "url": "https://github.com/GetFelix/felix/commit/9e8daca41206410cfe053283759c340bd31f9654"
+        },
+        "date": 1794825192572,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 94.60\nstdev: 0.55\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "7.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 132.40\nstdev: 7.73\ncv: 5.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 181,
+            "range": "614.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 460.20\nstdev: 614.06\ncv: 133.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "5.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 135.80\nstdev: 5.54\ncv: 4.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 269,
+            "range": "114.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 328.40\nstdev: 114.41\ncv: 34.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1384,
+            "range": "713.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1384.00\nmean: 1207.00\nstdev: 713.31\ncv: 59.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
