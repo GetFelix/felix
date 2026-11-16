@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794821800667,
+  "lastUpdate": 1794825206949,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59904,6 +59904,58 @@ window.BENCHMARK_DATA = {
             "range": "21489.04",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 791406.31\nmean: 783406.69\nstdev: 21489.04\ncv: 2.74%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9e8daca41206410cfe053283759c340bd31f9654",
+          "message": "test(ipm): give the measured broker a deployment's lease (Fixes #2564) (#2692)\n\n* test(ipm): say why a measured ingest run retried (#2564)\n\nfelix-loadgen's ingest row gains publish_retry_reasons, each retried\nrefusal counted by code and message, and the IPM gate's not-clean\nerror adds the broker's lease lapse and refusal counters.\n\n* test(ipm): give the measured broker a deployment's lease (#2564)\n\nUnder callgrind the harness's 1 s node expiry (a 750 ms usable lease)\nis tens of native milliseconds, so a heartbeat that slips under load\nlets the lease lapse and publishes are refused as fenced and retried.\nThe IPM run now uses the 15 s expiry a deployment has.",
+          "timestamp": "2026-11-16T10:26:34Z",
+          "tree_id": "60594884dd93fdb7bce97ad4dcd4b36160559033",
+          "url": "https://github.com/GetFelix/felix/commit/9e8daca41206410cfe053283759c340bd31f9654"
+        },
+        "date": 1794825206339,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 483241.6,
+            "range": "47774.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 483241.60\nmean: 499523.63\nstdev: 47774.69\ncv: 9.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 483241.6,
+            "range": "47774.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 483241.60\nmean: 499523.63\nstdev: 47774.69\ncv: 9.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121911.41,
+            "range": "690.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121911.41\nmean: 121798.49\nstdev: 690.07\ncv: 0.57%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1219114.09,
+            "range": "6900.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1219114.09\nmean: 1217984.94\nstdev: 6900.67\ncv: 0.57%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
