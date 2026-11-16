@@ -515,6 +515,41 @@ async fn a_batch_cut_by_a_leader_change_is_finished_by_its_resend() {
     led.cluster.stop().await;
 }
 
+/// **A batch of no records on a numbering producer is answered with no
+/// offsets, as the hybrid does, and proposes nothing.** Kafka admits one;
+/// refusing it would be a retriable storage error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_empty_numbered_batch_is_answered_and_proposes_nothing() {
+    use std::sync::atomic::Ordering::Relaxed;
+
+    let mut led = led().await;
+    let (broker, handle, _root) = broker_over(&led.cluster, &led.leader, &led.engine).await;
+    let group = led.cluster.runtime(&led.leader.broker).group(&shard(0));
+    let group = group.expect("group");
+    let before = group.proposed.load(Relaxed);
+    let turn = broker.producer_turn(&handle, PRODUCER).await;
+    let sent = led
+        .engine
+        .publish_records_idempotent(
+            &broker,
+            &handle,
+            &shard(0),
+            led.term,
+            turn,
+            0,
+            Vec::new(),
+            Default::default(),
+            PATIENCE,
+        )
+        .expect("an empty batch is not refused")
+        .complete()
+        .await
+        .expect("answered");
+    assert_eq!((sent.outcome.offsets, sent.duplicate), (None, false));
+    assert_eq!(group.proposed.load(Relaxed), before, "nothing proposed");
+    led.cluster.stop().await;
+}
+
 /// **A producer that numbers records hands a request's new records to the
 /// group as one proposal, and a leader change that cuts them leaves whole
 /// one-record batches.** The re-send is answered from the first held

@@ -625,6 +625,7 @@ impl RaftEngine {
             IdempotentProposal::Proposed(proposed) => {
                 Answer::Proposed(proposed.answer_within(timeout, timed_out))
             }
+            IdempotentProposal::Empty => Answer::Empty,
             IdempotentProposal::Held { first, last } => {
                 // Below the bound it is committed, whoever wrote it.
                 // Above, this term wrote it: a term is served only once
@@ -714,6 +715,8 @@ pub struct IdempotentPublish(Answer);
 
 enum Answer {
     Proposed(ProposedPublish<CommitError>),
+    /// A batch of no records: nothing to wait for.
+    Empty,
     Held {
         offsets: (u64, u64),
         committed: BoxFuture<'static, Result<(), CommitError>>,
@@ -728,6 +731,13 @@ impl IdempotentPublish {
         match self.0 {
             Answer::Proposed(proposed) => Ok(IdempotentOutcome {
                 outcome: proposed.complete().await?,
+                duplicate: false,
+            }),
+            Answer::Empty => Ok(IdempotentOutcome {
+                outcome: PublishOutcome {
+                    subscribers: 0,
+                    offsets: None,
+                },
                 duplicate: false,
             }),
             Answer::Held { offsets, committed } => {

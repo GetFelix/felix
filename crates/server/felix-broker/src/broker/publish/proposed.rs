@@ -485,6 +485,9 @@ pub enum IdempotentProposal<E: Send + 'static> {
     /// The log already holds the batch at these offsets, inclusive. Nothing
     /// was handed to the engine.
     Held { first: u64, last: u64 },
+    /// The batch had no records (Kafka admits one). Nothing was handed to
+    /// the engine and the producer's state is unchanged.
+    Empty,
     /// The batch was new and is on its way.
     Proposed(ProposedPublish<E>),
 }

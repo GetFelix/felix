@@ -255,10 +255,10 @@ impl Broker {
                 "an idempotent batch was proposed on a stream with no log".to_string(),
             ));
         };
+        // As the hybrid answers it: no offsets, nothing proposed, and the
+        // producer's state untouched.
         if payloads.is_empty() {
-            return Err(BrokerError::Storage(
-                "an idempotent batch with no records was proposed".to_string(),
-            ));
+            return Ok(IdempotentProposal::Empty);
         }
         let producer_id = turn.producer_id();
         let mut start: Option<(u64, u64)> = None;
