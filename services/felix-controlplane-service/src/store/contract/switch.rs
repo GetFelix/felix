@@ -97,7 +97,7 @@ async fn active(store: &dyn ControlPlaneStore, shard: u32) -> ShardAssignment {
     store.put_shard_assignment(wanted).await.expect("activate")
 }
 
-pub(super) async fn sealed(store: &dyn ControlPlaneStore, shard: u32) -> ShardAssignment {
+pub(crate) async fn sealed(store: &dyn ControlPlaneStore, shard: u32) -> ShardAssignment {
     let current = active(store, shard).await;
     written(
         store
@@ -134,7 +134,7 @@ fn report(generation: u64, voters: &[(&str, &str)]) -> SealReport {
     }
 }
 
-pub(super) fn both(generation: u64) -> SealReport {
+pub(crate) fn both(generation: u64) -> SealReport {
     report(generation, &[("broker-x", COPY_X), ("broker-y", COPY_Y)])
 }
 

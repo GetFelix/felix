@@ -12,7 +12,7 @@ use felix_storage::raft_copy::{CopyMarks, LogMarkMode, MarkLog};
 use felix_storage::raft_log::{LogPoint, LogPositions, RaftLog, SnapshotStore, TailBudget};
 use felix_storage::waiters::Waiters;
 use openraft::error::{ForwardReason, InitializeError, LinearizableReadError, RaftError};
-use openraft::raft::SnapshotResponse;
+use openraft::raft::{SnapshotResponse, VoteResponse};
 use openraft::storage::{RaftLogReader, Snapshot};
 use openraft::type_config::alias::{LogIdOf, VoteOf};
 use openraft::vote::RaftLeaderId;
@@ -28,7 +28,7 @@ use super::commit::{self, Commits};
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
-use super::machine::{self, Cache, Machine, SnapshotData};
+use super::machine::{self, Cache, Groups, Machine, SnapshotData};
 use super::membership::{Target, Told};
 use super::network::{
     Addressee, Network, RaftRequest, RaftTransport, Refused, Reply, Request, Router, term_of,
@@ -43,9 +43,11 @@ use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
 use crate::engine::{CommitError, EngineHost, Written};
+use placed::Placement;
 
 pub(crate) mod driver;
 pub(crate) mod membership;
+pub(crate) mod placed;
 
 use driver::MembershipProgress;
 
@@ -97,6 +99,8 @@ pub(crate) struct Group {
     reached_before: AtomicBool,
     /// A cache shard's projection, as this member has applied it.
     cache: Option<Cache>,
+    /// A stream shard's consumer groups, as this member has applied them.
+    groups: Option<Groups>,
     /// The snapshot a cache shard's member is being sent.
     incoming: Arc<Incoming>,
     /// What a cache shard's leader stamps entries and judges expiry by.
@@ -114,11 +118,19 @@ pub(crate) struct Group {
     progress: Arc<tokio::sync::watch::Sender<MembershipProgress>>,
     /// How far behind a learner may be when it is promoted.
     lag_threshold: u64,
+    /// The broker placement names as this group's leader. The member that
+    /// leads hands it the leadership.
+    preferred: tokio::sync::watch::Sender<Option<String>>,
+    placement: Placement,
+    placed_budget: Arc<placed::Budget>,
     /// Timer checks the group was sent.
     ticks: AtomicU64,
     /// Timer checks the ticker gave up on because the group had not taken
     /// them by the next interval.
     dropped_ticks: AtomicU64,
+    /// The term this member was first seen leading, and when, on the
+    /// runtime's clock. It ages a term no majority has answered yet.
+    leads_since: parking_lot::Mutex<Option<(u64, u64)>>,
     /// Set once a timer check finds the group's core gone.
     stopped: AtomicBool,
     /// The shard's publish queue, in commit order. Its task starts with the
@@ -193,6 +205,8 @@ pub(crate) struct Pace {
     heard: AtomicU64,
     /// As a follower: the longest its leader said it may stay silent.
     promised: AtomicU64,
+    /// When this member last took an append, or [`NEVER`].
+    led: AtomicU64,
     /// As a leader: when it last sent an entry to anyone.
     wrote: AtomicU64,
     peers: parking_lot::Mutex<Vec<Peer>>,
@@ -242,6 +256,7 @@ impl Pace {
             due: AtomicU64::new(0),
             heard: AtomicU64::new(0),
             promised: AtomicU64::new(timers.heartbeat),
+            led: AtomicU64::new(NEVER),
             wrote: AtomicU64::new(now),
             peers: parking_lot::Mutex::new(Vec::new()),
             sent: parking_lot::Mutex::new(None),
@@ -350,6 +365,20 @@ impl Pace {
         }
     }
 
+    /// The peers that answered lately: within the time after which a peer
+    /// counts as silent, and never less than two idle heartbeats, which an
+    /// idle group sends that far apart.
+    pub(crate) fn live(&self) -> BTreeSet<MemberId> {
+        let timers = &self.timers;
+        let now = timers.now();
+        let silent = timers
+            .silent()
+            .max(2 * timers.idle_heartbeat + timers.election_min);
+        let peers = self.peers.lock();
+        let live = peers.iter().filter(|peer| now < peer.answered + silent);
+        live.map(|peer| peer.id.clone()).collect()
+    }
+
     /// How long a leader waits until its next heartbeat.
     pub(super) fn leader_gap(&self, now: u64) -> u64 {
         let timers = &self.timers;
@@ -411,6 +440,32 @@ impl Pace {
         let late = self.timers.now().saturating_sub(arrived) >= deadline.as_millis() as u64;
         let short = gap <= self.timers.heartbeat;
         self.followed((!(late && short)).then_some(gap));
+        self.led.store(self.timers.now(), Ordering::Relaxed);
+    }
+
+    /// The leader handed its leadership on: this member counts on it no
+    /// longer. If the target never stands, the old leader stands once the
+    /// transfer expires, and must not be refused for a leader that is gone.
+    pub(super) fn forget_leader(&self) {
+        self.led.store(NEVER, Ordering::Relaxed);
+    }
+
+    /// Whether this member, as a follower, still counts on the leader it
+    /// last took an append from: it would not stand itself yet.
+    pub(super) fn follows_live_leader(&self, now: u64) -> bool {
+        let led = self.led.load(Ordering::Relaxed);
+        led != NEVER && now < led.saturating_add(self.follower_wait())
+    }
+
+    /// Whether a leader that a majority answered `acked` ago is still
+    /// waited for by its followers. Some may have been told the idle gap
+    /// even when the leader is back at the short one.
+    pub(super) fn leads_live(&self, acked: Duration) -> bool {
+        let timers = &self.timers;
+        let wait = timers
+            .election_min
+            .max(timers.idle_heartbeat.saturating_mul(3));
+        (acked.as_millis() as u64) < wait
     }
 
     /// This member granted a vote. Whoever wins starts at the short gap.
@@ -507,7 +562,13 @@ pub(crate) struct Host {
     /// Who is told when the shard opens and closes here.
     pub(crate) engine: Option<Arc<dyn EngineHost>>,
     pub(crate) clock: Clock,
+    pub(crate) placement: Placement,
+    /// The broker's placement transfers, shared by all its groups.
+    pub(crate) placed_budget: Arc<placed::Budget>,
 }
+
+/// [`Pace`]'s mark for a time that has not come yet.
+const NEVER: u64 = u64::MAX;
 
 /// Expired values deleted by one pass of the expiry task.
 const EXPIRE_AT_ONCE: usize = 256;
@@ -534,6 +595,8 @@ impl Group {
         let Host {
             engine: host,
             clock,
+            placement,
+            placed_budget,
         } = host;
         let snapshots = SnapshotStore::open(log.dir())?;
         let log =
@@ -571,8 +634,13 @@ impl Group {
             copy_id,
             log.first_index_reader(),
         );
-        let (machine, commits, applied, cache) =
-            Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
+        let machine::Opened {
+            machine,
+            commits,
+            applied,
+            cache,
+            groups,
+        } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
         #[cfg(test)]
         let apply_hold = Arc::clone(&machine.hold);
         let pace = Arc::new(Pace::new(timers, &id, &member));
@@ -649,6 +717,7 @@ impl Group {
             leadership,
             reached_before: AtomicBool::new(false),
             cache,
+            groups,
             incoming: Arc::default(),
             clock,
             #[cfg(test)]
@@ -658,8 +727,12 @@ impl Group {
             target: tokio::sync::watch::Sender::default(),
             progress: Arc::default(),
             lag_threshold,
+            preferred: tokio::sync::watch::Sender::new(None),
+            placement,
+            placed_budget,
             ticks: AtomicU64::new(0),
             dropped_ticks: AtomicU64::new(0),
+            leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
@@ -673,18 +746,39 @@ impl Group {
     /// target while this member leads. It ends on `stop`, or when the
     /// group's core is gone.
     pub(crate) fn drive(self: &Arc<Self>) {
+        let timers = &self.pace.timers;
+        let placing = placed::Placing::new(
+            self.placement.clone(),
+            Duration::from_millis(timers.election_min),
+            Duration::from_millis(timers.election_min + timers.election_max),
+            Arc::clone(&self.placed_budget),
+        );
         let driver = driver::Driver::new(
             Arc::clone(self),
             self.lag_threshold,
             driver::Retry::default(),
             Arc::clone(&self.progress),
+            placing,
         );
         self.runtime.spawn(driver::run(
             driver,
             self.target.subscribe(),
             self.leadership.changes(),
+            self.preferred.subscribe(),
             self.stop.clone(),
         ));
+    }
+
+    /// Placement names `broker` as this group's leader. Returns whether
+    /// that is new.
+    pub(crate) fn prefer(&self, broker: &str) -> bool {
+        self.preferred.send_if_modified(|held| {
+            let new = held.as_deref() != Some(broker);
+            if new {
+                *held = Some(broker.to_owned());
+            }
+            new
+        })
     }
 
     /// The control plane's target for this group, told for `term`. A
@@ -796,6 +890,59 @@ impl Group {
         }
     }
 
+    /// Whether this member follows a leader it heard within its wait, or
+    /// leads with a majority's answer within its followers' wait.
+    fn leader_seems_live(&self) -> bool {
+        use openraft::Instant as _;
+        use openraft::async_runtime::watch::WatchReceiver;
+        let now = self.pace.timers.now();
+        if self.pace.follows_live_leader(now) {
+            return true;
+        }
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let acked = metrics.last_quorum_acked.map(|acked| acked.elapsed());
+        metrics.state == ServerState::Leader
+            && acked.is_some_and(|acked| self.pace.leads_live(acked))
+    }
+
+    /// Whether this member, as leader, is still heard by its group: a
+    /// majority answered it within its followers' wait. A term no majority
+    /// has answered yet counts from when it was first seen here. openraft
+    /// never steps a leader down for a lost majority, so without this a
+    /// cut-off leader would serve readers for good. A sole voter needs
+    /// nobody.
+    fn leads_heard(&self, metrics: &openraft::RaftMetrics<ShardTypes>) -> bool {
+        use openraft::Instant as _;
+        if metrics.membership_config.membership().voter_ids().count() <= 1 {
+            return true;
+        }
+        let now = self.pace.timers.now();
+        let mut since = self.leads_since.lock();
+        let term = metrics.current_term;
+        let first = match *since {
+            Some((led, at)) if led == term => at,
+            _ => {
+                *since = Some((term, now));
+                now
+            }
+        };
+        let age = match metrics.last_quorum_acked {
+            Some(acked) => acked.elapsed(),
+            None => Duration::from_millis(now.saturating_sub(first)),
+        };
+        self.pace.leads_live(age)
+    }
+
+    /// A pre-vote answer that grants nothing, naming this member's vote and
+    /// last log id as openraft's own refusal would.
+    fn refusal(&self) -> VoteResponse<ShardTypes> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let vote = self.raft.metrics().borrow_watched().vote.clone();
+        let last = self.raft.data_metrics().borrow_watched().last_log;
+        VoteResponse::new(vote, last, false)
+    }
+
     fn leads(&self) -> bool {
         use openraft::async_runtime::watch::WatchReceiver;
         self.raft.metrics().borrow_watched().state == ServerState::Leader
@@ -864,11 +1011,13 @@ impl Group {
     ) -> Result<Reply, Refused> {
         let group = Arc::clone(self);
         let arrived = self.pace.timers.now();
+        // A granted pre-vote promises nothing, so it leaves the pace alone.
+        let pre_vote = matches!(body, Request::PreVote(_));
         let handled = tokio::spawn(async move {
             let reply = group.answer(body, report).await?;
             match &reply {
                 Reply::Append(Ok(_)) => group.pace.took(beat, arrived, deadline),
-                Reply::Vote(vote) if vote.vote_granted => group.pace.voted(),
+                Reply::Vote(vote) if vote.vote_granted && !pre_vote => group.pace.voted(),
                 _ => {}
             }
             Ok(reply)
@@ -974,6 +1123,17 @@ impl Group {
         {
             return Err(stopped(REACHED_BEFORE.to_string()));
         }
+        // openraft refuses a pre-vote only within its own lease of
+        // `election_max` (2 s), which lapses just before each idle
+        // heartbeat. A member that still counts on a live leader refuses it
+        // for as long as it would wait for that leader itself. The refusal
+        // is a real answer, so the candidate keeps the broker counted as
+        // reachable and still learns a higher term or a longer log.
+        if let Request::PreVote(_) = &body
+            && self.leader_seems_live()
+        {
+            return Ok(Reply::Vote(self.refusal()));
+        }
         let held = self.holds_votes();
         let asks = match &body {
             Request::Vote(rpc) => !(held && self.hold.lets_through(&rpc.vote)),
@@ -986,6 +1146,7 @@ impl Group {
             }
             Request::TransferLeader(_) => {
                 self.hold.vote_may_change(None);
+                self.pace.forget_leader();
                 false
             }
             Request::Snapshot { .. } | Request::Written { .. } => false,
@@ -1135,6 +1296,27 @@ impl Group {
             None => propose::split(batch),
         };
         self.queue(split)
+    }
+
+    /// Queue one consumer-group write, `entry` being its encoded
+    /// [`felix_broker::GroupEntry`], written only while this member leads
+    /// `term`. A cache shard has no groups and refuses it.
+    pub(crate) fn propose_group(
+        &self,
+        entry: Bytes,
+        timestamp_micros: u64,
+        term: u64,
+    ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+        let split = match self.cache {
+            Some(_) => Err(propose::not_a_stream()),
+            None => propose::split_group(entry, timestamp_micros, term),
+        };
+        self.queue(split)
+    }
+
+    /// A stream shard's consumer groups, as this member has applied them.
+    pub(crate) fn groups(&self) -> Option<Groups> {
+        self.groups.clone()
     }
 
     fn queue(
@@ -1748,11 +1930,20 @@ impl Group {
         // an append that publishes in between, and that append behind the
         // first: the caller and the member's log would both stop for good.
         let positions = *self.positions.borrow();
+        // Pre-vote keeps a cut-off member at its term, so openraft names the
+        // last leader forever. A follower counts on it only as long as it
+        // would refuse a pre-vote for it.
+        let live = match metrics.state {
+            ServerState::Leader => self.leads_heard(&metrics),
+            _ => self.pace.follows_live_leader(self.pace.timers.now()),
+        };
+        let leader_hint = metrics.current_leader.clone();
         GroupStatus {
             member: self.member.clone(),
             role,
             term: metrics.current_term,
-            leader: metrics.current_leader,
+            leader: leader_hint.clone().filter(|_| live),
+            leader_hint,
             last_index: metrics.last_log_index,
             written: positions.written,
             flushed: positions.flushed,
@@ -1800,6 +1991,21 @@ impl Group {
 
     pub(crate) fn positions(&self) -> tokio::sync::watch::Receiver<LogPositions> {
         self.positions.clone()
+    }
+
+    /// When this member last took an append or granted a vote.
+    #[cfg(test)]
+    pub(crate) fn heard(&self) -> u64 {
+        self.pace.heard.load(Ordering::Relaxed)
+    }
+
+    /// How long ago this member last took an append, and how long it
+    /// waits for its leader after one.
+    #[cfg(test)]
+    pub(crate) fn led_age(&self) -> (u64, u64) {
+        let led = self.pace.led.load(Ordering::Relaxed);
+        let age = self.pace.timers.now().saturating_sub(led);
+        (age, self.pace.follower_wait())
     }
 
     /// How long this member, as a leader, would wait for its next heartbeat.

@@ -29,6 +29,7 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::PublishSuperseded { .. } => ResponseError::NotLeaderOrFollower,
         BrokerError::Storage(_)
         | BrokerError::StorageFull(_)
+        | BrokerError::OpenFileLimit(_)
         | BrokerError::GenerationBelowFloor { .. }
         | BrokerError::WriterUnknown(_)
         | BrokerError::DurableStorageNotConfigured { .. } => ResponseError::KafkaStorageError,
@@ -51,6 +52,7 @@ pub(crate) fn from_broker(err: &BrokerError) -> ResponseError {
         | BrokerError::GroupOffsetNotHandedOut { .. }
         | BrokerError::GroupClaimLapsed { .. }
         | BrokerError::MalformedCommit(_)
+        | BrokerError::MalformedGroupEntry(_)
         | BrokerError::CommitNeedsDurableStream
         | BrokerError::OffsetMismatch { .. }
         | BrokerError::ExpectedOffsetNeedsDurableStream

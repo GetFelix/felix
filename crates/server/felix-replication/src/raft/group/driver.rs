@@ -3,13 +3,13 @@
 //! the newest target, takes the one step `next_step` names, and looks
 //! again. What it keeps between looks only paces it (the term a transfer
 //! was asked in, retry counts), so a new leader or a restart resumes from
-//! the log. See
+//! the log. With no membership work left, it hands the leadership to the
+//! member placement names ([`super::placed`]). See
 //! `docs/per-shard-raft.md`, "Membership".
 
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tokio::sync::watch;
@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::Group;
 use super::membership::{Basis, Replication, StepError};
+use super::placed::{Decision, Placing};
 use crate::raft::lead::Lead;
 use crate::raft::membership::{Config, Step, Target, TargetVersion, Told, View, Wait};
 use crate::raft::types::MemberId;
@@ -113,6 +114,15 @@ pub(crate) trait Member: Send + Sync {
     /// Ask for a transfer of the leadership of `term`. `None` if this
     /// member no longer leads it, and then nothing was asked.
     fn transfer(&self, term: u64, to: MemberId) -> impl Future<Output = Option<u64>> + Send;
+
+    /// [`Self::transfer`], asked once `to` holds the whole log or `within`
+    /// has passed. The shard closes first.
+    fn transfer_caught_up(
+        &self,
+        term: u64,
+        to: MemberId,
+        within: Duration,
+    ) -> impl Future<Output = Option<u64>> + Send;
 }
 
 impl Member for Arc<Group> {
@@ -157,6 +167,21 @@ impl Member for Arc<Group> {
     async fn transfer(&self, term: u64, to: MemberId) -> Option<u64> {
         self.transfer_in(term, to).await
     }
+
+    async fn transfer_caught_up(&self, term: u64, to: MemberId, within: Duration) -> Option<u64> {
+        self.transfer_in_caught_up(term, to, within).await
+    }
+}
+
+/// Where a leadership placement would move stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Placed {
+    /// A transfer was asked for.
+    Asked,
+    /// Not yet. Look again after this long.
+    Held(Duration),
+    /// Waiting for the broker's budget.
+    Queued,
 }
 
 /// What one look came to.
@@ -168,6 +193,8 @@ pub(crate) enum Pass {
     Stepped,
     /// Nothing to do until the target or the term changes.
     Parked(Wait),
+    /// No membership work, and placement names another leader.
+    Placed(Wait, Placed),
     /// A target is held, but it was not told for the term this member
     /// leads. Nothing to do until it is told again.
     Untold,
@@ -214,6 +241,7 @@ pub(crate) struct Driver<M> {
     /// the voters then. Checked when its entry shows up.
     unchecked: Option<(u64, Basis)>,
     progress: Reported,
+    pub(crate) placing: Placing,
 }
 
 impl<M: Member> Driver<M> {
@@ -222,6 +250,7 @@ impl<M: Member> Driver<M> {
         lag_threshold: u64,
         retry: Retry,
         progress: Arc<watch::Sender<MembershipProgress>>,
+        placing: Placing,
     ) -> Self {
         Self {
             member,
@@ -236,6 +265,7 @@ impl<M: Member> Driver<M> {
             last_transfer: None,
             unchecked: None,
             progress: Reported(progress),
+            placing,
         }
     }
 
@@ -243,36 +273,35 @@ impl<M: Member> Driver<M> {
     /// told for the term this member leads. One told in an earlier term may
     /// be older than what an earlier leader of this term's view acted on.
     pub(crate) async fn pass(&mut self, told: Option<&Told>) -> Pass {
-        let untold = AtomicBool::new(false);
-        let pass = self
-            .pass_for(|term| {
-                untold.store(
-                    told.is_some_and(|told| told.term != term),
-                    Ordering::Relaxed,
-                );
-                told.filter(|told| told.term == term)
-                    .map(|told| &told.target)
-            })
-            .await;
-        match pass {
-            Pass::Parked(Wait::NoTarget) if untold.load(Ordering::Relaxed) => Pass::Untold,
-            pass => pass,
-        }
+        self.pass_for(|term| match told {
+            Some(told) if told.term == term => (Some(&told.target), false),
+            Some(_) => (None, true),
+            None => (None, false),
+        })
+        .await
     }
 
     /// `pass` with a target taken whatever term it was told in.
     #[cfg(test)]
     pub(crate) async fn pass_any(&mut self, target: Option<&Target>) -> Pass {
-        self.pass_for(|_| target).await
+        self.pass_for(|_| (target, false)).await
     }
 
-    async fn pass_for<'t>(&mut self, target: impl FnOnce(u64) -> Option<&'t Target>) -> Pass {
+    /// `target` answers with the target for the term and whether one is
+    /// held that was told for another. Placement moves leadership only
+    /// when no such target waits.
+    async fn pass_for<'t>(
+        &mut self,
+        target: impl FnOnce(u64) -> (Option<&'t Target>, bool),
+    ) -> Pass {
         let Some(look) = self.member.look().await else {
+            self.placing.not_leading();
             return Pass::NotLeading;
         };
         let basis = &look.basis;
-        let target = target(basis.term);
+        let (target, untold) = target(basis.term);
         if self.halted == Some(basis.term) {
+            self.placing.busy(basis.term);
             return Pass::Halted;
         }
         let me = self.member.me().clone();
@@ -301,7 +330,21 @@ impl<M: Member> Driver<M> {
             return Pass::Broken(broken);
         }
         let kind = kind(&step);
+        if !matches!(step, Step::Wait(Wait::NoTarget | Wait::Settled)) {
+            self.placing.busy(basis.term);
+        }
         let written = match step {
+            // Placement is the last thing a leader looks at: any membership
+            // work comes first.
+            Step::Wait(Wait::NoTarget) if untold => {
+                // Nothing re-looks on a timer, so a permit or an earlier
+                // term's transfer is settled here.
+                self.placing.untold(&me, basis.term);
+                return Pass::Untold;
+            }
+            Step::Wait(wait @ (Wait::NoTarget | Wait::Settled)) => {
+                return self.placed(&me, &view, &look, wait).await;
+            }
             Step::Wait(wait) => {
                 return match wait {
                     Wait::NoTarget | Wait::StaleTarget | Wait::Settled => Pass::Parked(wait),
@@ -321,7 +364,10 @@ impl<M: Member> Driver<M> {
                         metrics::counter!(STEPS_TOTAL, "step" => kind).increment(1);
                         Pass::Stepped
                     }
-                    None => Pass::NotLeading,
+                    None => {
+                        self.placing.not_leading();
+                        Pass::NotLeading
+                    }
                 };
             }
             Step::AddLearner(member) => self.timed(self.member.add_learner(basis, member)).await,
@@ -370,6 +416,30 @@ impl<M: Member> Driver<M> {
         }
     }
 
+    /// Hand the leadership to the member placement names, if it is time.
+    async fn placed(&mut self, me: &MemberId, view: &View, look: &Look, wait: Wait) -> Pass {
+        let term = look.basis.term;
+        match self.placing.decide(me, view, &look.replication.live, term) {
+            Decision::Nothing => Pass::Parked(wait),
+            Decision::Hold(again) => Pass::Placed(wait, Placed::Held(again)),
+            Decision::Queue => Pass::Placed(wait, Placed::Queued),
+            Decision::Transfer(to, within) => {
+                match self.member.transfer_caught_up(term, to, within).await {
+                    Some(term) => {
+                        self.transfer = Some(term);
+                        self.placing.asked(term);
+                        metrics::counter!(STEPS_TOTAL, "step" => "placed_transfer").increment(1);
+                        Pass::Placed(wait, Placed::Asked)
+                    }
+                    None => {
+                        self.placing.not_leading();
+                        Pass::NotLeading
+                    }
+                }
+            }
+        }
+    }
+
     async fn timed<T>(&self, step: impl Future<Output = T>) -> Option<T> {
         tokio::time::timeout(self.retry.step, step).await.ok()
     }
@@ -391,13 +461,18 @@ impl<M: Member> Driver<M> {
                 self.progress.set(MembershipProgress::Idle);
                 return None;
             }
-            Pass::Parked(wait) => {
+            Pass::Parked(wait) | Pass::Placed(wait, _) => {
                 self.idle_looks = 0;
                 self.progress.set(match wait {
                     Wait::Settled => MembershipProgress::Settled,
                     _ => MembershipProgress::Idle,
                 });
-                return None;
+                return match pass {
+                    // Looked at again once the term has had time to end.
+                    Pass::Placed(_, Placed::Asked) => Some(self.placing.hold_for()),
+                    Pass::Placed(_, Placed::Held(again)) => Some(*again),
+                    _ => None,
+                };
             }
             Pass::Halted => return None,
             Pass::Stepped if self.transfers >= self.retry.attempts => {
@@ -480,10 +555,12 @@ pub(crate) async fn run<M: Member>(
     mut driver: Driver<M>,
     mut target: watch::Receiver<Option<Told>>,
     mut lead: watch::Receiver<Lead>,
+    mut preferred: watch::Receiver<Option<String>>,
     stop: CancellationToken,
 ) {
     loop {
         let goal = target.borrow_and_update().clone();
+        driver.placing.prefer(preferred.borrow_and_update().clone());
         if lead.borrow_and_update().gone() {
             break;
         }
@@ -502,6 +579,8 @@ pub(crate) async fn run<M: Member>(
         if pass == Pass::Closed {
             break;
         }
+        let queued = matches!(pass, Pass::Placed(_, Placed::Queued));
+        let budget = Arc::clone(&driver.placing.budget);
         let waited = async {
             match wait {
                 Some(wait) => tokio::time::sleep(wait).await,
@@ -528,6 +607,11 @@ pub(crate) async fn run<M: Member>(
                 }
                 driver.led();
             }
+            // A preference that went away leaves the driver as it was.
+            Ok(()) = preferred.changed() => {}
+            // In the select, so a group waiting its turn still takes a new
+            // target or term at once. It gives up its place then.
+            permit = budget.take(), if queued => driver.placing.ready = Some(permit),
             () = waited => {}
         }
     }

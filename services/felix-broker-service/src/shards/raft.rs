@@ -57,6 +57,9 @@ pub(crate) const OFF_PLACEMENT: &str = "felix_broker_raft_shards_off_placement";
 /// Raft shards whose term this broker leads and serves.
 pub(crate) const LED: &str = "felix_broker_raft_shards_led";
 
+/// Raft shards this broker leads whose placement names another leader.
+pub(crate) const LED_OFF_PLACEMENT: &str = "felix_broker_raft_shards_led_off_placement";
+
 /// This broker's Raft members of stream shards.
 pub(crate) struct RaftShards {
     me: Weak<Self>,
@@ -94,6 +97,8 @@ pub(crate) struct RaftShards {
     off_placement: parking_lot::Mutex<HashSet<ShardKey>>,
     /// Shards whose directory holds a log with no copy id, logged once.
     carried_over: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Limits the warning for a shard whose open waits on the open-file limit.
+    held_warn: parking_lot::Mutex<super::lifecycle::WarnThrottle>,
     /// The data root, once the restore gate has passed it. No member opens
     /// before.
     root: std::sync::OnceLock<Arc<CopyRoot>>,
@@ -117,6 +122,10 @@ pub(crate) struct RaftShards {
     /// close, so a stream's delete never runs between a member's claim of
     /// its directory and its open.
     open: tokio::sync::Mutex<HashMap<ShardKey, Member>>,
+    /// The group epoch of each open member, read from its copy at open. The
+    /// floor report sends it, and only a re-form changes it, which needs the
+    /// member closed.
+    epochs: parking_lot::Mutex<HashMap<ShardKey, u64>>,
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -205,11 +214,13 @@ impl RaftShards {
             #[cfg(test)]
             retention_gate: retention::Gate::default(),
             carried_over: parking_lot::Mutex::default(),
+            held_warn: parking_lot::Mutex::default(),
             root: std::sync::OnceLock::new(),
             targets: parking_lot::Mutex::default(),
             #[cfg(test)]
             told: parking_lot::Mutex::default(),
             open: tokio::sync::Mutex::default(),
+            epochs: parking_lot::Mutex::default(),
         });
         shards
             .broker
@@ -233,12 +244,22 @@ impl RaftShards {
     }
 
     /// The committed log id of every group this broker leads, with the
-    /// stream incarnation the group runs.
-    pub(crate) fn led_floors(&self) -> Vec<(ShardKey, u64, felix_replication::raft::LogPoint)> {
+    /// stream incarnation the group runs and the group epoch of its copy.
+    /// A group whose epoch is not known yet is left out until it is.
+    pub(crate) fn led_floors(&self) -> Vec<floor::Led> {
+        let epochs = self.epochs.lock();
         self.runtime
             .led_commits()
             .into_iter()
-            .map(|(group, at)| ((*group.shard).clone(), group.epoch, at))
+            .filter_map(|(group, at)| {
+                let epoch = *epochs.get(&*group.shard)?;
+                Some(floor::Led {
+                    key: (*group.shard).clone(),
+                    incarnation: group.epoch,
+                    epoch,
+                    at,
+                })
+            })
             .collect()
     }
 
@@ -310,6 +331,20 @@ impl RaftShards {
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
             .await
             .context("open the Raft member")?;
+        let epoch = {
+            let dir = dir.clone();
+            tokio::task::spawn_blocking(move || felix_storage::raft_copy::group_epoch(&dir)).await
+        };
+        match epoch {
+            Ok(Ok(epoch)) => {
+                self.epochs.lock().insert(key.clone(), epoch);
+            }
+            // The member still serves; only its floor report waits.
+            Ok(Err(err)) => {
+                tracing::warn!(shard = ?key, error = %err, "could not read a Raft member's group epoch; its floor is not reported")
+            }
+            Err(err) => tracing::warn!(shard = ?key, error = %err, "group epoch read task"),
+        }
         let mut member = Member {
             incarnation,
             log: opened.log,
@@ -551,6 +586,7 @@ impl RaftShards {
     /// until it has stopped.
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
+        self.epochs.lock().remove(key);
         self.leading.forget(key);
         if let Some(follow) = member.follow {
             follow.abort();
@@ -779,12 +815,23 @@ impl EngineShards for RaftShards {
                     match self.open_member(key, assignment, root).await {
                         Ok(member) => {
                             self.carried_over.lock().remove(key);
+                            self.held_warn.lock().clear(key);
                             open.insert(key.clone(), member);
                         }
                         // Tried again on the next pass.
                         Err(err) if err.is::<CarriedOver>() => {
                             if self.carried_over.lock().insert(key.clone()) {
                                 tracing::error!(shard = ?key, error = %err, "not opening a Raft shard");
+                            }
+                            continue;
+                        }
+                        // Also tried again on the next pass; counted with
+                        // the stream shards that hit the same limit.
+                        Err(err) if super::lifecycle::out_of_files(&err) => {
+                            super::lifecycle::metrics::record_open_failure();
+                            super::lifecycle::metrics::record_open_file_limit();
+                            if self.held_warn.lock().due(key) {
+                                tracing::warn!(shard = ?key, error = %format!("{err:#}"), "could not open a Raft shard: the open-file limit is exhausted; opening on a later pass");
                             }
                             continue;
                         }
@@ -797,6 +844,9 @@ impl EngineShards for RaftShards {
                 if self.off_placement(key, &brokers) {
                     off_placement += 1;
                 }
+                // The group's leader hands it the leadership. Even the first
+                // one: the broker that forms a group wins its first term.
+                self.runtime.prefer(key, &assignment.leader);
                 // A set short of the stream's replica count forms nothing: a
                 // group of the brokers placed so far would be formed again,
                 // on empty logs, by the ones placed later.
@@ -833,11 +883,16 @@ impl EngineShards for RaftShards {
                 })
                 .collect();
             *self.targets.lock() = targets;
-            let led = open
+            let led: Vec<&ShardKey> = open
                 .keys()
                 .filter(|key| self.leading(key).is_some())
-                .count();
-            metrics::gauge!(LED).set(led as f64);
+                .collect();
+            let led_off_placement = led.iter().filter(|key| {
+                fed.get(**key)
+                    .is_some_and(|(assignment, _)| assignment.leader != self.local)
+            });
+            metrics::gauge!(LED_OFF_PLACEMENT).set(led_off_placement.count() as f64);
+            metrics::gauge!(LED).set(led.len() as f64);
             taken
         })
     }
@@ -854,8 +909,10 @@ impl EngineShards for RaftShards {
         if let Some(term) = self.leading(key) {
             return Some(Dispatch::Local { generation: term });
         }
+        // The hint, not the heard leader: a restarted follower forwards at
+        // once, and a forward to a leader that is gone fails and is retried.
         let leader = status
-            .leader
+            .leader_hint
             .filter(|leader| *leader.broker != *self.local)
             .map(|leader| leader.broker);
         Some(match leader {
@@ -880,6 +937,14 @@ impl EngineShards for RaftShards {
         self.runtime
             .status(key)
             .is_some_and(|status| status.leader.is_some())
+    }
+
+    fn leads_unheard(&self, key: &ShardKey) -> bool {
+        self.leading(key).is_some()
+            && self
+                .runtime
+                .status(key)
+                .is_some_and(|status| status.leader.is_none())
     }
 
     fn wake_with(&self, wake: Arc<tokio::sync::Notify>) {

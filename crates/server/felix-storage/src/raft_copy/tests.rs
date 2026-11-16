@@ -7,6 +7,8 @@ mod marks;
 mod placement_ack;
 mod reclaim;
 mod reform;
+mod start;
+mod vouch;
 
 use std::io;
 use std::path::{Path, PathBuf};

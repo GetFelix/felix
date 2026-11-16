@@ -69,7 +69,9 @@ pub(crate) async fn list_shard_moves(
 ///
 /// The move then runs like any other: staged, fenced once the destination is
 /// close, cut over once the leader has drained. Held to the move limits, but
-/// not to a pause.
+/// not to a pause. On a cluster that runs durable streams on Raft, a shard's
+/// destination must be a member of its set, and the start is one write that
+/// names it leader.
 ///
 /// When brokers report zones, the response says how many the shard's copies
 /// span before and after. A move that narrows the spread is not refused, so
@@ -82,7 +84,7 @@ pub(crate) async fn list_shard_moves(
 ///   registered.
 /// - 409 when the destination is not live, already leads the shard or is at
 ///   capacity, the shard is already moving, its leader is down, or a move
-///   limit is reached.
+///   limit is reached; on a Raft shard, when the destination is not a member.
 pub(crate) async fn start_shard_move(
     State(state): State<AppState>,
     headers: HeaderMap,

@@ -31,11 +31,22 @@ const MAX_BATCH: usize = 1024;
 /// How long a report may take before the tick gives up on it.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A group this broker leads, as one tick sees it.
+#[derive(Debug, Clone)]
+pub(crate) struct Led {
+    pub(crate) key: ShardKey,
+    pub(crate) incarnation: u64,
+    /// The group epoch, from the copy's `raft-epoch`.
+    pub(crate) epoch: u64,
+    pub(crate) at: LogPoint,
+}
+
 /// A led group's committed log id and the last one the control plane took.
 #[derive(Debug, Clone, Copy)]
 struct Entry {
+    epoch: u64,
     at: LogPoint,
-    acked: Option<LogPoint>,
+    acked: Option<(u64, LogPoint)>,
 }
 
 /// The floors owed to the control plane, by shard and incarnation: a group
@@ -53,14 +64,20 @@ impl Floors {
     /// Take this tick's led groups. A group no longer in `led` is dropped,
     /// with whatever it still owed: it stopped here or stopped leading, and
     /// whoever leads it now reports. If it leads here again it starts owed.
-    pub(crate) fn observe(&mut self, led: impl IntoIterator<Item = (ShardKey, u64, LogPoint)>) {
+    pub(crate) fn observe(&mut self, led: impl IntoIterator<Item = impl Into<Led>>) {
         let mut seen = BTreeMap::new();
-        for (key, incarnation, at) in led {
+        for Led {
+            key,
+            incarnation,
+            epoch,
+            at,
+        } in led.into_iter().map(Into::into)
+        {
             let acked = self
                 .entries
                 .remove(&(key.clone(), incarnation))
                 .and_then(|entry| entry.acked);
-            seen.insert((key, incarnation), Entry { at, acked });
+            seen.insert((key, incarnation), Entry { epoch, at, acked });
         }
         self.entries = seen;
     }
@@ -69,7 +86,8 @@ impl Floors {
     /// [`MAX_BATCH`], starting after the last group the previous full batch
     /// carried and wrapping around. Empty when nothing moved.
     pub(crate) fn batch(&mut self) -> Vec<RaftFloor> {
-        let owed = |(_, entry): &(&(ShardKey, u64), &Entry)| entry.acked != Some(entry.at);
+        let owed =
+            |(_, entry): &(&(ShardKey, u64), &Entry)| entry.acked != Some((entry.epoch, entry.at));
         let picked: Vec<_> = match &self.resume_after {
             Some(last) => self
                 .entries
@@ -88,9 +106,7 @@ impl Floors {
             .map(|((key, incarnation), entry)| RaftFloor {
                 key: key.clone(),
                 incarnation: *incarnation,
-                // No group is re-formed yet; the PR that starts a re-form
-                // sends the group's real epoch here.
-                epoch: 0,
+                epoch: entry.epoch,
                 index: entry.at.index,
                 term: entry.at.term,
             })
@@ -106,10 +122,13 @@ impl Floors {
                 .entries
                 .get_mut(&(floor.key.clone(), floor.incarnation))
             {
-                entry.acked = Some(LogPoint {
-                    term: floor.term,
-                    index: floor.index,
-                });
+                entry.acked = Some((
+                    floor.epoch,
+                    LogPoint {
+                        term: floor.term,
+                        index: floor.index,
+                    },
+                ));
             }
         }
     }
@@ -119,7 +138,7 @@ impl Floors {
 /// 200 leaves it owed for the next tick.
 pub(crate) async fn tick<L: ControlPlaneLink>(
     floors: &mut Floors,
-    led: Vec<(ShardKey, u64, LogPoint)>,
+    led: Vec<impl Into<Led>>,
     link: &L,
     node_id: &str,
     bearer: Option<&str>,

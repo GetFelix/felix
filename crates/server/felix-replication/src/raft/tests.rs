@@ -27,6 +27,7 @@ mod change;
 mod commit;
 mod deliver;
 mod driver;
+mod groups;
 mod idempotent;
 mod identity;
 mod lease;
@@ -446,6 +447,7 @@ impl Cluster {
                 expected: None,
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -480,6 +482,7 @@ impl Cluster {
                     expected: None,
                     trim: None,
                     commit: false,
+                    group: false,
                     publisher: None,
                     headers: None,
                     written: None,
@@ -628,6 +631,170 @@ async fn members_told_together_elect_one_leader() {
     cluster.stop().await;
 }
 
+/// **The broker that forms a group hands its first leadership on.** The
+/// lowest broker of a set forms every group of that set, so without this it
+/// would lead them all. Its first term is handed to placement's leader as
+/// soon as that member holds the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_broker_that_forms_a_group_hands_its_first_leadership_on() {
+    let mut cluster = Cluster::new(true);
+    cluster.open(0).await;
+    let key = shard(0);
+    let to = MemberId::new("c", 1);
+    // Told before the group forms, as the broker's first pass does.
+    for runtime in cluster.runtimes() {
+        assert!(runtime.prefer(&key, "c"));
+    }
+    let a = cluster.runtime("a");
+    a.initialize(&key, members()).await.expect("initialize");
+    eventually(|| (cluster.leader(0)? == to).then_some(())).await;
+    cluster.write(0, b"record").await;
+    assert_eq!(cluster.leader(0), Some(to));
+    cluster.stop().await;
+}
+
+/// Placement pacing short enough for a test.
+fn quick_placement() -> RuntimeConfig {
+    RuntimeConfig {
+        placement: Placement {
+            settle: Duration::from_secs(1),
+            led_min: Duration::from_secs(2),
+            backoff: Duration::from_secs(5),
+            backoff_cap: Duration::from_secs(20),
+            ..Placement::default()
+        },
+        ..timers()
+    }
+}
+
+fn prefer_everywhere(cluster: &Cluster, n: u32, broker: &str) {
+    for runtime in cluster.runtimes() {
+        runtime.prefer(&shard(n), broker);
+    }
+}
+
+/// Take `broker` down, as far as the others can tell, or bring it back.
+fn down(cluster: &Cluster, broker: &str, down: bool) {
+    for set in [&cluster.net.cut, &cluster.net.muted] {
+        match down {
+            true => set.lock().insert(broker.into()),
+            false => set.lock().remove(broker),
+        };
+    }
+}
+
+/// **A placement change moves the leader**, while the followers still hear
+/// the old one: the target campaigns past their pre-vote check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_placement_change_moves_the_leader() {
+    let mut cluster = Cluster::with(quick_placement(), true);
+    cluster.form(0).await;
+    let first = cluster.elected(0).await;
+    let to = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*first.broker)
+        .expect("another broker");
+    cluster.write(0, b"before").await;
+    prefer_everywhere(&cluster, 0, to);
+    eventually(|| (cluster.leader(0)?.broker.as_ref() == to).then_some(())).await;
+    cluster.write(0, b"after").await;
+    assert_eq!(
+        cluster.leader(0).map(|leader| leader.broker),
+        Some(to.into())
+    );
+    cluster.stop().await;
+}
+
+/// **Leadership returns to placement's leader** once it is back and caught
+/// up, after the group elected another while it was away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leadership_returns_to_placement_once_back() {
+    let mut cluster = Cluster::with(quick_placement(), true);
+    cluster.form(0).await;
+    prefer_everywhere(&cluster, 0, "b");
+    let b = MemberId::new("b", 1);
+    eventually(|| (cluster.leader(0)? == b).then_some(())).await;
+
+    down(&cluster, "b", true);
+    let other = eventually(|| cluster.leader(0).filter(|leader| *leader != b)).await;
+    cluster.write(0, b"while b is away").await;
+    // Nothing moves while placement's leader is away.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(cluster.leader(0), Some(other));
+
+    down(&cluster, "b", false);
+    eventually(|| (cluster.leader(0)? == b).then_some(())).await;
+    cluster.write(0, b"b is back").await;
+    cluster.stop().await;
+}
+
+/// **A target that cannot catch up never gets a transfer**: the leader
+/// keeps its term instead of closing the shard and ending it again and
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_target_that_cannot_catch_up_gets_no_transfer() {
+    let mut cluster = Cluster::with(quick_placement(), true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let to = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker)
+        .expect("another broker");
+    let key = shard(0);
+    let term = cluster
+        .runtime(&leader.broker)
+        .status(&key)
+        .expect("status")
+        .term;
+    // Its appends never arrive, and it answers nothing. Preferred once the
+    // leader counts it silent; a member that went away just now still
+    // looks live, and is asked at most once per backoff.
+    down(&cluster, to, true);
+    cluster.write(0, b"not on the target").await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    prefer_everywhere(&cluster, 0, to);
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let status = cluster
+        .runtime(&leader.broker)
+        .status(&key)
+        .expect("status");
+    assert_eq!((status.role, status.term), (Role::Leader, term));
+    cluster.stop().await;
+}
+
+/// **A broker's placement transfers are bounded**: with many groups to
+/// hand back at once, no broker has more than its permits in flight, and
+/// every group still gets there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn placement_transfers_are_bounded_per_broker() {
+    const GROUPS: u32 = 8;
+    let mut cluster = Cluster::with(quick_placement(), true);
+    for n in 0..GROUPS {
+        cluster.form(n).await;
+        prefer_everywhere(&cluster, n, "b");
+    }
+    let b = MemberId::new("b", 1);
+    let all_on_b = |cluster: &Cluster| (0..GROUPS).all(|n| cluster.leader(n).as_ref() == Some(&b));
+    eventually(|| all_on_b(&cluster).then_some(())).await;
+
+    // b goes away and comes back: every group is handed back to it.
+    down(&cluster, "b", true);
+    eventually(|| {
+        (0..GROUPS)
+            .all(|n| cluster.leader(n).is_some_and(|l| l != b))
+            .then_some(())
+    })
+    .await;
+    down(&cluster, "b", false);
+    eventually(|| all_on_b(&cluster).then_some(())).await;
+    let permits = Placement::default().permits;
+    for runtime in cluster.runtimes() {
+        assert!(runtime.placed_transfers_peak() <= permits);
+    }
+    assert!(cluster.runtime("a").placed_transfers_peak() > 0);
+    cluster.stop().await;
+}
+
 /// openraft notices a timeout only in its timer check, and the ticker is
 /// the only thing that asks for one. Forming a group needs no timer: the
 /// member told to form it stands at once.
@@ -650,8 +817,20 @@ async fn without_the_ticker_no_timeout_is_noticed() {
     for broker in ["b", "c"] {
         let status = cluster.runtime(broker).status(&shard(0)).expect("status");
         assert_eq!(status.role, Role::Follower, "{status:?}");
-        assert_eq!(status.leader.as_ref(), Some(&first), "{status:?}");
         assert_eq!(status.term, term, "{status:?}");
+        // The status names no leader once the member stops hearing it, but
+        // openraft itself has noticed nothing.
+        let group = cluster.runtime(broker).group(&shard(0)).expect("group");
+        let named = {
+            use openraft::async_runtime::watch::WatchReceiver;
+            group
+                .raft()
+                .metrics()
+                .borrow_watched()
+                .current_leader
+                .clone()
+        };
+        assert_eq!(named.as_ref(), Some(&first), "{status:?}");
     }
 
     for broker in ["b", "c"] {
@@ -1330,6 +1509,7 @@ async fn a_proposed_record_is_reported_written_before_it_commits() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         timestamp_micros: 1_700_000_000,
         payload: Bytes::from_static(b"proposed"),
         producer: None,
@@ -1379,6 +1559,7 @@ fn a_commands_token_is_not_serialized() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         timestamp_micros: 7,
         payload: Bytes::from_static(b"p"),
         producer: None,
@@ -1392,6 +1573,7 @@ fn a_commands_token_is_not_serialized() {
         [
             "commit",
             "expected",
+            "group",
             "headers",
             "payload",
             "producer",
@@ -1688,6 +1870,7 @@ async fn a_restarted_member_reads_back_publisher_and_headers() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: Some(publisher.clone()),
         headers: Some(Box::new(headers.clone())),
         written: None,
@@ -1851,6 +2034,7 @@ async fn a_follower_far_behind_catches_up_over_a_gigabit_link() {
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,
@@ -2069,6 +2253,7 @@ async fn a_healed_cut_commits_within_about_a_heartbeat() {
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,
@@ -2208,11 +2393,262 @@ async fn a_dead_broker_costs_each_group_about_an_idle_heartbeat() {
         .await;
     }
     // The first answer from the broker, within an idle heartbeat (2 s),
-    // ends every group's wait. Its members stood while it was cut, so their
-    // higher term costs an election on top (pre-vote is off), on real
-    // timers: `eventually` bounds it, and the prompt answer has a test of
-    // its own below.
+    // ends every group's wait, on real timers: `eventually` bounds it, and
+    // the prompt answer has a test of its own below.
     eprintln!("caught up {:?} after the heal", healed.elapsed());
+    cluster.stop().await;
+}
+
+/// A member that hears nobody, and is heard by nobody, keeps its term: its
+/// pre-votes are lost, so it never stands. Back on the network, it follows
+/// the leader it left instead of deposing it with a higher term (#2630).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    // Every member has heard the leader's term.
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    let term = cluster
+        .runtime(&leader.broker)
+        .status(&shard(0))
+        .expect("status")
+        .term;
+    let alone = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker)
+        .expect("a follower");
+    cluster.net.muted.lock().insert(alone.into());
+    cluster.net.cut.lock().insert(alone.into());
+    // Several election timeouts (1 to 2 s each).
+    tokio::time::sleep(timers().election_max * 4).await;
+    let status = cluster.runtime(alone).status(&shard(0)).expect("status");
+    assert_eq!(status.term, term, "{alone}'s term while cut off");
+    // openraft still names the leader at that term; the member does not
+    // count on one it has not heard within its wait.
+    eventually(|| {
+        let status = cluster.runtime(alone).status(&shard(0)).expect("status");
+        status.leader.is_none().then_some(())
+    })
+    .await;
+
+    cluster.net.cut.lock().clear();
+    cluster.net.muted.lock().clear();
+    tokio::time::sleep(timers().election_max * 2).await;
+    assert_eq!(cluster.elected(0).await, leader);
+    let status = cluster
+        .runtime(&leader.broker)
+        .status(&shard(0))
+        .expect("status");
+    assert_eq!(status.term, term, "the leader was deposed");
+    cluster.stop().await;
+}
+
+/// openraft never steps a leader down for a lost majority. Its status
+/// names no leader once no majority answered it within its followers'
+/// wait, and still hints at itself (#2630).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_leader_no_majority_answers_names_no_leader() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    cluster.net.cut.lock().insert(leader.broker.to_string());
+    cluster.net.muted.lock().insert(leader.broker.to_string());
+    let status = eventually(|| {
+        let status = cluster.runtime(&leader.broker).status(&shard(0))?;
+        status.leader.is_none().then_some(status)
+    })
+    .await;
+    assert_eq!(status.role, Role::Leader, "{status:?}");
+    assert_eq!(status.leader_hint.as_ref(), Some(&leader), "{status:?}");
+    cluster.stop().await;
+}
+
+/// openraft refuses a pre-vote only inside its 2 s lease, which ends just
+/// before each idle heartbeat. A follower that heard its leader within its
+/// own wait, and a leader a majority answered within its followers' wait,
+/// refuse one past that lease too (#2630). Once a follower grants one, its
+/// own timer is left alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    let leading = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    // Idle: every follower took a heartbeat naming the idle gap.
+    eventually(|| (leading.leader_gap() > 1000).then_some(())).await;
+    let [follower, candidate] = {
+        let mut others = BROKERS
+            .into_iter()
+            .filter(|broker| *broker != &*leader.broker);
+        [others.next().expect("b"), others.next().expect("c")]
+    };
+    // Neither hears the leader, and neither can stand.
+    for broker in [follower, candidate] {
+        cluster.net.cut.lock().insert(broker.into());
+        cluster.net.muted.lock().insert(broker.into());
+    }
+    let following = cluster.runtime(follower).group(&shard(0)).expect("group");
+    let acked = || {
+        use openraft::Instant as _;
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = leading.raft().metrics();
+        let acked = metrics.borrow_watched().last_quorum_acked;
+        acked.expect("a majority answered").elapsed()
+    };
+    // Ages are read rather than slept for, so a slow runner shifts the
+    // checks instead of breaking them. 3 s is past openraft's 2 s lease.
+    let past_lease = Duration::from_secs(3);
+    eventually(|| {
+        (following.led_age().0 >= past_lease.as_millis() as u64 && acked() >= past_lease)
+            .then_some(())
+    })
+    .await;
+
+    let status = leading.status();
+    let last = {
+        use openraft::async_runtime::watch::WatchReceiver;
+        leading.raft().metrics().borrow_watched().last_applied
+    };
+    let last = last.expect("an applied entry");
+    let stands = LeaderIdOf::<ShardTypes>::new(status.term + 1, MemberId::new(candidate, 1));
+    let pre_vote = |to: &str| RaftRequest {
+        group: group(0),
+        to: MemberId::new(to, 1),
+        beat: 0,
+        report: false,
+        deadline: Duration::from_secs(1),
+        body: Request::PreVote(VoteRequest::new(
+            <VoteOf<ShardTypes> as RaftVote>::from_leader_id(stands.clone(), false),
+            Some(last),
+        )),
+    };
+    let refused = |answer: &Result<RaftReply, Refused>| {
+        // An answer, not a drop: a dropped call counts the broker as down.
+        matches!(
+            answer,
+            Ok(RaftReply(super::network::Reply::Vote(vote))) if !vote.vote_granted
+        )
+    };
+    // Each refusal must hold while the age read after the answer is still
+    // inside the wait, about 3 s after the checks start.
+    let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
+    let (age, wait) = following.led_age();
+    assert!(
+        age < wait,
+        "the check came {age} ms after the take, past {wait} ms"
+    );
+    assert!(
+        refused(&answer),
+        "{follower} did not refuse a pre-vote {age} ms after its leader"
+    );
+    let answer = cluster
+        .runtime(&leader.broker)
+        .handle(pre_vote(&leader.broker))
+        .await;
+    let age = acked();
+    assert!(
+        age < Duration::from_secs(6),
+        "the check came {age:?} after the ack"
+    );
+    assert!(
+        refused(&answer),
+        "the leader did not refuse a pre-vote {age:?} after its ack"
+    );
+
+    // Past the follower's wait it grants one, which promises nothing: its
+    // own election timer runs on.
+    let heard = following.heard();
+    loop {
+        let answer = cluster.runtime(follower).handle(pre_vote(follower)).await;
+        if matches!(
+            answer,
+            Ok(RaftReply(super::network::Reply::Vote(ref vote))) if vote.vote_granted
+        ) {
+            break;
+        }
+        let (age, wait) = following.led_age();
+        assert!(
+            age < wait + 5000,
+            "{follower} refused a pre-vote {age} ms after its leader"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(following.heard(), heard, "a pre-vote restarted the timer");
+    cluster.stop().await;
+}
+
+/// A transfer to a target that never stands expires, and the old leader
+/// stands. The other follower took the transfer, so it no longer counts on
+/// that leader and grants the pre-vote at once, rather than refusing it
+/// for its whole idle wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_idle_group_elects_soon_after_a_transfer_to_a_dead_target() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let written = cluster.write(0, b"heard").await;
+    cluster.committed_everywhere(0, written).await;
+    let leader = cluster.elected(0).await;
+    let leading = cluster
+        .runtime(&leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    eventually(|| (leading.leader_gap() > 1000).then_some(())).await;
+    let [target, other] = {
+        let mut others = BROKERS
+            .into_iter()
+            .filter(|broker| *broker != &*leader.broker);
+        [others.next().expect("b"), others.next().expect("c")]
+    };
+    cluster.net.cut.lock().insert(target.into());
+    cluster.net.muted.lock().insert(target.into());
+    let term = leading
+        .transfer(MemberId::new(target, 1))
+        .await
+        .expect("it leads");
+
+    // The old leader's pre-vote at expiry is granted by the other follower.
+    let last = {
+        use openraft::async_runtime::watch::WatchReceiver;
+        leading.raft().metrics().borrow_watched().last_applied
+    };
+    let stands = LeaderIdOf::<ShardTypes>::new(term + 1, leader.clone());
+    let pre_vote = || RaftRequest {
+        group: group(0),
+        to: MemberId::new(other, 1),
+        beat: 0,
+        report: false,
+        deadline: Duration::from_secs(1),
+        body: Request::PreVote(VoteRequest::new(
+            <VoteOf<ShardTypes> as RaftVote>::from_leader_id(stands.clone(), false),
+            last,
+        )),
+    };
+    let asked = tokio::time::Instant::now();
+    loop {
+        let answer = cluster.runtime(other).handle(pre_vote()).await;
+        if matches!(
+            answer,
+            Ok(RaftReply(super::network::Reply::Vote(ref vote))) if vote.vote_granted
+        ) {
+            break;
+        }
+        // Without the transfer forgetting the leader, the refusal lasts
+        // the 6 s idle wait from a heartbeat at most 2 s old.
+        assert!(
+            asked.elapsed() < Duration::from_secs(2),
+            "{other} refused the old leader's pre-vote after the transfer"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     cluster.stop().await;
 }
 
@@ -2248,6 +2684,7 @@ async fn an_entry_waiting_on_dead_brokers_commits_within_about_a_heartbeat_of_on
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,
@@ -2371,6 +2808,7 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
                     expected: None,
                     trim: None,
                     commit: false,
+                    group: false,
                     publisher: None,
                     headers: None,
                     written: None,
@@ -2530,6 +2968,72 @@ fn a_membership_stored_before_versions_reads_as_the_zero_version() {
     let voters = BTreeSet::from([voter("a"), voter("b")]);
     let want = Membership::new(vec![voters], [voter("c")].into(), TargetVersion::default());
     assert_eq!(read, want);
+}
+
+/// A group write is stored with the log's group mark and reads back as one.
+/// It holds no client record, and it is never stored with a producer, a
+/// publisher or headers, or as a commit or a trim.
+#[test]
+fn a_group_write_round_trips_through_its_record() {
+    let group = || Command {
+        timestamp_micros: 9,
+        payload: Bytes::from_static(b"an encoded group entry"),
+        producer: None,
+        expected: None,
+        trim: None,
+        commit: false,
+        group: true,
+        publisher: None,
+        headers: None,
+        written: None,
+    };
+    let record = ShardCodec.encode_data(&group()).expect("encode");
+    assert_eq!(record.mark, felix_storage::log::RecordMark::Group);
+    assert!(!record.mark.is_data());
+    let read = ShardCodec
+        .decode_data(felix_storage::log::LogRecord {
+            offset: 4,
+            timestamp_micros: record.timestamp_micros,
+            checksum: 0,
+            payload: record.payload,
+            mark: record.mark,
+            publisher: None,
+            headers: None,
+            generation: Some(3),
+        })
+        .expect("decode");
+    assert_eq!(read, group());
+    assert!(!read.holds_record_at(4));
+    let forged = felix_storage::log::LogRecord {
+        offset: 4,
+        timestamp_micros: 9,
+        checksum: 0,
+        payload: Bytes::from_static(b"x"),
+        mark: felix_storage::log::RecordMark::Group,
+        publisher: Some(Bytes::from_static(b"alice")),
+        headers: None,
+        generation: Some(3),
+    };
+    ShardCodec.decode_data(forged).expect_err("refused");
+    let producer = types::ProducerMark {
+        producer_id: 1,
+        sequence: 1,
+        position: 0,
+        len: 1,
+    };
+    let refusals: [fn(&mut Command, types::ProducerMark); 6] = [
+        |c, _| c.commit = true,
+        |c, _| c.trim = Some(3),
+        |c, p| c.producer = Some(p),
+        |c, _| c.expected = Some(4),
+        |c, _| c.publisher = Some(Bytes::from_static(b"alice")),
+        |c, _| c.headers = Some(Box::new(Bytes::from_static(b"h"))),
+    ];
+    for refuse in refusals {
+        let mut command = group();
+        refuse(&mut command, producer);
+        ShardCodec.encode_data(&command).expect_err("refused");
+    }
 }
 
 #[test]

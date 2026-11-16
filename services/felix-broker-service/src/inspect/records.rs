@@ -434,6 +434,7 @@ fn kind(mark: &RecordMark) -> String {
         RecordMark::Membership => "membership".to_string(),
         RecordMark::CounterDelta => "counter-delta".to_string(),
         RecordMark::CounterCheckpoint => "counter-checkpoint".to_string(),
+        RecordMark::Group => "group".to_string(),
     }
 }
 

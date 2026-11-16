@@ -37,10 +37,7 @@ impl ShardAssignment {
     /// No target is written until every broker in the set has reported a
     /// copy id: a target missing one would tell the group to remove it.
     pub(crate) fn settle_raft_target(&mut self) -> Result<bool, RaftTargetError> {
-        let set: BTreeSet<String> = std::iter::once(&self.leader)
-            .chain(&self.replicas)
-            .cloned()
-            .collect();
+        let set = self.raft_set();
         self.raft_copy_ids.retain(|node, _| set.contains(node));
         let complete = set.iter().all(|node| self.raft_copy_ids.contains_key(node));
         if !complete
@@ -63,6 +60,30 @@ impl ShardAssignment {
             members: self.raft_copy_ids.clone(),
         });
         Ok(true)
+    }
+
+    /// Keep `existing`'s copy ids and target when this write names the same
+    /// brokers, so a leader move leaves a membership change in flight and its
+    /// version alone. A different set drops both: the target named the old
+    /// set's members.
+    pub(crate) fn carry_raft_target(&mut self, existing: Option<&ShardAssignment>) {
+        match existing.filter(|existing| existing.raft_set() == self.raft_set()) {
+            Some(existing) => {
+                self.raft_copy_ids = existing.raft_copy_ids.clone();
+                self.raft_target = existing.raft_target.clone();
+            }
+            None => {
+                self.raft_copy_ids.clear();
+                self.raft_target = None;
+            }
+        }
+    }
+
+    fn raft_set(&self) -> BTreeSet<String> {
+        std::iter::once(&self.leader)
+            .chain(&self.replicas)
+            .cloned()
+            .collect()
     }
 }
 

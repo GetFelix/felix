@@ -43,6 +43,7 @@ mod reach;
 mod read_rounds;
 mod root;
 mod runtime;
+mod stream_snapshot;
 pub mod switch;
 #[cfg(any(test, feature = "testing"))]
 mod testing;
@@ -58,6 +59,7 @@ pub use deliver::{IdempotentPublish, RaftReads};
 pub use draws::{TimerSeed, seed_timers};
 pub use engine::RaftEngine;
 pub use group::driver::MembershipProgress;
+pub use group::placed::Placement;
 pub use membership::{Target, TargetVersion};
 pub use network::{Addressee, AgreeingPeers, RaftReply, RaftRequest, RaftTransport, Refused};
 pub use peer::{PeerAddresses, PeerTransport};

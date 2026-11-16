@@ -18,6 +18,7 @@ pub(crate) async fn run_raft_target_contract(store: Arc<dyn ControlPlaneStore>) 
         reports_of_other_kinds_keep_the_counter(store).await;
         a_report_from_an_earlier_process_is_refused(store).await;
         a_report_from_before_a_delete_is_refused(store).await;
+        each_target_is_listed_in_the_write_that_stores_it(store).await;
         the_target_waits_for_every_registered_broker(store).await;
     })
     .await;
@@ -248,5 +249,32 @@ async fn the_target_waits_for_every_registered_broker(store: &dyn ControlPlaneSt
     assert!(store.placement_acked_by_all().await.expect("gate"));
     assert!(report(store, &shard, "broker-y", 32).await);
     assert_eq!(counter(&read(store, &shard.key).await), Some(1));
+    clear(store).await;
+}
+
+/// Brokers read a target only from the stored record, so a target listed in
+/// the same write is on the epoch's list before any leader is asked for it.
+async fn each_target_is_listed_in_the_write_that_stores_it(store: &dyn ControlPlaneStore) {
+    let shard = switched(store).await;
+    assert_eq!(
+        shard.ordered_voter_sets(),
+        Some(vec![]),
+        "started on the switch"
+    );
+    for (node, id) in [("broker-x", 31), ("broker-y", 32), ("broker-y", 33)] {
+        report(store, &shard, node, id).await;
+        let record = read(store, &shard.key).await;
+        let listed = record.raft_ordered.as_ref().expect("list").targets.clone();
+        match &record.raft_target {
+            Some(target) => assert_eq!(listed.last(), Some(target)),
+            None => assert!(listed.is_empty()),
+        }
+    }
+    let both: std::collections::BTreeSet<String> =
+        ["broker-x".to_string(), "broker-y".to_string()].into();
+    assert_eq!(
+        read(store, &shard.key).await.ordered_voter_sets(),
+        Some(vec![both.clone(), both])
+    );
     clear(store).await;
 }

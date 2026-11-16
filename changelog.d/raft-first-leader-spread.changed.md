@@ -1,0 +1,1 @@
+- A Raft shard's first leader is now the broker placement names, not the broker that formed the group. Before, the lowest broker id formed and led every group of its sets, so one broker took every write.

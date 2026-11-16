@@ -15,6 +15,9 @@ use super::Group;
 use crate::raft::membership::TargetVersion;
 use crate::raft::types::{MemberId, Membership, MembershipEdit, ShardTypes};
 
+/// How often [`Group::transfer_in_caught_up`] looks at the target again.
+const CAUGHT_UP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+
 /// What a leader's log held when a step was decided.
 #[derive(Debug, Clone)]
 pub(crate) struct Basis {
@@ -37,6 +40,8 @@ pub(crate) struct Basis {
 pub(crate) struct Replication {
     pub(crate) last_index: u64,
     pub(crate) matched: BTreeMap<MemberId, u64>,
+    /// The members that answered this leader lately.
+    pub(crate) live: BTreeSet<MemberId>,
 }
 
 impl Basis {
@@ -119,6 +124,7 @@ impl Group {
             matched: matched
                 .filter_map(|(member, at)| Some((member.clone(), at.as_ref()?.index)))
                 .collect(),
+            live: self.pace.live(),
         }
     }
 
@@ -129,6 +135,32 @@ impl Group {
         // The term is checked in the read that gives up the lease, so a
         // later term this member won meanwhile is never closed.
         let term = self.transfer_starting_in(Some(term)).await?;
+        let _ = self.raft.trigger().transfer_leader(to).await;
+        Some(term)
+    }
+
+    /// [`Self::transfer_in`], with the request held until `to` holds this
+    /// leader's whole log, for at most `within`. The shard closes first, so
+    /// no new write lands meanwhile and a busy log stops growing away from
+    /// `to`. Asked anyway when the wait runs out: the term is closed by then,
+    /// and a transfer that does not go through ends it.
+    pub(crate) async fn transfer_in_caught_up(
+        &self,
+        term: u64,
+        to: MemberId,
+        within: std::time::Duration,
+    ) -> Option<u64> {
+        let term = self.transfer_starting_in(Some(term)).await?;
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let log = self.replication();
+            if log.matched.get(&to) >= Some(&log.last_index)
+                || tokio::time::Instant::now() >= deadline
+            {
+                break;
+            }
+            tokio::time::sleep(CAUGHT_UP_POLL).await;
+        }
         let _ = self.raft.trigger().transfer_leader(to).await;
         Some(term)
     }

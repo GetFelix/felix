@@ -55,8 +55,24 @@ fn copies(held: &[Vec<u8>], payload: &[u8]) -> usize {
 /// The broker that leads the shard: the one that reports serving its Raft
 /// term. A follower accepts subscribes too, so a subscribe cannot tell them
 /// apart. Waits until exactly one broker in `among` says so, since a deposed
-/// leader's gauge trails by one feed pass. Only brokers in `among` are asked.
+/// leader's gauge trails by one feed pass, and until it still says so a
+/// little later: the broker that forms a group leads it only until it hands
+/// the first leadership to placement's leader. Only brokers in `among` are
+/// asked.
 async fn leader_among(cluster: &Cluster, among: &[String]) -> String {
+    loop {
+        let first = one_leader(cluster, among).await;
+        tokio::time::sleep(LEADER_SETTLES).await;
+        if one_leader(cluster, among).await == first {
+            return first;
+        }
+    }
+}
+
+/// How long a leader must keep leading before [`leader_among`] names it.
+const LEADER_SETTLES: Duration = Duration::from_secs(2);
+
+async fn one_leader(cluster: &Cluster, among: &[String]) -> String {
     felix_cluster::wait::until_some(ELECTED_WITHIN, "a broker to lead the shard", || async {
         let mut leading = Vec::new();
         for node in among {
@@ -1041,4 +1057,69 @@ async fn an_atomic_commit_on_a_raft_shard_reaches_every_member() {
             }
         }
     }
+}
+
+/// Every broker's sample of `name`, or `None` while one has none.
+async fn samples(cluster: &Cluster, nodes: &[String], name: &str) -> Option<Vec<f64>> {
+    let mut samples = Vec::new();
+    for node in nodes {
+        samples.push(cluster.metric(node, name).await.ok().flatten()?);
+    }
+    Some(samples)
+}
+
+/// Whether every shard is led by the broker placement names for it.
+async fn led_where_placed(cluster: &Cluster, nodes: &[String], shards: u32) -> bool {
+    let led = samples(cluster, nodes, "felix_broker_raft_shards_led").await;
+    let off = samples(cluster, nodes, "felix_broker_raft_shards_led_off_placement").await;
+    let (Some(led), Some(off)) = (led, off) else {
+        return false;
+    };
+    led.iter().sum::<f64>() == f64::from(shards) && off.iter().all(|off| *off == 0.0)
+}
+
+/// **Raft shard leaders follow placement.** Each shard's leader is the
+/// broker placement names, so leaders spread as placement spreads them.
+/// When a broker dies the survivors lead its shards, and once it is back
+/// they hand them to it again.
+#[tokio::test]
+#[serial]
+async fn raft_shard_leaders_return_to_placement_after_a_restart() {
+    if !opted_in() {
+        return;
+    }
+    const SHARDS: u32 = 6;
+    let returned_within = Duration::from_secs(120);
+    let mut cluster = Cluster::start(raft_cluster_with(StreamSpec::quorum(STREAM, SHARDS, 3)))
+        .await
+        .expect("start cluster");
+    let nodes = cluster.node_ids();
+    felix_cluster::wait::until(returned_within, "leaders where placed", || {
+        led_where_placed(&cluster, &nodes, SHARDS)
+    })
+    .await
+    .expect("leaders follow placement once formed");
+    let led = samples(&cluster, &nodes, "felix_broker_raft_shards_led")
+        .await
+        .expect("led");
+    assert!(led.iter().all(|led| *led < f64::from(SHARDS)), "{led:?}");
+
+    let restarted = "broker-2".to_string();
+    let survivors: Vec<String> = nodes.iter().filter(|n| **n != restarted).cloned().collect();
+    cluster.kill_node(&restarted).expect("kill");
+    felix_cluster::wait::until(ELECTED_WITHIN * 2, "survivors lead every shard", || async {
+        samples(&cluster, &survivors, "felix_broker_raft_shards_led")
+            .await
+            .is_some_and(|led| led.iter().sum::<f64>() == f64::from(SHARDS))
+    })
+    .await
+    .expect("survivors take over");
+
+    cluster.restart_node(&restarted).await.expect("restart");
+    felix_cluster::wait::until(returned_within, "leaders back where placed", || {
+        led_where_placed(&cluster, &nodes, SHARDS)
+    })
+    .await
+    .expect("leadership returns to the restarted broker");
+    cluster.shutdown().await;
 }

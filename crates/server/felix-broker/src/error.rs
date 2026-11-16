@@ -80,6 +80,10 @@ pub enum BrokerError {
     /// so the same request can succeed once space is freed.
     #[error("durable storage is full: {0}")]
     StorageFull(String),
+    /// The broker ran out of file descriptors opening a log. Nothing was
+    /// opened, so the same request can succeed once files close.
+    #[error("durable storage: {0}")]
+    OpenFileLimit(String),
     /// A copied record names a writer generation below the one of the record
     /// before it in this log. Nothing was written. [`replication::apply`]
     /// answers it as a [`Divergence`](crate::replication::Divergence).
@@ -146,6 +150,9 @@ pub enum BrokerError {
     /// A commit record's payload does not decode.
     #[error("malformed commit record: {0}")]
     MalformedCommit(String),
+    /// A consumer group's Raft entry does not decode.
+    #[error("malformed group entry: {0}")]
+    MalformedGroupEntry(String),
     /// Commits and their state live in the shard's log, so a stream without
     /// one has nowhere to put them.
     #[error("an atomic commit needs a durable stream")]
@@ -241,6 +248,7 @@ impl From<felix_storage::StorageError> for BrokerError {
     fn from(err: felix_storage::StorageError) -> Self {
         match err {
             felix_storage::StorageError::Full(_) => BrokerError::StorageFull(err.to_string()),
+            _ if err.is_open_file_limit() => BrokerError::OpenFileLimit(err.to_string()),
             felix_storage::StorageError::GenerationBelowFloor {
                 offset,
                 generation,

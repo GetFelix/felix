@@ -272,7 +272,7 @@ impl ClientError {
             E::GroupClaimLapsed { .. } => {
                 Self::new(ErrorCode::StaleClaim, message).with_retry(RetryClass::Fatal)
             }
-            E::MalformedCommit(_) => Self::internal(message),
+            E::MalformedCommit(_) | E::MalformedGroupEntry(_) => Self::internal(message),
             E::StateViewBusy => Self::overloaded(message),
             // Only from leading a shard again, never a client request.
             E::ReleaseInFlight => Self::internal(message),
@@ -286,6 +286,8 @@ impl ClientError {
             }
             // Nothing was written, so the request can go again once space is freed.
             E::StorageFull(_) => Self::overloaded(message),
+            // Nothing was opened; it can go again once descriptors free up.
+            E::OpenFileLimit(_) => Self::overloaded(message),
             // Written to a log that was then reset: it may or may not survive.
             E::PublishSuperseded { .. } => Self::new(ErrorCode::Unacknowledged, message),
             // The trim may still land, so the caller cannot assume it did not.

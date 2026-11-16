@@ -288,6 +288,8 @@ impl SimCluster {
     /// Installs the virtual lease clock for this thread, so call it on the
     /// runtime the run will use.
     pub async fn start(seed: u64, config: SimConfig) -> Result<Arc<Self>> {
+        // A sweep runs many clusters at once, each holding real sockets.
+        felix_storage::open_files::raise_soft_limit_once();
         let clock_plan = config.clock_plan.clone().unwrap_or_else(|| {
             ClockPlan::generate(seed, config.clocks, config.brokers, config.fault_window)
         });

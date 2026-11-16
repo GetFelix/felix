@@ -28,9 +28,10 @@ pub use node::{
 };
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftFloor, RaftFloorError,
-    RaftFloorReport, RaftTarget, RaftTargetError, Readmitted, ReplicaReport, SealOrderError,
-    SealReport, SealReportError, SealedSideLog, ShardAssignment, ShardAssignmentChange,
-    ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch, ShardValidationError,
+    RaftFloorReport, RaftOrdered, RaftTarget, RaftTargetError, Readmitted, ReplicaReport,
+    SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
+    ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch,
+    ShardValidationError,
 };
 pub(crate) use shard::{
     Learning, ShardOwner, check_elected_generation, first_generation, generation_at_least,

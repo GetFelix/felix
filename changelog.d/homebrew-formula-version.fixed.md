@@ -1,0 +1,1 @@
+- The Homebrew formula no longer sets a `version` the archive URL already gives, which `brew audit --strict` refuses.

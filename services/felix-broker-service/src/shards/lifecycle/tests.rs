@@ -4,6 +4,7 @@ use super::*;
 mod cache_incarnation;
 mod dropped_hold;
 mod every_change;
+mod held_open;
 mod off_runtime;
 mod promotion;
 mod refused;

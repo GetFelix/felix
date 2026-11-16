@@ -21,6 +21,7 @@ use openraft::{Config, SnapshotPolicy, Vote};
 use tokio_util::sync::CancellationToken;
 
 use super::group::driver::MembershipProgress;
+use super::group::placed::{self, Placement};
 use super::group::{self, Group, Timers};
 use super::membership::Target;
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
@@ -98,6 +99,8 @@ pub struct RuntimeConfig {
     /// with two lagging followers each. Larger records are bounded by bytes:
     /// by the log reader's 4 MiB page and by `wire::fit`.
     pub append_entries: u64,
+    /// How a leader hands its leadership to the broker placement names.
+    pub placement: Placement,
 }
 
 impl Default for RuntimeConfig {
@@ -120,6 +123,7 @@ impl Default for RuntimeConfig {
             log_mark: LogMarkMode::Batched(Duration::from_secs(1)),
             tail_cache_bytes: TailBudget::DEFAULT_LIMIT_BYTES,
             append_entries: 1024,
+            placement: Placement::default(),
         }
     }
 }
@@ -186,6 +190,12 @@ impl RuntimeConfig {
             // for the next term as it starts. It promised nobody, so it
             // skips the vote hold too (`Group::open`).
             enable_leader_restore: Some(true),
+            // A member raises its term only once a majority would vote for
+            // it. Without this, a member nobody hears raises its term at
+            // every timeout and deposes the leader when it is heard again.
+            // A transfer target still stands at once, so one transfer
+            // costs at most one term.
+            enable_pre_vote: Some(true),
             // openraft keeps six ring buffers of this many slots per member
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
@@ -224,8 +234,10 @@ pub enum OpenError {
     /// returns.
     #[error("the shard's last group here is still stopping")]
     Closing,
-    /// The log cannot be a Raft log, or its Raft state does not read back.
-    #[error(transparent)]
+    /// The log cannot be a Raft log, its Raft state does not read back, or
+    /// the files could not be opened. Kept as the source, so a caller can
+    /// tell an exhausted open-file limit, which is worth a retry.
+    #[error("the group's log could not be opened")]
     Log(#[from] io::Error),
     #[error("the group did not start: {0}")]
     Raft(String),
@@ -320,8 +332,16 @@ pub struct GroupStatus {
     pub member: MemberId,
     pub role: Role,
     pub term: u64,
-    /// The leader this member follows, itself included.
+    /// The leader this member follows, itself included, while it is heard:
+    /// a follower names none once its leader is silent past its election
+    /// wait, and a leader names none once no majority answered it within
+    /// its followers' wait. Under pre-vote a cut-off member keeps its term,
+    /// and with it openraft's leader. Readers are served only while this
+    /// names one.
     pub leader: Option<MemberId>,
+    /// The leader openraft names at this member's term, heard lately or
+    /// not. Enough to forward a request to, which fails if it is gone.
+    pub leader_hint: Option<MemberId>,
     pub last_index: Option<u64>,
     /// The last entry this member's log has written since it was opened,
     /// fsynced or not. A power cut can still take it.
@@ -449,6 +469,8 @@ struct Inner {
     /// Every data root a member opened here keeps marks at, once each. The
     /// shutdown writes their last batch even after the members closed.
     mark_roots: parking_lot::Mutex<Vec<MarkLog>>,
+    placement: Placement,
+    placed_budget: Arc<placed::Budget>,
 }
 
 impl GroupRuntime {
@@ -502,6 +524,8 @@ impl GroupRuntime {
                 stop: CancellationToken::new(),
                 ticker: parking_lot::Mutex::new(None),
                 mark_roots: parking_lot::Mutex::default(),
+                placed_budget: Arc::new(placed::Budget::new(&config.placement)),
+                placement: config.placement,
             }),
         })
     }
@@ -594,6 +618,15 @@ impl GroupRuntime {
                 .await
                 .map_err(std::io::Error::other)
                 .flatten()
+        };
+        // Out of descriptors says nothing about the kept copies, and holding
+        // the group for it would outlast the shortage.
+        let earlier = match earlier {
+            Err(err) if felix_storage::open_files::exhausted_in(&err) => {
+                let _ = log.close().await;
+                return Err(OpenError::Log(err));
+            }
+            earlier => earlier,
         };
         // A kept copy that cannot be read may hold the group's records.
         let kept_unreadable = earlier.is_err();
@@ -746,6 +779,8 @@ impl GroupRuntime {
         let host = group::Host {
             engine: inner.host.get().cloned(),
             clock: Arc::clone(&inner.clock.read()),
+            placement: inner.placement.clone(),
+            placed_budget: Arc::clone(&inner.placed_budget),
         };
         let raft = match group.shard.kind {
             ShardKind::Stream => &inner.raft,
@@ -1070,6 +1105,21 @@ impl GroupRuntime {
     pub fn retarget(&self, shard: &ShardKey, target: Target, term: u64) -> bool {
         self.group(shard)
             .is_some_and(|group| group.retarget(target, term))
+    }
+
+    /// Placement names `broker` as the leader of `shard`. The member that
+    /// leads the group hands it the leadership once that broker's member
+    /// is a voter and has caught up, paced as [`Placement`] says. A
+    /// preference only: the group still elects whoever it can. False if
+    /// the preference is not new, or the shard has no group here.
+    pub fn prefer(&self, shard: &ShardKey, broker: &str) -> bool {
+        self.group(shard).is_some_and(|group| group.prefer(broker))
+    }
+
+    /// The most placement transfers this broker ever had in flight at once.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn placed_transfers_peak(&self) -> usize {
+        self.inner.placed_budget.peak()
     }
 
     /// Stop the ticker and every group, then write the batched log marks
