@@ -542,6 +542,33 @@ impl Cluster {
     }
 }
 
+/// Tells `target` to whichever member leads `shard`, for its term, and
+/// again after every leader change, as a broker does. Stops when dropped.
+struct Telling(tokio::task::JoinHandle<()>);
+
+impl Telling {
+    fn start(runtimes: Vec<GroupRuntime>, shard: ShardKey, target: Target) -> Self {
+        Self(tokio::spawn(async move {
+            loop {
+                for runtime in &runtimes {
+                    if let Some(status) = runtime.status(&shard)
+                        && status.role == Role::Leader
+                    {
+                        runtime.retarget(&shard, target.clone(), status.term);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }))
+    }
+}
+
+impl Drop for Telling {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Poll `check` until it answers.
 async fn eventually<T>(mut check: impl FnMut() -> Option<T>) -> T {
     let deadline = tokio::time::Instant::now() + PATIENCE;
