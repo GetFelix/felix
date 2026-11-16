@@ -625,6 +625,52 @@ async fn a_store_at_the_top_generation_refuses_to_issue() {
     }
 }
 
+/// A leader move keeps a shard's Raft target and copy ids, so it does not
+/// cancel a membership change in flight. A write that changes the set drops
+/// them, since the target named the old set.
+#[tokio::test]
+async fn a_leader_only_write_keeps_the_raft_target() {
+    use crate::model::RaftTarget;
+    use crate::store::contract::shards::{assignment, key, seed};
+    let store = store_with_limits(100, 1000);
+    seed(&store).await;
+    let mut set = assignment(0, "broker-x");
+    set.replicas = vec!["broker-y".to_string()];
+    store.put_shard_assignment(set.clone()).await.expect("put");
+    let ids: std::collections::BTreeMap<String, u64> =
+        [("broker-x".to_string(), 3), ("broker-y".to_string(), 4)].into();
+    let target = RaftTarget {
+        counter: 5,
+        members: ids.clone(),
+    };
+    {
+        let mut shards = store.shards.write().await;
+        let record = shards.records.get_mut(&key(0)).expect("record");
+        record.raft_copy_ids = ids.clone();
+        record.raft_target = Some(target.clone());
+    }
+
+    let mut moved = set.clone();
+    moved.leader = "broker-y".to_string();
+    moved.replicas = vec!["broker-x".to_string()];
+    store.put_shard_assignment(moved).await.expect("move");
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.leader, "broker-y");
+    assert_eq!(
+        read.raft_target,
+        Some(target),
+        "the target and its counter stay"
+    );
+    assert_eq!(read.raft_copy_ids, ids);
+
+    let mut shrunk = assignment(0, "broker-y");
+    shrunk.replicas.clear();
+    store.put_shard_assignment(shrunk).await.expect("shrink");
+    let read = store.get_shard_assignment(&key(0)).await.expect("get");
+    assert_eq!(read.raft_target, None, "a set change drops the target");
+    assert!(read.raft_copy_ids.is_empty());
+}
+
 /// A reader that sees an import's restored shard records sees its
 /// placement incarnation too: the feed stamps targets with the incarnation
 /// read around the records, and restored records under the old one would

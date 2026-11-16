@@ -69,6 +69,7 @@ fn report(current: CopyRead, kept: Vec<CopyRead>) -> BrokerReport<&'static str> 
     BrokerReport {
         leads: false,
         names: BTreeSet::new(),
+        memberships: Some(Vec::new()),
         copies: BrokerCopies { current, kept },
     }
 }
@@ -90,6 +91,9 @@ fn record(
         offset_floor: None,
         placed: Some(placed.iter().copied().collect()),
         dead: dead.iter().copied().collect(),
+        // These traces seed every placed broker as a voter.
+        seed: Some(placed.iter().copied().collect()),
+        ordered: Some(Vec::new()),
     }
 }
 
@@ -129,7 +133,7 @@ fn a_kept_vote_above_every_entry_cuts_to_the_floor() {
     );
     assert_eq!(plan.top, (0, 2));
     assert_eq!(plan.base_end(), 1);
-    assert!(!plan.marked);
+    assert_eq!(plan.marked, None);
     assert!(plan.cut_by_vote, "W is lost, so the operator signs off");
     assert!(plan.needs_accept_loss());
     assert_eq!(plan.first_index, 2, "past the reservations that counted W");
@@ -152,7 +156,7 @@ fn a_restored_copy_of_the_epoch_marks_the_group() {
         ],
     );
     assert_eq!(plan.top, (0, 1));
-    assert!(plan.marked);
+    assert!(plan.marked.is_some());
     assert_eq!(plan.base_end(), 1);
 }
 
@@ -202,7 +206,7 @@ fn an_older_epochs_copy_is_capped_and_never_marks() {
             ("b", report(blank(), vec![b_old, b_learner])),
         ],
     );
-    assert!(!plan.marked);
+    assert_eq!(plan.marked, None);
     assert_eq!(plan.top, (1, 3));
     assert_eq!(
         plan.base_last,
@@ -249,7 +253,7 @@ fn the_reservation_pads_above_an_entry_nothing_vouches_for() {
         ]
     };
     let padded = plan(&rec, reports(Some(0)));
-    assert!(padded.marked, "a placed broker is dead");
+    assert_eq!(padded.marked, None, "one dead broker of three");
     assert_eq!(padded.base_last, None);
     assert_eq!(padded.first_index, 1);
 
@@ -509,12 +513,12 @@ fn a_base_never_ends_inside_a_gap() {
         }),
         first_index: 5,
     }];
-    let rec = record(&["a", "d"], &["d"], &bases, floor(3, 0, 1));
+    let rec = record(&["a", "d", "e"], &["d", "e"], &bases, floor(3, 0, 1));
     let a = at_epoch(copy_from("a", &[(0, 1), (1, 1), (5, 2)], Some(2)), &bases);
     let mut a = a;
     a.committed = Some(1);
     let plan = plan(&rec, vec![("a", report(a, vec![]))]);
-    assert!(plan.marked);
+    assert!(plan.marked.is_some());
     assert_eq!(
         plan.base_last,
         Some(EpochLogId {
@@ -556,7 +560,7 @@ fn a_wiped_copy_at_epoch_zero_marks_the_group() {
             ("c", report(blank(), vec![])),
         ],
     );
-    assert!(plan.marked);
+    assert!(plan.marked.is_some());
     assert!(plan.needs_accept_loss());
     assert_eq!(plan.base_end(), 5, "X is not in the base");
     assert_eq!(plan.first_index, 6);
@@ -621,8 +625,126 @@ fn an_older_power_cut_never_vouches_for_a_later_copy() {
             &rec,
             vec![("a", report(a, vec![])), ("b", lost("b")), ("c", lost("c"))],
         );
-        assert!(plan.marked, "epoch {epoch}");
+        assert!(plan.marked.is_some(), "epoch {epoch}");
         assert!(plan.needs_accept_loss(), "epoch {epoch}");
         assert_eq!(plan.base_end(), 5, "epoch {epoch}: X is not in the base");
     }
+}
+
+fn set(brokers: &[&'static str]) -> BTreeSet<&'static str> {
+    brokers.iter().copied().collect()
+}
+
+/// #2661: `a` led t1 and committed index 0 on `b`'s write; `b` fsynced and
+/// reserved it but saved no commit; `c` held it unsynced. `a` is declared
+/// dead and `c` loses power. One dead broker of three seeded voters leaves
+/// every election needing a read vote, so `b` at the top term vouches for
+/// its whole log and the base keeps index 0.
+#[test]
+fn one_dead_broker_of_three_keeps_a_read_copys_committed_entry() {
+    let rec = record(&["a", "b", "c"], &["a"], &[], None);
+    let b = reserved(copy("b", &[1], None, Some(1)), 0);
+    let c = kept(copy("c", &[], None, Some(1)), RotatedBy::PowerCut { to: 1 });
+    let plan = plan(
+        &rec,
+        vec![("b", report(b, vec![])), ("c", report(blank(), vec![c]))],
+    );
+    assert_eq!(plan.marked, None);
+    assert_eq!(plan.base_end(), 1, "the committed entry is kept");
+    assert_eq!(plan.source.0, "b");
+    assert!(!plan.needs_accept_loss());
+}
+
+/// Two dead of three seeded voters could have elected a term no read vote
+/// knows of, so `c` vouches only for its saved commit.
+#[test]
+fn two_dead_brokers_of_three_mark_the_group() {
+    let rec = record(&["a", "b", "c"], &["a", "b"], &[], None);
+    let c = copy("c", &[1], None, Some(1));
+    let plan = plan(&rec, vec![("c", report(c, vec![]))]);
+    assert_eq!(
+        plan.marked,
+        Some(Marked::Majority {
+            from: VoterSource::Seed,
+            set: set(&["a", "b", "c"]),
+            unknown: set(&["a", "b"]),
+        })
+    );
+    assert_eq!(plan.base_end(), 0);
+}
+
+/// A one-voter seed whose voter is dead is marked, though the placed set
+/// (with a learner in it) would hold no dead majority.
+#[test]
+fn a_dead_single_seed_voter_marks_the_group() {
+    let mut rec = record(&["a", "b"], &["a"], &[], None);
+    rec.seed = Some(set(&["a"]));
+    let b = copy("b", &[1], None, Some(1));
+    let plan = plan(&rec, vec![("b", report(b, vec![]))]);
+    assert_eq!(
+        plan.marked,
+        Some(Marked::Majority {
+            from: VoterSource::Seed,
+            set: set(&["a"]),
+            unknown: set(&["a"]),
+        })
+    );
+    assert_eq!(plan.base_end(), 0);
+}
+
+/// A joint change toward {c, d, e} with `d` and `e` dead: they are a
+/// minority of the seed but a majority of the new half, which elects alone
+/// in a joint config's second step. Both an ordered target and a membership
+/// entry read mark the group.
+#[test]
+fn a_joint_target_with_a_dead_majority_marks_the_group() {
+    let target = set(&["c", "d", "e"]);
+    let mut rec = record(&["a", "b", "c", "d", "e"], &["d", "e"], &[], None);
+    rec.seed = Some(set(&["a", "b", "c"]));
+    let reports = || {
+        ["a", "b", "c"]
+            .map(|name| (name, report(copy(name, &[1], None, Some(1)), vec![])))
+            .to_vec()
+    };
+    let majority = |from| Marked::Majority {
+        from,
+        set: target.clone(),
+        unknown: set(&["d", "e"]),
+    };
+
+    rec.ordered = Some(vec![target.clone()]);
+    let ordered = plan(&rec, reports());
+    assert_eq!(ordered.marked, Some(majority(VoterSource::Ordered)));
+    assert_eq!(ordered.base_end(), 0);
+
+    rec.ordered = Some(Vec::new());
+    let mut read = reports();
+    read[2].1.memberships = Some(vec![set(&["a", "b", "c"]), target.clone()]);
+    let member = plan(&rec, read);
+    assert_eq!(member.marked, Some(majority(VoterSource::Membership("c"))));
+    assert_eq!(member.base_end(), 0);
+}
+
+/// A voter set source that is not known marks the group.
+#[test]
+fn an_unknown_voter_set_marks_the_group() {
+    let reports = || vec![("a", report(copy("a", &[1], None, Some(1)), vec![]))];
+    let mut rec = record(&["a"], &[], &[], None);
+    rec.seed = None;
+    assert_eq!(
+        plan(&rec, reports()).marked,
+        Some(Marked::Unknown(VoterSource::Seed))
+    );
+    let mut rec = record(&["a"], &[], &[], None);
+    rec.ordered = None;
+    assert_eq!(
+        plan(&rec, reports()).marked,
+        Some(Marked::Unknown(VoterSource::Ordered))
+    );
+    let mut read = reports();
+    read[0].1.memberships = None;
+    assert_eq!(
+        plan(&record(&["a"], &[], &[], None), read).marked,
+        Some(Marked::Unknown(VoterSource::Membership("a")))
+    );
 }

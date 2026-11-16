@@ -39,6 +39,11 @@ const SAVE_POLL: Duration = felix_storage::disk_log::COMMIT_PERSIST_INTERVAL;
 /// How long a shutdown waits for its last batch of log marks, all roots
 /// together.
 const LAST_MARK_LIMIT: Duration = Duration::from_secs(5);
+/// How often [`GroupRuntime::hand_over`] looks at a new group again.
+const HAND_OVER_POLL: Duration = Duration::from_millis(20);
+/// The least [`GroupRuntime::hand_over`] lets the target catch up once the
+/// shard is closed.
+const HAND_OVER_MIN_WAIT: Duration = Duration::from_secs(1);
 
 /// The timers every group on a broker shares.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +191,12 @@ impl RuntimeConfig {
             // for the next term as it starts. It promised nobody, so it
             // skips the vote hold too (`Group::open`).
             enable_leader_restore: Some(true),
+            // A member raises its term only once a majority would vote for
+            // it. Without this, a member nobody hears raises its term at
+            // every timeout and deposes the leader when it is heard again.
+            // A transfer target still stands at once, so one transfer
+            // costs at most one term.
+            enable_pre_vote: Some(true),
             // openraft keeps six ring buffers of this many slots per member
             // for its `runtime-stats` feature, which is off: about 360 KB a
             // member at the default 1,024.
@@ -320,8 +331,16 @@ pub struct GroupStatus {
     pub member: MemberId,
     pub role: Role,
     pub term: u64,
-    /// The leader this member follows, itself included.
+    /// The leader this member follows, itself included, while it is heard:
+    /// a follower names none once its leader is silent past its election
+    /// wait, and a leader names none once no majority answered it within
+    /// its followers' wait. Under pre-vote a cut-off member keeps its term,
+    /// and with it openraft's leader. Readers are served only while this
+    /// names one.
     pub leader: Option<MemberId>,
+    /// The leader openraft names at this member's term, heard lately or
+    /// not. Enough to forward a request to, which fails if it is gone.
+    pub leader_hint: Option<MemberId>,
     pub last_index: Option<u64>,
     /// The last entry this member's log has written since it was opened,
     /// fsynced or not. A power cut can still take it.
@@ -815,6 +834,52 @@ impl GroupRuntime {
             .map_err(InitializeError::Raft)
     }
 
+    /// Hand the first leadership of `shard`, a group this broker just
+    /// formed, to `to`. The broker that forms a group is the lowest id in
+    /// its set and wins its first election, so without this one broker
+    /// would lead every group it forms and take every write. Once this
+    /// member leads, the shard closes and the request waits for `to` to
+    /// hold the whole log, since openraft hands over only to a member whose
+    /// log matches. Returns whether the
+    /// transfer was asked for. One that does not go through ends the term
+    /// after an election timeout, as any transfer does.
+    pub async fn hand_over(&self, shard: &ShardKey, to: MemberId, within: Duration) -> bool {
+        let Some(group) = self.inner.registry.get(shard) else {
+            return false;
+        };
+        if to == group.member {
+            return false;
+        }
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            let status = group.status();
+            match status.role {
+                Role::Leader => {
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    return group
+                        .transfer_in_caught_up(status.term, to, left.max(HAND_OVER_MIN_WAIT))
+                        .await
+                        .is_some();
+                }
+                // Learner too: a member's metrics can still show the state
+                // it had before the group formed.
+                Role::Candidate | Role::Follower | Role::Learner => {}
+                Role::Stopped => return false,
+            }
+            if status
+                .leader
+                .as_ref()
+                .is_some_and(|leader| *leader != group.member)
+            {
+                return false;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(HAND_OVER_POLL).await;
+        }
+    }
+
     /// Ask every other member of `members` whether it has heard from a
     /// group of `shard`. `Ok` only when each one answered within `within`
     /// that it holds no vote and no entry.
@@ -1056,19 +1121,20 @@ impl GroupRuntime {
         true
     }
 
-    /// Tell `shard`'s member here the control plane's target: the voters
-    /// the group should have, and the target's version. The member that
-    /// leads takes the steps: it adds each new member as a learner,
-    /// changes the voters once the learners have caught up, and hands the
-    /// leadership over first if the target leaves it out. Every member can
-    /// be told; one that does not lead keeps the target for when it does.
+    /// Tell `shard`'s member here the control plane's target for `term`:
+    /// the voters the group should have, and the target's version. The
+    /// member that leads takes the steps: it adds each new member as a
+    /// learner, changes the voters once the learners have caught up, and
+    /// hands the leadership over first if the target leaves it out.
     ///
-    /// Only a target newer than the one held is kept, and the leader acts
-    /// only on one at least as new as its membership. False if the target
-    /// is not newer, or the shard has no group here.
-    pub fn retarget(&self, shard: &ShardKey, target: Target) -> bool {
+    /// The member acts on a target only while it leads `term`, so a new
+    /// term needs the target told again. A target is kept if it is newer
+    /// than the one held, or the same version told for a newer term, and
+    /// the leader acts only on one at least as new as its membership.
+    /// False if it was not kept, or the shard has no group here.
+    pub fn retarget(&self, shard: &ShardKey, target: Target, term: u64) -> bool {
         self.group(shard)
-            .is_some_and(|group| group.retarget(target))
+            .is_some_and(|group| group.retarget(target, term))
     }
 
     /// Stop the ticker and every group, then write the batched log marks

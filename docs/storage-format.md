@@ -530,12 +530,14 @@ None of them has a tag, so the step to the next record is still
 `36 + payload_len`. Bit 30 alone means "continues a producer batch", so every
 build before v9 refuses these codes as `RecordFlags`, and so does a v9 reader
 in a segment older than v9. Bits 31 and 30 together are a batch piece from
-v9 ("Producer marks", above). The other pairs that include bit 31 (31 and
-29, 31 and 28) and the triples that include it stay `RecordFlags` in every
-version.
+v9 ("Producer marks", above). Bits 31, 30 and 29 are a group record from
+v9 ("Group records", below). The other pairs that include bit 31 (31 and
+29, 31 and 28) and the other triples that include it stay `RecordFlags` in
+every version.
 
-Only a v9 segment holds them, and nothing writes them yet. An append that
-holds one is refused (`Unsupported`) before it can roll the log onto v9. They
+Only a v9 segment holds them. A Raft log writes membership records (see
+"Records as Raft entries"); nothing writes counter records yet. A stream
+log's append that holds one is refused (`Unsupported`) before it can roll the log onto v9. They
 exist so the replication engine and the cache shard's single log (see
 `docs/replication-engine.md`, decisions 1 and 4) have kinds to write once the
 fleet reads v9. Recovery treats them like any other record: one cut short is a
@@ -546,12 +548,47 @@ the first such record (`kind_unsupported` in
 `felix_broker_replication_shipped_total`) rather than send it under another
 mark.
 
+### Group records
+
+Bits 31, 30 and 29 mark a consumer group's write on a Raft stream shard: a
+cursor advance, a dead letter, a redrive or its finish, a discard, a seek or
+a delete. The record has no tag, so the step to the next record is still
+`36 + payload_len`. The body is the broker's group entry (`GroupEntry` in
+`felix-broker`):
+
+```text
+u8   version (1)
+u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
+         4 discard, 5 seek, 6 delete
+u32  group name length, then the name (UTF-8, never empty)
+creation token                                    (ops 0 to 4)
+  u64  term
+  u64  index
+  u8   by: 0 hydrate, 1 seek
+u64  offset: the advance's or seek's target, or the record (ops 0 to 5)
+u8   flags: bit 0 if_new                          (op 5 only)
+```
+
+Big-endian, like the rest of the format. A reader refuses an unknown
+version, operation, creation kind or flag, and any byte past the end, rather
+than skip it: every member must fold the same writes.
+
+Only a v9 segment holds one, as with the membership and counter codes, and
+only a Raft log writes one. A stream log refuses the append (`Unsupported`)
+before it can roll onto v9. Every build before v9 reads the bits as
+`RecordFlags`, and so does a v9 reader in an older segment. So does a v9
+build from before group records: a Raft member downgraded to one refuses
+to open a log that holds a group record, at the tail too, rather than drop
+it. Nothing writes
+one yet: groups are not served on Raft shards (`docs/per-shard-raft.md`,
+"Consumer groups").
+
 ### Record kinds
 
 Every kind takes an offset, and offsets stay contiguous whatever the kind.
 Only **data** records reach a client: plain records, producer batch records
 and commit records (returned as their event). Generation-start, trim,
-membership and counter records are skipped by every client read:
+membership, counter and group records are skipped by every client read:
 subscriptions and replay, `StreamRead`, Kafka fetch and offset lookups,
 consumer groups, cache watches, and the cache and counter projections. One
 predicate, `RecordMark::is_data`, makes that call at each of those sites, so
@@ -563,7 +600,7 @@ subscriber that negotiated event offsets and skip counts (`docs/protocol.md`,
 so a jump it covers is not a drop and any other jump is. A consumer group's
 record reports the same count. A Kafka consumer is moved past a trailing run
 by an empty batch. Replication reads every kind (`read_replicated_from`),
-but cannot yet ship membership and counter records (see above).
+but cannot yet ship membership, counter and group records (see above).
 
 ### Records as Raft entries
 
@@ -606,7 +643,7 @@ in eight ways:
   the directory already holds older segments, the first append starts a
   version 9 segment; the old ones are left as they are and their records
   are not entries.
-- **It takes membership records.** A stream log still refuses them.
+- **It takes membership and group records.** A stream log still refuses them.
 - **No retention bounds.** Retention deletes head segments on a timer, which
   would look like a purge nothing asked for. Bounds are refused at open and
   when set later.
@@ -657,6 +694,7 @@ command stored as a trim record is refused.
 | membership | 30 and 29 | v9 | no |
 | counter delta | 30 and 28 | v9 | no |
 | counter checkpoint | 30, 29 and 28 | v9 | no |
+| group | 31, 30 and 29 | v9 | no |
 
 ### Keys and headers
 
@@ -804,7 +842,7 @@ delete the file and sync the directory first.
 | Short read | `Truncated { needed, available }`: the one shape recovery may repair |
 | Bad record header CRC | `RecordHeaderChecksum`: the length cannot be trusted |
 | Bad record CRC | `RecordChecksum` |
-| More than one kind bit set, other than bits 29 and 28 together from v7, or the membership and counter codes from v9 | `RecordFlags` |
+| More than one kind bit set, other than bits 29 and 28 together from v7, or the batch piece, membership, counter and group codes from v9 | `RecordFlags` |
 | `payload_len` over the limit | `RecordTooLarge`, raised *before* any allocation. In a v8 segment bit 26 over a non-zero length is a flag, so every length fits |
 | A publisher or a key-and-headers block that does not fit its body | `RecordPublisher`, `RecordHeaders` |
 | Offset gap within a segment | `OffsetOutOfOrder` |
@@ -974,7 +1012,7 @@ encode_record(offset = 7, timestamp = 9, trim payload = "hi", trim floor = 5):
 | 6 | Publishers: bit 27 and a trailer on the body. Written only to hold a record with one, once publishers are enabled; every older segment is read unchanged, and a record without a publisher is byte for byte a v5 record. |
 | 7 | Trim records: bits 29 and 28 together, and an 8-byte floor tag. Written only to hold one; every older segment is read unchanged, and every other record is byte for byte what v6 wrote. |
 | 8 | Keys and headers: bit 26 and a length-prefixed block at the front of the body. Written only to hold a record with one; every older segment is read unchanged, and a record without a key or headers is byte for byte what v7 wrote. |
-| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta and counter checkpoint records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
+| 9 | Generations: an 8-byte generation in every record header (28 → 36 bytes). Membership, counter delta, counter checkpoint and group records. Batch pieces (bits 31 and 30, a 24-byte tag), written only by a Raft log, as are group records. Written by stream logs once the fleet finalizes `record_generations`; membership and counter records are not written yet. Every older segment is read unchanged. |
 
 A v1 segment is rejected on open with `CorruptionKind::SegmentVersion`, naming
 the version found. v1 was only ever written by unreleased builds, so the
@@ -1421,6 +1459,24 @@ it. A snapshot received from another member is written to
 once it is whole and its checksum matches. It has its own name because a
 local build can finish while a receive is in flight. The open deletes a
 `raft-snapshot.recv` a crash left, and it is never read.
+
+A stream shard's snapshot data is empty, or the cut batches alone in the
+`producers.forgotten` layout, or, once the shard has group writes, both
+together:
+
+```text
+0   4  magic          u32  "FLST"
+4   4  crc            u32  crc32 over the rest
+8   4  cuts length    u32  zero for none
+12     cut batches (producers.forgotten layout), then the group table to the end
+```
+
+The group table is the shard's consumer groups as of the snapshot's last
+entry (`felix-broker`, `GroupTable::encode`): a version byte (1), the last
+group entry applied and the latest delete (`u64` each), then per group in
+name order its name, creation token, cursor, and its dead letters and
+redriven records in ascending order. A reader refuses names or offsets out
+of order, so one table has one encoding.
 
 ## `member`: a metadata store's member file
 

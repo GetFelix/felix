@@ -796,9 +796,10 @@ What `plan` works out for one group, and `apply` then does:
 command reached is at or below the base, or is cut as uncommitted. What is
 lost is a record that only brokers declared dead held, and, when no copy
 holds the floor's entry, a record that no copy holding it can vouch for
-(see "Offsets are not reused" below). `plan` marks every
-group where a dead broker was a voter, since those are the groups that may
-have lost something. On Linux a process crash does not rotate ids and never
+(see "Offsets are not reused" below). `plan` marks a group when the
+brokers whose votes it cannot read are a majority of some voter set of the
+epoch, since only then can a term have been elected that no vote it read
+knows of (see "When a copy vouches for its whole log" below). On Linux a process crash does not rotate ids and never
 needs a re-form. A power cut rotates a broker's copy only when its run was
 relaxed or a copy in its root had vouched, and the old voter seat then
 stays empty until membership changes exist, so a group that loses a
@@ -957,6 +958,25 @@ no offset is reused (`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes;
 `FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg`, with an offset-only
 floor, does not), and the loss above can happen
 (`FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg`).
+
+**When a copy vouches for its whole log.** A copy whose last entry has
+the highest term read vouches for everything it holds, unless the group is
+marked. Every elected term took votes from a majority of some voter set of
+the epoch, and a vote is fsynced before the reply and kept across a power
+cut, so while the unknown votes are a minority of every voter set, some
+vote read is at least as new as every elected term. The unknown votes are
+those of dead brokers, of brokers whose current copy is not of the epoch or
+lost its vote, and of brokers with a copy of the epoch a restore rotated.
+
+The voter sets are the epoch's seed voters, both halves of every membership
+entry of the epoch in every copy read (uncommitted ones included), and every
+target the control plane ordered in the epoch, which it records before it
+asks the leader. If any of these is not known, the group is marked. The set
+of placed brokers is never used: learners and brokers not yet added inflate
+it. With one of three seeded voters dead, a read follower that holds a
+committed entry it has not yet seen committed keeps it in the base; with two
+of three dead, or a dead single seed voter, or a joint target whose new half
+is mostly dead, the group is marked and the plan names the voter set.
 
 What the implementation stores for this:
 
@@ -1615,9 +1635,51 @@ leader's last message whether the group is idle or not. At the default
 idle interval of 2 s the follower waits three intervals, 6 s plus its
 spread, so a dead leader of an idle group is noticed in 6 to 7 s.
 
-Pre-vote is off, as it is by default in openraft. A member cut off from
-its leader therefore raises the term when it stands. That is unchanged by
-idle groups and is a separate decision.
+Pre-vote is on (openraft's `enable_pre_vote`; off by default there). A
+member that stands first asks the others whether they would vote for it,
+and raises its term only when a majority says yes. A member nobody can hear,
+such as one whose outbound connections fail, keeps its term. When it is
+heard again it follows the leader instead of deposing it with a higher term
+(#2630). Three cases skip the question and stand at once: a leadership
+transfer's target (so a transfer costs at most one term), a restarted
+leader whose stored vote is its own (`enable_leader_restore`), and a sole
+voter.
+
+openraft refuses a pre-vote only inside its own lease of `election_max`
+(2 s) from the last message a member took. In an idle group that lease
+ends just before each idle heartbeat, so a member coming back could still
+win a pre-vote there. Felix closes that gap. A follower refuses a pre-vote
+for as long as it would wait for its leader itself (6 to 7 s at the idle
+interval), and a leader refuses one while a majority answered it within
+three idle intervals. The refusal is an ordinary not-granted answer, so
+the candidate still counts the broker as reachable, adopts a higher term
+or backs off for a longer log as openraft does, and asks again at its
+next timeout. A member that takes a leadership transfer stops counting
+on the old leader, so if the target never stands, the old leader's own
+pre-vote at the transfer's expiry is granted at once. After a leader
+dies, the first follower to time out may have to wait for the others to
+time out too, which still falls inside the 6 to 7 s above.
+
+Because a cut-off member keeps its term, openraft keeps naming the leader it
+last heard, and it never steps a leader down for losing its majority. Felix
+serves readers only from a member that is still in touch with its group:
+
+- A follower counts on its leader only while it would refuse a pre-vote
+  for it.
+- A leader counts as heard while a majority answered it within three idle
+  intervals (6 s at the default). A new term no majority has answered yet
+  is timed from when the leader was first seen. A sole voter needs nobody.
+
+Past that, the member ends its subscribers and refuses new ones with
+`not_ready`. A follower still forwards writes to the leader openraft names,
+so one that has just restarted forwards at once, before it hears that
+leader. A forward to a leader that is gone fails, and the client retries.
+
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_cut_off_member_keeps_its_term_and_does_not_depose_the_leader_on_return`,
+> `a_leader_no_majority_answers_names_no_leader`,
+> `an_idle_group_refuses_a_pre_vote_past_the_openraft_lease` and
+> `an_idle_group_elects_soon_after_a_transfer_to_a_dead_target`.
 
 ### Many groups electing at once
 
@@ -2371,8 +2433,12 @@ restarted member cannot help elect anyone but the leader it followed
 leader stands as it starts. If a follower is already open it grants, and
 the group has its leader back within one vote round: 16 ms in the
 runtime's tests, against 2.1 to 3.2 s when the followers dropped the
-request. If the leader opens first, its request finds nobody, and it asks
-again at its next election timeout: 1.3 to 2.1 s over five runs.
+request. If the leader opens first, its request finds nobody. It asks
+again at its next election timeout with a pre-vote, which the followers
+refuse until their own hold and openraft's start-up lease end, about
+`election_max` after they open. The group then elects at the next term up:
+2.2 to 4.0 s over eight runs. Without pre-vote the retry was a vote, which
+the followers let through, at 1.3 to 2.1 s.
 
 **As built.** `Group::open` reads the vote from the log before openraft
 starts, and the voters once it has. Until `election_max` has passed since the open, the
@@ -2397,7 +2463,8 @@ member of a group being formed.
 > `a_restarted_member_alone_in_a_set_not_committed_is_held`,
 > `a_held_member_grants_the_leader_its_stored_vote_names`,
 > `a_later_leaders_append_ends_what_the_stored_vote_lets_through`,
-> `a_group_restarted_whole_has_its_leader_back_within_one_vote_round` and
+> `a_group_restarted_whole_has_its_leader_back_within_one_vote_round`,
+> `a_group_restarted_whole_with_its_leader_first_has_a_leader_within_its_holds` and
 > `a_held_member_handed_the_leadership_stands_and_is_ticked`.
 
 ### Reads
@@ -2714,6 +2781,7 @@ On a broker that holds a member:
 | leads, and its stream is at the committed tail | served here, at the term |
 | follows a leader | forwarded to that leader |
 | has no leader, or leads and is still moving to the tail | answered `shard_unavailable` (`not_ready`), which a client retries |
+| leads, but no majority answers it | a publish is served here, where it waits for its commit; a subscribe is answered `not_ready` |
 
 A publish served here is proposed in the order the shard's publishes
 arrive. On a `Quorum` stream it is answered at its commit under `on_commit`,
@@ -2786,7 +2854,11 @@ fence are not asked.
 - A member with no known leader serves no subscriber: a new subscribe is
   refused with a retryable `not_ready`, and the ones it has are ended on
   the next feed pass, since a member cut off from its group may be
-  reading a log that group has moved past.
+  reading a log that group has moved past. A publish there is still
+  forwarded to the leader openraft last named, but a subscribe is not
+  redirected to it, because that leader may be the one that is gone. A
+  restarted follower therefore answers a new subscribe with `not_ready`
+  until it hears its leader, up to one idle heartbeat.
 - A leader that is deposed ends the subscribers of its term, because
   records it had not seen committed may be replaced, and a gap would read
   as a drop. They can subscribe again to the same broker, which now serves
@@ -2800,8 +2872,10 @@ fence are not asked.
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_raft_shard_is_subscribed_to_on_its_leader_and_followers`,
 > `a_follower_behind_a_resume_offset_redirects_to_its_leader`,
-> `a_member_with_no_leader_serves_no_reader`;
+> `a_member_with_no_leader_serves_no_reader`,
+> `a_leader_no_majority_answers_serves_no_reader`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_restarted_follower_forwards_before_it_hears_its_leader`,
 > `a_deposed_leader_lets_its_subscribers_go`;
 > `crates/server/felix-broker/src/broker/shards/tests.rs`,
 > `a_follower_delivers_what_is_committed_and_no_further`,
@@ -3067,7 +3141,8 @@ A member that installs a snapshot holds no record below it, so it cannot
 read those refusals from its log. They travel in the snapshot instead. A
 stream shard's snapshot data is the list of cut batches, by producer and
 sequence, that a log starting right after the snapshot's last entry has to
-refuse. It is what the committed records up to that entry say, and nothing
+refuse, and the group table as of that entry ("Consumer groups", below).
+It is what the committed records up to that entry say, and nothing
 else: the cut batches in those records, plus the ones earlier purges and
 installs carried. The sender's own refusals do not go in. A batch evicted
 from a full table of cut batches goes in only once a purge passes its
@@ -3390,6 +3465,73 @@ refused (`stream_has_commits`), as on the hybrid.
 > `services/felix-broker-service/src/serving/quic/streams/tests/raft_publish_if.rs`,
 > `a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid`.
 
+**Consumer groups.** Not served on a Raft shard yet: a group operation on
+one is refused as `invalid_request`. What is built is the entry the groups
+will write and the table every member folds from those entries. A group's writes (a cursor advance, a dead letter, a redrive and
+its finish, a discard, a seek, a delete) are entries in the shard's own Raft
+log, stored as group records (`docs/storage-format.md`, "Group records").
+Every member folds them, in log order, into the same group table, so a
+new leader serves the group from exactly the state the old one committed.
+`docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
+leaves out discard, which only drops a dead letter, and `if_new`, which the
+leader decides before it proposes the seek.
+
+The group table is the shard's consumer groups as one member has applied
+them: per group, its creation token, its cursor (everything below it is
+settled, dead or redriven), its dead letters, and the dead letters redriven
+but not yet settled. The shard also keeps the index of its latest delete.
+The state machine folds a group entry when it applies it, before the commit
+table moves, so a write that waits for its apply finds it folded. It is
+kept in memory, and every member gets there the same way:
+
+- At apply, only committed entries fold. A log truncation never touches
+  the table, because nothing above the commit index is in it.
+- After a restart, the member loads the table its stored snapshot carries
+  (none without one) and openraft applies the log above the snapshot
+  again, which folds the group entries there.
+- At a snapshot install, the member replaces its table with the one the
+  snapshot carries and forgets its trackers. The entries above the snapshot
+  fold on top. A stream member refuses every install today ("Group
+  runtime"), so this is for the purge that will send them (#2602).
+
+A shard switched from the hybrid starts with an empty table: its cursors
+and dead letters stay in the hybrid's side logs until the switch seeds
+them ([#2659](https://github.com/GetFelix/felix/issues/2659)), which has
+to land before groups are served on a switched shard.
+
+So the stream snapshot carries the table as of its last entry, beside the
+cut batches ("Idempotent publishes"): a member that installs it holds no
+group entry below it to fold. A snapshot with no group writes is still the
+older layout, cut batches only. A group entry a member cannot decode stops
+the member, as a cache entry does: skipping it would leave that member's
+table unlike the others'.
+
+The payload is a `GroupEntry` (`felix-broker`, `queue/entry.rs`): the
+group's name, the operation, and for every write a tracker decides, the
+group's creation token. The token names the incarnation of the group the
+write was decided for (the term and index of the seek that created or last
+reset it, or of the hydrate that created it), so a write that lands after a
+seek or a delete of its group is dropped rather than applied to the group
+that replaced it. A seek's own token is its entry's log id.
+
+A group entry has its own tag, 9, in the Raft wire's entry payloads, and a
+member built before it refuses the whole append by that tag. Serving groups
+on Raft will wait for the fleet feature `raft_consumer_groups`, which no
+build reports yet.
+
+> `crates/server/felix-replication/src/raft/wire/tests.rs`,
+> `a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build`;
+> `crates/server/felix-replication/src/raft/tests.rs`,
+> `a_group_write_round_trips_through_its_record`;
+> `crates/server/felix-broker/src/queue/entry/tests.rs`,
+> `the_layout_is_the_documented_one`;
+> `crates/server/felix-replication/src/raft/tests/groups.rs`,
+> `every_member_folds_the_same_group_table_and_keeps_it_across_a_restart`,
+> `an_installed_snapshot_carries_the_group_table`,
+> `a_group_entry_that_does_not_decode_stops_the_apply`;
+> `crates/server/felix-broker/src/queue/table/tests.rs`,
+> `the_same_entries_fold_to_the_same_table`.
+
 **Publishers and record headers.** A record on a Raft shard keeps what it
 keeps on the hybrid: the publisher id (the principal that published it,
 which is not the producer id) and its key-and-headers block
@@ -3490,6 +3632,18 @@ Membership changes are not built yet
   not seen the stream recreated yet) does not answer it, and that also
   stops it. The other members never form a group. They
   open on an empty log and join when the leader's first append arrives.
+- The broker that formed a group hands its first leadership to the broker
+  placement names as the shard's leader. It is the lowest id of the set
+  and wins the first election, so without this the lowest broker would
+  lead every group it formed and take every write while the others only
+  follow. Once it leads, it closes the shard for that term and asks for
+  the transfer when that broker holds its whole log, because openraft
+  hands over only to a member whose log matches. A transfer that does not
+  go through ends the term after an election timeout like any other, and
+  whoever wins leads. It gives up
+  after 10 s. Only the first term is placed this way: a later election, a
+  restart or a failover leaves leadership where the vote puts it, and
+  leaders do not move back to placement's leader afterwards (issue #2649).
 - A formed group keeps its members. A member that placement drops stays
   open and keeps voting, and it opens again after a restart: the broker
   reads the `engine` marker of each shard placed elsewhere, and opens the
@@ -3500,14 +3654,40 @@ Membership changes are not built yet
   placement adds opens an empty member that no group knows: it serves
   nothing for the shard and answers "not ready".
 
-So **moves, drains and replacing a broker are not supported on Raft
-shards.** Placement may still write them, and the group ignores them. A
-broker counts the shards it holds whose voters are not the brokers
-placement names in `felix_broker_raft_shards_off_placement`, and logs each
-one once at warn level. Requests that reach a broker with no formed member
-go to the leader placement names, which is wrong once placement and the
-group differ, so keep placement where the group formed: do not drain or
-remove a broker that holds Raft shards.
+**What placement does with a Raft shard.** On a cluster whose
+`shard_engine` is `raft`, the control plane leaves a durable stream's group
+alone and only names the member it wants leading. It never adds or removes a
+member of a shard it has placed, except that it drops the copy a move from
+an older control plane added:
+
+- A balance pass, a drain and an operator move each name another member of
+  the set as leader, in one write that changes only `leader`. Nothing is
+  staged or copied. The group's leader moves there once brokers follow
+  placement ([#2649](https://github.com/GetFelix/felix/issues/2649)). Until
+  then it stays where it was elected, and requests still reach it.
+- A drain moves every shard the draining broker leads to a live member, so
+  its shutdown hand-off finishes. Its follower copies stay, since a member
+  leaves a group only through a membership change. A shard with no other
+  live member, such as one at replication factor 1, keeps its leader and
+  shows as waiting with "no live node can take this shard".
+- A leader that goes down is renamed to a live member, in the same kind of
+  write, because a broker with no member forwards to the leader placement
+  names. The group elects a new one without the control plane, so placement
+  counts no unplaceable shard. With no live member left the name stays.
+- A leader-only write keeps the shard's Raft target and its version, so it
+  does not cancel a membership change in flight.
+- An operator move to a broker that is not a member is refused with
+  `not_a_member`.
+- A move an older control plane started on the shard is dropped at the next
+  pass, with any copy it added.
+
+So **replacing a broker is not supported on Raft shards.** A broker counts
+the shards it holds whose voters are not the brokers placement names in
+`felix_broker_raft_shards_off_placement`, and logs each one once at warn
+level. Requests that reach a broker with no formed member go to the leader
+placement names, which is wrong once placement and the group differ, so do
+not remove a broker that holds Raft shards. `docs/control-plane.md`, "Raft
+shards", has the placement side.
 
 Two cases this does not cover. If placement changes a full set while it is
 forming, two brokers can each be the lowest of their own set and form two
@@ -3683,10 +3863,12 @@ as #2413 extends it) guard by guard.
 
 Each group has one task, the driver (`raft/group/driver.rs`), that makes
 the membership match the target. A broker is told a target with
-`GroupRuntime::retarget`: the voters the group should have, and the
-target's version. It keeps only the newest target it was told, in memory.
-Every member can be told. Only the one that leads acts, and one elected
-later acts on the target it holds.
+`GroupRuntime::retarget`: the voters the group should have, the
+target's version, and the term it is told for. It keeps only the newest
+target it was told, or the same one told for a newer term, in memory.
+Every member can be told. Only the one that leads acts, and only on a
+target told for the term it leads: one elected later does nothing until
+it is told again.
 
 A target names members, not brokers, and a member is a copy id. The copy
 id of a broker the group does not have yet is minted on that broker, when
@@ -3777,7 +3959,12 @@ Transfers are counted separately, because each one closes the shard for
 writes until the next term opens. After eight transfers that did not go
 through, the group is reported stuck and the next transfer is asked no
 sooner than 30 seconds after the last. A written step or a new target
-starts that count again.
+starts that count again; the same target told again for a new term does
+not. Each failed transfer ends a term, and the member that leads the next
+one waits to be told the target for it, so for those 30 seconds the group
+stays reported stuck while this member does not lead or has not been told
+yet. Without that, the stuck gauge would drop to zero once a term during
+the very failure it reports.
 
 **The two rules, checked again.** The decision never names a set without
 the leader, and the step writers refuse one. The driver checks a third

@@ -43,6 +43,7 @@ mod moves;
 mod operator;
 mod plan;
 mod progress;
+mod raft_leaders;
 mod reconciler;
 mod rendezvous;
 mod replica_positions;
