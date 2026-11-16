@@ -618,11 +618,17 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenCommitsReformTrailing.cfg` | the same without the reservation: the re-form pads up to the trailing floor only | violate `OffsetNeverReused` |
 | `FelixRaftWrittenCommitsReformLoses.cfg` | witness: under the proposal a power cut of a majority loses a committed record | violate `NeverLosesCommitted` |
 | `FelixRaftWrittenReformOnCommit.cfg` | the design as built (commit on fsynced copies), two power cuts and a re-form with the trailing floor alone | pass `OneLeaderPerTerm`, `LogMatching`, `StateMachineSafety`, `OffsetNeverReused`, `NeverLosesCommitted` (58k distinct states) |
-| `FelixRaftWrittenCommitsReformTerms.cfg` | the proposal across two terms with the re-form's vouch rule (saved commit, the floor's entry, the whole log only when its last entry has the highest term of any vote read), two power cuts and one broker declared dead | `OffsetNeverReused`, `LossNeedsLostDiskAtTop` (no record a read copy holds is lost when no broker is dead and no vote is above every entry) and the safety checks above: expected to pass, no violation in six hours on a CI runner (319.6M distinct states, depth 28); not registered, running to completion on a 32-core build box |
+| `FelixRaftWrittenCommitsReformTerms.cfg` | the proposal across two terms with the re-form's vouch rule (saved commit, the floor's entry, the whole log only when its last entry has the highest term of any vote read), two power cuts and one broker declared dead | `OffsetNeverReused`, `LossNeedsLostDiskAtTop` (no record a read copy holds is lost while the group is unmarked and no vote is above every entry) and the safety checks above: expected to pass, no violation in six hours on a CI runner (319.6M distinct states, depth 28); not registered, running to completion on a 32-core build box |
 | `FelixRaftWrittenCommitsReformTermsFloorHolder.cfg` | the same with the shortcut the rule replaces: the copy with the highest last log id is the base when some copy holds the floor's entry | violate `OffsetNeverReused` (73.0M distinct states, depth 26, 9 minutes 16 seconds on a 32-core build box) |
 | `FelixRaftWrittenCommitsReformTermsHappens.cfg` | witness, with no broker dead: a re-form after a term-2 election cuts the longest copy read | violate `NeverCutsAcrossTerms` (21.8k distinct states, 1 second) |
 | `FelixRaftWrittenCommitsReformTermsVoteOnly.cfg` | witness: a vote in a term that wrote nothing cuts every copy, so a committed entry a read copy holds is lost (reported as "cut by a vote", needs `--accept-loss`) | violate `LossNeedsLostDisk` (387k distinct states, 4 seconds) |
 | `FelixRaftWrittenReformVouchDead.cfg` | the vouch rule with the commit on fsynced copies (`WrittenCommits` off), `Reserve`, one term and one broker declared dead | pass (#2661): a leads term 1, a and b fsync and reserve its first entry, a commits it, a is declared dead and c loses power. The dead broker is a minority of the voters, so b still vouches for its whole log and the base keeps the entry |
+| `FelixRaftWrittenReformVouchDeadFive.cfg` | the vouch rule with five voters, two terms and two brokers declared dead | pass (#2661): the dead are a minority, so T stands |
+| `FelixRaftWrittenCommitsReformJointDead.cfg` | a joint change from {a, b, c} to {a, b, d}, two brokers declared dead | `BaseAgrees` (no base entry differs from the committed one): pass (#2661) |
+| `FelixRaftWrittenCommitsReformJointDeadOneSet.cfg` | the same, with the gate counting the first voter set only | violates `BaseAgrees` (#2661) |
+| `FelixRaftWrittenCommitsReformJointCutDead.cfg` | five voters move to {a, b, c} on c's unsynced write; c is cut, a and b die | `BaseAgrees`, `OffsetNeverReused`: pass (#2661) |
+| `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms | `BaseAgrees`: pass (#2661) |
+| `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | violates `BaseAgrees` (#2661) |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472; the code now takes the term-bound shape, and this stays as the counterexample twin); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
@@ -2942,18 +2948,24 @@ and is declared dead before b learns the commit; c loses power. b's last
 entry has term T, so the base keeps entry 1
 (`FelixRaftWrittenReformVouchDead.cfg`). Once the dead hold a majority of a
 voter set, a term T' above every vote read could have elected a leader
-among them, so no copy vouches past its saved commit and the floor.
+among them, so no copy vouches past its saved commit and the floor. The voter
+sets are the ones the re-form can know: the seed voters, both halves of every
+membership entry in a copy read, committed or not, and each target the control
+plane ordered, which it records before asking the leader. A target counts even
+when no copy read holds its entry (`FelixRaftWrittenCommitsReformJointCutDead.cfg`),
+and counting only the first voter set vouches for a stale tail
+(`FelixRaftWrittenCommitsReformJointDeadOneSet.cfg`). With the gate forced
+open, a copy holding a term-1 tail vouches for it over a term-2 commit the dead
+made (`FelixRaftWrittenReformGateOpen.cfg`; `FelixRaftWrittenReformGate.cfg`
+passes).
 
 With `Reserve`, every copy also reserves before its fsynced copy counts toward
 the commit, the leader's own included. A fsynced copy is not enough on its
-own: the vouch rule keeps a whole log only when no broker is dead and its last
-term is the highest vote read, so the re-form can cut a fsynced copy back to
-its saved commit. Without a reservation at that entry the re-form starts below
-it and reuses a committed offset. TLC finds this in 14 steps when Ack and Agree
-skip the reservation for fsynced counts: a leads term 1, a and b fsync entry 1
-unreserved, a commits it, a is declared dead, c loses power, and the re-form
-reads b's saved commit and c's kept copy, which vouch for nothing, and starts
-at 0 (`OffsetNeverReused`). The code reserves before every count, in every
+own: the vouch rule keeps a whole log only while the group is unmarked and
+its last term is the highest vote read, so a lone vote in a later term, or
+dead brokers holding a majority of a voter set, cut a fsynced copy back to its
+saved commit. Without a reservation at that entry the re-form starts below it
+and reuses a committed offset (`OffsetNeverReused`). The code reserves before every count, in every
 fsync mode (`crates/server/felix-storage/src/raft_log/writer.rs`).
 
 Abstracted: votes are durable and followers do not learn the commit index

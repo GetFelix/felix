@@ -95,11 +95,13 @@
 (*                 it, and for its whole log if its last entry is of term  *)
 (*                 T. The base is the longest vouched prefix. A declared   *)
 (*                 dead broker is not read (DeclareDead, up to MaxDead);   *)
-(*                 its vote is unknown. While the dead are a minority of   *)
-(*                 each voter set, every election took a vote the re-form  *)
-(*                 read, so T stands; once they hold a majority of one,    *)
-(*                 the group is marked and no copy vouches for its whole   *)
-(*                 log.                                                    *)
+(*                 its vote is unknown. The voter sets are the seed, both  *)
+(*                 halves of each membership entry read and each target    *)
+(*                 the control plane ordered. While the unknown votes are  *)
+(*                 a minority of each, every election took a vote the      *)
+(*                 re-form read, so T stands; once they hold a majority of *)
+(*                 one, the group is marked and no copy vouches for its    *)
+(*                 whole log.                                              *)
 (*   FloorHolder -- the shortcut the rule replaces: when some copy holds   *)
 (*                 the floor's entry, the base is the copy with the        *)
 (*                 highest last log id.                                    *)
@@ -110,7 +112,10 @@
 (*                          given only committed records.                  *)
 (*   NeverLosesCommitted -- a re-form keeps every committed record. A      *)
 (*                          witness under WrittenCommits.                  *)
-(*   LossNeedsLostDisk   -- with no broker declared dead, a re-form keeps  *)
+(*   BaseAgrees          -- the base holds no entry that differs from the  *)
+(*                          committed one at its index. A witness with the *)
+(*                          gate forced open.                              *)
+(*   LossNeedsLostDisk   -- while the group is unmarked, a re-form keeps   *)
 (*                          every committed entry a copy it read holds. A  *)
 (*                          witness: a vote in a term that wrote nothing   *)
 (*                          cuts every copy to its saved commit.           *)
@@ -505,12 +510,27 @@ LTerm(l) == IF l = <<>> THEN 0 ELSE l[Len(l)].term
 \* every entry, since a copy holds no entry above its term.
 TopTerm == MaxOf({cpFloor.term} \cup {r.v : r \in Read})
 HoldsFloor(l) == cpFloor.idx > 0 /\ Len(l) >= cpFloor.idx /\ l[cpFloor.idx].term = cpFloor.term
-\* T is the top elected term unless the dead hold a majority of a voter set:
-\* any other election took a vote from a broker the re-form read.
-VotesRead == \A V \in {InitVoters, NewVoters} : ~Majority(dead, V)
+\* The voter sets a re-form can know: the seed voters, both halves of every
+\* membership entry in a copy it read, committed or not, and each target the
+\* control plane ordered, which it records before asking the leader. With
+\* one change the only target is NewVoters, ordered once a change is made.
+VoterSets ==
+    {InitVoters} \cup (IF used.changes > 0 THEN {NewVoters} ELSE {})
+        \cup UNION {UNION {{r.l[i].cfg.old, r.l[i].cfg.new} :
+                            i \in {j \in 1..Len(r.l) : r.l[j].kind = "member"}} : r \in Read}
+\* Votes the re-form cannot account for: the dead's. A power cut that rotated
+\* a copy kept its vote, and votes are otherwise durable.
+Unknown == dead
+\* T is the top elected term unless the unknown votes hold a majority of a
+\* voter set: any other election took a vote the re-form read.
+VotesRead == \A V \in VoterSets : ~Majority(Unknown, V)
+\* Mutants of the gate, for the configurations that show it is needed.
+VotesInitOnly == ~Majority(Unknown, InitVoters)
+VotesAlways == TRUE
+VouchGate == VotesRead
 VouchLen(r) ==
     Max(r.c, Max(IF HoldsFloor(r.l) THEN cpFloor.idx ELSE 0,
-                 IF VotesRead /\ LTerm(r.l) = TopTerm THEN Len(r.l) ELSE 0))
+                 IF VouchGate /\ LTerm(r.l) = TopTerm THEN Len(r.l) ELSE 0))
 Vouched == {SubSeq(r.l, 1, VouchLen(r)) : r \in Read}
 HighestLog(S) == CHOOSE l \in S : \A m \in S :
     LTerm(m) < LTerm(l) \/ (LTerm(m) = LTerm(l) /\ Len(m) <= Len(l))
@@ -634,20 +654,28 @@ NeverCommitsAfterFailover ==
 NeverLosesCommitted ==
     reform.on => Len(committed) <= Len(reform.base)
 
-\* With no broker declared dead, an entry that a read copy holds at its
-\* index and that was committed is in the base.
+\* The base holds no entry that differs from the committed entry at its
+\* index. A witness that the gate is needed: with the gate forced open, a
+\* copy holding an older term's tail vouches for it over a commit the dead
+\* made.
+BaseAgrees ==
+    reform.on =>
+        \A k \in 1..Min(Len(reform.base), Len(committed)) : reform.base[k] = committed[k].e
+
+\* While the votes read are a majority of every voter set, an entry that a
+\* read copy holds at its index and that was committed is in the base.
 LossNeedsLostDisk ==
-    (reform.on /\ dead = {}) =>
+    (reform.on /\ VotesRead) =>
         \A k \in 1..Len(committed) :
             (\E l \in Copies : k <= Len(l) /\ l[k] = committed[k].e) => k <= Len(reform.base)
 
-\* The positive half of LossNeedsLostDisk: with no broker declared dead and
+\* The positive half of LossNeedsLostDisk: with the votes read a majority and
 \* no vote read above every entry read, T is the highest entry's term, the
 \* copy holding that entry is kept whole, and a committed entry a read copy
 \* holds is in the base.
 LTop == MaxOf({LTerm(r.l) : r \in Read})
 LossNeedsLostDiskAtTop ==
-    (reform.on /\ dead = {} /\ TopTerm = LTop /\ LTop > 0) =>
+    (reform.on /\ VotesRead /\ TopTerm = LTop /\ LTop > 0) =>
         \A k \in 1..Len(committed) :
             (\E l \in Copies : k <= Len(l) /\ l[k] = committed[k].e) => k <= Len(reform.base)
 
