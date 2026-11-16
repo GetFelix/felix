@@ -570,7 +570,7 @@ expectations=(
   "FelixRaftWrittenCommitsReformTermsFloorHolder violates OffsetNeverReused"
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
-  "FelixRaftWrittenReformVouchDead violates NeverLosesCommitted"
+  "FelixRaftWrittenReformVouchDead pass"
   "FelixRaftBatch pass"
   "FelixRaftBatchKeepsCut pass"
   "FelixRaftBatchEachRecord violates BatchExactlyOnce"

@@ -95,8 +95,11 @@
 (*                 it, and for its whole log if its last entry is of term  *)
 (*                 T. The base is the longest vouched prefix. A declared   *)
 (*                 dead broker is not read (DeclareDead, up to MaxDead);   *)
-(*                 its vote is unknown, so the group is marked and no copy *)
-(*                 vouches for its whole log.                              *)
+(*                 its vote is unknown. While the dead are a minority of   *)
+(*                 each voter set, every election took a vote the re-form  *)
+(*                 read, so T stands; once they hold a majority of one,    *)
+(*                 the group is marked and no copy vouches for its whole   *)
+(*                 log.                                                    *)
 (*   FloorHolder -- the shortcut the rule replaces: when some copy holds   *)
 (*                 the floor's entry, the base is the copy with the        *)
 (*                 highest last log id.                                    *)
@@ -502,9 +505,12 @@ LTerm(l) == IF l = <<>> THEN 0 ELSE l[Len(l)].term
 \* every entry, since a copy holds no entry above its term.
 TopTerm == MaxOf({cpFloor.term} \cup {r.v : r \in Read})
 HoldsFloor(l) == cpFloor.idx > 0 /\ Len(l) >= cpFloor.idx /\ l[cpFloor.idx].term = cpFloor.term
+\* T is the top elected term unless the dead hold a majority of a voter set:
+\* any other election took a vote from a broker the re-form read.
+VotesRead == \A V \in {InitVoters, NewVoters} : ~Majority(dead, V)
 VouchLen(r) ==
     Max(r.c, Max(IF HoldsFloor(r.l) THEN cpFloor.idx ELSE 0,
-                 IF dead = {} /\ LTerm(r.l) = TopTerm THEN Len(r.l) ELSE 0))
+                 IF VotesRead /\ LTerm(r.l) = TopTerm THEN Len(r.l) ELSE 0))
 Vouched == {SubSeq(r.l, 1, VouchLen(r)) : r \in Read}
 HighestLog(S) == CHOOSE l \in S : \A m \in S :
     LTerm(m) < LTerm(l) \/ (LTerm(m) = LTerm(l) /\ Len(m) <= Len(l))
