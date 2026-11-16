@@ -646,21 +646,35 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftGroupsTrackerAcrossTerms.cfg` | a member keeps its tracker across terms; two changes of leader | violate `RedrivenOwed`: a member leading again serves from a tracker that misses a redrive committed in between |
 | `FelixRaftGroupsHydrateBeforeApply.cfg` | the leader decides from a prefix of the committed log it has applied | violate `RedrivenOwed`: the tracker misses a committed redrive |
 | `FelixRaftGroupsUserOpsBeforeOwnApply.cfg` | hydrate, redrive and seek do not wait for the leader's own entries in flight | violate `RedrivenOwed`: a seek's tracker misses a redrive the leader proposed just before it |
-| `FelixRaftStreamPurge.cfg` | `FelixRaftStreamPurge.tla`: three voters, four entries, two trims, one change of leader, one restart, one re-form; every rule on | pass `NoReadBelowFloor`, `NoAckedLoss`, `PurgeBelowFloor`, `TablesAgree`, `OffsetNeverReused`, `CatchUpPossible` (13,933,546 distinct states, 67.1M generated, 64 seconds with 16 workers on a 32-core machine) |
-| `FelixRaftStreamPurgeLearner.cfg` | three voters and a learner, four entries, no re-form | pass the same (9,378,230 distinct states, 66.2M generated) |
-| `FelixRaftStreamPurgeLearnerReform.cfg` | three voters and a learner, three entries, one change of leader, one restart, one re-form | pass the same (12,303,559 distinct states, 64.1M generated, 77 seconds with 16 workers) |
-| `FelixRaftStreamPurgeNoCap.cfg` | the leader purges past a member's match | pass the same (16,469,858 distinct states, 79.6M generated): the cap is not a safety rule |
+| `FelixRaftStreamPurge.cfg` | `FelixRaftStreamPurge.tla`: three voters, four entries, two trims, one change of leader, one restart, one re-form; every rule on | pass `NoReadBelowFloor`, `NoAckedLoss`, `PurgeBelowFloor`, `AppliedCoversPurge`, `TablesAgree`, `HeadersAgree`, `OffsetNeverReused`, `CatchUpPossible`. Not registered, run by dispatch: over 80M distinct states and unfinished after 45 minutes on a build box |
+| `FelixRaftStreamPurgeSmall.cfg` | the same with three entries | pass the same (13,827,652 distinct states, 69.2M generated, 3.6 minutes with 10 workers on a shared 32-core box) |
+| `FelixRaftStreamPurgeLearner.cfg` | three voters and a learner, four entries, one change of leader, one restart, no re-form | pass the same. Not registered, run by dispatch: over 60M distinct states and unfinished after 45 minutes |
+| `FelixRaftStreamPurgeLearnerSmall.cfg` | the same with three entries | pass the same (7,979,726 distinct states, 55.8M generated, 100 seconds) |
+| `FelixRaftStreamPurgeLearnerReform.cfg` | three voters and a learner, three entries, two trims, one change of leader, one restart, one re-form | pass the same. Not registered, run by dispatch: over 68M distinct states and unfinished after 45 minutes |
+| `FelixRaftStreamPurgeLearnerReformSmall.cfg` | the same with one trim and no change of leader | pass the same (45,082,276 distinct states, 261.8M generated, 5.6 minutes) |
+| `FelixRaftStreamPurgeNoCap.cfg` | the leader purges past a member's match | pass the same: the cap is not a safety rule. Not registered, run by dispatch: over 84M distinct states and unfinished after 45 minutes |
+| `FelixRaftStreamPurgeNoCapSmall.cfg` | the same with three entries | pass the same (16,369,637 distinct states, 81.9M generated, 3.5 minutes) |
+| `FelixRaftStreamPurgeFive.cfg` | three voters, five entries, one restart, no change of leader, no re-form, no cap | pass the same. Not registered, run by dispatch: over 67M distinct states and unfinished after 45 minutes |
+| `FelixRaftStreamPurgeFiveSmall.cfg` | the same with four entries | pass the same (4,526,442 distinct states, 26.8M generated, 47 seconds) |
+| `FelixRaftStreamPurgeFiveReform.cfg` | three voters, five entries, one re-form, no restart, no cap | pass the same. Not registered, run by dispatch: over 84M distinct states and unfinished after 45 minutes |
+| `FelixRaftStreamPurgeFiveReformSmall.cfg` | the same with four entries | pass the same (43,521,359 distinct states, 200.7M generated, 4.2 minutes) |
+| `FelixRaftStreamPurgeTwoReforms.cfg` | three voters and a learner, three entries, one restart, two re-forms: the floor a re-form carries is read by the next | pass the same. Not registered, run by dispatch: out of heap on a build box |
+| `FelixRaftStreamPurgeTwoReformsSmall.cfg` | the same with two entries | pass the same (7,342,428 distinct states, 37.6M generated, 82 seconds) |
 | `FelixRaftStreamPurgePastFloor.cfg` | a purge bounded by the applied entry, not by floor - 1 | violate `NoAckedLoss`: a record at or above the floor is purged |
 | `FelixRaftStreamPurgeInstallAboveFloor.cfg` | the snapshot at the applied entry, and a member installs any snapshot ahead of it | violate `NoAckedLoss`: the member skips records it was never sent |
 | `FelixRaftStreamPurgeSnapAtApplied.cfg` | the snapshot at the applied entry, install rule kept, leader cap kept | violate `CatchUpPossible`: a follower purges past a slow member, leads, and the member refuses every snapshot |
 | `FelixRaftStreamPurgePastMatch.cfg` | the same without the cap and with no change of leader | violate `CatchUpPossible` |
 | `FelixRaftStreamPurgeTablesAtApplied.cfg` | the snapshot at the purge point carries the current tables | violate `TablesAgree`: entries above the purge point are applied twice |
 | `FelixRaftStreamPurgeReformEntries.cfg` | a re-form reads a copy's last entry only | violate `OffsetNeverReused`: a copy that just installed a snapshot reads as empty |
+| `FelixRaftStreamPurgeReformNoFloorTwice.cfg` | two re-forms, the second reads a floor only from a copy that installed or whose log reaches it, not from one the first re-form carried it into | violate `OffsetNeverReused`: the second re-form gives out offsets below the carried floor again. One re-form passes at these bounds |
 | `FelixRaftStreamPurgeReformNoFloor.cfg` | a re-form reads the last entry and the purged id, not the floor | violate `OffsetNeverReused`: offsets below an installed floor are given out again |
 | `FelixRaftStreamPurgeReformKeepsOwnFloor.cfg` | a re-form leaves each copy its own floor; a learner installs | violate `NoReadBelowFloor`: the new leader serves below the learner's floor |
 | `FelixRaftStreamPurgeReformFloorNotStored.cfg` | the re-form raises the floor in memory, not in the snapshot; learner, restart | violate `NoReadBelowFloor`: after a restart the copy serves below the floor |
 | `FelixRaftStreamPurgeReachInstall.cfg` | witness: a member that installed a snapshot leads and serves | violate `NeverServesAfterInstall` |
 | `FelixRaftStreamPurgeReachPurge.cfg` | witness: a member purges past a record | violate `NeverPurgesARecord` |
+| `FelixRaftStreamPurgeReachTrimPurge.cfg` | witness at the bounds of `FelixRaftStreamPurgeFive.cfg`: a purge drops a trim entry | violate `NeverPurgesATrim` |
+| `FelixRaftStreamPurgeReachWriteAfterReform.cfg` | witness at the bounds of `FelixRaftStreamPurgeFiveReform.cfg`: a write follows a re-form | violate `NeverWritesAfterReform` |
+| `FelixRaftStreamPurgeReachPurgeAfterReform.cfg` | witness at the same bounds: a purge follows a re-form | violate `NeverPurgesAfterReform` |
 | `FelixRaftCond.cfg` | `FelixRaftCond.tla`: three members, three terms, logs up to five entries, one plain publish, one membership entry, three conditional publishes (two naming offset 2, one offset 3); each member decides `kept` from the entry and its index | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold` (169,456,277 distinct states, depth 34, 24 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondTwoTerms.cfg` | the same with two terms | pass the same (18,646,633 distinct states, depth 30, 3 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
@@ -4336,6 +4350,18 @@ The broken configurations, and what each shows:
 - A re-form that raises the floor in memory but not in the snapshot loses it
   at the next restart, and the copy serves below it
   (`FelixRaftStreamPurgeReformFloorNotStored.cfg`).
+- A second re-form that does not read the floor the first carried into a copy
+  gives out offsets below it again, since that copy's log holds no entry for
+  the floor and it installed nothing
+  (`FelixRaftStreamPurgeReformNoFloorTwice.cfg`).
+
+Bounds. The pass configurations at the bounds above are too big for CI's
+hour: each passed 60 to 85 million distinct states without finishing in 45
+minutes. They are not registered and run by the CI dispatch
+(`tla_configs`, 360 minutes). The `Small` variants lower only the counts
+(entries, a trim, a change of leader or a restart, never a rule or an
+invariant) and are registered. A pass at the small bounds says nothing about
+a longer log, so the dispatch result is what shows the big bounds.
 
 The leader's cap at the slowest match is not a safety rule. With the snapshot
 at the purge point, a member sent it always accepts it
