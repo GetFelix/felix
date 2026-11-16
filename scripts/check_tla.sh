@@ -578,6 +578,8 @@ expectations=(
   "FelixRaftWrittenCommitsReformJointCutDead pass"
   "FelixRaftWrittenReformGate pass"
   "FelixRaftWrittenReformGateOpen violates BaseAgrees"
+  "FelixRaftWrittenReformReplaced pass"
+  "FelixRaftWrittenReformReplacedByBroker violates BaseAgrees"
   "FelixRaftBatch pass"
   "FelixRaftBatchKeepsCut pass"
   "FelixRaftBatchEachRecord violates BatchExactlyOnce"

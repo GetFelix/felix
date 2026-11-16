@@ -102,6 +102,12 @@
 (*                 re-form read, so T stands; once they hold a majority of *)
 (*                 one, the group is marked and no copy vouches for its    *)
 (*                 whole log.                                              *)
+(*   ReplacedCopy, ReplacementCopy -- with ReplacedCopy a broker's disk  *)
+(*                 can be replaced (Replace): the copy keeps nothing and   *)
+(*                 the broker comes back as ReplacementCopy. Voter sets    *)
+(*                 hold copy ids, and a voter that is neither in place nor *)
+(*                 a power cut's rotated copy is unknown (#2671). Nobody   *)
+(*                 turns it off.                                           *)
 (*   FloorHolder -- the shortcut the rule replaces: when some copy holds   *)
 (*                 the floor's entry, the base is the copy with the        *)
 (*                 highest last log id.                                    *)
@@ -147,7 +153,9 @@ CONSTANTS
     MaxReforms,
     MaxDead,
     Vouch,
-    FloorHolder
+    FloorHolder,
+    ReplacedCopy,
+    ReplacementCopy
 
 VARIABLES
     role,       \* "follower", "candidate" or "leader"
@@ -171,11 +179,12 @@ VARIABLES
     dead,       \* brokers the operator declared dead: a re-form does not read them
     reserve,    \* the index each copy reserved, synced; a rotation keeps it
     cpFloor,    \* the highest commit index a leader reported to the control plane
-    reform      \* the re-form, once: the base and where the new epoch starts
+    reform,     \* the re-form, once: the base and where the new epoch starts
+    replaced    \* copies whose disk was replaced (Replace): nothing of them is read
 
 election == <<role, term, votedFor, granted, elected>>
 raft == <<log, synced, commitIdx, match, committed>>
-floor == <<kept, keptCommit, keptVote, dead, reserve, cpFloor, reform>>
+floor == <<kept, keptCommit, keptVote, dead, reserve, cpFloor, reform, replaced>>
 vars == <<election, raft, wrote, acked, lost, used, gone, floor>>
 
 \* Only brokers that every named set treats alike permute.
@@ -236,6 +245,12 @@ WrittenQuorum(Q, c) ==
 
 AckedVals == {a.val : a \in acked}
 
+\* The replacement copy before its broker's disk is replaced: it does not
+\* exist yet.
+Unborn == IF ReplacementCopy \in Servers /\ replaced = {} THEN {ReplacementCopy} ELSE {}
+\* Copies with no disk to read: replaced ones and ones not yet made.
+NoDisk == replaced \cup Unborn
+
 Init ==
     /\ role = [s \in Servers |-> "follower"]
     /\ term = [s \in Servers |-> 0]
@@ -251,7 +266,7 @@ Init ==
     /\ acked = {}
     /\ lost = [s \in Servers |-> {}]
     /\ used = [writes |-> 0, changes |-> 0, crashes |-> 0, cuts |-> 0, reforms |-> 0]
-    /\ gone = {}
+    /\ gone = IF ReplacementCopy \in Servers THEN {ReplacementCopy} ELSE {}
     /\ kept = [s \in Servers |-> <<>>]
     /\ keptCommit = [s \in Servers |-> 0]
     /\ keptVote = [s \in Servers |-> 0]
@@ -259,6 +274,7 @@ Init ==
     /\ reserve = [s \in Servers |-> 0]
     /\ cpFloor = NoFloor
     /\ reform = NoReform
+    /\ replaced = {}
 
 \* Only a voter of the configuration it holds campaigns.
 Campaign(c) ==
@@ -455,7 +471,7 @@ PowerCut(s) ==
     /\ gone' = IF CutRotates THEN gone \cup {s} ELSE gone
     /\ Forget(s)
     /\ used' = [used EXCEPT !.cuts = @ + 1]
-    /\ UNCHANGED <<term, elected, committed, acked, dead, reserve, cpFloor, reform>>
+    /\ UNCHANGED <<term, elected, committed, acked, dead, reserve, cpFloor, reform, replaced>>
 
 \* With the logs as they stand, a later term could elect this broker: it
 \* is a voter of the configuration it holds, and the brokers whose logs are
@@ -474,7 +490,7 @@ ReserveTo(s) ==
     /\ s \notin gone
     /\ reserve[s] < LastIdx(s)
     /\ reserve' = [reserve EXCEPT ![s] = LastIdx(s)]
-    /\ UNCHANGED <<election, raft, wrote, acked, lost, used, gone, kept, keptCommit, keptVote, dead, cpFloor, reform>>
+    /\ UNCHANGED <<election, raft, wrote, acked, lost, used, gone, kept, keptCommit, keptVote, dead, cpFloor, reform, replaced>>
 
 \* The leader's report of its commit index, which the control plane keeps
 \* as the floor. It trails the commit by as long as the report takes.
@@ -483,7 +499,7 @@ ReportFloor(i) ==
     /\ role[i] = "leader"
     /\ commitIdx[i] > cpFloor.idx
     /\ cpFloor' = [idx |-> commitIdx[i], term |-> log[i][commitIdx[i]].term]
-    /\ UNCHANGED <<election, raft, wrote, acked, lost, used, gone, kept, keptCommit, keptVote, dead, reserve, reform>>
+    /\ UNCHANGED <<election, raft, wrote, acked, lost, used, gone, kept, keptCommit, keptVote, dead, reserve, reform, replaced>>
 
 \* The operator declares a broker dead: its disk is lost. It never acts
 \* again, and a re-form reads nothing of it, its reservation included.
@@ -491,20 +507,38 @@ DeclareDead(s) ==
     /\ MaxReforms > 0
     /\ Cardinality(dead) < MaxDead
     /\ s \notin dead
+    /\ s \notin NoDisk
     /\ dead' = dead \cup {s}
     /\ gone' = gone \cup {s}
     /\ Forget(s)
     /\ UNCHANGED <<term, votedFor, elected, log, synced, commitIdx, committed, acked, lost, used,
-                   kept, keptCommit, keptVote, reserve, cpFloor, reform>>
+                   kept, keptCommit, keptVote, reserve, cpFloor, reform, replaced>>
+
+\* The broker's disk is replaced (#2671): the copy is gone and keeps
+\* nothing, not even its vote, and the broker comes back as a new copy id
+\* with an empty log and no vote. A leader that holds the new copy as a
+\* member (here a learner of the seed) can append to it, and the append
+\* saves that leader's term as the new copy's vote, deposed or not.
+Replace ==
+    /\ ReplacedCopy \in Servers
+    /\ replaced = {}
+    /\ ReplacedCopy \notin gone
+    /\ replaced' = {ReplacedCopy}
+    /\ gone' = (gone \cup {ReplacedCopy}) \ {ReplacementCopy}
+    /\ lost' = [lost EXCEPT ![ReplacedCopy] = @ \cup
+            {log[ReplacedCopy][k].val : k \in {x \in 1..LastIdx(ReplacedCopy) : log[ReplacedCopy][x].kind = "record"}}]
+    /\ Forget(ReplacedCopy)
+    /\ UNCHANGED <<term, votedFor, elected, log, synced, commitIdx, committed, acked, used,
+                   kept, keptCommit, keptVote, dead, reserve, cpFloor, reform>>
 
 \* What the re-form reads: the logs of copies still in place, and what each
-\* rotated copy kept. Nothing of a dead broker.
-Copies == {log[s] : s \in Servers \ gone} \cup {kept[s] : s \in gone \ dead}
-ReformFloor == Max(cpFloor.idx, IF Reserve THEN MaxOf({0} \cup {reserve[s] : s \in Servers \ dead}) ELSE 0)
+\* rotated copy kept. Nothing of a dead broker or a replaced disk.
+Copies == {log[s] : s \in Servers \ gone} \cup {kept[s] : s \in gone \ (dead \cup NoDisk)}
+ReformFloor == Max(cpFloor.idx, IF Reserve THEN MaxOf({0} \cup {reserve[s] : s \in Servers \ (dead \cup NoDisk)}) ELSE 0)
 
 \* A read copy as the vouch rule sees it: its log, saved commit and vote.
 Read == {[l |-> log[s], c |-> commitIdx[s], v |-> term[s]] : s \in Servers \ gone}
-    \cup {[l |-> kept[s], c |-> keptCommit[s], v |-> keptVote[s]] : s \in gone \ dead}
+    \cup {[l |-> kept[s], c |-> keptCommit[s], v |-> keptVote[s]] : s \in gone \ (dead \cup NoDisk)}
 LTerm(l) == IF l = <<>> THEN 0 ELSE l[Len(l)].term
 \* T: the highest term of any vote read, and of the floor. Votes cover
 \* every entry, since a copy holds no entry above its term.
@@ -518,15 +552,21 @@ VoterSets ==
     {InitVoters} \cup (IF used.changes > 0 THEN {NewVoters} ELSE {})
         \cup UNION {UNION {{r.l[i].cfg.old, r.l[i].cfg.new} :
                             i \in {j \in 1..Len(r.l) : r.l[j].kind = "member"}} : r \in Read}
-\* Votes the re-form cannot account for: the dead's. A power cut that rotated
-\* a copy kept its vote, and votes are otherwise durable.
-Unknown == dead
+\* Votes the re-form cannot account for, keyed by copy id: every copy that
+\* is neither in place nor a power cut's rotated copy, whose kept vote is
+\* read. That is the dead and the replaced. Votes are otherwise durable.
+Unknown == dead \cup NoDisk
 \* T is the top elected term unless the unknown votes hold a majority of a
 \* voter set: any other election took a vote the re-form read.
 VotesRead == \A V \in VoterSets : ~Majority(Unknown, V)
 \* Mutants of the gate, for the configurations that show it is needed.
 VotesInitOnly == ~Majority(Unknown, InitVoters)
 VotesAlways == TRUE
+\* Keyed by broker (#2671): a replaced copy's vote counts as read once its
+\* broker's new copy holds any vote, though that vote can be a deposed
+\* leader's term and not the replaced copy's.
+UnknownByBroker == dead \cup {s \in replaced : term[ReplacementCopy] = 0}
+VotesByBroker == \A V \in VoterSets : ~Majority(UnknownByBroker, V)
 VouchGate == VotesRead
 VouchLen(r) ==
     Max(r.c, Max(IF HoldsFloor(r.l) THEN cpFloor.idx ELSE 0,
@@ -548,7 +588,7 @@ Reform ==
     /\ LET base == ReformBase
        IN reform' = [on |-> TRUE, base |-> base, start |-> Max(Len(base), ReformFloor)]
     /\ used' = [used EXCEPT !.reforms = @ + 1]
-    /\ UNCHANGED <<election, raft, wrote, acked, lost, gone, kept, keptCommit, keptVote, dead, reserve, cpFloor>>
+    /\ UNCHANGED <<election, raft, wrote, acked, lost, gone, kept, keptCommit, keptVote, dead, reserve, cpFloor, replaced>>
 
 \* After the re-form the old epoch is over, and the model stops there.
 Next ==
@@ -560,6 +600,7 @@ Next ==
                 \/ Flush(s) \/ AckWritten(s) \/ AdvanceCommit(s)
                 \/ Crash(s) \/ PowerCut(s)
                 \/ ReserveTo(s) \/ ReportFloor(s) \/ DeclareDead(s)
+          \/ Replace
           \/ \E i, j \in Servers :
                 \/ GrantVote(i, j)
                 \/ Replicate(i, j) \/ Ack(i, j) \/ Report(i, j)
@@ -583,6 +624,7 @@ TypeOK ==
         /\ reserve[s] \in Nat
     /\ cpFloor.idx \in Nat /\ cpFloor.term \in Nat
     /\ dead \subseteq gone
+    /\ replaced \subseteq gone
     /\ DOMAIN reform = {"on", "base", "start"}
     /\ reform.on \in BOOLEAN
     /\ DOMAIN reform.base = 1..Len(reform.base)

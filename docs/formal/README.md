@@ -629,6 +629,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftWrittenCommitsReformJointCutDead.cfg` | five voters move to {a, b, c} on c's unsynced write; c is cut, a and b die | `BaseAgrees`, `OffsetNeverReused`: pass (#2661) |
 | `FelixRaftWrittenReformGate.cfg` | three voters, two declared dead, two terms | `BaseAgrees`: pass (#2661) |
 | `FelixRaftWrittenReformGateOpen.cfg` | the same with the gate forced open | violates `BaseAgrees` (#2661) |
+| `FelixRaftWrittenReformReplaced.cfg` | voters a1, b1, c1 with b2 a learner; b1's disk is replaced with nothing kept, c1 is declared dead, and a1, deposed, appends its term-1 tail to b2 | `BaseAgrees`: pass (#2671): voters are keyed by copy id, so b1's vote is unknown, {b1, c1} is a majority and the group is marked |
+| `FelixRaftWrittenReformReplacedByBroker.cfg` | the same with voters keyed by broker: b2's vote stands in for b1's | violates `BaseAgrees` (#2671): a1 vouches for x at the index where c1 committed f |
 | `FelixRaftBatch.cfg` | `FelixRaftBatch.tla`: two members, two producers with two batches each of two or three records, two changes of leader, two purges, snapshot installs; a purge past a cut batch keeps its sequence and not its count | pass `BatchExactlyOnce`, `BatchInOrder`, `ProducerPlaceAgrees` (8,525,374 distinct states, 42.9M generated, depth 19) |
 | `FelixRaftBatchKeepsCut.cfg` | the same with the count kept at a purge, so a member past the held pieces finishes the batch | pass the same (8,525,374 distinct states, 43.2M generated, depth 20: the same distinct count, re-run to confirm) |
 | `FelixRaftBatchEachRecord.cfg` | each record is its own message with its own term and lease check (#2472; the code now takes the term-bound shape, and this stays as the counterexample twin); no change of leader, no purge | violate `BatchExactlyOnce`: a batch is acknowledged with a record missing |
@@ -2969,6 +2971,17 @@ and counting only the first voter set vouches for a stale tail
 (`FelixRaftWrittenCommitsReformJointDeadOneSet.cfg`). With the gate forced
 open, a copy holding a term-1 tail vouches for it over a term-2 commit the dead
 made (`FelixRaftWrittenReformGateOpen.cfg`; `FelixRaftWrittenReformGate.cfg`
+passes).
+
+Voter sets hold copy ids, not brokers. A vote is unknown unless the re-form
+read it from the copy that cast it: the copy in place, or the copy a power cut
+rotated, whose kept vote is read. A replaced disk keeps nothing, so its old
+copy's vote is unknown even when the broker's new copy has voted since. The
+new copy's vote can be a deposed leader's term, saved when that leader appended
+to it as a learner, and says nothing about the term the old copy voted in.
+Counting it for the broker leaves the group unmarked and a1 vouches for a
+term-1 tail over the term-2 commit that b1's vote made
+(`FelixRaftWrittenReformReplacedByBroker.cfg`; `FelixRaftWrittenReformReplaced.cfg`
 passes).
 
 With `Reserve`, every copy also reserves before its fsynced copy counts toward
