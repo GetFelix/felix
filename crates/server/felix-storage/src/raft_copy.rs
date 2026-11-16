@@ -81,7 +81,8 @@ pub(crate) use rotated_by::RotatedBy;
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use vouch::{
-    BrokerReport, GroupRecord, Key, ReformPlan, Refused, Source, Voter, plan_reform, probes,
+    BrokerReport, GroupRecord, Key, Marked, ReformPlan, Refused, Source, Voter, VoterSource,
+    plan_reform, probes,
 };
 
 use std::sync::Arc;

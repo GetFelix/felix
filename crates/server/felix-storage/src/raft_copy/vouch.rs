@@ -31,6 +31,12 @@ pub(crate) struct GroupRecord<B> {
     pub(crate) placed: Option<BTreeSet<B>>,
     /// Brokers declared dead. Their copies are not read.
     pub(crate) dead: BTreeSet<B>,
+    /// The voters the epoch started with: the plan that formed it, or the
+    /// group's first voters at epoch 0. `None` when not recorded.
+    pub(crate) seed: Option<BTreeSet<B>>,
+    /// Every voter target the control plane ordered in the epoch, recorded
+    /// before the leader was asked. `None` when not recorded.
+    pub(crate) ordered: Option<Vec<BTreeSet<B>>>,
 }
 
 /// One broker's answer.
@@ -40,6 +46,9 @@ pub(crate) struct BrokerReport<B> {
     pub(crate) leads: bool,
     /// The voters its newest membership names.
     pub(crate) names: BTreeSet<B>,
+    /// Both halves of every membership entry of the record's epoch in every
+    /// copy read, uncommitted ones included. `None` when not read.
+    pub(crate) memberships: Option<Vec<BTreeSet<B>>>,
     pub(crate) copies: BrokerCopies,
 }
 
@@ -60,6 +69,31 @@ pub(crate) struct Voter<B> {
     pub(crate) source: Source,
 }
 
+/// Where a voter set of the epoch comes from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum VoterSource<B> {
+    /// [`GroupRecord::seed`].
+    Seed,
+    /// [`GroupRecord::ordered`].
+    Ordered,
+    /// A membership entry read from this broker's copies.
+    Membership(B),
+}
+
+/// Why no copy is vouched for past its saved commit or the floor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Marked<B> {
+    /// A source of the epoch's voter sets is not known.
+    Unknown(VoterSource<B>),
+    /// The brokers whose votes are not known are a majority of this voter
+    /// set, so a term could have been elected without any vote read.
+    Majority {
+        from: VoterSource<B>,
+        set: BTreeSet<B>,
+        unknown: BTreeSet<B>,
+    },
+}
+
 /// The next epoch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ReformPlan<B> {
@@ -75,10 +109,11 @@ pub(crate) struct ReformPlan<B> {
     pub(crate) first_index: u64,
     /// The highest key of any vote or entry read, and of the floor.
     pub(crate) top: Key,
-    /// A broker placed in the epoch is dead, has no vote of the epoch read,
-    /// or has a copy of the epoch a restore rotated. No copy is then
-    /// vouched for past its saved commit or the floor.
-    pub(crate) marked: bool,
+    /// Set when the brokers whose votes are unknown (dead, no vote of the
+    /// epoch read, or a copy of the epoch a restore rotated) are a majority
+    /// of some voter set of the epoch, or a voter set is not known. No copy
+    /// is then vouched for past its saved commit or the floor.
+    pub(crate) marked: Option<Marked<B>>,
     /// Unmarked, a vote or the floor is above every entry read, and that
     /// cut a copy below what it holds.
     pub(crate) cut_by_vote: bool,
@@ -88,7 +123,7 @@ impl<B> ReformPlan<B> {
     /// Whether applying it can drop acknowledged records a reached disk
     /// still holds, so the operator has to accept the loss by name.
     pub(crate) fn needs_accept_loss(&self) -> bool {
-        self.marked || self.cut_by_vote
+        self.marked.is_some() || self.cut_by_vote
     }
 
     pub(crate) fn base_end(&self) -> u64 {
@@ -216,7 +251,12 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
     let floor = record.floor.map(|floor| (floor.epoch, floor.term));
     let top = entries.max(votes).max(floor).unwrap_or((0, 0));
 
-    let marked = placed.iter().any(|broker| {
+    // A term above every vote read needs a majority of some voter set of
+    // the epoch, and votes are fsynced before the reply and kept across a
+    // power cut. So unless the unknown votes are a majority of one, the top
+    // term's copy holds every committed entry. The placed set is never a
+    // voter set: learners inflate it.
+    let unknown_vote = |broker: &B| {
         let Some(report) = live.get(broker) else {
             return true;
         };
@@ -243,7 +283,8 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         // that lost its votes.
         let lost_votes = current.vote.is_none() || current.copy.is_none();
         ((rule.copy_epoch(current) != Some(epoch) || lost_votes) && !cut_into_current) || restored
-    });
+    };
+    let marked = marked_by(record, &live, unknown_vote);
 
     let mut vouched = Vec::with_capacity(copies.len());
     let mut cut_by_vote = false;
@@ -259,9 +300,9 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         {
             safe = safe.max(floor.index + 1);
         }
-        let whole = !marked && copy.last == Some(top);
+        let whole = marked.is_none() && copy.last == Some(top);
         let vouch = if whole { copy.end } else { safe }.min(cap);
-        if !marked && entries.is_some_and(|entries| entries < top) && cap > vouch {
+        if marked.is_none() && entries.is_some_and(|entries| entries < top) && cap > vouch {
             cut_by_vote = true;
         }
         vouched.push(vouch);
@@ -368,6 +409,42 @@ pub(crate) fn plan_reform<B: Ord + Clone>(
         top,
         marked,
         cut_by_vote,
+    })
+}
+
+/// The first voter set of the epoch whose majority has unknown votes, or
+/// the first source not known.
+fn marked_by<B: Ord + Clone>(
+    record: &GroupRecord<B>,
+    live: &BTreeMap<&B, &BrokerReport<B>>,
+    unknown_vote: impl Fn(&B) -> bool,
+) -> Option<Marked<B>> {
+    let mut sets: Vec<(VoterSource<B>, &BTreeSet<B>)> = Vec::new();
+    match &record.seed {
+        Some(seed) if !seed.is_empty() => sets.push((VoterSource::Seed, seed)),
+        _ => return Some(Marked::Unknown(VoterSource::Seed)),
+    }
+    let Some(ordered) = &record.ordered else {
+        return Some(Marked::Unknown(VoterSource::Ordered));
+    };
+    sets.extend(ordered.iter().map(|set| (VoterSource::Ordered, set)));
+    for (broker, report) in live {
+        let Some(memberships) = &report.memberships else {
+            return Some(Marked::Unknown(VoterSource::Membership((*broker).clone())));
+        };
+        sets.extend(
+            memberships
+                .iter()
+                .map(|set| (VoterSource::Membership((*broker).clone()), set)),
+        );
+    }
+    sets.into_iter().find_map(|(from, set)| {
+        let unknown: BTreeSet<B> = set.iter().filter(|b| unknown_vote(b)).cloned().collect();
+        (unknown.len() * 2 > set.len()).then(|| Marked::Majority {
+            from,
+            set: set.clone(),
+            unknown,
+        })
     })
 }
 

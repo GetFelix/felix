@@ -795,9 +795,10 @@ What `plan` works out for one group, and `apply` then does:
 command reached is at or below the base, or is cut as uncommitted. What is
 lost is a record that only brokers declared dead held, and, when no copy
 holds the floor's entry, a record that no copy holding it can vouch for
-(see "Offsets are not reused" below). `plan` marks every
-group where a dead broker was a voter, since those are the groups that may
-have lost something. On Linux a process crash does not rotate ids and never
+(see "Offsets are not reused" below). `plan` marks a group when the
+brokers whose votes it cannot read are a majority of some voter set of the
+epoch, since only then can a term have been elected that no vote it read
+knows of (see "When a copy vouches for its whole log" below). On Linux a process crash does not rotate ids and never
 needs a re-form. A power cut rotates a broker's copy only when its run was
 relaxed or a copy in its root had vouched, and the old voter seat then
 stays empty until membership changes exist, so a group that loses a
@@ -903,6 +904,25 @@ no offset is reused (`FelixRaftReformTwoRotatedOffsetsTerms.cfg` passes;
 `FelixRaftReformTwoRotatedOffsetsTermsIndexOnly.cfg`, with an offset-only
 floor, does not), and the loss above can happen
 (`FelixRaftReformTwoRotatedOffsetsTermsUnvouched.cfg`).
+
+**When a copy vouches for its whole log.** A copy whose last entry has
+the highest term read vouches for everything it holds, unless the group is
+marked. Every elected term took votes from a majority of some voter set of
+the epoch, and a vote is fsynced before the reply and kept across a power
+cut, so while the unknown votes are a minority of every voter set, some
+vote read is at least as new as every elected term. The unknown votes are
+those of dead brokers, of brokers whose current copy is not of the epoch or
+lost its vote, and of brokers with a copy of the epoch a restore rotated.
+
+The voter sets are the epoch's seed voters, both halves of every membership
+entry of the epoch in every copy read (uncommitted ones included), and every
+target the control plane ordered in the epoch, which it records before it
+asks the leader. If any of these is not known, the group is marked. The set
+of placed brokers is never used: learners and brokers not yet added inflate
+it. With one of three seeded voters dead, a read follower that holds a
+committed entry it has not yet seen committed keeps it in the base; with two
+of three dead, or a dead single seed voter, or a joint target whose new half
+is mostly dead, the group is marked and the plan names the voter set.
 
 What the implementation stores for this:
 
