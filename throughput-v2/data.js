@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794806265093,
+  "lastUpdate": 1794806605149,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59592,6 +59592,58 @@ window.BENCHMARK_DATA = {
             "range": "8319.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 810047.09\nmean: 809212.35\nstdev: 8319.64\ncv: 1.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c673d689fbf1cfc92d89d7ee68dc4b27d0115288",
+          "message": "fix(broker): handle an exhausted open-file limit without failing the shard (#2657) (#2674)\n\n* fix(storage): handle an exhausted open-file limit without failing the shard (#2657)\n\nAn open that runs out of file descriptors fails with StorageError::OpenFileLimit,\nwhich names the limit. The shard lifecycle keeps such a shard opening and retries\nit on the next pass instead of failing it, and a Raft member no longer holds its\ngroup when its kept-copy scan runs out of descriptors. The raise-to-hard code moves\nto felix_storage::open_files; test binaries raise their own soft limit.\n\n* test: satisfy clippy in the open-file limit test (#2657)\n\n* fix(broker): keep every EMFILE in a shard open typed and retried (#2657)\n\nTyped errors through the open steps (ballot, generation history,\ngeneration-start record), so an exhausted limit leaves the shard opening\ninstead of failed. A held open keeps its error: inspect shows it and\nrouting refuses at once. Raft opens count and name the limit. The\ngeneration history changes in memory only after its file does. Test\nruns out of descriptors at each open step in turn.\n\n* fix(broker): keep marker-write errors typed; pause Kafka accept on error (#2657)\n\nAn accept that fails for want of descriptors fails again at once while\nthe connection stays queued, so the loop waits 50 ms as MQTT's does.\n\n* fix(shards): report a long-held open to the control plane, wake held writes on open errors, throttle the warning (#2657)\n\n* chore: record spec pairing for the open-file-limit change (#2657)\n\nSpec-Unaffected: the change only reports a long-held open through the existing open-failed report and wakes held writes; no modelled transition, state or message changes.",
+          "timestamp": "2026-11-15T21:11:09-08:00",
+          "tree_id": "a64f01f4ca5e550dcfc456401b5d94759b6bc676",
+          "url": "https://github.com/GetFelix/felix/commit/c673d689fbf1cfc92d89d7ee68dc4b27d0115288"
+        },
+        "date": 1794806604676,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 522236.52,
+            "range": "11187.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522236.52\nmean: 524716.59\nstdev: 11187.94\ncv: 2.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 522236.52,
+            "range": "11187.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522236.52\nmean: 524716.59\nstdev: 11187.94\ncv: 2.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124969.84,
+            "range": "6260.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124969.84\nmean: 122121.91\nstdev: 6260.78\ncv: 5.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1249698.44,
+            "range": "62607.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1249698.44\nmean: 1221219.16\nstdev: 62607.75\ncv: 5.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
