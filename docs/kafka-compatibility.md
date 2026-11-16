@@ -317,6 +317,13 @@ connection until one is written. A claimed batch runs to durability whether or
 not its answer can be written, so a client that stops reading its answers, or
 goes away, never holds up other writers on the partition or a shard move.
 
+On a Raft shard an idempotent producer's records for a partition go to the
+group as one proposal, under one turn of the producer, so a request costs one
+round through the group, not one per record. Each record is still stored as a
+batch of its own at its own sequence, as on the hybrid, so a leader change that
+cuts the request partway leaves whole records, and the re-send writes only the
+rest.
+
 An idempotent producer's batches keep their order through this. A batch is
 checked against the records the log holds or has claimed, so the next one is
 not refused as a gap while the one before it commits. When a batch fails after

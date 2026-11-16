@@ -114,6 +114,9 @@ pub(crate) struct Group {
     pub(crate) gate: Arc<propose::Gate>,
     #[cfg(test)]
     pub(crate) apply_hold: Arc<tokio::sync::Mutex<()>>,
+    /// Stream batches handed to [`Self::propose`], for tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) proposed: AtomicU64,
     /// The newest target this member was told and the term it was told
     /// in, kept in memory only: after a restart nothing changes until the
     /// control plane speaks again.
@@ -736,6 +739,8 @@ impl Group {
             gate: Arc::default(),
             #[cfg(test)]
             apply_hold,
+            #[cfg(any(test, feature = "testing"))]
+            proposed: AtomicU64::new(0),
             target: tokio::sync::watch::Sender::default(),
             progress: Arc::default(),
             lag_threshold,
@@ -1336,6 +1341,8 @@ impl Group {
         &self,
         batch: Batch,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+        #[cfg(any(test, feature = "testing"))]
+        self.proposed.fetch_add(1, Ordering::Relaxed);
         let split = match self.cache {
             Some(_) => Err(propose::not_a_stream()),
             None => propose::split(batch),

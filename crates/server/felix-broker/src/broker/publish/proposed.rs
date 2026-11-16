@@ -544,7 +544,7 @@ pub struct ProposedPublish<E: Send + 'static> {
     answer_within: Option<AnswerWithin<E>>,
     /// Where the batch starts when these records are only the rest of it:
     /// the first offset of the start an earlier leader wrote.
-    batch_first: Option<u64>,
+    pub(super) batch_first: Option<u64>,
 }
 
 type AnswerWithin<E> = (Duration, Box<dyn FnOnce() -> E + Send>);

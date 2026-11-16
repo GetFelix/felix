@@ -11,9 +11,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use felix_authz::AuthzError;
-use felix_broker::{
-    Attribution, Broker, IdempotentOutcome, PublishOutcome, SequenceReuse, StreamHandle,
-};
+use felix_broker::{Attribution, Broker, IdempotentOutcome, PublishOutcome, StreamHandle};
 use felix_kafka::{
     Cluster, Endpoint, KafkaService, Placement, Principal, Produce, ProduceError, Proposed,
     Settings, ShardRef, WriteError, WritePermit,
@@ -322,11 +320,13 @@ impl BrokerCluster {
     /// commit to wait on. The next produce can be proposed behind it
     /// straight away: a later entry never commits without the ones before it.
     ///
-    /// An idempotent producer's records go in one by one, each its own
-    /// batch at its own sequence, which is how the hybrid stores them
+    /// An idempotent producer's records are each a batch of their own at
+    /// their own sequence, which is how the hybrid stores them
     /// (`Broker::publish_records_idempotent`) and the one-record batch a
-    /// Raft shard takes. A re-send finds the records the log holds and
-    /// writes the rest.
+    /// Raft shard takes. They are checked and proposed together, under one
+    /// turn, so a request costs one round through the group, not one per
+    /// record. A re-send finds the records the log holds and writes the
+    /// rest.
     async fn produce_on_raft(
         &self,
         broker: &Broker,
@@ -365,85 +365,27 @@ impl BrokerCluster {
             }));
         };
         let first = broker.record_sequence(handle, producer_id, sequence);
-        let mut proposed = Vec::with_capacity(produce.payloads.len());
-        for (at, payload) in produce.payloads.iter().enumerate() {
-            let turn = broker.producer_turn(handle, producer_id).await;
-            let attribution = Attribution {
-                publisher: None,
-                headers: headers.map(|headers| vec![headers[at].clone()]),
-            };
-            let record = self.replication.publish_idempotent_on_raft(
-                broker,
-                handle,
-                key,
-                term,
-                turn,
-                first + at as u64,
-                // Kafka answers a re-sent sequence by its numbers alone.
-                SequenceReuse::AnswerDuplicate,
-                vec![payload.clone()],
-                attribution,
-                self.quorum_timeout,
-            );
-            match raft_proposed(record, term) {
-                Ok(record) => proposed.push(record),
-                // The records before it may still commit; a re-send finds
-                // them in the log. A refusal that follows from one of them
-                // failing (a gap, which Kafka producers treat as fatal) is
-                // answered with that failure instead.
-                Err(refused) if proposed.is_empty() => return Err(refused),
-                // Answered once the earlier records are settled, so the
-                // connection can go on to its next request meanwhile.
-                Err(refused) => {
-                    return Ok(Box::pin(async move {
-                        let earlier = proposed.into_iter().map(|record| async move {
-                            record
-                                .complete_outcome()
-                                .await
-                                .map(drop)
-                                .map_err(commit_failure)
-                        });
-                        Err(earlier_failure(earlier, refused).await)
-                    }));
-                }
-            }
-        }
+        let turn = broker.producer_turn(handle, producer_id).await;
+        let attribution = Attribution {
+            publisher: None,
+            headers: headers.map(<[_]>::to_vec),
+        };
+        let proposed = self.replication.publish_records_idempotent_on_raft(
+            broker,
+            handle,
+            key,
+            term,
+            turn,
+            first,
+            produce.payloads.to_vec(),
+            attribution,
+            self.quorum_timeout,
+        );
+        let proposed = raft_proposed(proposed, term)?;
         Ok(Box::pin(async move {
-            let mut offsets: Option<(u64, u64)> = None;
-            let mut duplicate = true;
-            for record in proposed {
-                let written = record.complete_outcome().await.map_err(commit_failure)?;
-                duplicate &= written.duplicate;
-                if let Some((start, end)) = written.outcome.offsets {
-                    offsets = Some((offsets.map_or(start, |(first, _)| first), end));
-                }
-            }
-            Ok(IdempotentOutcome {
-                outcome: PublishOutcome {
-                    subscribers: 0,
-                    offsets,
-                },
-                duplicate,
-            })
+            proposed.complete_outcome().await.map_err(commit_failure)
         }))
     }
-}
-
-/// The first of `earlier` to fail, else `refused`: a later record's refusal
-/// only follows from an earlier record's failure, which is the answer.
-async fn earlier_failure<F>(
-    earlier: impl IntoIterator<Item = F>,
-    refused: ProduceError,
-) -> ProduceError
-where
-    F: std::future::Future<Output = Result<(), ProduceError>>,
-{
-    for record in earlier {
-        if let Err(err) = record.await {
-            return err;
-        }
-    }
-    refused
 }
 
 /// What was proposed, or why nothing was.

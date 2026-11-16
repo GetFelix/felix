@@ -372,36 +372,186 @@ async fn keys_and_headers_for_a_raft_shard_wait_for_the_fleet() {
     EngineShards::shutdown(&*shards).await;
 }
 
-/// **A record refused after an earlier one of its batch failed is answered
-/// with the earlier failure.** The later refusal is a sequence gap, which a
-/// Kafka producer takes as fatal, when the batch only needs sending again.
+/// A cluster whose `orders` shard 0 is led by a Raft group on this broker.
+#[cfg(feature = "raft")]
+struct OnRaft {
+    _root: tempfile::TempDir,
+    broker: Arc<Broker>,
+    shards: Arc<crate::shards::raft::RaftShards>,
+    key: ShardKey,
+    cluster: BrokerCluster,
+    handle: StreamHandle,
+}
+
+#[cfg(feature = "raft")]
+impl OnRaft {
+    const SHARD: ShardRef<'static> = ShardRef {
+        tenant_id: "t1",
+        namespace: "ns",
+        stream: "orders",
+        shard: 0,
+    };
+
+    async fn start() -> Self {
+        use crate::shards::raft::tests as fixture;
+        use crate::shards::routing::EngineShards;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let key = fixture::key("orders", 0);
+        let assigned = fixture::assigned(key.clone(), fixture::INCARNATION);
+        shards.take(&mut fixture::assignments([assigned])).await;
+        fixture::until("the term is served", || shards.leading(&key).is_some()).await;
+        let cluster = BrokerCluster::new(
+            Arc::new(BrokerAuth::new("http://127.0.0.1:1".to_string())),
+            Arc::new(fixture::engine(&shards)),
+            None,
+            STANDALONE_NODE_ID,
+            "127.0.0.1:9092",
+        )
+        .expect("cluster");
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await
+            .expect("handle");
+        Self {
+            _root: root,
+            broker,
+            shards,
+            key,
+            cluster,
+            handle,
+        }
+    }
+
+    /// Stream batches handed to the group so far.
+    fn proposals(&self) -> u64 {
+        let engine = self.shards.engine_for(&self.key).expect("a member here");
+        engine.proposals(&self.key)
+    }
+
+    /// Hand `values` to the group, without waiting for the answer.
+    async fn propose(
+        &self,
+        values: &[&'static str],
+        producer: Option<(u64, u64)>,
+    ) -> Result<Proposed, ProduceError> {
+        let payloads: Vec<bytes::Bytes> = values.iter().map(|v| bytes::Bytes::from(*v)).collect();
+        let permit = self
+            .cluster
+            .admit_write(&Self::SHARD)
+            .await
+            .expect("admitted");
+        let produce = Produce {
+            payloads: &payloads,
+            headers: None,
+            producer,
+        };
+        self.cluster
+            .produce(&self.broker, &Self::SHARD, &self.handle, &permit, produce)
+            .await
+            .expect("proposed on Raft")
+    }
+
+    async fn produce(
+        &self,
+        values: &[&'static str],
+        producer: Option<(u64, u64)>,
+    ) -> felix_broker::IdempotentOutcome {
+        let proposed = self.propose(values, producer).await.expect("handed over");
+        proposed.await.expect("written")
+    }
+
+    /// The payloads the log holds from `from` on.
+    async fn log_from(&self, from: u64) -> Vec<bytes::Bytes> {
+        let read = self
+            .broker
+            .read_durable("t1", "ns", "orders", 0, from, 1 << 20);
+        let records = read.await.expect("read");
+        records.into_iter().map(|record| record.payload).collect()
+    }
+
+    async fn stop(self) {
+        crate::shards::routing::EngineShards::shutdown(&*self.shards).await;
+    }
+}
+
+/// **An idempotent producer's records go to the group as one proposal**,
+/// not one per record, and re-sends of the whole batch or of an overlap
+/// are answered from the log with the original offsets.
+#[cfg(feature = "raft")]
 #[tokio::test]
-async fn a_refusal_behind_a_failed_record_is_answered_with_that_failure() {
-    let gap = || ProduceError::Broker(felix_broker::BrokerError::SequenceGap { expected: 1 });
-    let lost = || ProduceError::Write(WriteError::LeadershipLost);
+async fn an_idempotent_produce_is_one_proposal() {
+    let raft = OnRaft::start().await;
+    let plain = raft.produce(&["p"], None).await;
+    let (base, _) = plain.outcome.offsets.expect("written");
+    let at = |first: u64, last: u64| Some((base + first, base + last));
 
-    let behind_failure = earlier_failure(
-        vec![
-            Box::pin(async { Ok(()) }) as std::pin::Pin<Box<dyn std::future::Future<Output = _>>>,
-            Box::pin(async move { Err(lost()) }),
-        ],
-        gap(),
-    )
-    .await;
-    let alone = earlier_failure(vec![std::future::ready(Ok(()))], gap()).await;
+    let before = raft.proposals();
+    let first = raft.produce(&["a", "b", "c", "d"], Some((7, 0))).await;
+    let after_first = raft.proposals();
+    let again = raft.produce(&["a", "b", "c", "d"], Some((7, 0))).await;
+    let after_again = raft.proposals();
+    let overlap = raft.produce(&["c", "d", "e", "f"], Some((7, 2))).await;
+    let after_overlap = raft.proposals();
 
-    assert!(
-        matches!(
-            behind_failure,
-            ProduceError::Write(WriteError::LeadershipLost)
-        ),
-        "{behind_failure:?}"
+    assert_eq!(after_first - before, 1, "four records, one proposal");
+    assert_eq!((first.outcome.offsets, first.duplicate), (at(1, 4), false));
+    assert_eq!(after_again, after_first, "a whole re-send proposes nothing");
+    assert_eq!((again.outcome.offsets, again.duplicate), (at(1, 4), true));
+    assert_eq!(after_overlap - after_again, 1, "only the new records");
+    assert_eq!(
+        (overlap.outcome.offsets, overlap.duplicate),
+        (at(3, 6), false)
     );
-    assert!(
-        matches!(
-            alone,
-            ProduceError::Broker(felix_broker::BrokerError::SequenceGap { .. })
-        ),
-        "{alone:?}"
-    );
+    let held: Vec<_> = ["p", "a", "b", "c", "d", "e", "f"]
+        .into_iter()
+        .map(bytes::Bytes::from)
+        .collect();
+    assert_eq!(raft.log_from(base).await, held);
+    raft.stop().await;
+}
+
+/// **A produce cancelled while it waits for its producer's turn writes all
+/// of its records or none.** The turn is taken once for the whole batch,
+/// so another of the producer's batches never gets in between its records.
+#[cfg(feature = "raft")]
+#[tokio::test]
+async fn a_cancelled_produce_writes_its_records_whole_or_not_at_all() {
+    let raft = OnRaft::start().await;
+    let plain = raft.produce(&["p"], None).await;
+    let (base, _) = plain.outcome.offsets.expect("written");
+    let wait = Duration::from_millis(100);
+
+    let held = raft.broker.producer_turn(&raft.handle, 7).await;
+    let mut produce = Box::pin(raft.propose(&["a", "b", "c"], Some((7, 0))));
+    assert!(tokio::time::timeout(wait, &mut produce).await.is_err());
+    // Queued behind the produce's turn.
+    let mut next = Box::pin(raft.broker.producer_turn(&raft.handle, 7));
+    assert!(tokio::time::timeout(wait, &mut next).await.is_err());
+    drop(held);
+    // Whatever it got to before it is cancelled.
+    let _ = tokio::time::timeout(wait, &mut produce).await;
+    drop(produce);
+    let next = next.await;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    let whole: Vec<_> = ["p", "a", "b", "c"]
+        .into_iter()
+        .map(bytes::Bytes::from)
+        .collect();
+    loop {
+        let log = raft.log_from(base).await;
+        if log == whole {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the log holds part of the batch: {log:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    drop(next);
+    raft.stop().await;
 }
