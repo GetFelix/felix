@@ -157,6 +157,76 @@ fn a_producer_whose_batches_were_all_trimmed_is_forgotten() {
     assert_eq!(state.classify(2, 2), ProducerSequence::Next);
 }
 
+/// A producer pruned away completely leaves a tombstone, so its re-send of a
+/// first batch is not taken as a new producer's.
+#[test]
+fn a_producer_forgotten_by_a_purge_refuses_its_first_batch_again() {
+    let mut state = ProducerState::default();
+    batch(&mut state, 1, 0, 0, 2);
+    batch(&mut state, 1, 1, 2, 1);
+    batch(&mut state, 2, 0, 3, 1);
+
+    state.prune(3);
+    assert_eq!(state.classify(1, 0), ProducerSequence::Retired);
+    assert_eq!(state.classify(1, 1), ProducerSequence::Retired);
+    assert_eq!(state.classify(1, 2), ProducerSequence::Unknown);
+    assert_eq!(state.classify(2, 0), held(2, 0, 3, 3));
+    assert_eq!(
+        state.tombstones().get(&1),
+        Some(&Tombstone {
+            sequence: 1,
+            last: 2
+        })
+    );
+    assert_eq!(state.carried().sequence(1), Some(1));
+}
+
+#[test]
+fn past_the_bound_the_oldest_tombstone_is_dropped() {
+    let mut state = ProducerState::default();
+    let count = MAX_PRODUCERS as u64;
+    for producer in 0..count {
+        batch(&mut state, producer, 0, producer, 1);
+    }
+    state.prune(count);
+    assert_eq!(state.tombstones().len(), MAX_PRODUCERS);
+    batch(&mut state, count, 0, count, 1);
+    state.prune(count + 1);
+
+    assert_eq!(state.tombstones().len(), MAX_PRODUCERS);
+    assert_eq!(state.classify(0, 0), ProducerSequence::Unknown);
+    assert_eq!(state.classify(1, 0), ProducerSequence::Retired);
+    assert_eq!(state.classify(count, 0), ProducerSequence::Retired);
+}
+
+#[test]
+fn tombstones_round_trip_in_the_forgotten_file_and_the_snapshot_data() {
+    let mut state = ProducerState::keeping_cuts();
+    batch(&mut state, 5, 0, 0, 1);
+    batch(&mut state, 6, 0, 1, 1);
+    state.prune(2);
+    let saved = state.saved();
+    assert_eq!(saved.tombstones.len(), 2);
+    let file = encode_saved(&saved);
+    assert_eq!(decode_saved(&file), Some(saved.clone()));
+
+    let mut restored = ProducerState::default();
+    restored.restore_tombstones(&decode_saved(&file).expect("file"));
+    assert_eq!(restored.classify(5, 0), ProducerSequence::Retired);
+
+    let carried = state.carried();
+    assert_eq!(
+        ForgottenCuts::decode(&carried.encode()),
+        Some(carried.clone())
+    );
+    // Without tombstones the data is the older layout, byte for byte.
+    let cuts = ForgottenCuts::default();
+    assert_eq!(cuts.encode(), encode_forgotten(&HashMap::default()));
+    let mut installed = ProducerState::keeping_cuts();
+    installed.install(2, carried);
+    assert_eq!(installed.classify(6, 0), ProducerSequence::Retired);
+}
+
 #[test]
 fn past_the_bound_the_producer_written_longest_ago_is_forgotten() {
     let mut state = ProducerState::default();
@@ -493,7 +563,13 @@ fn forgotten_batches_round_trip() {
 
     // The file also keeps the carried batches and the installed base, and
     // one written before them carries every batch it forgot.
-    state.install(9, ForgottenCuts([(4, 1)].into_iter().collect()));
+    state.install(
+        9,
+        ForgottenCuts {
+            cuts: [(4, 1)].into_iter().collect(),
+            ..ForgottenCuts::default()
+        },
+    );
     let saved = state.saved();
     assert_eq!(saved.carried.get(&4), Some(&1));
     let file = encode_saved(&saved);
@@ -714,6 +790,6 @@ fn an_evicted_cut_is_carried_once_purged() {
     assert_refused(&state, 0, 0);
     assert!(state.carried().is_empty());
     state.prune(1);
-    assert_eq!(state.carried().get(&0), Some(&0));
-    assert_eq!(state.carried().len(), 1);
+    assert_eq!(state.carried().cuts.get(&0), Some(&0));
+    assert_eq!(state.carried().cuts.len(), 1);
 }

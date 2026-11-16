@@ -15,6 +15,23 @@ fn cuts() -> ForgottenCuts {
     ForgottenCuts::decode(&bytes).expect("cut batches")
 }
 
+/// [`cuts`] plus a tombstone: producer 8, forgotten by a purge after its
+/// batch 5, whose last record was at offset 40.
+fn cuts_and_tombstones() -> ForgottenCuts {
+    let mut body = Vec::new();
+    body.extend_from_slice(&1u32.to_be_bytes());
+    body.extend_from_slice(&7u64.to_be_bytes());
+    body.extend_from_slice(&3u64.to_be_bytes());
+    body.extend_from_slice(&1u32.to_be_bytes());
+    body.extend_from_slice(&8u64.to_be_bytes());
+    body.extend_from_slice(&5u64.to_be_bytes());
+    body.extend_from_slice(&40u64.to_be_bytes());
+    let mut bytes = 0x464C_5046u32.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&crc32fast::hash(&body).to_be_bytes());
+    bytes.extend_from_slice(&body);
+    ForgottenCuts::decode(&bytes).expect("cut batches and tombstones")
+}
+
 fn groups() -> GroupTable {
     let mut table = GroupTable::default();
     let cre = CreationToken {
@@ -33,7 +50,8 @@ fn groups() -> GroupTable {
 /// Every combination of carried state loads back as it was built.
 #[test]
 fn a_stream_snapshot_round_trips() {
-    for cuts in [ForgottenCuts::default(), cuts()] {
+    assert_eq!(cuts_and_tombstones().sequence(8), Some(5));
+    for cuts in [ForgottenCuts::default(), cuts(), cuts_and_tombstones()] {
         for groups in [GroupTable::default(), groups()] {
             let snapshot = StreamSnapshot {
                 cuts: cuts.clone(),

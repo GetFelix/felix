@@ -406,6 +406,11 @@ impl Publisher {
     /// Returns the batch's first log offset, when the broker reported one. A
     /// re-send the broker already holds gets the offset it landed at the
     /// first time.
+    ///
+    /// The broker remembers a forgotten producer's last sequence, and refuses
+    /// a batch at or below it with an expiry. A caller that picks and reuses
+    /// its own `producer_id` from sequence 0 can hit this until the broker
+    /// evicts that record; take a fresh id instead.
     pub async fn publish_idempotent_batch(
         &self,
         tenant_id: &str,
