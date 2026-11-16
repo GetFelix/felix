@@ -846,7 +846,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
     }
 
     /// How many groups hold a slot here.
-    #[doc(hidden)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn tracked(&self) -> usize {
         self.slots.lock().slots.len()
     }

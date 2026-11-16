@@ -1303,3 +1303,35 @@ async fn a_waiting_raft_poll_is_woken_by_a_commit() {
     assert_eq!(answered(waiting, "a commit").await, vec![at]);
     EngineShards::shutdown(&*shards).await;
 }
+
+/// **A waiting Raft poll swallows only a leadership move.** Any other failure
+/// after the first read reaches the consumer instead of passing as an empty
+/// answer.
+#[cfg(feature = "raft")]
+#[test]
+fn a_later_poll_failure_is_swallowed_only_for_a_leadership_move() {
+    use felix_broker::{BrokerError, NotReadable};
+
+    use super::raft::{failed, moved};
+    let outcome = |first: bool, err: BrokerError| {
+        let moved = moved(&err);
+        failed(
+            first,
+            ClientError::from_broker(&err, err.to_string()),
+            moved,
+        )
+    };
+    let refused = || BrokerError::StateNotReadable(NotReadable::Refused);
+    assert_eq!(outcome(false, refused()).expect("swallowed"), Vec::new());
+    assert!(outcome(true, refused()).is_err(), "the first poll is told");
+    assert!(outcome(false, BrokerError::StateViewBusy).is_err());
+    assert!(
+        outcome(
+            false,
+            BrokerError::ProposalsStalled {
+                waited: Duration::ZERO
+            }
+        )
+        .is_err()
+    );
+}

@@ -180,3 +180,61 @@ async fn a_member_that_leads_again_owes_what_it_claimed_before() {
     );
     stop(&members).await;
 }
+
+/// **A leader that dies mid-claim loses no record and hands none out twice
+/// in one term.** No placement move, no hand-over: the member stops and the
+/// others elect. The new leader owes everything the dead one had claimed, and
+/// the old holder's ack is taken for what the new leader handed out and
+/// refused for what it did not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_killed_leader_mid_claim_skips_nothing_and_hands_out_once() {
+    let (net, mut members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let mut offsets = Vec::new();
+    for payload in [b"r0", b"r1", b"r2"] {
+        offsets.push(members[leader].publish(term, payload).await);
+    }
+    let last = offsets[2];
+    for member in &members {
+        until("the commit covers the records", || member.bound() > last).await;
+    }
+    let holder = GroupConsumer::new("p", "h", 1, false);
+    let other = GroupConsumer::new("p", "o", 2, false);
+    assert_eq!(
+        poll(&members[leader], &holder, last + 1)
+            .await
+            .expect("poll"),
+        offsets
+    );
+
+    let old = members.remove(leader);
+    net.runtimes.lock().remove(old.name);
+    EngineShards::shutdown(&*old.shards).await;
+    let next = served(&members).await;
+    assert!(members[next].shards.leading(&orders).expect("term") > term);
+
+    // Claims died with the leader: everything is owed, to one consumer.
+    assert_eq!(
+        poll(&members[next], &other, last + 1).await.expect("poll"),
+        offsets,
+        "a record was skipped after the leader died"
+    );
+    assert_eq!(
+        poll(&members[next], &holder, last + 1).await.expect("poll"),
+        Vec::<u64>::new(),
+        "one term handed a record to two consumers"
+    );
+    let groups = members[next].shards.groups();
+    for &offset in &offsets {
+        groups
+            .ack(&group_key(), offset, soon())
+            .await
+            .expect("the old holder's ack");
+    }
+    assert!(matches!(
+        groups.ack(&group_key(), last + 50, soon()).await,
+        Err(BrokerError::GroupOffsetNotHandedOut { .. })
+    ));
+    stop(&members).await;
+}

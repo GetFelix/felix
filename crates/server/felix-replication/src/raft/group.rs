@@ -79,6 +79,8 @@ pub(crate) struct Group {
     root: Option<MarkLog>,
     /// The brokers on which this group's member refused this one's calls.
     refusals: Arc<Refusals>,
+    /// One past the newest term a failed write already stepped down from.
+    stepped_down: AtomicU64,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// Waits on `positions.written` and `positions.flushed`, woken only
@@ -716,6 +718,7 @@ impl Group {
             answered: Arc::default(),
             root,
             refusals,
+            stepped_down: AtomicU64::new(0),
             positions,
             written_waiters,
             flushed_waiters,

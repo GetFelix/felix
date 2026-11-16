@@ -142,7 +142,7 @@ impl OnRaft {
             // covers a claim lapsing or a nack, which nothing signals.
             let mut on_append = super::armed(appended.as_ref());
             let polled = async {
-                let committed = self.committed(publish_ctx)?;
+                let committed = self.committed(publish_ctx).map_err(|err| (err, true))?;
                 self.groups
                     .poll_below(
                         &self.key,
@@ -155,14 +155,16 @@ impl OnRaft {
                         self.deadline(),
                     )
                     .await
-                    .map_err(broker)
+                    .map_err(|err| {
+                        let moved = moved(&err);
+                        (broker(err), moved)
+                    })
             };
             let claimed = match polled.await {
                 Ok(claimed) => claimed,
                 // Leadership moved while the poll waited: nothing was
                 // claimed, and the next poll goes to the new leader.
-                Err(_) if !first => return Ok(Vec::new()),
-                Err(refused) => return Err(refused),
+                Err((refused, moved)) => return failed(first, refused, moved),
             };
             first = false;
             if !claimed.is_empty() {
@@ -315,6 +317,28 @@ impl OnRaft {
             .await
             .map_err(broker)
     }
+}
+
+/// A poll that failed. Only a later one whose leadership moved answers empty;
+/// any other failure reaches the consumer.
+pub(super) fn failed(
+    first: bool,
+    refused: ClientError,
+    moved: bool,
+) -> Result<Vec<GroupRecord>, ClientError> {
+    if moved && !first {
+        Ok(Vec::new())
+    } else {
+        Err(refused)
+    }
+}
+
+/// Whether `err` says this broker stopped leading the shard.
+pub(super) fn moved(err: &BrokerError) -> bool {
+    matches!(
+        err,
+        BrokerError::StateNotReadable(felix_broker::NotReadable::Refused)
+    )
 }
 
 fn broker(err: BrokerError) -> ClientError {

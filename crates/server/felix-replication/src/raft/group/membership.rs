@@ -143,7 +143,17 @@ impl Group {
     /// preferring one that answered lately, so a new term starts without
     /// waiting for placement to notice. Nothing happens unless this member
     /// leads `term`; with no other voter the term stays closed.
+    ///
+    /// Once per term: writes failing together must not each pick a
+    /// successor, or two voters get asked to take over.
     pub(crate) async fn step_down_in(&self, term: u64) -> Option<u64> {
+        if self
+            .stepped_down
+            .fetch_max(term + 1, std::sync::atomic::Ordering::AcqRel)
+            > term
+        {
+            return None;
+        }
         let term = self.transfer_starting_in(Some(term)).await?;
         let log = self.replication();
         let to = self
