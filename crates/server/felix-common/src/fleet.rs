@@ -83,6 +83,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_RECORD_HEADERS,
     RECORD_GENERATIONS,
     RAFT_ATOMIC_COMMIT,
+    RAFT_STREAM_PURGE,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -201,9 +202,8 @@ pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_
 /// log up to it, and a member behind the purge installs that snapshot. A
 /// build that predates this refuses every stream snapshot, so a purge would
 /// leave it stuck behind the leader. So it waits for the whole fleet, and
-/// for [`RAFT_HEAD_TRIM`]. Not in [`IMPLEMENTED`] yet: this build installs
-/// a purge snapshot but does not purge. See `docs/per-shard-raft.md`
-/// ("Purging below the floor").
+/// for [`RAFT_HEAD_TRIM`]. See `docs/per-shard-raft.md` ("Purging below the
+/// floor").
 pub const RAFT_STREAM_PURGE: FleetFeature = FleetFeature::new("raft_stream_purge");
 
 /// A stream log starts its next segment in storage format v9, whose record

@@ -2,6 +2,7 @@
 //! gate is off in these brokers, so only a test's own calls purge.
 
 use felix_broker::StartPosition;
+use felix_storage::log::LogConfig;
 
 use super::trim::{publish, too_old, trim};
 use super::*;
@@ -155,35 +156,77 @@ async fn a_member_behind_a_purge_installs_the_snapshot_and_keeps_the_floor() {
     stop(&members).await;
 }
 
-/// **No member is read below the floor after a purge**, leader or follower.
-/// The purge stops below the floor, so the trim record behind it stays.
+/// **No member is read below the floor after a purge, or after a restart
+/// that follows it**, leader or follower. `broker-b` was cut off before the
+/// trim, so after it installs `broker-c`'s purge snapshot its floor lives
+/// only in the carried-floor file; every member then restarts, so what
+/// serves is read back from disk and not remembered.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_member_is_read_below_the_floor_after_a_purge() {
     let CutAndTrimmed {
         net,
-        members,
+        mut members,
         floor,
+        tail,
         ..
     } = cut_and_trimmed().await;
-    net.cut.lock().clear();
     let orders = key("orders", 0);
+    assert_eq!(purge(&members[2]).await, Some(floor - 1));
+    let mut moved = replicated();
+    moved.leader = "broker-c".to_string();
+    for member in &members {
+        member.shards.take(&mut assignments([moved.clone()])).await;
+    }
+    until("broker-c leads", || {
+        members[2].shards.leading(&orders).is_some()
+    })
+    .await;
+    net.cut.lock().clear();
+    let log = members[1].shards.log_of(&orders).await.expect("log");
+    until("broker-b installs the snapshot", || {
+        log.commit_offset() >= tail && log.carried_floor().is_some()
+    })
+    .await;
     for member in &members {
         let log = member.shards.log_of(&orders).await.expect("log");
         until("the floor reaches every member", || {
             log.readable_base() == floor
         })
         .await;
-    }
-    for member in &members {
-        let purged = purge(member).await;
-        assert!(
-            purged.is_some_and(|at| at < floor),
-            "{} purged to {purged:?}",
-            member.name
-        );
-        serves_from(member, floor).await;
+        if member.name != "broker-c" {
+            let purged = purge(member).await;
+            assert!(
+                purged.is_none_or(|at| at < floor),
+                "{} purged to {purged:?}",
+                member.name
+            );
+        }
     }
     stop(&members).await;
+
+    let mut restarted = Vec::new();
+    for Member { name, root, .. } in members.drain(..).rev() {
+        net.forget(name);
+        let member = Member::start_on(
+            &net,
+            name,
+            root,
+            INCARNATION,
+            ConsistencyLevel::Quorum,
+            FsyncMode::None,
+            false,
+        )
+        .await;
+        member.shards.take(&mut assignments([moved.clone()])).await;
+        restarted.push(member);
+    }
+    restarted.reverse();
+    served(&restarted).await;
+    for member in &restarted {
+        until("the member serves its term", || member.bound() >= tail).await;
+        serves_from(member, floor).await;
+    }
+    stop(&restarted).await;
 }
 
 /// **A leader never purges past a member's match.** `broker-b` is behind
@@ -218,20 +261,60 @@ async fn a_leader_keeps_the_log_a_lagging_member_needs() {
 }
 
 /// **A member restarted after a purge serves as before.** It opens from the
-/// purge snapshot and the log above it: the membership comes from the
-/// snapshot, the floor from the trim record, and offsets go on past the
-/// tail.
+/// purge snapshot and the log above it: the membership, the consumer-group
+/// table and the cut batches the log forgot come from the snapshot, the floor
+/// from the trim record, and offsets go on past the tail.
 #[tokio::test]
 async fn a_member_restarted_after_a_purge_serves_from_its_floor() {
+    use felix_broker::{CreatedBy, CreationToken, GroupEntry, GroupOp, SequenceReuse};
+
     let root = tempfile::tempdir().expect("tempdir");
     let orders = key("orders", 0);
+    // Small segments, so the purge drops the ones holding the group and the
+    // cut batch and only the snapshot still has them.
+    let small = || LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        segment_size_bytes: 512,
+        ..LogConfig::default()
+    };
     let (floor, tail) = {
-        let broker = broker(root.path()).await;
+        let broker = broker_with_config(
+            root.path(),
+            1,
+            INCARNATION,
+            ConsistencyLevel::Leader,
+            small(),
+        )
+        .await;
         broker.allow_raft_head_trims_when(|| true);
         let shards = shards(&broker);
         lead_orders(&shards).await;
         let term = shards.leading(&orders).expect("term");
         let engine = engine(&shards);
+        let raft = shards.engine_for(&orders).expect("raft engine");
+        // A group and a cut batch, both written below the purge point.
+        let cre = CreationToken {
+            term,
+            index: 0,
+            by: CreatedBy::Hydrate,
+        };
+        let write = GroupEntry {
+            group: "billing".to_owned(),
+            op: GroupOp::Advance { cre, to: 3 },
+        };
+        let written = raft
+            .propose_group(&orders, term, 1_700_000_000, &write)
+            .await
+            .expect("group written");
+        raft.await_commit(&orders, written, std::time::Duration::from_secs(10))
+            .await
+            .expect("group committed");
+        write_batch(&shards, &orders, 9, 0, 0, 2, &[b"cut"]).await;
+        const FILL: &[u8] = &[7; 200];
+        for _ in 0..8 {
+            publish(&broker, &engine, term, FILL).await;
+        }
         let mut tail = 0;
         let mut floor = 0;
         for payload in [b"r0", b"r1", b"r2", b"r3", b"r4", b"r5"] {
@@ -246,11 +329,24 @@ async fn a_member_restarted_after_a_purge_serves_from_its_floor() {
         let log = shards.log_of(&orders).await.expect("log");
         until("the trim applies", || log.readable_base() == floor).await;
         let purged = shards.runtime.purge_below_floor(&orders).await;
-        assert_eq!(purged, Some(floor - 1));
+        assert!(purged.is_some_and(|at| at < floor), "purged to {purged:?}");
+        until("the purge drops the early segments", || {
+            log.segments()
+                .first()
+                .is_some_and(|first| first.base_offset > 0)
+        })
+        .await;
         EngineShards::shutdown(&*shards).await;
         (floor, tail + 1)
     };
-    let broker = broker(root.path()).await;
+    let broker = broker_with_config(
+        root.path(),
+        1,
+        INCARNATION,
+        ConsistencyLevel::Leader,
+        small(),
+    )
+    .await;
     let shards = shards(&broker);
     lead_orders(&shards).await;
     let log = shards.log_of(&orders).await.expect("log");
@@ -264,6 +360,46 @@ async fn a_member_restarted_after_a_purge_serves_from_its_floor() {
         .expect("a page from the floor");
     assert_eq!(records[0].offset, floor);
     assert_eq!(records[0].payload, bytes::Bytes::from_static(b"r4"));
+
+    let groups = shards
+        .engine_for(&orders)
+        .and_then(|raft| raft.groups(&orders))
+        .expect("the shard's groups");
+    let billing = groups.read().table().group("billing").map(|g| g.cursor);
+    assert_eq!(billing, Some(3), "the group table came back");
+
+    // The cut batch's records are purged, so only the snapshot still names it.
+    let handle = broker
+        .resolve_stream_handle("t1", "ns", "orders", 0)
+        .await
+        .expect("handle");
+    let turn = broker.producer_turn(&handle, 9).await;
+    let resent = engine
+        .publish_idempotent_on_raft(
+            &broker,
+            &handle,
+            &orders,
+            term,
+            turn,
+            0,
+            SequenceReuse::Refuse,
+            vec![
+                bytes::Bytes::from_static(b"cut"),
+                bytes::Bytes::from_static(b"rest"),
+            ],
+            Default::default(),
+            std::time::Duration::from_secs(10),
+        )
+        .expect("a Raft shard");
+    assert!(
+        matches!(
+            resent,
+            Err(crate::shards::engine::RaftRefusal::Broker(
+                felix_broker::BrokerError::SequenceExpired { sequence: 0 }
+            ))
+        ),
+        "a cut batch the purge dropped was accepted again"
+    );
     let next = publish(&broker, &engine, term, b"r6").await;
     assert!(next >= tail, "offset {next} given out again below {tail}");
     EngineShards::shutdown(&*shards).await;
