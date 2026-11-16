@@ -581,7 +581,9 @@ feed the QUIC listeners follow.
 
 `FELIX_MQTT_ANONYMOUS_TENANT` is the development switch, as on Kafka: an
 unauthenticated connection gets every stream grant in that tenant, and the
-broker logs a warning at startup. Unset by default.
+broker logs a warning at startup. Unset by default. It works on a single broker
+only: a forward carries the client's token, so a broker in a cluster of more
+than one broker refuses a connection without one at `CONNECT`.
 
 ## Isolation and limits
 

@@ -62,6 +62,23 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             // answered with one.
             Err(_) => return self.reject(ReasonCode::ServerUnavailable, "auth_timeout"),
         };
+        // On a cluster of more than one broker a publish for a shard another
+        // broker leads is forwarded with the connection's token, and the
+        // owner checks it again. Without one the publish would be refused
+        // later and a 3.1.1 connection dropped, so refuse it here instead.
+        // Not authorized rather than unavailable: retrying will not help.
+        if principal.credential().is_none() && shared.writes.may_forward() {
+            tracing::warn!(
+                tenant = principal.tenant_id(),
+                "mqtt connection refused: it has no credential to forward to a shard's \
+                 owner on another broker; connect with a tenant token",
+            );
+            return self.reject_with(
+                ReasonCode::NotAuthorized,
+                "credential_required",
+                Some(CREDENTIAL_REQUIRED),
+            );
+        }
         // A will is a publish deferred to when the client vanishes, and the
         // listener does not send them yet. Refusing it now beats never
         // sending it.
@@ -187,14 +204,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
 
     /// Refuse the `CONNECT` with a `CONNACK` and close.
     fn reject<T>(&mut self, reason: ReasonCode, metric: &'static str) -> Result<T, End> {
+        self.reject_with(reason, metric, None)
+    }
+
+    /// [`Self::reject`], with a reason string for a 5.0 client. 3.1.1 has
+    /// nowhere to put one.
+    fn reject_with<T>(
+        &mut self,
+        reason: ReasonCode,
+        metric: &'static str,
+        reason_string: Option<&'static str>,
+    ) -> Result<T, End> {
+        let mut properties = Properties::default();
+        if self.version == Some(Version::V5) {
+            properties.reason_string = reason_string.and_then(|text| Utf8::new(text).ok());
+        }
         self.queue(&Packet::ConnAck(ConnAck {
             session_present: false,
             reason,
-            properties: Properties::default(),
+            properties,
         }))?;
         Err(End::Close(metric))
     }
 }
+
+/// Sent to a 5.0 client refused for having no credential to forward.
+const CREDENTIAL_REQUIRED: &str = "this broker is in a cluster and forwards publishes with the client's token; connect with a tenant token";
 
 /// 5.0 hands back an identifier for an empty one; 3.1.1 may only when the
 /// session is clean.

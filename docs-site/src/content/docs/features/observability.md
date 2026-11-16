@@ -296,7 +296,8 @@ felix_mqtt_readers                          # gauge: subscription readers, cappe
 `felix_mqtt_refused_total` counts every connection or request the listener
 turned away. `connection_limit`, `per_ip_limit` and `tls_handshake` are
 connections that never got to `CONNECT`; `auth_timeout`, `auth_required`,
-`auth_failed` and `auth_unavailable` are `CONNECT` failures, where
+`auth_failed`, `auth_unavailable` and `credential_required` (no credential to
+forward, on a cluster of more than one broker) are `CONNECT` failures, where
 `auth_unavailable` means the control plane could not be asked and is worth an
 alert. `token_expired`, `revoked` and `keepalive_timeout` end a live connection.
 `subscribe_unsupported` and `will_unsupported` count what the listener cannot do

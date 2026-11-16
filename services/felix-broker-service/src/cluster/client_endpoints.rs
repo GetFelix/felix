@@ -10,6 +10,7 @@
 //! control stream, so it is an `ArcSwap`: one writer on a timer, a reader per
 //! `Topology` request, and no reason for either to wait on the other.
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use arc_swap::ArcSwap;
 use felix_wire::BrokerEndpoint;
@@ -24,6 +25,8 @@ pub struct ClientEndpoints {
     redirects: ArcSwap<Vec<BrokerEndpoint>>,
     /// Kafka listener addresses of every routable broker that runs one.
     kafka: ArcSwap<Vec<BrokerEndpoint>>,
+    /// How many brokers the catalog lists, this one included.
+    brokers: AtomicUsize,
 }
 
 impl ClientEndpoints {
@@ -43,6 +46,13 @@ impl ClientEndpoints {
         self.redirects
             .store(Arc::new(catalog.redirect_endpoints.clone()));
         self.kafka.store(Arc::new(catalog.kafka_endpoints.clone()));
+        self.brokers.store(catalog.nodes.len(), Ordering::Relaxed);
+    }
+
+    /// How many brokers the last refresh listed, live or not; zero before
+    /// the first.
+    pub fn brokers(&self) -> usize {
+        self.brokers.load(Ordering::Relaxed)
     }
 
     /// The client address to name in a redirect to `node_id`, if the cluster

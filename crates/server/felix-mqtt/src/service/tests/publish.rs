@@ -743,9 +743,6 @@ fn a_refused_publish_that_closes_a_3_1_1_connection_is_logged() {
     let log = String::from_utf8(sink.0.lock().unwrap().clone()).unwrap();
     assert_eq!(log.matches("WARN").count(), 1, "{log}");
     assert!(log.contains("not_owner"), "{log}");
-    assert!(
-        log.contains("anonymous connection has no token to forward"),
-        "{log}"
-    );
+    assert!(log.contains("no credential to forward"), "{log}");
     assert!(log.contains("shard"), "{log}");
 }

@@ -319,10 +319,8 @@ async fn a_batch_for_a_raft_shard_takes_a_sequence_per_record() {
 }
 
 /// Forwards nothing: a test whose writes all stay on this broker.
-#[cfg(feature = "raft")]
 struct NoPeers;
 
-#[cfg(feature = "raft")]
 impl felix_replication::peer::PeerRequester for NoPeers {
     async fn request(
         &self,
@@ -396,5 +394,56 @@ fn a_failure_partway_names_the_records_written() {
             written: 1,
             rest: Unwritten::OutcomeUnknown("quorum_timeout")
         }
+    );
+}
+
+fn catalog_of(brokers: &[&str]) -> crate::cluster::node_catalog::NodeCatalog {
+    crate::cluster::node_catalog::NodeCatalog {
+        nodes: brokers
+            .iter()
+            .map(|id| {
+                let node = felix_router::NodeRef {
+                    node_id: id.to_string(),
+                    advertise_addr: "127.0.0.1:5000".parse().unwrap(),
+                    region: "local".into(),
+                    live: true,
+                };
+                (id.to_string(), node)
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+/// A connection needs a credential to forward only where a publish can be
+/// forwarded: this broker forwards and the catalog lists another broker. A
+/// cluster that grows is seen at the next `CONNECT`.
+#[tokio::test]
+async fn a_publish_may_be_forwarded_only_on_a_cluster_of_more_than_one_broker() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let broker = broker(false, dir.path()).await;
+    let endpoints = Arc::new(ClientEndpoints::new());
+
+    assert!(!writes(&broker).may_forward(), "a broker outside a cluster");
+    let writes = writes(&broker)
+        .with_cluster(Arc::clone(&endpoints))
+        .with_forwarding(Arc::new(NoPeers), Duration::from_secs(1));
+    assert!(!writes.may_forward(), "before the catalog is read");
+
+    endpoints.refresh(&catalog_of(&["broker-a"]));
+    assert!(!writes.may_forward(), "a cluster of one broker");
+
+    endpoints.refresh(&catalog_of(&["broker-a", "broker-b"]));
+    assert!(writes.may_forward(), "a cluster that grew to two brokers");
+
+    let unforwarding = super::BrokerWrites::new(
+        Arc::clone(&broker),
+        Arc::new(crate::shards::routing::StreamEngine::default()),
+        Duration::from_secs(1),
+    )
+    .with_cluster(endpoints);
+    assert!(
+        !unforwarding.may_forward(),
+        "a broker that does not forward refuses no one for it"
     );
 }

@@ -53,7 +53,7 @@ What `CONNECT` does:
 |---|---|
 | Valid tenant and token | `CONNACK` success. The session is clean: `session present` is 0, and a 5.0 request for a session expiry is answered with an expiry of 0. A 5.0 client is also told `Receive Maximum` (`FELIX_MQTT_MAX_INFLIGHT`), `Maximum QoS` 1, `Retain Available` 0, and, by leaving the property out, `Topic Alias Maximum` 0. |
 | Wrong token or tenant | `CONNACK` 0x86 (3.1.1: 4), then the connection closes. |
-| No credentials | `CONNACK` 0x87 (3.1.1: 5), unless `FELIX_MQTT_ANONYMOUS_TENANT` is set. |
+| No credentials | `CONNACK` 0x87 (3.1.1: 5), unless `FELIX_MQTT_ANONYMOUS_TENANT` is set and the broker is not in a cluster of more than one broker. |
 | Token cannot be checked (control plane unreachable) | `CONNACK` 0x88 (3.1.1: 3). The client may retry. |
 | A will message | `CONNACK` 0x87 (3.1.1: 5). The listener does not send wills yet. |
 | Empty client id, 3.1.1, `clean session` 0 | `CONNACK` 0x02. |
@@ -67,11 +67,19 @@ no credentials acts as that tenant and may publish to every stream mounted for
 it, and the broker logs a warning at startup. A connection that sends a wrong
 token is still refused.
 
-On a cluster an anonymous connection cannot be forwarded: it has no token to
-send the shard's owner, so a publish for a shard another broker leads is
-refused as `not_owner`. A 3.1.1 connection then closes, and the broker logs a
-warning naming the stream and shard. Use a tenant token for anything beyond a
-single-broker development setup.
+Anonymous connections work only on a single broker. A publish for a shard
+another broker leads is forwarded with the connection's token for the owner to
+check, and an anonymous connection has none. So a broker that forwards and
+whose cluster lists more than one broker refuses a connection without a
+credential to forward at `CONNECT`: `CONNACK` 0x87 with a reason string for
+5.0, and 5 (not authorized) for 3.1.1, which has no reason string. Not
+authorized rather than server unavailable, because retrying will not help. The
+broker logs a warning and counts it as `credential_required`.
+
+The broker count is read at each `CONNECT`. A connection accepted while the
+cluster had one broker is not closed when another joins; its first publish for
+a shard the new broker leads is refused as `not_owner`, a 3.1.1 connection
+closes, and the broker logs a warning naming the stream and shard.
 
 A connection ends when its token expires or is revoked. A 5.0 client is sent a
 `DISCONNECT` with reason 0x87 first. Re-authenticating with `AUTH` is not

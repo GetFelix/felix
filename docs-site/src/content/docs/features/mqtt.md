@@ -77,7 +77,11 @@ none. The
 
 A connection with no credentials is refused unless the broker was started with
 `FELIX_MQTT_ANONYMOUS_TENANT=<tenant>`, which is for development only: such a
-connection may publish to every stream mounted for that tenant.
+connection may publish to every stream mounted for that tenant. It works on a
+single broker only. A broker in a cluster of more than one broker refuses a
+connection without credentials at `CONNECT` with `CONNACK` 0x87 (3.1.1: 5),
+because a publish forwarded to another broker carries the client's token and
+there is none to carry.
 
 A connection ends when its token expires or is revoked. A device is also closed
 if it is silent for one and a half keepalive intervals, with the interval capped
@@ -125,11 +129,13 @@ Three limits to know:
   for a shard another broker owns is forwarded there, and the `PUBACK` waits for
   the owner's answer. If the owner dies before answering, the connected broker
   sends the message again to whichever broker owns the shard next, and the new
-  owner recognises it and does not write it twice. A device that connects
-  without credentials (`FELIX_MQTT_ANONYMOUS_TENANT`) has no token for the owner
-  to check, so it can publish only to shards its own broker owns. Anything else
-  is refused with `not_owner`: a 5.0 client at QoS 1 gets `PUBACK` 0x83, a
-  3.1.1 client's connection closes, and a QoS 0 message is dropped and counted.
+  owner recognises it and does not write it twice. The forward carries the
+  device's token for the owner to check, which is why a cluster of more than
+  one broker refuses devices without credentials at `CONNECT`. One that
+  connected while the cluster had a single broker can publish only to shards
+  its own broker owns; anything else is refused with `not_owner`: a 5.0 client
+  at QoS 1 gets `PUBACK` 0x83, a 3.1.1 client's connection closes, and a QoS 0
+  message is dropped and counted.
 - **Unknown outcome.** If a majority does not answer in time, or the owner
   cannot be reached again before the forward budget runs out, the broker cannot
   say whether the message was written. It

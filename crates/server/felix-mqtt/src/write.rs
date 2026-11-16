@@ -109,6 +109,14 @@ pub trait Writes: Send + Sync {
         false
     }
 
+    /// Whether a publish may have to be forwarded to another broker: this one
+    /// forwards and its cluster lists more than one broker. A forward carries
+    /// the connection's token for the owner to check, so while this holds the
+    /// listener refuses a `CONNECT` that has none to carry.
+    fn may_forward(&self) -> bool {
+        false
+    }
+
     /// Write the batch and return once it has what the stream's consistency
     /// asks for, when `batch.acknowledged`: the leader's durable write under
     /// the fsync policy, and on a `Quorum` stream a majority as well. Never
