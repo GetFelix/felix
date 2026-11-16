@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794838887103,
+  "lastUpdate": 1794842922466,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60268,6 +60268,58 @@ window.BENCHMARK_DATA = {
             "range": "10923.21",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 794731.34\nmean: 790771.32\nstdev: 10923.21\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5bd321f1dd2b62672554dc30f9b407e46f176496",
+          "message": "build(deps): bump the cargo-minor-and-patch group across 1 directory with 4 updates (#2685)\n\nBumps the cargo-minor-and-patch group with 4 updates in the / directory: [uuid](https://github.com/uuid-rs/uuid), [arc-swap](https://github.com/vorner/arc-swap), [toml](https://github.com/toml-rs/toml) and [flate2](https://github.com/rust-lang/flate2-rs).\n\n\nUpdates `uuid` from 1.29.0 to 1.29.2\n- [Release notes](https://github.com/uuid-rs/uuid/releases)\n- [Commits](https://github.com/uuid-rs/uuid/compare/v1.29.0...v1.29.2)\n\nUpdates `arc-swap` from 1.9.3 to 1.9.4\n- [Changelog](https://github.com/vorner/arc-swap/blob/master/CHANGELOG.md)\n- [Commits](https://github.com/vorner/arc-swap/compare/v1.9.3...v1.9.4)\n\nUpdates `toml` from 1.1.8+spec-1.1.0 to 1.2.1+spec-1.1.0\n- [Commits](https://github.com/toml-rs/toml/compare/toml-v1.1.8...toml-v1.2.1)\n\nUpdates `flate2` from 1.1.10 to 1.1.11\n- [Release notes](https://github.com/rust-lang/flate2-rs/releases)\n- [Changelog](https://github.com/rust-lang/flate2-rs/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/rust-lang/flate2-rs/compare/1.1.10...v1.1.11)\n\n---\nupdated-dependencies:\n- dependency-name: arc-swap\n  dependency-version: 1.9.4\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: flate2\n  dependency-version: 1.1.11\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n- dependency-name: toml\n  dependency-version: 1.2.1+spec-1.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: cargo-minor-and-patch\n- dependency-name: uuid\n  dependency-version: 1.29.2\n  dependency-type: direct:production\n  update-type: version-update:semver-patch\n  dependency-group: cargo-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-16T07:11:03-08:00",
+          "tree_id": "0641c8b10a6a63e17086bcc0d2373779f6fc2265",
+          "url": "https://github.com/GetFelix/felix/commit/5bd321f1dd2b62672554dc30f9b407e46f176496"
+        },
+        "date": 1794842921843,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 513692.35,
+            "range": "26358.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513692.35\nmean: 514525.67\nstdev: 26358.46\ncv: 5.12%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 513692.35,
+            "range": "26358.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513692.35\nmean: 514525.67\nstdev: 26358.46\ncv: 5.12%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117622.76,
+            "range": "6273.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117622.76\nmean: 114969.83\nstdev: 6273.96\ncv: 5.46%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1176227.64,
+            "range": "62739.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1176227.64\nmean: 1149698.25\nstdev: 62739.60\ncv: 5.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
