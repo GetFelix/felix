@@ -280,7 +280,13 @@ On a broker that runs stream shards on Raft, a shard takes an idempotent batch
 of one record only, so each message in the batch gets a producer sequence of its
 own. The shard's leader proposes them back to back without waiting for each
 commit, so the batch still costs about one commit round trip
-(`docs/per-shard-raft.md`, "Kafka produce and MQTT publish").
+(`docs/per-shard-raft.md`, "Kafka produce and MQTT publish"). A broker in the
+shard's group that does not lead it sends the whole batch to the leader in one
+forward marked as one record per sequence, and the leader does the same. A
+batch is acknowledged only once every message in it is committed; if the
+leader stops partway, each message is sent again on its own and the ones
+already written are answered from the log, so none is written twice or
+acknowledged at a second offset.
 
 Publishes from one session to one shard stay in order through the forwarding
 hop because each session keeps one ordered queue per shard it is writing to, and

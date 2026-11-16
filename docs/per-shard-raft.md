@@ -2997,8 +2997,9 @@ before it. The messages are settled in order: one whose proposal failed is
 sent again on its own and answered from whichever log holds it by then.
 
 A member that does not lead the group forwards the whole batch to the
-leader in one forward, and the leader proposes its messages back to back at
-consecutive sequences, so the batch again costs about one commit round trip
+leader in one forward, `RecordSequencedForwardPublish`, which marks each
+message as its own batch at the next sequence, and the leader proposes them
+back to back, so the batch again costs about one commit round trip
 plus the forward, as on the hybrid. That needs a leader that offers
 `RECORD_SEQUENCED_FORWARDS`; to any other, and from a broker that is not a
 member, each message is forwarded on its own under its sequence. A forward
