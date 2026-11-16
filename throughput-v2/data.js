@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794792301716,
+  "lastUpdate": 1794800729226,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59488,6 +59488,58 @@ window.BENCHMARK_DATA = {
             "range": "35638.40",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1157410.02\nmean: 1166032.35\nstdev: 35638.40\ncv: 3.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ede594c3f361d1c928722f8be6dc82ce34e73ee7",
+          "message": "feat(raft): start a re-formed copy at its base (#2250, #2640) (#2664)\n\n* feat(raft): a started copy reads as its base on the next re-form\n\nA start puts the epoch's first entry at its first index by purging to the\nend of the gap and keeping the base records. read_copy now treats a purged\nid one below the top epoch's first index as the gap's end: the copy's last\nid is its base's last record (checked against raft-epoch's term) and base\nterms come from the records. A record in the gap, or a base whose records\nare gone, keeps the purged id and the plan still refuses (#2640).\n\n* feat(raft): start a re-formed copy at its base under a reform-building marker (#2250, #2640)\n\nA voter keeps its base records and gets a purged id, snapshot id and saved\ncommit at first_index - 1 in the base term. A learner past the base empties\nits log. Every copy is reserved through the gap and both #2640 promises are\nchecked before the marker goes; open_copy refuses a copy holding the marker.\nThe plan's first index stays above the record's offset_floor.\n\n* feat(raft): floor reports the copy's group epoch; learner and commit rules at a re-form start (#2250)\n\nThe floor report sends each led group's epoch from its copy's raft-epoch,\nread at open. A learner keeps its prefix only where every record carries\nthe base's term, otherwise it empties, and an emptied learner keeps no\nsaved commit. A voter's saved commit past the first index is lowered only\nby a re-form that accepts the loss.\n\n* feat(raft): a re-form start rebuilds a voter from a kept copy and cuts one back to its base (#2250)\n\nA voter whose base is in a kept directory copies its segments and durable\nmark in under temporary names and renames them into place. A voter with\nrecords past the base cuts them; committed ones only with an accepted loss.\nThe log must then end at the base's last log id in its term. A plan refuses\nto read a copy whose start did not finish, and emptying a log also drops\nits durable mark and any leftover temporaries.\n\n* fix(raft): a re-form start keeps a learner out of an earlier gap and checks a kept copy before replacing a voter's log (#2250)\n\nA learner holding a record in a gap an earlier re-form left is emptied. A\nvoter rebuilt from a kept directory reads it whole first, so a missing one\nleaves the voter's log intact, and its own commit over records past the base\nneeds an accepted loss too.\n\n* test(raft): fill the re-form voter-set sources in the start tests",
+          "timestamp": "2026-11-15T19:36:52-08:00",
+          "tree_id": "fd6b923f6f24ea9bc5f58c4c48a002de07a82584",
+          "url": "https://github.com/GetFelix/felix/commit/ede594c3f361d1c928722f8be6dc82ce34e73ee7"
+        },
+        "date": 1794800728358,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 351260.9,
+            "range": "9570.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351260.90\nmean: 356571.27\nstdev: 9570.40\ncv: 2.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 351260.9,
+            "range": "9570.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 351260.90\nmean: 356571.27\nstdev: 9570.40\ncv: 2.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81256.82,
+            "range": "536.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81256.82\nmean: 81506.11\nstdev: 536.91\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 812568.2,
+            "range": "5369.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 812568.20\nmean: 815061.05\nstdev: 5369.05\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
