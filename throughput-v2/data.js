@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794838269204,
+  "lastUpdate": 1794838887103,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60216,6 +60216,58 @@ window.BENCHMARK_DATA = {
             "range": "11490.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803674.79\nmean: 802550.13\nstdev: 11490.70\ncv: 1.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3b7a398f968b4e2a54cf4833feb5bc0bbdf489fb",
+          "message": "feat(raft): serve consumer groups on Raft stream shards (#2446, PR 4b) (#2693)\n\n* feat(raft): serve consumer groups on Raft stream shards (#2446, PR 4b)\n\nGroupConsensus over RaftEngine (read-index fresh, propose at the confirmed\nterm, apply wait); an ambiguous group propose closes its term before the\nerror returns. Every group entry point routes a Raft shard to RaftGroups,\ngated on the new fleet feature raft_consumer_groups (NEW_CLUSTER 14 -> 15).\nA deposed term drops the shard's trackers (RaftGroups::step_down).\n\n* fix(raft): describe's tail on a Raft shard stops before group entries (#2446)\n\n* fix(raft): an ambiguous group write steps the leader down, not only closes its term (#2446)\n\n* feat(raft): a waiting group poll on a Raft shard wakes on the shard's commits (#2446)\n\n* test(raft): groups across a leader change, step_down, and the commit wake-up (#2446)\n\n* fix(raft): count each record's skipped offsets in the apply, kept until its publisher asks (#2446)\n\nA run of more than 64 group entries between records evicted the range below\nan early record before its publisher read it, so a subscriber counting\noffsets saw a drop. The apply now counts per record and a claim taken before\nthe proposal keeps the count until the publisher reads it.\n\n* docs(raft): groups redeliver at once after a leader change; raft_consumer_groups is reported (#2446)\n\n* docs(raft): cite the test that covers group operations on a Raft shard (#2446)\n\n* perf(raft): fewer skip-table locks per publish, wake waiters outside it, and tests for long no-record runs (#2446)\n\nA publish took the skip table lock three times and apply held it across the\nwaiter wakeup. A claim now releases as it reads, the commits move under the lock\nand the wakeup runs after it, and the tables are sorted vectors that keep their\nmemory. Tests check the long-run case really outgrows a bounded history, a quiet\nrun across apply runs, and the count across a snapshot install.\n\n* fix(raft): groups serving review round 2 (#2446)\n\nSwallow only leadership-move errors in a waiting poll, step a term down\nonce, gate RaftGroups::tracked behind test-support, and test a killed\nleader mid-claim.\n\n* test(raft): group refusal names the fleet feature; groups serve once it is finalized (#2446)\n\n* chore: spec pairing for groups serving on Raft (#2446)\n\nSpec-Unaffected: group operations implement FelixRaftGroups' existing actions; the step-down after an ambiguous group write is an ordinary leadership transfer (ChangeLeader in FelixRaftGroups, the existing transfer in the Raft models); per-record skip counting changes how a covered gap is reported, not which offsets are written or acknowledged; raft_consumer_groups is a fleet gate.\n\n* test(raft): consumer-group cluster tests go through the leader, followers redirect\n\n* test(raft): check the group's own records come out once, not the stream's length\n\nThe stream can hold a record written while the cluster started, so the first poll may return it.\n\n* test(controlplane): list raft_consumer_groups in the new-cluster feature fixture",
+          "timestamp": "2026-11-16T14:13:37Z",
+          "tree_id": "2a5537dcc6e89268223fe6aecf02ece570fc9518",
+          "url": "https://github.com/GetFelix/felix/commit/3b7a398f968b4e2a54cf4833feb5bc0bbdf489fb"
+        },
+        "date": 1794838885974,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 341654.03,
+            "range": "10688.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341654.03\nmean: 344240.08\nstdev: 10688.19\ncv: 3.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 341654.03,
+            "range": "10688.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 341654.03\nmean: 344240.08\nstdev: 10688.19\ncv: 3.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79473.13,
+            "range": "1092.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79473.13\nmean: 79077.13\nstdev: 1092.32\ncv: 1.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 794731.34,
+            "range": "10923.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 794731.34\nmean: 790771.32\nstdev: 10923.21\ncv: 1.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
