@@ -226,7 +226,10 @@ once the committed mark passes it), after which no read is served below the
 floor. On a shard that runs on Raft a follower first applies a read index
 asked of the leader, so it holds every answered trim, and refuses the read
 as retryable when it cannot; until the fleet finalizes `raft_follower_read`
-it redirects such a subscribe to the leader instead. A trim with `before` at or below the current floor writes nothing and
+it redirects such a subscribe to the leader instead. A leader confirms by
+a read-index round that it still leads before any read but a tail
+subscribe, so a leader cut off from a successor that trimmed refuses the
+read as retryable. A trim with `before` at or below the current floor writes nothing and
 answers with the floor, but only when its tail matches: a stale no-op is
 refused like any other trim. Refusals:
 

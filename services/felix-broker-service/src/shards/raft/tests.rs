@@ -1506,6 +1506,28 @@ pub(crate) struct Loopback {
     /// The fleet has not finalized `raft_follower_read`: followers leave
     /// reads that could start below a floor to the leader.
     pub(crate) follower_reads_off: std::sync::atomic::AtomicBool,
+    /// Brokers whose own requests reach nobody. With `cut` as well, a
+    /// leader in here is cut off without hearing that it was deposed.
+    pub(crate) muted: parking_lot::Mutex<std::collections::HashSet<String>>,
+}
+
+/// One broker's way onto a [`Loopback`], so the net knows who sent what.
+struct Sender {
+    from: String,
+    net: Arc<Loopback>,
+}
+
+#[async_trait::async_trait]
+impl RaftTransport for Sender {
+    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        if self.net.muted.lock().contains(&self.from) {
+            return Err(Refused::Unreachable(format!(
+                "broker {} is muted",
+                self.from
+            )));
+        }
+        self.net.send(request).await
+    }
 }
 
 impl Loopback {
@@ -1624,9 +1646,12 @@ impl Member {
         } else {
             no_fleet()
         };
+        let sender = Arc::new(Sender {
+            from: name.to_string(),
+            net: Arc::clone(net),
+        });
         let runtime =
-            GroupRuntime::start(name, timers(), Arc::clone(net) as Arc<dyn RaftTransport>)
-                .expect("runtime");
+            GroupRuntime::start(name, timers(), sender as Arc<dyn RaftTransport>).expect("runtime");
         net.runtimes
             .lock()
             .insert(name.to_string(), runtime.clone());
@@ -2161,6 +2186,13 @@ const UNANSWERED: Duration = Duration::from_millis(400);
 
 /// No member reaches another. A leader stays one, since it hears of no
 /// election, and the others can elect nobody.
+/// Cut `broker` off both ways. It hears nothing, so a leader keeps
+/// believing it leads.
+pub(crate) fn isolate(net: &Loopback, broker: &str) {
+    net.cut.lock().insert(broker.to_string());
+    net.muted.lock().insert(broker.to_string());
+}
+
 fn cut_all(net: &Loopback) {
     net.cut.lock().extend(BROKERS.map(String::from));
 }

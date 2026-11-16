@@ -34,9 +34,9 @@
 (* and the client acting on it are separate steps.                         *)
 (*                                                                         *)
 (* NoReadBelowAckedTrim  -- the serving leader never serves a record below *)
-(*                          an acknowledged trim's floor, and a follower   *)
-(*                          never serves a read that began after the trim  *)
-(*                          was acknowledged from below its floor.         *)
+(*                          an acknowledged trim's floor, and no broker    *)
+(*                          serves a read that began after the trim was    *)
+(*                          acknowledged from below its floor.             *)
 (* NothingLostAboveFloor -- the serving leader holds every acknowledged    *)
 (*                          write at or above that floor.                  *)
 (* FloorRecordKept       -- the serving leader's floor is the one its trim *)
@@ -66,6 +66,11 @@
 (*   FollowerNoReadIndex -- a follower serves a read that could start      *)
 (*                        below a floor from its own state, without first  *)
 (*                        applying the leader's read index.                *)
+(*   LeaderNoReadIndex -- a leader serves such a read from its own state,  *)
+(*                        without a read-index round, even a deposed one   *)
+(*                        that has not heard its successor.                *)
+(*   TailNoReadIndex   -- a follower serves a tail read from its own       *)
+(*                        committed tail without the leader's read index.  *)
 (*                                                                         *)
 (* Leadership is Raft-shaped, as in FelixAtomicCommit.tla: a candidate at  *)
 (* least as up to date as a majority takes the next generation and writes  *)
@@ -74,12 +79,15 @@
 (* inherited. FelixShard.tla models the lease, fence and promotion in      *)
 (* full; this model asks what a trim adds on top of them.                  *)
 (*                                                                         *)
-(* A follower may serve a read that could start below a floor: a resume    *)
-(* from an offset or the earliest record, or a history page. It first asks *)
-(* the leader for a read index, which the leader answers only after a      *)
-(* majority confirms it still leads, and serves once its own commit offset *)
-(* reaches that index (issue 2603). Tail reads never start below a floor   *)
-(* and are not modelled. One such read per behaviour.                      *)
+(* Any member may serve a read that could start below a floor: a resume    *)
+(* from an offset or the earliest record, or a history page. A follower    *)
+(* first asks the leader for a read index, which the leader answers only   *)
+(* after a majority confirms it still leads, and serves once its own       *)
+(* commit offset reaches that index. A leader runs that round itself       *)
+(* (issue 2603). A tail read on a follower starts at its committed tail,   *)
+(* which can be below a floor it has not received, so it applies the read  *)
+(* index too. A leader's tail read is not modelled: a deposed leader's     *)
+(* tail subscribers end with its term. One read per behaviour.             *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
@@ -97,12 +105,15 @@ CONSTANTS
     Untagged,
     NoOpUnchecked,
     Retention,
-    FollowerNoReadIndex
+    FollowerNoReadIndex,
+    LeaderNoReadIndex,
+    TailNoReadIndex
 
 ASSUME /\ Local \in BOOLEAN /\ FloorFromBase \in BOOLEAN /\ ApplyOnStore \in BOOLEAN
        /\ DeleteAboveCommit \in BOOLEAN /\ Unconditional \in BOOLEAN
        /\ Untagged \in BOOLEAN /\ NoOpUnchecked \in BOOLEAN /\ Retention \in BOOLEAN
-       /\ FollowerNoReadIndex \in BOOLEAN
+       /\ FollowerNoReadIndex \in BOOLEAN /\ LeaderNoReadIndex \in BOOLEAN
+       /\ TailNoReadIndex \in BOOLEAN
 
 VARIABLES
     log,        \* each broker's log; positions below `base` are deleted and kept only as history
@@ -120,7 +131,7 @@ VARIABLES
     writes,     \* writes appended so far
     trims,      \* trims taken so far, no-ops included
     crashes,    \* broker crashes so far
-    fread       \* the follower read: idle, waiting on its read index, or served
+    fread       \* the read: idle, waiting on its read index, or served
 
 vars == << log, gen, leads, commit, base, localFloor, lease, expected, fenced,
            retired, acked, ackedFloor, writes, trims, crashes, fread >>
@@ -213,7 +224,8 @@ Init ==
     /\ writes = 0
     /\ trims = 0
     /\ crashes = 0
-    /\ fread = [st |-> "idle", b |-> "none", idx |-> 0, need |-> 0, start |-> 0]
+    /\ fread = [st |-> "idle", b |-> "none", ld |-> FALSE, tl |-> FALSE, idx |-> 0,
+                 need |-> 0, start |-> 0]
 
 Active(h) == h <= lease /\ ~retired[h]
 
@@ -388,30 +400,39 @@ Promote(b) ==
        /\ UNCHANGED << fread, commit, base, localFloor, lease, expected, fenced, retired,
                        acked, ackedFloor, writes, trims, crashes >>
 
-\* A read that could start below a floor begins on a broker that does not
-\* lead, after a trim was acknowledged. It remembers the floor it must not
-\* go below, and takes the read index: the confirmed leader's commit
-\* offset, which covers every answer that leader gave.
-BeginFollowerRead(f, l) ==
+\* A read begins on broker r after a trim was acknowledged, and remembers
+\* the floor it must not go below. A history read (a resume or a page) on
+\* a leader takes a read index by its own round; on a follower it asks the
+\* confirmed leader l, whose commit offset covers every answer it gave. A
+\* tail read (tl) is modelled on a follower only.
+BeginRead(r, l, tl) ==
     /\ fread.st = "idle"
     /\ ackedFloor > 1
-    /\ f /= l
-    /\ ~leads[f]
-    /\ ConfirmedLeader(l)
-    /\ fread' = [st |-> "wait", b |-> f, idx |-> commit[l], need |-> ackedFloor, start |-> 0]
+    /\ IF leads[r]
+          THEN /\ l = r
+               /\ ~tl
+               /\ Settled(r)
+               /\ LeaderNoReadIndex \/ ConfirmedLeader(r)
+          ELSE /\ l /= r
+               /\ ConfirmedLeader(l)
+    /\ fread' = [st |-> "wait", b |-> r, ld |-> leads[r], tl |-> tl, idx |-> commit[l],
+                 need |-> ackedFloor, start |-> 0]
     /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, expected, fenced,
                     retired, acked, ackedFloor, writes, trims, crashes >>
 
-\* The follower serves once its commit offset reaches the read index, from
-\* its own readable start. A crash that reads its commit offset back
-\* behind keeps it waiting.
-ServeFollowerRead ==
-    LET f == fread.b
+\* The read is served once the broker's commit offset reaches the read
+\* index, by a broker still in the role it began in: a history read from
+\* its readable start, a tail read from its committed tail. A crash that
+\* reads its commit offset back behind keeps it waiting.
+ServeRead ==
+    LET r == fread.b
+        skip == IF fread.tl THEN TailNoReadIndex ELSE FollowerNoReadIndex
     IN /\ fread.st = "wait"
-       /\ ~leads[f]
-       /\ FollowerNoReadIndex \/ commit[f] >= fread.idx
-       /\ fread' = [st |-> "served", b |-> "none", idx |-> 0, need |-> fread.need,
-                    start |-> ReadableStart(f)]
+       /\ leads[r] = fread.ld
+       /\ fread.ld \/ skip \/ commit[r] >= fread.idx
+       /\ fread' = [st |-> "served", b |-> "none", ld |-> FALSE, tl |-> fread.tl, idx |-> 0,
+                    need |-> fread.need,
+                    start |-> IF fread.tl THEN commit[r] + 1 ELSE ReadableStart(r)]
        /\ UNCHANGED << log, gen, leads, commit, base, localFloor, lease, expected, fenced,
                        retired, acked, ackedFloor, writes, trims, crashes >>
 
@@ -423,8 +444,8 @@ Next ==
           \/ NoOpTrim(h, b)
           \/ \E f \in 2..(MaxWrites + MaxTrims + MaxGen) : Trim(h, b, f)
     \/ \E b \in Brokers : AdvanceMark(b) \/ Delete(b) \/ Promote(b) \/ Crash(b)
-    \/ \E s, f \in Brokers : Replicate(s, f) \/ BeginFollowerRead(f, s)
-    \/ ServeFollowerRead
+    \/ \E s, f \in Brokers : Replicate(s, f) \/ \E tl \in BOOLEAN : BeginRead(f, s, tl)
+    \/ ServeRead
 
 Spec == Init /\ [][Next]_vars
 

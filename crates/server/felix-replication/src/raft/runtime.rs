@@ -1213,14 +1213,14 @@ impl GroupRuntime {
     }
 
     /// Before this broker serves a read of `shard` that could start below
-    /// a head trim's floor: if its member follows, ask the leader for a
-    /// read index and wait until the member has applied it, so every trim
-    /// answered before the read is in its log. Ok at once on the leader,
-    /// or when the shard has no member here. An error is retryable and
+    /// a head trim's floor: a follower applies the leader's read index, and
+    /// a leader confirms by a read-index round that it still leads, so
+    /// every trim answered before the read is in the member's log. Ok at
+    /// once when the shard has no member here. An error is retryable and
     /// says why.
-    pub async fn follower_read(&self, shard: &ShardKey) -> Result<(), &'static str> {
+    pub async fn read_barrier(&self, shard: &ShardKey) -> Result<(), &'static str> {
         match self.group(shard) {
-            Some(group) => group.follower_read().await,
+            Some(group) => group.read_barrier().await,
             None => Ok(()),
         }
     }

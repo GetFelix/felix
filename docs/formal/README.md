@@ -501,6 +501,8 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixHeadTrimNoOpUnchecked.cfg` | a no-op trim answered with the tail without checking it | violate `StaleTrimRefused` |
 | `FelixHeadTrimRetention.cfg` | retention deleting past the floor, up to the commit offset | violate `StaleTrimRefused` |
 | `FelixHeadTrimFollowerNoReadIndex.cfg` | a follower serving a read that could start below a floor without first applying the leader's read index | violate `NoReadBelowAckedTrim` |
+| `FelixHeadTrimLeaderNoReadIndex.cfg` | a leader serving such a read without its own read-index round, so a deposed leader that never heard its successor serves below the successor's trim | violate `NoReadBelowAckedTrim` |
+| `FelixHeadTrimTailNoReadIndex.cfg` | a follower behind a trim starting a tail read at its own committed tail without the leader's read index | violate `NoReadBelowAckedTrim` |
 | `FelixGroups.cfg` | `FelixGroups.tla`: two groups' dead-letter and cursor logs on three replicas, flushed separately, across a crash and two promotions; each cursor checked against the dead letters it needs before a shard is served | pass `NoSkip` (66.3M distinct states, 11 min on a CI runner) |
 | `FelixGroupsNoCheck.cfg` | the same with cursors served unchecked | violate `NoSkip` |
 | `FelixGroupsLengthOnly.cfg` | the same with the check comparing the dead-letter log's length only | violate `NoSkip` |

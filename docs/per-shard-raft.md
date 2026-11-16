@@ -2459,7 +2459,7 @@ was answered:
 |---|---|
 | At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read`. A `state_get` does ("Atomic commits") |
+| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. A stream read that could start below a head trim's floor takes it on the leader ("Head trims"); a tail subscribe and live delivery are bounded by the commit (`read_bound`) alone. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
@@ -2481,11 +2481,11 @@ Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine
 page, "openraft version").
 
-A follower serves a read that starts at an offset or at `earliest` only
-after it has applied a read index asked of the leader, so it is never
-served below a head trim the leader already answered ("Head trims").
-Tail subscribes and live delivery are served from the follower's bound
-with no round.
+A follower serves a read that starts at an offset or at `earliest`, and a
+tail subscribe, only after it has applied a read index asked of the
+leader, so it is never served below a head trim the leader already
+answered ("Head trims"). The leader runs its own read-index round before
+the same reads, bar a tail subscribe. Live delivery takes no round.
 
 A broker that restarts answers reads again once its member has caught up
 and a leader is known. It needs the restore check once per start ("Group
@@ -2779,12 +2779,13 @@ member knows its group's leader. The leader serves it live. A follower
 serves it from its own log, up to what it has applied ("Delivering
 committed records"), so what a follower's subscriber sees is at most what
 that member has committed, and it can trail the leader by the time the
-member takes to hear the commit. A tail subscribe needs no redirect. A
-resume from an offset or from `earliest`, a cursor subscribe and a history
-page follow the rules in "Head trims": until the fleet finalizes
-`raft_follower_read` a follower redirects them to the leader, and after it
-the follower first applies a read index asked of the leader. The leader serves on its term alone: the broker's lease and the hybrid's
-fence are not asked.
+member takes to hear the commit. Every subscribe, a resume, a cursor
+subscribe, a history page and a stream read follow the rules in "Head
+trims": until the fleet finalizes `raft_follower_read` a follower
+redirects them to the leader, and after it the follower first applies a
+read index asked of the leader. The leader confirms by a read-index round
+that it still leads before each of them but a tail subscribe. The
+broker's lease and the hybrid's fence are not asked.
 
 - A member with no known leader serves no subscriber: a new subscribe is
   refused with a retryable `not_ready`, and the ones it has are ended on
@@ -3265,16 +3266,37 @@ commit passes the trim it hides the same records as every other member.
 On the hybrid only the leader serves readers, so once a trim is answered
 no reader on any broker is served below its floor. A Raft follower serves
 from its own log, which may not hold a trim the leader has already
-answered. So before a follower serves a resume from an offset or from
-`earliest`, a cursor subscribe, or a history page, it asks the leader for a
-read index (the `ReadIndex` peer message) and waits until it has applied
-that index. The leader answers with the larger of its commit index (after
+answered, and so may a leader cut off from a successor that trimmed: it
+never heard the later term, so in its own view it still leads. So before
+a follower serves a resume from an offset or from `earliest`, a cursor
+subscribe, a tail subscribe, a history page or a stream read, it asks the
+leader for a read index (the `ReadIndex` peer message) and waits until it
+has applied that index. The leader answers with the larger of its commit index (after
 a majority confirms it still leads) and one past the last write it
 answered once a majority had written it: the same value `confirm_read`
 waits for. Every trim
 answered before the read began is then committed in the follower's log,
-so its floor applies there. A tail subscribe and live delivery do not ask,
-and the leader does not ask: its reads are unchanged.
+so its floor applies there. A tail subscribe asks too: it starts at the
+follower's committed tail, which can be below a floor it has not
+received, and the records between would reach the subscriber live. Once
+the index is applied the tail is past the trim, so past its floor.
+
+The leader runs a read-index round of its own (`confirm_read`) before the
+same reads, a Kafka fetch below its tail included, but not before a tail
+subscribe. A deposed leader cannot get a majority's answer, so it refuses
+the read as retryable instead of serving a log its successor has trimmed.
+A deposed leader's tail subscribers end with its term. Concurrent reads
+share one round. That costs a leader read one round trip to a majority,
+which the reads it already confirms (`state_get`, cache reads) paid
+already; a fetch at the tail and live delivery pay nothing.
+
+A member cut off from its leader refuses these reads with a retryable
+`not_ready` for as long as it is cut off. The Rust client, and the
+clients built on it, retry `not_ready` with backoff on the same entry
+broker: it does not move to another broker on that answer, only on a
+broken connection or `draining`. A client whose entry broker is the
+cut-off member gets `not_ready` until its retries run out
+([#2665](https://github.com/GetFelix/felix/issues/2665)).
 
 The wait is bounded by the longest election timeout from when the read
 began. A follower that knows no leader, gets no answer, or does not apply
@@ -3298,7 +3320,10 @@ redirect to the leader when it knows one and with `shard_unavailable`
 > `a_follower_holding_the_trim_is_not_read_below_it_after_the_answer`,
 > `a_reachable_follower_holding_an_uncommitted_trim_holds_reads_below_it`,
 > `a_follower_cut_off_from_its_leader_refuses_offset_reads_as_retryable` and
-> `a_follower_leaves_offset_reads_to_the_leader_until_raft_follower_read`;
+> `a_follower_leaves_offset_reads_to_the_leader_until_raft_follower_read`,
+> `a_tail_read_on_a_follower_behind_a_trim_starts_at_or_above_its_floor`,
+> `a_deposed_leader_that_missed_the_trim_is_not_read_below_it` and
+> `a_resume_redirected_before_the_finalize_is_not_served_by_a_deposed_leader`;
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_follower_resume_before_raft_follower_read_redirects_to_its_leader` and
 > `a_follower_with_no_leader_answers_on_leader_as_not_ready`.

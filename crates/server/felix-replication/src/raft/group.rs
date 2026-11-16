@@ -1399,23 +1399,31 @@ impl Group {
         Ok(())
     }
 
-    /// Before a follower serves a read that could start below a head trim's
-    /// floor: ask the leader for a read index and wait until this member
-    /// has applied it. A trim answered before the read began is then in
-    /// this member's log, so its floor applies (or is pending) here too.
-    /// A leader reads as it always has and returns at once.
+    /// Before this member serves a read that could start below a head
+    /// trim's floor. A follower asks the leader for a read index and waits
+    /// until it has applied it, so a trim answered before the read began is
+    /// in its log and its floor applies (or is pending) here too. A leader
+    /// runs its own read-index round, [`Group::confirm_read`]: a leader cut
+    /// off from a successor that trimmed has not heard of the trim, and the
+    /// round is what tells it that it was deposed.
     ///
     /// Every error is retryable: no leader known, no answer in time, or
     /// the index not applied within `election_max` of the start.
-    pub(crate) async fn follower_read(&self) -> Result<(), &'static str> {
+    pub(crate) async fn read_barrier(&self) -> Result<(), &'static str> {
         use openraft::async_runtime::watch::WatchReceiver;
         let leader = {
             let metrics = self.raft.metrics();
             let metrics = metrics.borrow_watched();
-            if metrics.state == ServerState::Leader {
-                return Ok(());
-            }
-            metrics.current_leader.clone()
+            (metrics.state != ServerState::Leader).then(|| metrics.current_leader.clone())
+        };
+        let Some(leader) = leader else {
+            let Some(term) = self.open_term() else {
+                return Err("this member leads but has not opened its term");
+            };
+            return self
+                .confirm_read(term)
+                .await
+                .map_err(|_| "a majority did not confirm this member still leads");
         };
         let Some(leader) = leader.filter(|leader| *leader != self.member) else {
             return Err("this member knows no leader");

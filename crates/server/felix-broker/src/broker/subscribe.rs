@@ -113,7 +113,7 @@ impl Broker {
         let stream_state = handle.state;
         if let Some(log) = &stream_state.durable {
             let at = (tenant_id, namespace, stream, shard);
-            self.before_floor_read(&stream_state, at).await?;
+            self.before_floor_read(&stream_state, at, false).await?;
             await_pending_trim(log, Some(cursor.next_seq), stream, shard).await?;
         }
 
@@ -203,10 +203,9 @@ impl Broker {
         let stream_state = handle.state;
         let durable = stream_state.durable.clone();
 
-        if start != StartPosition::Latest {
-            let at = (tenant_id, namespace, stream, shard);
-            self.before_floor_read(&stream_state, at).await?;
-        }
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_floor_read(&stream_state, at, start == StartPosition::Latest)
+            .await?;
         let Position {
             requested,
             joined,
@@ -294,10 +293,9 @@ impl Broker {
                 stream: stream.to_string(),
             });
         };
-        if start != StartPosition::Latest {
-            let at = (tenant_id, namespace, stream, shard);
-            self.before_floor_read(&handle.state, at).await?;
-        }
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_floor_read(&handle.state, at, start == StartPosition::Latest)
+            .await?;
         let position = resolve_position(&handle.state, stream, shard, start).await?;
         refuse_below_floor(&log, position.requested)?;
         Ok((end <= position.live).then_some(JoinOffsets {
@@ -376,7 +374,7 @@ impl Broker {
             });
         };
         let at = (tenant_id, namespace, stream, shard);
-        self.before_floor_read(&handle.state, at).await?;
+        self.before_floor_read(&handle.state, at, false).await?;
         await_pending_trim(log, Some(from_offset), stream, shard).await?;
         let mut from_offset = from_offset;
         loop {
@@ -453,12 +451,35 @@ impl Broker {
             .map(|(offset, _)| offset))
     }
 
+    /// Before a read of committed records from `from`, for a path that reads
+    /// the log itself (a Kafka fetch): ask the engine, as a resume does, and
+    /// wait out a trim pending above `from`. `NotReadable` is retryable.
+    pub async fn before_history_read(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        from: u64,
+    ) -> Result<()> {
+        let handle = self
+            .resolve_stream_handle(tenant_id, namespace, stream, shard)
+            .await?;
+        let Some(log) = &handle.state.durable else {
+            return Ok(());
+        };
+        let at = (tenant_id, namespace, stream, shard);
+        self.before_floor_read(&handle.state, at, false).await?;
+        await_pending_trim(log, Some(from), stream, shard).await
+    }
+
     /// Ask the engine, when one serves `stream`'s log here, whether a read
-    /// that could start below a floor may be served now.
-    async fn before_floor_read(
+    /// may be served now. `tail` for one that starts at the committed tail.
+    pub(super) async fn before_floor_read(
         &self,
         state: &crate::stream::StreamState,
         (tenant_id, namespace, stream, shard): (&str, &str, &str, u32),
+        tail: bool,
     ) -> Result<()> {
         let Some(reads) = self.follower_reads.get() else {
             return Ok(());
@@ -467,7 +488,7 @@ impl Broker {
             return Ok(());
         }
         reads
-            .before_read(tenant_id, namespace, stream, shard)
+            .before_read(tenant_id, namespace, stream, shard, tail)
             .await
             .map_err(|reason| not_readable(stream, shard, reason))
     }
@@ -514,7 +535,10 @@ async fn resolve_position(
 ) -> Result<Position> {
     let durable = stream_state.durable.clone();
     if let Some(log) = &durable {
-        // `Latest` starts at the tail, above any floor.
+        // `Latest` starts at this member's committed tail. That is above
+        // every answered floor only once the member has applied the
+        // leader's read index, which `before_floor_read` saw to: a lagging
+        // follower's tail can sit below a trim it has not received.
         let from = match start {
             StartPosition::Latest => Some(u64::MAX),
             StartPosition::Earliest => None,
@@ -548,7 +572,6 @@ async fn resolve_position(
         },
         StartPosition::Offset(offset) => offset,
     };
-
     // Resuming past the tail would register for live delivery and then hand
     // over records *below* the requested offset -- the opposite of what was
     // asked for. Rejected rather than silently reinterpreted; a client that
@@ -601,7 +624,7 @@ pub(super) fn committed_tail(bound: ReadBound, tail: u64, stream: &str, shard: u
 /// below a floor a client was already told about. A follower that never got
 /// the trim entry is brought up to it first by `Broker::before_floor_read`:
 /// see `docs/per-shard-raft.md`, "Head trims".
-async fn await_pending_trim(
+pub(super) async fn await_pending_trim(
     log: &crate::StreamLog,
     from: Option<u64>,
     stream: &str,

@@ -933,10 +933,12 @@ impl felix_broker::EngineLogs for RaftShards {
     }
 }
 
-/// A follower's log may lack a head trim the leader already answered, so
-/// a read that could start below a floor waits for the leader's read index
-/// first. Before the fleet can send that message, the leader serves it.
-/// See `docs/per-shard-raft.md`, "Head trims".
+/// A follower's log may lack a head trim the leader already answered, and
+/// so may a leader cut off from a successor that trimmed. A read that could
+/// start below a floor therefore waits for a read index: a follower asks
+/// the leader for one, a leader runs its own round. Before the fleet can
+/// send the follower's message, the leader serves the read. See
+/// `docs/per-shard-raft.md`, "Head trims".
 impl felix_broker::FollowerReads for RaftShards {
     fn before_read<'a>(
         &'a self,
@@ -944,6 +946,7 @@ impl felix_broker::FollowerReads for RaftShards {
         namespace: &'a str,
         stream: &'a str,
         shard: u32,
+        tail: bool,
     ) -> Pin<Box<dyn Future<Output = Result<(), felix_broker::NotReadable>> + Send + 'a>> {
         Box::pin(async move {
             let key = ShardKey {
@@ -953,14 +956,19 @@ impl felix_broker::FollowerReads for RaftShards {
                 shard,
                 kind: ShardKind::Stream,
             };
-            if !self.runtime.follows(&key) {
+            if self.runtime.status(&key).is_none() {
                 return Ok(());
             }
-            if !self.broker.raft_follower_reads_allowed() {
-                return Err(felix_broker::NotReadable::OnLeader);
+            if self.runtime.follows(&key) {
+                if !self.broker.raft_follower_reads_allowed() {
+                    return Err(felix_broker::NotReadable::OnLeader);
+                }
+            } else if tail {
+                // A deposed leader's tail subscribers end with its term.
+                return Ok(());
             }
-            self.runtime.follower_read(&key).await.map_err(|why| {
-                tracing::debug!(stream, shard, why, "a follower read was refused");
+            self.runtime.read_barrier(&key).await.map_err(|why| {
+                tracing::debug!(stream, shard, why, "a read was refused");
                 felix_broker::NotReadable::Settling
             })
         })

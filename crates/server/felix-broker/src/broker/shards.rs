@@ -41,19 +41,24 @@ pub trait EngineLogs: Send + Sync + std::fmt::Debug {
     ) -> std::pin::Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
-/// Asked before a read of a stream on its engine's log that could start
-/// below a head trim's floor. A follower's log may not hold a trim the
-/// leader has already answered, so the engine first brings the follower up
-/// to the leader's read index, or refuses the read.
+/// Asked before a read of a stream on its engine's log. A follower's log
+/// may not hold a trim the leader has already answered, and a deposed
+/// leader that has not heard its successor may not either, so the engine
+/// first brings the member up to a read index the current leader gave, or
+/// refuses the read.
 pub trait FollowerReads: Send + Sync + std::fmt::Debug {
-    /// Ok when this broker may serve the read now. Tail reads and live
-    /// delivery are never asked.
+    /// Ok when this broker may serve the read now. `tail` is a read that
+    /// starts at the committed tail, a `Latest` subscribe: a leader serves
+    /// it at once, a follower still applies the read index, since its own
+    /// tail can be below a floor the leader answered. Live delivery is
+    /// never asked.
     fn before_read<'a>(
         &'a self,
         tenant_id: &'a str,
         namespace: &'a str,
         stream: &'a str,
         shard: u32,
+        tail: bool,
     ) -> std::pin::Pin<Box<dyn Future<Output = std::result::Result<(), NotReadable>> + Send + 'a>>;
 }
 
