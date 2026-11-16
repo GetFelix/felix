@@ -678,12 +678,12 @@ async fn a_short_placement_acknowledges_nothing() {
     );
 }
 
-/// **A consumer group on a Raft shard is refused by name**, on the leader
-/// and on a follower. A group's state is not in the Raft log yet, so serving
-/// one would hand out records from state a failover loses.
+/// **Until the fleet finalizes `raft_consumer_groups`, a group on a Raft
+/// shard is refused by name**, on the leader and on a follower. The refusal
+/// names the fleet feature so an operator knows what to finalize.
 #[tokio::test]
 #[serial]
-async fn a_consumer_group_on_a_raft_shard_is_refused() {
+async fn a_consumer_group_on_a_raft_shard_is_refused_until_the_fleet_finalizes_it() {
     if !opted_in() {
         return;
     }
@@ -692,23 +692,73 @@ async fn a_consumer_group_on_a_raft_shard_is_refused() {
     let leader = leader_among(&cluster, &nodes).await;
     publish_acked(&cluster, &leader, b"work").await;
 
-    let err = cluster
-        .group_poll_via(&leader, STREAM, 0, "workers", 10)
-        .await
-        .expect_err("the leader served a group on a Raft shard");
-    assert!(
-        format!("{err:#}").contains("a stream on Raft does not take"),
-        "the leader's refusal does not name the reason: {err:#}"
-    );
-    for node in nodes.iter().filter(|node| **node != leader) {
+    for node in &nodes {
+        let err = cluster
+            .group_poll_via(node, STREAM, 0, "workers", 10)
+            .await
+            .expect_err("a group was served before the fleet finalized the feature");
         assert!(
-            cluster
-                .group_poll_via(node, STREAM, 0, "workers", 10)
-                .await
-                .is_err(),
-            "{node} served a group on a Raft shard it does not lead"
+            format!("{err:#}").contains("raft_consumer_groups"),
+            "{node}'s refusal does not name the fleet feature: {err:#}"
         );
     }
+}
+
+/// **A consumer group on a Raft shard works once the fleet finalizes
+/// `raft_consumer_groups`.** Records are claimed through the leader and
+/// through a follower, an acknowledged record is not handed out again, and
+/// the group state survives being read through another broker.
+#[tokio::test]
+#[serial]
+async fn a_consumer_group_on_a_raft_shard_serves_once_the_fleet_finalizes_it() {
+    if !opted_in() {
+        return;
+    }
+    let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(&["raft_consumer_groups"], Duration::from_secs(30))
+        .await
+        .expect("finalize the group feature");
+    let nodes = cluster.node_ids();
+    let leader = leader_among(&cluster, &nodes).await;
+    for payload in [b"one".as_slice(), b"two", b"three"] {
+        publish_acked(&cluster, &leader, payload).await;
+    }
+
+    let first = cluster
+        .group_poll_records_via(&leader, STREAM, 0, "workers", 1)
+        .await
+        .expect("the leader serves the group");
+    assert_eq!(first.len(), 1, "one record asked for: {first:?}");
+    cluster
+        .group_ack_via(&leader, STREAM, 0, "workers", first[0].offset)
+        .await
+        .expect("ack through the leader");
+
+    let follower = nodes
+        .iter()
+        .find(|node| **node != leader)
+        .expect("a follower");
+    let rest = cluster
+        .group_poll_records_via(follower, STREAM, 0, "workers", 10)
+        .await
+        .expect("a follower serves the group");
+    assert!(
+        rest.iter().all(|record| record.offset != first[0].offset),
+        "an acknowledged record was handed out again: {rest:?}"
+    );
+    assert_eq!(rest.len(), 2, "the other two records: {rest:?}");
+    for record in &rest {
+        cluster
+            .group_ack_via(follower, STREAM, 0, "workers", record.offset)
+            .await
+            .expect("ack through the follower");
+    }
+    let drained = cluster
+        .group_poll_records_via(&leader, STREAM, 0, "workers", 10)
+        .await
+        .expect("poll after everything is acknowledged");
+    assert!(drained.is_empty(), "records left after acks: {drained:?}");
 }
 
 /// **An idempotent producer keeps its sequence when its Raft leader dies.**
