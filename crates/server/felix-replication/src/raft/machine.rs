@@ -141,18 +141,21 @@ impl Machine {
         })
     }
 
-    fn publish(&self) {
-        let moved = self.published.send_if_modified(|published| {
+    /// Move the published commits to this member's. True if they changed.
+    fn publish(&self) -> bool {
+        self.published.send_if_modified(|published| {
             let moved = *published != self.commits;
             if moved {
                 published.clone_from(&self.commits);
             }
             moved
-        });
-        if moved {
-            self.applied
-                .advance(self.commits.applied().map(|applied| applied.index));
-        }
+        })
+    }
+
+    /// Wake the waiters up to what [`Self::publish`] showed.
+    fn wake(&self) {
+        self.applied
+            .advance(self.commits.applied().map(|applied| applied.index));
     }
 }
 
@@ -188,6 +191,21 @@ impl SnapshotData {
 /// seconds of work that would otherwise hold a runtime thread.
 pub(crate) async fn restore(data: Bytes, applied: bool) -> io::Result<CacheState> {
     cpu(move || CacheState::restore(&data, applied)).await?
+}
+
+/// The longest apply run each state machine has seen, by its `hold`.
+#[cfg(test)]
+static LONGEST_RUN: LazyLock<parking_lot::Mutex<std::collections::HashMap<usize, u64>>> =
+    LazyLock::new(Default::default);
+
+/// The most entries one `apply` of the machine holding `hold` has taken.
+#[cfg(test)]
+pub(crate) fn longest_run(hold: &Arc<tokio::sync::Mutex<()>>) -> u64 {
+    LONGEST_RUN
+        .lock()
+        .get(&(Arc::as_ptr(hold) as usize))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// How many snapshot encodes and parses run at once, across every group.
@@ -470,6 +488,8 @@ impl RaftStateMachine<ShardTypes> for Machine {
         let _held = Arc::clone(&self.hold).lock_owned().await;
         let mut applied = Ok(());
         let mut written = 0;
+        #[cfg(test)]
+        let mut entries_seen = 0u64;
         let bound = self.commits.read_bound();
         // Counted here, entry by entry, so each record's count rides to its
         // publisher however long the run.
@@ -542,6 +562,13 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 self.quiet.end = index + 1;
             }
             self.state.last_applied = Some(entry.log_id);
+            #[cfg(test)]
+            {
+                entries_seen += 1;
+                let mut longest = LONGEST_RUN.lock();
+                let seen = longest.entry(Arc::as_ptr(&self.hold) as usize).or_default();
+                *seen = (*seen).max(entries_seen);
+            }
             if let Some(responder) = responder {
                 responder.send(Applied);
             }
@@ -549,7 +576,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
         let skips = self.skips.clone();
-        skips.applied(bound, &skipped, || self.publish());
+        if skips.applied(bound, &skipped, || self.publish()) {
+            self.wake();
+        }
         // After the publish, so the run's waiters are not held by it.
         self.fold_back(written);
         applied
@@ -631,7 +660,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
         let resumed = Commits::resumed(meta.last_log_id.as_ref().map(point));
         if resumed.read_bound() > self.commits.read_bound() {
             self.commits = resumed;
-            self.publish();
+            if self.publish() {
+                self.wake();
+            }
         }
         Ok(())
     }

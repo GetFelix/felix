@@ -696,7 +696,7 @@ pub(super) async fn settled(
     written: impl Future<Output = Result<Written, Unacknowledged>>,
 ) -> Result<ProposalCommitted, ProposalFailed<CommitError>> {
     let Proposed {
-        skips: _claim,
+        skips,
         shard,
         term,
         count,
@@ -761,7 +761,7 @@ pub(super) async fn settled(
     // Everything below the batch is applied, and the claim, taken before
     // the proposal, kept its count.
     let first = written.end.saturating_sub(count);
-    let skipped_before = engine.skipped_before(&shard, first);
+    let skipped_before = skips.map_or(0, |claim| claim.skipped_before(first));
     Ok(ProposalCommitted {
         end: written.end,
         skipped_before,

@@ -1588,6 +1588,11 @@ async fn records_between_group_entries_in_one_apply_run_count_no_drop() {
     }
     drop(held);
 
+    // The claim only matters if the run outgrows what a bounded history
+    // keeps; a run cut short by openraft would pass without the fix.
+    eventually(|| (super::super::machine::longest_run(&member.apply_hold) > 128).then_some(()))
+        .await;
+
     let mut previous: Option<u64> = None;
     for expected in &offsets {
         let envelope = next(&mut receiver).await;

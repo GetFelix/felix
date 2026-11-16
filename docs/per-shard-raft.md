@@ -2638,7 +2638,9 @@ way a held `Quorum` batch is released on the hybrid.
   state machine remembers each run of them, and a batch right after one
   tells its subscribers how many offsets it skipped (`skipped_before`), so
   the jump is not read as a drop. This is the rule `FelixRaft.tla` checks;
-  its twin `FelixRaftSkipsNotCounted` must fail.
+  its twin `FelixRaftSkipsNotCounted` must fail. The run is counted in
+  memory, so after a restart or a snapshot install the first record above
+  the cut is told too few, by the blank entries just under the cut.
 - Every reader of the stream is bounded by `read_bound`, at every
   consistency level (`StreamHandle::bound_every_level`, answered by
   `RaftReads`). On a follower that bound is what the follower has applied,

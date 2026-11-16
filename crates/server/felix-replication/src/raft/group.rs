@@ -1411,11 +1411,6 @@ impl Group {
         self.skips.claim(&self.commits)
     }
 
-    /// See [`Skips::skipped_before`].
-    pub(crate) fn skipped_before(&self, first: u64) -> u64 {
-        self.skips.skipped_before(first)
-    }
-
     /// One past the last offset this member knows committed. It moves when
     /// the state machine applies an entry, so it never passes the commit
     /// index, on a leader or a follower.
