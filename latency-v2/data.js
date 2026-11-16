@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794820233125,
+  "lastUpdate": 1794821072281,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75834,6 +75834,72 @@ window.BENCHMARK_DATA = {
             "range": "401.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 587.00\nmean: 742.60\nstdev: 401.21\ncv: 54.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cfe079215021b600eceaedd1e10b3304fb9bac13",
+          "message": "feat(raft): consumer group reader for Raft stream shards (#2446, PR 4a) (#2678)\n\n* feat(raft): consumer group reader for Raft stream shards (#2446, PR 4a)\n\nRaftGroups serves a stream shard's consumer groups from the Raft group\ntable, behind a GroupConsensus trait the broker service implements in\nthe next change: a read-index wait, propose, and an apply wait.\n\nImplements the leader side of FelixRaftGroups.tla (HandOut, Ack,\nDeadLetter, Redrive, Seek, Propose) without changing the spec.\n\n* fix(raft): group reader review round (#2446, PR 4a)\n\n- Hydrate an absent group with moved_to(0): a late ack from a deleted\n  incarnation is refused instead of skipping the record.\n- GroupConsensus::propose takes the term the decision was read in and is\n  refused outside it.\n- Keep the tracker when an applied() wait gives up; a redrive marks the\n  record owed before its write so the kept tracker stays right.\n- Seek takes the creation token back from the table.\n- Evict slots on delete, on a newer term, on step_down, and when idle.\n- A poll whose creation lost to another group's delete hydrates once more.\n- Fake consensus: term changes, lagging read index, truncation, fold term.\n\n* fix(broker): keep a discard's tracker on a failed write, settle dead letters above the cursor on hydrate\n\nA discard decides nothing from the tracker, so a failed write no longer\nthrows it away. A hydrated tracker treats the table's dead letters above\nthe cursor as settled, so a leader change between a dead letter and the\nadvance over it does not deliver it again. The propose contract now says\nan error means nothing was appended in the term, or the member stopped\nleading it.",
+          "timestamp": "2026-11-16T01:17:10-08:00",
+          "tree_id": "487fda473fe00d48bdcb3afac08ee14285277c85",
+          "url": "https://github.com/GetFelix/felix/commit/cfe079215021b600eceaedd1e10b3304fb9bac13"
+        },
+        "date": 1794821059621,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "16.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 164.20\nstdev: 16.93\ncv: 10.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 224,
+            "range": "271.22",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 224.00\nmean: 365.80\nstdev: 271.22\ncv: 74.14%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 509,
+            "range": "473.47",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 509.00\nmean: 675.40\nstdev: 473.47\ncv: 70.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 203,
+            "range": "11.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 208.00\nstdev: 11.75\ncv: 5.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 399,
+            "range": "390.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 399.00\nmean: 583.00\nstdev: 390.08\ncv: 66.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1030,
+            "range": "1150.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1030.00\nmean: 1669.40\nstdev: 1150.73\ncv: 68.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
