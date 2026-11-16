@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, bail};
 
-use felix_loadgen::{Common, IngestOptions, Scenario, SubscribeOptions};
+use felix_loadgen::{Common, IngestOptions, ResumeOptions, Scenario, SubscribeOptions};
 
 /// What the command line asked for.
 pub(crate) struct Args {
@@ -21,7 +21,7 @@ pub(crate) fn usage() -> ! {
   --token <jwt>               Felix token, or --token-file <path>
   --namespace <ns>            default: default
   --scenario <name>           pubsub | cache | counter | watch | queue | retained |
-                              ingest | subscribe | failover |
+                              ingest | subscribe | resume | failover |
                               mqtt-publish (required)
   --stream <name>             stream for pubsub, queue, ingest, subscribe (default: perf)
   --keys <n>                  ingest: spread batches over n routing keys (default 0,
@@ -42,10 +42,19 @@ pub(crate) fn usage() -> ! {
   --mqtt-topic-prefix <p>     mqtt-publish: the mounted prefix (default: bench/);
                               --in-flight sets the window, --concurrency the
                               connections
+  --direct                    subscribe: connect each subscriber to one of --brokers
+                              (round robin) and read shard 0 there, instead of following
+                              the shard to its leader. A NotLeader answer is followed one
+                              hop and counted as `redirected`. The stream must have one shard
+  --resume-span <n>           resume: records read after each resume (default 100)
+  --resume-history <n>        resume: wait for n records, then resume at offsets in
+                              [0, n - span] (default 20 x --resume-span)
   --duration-secs <n>         ingest: publish for n seconds instead of --total records;
-                              subscribe: how long to count deliveries (required)
+                              subscribe, resume: how long to count (required)
   --start-at <unix-secs>      ingest, subscribe: connect, then start at this wall-clock
                               time (fractional seconds), so generators overlap
+  --rate <n>                  ingest: publish n records/s in total across publishers
+                              (default: as fast as acks allow)
   --stamp-send-time           ingest: put the wall-clock send time in each payload's first
                               8 bytes; subscribe: report delivery latency from it (needs
                               the machines' clocks in sync)
@@ -96,6 +105,9 @@ pub(crate) fn parse_args() -> Result<Args> {
     let mut environment = "unknown".to_string();
     let mut slow_subscribers = 0usize;
     let mut slow_delay_ms = 0u64;
+    let mut direct = false;
+    let mut resume_span = 100usize;
+    let mut resume_history: Option<u64> = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
@@ -176,6 +188,18 @@ pub(crate) fn parse_args() -> Result<Args> {
                     .collect()
             }
             "--mqtt-topic-prefix" => mqtt_prefix = value("--mqtt-topic-prefix")?,
+            "--direct" => direct = true,
+            "--resume-history" => {
+                resume_history = Some(
+                    value("--resume-history")?
+                        .parse()
+                        .context("--resume-history")?,
+                )
+            }
+            "--resume-span" => {
+                resume_span = value("--resume-span")?.parse().context("--resume-span")?
+            }
+            "--rate" => ingest.rate = Some(value("--rate")?.parse().context("--rate")?),
             "--stamp-send-time" => ingest.stamp_send_time = true,
             "--cluster" => ingest.cluster = true,
             "--concurrency" => {
@@ -214,6 +238,16 @@ pub(crate) fn parse_args() -> Result<Args> {
                 duration: ingest.duration.context("subscribe needs --duration-secs")?,
                 start_at: ingest.start_at,
                 stamp_send_time: ingest.stamp_send_time,
+                direct,
+            },
+        },
+        "resume" => Scenario::Resume {
+            stream,
+            options: ResumeOptions {
+                duration: ingest.duration.context("resume needs --duration-secs")?,
+                start_at: ingest.start_at,
+                span: resume_span,
+                history: resume_history.unwrap_or(resume_span as u64 * 20),
             },
         },
         "failover" => Scenario::Failover {
@@ -235,7 +269,7 @@ pub(crate) fn parse_args() -> Result<Args> {
             options: ingest,
         },
         other => bail!(
-            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest | subscribe | failover | mqtt-publish)"
+            "unknown scenario {other:?} (pubsub | cache | counter | watch | queue | retained | ingest | subscribe | resume | failover | mqtt-publish)"
         ),
     };
 

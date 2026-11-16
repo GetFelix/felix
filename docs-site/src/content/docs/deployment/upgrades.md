@@ -589,6 +589,20 @@ entry. A single broker allows Raft trims from the start.
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_follower_read`
+
+Once finalized, a follower of a stream shard on Raft serves a resume from an
+offset or from `earliest`, a cursor subscribe, or a history page itself, after
+it has asked the leader for a read index and applied it. That keeps it from
+serving records below a head trim the leader already answered. The read index
+is a Raft message a broker built before it does not know. Until then a
+follower answers such a subscribe with a redirect to the shard's leader, or
+with a retryable `shard_unavailable` (`not_ready`) when it knows none. Tail
+subscribes are served by followers either way. A single broker has it from the
+start.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_headers`
 
 Once finalized, a durable stream in a cluster accepts record keys and headers
@@ -662,6 +676,19 @@ kind that a broker built before it refuses, and replication to that broker
 would stop at the entry. Claims are held by the shard's leader only, so after
 a leader change the next leader hands out what was in flight again at once
 (at least once delivery).
+
+- **A new cluster** starts with it finalized.
+
+#### `raft_stream_purge`
+
+Once finalized, a stream shard that runs on Raft frees the disk below its head
+trim: each member writes a stream snapshot at a point below its floor and
+deletes its log up to it, and a member that fell behind the purge catches up by
+installing that snapshot. It needs `head_trim` and `raft_head_trim`. A build
+older than this release refuses every stream snapshot, so a purge would leave
+it stuck behind its leader; that is why it waits for the whole fleet. Until
+then a Raft shard keeps its whole log. A single broker allows it from the
+start.
 
 - **A new cluster** starts with it finalized.
 

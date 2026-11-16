@@ -36,7 +36,7 @@ pub use publish::{
 };
 pub use read::ReadPage;
 pub use shard_logs::LogKind;
-pub use shards::{EngineLogs, StreamHandle};
+pub use shards::{EngineLogs, FollowerReads, StreamHandle};
 pub use subscribe::{Cursor, HistoryRange, JoinOffsets, ResumedSubscription, RingRecord};
 pub use trim::{ProposedTrim, TrimFailed, TrimOutcome, TrimStep};
 
@@ -171,6 +171,12 @@ pub struct Broker {
     /// Closes the logs an engine opened itself, before their stream's
     /// directories are closed or deleted.
     engine_logs: std::sync::OnceLock<Arc<dyn EngineLogs>>,
+    /// Asked before a read on an engine's log that could start below a
+    /// head trim's floor.
+    follower_reads: std::sync::OnceLock<Arc<dyn FollowerReads>>,
+    /// Whether a follower of a shard on Raft serves reads that could start
+    /// below a floor, once the node says. Unset sends them to the leader.
+    raft_follower_reads: std::sync::OnceLock<NodeGate>,
     /// How long a head trim waits on the mark or the ring.
     pub(crate) trim_wait: std::time::Duration,
     /// Whether head trims are allowed, once the node says. Unset refuses
@@ -266,6 +272,8 @@ impl Broker {
             read_bounds: Arc::default(),
             engine_streams: std::sync::atomic::AtomicBool::new(false),
             engine_logs: std::sync::OnceLock::new(),
+            follower_reads: std::sync::OnceLock::new(),
+            raft_follower_reads: std::sync::OnceLock::new(),
             head_trims: std::sync::OnceLock::new(),
             raft_head_trims: std::sync::OnceLock::new(),
             raft_record_headers: std::sync::OnceLock::new(),
@@ -489,6 +497,31 @@ impl Broker {
     /// call counts.
     pub fn set_engine_logs(&self, logs: Arc<dyn EngineLogs>) {
         let _ = self.engine_logs.set(logs);
+    }
+
+    /// Ask `reads` before a read on an engine's log that could start below
+    /// a head trim's floor. Only the first call counts.
+    pub fn set_follower_reads(&self, reads: Arc<dyn FollowerReads>) {
+        let _ = self.follower_reads.set(reads);
+    }
+
+    /// Let a follower of a shard on Raft serve reads that could start below
+    /// a floor whenever `gate` says so. Only the first call counts.
+    ///
+    /// Such a read first asks the leader for a read index, a message a
+    /// member that predates it does not know. Until the node says it runs
+    /// alone or the fleet has finalized `raft_follower_read`, the read is
+    /// sent to the leader instead.
+    pub fn allow_raft_follower_reads_when(&self, gate: impl Fn() -> bool + Send + Sync + 'static) {
+        let _ = self.raft_follower_reads.set(NodeGate(Arc::new(gate)));
+    }
+
+    /// Whether a follower of a shard on Raft may serve a read that could
+    /// start below a floor; see [`Self::allow_raft_follower_reads_when`].
+    pub fn raft_follower_reads_allowed(&self) -> bool {
+        self.raft_follower_reads
+            .get()
+            .is_some_and(|gate| (gate.0)())
     }
 
     pub(crate) async fn close_engine_logs(&self, key: &StreamKey, through: u64) {

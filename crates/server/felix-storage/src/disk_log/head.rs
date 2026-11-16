@@ -62,6 +62,9 @@ pub(super) struct Head {
     applied: usize,
     /// The first applied entry with the largest floor: the one that set it.
     setter: Option<usize>,
+    /// A floor kept without its trim record (`raft_log::floor`): a Raft
+    /// member that installed a stream snapshot skipped that record.
+    carried: Option<HeadEntry>,
 }
 
 impl Head {
@@ -71,6 +74,7 @@ impl Head {
             entries,
             applied: 0,
             setter: None,
+            carried: None,
         }
     }
 
@@ -79,9 +83,40 @@ impl Head {
         self.setter().map_or(0, |entry| entry.floor)
     }
 
-    /// The applied entry that set the floor.
+    /// The applied entry that set the floor, or the carried floor when it
+    /// is as high: a trim applied at or below the carried floor changes
+    /// neither the floor nor the headers a refused read gets.
     pub(super) fn setter(&self) -> Option<&HeadEntry> {
+        match (self.recorded(), &self.carried) {
+            (Some(recorded), Some(carried)) if carried.floor >= recorded.floor => Some(carried),
+            (None, Some(carried)) => Some(carried),
+            (recorded, _) => recorded,
+        }
+    }
+
+    /// The applied entry that set the floor among the records the log holds.
+    fn recorded(&self) -> Option<&HeadEntry> {
         self.setter.map(|index| &self.entries[index])
+    }
+
+    fn recorded_floor(&self) -> Offset {
+        self.recorded().map_or(0, |entry| entry.floor)
+    }
+
+    pub(super) fn carried(&self) -> Option<&HeadEntry> {
+        self.carried.as_ref()
+    }
+
+    /// Keep `carried` as a floor with no record behind it, if it is above
+    /// the carried floor held.
+    pub(super) fn carry(&mut self, carried: HeadEntry) {
+        if self
+            .carried
+            .as_ref()
+            .is_none_or(|held| held.floor < carried.floor)
+        {
+            self.carried = Some(carried);
+        }
     }
 
     pub(super) fn entries(&self) -> &[HeadEntry] {
@@ -125,7 +160,7 @@ impl Head {
             && entry.offset < bound
         {
             // Strictly above, so the setter is the first entry with the floor.
-            if entry.floor > self.floor() {
+            if entry.floor > self.recorded_floor() {
                 self.setter = Some(self.applied);
             }
             self.applied += 1;
@@ -154,7 +189,7 @@ impl Head {
     fn recompute(&mut self) {
         self.setter = None;
         for index in 0..self.applied {
-            if self.entries[index].floor > self.floor() {
+            if self.entries[index].floor > self.recorded_floor() {
                 self.setter = Some(index);
             }
         }
@@ -164,7 +199,7 @@ impl Head {
     /// never past the record that set it, so the floor can always be read
     /// back from the log. `None` when no trim applies.
     pub(super) fn delete_bound(&self) -> Option<Offset> {
-        self.setter().map(|entry| entry.floor.min(entry.offset))
+        self.recorded().map(|entry| entry.floor.min(entry.offset))
     }
 }
 

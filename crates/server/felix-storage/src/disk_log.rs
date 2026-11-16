@@ -57,6 +57,7 @@ pub(crate) mod dir_lock;
 pub(crate) mod durable_mark;
 #[cfg(feature = "raft")]
 pub(crate) use durable_mark::{forget_poisoned_dir, left_poisoned};
+pub(crate) mod carried_floor;
 mod epochs;
 mod flush;
 #[cfg(feature = "fuzzing")]
@@ -75,6 +76,7 @@ mod set;
 pub mod switch;
 mod sync;
 
+pub use carried_floor::CarriedFloor;
 pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
 pub use provider::DiskLogProvider;
 pub use segments::RetentionOutcome;
@@ -321,9 +323,55 @@ impl DiskLog {
         base.max(self.inner.head_floor())
     }
 
-    /// The trim record that set the head floor, if one applies.
+    /// The trim record that set the head floor, if one applies. On a Raft
+    /// log that installed a stream snapshot this may be a carried floor,
+    /// whose record the log does not hold.
     pub fn head_trim(&self) -> Option<HeadTrim> {
         self.inner.head_trim()
+    }
+
+    /// The floor in force as of entry `index`: the highest floor a trim at
+    /// or below `index` set, counting a carried one by its trim's offset.
+    pub fn floor_as_of(&self, index: Offset) -> Offset {
+        let head = self.inner.head.lock();
+        head.entries()
+            .iter()
+            .chain(head.carried())
+            .filter(|entry| entry.offset <= index)
+            .map(|entry| entry.floor)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The floor this Raft log keeps without its trim record, if it ever
+    /// installed one ([`Self::carry_floor`]).
+    pub fn carried_floor(&self) -> Option<CarriedFloor> {
+        self.inner.head.lock().carried().map(|entry| CarriedFloor {
+            offset: entry.offset,
+            floor: entry.floor,
+            headers: entry.headers.clone(),
+        })
+    }
+
+    /// Keep `carried` as this Raft log's floor even though the log does not
+    /// hold the trim record that set it, unless the floor already kept is
+    /// at least as high. Durable before it applies; the floor never goes
+    /// down. Answers the floor in force afterwards.
+    pub fn carry_floor(&self, carried: CarriedFloor) -> Result<HeadTrim> {
+        let kept = carried_floor::raise(&self.inner.dir, carried).map_err(StorageError::Io)?;
+        let mut head = self.inner.head.lock();
+        head.carry(head::HeadEntry {
+            offset: kept.offset,
+            floor: kept.floor,
+            headers: kept.headers,
+        });
+        self.inner.apply_head(&mut head);
+        let setter = head.setter().expect("a floor was just carried");
+        Ok(HeadTrim {
+            offset: setter.offset,
+            floor: setter.floor,
+            headers: setter.headers.clone(),
+        })
     }
 
     /// The highest floor among trim records the apply bound has not passed
@@ -1377,7 +1425,16 @@ impl DiskLog {
             .active_marks
             .iter()
             .any(|(_, mark, _)| mark.is_trim());
-        let (head, read_sealed) = head::rebuild(&epochs_dir, &segments, active_has_trims)?;
+        let (mut head, read_sealed) = head::rebuild(&epochs_dir, &segments, active_has_trims)?;
+        if config.raft_log
+            && let Some(carried) = carried_floor::load(&epochs_dir).map_err(StorageError::Io)?
+        {
+            head.carry(head::HeadEntry {
+                offset: carried.offset,
+                floor: carried.floor,
+                headers: carried.headers,
+            });
+        }
         if read_sealed {
             // So the next open need not read those segments again.
             let as_of = segments.active().base_offset();

@@ -115,6 +115,7 @@ module_of() {
     FelixRaftBatch*) echo FelixRaftBatch ;;
     FelixRaftGroups*) echo FelixRaftGroups ;;
     FelixRaftCond*) echo FelixRaftCond ;;
+    FelixRaftStreamPurge*) echo FelixRaftStreamPurge ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardUnified*) echo FelixShardUnified ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
@@ -276,7 +277,6 @@ expectations=(
   "FelixAtomicCommit pass"
   "FelixAtomicCommitSplitRecords violates NoPartialCommit"
   "FelixAtomicCommitPartialApply violates NoPartialCommit"
-  "FelixHeadTrim pass"
   "FelixHeadTrimCrash pass"
   "FelixHeadTrimTwoPromotions pass"
   "FelixHeadTrimCrashTwoPromotions pass"
@@ -288,6 +288,9 @@ expectations=(
   "FelixHeadTrimHiddenTrims violates StaleTrimRefused"
   "FelixHeadTrimNoOpUnchecked violates StaleTrimRefused"
   "FelixHeadTrimRetention violates StaleTrimRefused"
+  "FelixHeadTrimFollowerNoReadIndex violates NoReadBelowAckedTrim"
+  "FelixHeadTrimLeaderNoReadIndex violates NoReadBelowAckedTrim"
+  "FelixHeadTrimTailNoReadIndex violates NoReadBelowAckedTrim"
   "FelixShardFencedAckTwoPromotionsStart pass"
   "FelixShardFencedAckStagedMoveDestination violates AckedHeldByLeader"
   "FelixShardFencedAckMoveShort pass"
@@ -608,6 +611,47 @@ expectations=(
   "FelixRaftGroupsDeadAfterAdvance violates NoSkip"
   "FelixRaftGroupsNoRefreshOnDrop violates TrackerHeard"
   "FelixRaftGroupsTwoChanges pass"
+  "FelixRaftStreamPurgeSmall pass"
+  "FelixRaftStreamPurgeLearnerSmall pass"
+  "FelixRaftStreamPurgeLearnerReformSmall pass"
+  "FelixRaftStreamPurgeNoCapSmall pass"
+  "FelixRaftStreamPurgeFourSmall pass"
+  "FelixRaftStreamPurgeFourReformSmall pass"
+  "FelixRaftStreamPurgeTwoReformsSmall pass"
+  "FelixRaftStreamPurgeNoCapSmallRefuse pass"
+  "FelixRaftStreamPurgePastFloor violates NoAckedLoss"
+  "FelixRaftStreamPurgeInstallAboveFloor violates NoAckedLoss"
+  "FelixRaftStreamPurgeSnapAtApplied violates CatchUpPossible"
+  "FelixRaftStreamPurgePastMatch violates CatchUpPossible"
+  "FelixRaftStreamPurgeTablesAtApplied violates TablesAgree"
+  "FelixRaftStreamPurgeFloorAtApplied violates TablesAgree"
+  "FelixRaftStreamPurgeNoHeaders violates HeadersAgree"
+  "FelixRaftStreamPurgeDropFirst violates AppliedCoversPurge"
+  "FelixRaftStreamPurgeReformEntries violates OffsetNeverReused"
+  "FelixRaftStreamPurgeReformNoFloor violates OffsetNeverReused"
+  "FelixRaftStreamPurgeReformNoFloorTwice violates OffsetNeverReused"
+  "FelixRaftStreamPurgeReformKeepsOwnFloor violates NoReadBelowFloor"
+  "FelixRaftStreamPurgeReformFloorNotStored violates NoReadBelowFloor"
+  "FelixRaftStreamPurgeReachInstall violates NeverServesAfterInstall"
+  "FelixRaftStreamPurgeReachPurge violates NeverPurgesARecord"
+  "FelixRaftStreamPurgeReachTrimPurge violates NeverPurgesATrim"
+  "FelixRaftStreamPurgeReachWriteAfterReform violates NeverWritesAfterReform"
+  "FelixRaftStreamPurgeReachPurgeAfterReform violates NeverPurgesAfterReform"
+  "FelixRaftStreamPurgeReachTrimPurgeFour violates NeverPurgesATrim"
+  "FelixRaftStreamPurgeReachWriteAfterReformFour violates NeverWritesAfterReform"
+  "FelixRaftStreamPurgeReachPurgeAfterReformFour violates NeverPurgesAfterReform"
+  "FelixRaftStreamPurgeReachWriteAfterReformTwo violates NeverWritesAfterReform"
+  "FelixRaftStreamPurgeReachPurgeAfterReformTwo violates NeverPurgesAfterReform"
+  "FelixRaftStreamPurgeReachWriteAndTrimBetweenReforms violates NeverWriteAndTrimBetweenReforms"
+  "FelixRaftStreamPurgeReachRaiseBetweenReforms violates NeverRaiseBetweenReforms"
+  "FelixRaftStreamPurgeReachTrimPurgeTwoReforms violates NeverPurgesATrimAfterTwoReforms"
+  "FelixRaftStreamPurgeReachInstallThenReform violates NeverInstallsThenReforms"
+  "FelixRaftStreamPurgeInstallLowersFloor violates OffsetNeverReused"
+  "FelixRaftStreamPurgeInstallRefusesLowerFloor violates CatchUpPossible"
+  "FelixRaftStreamPurgeInstallKeepsFloorSmall pass"
+  "FelixRaftStreamPurgeReachLowerFloorInstall violates NeverInstallsLowerFloor"
+  "FelixRaftStreamPurgeInstallLowersFloorSmall violates OffsetNeverReused"
+  "FelixRaftStreamPurgeReachRewrittenInstall violates NeverInstallsRewrittenSnap"
   "FelixRaftCond pass"
   "FelixRaftCondTwoTerms pass"
   "FelixRaftCondLeaderDecides violates CondKeptAtExpected"
@@ -1138,6 +1182,9 @@ fi
 # dispatch run gives its declared outcome.
 # FelixRaftPlacementPlacedTarget, Placed with one target change, is not
 # registered until a dispatch run passes it.
+# FelixHeadTrim is not registered: its dispatch (run 43870273108) passed 29 of
+# 30 shards and shard 0 hit the six hour limit at depth 34 with no violation
+# (1.75B states, 244M distinct).
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -1169,8 +1216,7 @@ weights=(
   "FelixGroupsSplitSources 17"
   "FelixShardFencedAck 28"
   "FelixGroups 24"
-  "FelixHeadTrim 17"
-  "FelixHeadTrimCrash 12"
+  "FelixHeadTrimCrash 240"
   "FelixHeadTrimTwoPromotions 2"
   "FelixHeadTrimCrashTwoPromotions 3"
   "FelixShardFigure8CutOver 19"
@@ -1377,6 +1423,18 @@ weights=(
   "FelixRaftReformTwoReformsTrailingFloor 9"
   "FelixRaftBatch 18"
   "FelixRaftBatchKeepsCut 18"
+  "FelixRaftStreamPurgeSmall 12"
+  "FelixRaftStreamPurgeNoCapSmall 12"
+  "FelixRaftStreamPurgeLearnerSmall 6"
+  "FelixRaftStreamPurgeLearnerReformSmall 30"
+  "FelixRaftStreamPurgeFourSmall 3"
+  "FelixRaftStreamPurgeFourReformSmall 20"
+  "FelixRaftStreamPurgeTwoReformsSmall 5"
+  "FelixRaftStreamPurgeInstallLowersFloor 3"
+  "FelixRaftStreamPurgeInstallRefusesLowerFloor 2"
+  "FelixRaftStreamPurgeInstallKeepsFloorSmall 2"
+  "FelixRaftStreamPurgeReachRewrittenInstall 15"
+  "FelixRaftStreamPurgeNoCapSmallRefuse 12"
   "FelixRaftCond 300"
   "FelixRaftCondTwoTerms 40"
   "FelixRaftCondLeaderDecidesNoMembers 200"

@@ -90,6 +90,7 @@ pub mod segment;
 mod shard_slots;
 #[cfg(feature = "sim")]
 pub mod sim_fs;
+pub(crate) mod state_file;
 pub mod storage_identity;
 mod task;
 pub mod tiered;

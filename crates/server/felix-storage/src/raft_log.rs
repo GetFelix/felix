@@ -40,7 +40,7 @@ pub(crate) mod purged;
 mod reader;
 pub(crate) mod reserved;
 pub(crate) mod snapshot;
-pub(crate) mod state_file;
+pub(crate) use crate::state_file;
 mod tail_cache;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -48,6 +48,7 @@ pub mod transfer;
 mod writer;
 mod written;
 
+pub use crate::disk_log::CarriedFloor;
 pub use codec::EntryCodec;
 /// The leader id in a log id: for this log, the term. Named in the bounds
 /// of everything generic over [`LogTypes`].

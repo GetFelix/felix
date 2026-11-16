@@ -83,7 +83,9 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_RECORD_HEADERS,
     RECORD_GENERATIONS,
     RAFT_ATOMIC_COMMIT,
+    RAFT_STREAM_PURGE,
     RAFT_CONSUMER_GROUPS,
+    RAFT_FOLLOWER_READ,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -168,6 +170,13 @@ pub const HEAD_TRIM: FleetFeature = FleetFeature::new("head_trim");
 /// [`HEAD_TRIM`]. See `docs/per-shard-raft.md` ("Head trims").
 pub const RAFT_HEAD_TRIM: FleetFeature = FleetFeature::new("raft_head_trim");
 
+/// A follower of a stream shard on the Raft engine serves a read that could
+/// start below a head trim's floor once it has applied the leader's read
+/// index, asked with a Raft message a build that predates this does not
+/// know. Until the fleet finalizes it such a read goes to the leader. See
+/// `docs/per-shard-raft.md` ("Head trims").
+pub const RAFT_FOLLOWER_READ: FleetFeature = FleetFeature::new("raft_follower_read");
+
 /// A durable stream stores each record's headers and key, and replication and
 /// forwarding carry them. A record with them needs storage format v8, which an
 /// older build refuses to open, so a cluster accepts headers only once the
@@ -195,6 +204,15 @@ pub const RAFT_ATOMIC_COMMIT: FleetFeature = FleetFeature::new("raft_atomic_comm
 /// whole fleet. Until it is finalized a group operation on a Raft shard is
 /// refused. See `docs/per-shard-raft.md` ("Consumer groups").
 pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_groups");
+
+/// A stream shard on the Raft engine frees the disk below its head trim: a
+/// member writes a stream snapshot at a point below its floor and purges its
+/// log up to it, and a member behind the purge installs that snapshot. A
+/// build that predates this refuses every stream snapshot, so a purge would
+/// leave it stuck behind the leader. So it waits for the whole fleet, and
+/// for [`RAFT_HEAD_TRIM`]. See `docs/per-shard-raft.md` ("Purging below the
+/// floor").
+pub const RAFT_STREAM_PURGE: FleetFeature = FleetFeature::new("raft_stream_purge");
 
 /// A stream log starts its next segment in storage format v9, whose record
 /// headers carry a generation, and stamps each record with the generation it
@@ -348,6 +366,8 @@ pub fn prerequisites(feature: &str) -> &'static [FleetFeature] {
         &[GENERATION_START]
     } else if feature == RAFT_HEAD_TRIM.name() {
         &[HEAD_TRIM]
+    } else if feature == RAFT_STREAM_PURGE.name() {
+        &[HEAD_TRIM, RAFT_HEAD_TRIM]
     } else if feature == RAFT_RECORD_HEADERS.name() {
         &[RECORD_HEADERS]
     } else if feature == RAFT_ATOMIC_COMMIT.name() {

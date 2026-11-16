@@ -491,3 +491,36 @@ async fn a_started_copy_with_a_record_in_its_gap_refuses_the_plan() {
         "{refused:?}"
     );
 }
+
+/// #2602: a copy that never installed a floor still has one, from the trim
+/// records it holds. A re-form reads the highest at or below its saved
+/// commit, with that record's headers; a trim past the commit may never
+/// have committed and is not read, and a lower carried floor loses.
+#[tokio::test]
+async fn a_copy_reads_its_floor_from_the_trim_records_below_its_commit() {
+    use crate::disk_log::carried_floor::{self, CarriedFloor};
+    let dir = tempfile::tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let entries: Vec<_> = (0..10)
+        .map(|index| match index {
+            3 => normal(1, index, "trim:2"),
+            5 => normal(1, index, "trim:4"),
+            8 => normal(1, index, "trim:7"),
+            _ => normal(1, index, "r"),
+        })
+        .collect();
+    append_flushed(&mut raft, &entries).await;
+    raft.save_committed(Some(log_id(1, 6))).await.expect("save");
+    raft.disk_log().close().await.expect("close");
+    let lower = CarriedFloor {
+        offset: 1,
+        floor: 1,
+        headers: bytes::Bytes::from_static(b"lower"),
+    };
+    carried_floor::raise(dir.path(), lower).expect("carried");
+
+    let read = read_copy(dir.path(), SPACING, &BTreeSet::new()).expect("read");
+    let floor = read.floor.expect("a floor from the trim records");
+    assert_eq!((floor.offset, floor.floor), (5, 4));
+    assert_eq!(floor.headers, bytes::Bytes::from_static(b"trim:4"));
+}

@@ -265,7 +265,10 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "raft_head_trim"
         | "raft_record_headers"
         | "raft_atomic_commit"
+        | "raft_stream_purge"
         | "raft_consumer_groups"
+        // Off, a follower sends such reads to the leader.
+        | "raft_follower_read"
         | "atomic_commit"
         | "publisher_principal"
         | "group_cursor_dependencies"
@@ -296,4 +299,14 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
     for feature in prerequisites(REPLICA_ELECTION.name()) {
         assert!(matches!(class(*feature), Off::ElectionPrerequisite));
     }
+}
+
+/// Purging a Raft stream shard waits for head trims on both engines.
+#[test]
+fn raft_stream_purge_needs_head_trims() {
+    assert_eq!(
+        prerequisites(RAFT_STREAM_PURGE.name()),
+        [HEAD_TRIM, RAFT_HEAD_TRIM]
+    );
+    assert!(IMPLEMENTED.contains(&RAFT_STREAM_PURGE));
 }

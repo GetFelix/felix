@@ -8,13 +8,14 @@ use std::io;
 use std::path::Path;
 
 use super::purged;
+use crate::disk_log::carried_floor::CarriedFloor;
 use crate::disk_log::durable_mark;
-use crate::log::Offset;
-use crate::segment::SegmentReader;
+use crate::log::{Offset, RecordMark};
 use crate::segment::parse_segment_file_name;
 use crate::segment::scan::{
     ScanOutcome, ScanStart, TailRepair, record_generation_at, scan_segment_with,
 };
+use crate::segment::{ReadBudget, SegmentReader, TrimRecords};
 
 /// The records a directory holds, whether or not Raft still reads them as
 /// entries: a purge drops whole segments, so the segment that holds the purged
@@ -97,6 +98,52 @@ pub(crate) fn generation_at(
             .map_err(io::Error::other);
     }
     Ok(None)
+}
+
+/// The highest floor set by a trim record in `dir` at or below `through`,
+/// with that record's headers: the floor an open applies below its commit.
+/// Read the way [`read`] reads. Nothing is written.
+pub(crate) fn trim_floor(
+    dir: &Path,
+    label: &str,
+    index_spacing_bytes: u64,
+    through: Offset,
+) -> io::Result<Option<CarriedFloor>> {
+    let segments = Segments::list(dir, label, index_spacing_bytes)?;
+    let mut highest: Option<CarriedFloor> = None;
+    for (id, path) in &segments.files {
+        let scanned = segments.scan(*id, path)?;
+        let base = scanned.header.base_offset;
+        if base > through {
+            break;
+        }
+        let reader = SegmentReader::open(path, *id, base).map_err(io::Error::other)?;
+        let mut budget = ReadBudget::unbounded().with_trims(TrimRecords::Only);
+        let mut trims = Vec::new();
+        reader
+            .read_from(
+                &scanned.index,
+                base,
+                scanned.valid_bytes,
+                &mut budget,
+                label,
+                &mut trims,
+            )
+            .map_err(io::Error::other)?;
+        for record in trims {
+            if let RecordMark::Trim { floor } = record.mark
+                && record.offset <= through
+                && highest.as_ref().is_none_or(|held| floor > held.floor)
+            {
+                highest = Some(CarriedFloor {
+                    offset: record.offset,
+                    floor,
+                    headers: record.payload,
+                });
+            }
+        }
+    }
+    Ok(highest)
 }
 
 /// A directory's segment files, sorted, with what scanning one needs.

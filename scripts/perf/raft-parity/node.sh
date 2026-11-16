@@ -176,6 +176,28 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
       "$dir" "$limit" "$BIN/felix-loadgen" "$TENANT" "$@" 2>&1 | tee "$dir/loadgen.log"
     ;;
 
+  # loadgen-bg <dir> <name> <timeout-secs> <args...>: the same loadgen, detached, for
+  # a publisher that runs beside a measuring one. Output in <dir>/<name>.log.
+  loadgen-bg)
+    dir=$1 name=$2 limit=$3; shift 3; in_run "$dir"
+    start "$dir" "$name" timeout -k 10 "$limit" "$BIN/felix-loadgen" --tenant "$TENANT" \
+      --token-file "$dir/tokens/client.jwt" "$@"
+    ;;
+
+  # wait-json <dir> <name> <timeout-secs>: wait for a loadgen-bg run to print its
+  # LOADGEN_JSON and exit, so no publisher outlives its cell. Fails on timeout.
+  wait-json)
+    dir=$1 name=$2 limit=$3; in_run "$dir"
+    for _ in $(seq 1 "$limit"); do
+      if ! kill -0 "$(cat "$dir/$name.pid")" 2>/dev/null; then
+        grep -q '^LOADGEN_JSON ' "$dir/$name.log" && exit 0
+        die "$name exited without LOADGEN_JSON"
+      fi
+      sleep 1
+    done
+    die "$name still running after $limit s"
+    ;;
+
   # stop <dir>: TERM then KILL the processes this script started under <dir>.
   stop)
     dir=$1; in_run "$dir"
@@ -216,13 +238,19 @@ print("under=%d shards=%d leaders=%s" % (d.get("under_replicated", 0), len(items
       "disk=\"$(df -h --output=source,size /mnt/build | tail -1 | xargs)\""
     ;;
 
-  # kafka-install: Kafka's own producer perf tool, once per box.
+  # kafka-install: Kafka's own perf tools, once per box. The tarball is cached outside $R
+  # (archive.apache.org serves ~200 KB/s); run.sh relays it to boxes that lack it.
   kafka-install)
     command -v java >/dev/null || die "java is not installed"
     [ -x "$R/kafka/bin/kafka-producer-perf-test.sh" ] && exit 0
+    tgz=/mnt/build/kafka-cache/kafka_2.13-$KAFKA_VER.tgz
+    if [ ! -s "$tgz" ]; then
+      mkdir -p "$(dirname "$tgz")"
+      curl -fsSL -o "$tgz.part" "https://archive.apache.org/dist/kafka/$KAFKA_VER/kafka_2.13-$KAFKA_VER.tgz"
+      mv "$tgz.part" "$tgz"
+    fi
     mkdir -p "$R/kafka-dl"; cd "$R/kafka-dl"
-    curl -fsSL -o kafka.tgz "https://archive.apache.org/dist/kafka/$KAFKA_VER/kafka_2.13-$KAFKA_VER.tgz"
-    tar xzf kafka.tgz; rm -rf "$R/kafka"; mv "kafka_2.13-$KAFKA_VER" "$R/kafka"; rm -rf "$R/kafka-dl"
+    tar xzf "$tgz"; rm -rf "$R/kafka"; mv "kafka_2.13-$KAFKA_VER" "$R/kafka"; rm -rf "$R/kafka-dl"
     ;;
 
   # kafka <dir> <timeout> <bootstrap> <topic> <records> <bytes>: produce with
@@ -245,6 +273,55 @@ print("LOADGEN_JSON " + json.dumps({"scenario": "kafka", "acked_records": int(n)
   "throughput_msg_s": float(rate), "throughput_mb_s": float(mb), "failed_sends": 0,
   "batch_ack_latency_us": {"p50": int(p50) * 1000, "p99": int(p99) * 1000,
                            "p999": int(p999) * 1000, "max": float(mx) * 1000}}))'
+    ;;
+
+  # kafka-tail <dir> <timeout> <bootstrap> <topic> <records> <bytes> <rate>: a consumer
+  # (kafka-console-consumer, no group) tails the topic while kafka-producer-perf-test publishes
+  # <rate> records/s into it. Same client settings on both engines. Prints one LOADGEN_JSON
+  # line with what the consumer fetched per second and what the producer achieved.
+  kafka-tail)
+    dir=$1 limit=$2 boot=$3 topic=$4 records=$5 bytes=$6 rate=$7; in_run "$dir"
+    start "$dir" kafka-tail-producer bash -c 'sleep 10; exec timeout -k 10 "$@"' _ "$limit" \
+      "$R/kafka/bin/kafka-producer-perf-test.sh" --topic "$topic" \
+      --num-records "$records" --record-size "$bytes" --throughput "$rate" --producer-props \
+      bootstrap.servers="$boot" acks=all batch.size=65536 linger.ms=5 compression.type=none \
+      max.in.flight.requests.per.connection=5
+    # The consumer assigns partition 0 and uses no group: Felix's Kafka layer refuses
+    # consumer groups, and kafka-consumer-perf-test always joins one. It prints each
+    # record, so the count and the clock are ours. Same settings on both engines.
+    t0=$(date +%s.%N)
+    timeout -k 10 "$limit" "$R/kafka/bin/kafka-console-consumer.sh" \
+      --bootstrap-server "$boot" --topic "$topic" --partition 0 --offset earliest \
+      --max-messages "$records" --timeout-ms 120000 \
+      --consumer-property enable.auto.commit=false > "$dir/kafka-tail-consumer.out" \
+      2> "$dir/kafka-tail-consumer.log" || true
+    t1=$(date +%s.%N)
+    consumed=$(wc -l < "$dir/kafka-tail-consumer.out" | tr -d ' ')
+    [ "$consumed" -gt 0 ] || die "kafka-console-consumer read nothing: $(tail -3 "$dir/kafka-tail-consumer.log")"
+    cons="$consumed $t0 $t1"
+    # The producer prints its summary last; give it a moment to finish after the consumer.
+    for _ in $(seq 1 60); do
+      grep -q 'records sent' "$dir/kafka-tail-producer.log" 2>/dev/null \
+        && grep 'records sent' "$dir/kafka-tail-producer.log" | tail -1 | grep -q 'ms 99.9th' && break
+      sleep 1
+    done
+    # The tool's own fetch rate runs from the consumer's start, so it carries the idle
+    # seconds before the producer begins. The gated rate divides what was consumed by the
+    # producer's own run time instead, and completeness (consumed == produced) is gated apart.
+    python3 -c '
+import json, re, sys
+cons, prod, target, size = sys.argv[1].split(), open(sys.argv[2]).read(), float(sys.argv[3]), int(sys.argv[4])
+consumed, elapsed = int(cons[0]), float(cons[2]) - float(cons[1])
+m = re.findall(r"(\d+) records sent, ([\d.]+) records/sec", prod)
+if not m:
+    sys.exit("producer did not finish")
+sent, rate = int(m[-1][0]), float(m[-1][1])
+window = sent / rate
+print("LOADGEN_JSON " + json.dumps({"scenario": "kafka-tail", "consumed_records": consumed,
+  "consumed_throughput_msg_s": consumed / window, "fetch_throughput_msg_s": consumed / elapsed,
+  "consumed_throughput_mb_s": consumed * size / elapsed / 1e6, "produced_records": sent, "window_s": window,
+  "publish_throughput_msg_s": rate, "publish_target_msg_s": target, "failed_sends": 0}))' \
+      "$cons" "$dir/kafka-tail-producer.log" "$rate" "$bytes"
     ;;
 
   wipe) in_run "$1"; rm -rf "$1" ;;
