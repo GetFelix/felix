@@ -27,6 +27,7 @@ mod change;
 mod commit;
 mod deliver;
 mod driver;
+mod groups;
 mod idempotent;
 mod identity;
 mod lease;

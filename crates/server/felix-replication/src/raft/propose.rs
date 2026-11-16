@@ -405,6 +405,30 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     queued(commands, Vec::new(), term, bytes, ack)
 }
 
+/// The same for one consumer-group write: one entry, its payload the
+/// encoded [`felix_broker::GroupEntry`], stored with the log's group mark.
+/// Acknowledged once written; its caller waits for the apply.
+pub(crate) fn split_group(
+    entry: Bytes,
+    timestamp_micros: u64,
+    term: u64,
+) -> Result<(Proposal, Waiting), CommitError> {
+    let bytes = entry.len();
+    let command = Command {
+        timestamp_micros,
+        payload: entry,
+        producer: None,
+        expected: None,
+        trim: None,
+        commit: false,
+        group: true,
+        publisher: None,
+        headers: None,
+        written: None,
+    };
+    queued(vec![command], Vec::new(), Some(term), bytes, AckAt::Written)
+}
+
 /// The same for a cache shard's writes. Each is one entry, and the batch
 /// is acknowledged once written: its caller waits for the commit.
 pub(crate) fn split_cache(writes: Vec<Unstamped>) -> Result<(Proposal, Waiting), CommitError> {

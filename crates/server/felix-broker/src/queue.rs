@@ -18,10 +18,12 @@ mod cursors;
 mod dead_letters;
 mod entry;
 mod reader;
+mod table;
 mod tracker;
 
 pub use cursors::ConsumerGroups;
 pub use dead_letters::DeadLetters;
 pub use entry::{CreatedBy, CreationToken, GroupEntry, GroupOp};
 pub use reader::{Claimed, GroupKey, GroupReader, GroupSnapshot, Seek};
+pub use table::{Folded, GroupState, GroupTable, ShardGroups};
 pub use tracker::GroupConsumer;
