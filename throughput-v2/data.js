@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794842922466,
+  "lastUpdate": 1794843855210,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60320,6 +60320,58 @@ window.BENCHMARK_DATA = {
             "range": "62739.60",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1176227.64\nmean: 1149698.25\nstdev: 62739.60\ncv: 5.46%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "02e8646c4bc23ef4b5410e0d0d016820b3a8594b",
+          "message": "ci(deps): bump azure/setup-helm (#2691)\n\nBumps the actions-minor-and-patch group with 1 update: [azure/setup-helm](https://github.com/azure/setup-helm).\n\n\nUpdates `azure/setup-helm` from 5.0.1 to 5.1.0\n- [Release notes](https://github.com/azure/setup-helm/releases)\n- [Changelog](https://github.com/Azure/setup-helm/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/azure/setup-helm/compare/9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310...2f5e7bc67f1f9972ab16657bb795f36d8f04de0e)\n\n---\nupdated-dependencies:\n- dependency-name: azure/setup-helm\n  dependency-version: 5.1.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: actions-minor-and-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-11-16T07:11:38-08:00",
+          "tree_id": "3ed7d5ed9ce8c20c731c54086a6e8f272a86d786",
+          "url": "https://github.com/GetFelix/felix/commit/02e8646c4bc23ef4b5410e0d0d016820b3a8594b"
+        },
+        "date": 1794843854534,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 500510.95,
+            "range": "33812.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500510.95\nmean: 506434.54\nstdev: 33812.16\ncv: 6.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 500510.95,
+            "range": "33812.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500510.95\nmean: 506434.54\nstdev: 33812.16\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120560.6,
+            "range": "1633.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120560.60\nmean: 120363.59\nstdev: 1633.57\ncv: 1.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1205605.97,
+            "range": "16335.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1205605.97\nmean: 1203635.88\nstdev: 16335.75\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
