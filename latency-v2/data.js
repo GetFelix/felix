@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794865556388,
+  "lastUpdate": 1794870699838,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -77154,6 +77154,72 @@ window.BENCHMARK_DATA = {
             "range": "587.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1033.00\nmean: 1060.80\nstdev: 587.81\ncv: 55.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b0638a8ab57497ac13faaf6ade7a02afe47318ce",
+          "message": "perf(kafka): pipeline a connection's produces (#2704) (#2705)\n\n* wip: Kafka produce pipelining (#2704), interrupted by a reboot; not reviewed or tested\n\n* perf(kafka): pipeline a connection's produces (#2704)\n\nA connection's reader claims each produce's place in order (offsets on\nthe hybrid, a proposal on a Raft group) and queues its commit wait; a\nwriter waits on up to 8 at once and writes answers in request order.\nOther requests run once every earlier answer is written. An idempotent\nproducer's family turn is held until its batch is on the local log, so\nthe epoch fence still sees it.\n\nSpec-Unaffected: Kafka produce claims and proposals are made in the same order as before, one connection at a time; only the commit waits overlap. Replication, lease, quorum mark, promotion and handoff are unchanged.\n\n* fix(kafka): run a claimed produce to durability on its own task (#2704)\n\nA claimed batch's completion and its fence permit lived in the future the\nconnection's writer polled, so a client that stopped reading held the\nlog's commit turn and the shard's fence, and a reset dropped the permit\nbefore the batch was durable. Each partition's commit waits now run on a\nspawned task that holds the permit until they finish.\n\nTests cover a client that never reads (hybrid idempotent and plain\nclaims), a reset mid-pipeline, and the Raft producer-turn re-acquire.\n\n* fix(kafka): finish a partition's claimed batches when the claim is dropped\n\nWhen the connection's writer failed, the reader's future was dropped, and\na produce mid-claim dropped its claimed batches and fence permit with it.\nOn Raft a proposal lost its permit while in flight, so a move could\novertake it; on the hybrid a claimed batch was on the log but never fanned\nout. A partition's claims and permit now live in a guard that, when dropped\nunfinished, runs them to durability on their own task, and a Raft batch\njoins it before the producer-turn wait.\n\n* fix(kafka): hold a producer's family turn until its newer epoch is written\n\nA dropped claim on a Raft shard released the family turn while the\nproposed batch was still unwritten, so an older epoch from another\nconnection could pass the fence check and commit behind it. The wait\nfor the producer's turn now runs on its own task, which keeps the\nfamily turn until the batch is written or given up.\n\n* perf(kafka): propose an idempotent request's records together on Raft (#2704)\n\nproduce_on_raft took the producer's turn and made one proposal per record,\nholding the turn until each record reached the leader's log, so one\nidempotent producer got one record per group round trip per partition.\n\nA request's records for a partition are now checked against the log and\nproposed in one call under one turn (Broker::propose_records_idempotent,\nRaftEngine::publish_records_idempotent). The records the log holds are\nanswered from it; the first it does not is checked as a one-record batch\nwas, and the rest follow it by sequence. Each record is still stored as a\none-record batch at its own sequence (Sequenced::per_record), so the\nentries, the apply path and the hybrid are unchanged. A produce cancelled\nwhile waiting for its turn has proposed nothing.\n\nSpec-Unaffected: entries and their producer marks are byte-for-byte the ones a proposal per record wrote, and FelixRaftBatch's place+append step under the producer turn is taken once per record as before; doing several consecutive one-record steps in one message under one turn only removes interleavings, and a cut keeps a prefix of whole one-record batches, which the model already covers.\n\n* fix(kafka): answer an empty idempotent batch on Raft without proposing",
+          "timestamp": "2026-11-16T23:06:05Z",
+          "tree_id": "195e810139bd84b80ed407e0d896027a0438ee35",
+          "url": "https://github.com/GetFelix/felix/commit/b0638a8ab57497ac13faaf6ade7a02afe47318ce"
+        },
+        "date": 1794870691952,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 60,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 60.00\nmean: 60.40\nstdev: 0.55\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 81,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 81.00\nmean: 81.20\nstdev: 0.84\ncv: 1.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 105,
+            "range": "286.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 105.00\nmean: 233.40\nstdev: 286.79\ncv: 122.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 78,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 78.00\nmean: 78.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 163,
+            "range": "3.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 163.80\nstdev: 3.63\ncv: 2.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 243,
+            "range": "39.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 266.20\nstdev: 39.58\ncv: 14.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
