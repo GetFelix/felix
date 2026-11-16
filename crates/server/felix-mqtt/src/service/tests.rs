@@ -43,7 +43,7 @@ struct FakeWrites {
     gate: tokio::sync::Semaphore,
     quota_hold: std::sync::Mutex<Duration>,
     producers: std::sync::atomic::AtomicU64,
-    max_batch_records: std::sync::atomic::AtomicUsize,
+    sequence_per_record: AtomicBool,
 }
 
 impl FakeWrites {
@@ -54,7 +54,7 @@ impl FakeWrites {
             gate: tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS),
             quota_hold: std::sync::Mutex::new(Duration::ZERO),
             producers: std::sync::atomic::AtomicU64::new(1),
-            max_batch_records: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            sequence_per_record: AtomicBool::new(false),
         })
     }
 
@@ -87,8 +87,8 @@ impl Writes for FakeWrites {
         *self.quota_hold.lock().unwrap()
     }
 
-    fn max_batch_records(&self) -> usize {
-        self.max_batch_records.load(Ordering::SeqCst)
+    fn sequence_per_record(&self) -> bool {
+        self.sequence_per_record.load(Ordering::SeqCst)
     }
 
     async fn write(&self, batch: WriteBatch) -> Result<(), WriteError> {

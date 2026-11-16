@@ -173,6 +173,7 @@ Felix publish makes. `InitProducerId` needs only an authenticated connection.
 | Idempotent batch ahead of the next sequence | `OUT_OF_ORDER_SEQUENCE_NUMBER` | Fatal for the idempotent producer |
 | Idempotent batch from a producer the partition's log does not know, not at sequence 0 | `UNKNOWN_PRODUCER_ID` | Takes a new producer id and carries on |
 | Idempotent re-send older than the offsets the log remembers | `DUPLICATE_SEQUENCE_NUMBER` | Counts the batch delivered, without an offset |
+| Idempotent batch from an epoch older than one this partition holds | `INVALID_PRODUCER_EPOCH` | Fails the batch; the producer has already moved to the later epoch |
 
 The authorization check runs before the existence check, so a principal that may
 not read a stream cannot learn whether it exists. A topic the principal may not
@@ -418,10 +419,44 @@ does for Felix producers applies unchanged
   more than 2^30 behind what the producer owes reads as ahead and is refused
   as a gap; Kafka refuses it as out of order too.
 
-The epoch is always 0. A producer that would bump its epoch (KIP-360) asks
-`InitProducerId` again and gets a new id instead, which restarts its sequences
-the same way a bump would. Batches carrying some other epoch are not checked
-against it.
+### Producer epochs
+
+`InitProducerId` answers with epoch 0. A Kafka producer is an id and an epoch,
+and the Java client (2.5 and later, KIP-360) bumps the epoch on its own after
+`UNKNOWN_PRODUCER_ID` or a timed-out batch: it keeps its id and starts its
+sequences again at 0. So the listener writes each record under a Felix producer
+id packed from both (`felix_producer` in `api/producer_id.rs`): bit 63 set, the
+Kafka id's low 47 bits, then the epoch's 16. `InitProducerId` hands out ids
+that fit in 47 bits; a larger one is folded into them.
+
+- **A later epoch is a new producer.** Its first batch is at sequence 0 and is
+  written even while the earlier epoch's records are in the log. Starting
+  anywhere else is `UNKNOWN_PRODUCER_ID`, as for any producer the log does not
+  know.
+- **An earlier epoch is fenced.** Once the partition's log holds records from a
+  later epoch of the same id (or a tombstone for one), a batch from an earlier
+  epoch is `INVALID_PRODUCER_EPOCH`, at every `Produce` version, as a Kafka
+  broker answers it. Nothing is written. `PRODUCER_FENCED` is for transactional
+  producers, which Felix refuses. The fence holds only while the log still
+  knows the later epoch: a producer evicted past the 4096-producer table
+  leaves no tombstone, so an earlier epoch's batches are no longer fenced.
+- **Same epoch, same rules.** Duplicates, gaps and expired re-sends are
+  answered as above.
+
+The check reads the shard's producer state, which every copy derives from the
+records' producer marks, so a promoted leader, a Raft leader change or a
+restart fences the same epochs. Batches of one id are checked and written one
+at a time across epochs, so an older epoch cannot slip in between the check
+and a newer epoch's write. The on-disk format is unchanged: the packed id is
+an ordinary producer id in the mark. A build from before this reads those marks
+as some other producer, so after a downgrade a Kafka producer's next batch is
+`UNKNOWN_PRODUCER_ID` and the client starts again under a new epoch.
+
+A producer the shard forgot (see "Producers that go quiet" in the features
+page) keeps a tombstone, as Felix producers do. A re-send at or below its last
+sequence is `DUPLICATE_SEQUENCE_NUMBER` and not written again. Because the
+epoch is part of the id, the tombstone of an old epoch never blocks the next
+epoch's sequence 0.
 
 The cost is a 20-byte producer tag on every record an idempotent Kafka producer
 writes, where a Felix producer pays it once per batch.
@@ -431,6 +466,10 @@ Tested in `crates/server/felix-broker/src/broker/publish/per_record/tests.rs`
 batch), end to end in `kafka_produce.rs` (above), and at the wrap in
 `crates/server/felix-kafka/src/api/tests/produce.rs`
 (`a_sequence_wraps_to_zero_after_i32_max`, `a_batch_spans_the_sequence_wrap`).
+Epochs are tested there too (`a_bumped_epoch_restarts_at_zero_and_is_written`,
+`an_older_epoch_is_fenced_after_a_bump`, `a_promoted_replica_keeps_the_epoch`),
+and on a Raft shard through a failover in `kafka_produce.rs`
+(`a_kafka_epoch_bump_on_a_raft_shard_survives_failover`).
 
 ## Transactions are refused
 

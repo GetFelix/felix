@@ -405,8 +405,13 @@ What it does not cover:
   producers, and a producer is also forgotten once retention has removed all of
   its records. A forgotten producer's next batch gets `UNKNOWN_PRODUCER_ID`,
   and the client takes a new id and carries on.
-- **Epochs.** The epoch is always 0. When a producer would bump its epoch, it
-  gets a new producer id instead, which comes to the same thing.
+- **Epochs.** `InitProducerId` answers with epoch 0. The Java client bumps the
+  epoch itself after an error it cannot place (KIP-360), keeps its id and
+  starts its sequences again at 0. Felix keys a producer by its id and epoch,
+  so that batch is written as a new producer's first. Once a later epoch has
+  written to a partition, a batch from an earlier one gets
+  `INVALID_PRODUCER_EPOCH` and is not written. A failover or restart keeps
+  this, since the epoch is stored with each record.
 
 Each record written by an idempotent producer carries its producer id and
 sequence in the log, which costs 20 bytes a record.
