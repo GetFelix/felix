@@ -1378,7 +1378,11 @@ re-form its log went through, where that epoch began. A copy without the
 file is at epoch 0. A re-form start writes it, and a rotation carries the
 newest one among the directory and its kept copies into the new copy
 before its copy file, so a copy keeps its epoch across a power cut or a
-restore and never votes without it.
+restore. Two copies can still lack it: a learner placed fresh into a group
+past epoch 0, and a directory restored from a backup older than the
+group's epoch. Their votes count as unknown, so a re-form that needs them
+is marked, and the control plane refuses the floor reports such a copy
+sends as leader until the file is written (#2690).
 
 ```text
  0   4  magic        u32  "FLEP"

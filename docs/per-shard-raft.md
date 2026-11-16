@@ -5528,7 +5528,8 @@ not move.
   or has no copy file marks the group unless a power-cut kept copy names
   that current copy as the one it rotated into: a wiped directory or an
   empty rotation leaves nothing kept, so an older power cut does not
-  count. The first index is also
+  count. A current copy that voted counts only if it reads as the group's
+  epoch, which a rotation carries into it before its copy file. The first index is also
   never below an earlier epoch's first index or any record a copy of the
   incarnation holds. A later epoch's gap counts as holding the floor's
   entry only on a copy with a record past the gap, so the start, not
