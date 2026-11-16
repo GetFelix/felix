@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794821080822,
+  "lastUpdate": 1794821388737,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59800,6 +59800,58 @@ window.BENCHMARK_DATA = {
             "range": "16178.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 785298.17\nmean: 789771.84\nstdev: 16178.12\ncv: 2.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14d7a50affe1e729d226709ea642e856686ab72a",
+          "message": "feat(raft): skip the written report for relaxed followers of a relaxed leader (#2612) (#2683)\n\n* feat(raft): skip the written report for relaxed followers of a relaxed leader (#2612)\n\nA leader on a written-commit log asks with Ask::WrittenIfStrict; a follower\non a written-commit log skips it (no marker sync, no Request::Written), since\nits append answer comes at the write and counts toward the commit. Followers\nthat fsync first still report, and a strict leader still asks everyone. The\nreport byte keeps 0/1 for older builds; 2 is sent only once the fleet\nfinalizes raft_written_commit.\n\nSpec-Unaffected: reports stay an optional action in FelixRaftWritten.tla; skipping one only removes early-ack evidence, and the relaxed follower's at-write answer is already the commit evidence WrittenCommits models.\n\n* test(raft): a relaxed leader waits for strict followers to write (#2612)",
+          "timestamp": "2026-11-16T01:17:46-08:00",
+          "tree_id": "947aac2859bf67e41148c7d406eef0c017e7ae49",
+          "url": "https://github.com/GetFelix/felix/commit/14d7a50affe1e729d226709ea642e856686ab72a"
+        },
+        "date": 1794821388061,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 736698.76,
+            "range": "28197.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 736698.76\nmean: 736481.49\nstdev: 28197.13\ncv: 3.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 736698.76,
+            "range": "28197.13",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 736698.76\nmean: 736481.49\nstdev: 28197.13\ncv: 3.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 160745.54,
+            "range": "2378.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 160745.54\nmean: 161611.51\nstdev: 2378.37\ncv: 1.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1607455.37,
+            "range": "23783.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1607455.37\nmean: 1616115.04\nstdev: 23783.70\ncv: 1.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
