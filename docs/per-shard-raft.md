@@ -2203,7 +2203,8 @@ and so does a follower's report of what it has written.
 > `an_advance_wakes_the_waiters_it_satisfies_not_the_whole_queue`.
 
 A `Leader` write is acknowledged on local durability if `admit_local_ack`
-passes: `now < last_quorum_acked + lease`. openraft 0.10 publishes
+passes: `now < last_quorum_acked + lease`, or the leader is the group's
+only voter (below). openraft 0.10 publishes
 `last_quorum_acked` as an instant; the older `millis_since_quorum_ack` is
 deprecated. The value only moves forward, so a stale read errs toward
 refusing. The lease must satisfy the inequality on the engine page
@@ -2230,10 +2231,28 @@ passes when all of these hold, read in this order:
 1. The broker was not suspended less than one lease ago (below).
 2. openraft's metrics say this member leads `term`.
 3. The newest message a majority answered was handed off less than one
-   lease ago. A leader that is the only voter is answered by nobody, so
-   past its first lease its `Leader` writes are answered as `Quorum` ones
-   are, which needs nobody else.
+   lease ago, or this member is the group's only voter: openraft's newest
+   membership, committed or not, is one voter set holding this member
+   alone. Learners do not count.
 4. The term is above the member's void (below).
+
+**A sole voter.** Nobody answers a group's only voter, so the third rule
+would never hold for it by the majority half, and every `Leader` write
+on a single-node shard would be answered as a `Quorum` one. It needs no
+answer. Every membership is written to the log by the leader, and
+openraft's effective membership is the newest one appended, so the rule
+stops holding the moment a membership with a second voter is appended,
+before it commits. Until then no majority can leave this member out:
+openraft writes a change from `{a}` as one entry only when every majority
+of the new set holds `a`, and otherwise writes a joint membership first,
+which already has more than one voter and needs `a` in both halves. A zero lease turns this off with the rest.
+`FelixRaftLease.tla` checks the single-server case with the fixed
+`Servers = {a}` (`FelixRaftLeaseRestoreSingle.cfg`); the change of
+membership is argued here and tested, not modelled.
+
+> `crates/server/felix-replication/src/raft/tests/change.rs`,
+> `a_sole_voter_loses_its_lease_when_it_appends_a_second_voter` and
+> `a_sole_voter_loses_its_lease_on_a_direct_change_to_two_voters`.
 
 `RaftEngine::await_ack(shard, written, timeout)` is the acknowledgement of
 a `Leader` write: it returns at once when the check passes, and otherwise
@@ -2287,8 +2306,8 @@ sequenceDiagram
 ```
 
 The lease is set with `FELIX_SHARD_RAFT_LEASE_MS` (1500 by default). `0`
-turns the local acknowledgement off: the check never passes and every
-`Leader` publish is answered as a `Quorum` one. A broker refuses to start with a
+turns the local acknowledgement off: the check never passes, a sole
+voter's included, and every `Leader` publish is answered as a `Quorum` one. A broker refuses to start with a
 lease the inequality above does not allow, which with the shipped
 election timeout and drift bound is anything over 1636 ms.
 
@@ -2297,7 +2316,8 @@ election timeout and drift bound is anything over 1636 ms.
 > `a_term_given_up_after_the_write_landed_is_not_answered_on_the_lease`,
 > `a_leader_publish_written_across_a_suspend_waits_for_its_commit`,
 > `a_leader_publish_outside_the_lease_waits_for_its_commit`,
-> `a_sole_voter_answers_a_leader_publish_once_written`,
+> `a_sole_voter_answers_a_leader_publish_on_its_lease`,
+> `a_sole_voter_with_no_lease_answers_a_leader_publish_once_written`,
 > `a_replaced_leader_answers_no_leader_publish`,
 > `a_batch_written_at_another_term_is_not_answered_on_the_lease` and
 > `a_publish_answered_on_the_lease_and_then_replaced_reaches_no_subscriber`;

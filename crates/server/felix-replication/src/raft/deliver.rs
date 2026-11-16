@@ -723,8 +723,6 @@ pub(super) async fn settled(
     // The lease is asked only now, with the batch on this log under the
     // term it names. A refusal answers the publisher where a `Quorum` one
     // would be: a `Leader` write never waits longer than a `Quorum` one.
-    // A sole voter is answered by nobody, so past its first lease this is
-    // how its `Leader` publishers are answered.
     let on_majority = match on_lease {
         Some((_, on_lease)) if engine.admit_local_ack(&shard, written.generation).is_ok() => {
             let _ = on_lease.send(written.end);
