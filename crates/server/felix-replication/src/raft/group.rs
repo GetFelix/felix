@@ -24,7 +24,7 @@ use bytes::Bytes;
 
 use super::cache::{Answer, CacheCommand};
 use super::codec::ShardCodec;
-use super::commit::{self, Commits};
+use super::commit::{self, Commits, SkipClaim, Skips};
 use super::install::{self, Incoming, Piece};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
@@ -79,6 +79,8 @@ pub(crate) struct Group {
     root: Option<MarkLog>,
     /// The brokers on which this group's member refused this one's calls.
     refusals: Arc<Refusals>,
+    /// One past the newest term a failed write already stepped down from.
+    stepped_down: AtomicU64,
     /// What the log holds written and flushed, as the adapter reports it.
     positions: tokio::sync::watch::Receiver<LogPositions>,
     /// Waits on `positions.written` and `positions.flushed`, woken only
@@ -89,6 +91,9 @@ pub(crate) struct Group {
     commits: tokio::sync::watch::Receiver<Commits>,
     /// Waits on the applied index, woken only once it reaches theirs.
     applied: Waiters<u64>,
+    /// What the records the state machine applied had below them that
+    /// holds no record.
+    skips: Skips,
     /// The member's log, and its first index read live: a purge held only in
     /// memory counts.
     copy: felix_storage::raft_copy::CurrentCopy,
@@ -642,6 +647,7 @@ impl Group {
             machine,
             commits,
             applied,
+            skips,
             cache,
             groups,
         } = Machine::open(snapshots, id.shard.kind, Some(log.disk_log())).await?;
@@ -712,11 +718,13 @@ impl Group {
             answered: Arc::default(),
             root,
             refusals,
+            stepped_down: AtomicU64::new(0),
             positions,
             written_waiters,
             flushed_waiters,
             commits,
             applied,
+            skips,
             copy,
             leadership,
             reached_before: AtomicBool::new(false),
@@ -1348,6 +1356,15 @@ impl Group {
             Some(_) => Err(propose::not_a_stream()),
             None => propose::split_group(entry, timestamp_micros, term),
         };
+        #[cfg(test)]
+        let split = match self
+            .gate
+            .unknown_groups
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            true => Err(propose::unknown()),
+            false => split,
+        };
         self.queue(split)
     }
 
@@ -1389,6 +1406,12 @@ impl Group {
     /// The commit table as the state machine publishes it.
     pub(crate) fn commits(&self) -> tokio::sync::watch::Receiver<Commits> {
         self.commits.clone()
+    }
+
+    /// Hold the skip counts of the records about to be proposed. See
+    /// [`Skips`].
+    pub(crate) fn claim_skips(&self) -> SkipClaim {
+        self.skips.claim(&self.commits)
     }
 
     /// One past the last offset this member knows committed. It moves when

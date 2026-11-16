@@ -653,6 +653,18 @@ broker allows them from the start.
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_consumer_groups`
+
+Once finalized, a stream shard that runs on Raft serves consumer groups. Until
+then a broker in a cluster refuses a group operation on a Raft shard with
+`invalid_request` and proposes nothing. A group write is an entry of its own
+kind that a broker built before it refuses, and replication to that broker
+would stop at the entry. Claims are held by the shard's leader only, so after
+a leader change the next leader hands out what was in flight again at once
+(at least once delivery).
+
+- **A new cluster** starts with it finalized.
+
 #### `record_generations`
 
 Groundwork for running each shard on Raft, which needs the term of every

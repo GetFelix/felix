@@ -358,10 +358,34 @@ impl<C: GroupConsensus> RaftGroups<C> {
 
     /// Give one record back, owed again at once. Leader memory only.
     pub async fn nack(&self, key: &GroupKey, offset: u64, deadline: Instant) -> Result<()> {
+        self.nack_after(key, offset, None, Duration::ZERO, Instant::now(), deadline)
+            .await
+    }
+
+    /// [`GroupReader::nack_after`](super::GroupReader::nack_after) on a Raft
+    /// shard. Claims are leader memory, so nothing is proposed.
+    pub async fn nack_after(
+        &self,
+        key: &GroupKey,
+        offset: u64,
+        attempts: Option<u32>,
+        delay: Duration,
+        now: Instant,
+        deadline: Instant,
+    ) -> Result<()> {
         let (_fresh, mut guard) = self.current(key, deadline).await?;
         let held = guard.as_mut().expect("current hydrates");
         check_handed_out(&held.tracker, offset)?;
-        held.tracker.nack(offset);
+        if let Some(attempts) = attempts
+            && !held.tracker.claim_stands(offset, attempts, now)
+        {
+            return Err(BrokerError::GroupClaimLapsed { offset });
+        }
+        if delay.is_zero() {
+            held.tracker.nack(offset);
+        } else {
+            held.tracker.nack_after(offset, now + delay);
+        }
         Ok(())
     }
 
@@ -822,8 +846,8 @@ impl<C: GroupConsensus> RaftGroups<C> {
     }
 
     /// How many groups hold a slot here.
-    #[cfg(test)]
-    pub(crate) fn tracked(&self) -> usize {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn tracked(&self) -> usize {
         self.slots.lock().slots.len()
     }
 
