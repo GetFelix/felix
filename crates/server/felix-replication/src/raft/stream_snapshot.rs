@@ -38,6 +38,8 @@ const PURGE_MAGIC: u32 = 0x464C_5350;
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct StreamSnapshot {
+    /// What `ProducerState::prune` carries at the purge point. A forgotten
+    /// producer's retry at sequence 0 is written again; #2699 fixes that.
     pub(crate) cuts: ForgottenCuts,
     pub(crate) groups: GroupTable,
     /// Set on a snapshot written for a purge.

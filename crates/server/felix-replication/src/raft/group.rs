@@ -1228,7 +1228,7 @@ impl Group {
                 data_len,
                 offset,
                 data,
-            } if self.id.shard.kind == ShardKind::Cache => {
+            } => {
                 use openraft::async_runtime::watch::WatchReceiver;
                 // Before the outvoted check: the sender's term ends the
                 // ones below it either way, and an outvoted sender's term
@@ -1247,6 +1247,26 @@ impl Group {
                             self.drop_incoming_when_idle();
                         }
                         Ok(Reply::Snapshot(SnapshotResponse::new(vote)))
+                    }
+                    Piece::Whole(snapshot) if self.id.shard.kind == ShardKind::Stream => {
+                        let bytes = Bytes::from(snapshot);
+                        if let Err(why) = stream_installable(&meta, &bytes) {
+                            tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: {why}");
+                            return Err(Refused::NoSnapshots(Box::new(Addressee {
+                                group: self.id.clone(),
+                                to: self.member.clone(),
+                            })));
+                        }
+                        let snapshot = SnapshotData {
+                            bytes,
+                            restored: None,
+                        };
+                        self.hold.vote_may_change(Some(&vote));
+                        self.raft
+                            .install_full_snapshot(vote, Snapshot { meta, snapshot })
+                            .await
+                            .map(Reply::Snapshot)
+                            .map_err(|err| stopped(err.to_string()))
                     }
                     Piece::Whole(snapshot) => {
                         // openraft takes a snapshot the state machine cannot
@@ -1283,19 +1303,6 @@ impl Group {
                             .map_err(|err| stopped(err.to_string()))
                     }
                 }
-            }
-            // A stream group's snapshot carries no records, only the cut
-            // batches its sender refuses by name, and installing one purges
-            // the log up to it: the member would drop records it was never
-            // sent. Refused until the records below it travel too.
-            Request::Snapshot { vote, meta, .. } => {
-                self.lease.named(term_of(&vote));
-                let member = Box::new(Addressee {
-                    group: self.id.clone(),
-                    to: self.member.clone(),
-                });
-                tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: taking it would purge records this member was not sent");
-                Err(Refused::NoSnapshots(member))
             }
             Request::TransferLeader(req) => self
                 .raft
@@ -2126,4 +2133,32 @@ async fn read_round(raft: Raft<ShardTypes, Machine>, stop: CancellationToken) ->
         }
         Err(RaftError::Fatal(_)) => Round::Stopped,
     }
+}
+
+/// Whether a member may install the stream snapshot `bytes`: only when every
+/// entry it skips is below the floor the snapshot itself carries, so the
+/// member drops nothing a reader could still be served. The member's own
+/// floor does not count: a snapshot cut above its sender's floor would skip
+/// records the sender still serves. A snapshot without purge floors (one no
+/// purge wrote) is never installable. See `docs/per-shard-raft.md`
+/// ("Purging below the floor").
+pub(super) fn stream_installable(
+    meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+    bytes: &[u8],
+) -> Result<(), String> {
+    let snapshot = super::stream_snapshot::StreamSnapshot::decode(bytes)
+        .map_err(|err| format!("a snapshot this member cannot read: {err}"))?;
+    let Some(purge) = snapshot.purge else {
+        return Err("taking it would purge records this member was not sent".into());
+    };
+    let Some(last) = meta.last_log_id.as_ref() else {
+        return Err("a stream snapshot with no last entry".into());
+    };
+    if last.index >= purge.carried.floor {
+        return Err(format!(
+            "it ends at {} but carries floor {}, so it skips records still served",
+            last.index, purge.carried.floor
+        ));
+    }
+    Ok(())
 }

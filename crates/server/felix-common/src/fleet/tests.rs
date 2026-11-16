@@ -296,3 +296,14 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         assert!(matches!(class(*feature), Off::ElectionPrerequisite));
     }
 }
+
+/// Purging a Raft stream shard waits for head trims on both engines, and is
+/// not reported until the purge itself is built.
+#[test]
+fn raft_stream_purge_needs_head_trims_and_is_not_reported_yet() {
+    assert_eq!(
+        prerequisites(RAFT_STREAM_PURGE.name()),
+        [HEAD_TRIM, RAFT_HEAD_TRIM]
+    );
+    assert!(!IMPLEMENTED.contains(&RAFT_STREAM_PURGE));
+}

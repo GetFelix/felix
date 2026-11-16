@@ -1370,6 +1370,50 @@ Raft counts anything, so an upgraded copy is covered. No released build
 has the file at all (above), so only an unreleased build can leave such a
 copy.
 
+## `raft-floor`: a Raft stream copy's carried floor
+
+A Raft stream copy that installed a purge snapshot holds a `raft-floor`
+file: the highest floor it has served, with the trim that set it.
+
+```text
+ 0   4  magic        u32  "FLFR"
+ 4   2  version      u16  1
+ 6   2  reserved     u16  zero
+ 8   8  offset       u64  where the trim record that set the floor sits
+16   8  floor        u64  reads below it are refused
+24   4  headers_len  u32
+28   n  headers      the trim's headers, returned with a refused read
+28+n 4  crc          u32  crc32 over bytes 0..28+n
+```
+
+An install drops the log below the snapshot, and with it the trim record
+behind the copy's own floor, so the floor moves here first. The file only
+goes up: a write below the stored floor keeps the stored one, and each write
+is synced before the snapshot is stored. Nothing can rebuild it, so a file
+that does not decode fails the open. A copy serves the higher of this floor
+and the one its trim records set; on a tie the carried floor's headers win.
+A different version is refused, never misread.
+
+### The purge snapshot (`FLSP`)
+
+A stream snapshot written for a purge is laid out under its own magic, so
+a build that predates purges refuses it instead of reading it as cut
+batches. It travels in the snapshot message and is stored in
+`raft-snapshot`.
+
+```text
+ 0   4  magic        u32  "FLSP"
+ 4   4  crc          u32  crc32 over the body
+ 8   4  cuts_len     u32
+12   c  cuts         the cut batches, as `producers.forgotten` lays them out
+ .   8  tables       u64  the floor as of the snapshot's entry
+ .   8  offset       u64  the carried trim's offset
+ .   8  floor        u64  the carried floor (the one a member installs against)
+ .   4  headers_len  u32
+ .   n  headers      the carried trim's headers
+ .   -  groups       the group table, to the end
+```
+
 ## `raft-epoch`: a Raft copy's group epoch
 
 A group re-formed by the operator starts a new group epoch, and every copy

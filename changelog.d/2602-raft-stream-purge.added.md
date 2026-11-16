@@ -1,0 +1,1 @@
+A member of a Raft stream shard installs a purge snapshot only when every entry it skips is below the floor the snapshot carries, and keeps the higher of its own floor and the snapshot's across restarts. The `raft_stream_purge` fleet feature is defined but not reported yet: purging itself is not built.
