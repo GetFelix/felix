@@ -296,10 +296,14 @@ power went out reads its run state as a crash in an earlier boot and takes a new
 storage id, as a real broker does (`run_state::begin`).
 
 Each of these faults runs alone (a lock in the nemesis). It reads every
-broker's stream shards just before it changes the disks and again after. A
-fault of several brokers changes all their disks in one instant, so nothing is
-acknowledged between the read and the change. The `acked-on-some-disk` checker
-then holds it to this:
+broker's stream shards at the instant it changes the disks and again after.
+A fault of several brokers, or a wipe, changes all their disks in one instant
+with nothing awaited in between. A one-broker power cut can wait up to two
+seconds for an append to land in, so its disks are read when the power goes:
+just before a cut with no append in flight, and right after the broker stops
+for a cut inside an append. A record acknowledged while a fault ran counts as
+a copy the fault took only on a disk that held it at that read. The
+`acked-on-some-disk` checker then holds it to this:
 
 - A record acknowledged to a client is held by a quorum, so one fault that
   changes one broker's disk never takes it off every disk.
