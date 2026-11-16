@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794843855210,
+  "lastUpdate": 1794846294763,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60372,6 +60372,58 @@ window.BENCHMARK_DATA = {
             "range": "16335.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1205605.97\nmean: 1203635.88\nstdev: 16335.75\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9aa3554ea93cee0a9ceff45003808dfc5b0880b4",
+          "message": "formal(raft): re-form across epochs, written commits and power-cut rotation (model for #2250) (#2626)\n\n* formal(raft): written re-form across two terms with the vouch rule (M1 for #2250)\n\n* formal(raft): one process crash in the two-term re-form configs\n\n* formal(raft): reach witness for the two-term cut without a dead broker\n\n* formal(raft): kept copies, power-cut rotation and reservations in the re-form model (M2 for #2250)\n\nFelixRaftReform.tla gains a Kept mode: every rotation keeps the whole copy\nwith its vote, why it rotated and its reservation; PowerCutRotate loses only\nthe unsynced tail and keeps the vote; Rotate is the restore; Return brings a\ndead broker back. The re-form reads current and kept copies and keeps the\nlongest prefix a copy vouches for, keyed by (epoch, term), capped by later\nbase ends, padded past every reservation read, with the epoch-scoped mark.\nExisting configs set Kept FALSE and keep their state spaces.\n\n* docs(formal): kept copies and two re-forms in the README\n\n* formal(raft): shape the two re-form configs so each finishes, with results\n\nTwoReformsShape closes epoch 0 empty, allows one write per later epoch and\nholds the plan that closes epoch 1 until epoch 1 commits a record. All six\ntwo re-form configs now give their declared outcome on a build box in\nunder seven minutes. README rows with state counts and times, weights for\nthe longer configs, and a changelog fragment.\n\n* formal(raft): exercise the cap, T and Return, and bound Kept losses\n\n- TwoReformsOldRestore takes a second write, so epoch 2 writes.\n- NeverPadsByReserve needs both power cuts and a power-cut copy whose\n  reservation is above its log, at a committed epoch-1 record.\n- New Kept configs with a non-empty epoch 0: KeptOldKept (a dead broker\n  returns with its epoch-0 copy; witness KeptOldKeptCap for the cap) and\n  KeptTerms (two terms; witness KeptTermsT for T).\n- KeptLossBound: unmarked, no vote above every entry, no acknowledged\n  record held below its cap is lost.\n- LossNeedsLostDiskAtTop on CommitsReformTerms.\n- Evidence lines on EpochMark and TrailingFloorHappens.\n\n* formal(raft): a fsynced count needs no reservation; long re-form configs run nightly\n\nAn fsynced entry survives a power cut, so the re-form's base covers it.\nOnly a written count needs a reservation, as in raft_log/writer.rs.\nRelaxing Ack and Agree only adds behaviours; every registered\nFelixRaftWritten config keeps its outcome.\n\nFelixRaftWrittenCommitsReformTerms, FelixRaftReformTwoReformsOldRestore\nand FelixRaftReformKeptTerms pass but run past a pull request's hour, so\nthey move to the nightly exhaustive job.\n\n* formal(raft): every count needs a reservation, fsynced ones too\n\nRelaxing Ack and Agree so a fsynced count skips the reservation lets\nFelixRaftWrittenCommitsReformTerms violate OffsetNeverReused in 14\nsteps: the vouch rule keeps only b's saved commit once a is declared\ndead, so the base is cut below a fsynced, committed entry that nothing\nreserved, and the re-form reuses its offset. The code must reserve\nbefore any count (#2632).\n\n* docs(formal): the long re-form configs run in dispatch 43744757023\n\n* formal(raft): pin the vouch rule's dead-broker loss; record the long re-form results\n\nFelixRaftWrittenReformVouchDead violates NeverLosesCommitted in 15 states:\nwith a broker declared dead no copy vouches for its whole log and a\nfollower's saved commit is 0, so a record fsynced and reserved on an\nintact copy is cut (#2661). KeptTerms and TwoReformsOldRestore pass\nexhaustively; ReformTerms leaves the nightly list, a box run checks it.\nThe code reserves in every fsync mode (#2636).\n\n* docs(formal): the vouch-dead trace loses a committed entry; ReformTerms is expected to pass\n\n* docs(formal): record ReformTerms' six-hour reach\n\n* docs(formal): record the ReformTerms pass (1.75B distinct states, 6 h 53 min on a box)",
+          "timestamp": "2026-11-16T08:15:55-08:00",
+          "tree_id": "f351ced03661ff5535ed9370622b908f01d4804c",
+          "url": "https://github.com/GetFelix/felix/commit/9aa3554ea93cee0a9ceff45003808dfc5b0880b4"
+        },
+        "date": 1794846294012,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 522246.69,
+            "range": "19438.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522246.69\nmean: 512675.31\nstdev: 19438.91\ncv: 3.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 522246.69,
+            "range": "19438.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 522246.69\nmean: 512675.31\nstdev: 19438.91\ncv: 3.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125562.65,
+            "range": "1039.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125562.65\nmean: 125464.96\nstdev: 1039.88\ncv: 0.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1255626.54,
+            "range": "10398.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1255626.54\nmean: 1254649.64\nstdev: 10398.75\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
