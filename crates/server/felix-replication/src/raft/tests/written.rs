@@ -858,3 +858,27 @@ async fn a_relaxed_leader_acknowledges_on_strict_followers_reports() {
     committed.expect("committed");
     led.cluster.stop().await;
 }
+
+/// A relaxed leader counts nobody's write but its own while strict
+/// followers have not written: `Quorum` is not acknowledged on the ask
+/// alone, and is once they do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_relaxed_leader_waits_for_strict_followers_to_write() {
+    let mut led = led_relaxed(&["a"]).await;
+    let primed = led.prime().await;
+    led.cluster.committed_everywhere(0, primed.end - 1).await;
+
+    // Neither strict follower has the entry: held before the write.
+    led.cluster
+        .net
+        .cut
+        .lock()
+        .extend(led.others().iter().map(|broker| broker.to_string()));
+    let written = led.propose().await;
+    led.not_acked(written).await;
+
+    led.cluster.net.cut.lock().clear();
+    let acked = led.acked(written, AckAt::Written).await;
+    acked.expect("acknowledged");
+    led.cluster.stop().await;
+}

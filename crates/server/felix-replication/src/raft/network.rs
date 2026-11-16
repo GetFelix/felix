@@ -39,8 +39,9 @@ pub struct RaftRequest {
     /// On a leader's append: the longest the leader may now stay silent,
     /// in milliseconds. Zero on every other message.
     pub(crate) beat: u64,
-    /// On a leader's append that carries entries: whether the leader wants
-    /// to be told once they are written, before their fsync.
+    /// On a leader's append that carries entries: what the leader asks of
+    /// the follower about telling it, once they are written and before their
+    /// fsync. See [`Ask`] for the three values.
     pub(crate) report: Ask,
     /// How long the sender waits for the answer. The receiver drops an
     /// answer it cannot give in time, so a stuck member holds nothing.
