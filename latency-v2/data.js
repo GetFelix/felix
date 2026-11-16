@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794836733526,
+  "lastUpdate": 1794838246587,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76362,6 +76362,72 @@ window.BENCHMARK_DATA = {
             "range": "794.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 286.00\nmean: 691.20\nstdev: 794.83\ncv: 114.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "178b8c67214cd8ece1eb49611377121edea5c512",
+          "message": "fix(storage): refuse a forgotten producer's re-send with a tombstone (#2699) (#2701)\n\n* fix(storage): refuse a forgotten producer's re-send with a tombstone (#2699)\n\nWhen a purge (hybrid retention or a Raft purge) or a reset without an\ninstall forgets a producer completely, keep its newest sequence and last\noffset as a tombstone. A re-send at or below that sequence, including at\nsequence 0, now classifies as Expired instead of Unknown, so the broker\nrefuses it instead of writing the batch again.\n\nTombstones are saved in producers.forgotten (both engines) before the\nrecords go, carried in a stream shard's snapshot data after the cut\nbatches, and bounded at MAX_PRODUCERS, evicting the lowest last offset.\nBoth encodings keep the older bytes when there are no tombstones.\n\nFelixRaftBatch.tla: comment only. The model never re-sends a whole batch\nafter producer expiry, so refusing one adds no behaviour it checks.\n\n* fix(broker): leave Kafka re-sends out of producer tombstones (#2699, #2702)\n\nA Kafka producer keeps its id across an epoch bump and restarts at\nsequence 0, which Felix does not see. Answering that as expired reads as a\nduplicate to the Java client and the records are lost. The Raft Kafka path\nnow treats a tombstoned producer as unknown, as before tombstones.\n\n* Mark the producer tombstones as outside the TLA models\n\nSpec-Unaffected: tombstones refuse a forgotten producer's re-send before anything is proposed; the lease, quorum mark, reports, promotion and handoff are unchanged, and FelixRaftBatch never re-sends a whole batch, so it checks nothing this changes.",
+          "timestamp": "2026-11-16T14:00:14Z",
+          "tree_id": "53fbf0a514a2eaf3e23fb2e5231c6a10ac3f966f",
+          "url": "https://github.com/GetFelix/felix/commit/178b8c67214cd8ece1eb49611377121edea5c512"
+        },
+        "date": 1794838234885,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "3.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 155.60\nstdev: 3.21\ncv: 2.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 223,
+            "range": "446.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 223.00\nmean: 539.00\nstdev: 446.09\ncv: 82.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 569,
+            "range": "546.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 569.00\nmean: 829.40\nstdev: 546.73\ncv: 65.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 202,
+            "range": "9.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 205.80\nstdev: 9.63\ncv: 4.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 408,
+            "range": "231.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 408.00\nmean: 509.80\nstdev: 231.59\ncv: 45.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1172,
+            "range": "649.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1172.00\nmean: 1171.80\nstdev: 649.83\ncv: 55.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
