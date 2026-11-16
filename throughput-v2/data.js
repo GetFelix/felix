@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794846610844,
+  "lastUpdate": 1794847192022,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60476,6 +60476,58 @@ window.BENCHMARK_DATA = {
             "range": "28562.47",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1552607.73\nmean: 1537841.11\nstdev: 28562.47\ncv: 1.86%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5af5d7c0095a938c81b162b2afe7284c2ccfdd4d",
+          "message": "feat(mqtt): pipeline a connection's messages on a Raft shard (#2638) (#2673)\n\n* feat(mqtt): pipeline a connection's messages on a Raft shard (#2638)\n\nOn a broker that runs Raft, an MQTT batch is written as one-record\nbatches at consecutive producer sequences, as Kafka's records are. On a\nRaft group led here each is proposed once the one before it is on the\nlocal log, not once it commits, so a connection's queued messages cost\nabout one commit round trip instead of one each. Records are settled in\norder; a failed one is sent again on its own and answered from the log.\nWrites::max_batch_records gives way to Writes::sequence_per_record.\n\n* docs(mqtt): MQTT batching on Raft\n\n* fix(mqtt): acknowledge the written prefix of a batch on Raft; one budget per batch\n\nReview: a record failing partway through a batch now reports how many were\nwritten (WriteError::Partly), so those are acknowledged and only the rest\nare refused or closed. The forward budget bounds the whole batch again. A\nsecond cluster test pauses the leader so its proposals fail while it still\nserves the connection.\n\n* Mark MQTT batching as outside the TLA model\n\nSpec-Unaffected: MQTT records on Raft go through the same one-record idempotent publish Kafka producers use, pipelined per producer; replication, lease, quorum mark, reports, promotion and handoff are unchanged.",
+          "timestamp": "2026-11-16T08:30:35-08:00",
+          "tree_id": "8f141f762feb4ee0c3d0d9edddb5354e2b3cf011",
+          "url": "https://github.com/GetFelix/felix/commit/5af5d7c0095a938c81b162b2afe7284c2ccfdd4d"
+        },
+        "date": 1794847191014,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 667271.46,
+            "range": "35367.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 667271.46\nmean: 682385.13\nstdev: 35367.88\ncv: 5.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 667271.46,
+            "range": "35367.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 667271.46\nmean: 682385.13\nstdev: 35367.88\ncv: 5.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163073.81,
+            "range": "3940.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163073.81\nmean: 160924.15\nstdev: 3940.06\ncv: 2.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1630738.14,
+            "range": "39400.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1630738.14\nmean: 1609241.52\nstdev: 39400.64\ncv: 2.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
