@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794847683585,
+  "lastUpdate": 1794854996850,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -76890,6 +76890,72 @@ window.BENCHMARK_DATA = {
             "range": "59.78",
             "unit": "us",
             "extra": "trials: 5\nmedian: 431.00\nmean: 447.80\nstdev: 59.78\ncv: 13.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8a811254a0e286ff079b7e7add0192ea93c07afb",
+          "message": "formal(raft): model purging a Raft stream shard below its head trim (#2602) (#2656)\n\n* formal(raft): model purging a Raft stream shard below its head trim (#2602)\n\nFelixRaftStreamPurge.tla models the purge and stream-snapshot install that\nlet a Raft stream shard free disk below a head trim, behind the\nraft_stream_purge feature. A purge to P writes the snapshot at P with the\nfloor and the tables as of P; a member installs a stream snapshot only when\nits index is at most the carried floor minus one; a re-form reads each copy's\nlast entry, purged id and floor - 1, and starts at the highest floor read.\n\nFelixRaftStreamPurge passes NoReadBelowFloor, NoAckedLoss, PurgeBelowFloor,\nTablesAgree, OffsetNeverReused and CatchUpPossible (4.3M distinct states;\nthe five-entry Full config, 64M, runs on a build box). Broken configs find\neach dropped rule: purge past the floor, install above the carried floor,\nsnapshot at the applied entry (members behind the purge are stuck), tables\nat the applied entry, a re-form reading entries only, without the floor, or\nkeeping each copy's own floor. Dropping the leader's cap at the slowest\nmatch passes: it is not a safety rule.\n\n* formal(raft): purge model review fixes: stored re-form floor, history checks\n\nThe re-form now writes the floor it carries into each read copy's snapshot,\nso a restart keeps it; FelixRaftStreamPurgeReformFloorNotStored is the twin\nthat drops this. OffsetNeverReused checks a history variable (the highest\ncommitted offset each copy held or installed) instead of the re-form's own\nread, and a copy vouches for its floor, not floor - 1. NoReadBelowFloor and\nNoAckedLoss check against the highest floor a live member ever had. A purge\nbuilds the snapshot's tables from the previous snapshot and the retained log.\n\nFelixRaftStreamPurgeLearnerReform (learner, change of leader, restart and\nre-form) passes with 12.3M distinct states. The five-entry Full configs no\nlonger finish in a box run and are dropped.\n\n* formal(raft): purge model second review round: floor-dependent tables, trim headers, two-step purge\n\nTables fold with the floor as of the purge point and the snapshot carries\nits own floor and trim headers. Reform picks a read voter with the longest\nlog; the purge writes the snapshot before dropping the log. New configs:\nFive, FiveReform, TwoReforms (pass); FloorAtApplied, NoHeaders, DropFirst\n(violations); ReachTrimPurge, ReachWriteAfterReform, ReachPurgeAfterReform\n(witnesses).\n\n* formal(raft): smaller-bound purge configs for CI, two-reform reads twin\n\n* formal(raft): register the small purge bounds, document the dispatch bounds\n\n* formal(raft): two-re-form write bound, learner install before re-form, witnesses at the small bounds, control twin\n\n* formal(raft): run the purge re-form control by dispatch\n\nFelixRaftStreamPurgeReformNoFloorOnce takes about 43 minutes and pushed its PR shard past the 60-minute limit.\n\n* formal(raft): an install never lowers a member's floor\n\nA member that installed a snapshot carrying floor 4 and then the next\nleader's carrying floor 3 dropped to floor 3 at a restart, and a re-form\nreading only it gave out offset 4 again (NoCap, OffsetNeverReused).\n\nInstallFloor picks the install rule: replace (the old one, now the twin\nInstallLowersFloor, steered by FloorDropPath), max (keep the higher floor\nwith its headers; every pass config uses it), refuse (refuse a snapshot\ncarrying a lower floor: safe, but violates CatchUpPossible).\n\n* formal(raft): register the refusal's safety pass at the small bounds\n\nAll seven small pass configurations pass under InstallFloor = \"max\" with the\nsame state counts as before; NoCapSmallRefuse passes the safety invariants.\n\n* formal(raft): make CI reach the lower-floor install that rule A covers\n\nNo registered pass configuration could reach an install of a snapshot\ncarrying a floor below the member's, so storing the leader's snapshot as\nit is passed every one of them just as keeping the max did.\n\nThe install now records \"lowInst\" when it takes a lower-floor snapshot\nand \"instMx\" when it installs one an earlier such install rewrote.\nInstallKeepsFloorSmall (steered by LowerFloorPath) passes under \"max\",\nits witness ReachLowerFloorInstall reaches the install, and its\n\"replace\" twin InstallLowersFloorSmall violates OffsetNeverReused, all\nregistered. InstallKeepsFloorLong (a learner, five entries, two changes\nof leader) goes past the install and runs by dispatch; its witness\nReachRewrittenInstall, where a member installs the rewritten snapshot,\nis registered.\n\nREADME: what covers the branch, rule A's code requirements as item 7,\nitem 2's accept check names the snapshot's own floor, and HeadersAgree's\nlimits.",
+          "timestamp": "2026-11-16T10:39:41-08:00",
+          "tree_id": "02954d01b28cce010b97905e9842f81f679aa09e",
+          "url": "https://github.com/GetFelix/felix/commit/8a811254a0e286ff079b7e7add0192ea93c07afb"
+        },
+        "date": 1794854982823,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.40\nstdev: 1.14\ncv: 0.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 205.60\nstdev: 1.14\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 254,
+            "range": "39.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 254.00\nmean: 268.60\nstdev: 39.50\ncv: 14.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "6.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 202.00\nstdev: 6.71\ncv: 3.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 401,
+            "range": "289.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 401.00\nmean: 521.00\nstdev: 289.93\ncv: 55.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 683,
+            "range": "809.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 683.00\nmean: 1167.00\nstdev: 809.18\ncv: 69.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
