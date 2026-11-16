@@ -233,6 +233,11 @@ async fn measure_cells(
         // the work it does scales with wall time, not messages, so a slow
         // tick keeps it out of the per-message figure.
         sync_interval_ms: 2000,
+        // The harness's 1 s expiry leaves the broker a 750 ms lease. Callgrind
+        // runs it tens of times slower, and under load a heartbeat can slip
+        // past that: the lease lapses and publishes are refused as fenced and
+        // retried. A deployment's expiry keeps that out of the measured run.
+        node_expiry: Duration::from_secs(15),
         ..Default::default()
     })
     .await
