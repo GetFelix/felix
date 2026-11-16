@@ -47,6 +47,7 @@ async fn write(cluster: &Cluster, stamp: u64, command: CacheCommand) -> u64 {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,
@@ -210,6 +211,7 @@ async fn a_stamp_taken_in_one_term_is_not_written_in_another() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,
@@ -392,6 +394,7 @@ async fn a_read_waits_until_the_leader_has_applied_what_is_committed() {
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,
@@ -431,6 +434,7 @@ async fn a_read_whose_apply_lags_past_the_election_timeout_waits_out_its_own_dea
         expected: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: None,
         headers: None,
         written: None,
@@ -467,7 +471,9 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
     let dir = tempdir().expect("dir");
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
     let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
-    let (mut machine, _, _, cache) = opened.expect("open");
+    let super::super::machine::Opened {
+        mut machine, cache, ..
+    } = opened.expect("open");
     let cache = cache.expect("a cache group");
     let entry = |index: u64, command: CacheCommand| {
         let command = Command {
@@ -477,6 +483,7 @@ async fn a_snapshot_holds_the_state_as_of_the_entry_it_names() {
             expected: None,
             trim: None,
             commit: false,
+            group: false,
             publisher: None,
             headers: None,
             written: None,
@@ -506,7 +513,7 @@ async fn cache_machine(
 ) -> (super::super::machine::Machine, super::super::machine::Cache) {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir).expect("store");
     let opened = super::super::machine::Machine::open(snapshots, ShardKind::Cache, None).await;
-    let (machine, _, _, cache) = opened.expect("open");
+    let super::super::machine::Opened { machine, cache, .. } = opened.expect("open");
     (machine, cache.expect("a cache group"))
 }
 
@@ -529,6 +536,7 @@ fn entries(
                 expected: None,
                 trim: None,
                 commit: false,
+                group: false,
                 publisher: None,
                 headers: None,
                 written: None,
@@ -1438,6 +1446,7 @@ async fn what_a_write_call_per_entry_costs() {
                     expected: None,
                     trim: None,
                     commit: false,
+                    group: false,
                     publisher: None,
                     headers: None,
                     written: None,
@@ -1557,7 +1566,7 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
     let snapshots = felix_storage::raft_log::SnapshotStore::open(dir.path()).expect("store");
     let opened =
         super::super::machine::Machine::open(snapshots, ShardKind::Cache, Some(&log)).await;
-    let (mut machine, _, _, _) = opened.expect("open");
+    let super::super::machine::Opened { mut machine, .. } = opened.expect("open");
     let command = Command {
         timestamp_micros: 10,
         payload: put("k", b"one", 1).encode(),
@@ -1566,6 +1575,7 @@ async fn a_snapshot_syncs_a_written_commit_log_first() {
         written: None,
         trim: None,
         commit: false,
+        group: false,
         publisher: None,
         headers: None,
     };

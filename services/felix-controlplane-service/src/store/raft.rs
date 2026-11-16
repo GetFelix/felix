@@ -158,6 +158,10 @@ const FORGET_REPORTS_LEVEL: u16 = 37;
 /// (`ShardAssignment::raft_floor`).
 const RAFT_FLOOR_LEVEL: u16 = 38;
 
+/// The metadata level whose members keep every Raft target ordered in a
+/// shard's epoch (`ShardAssignment::raft_ordered`).
+const RAFT_ORDERED_LEVEL: u16 = 39;
+
 use crate::store::memory::InMemoryStore;
 use crate::store::raft::command::{
     MetaCommand, MetaError, MetaResponse, decode_result, encode_command,
@@ -298,6 +302,7 @@ impl RaftStore {
         assignment.raft_copy_ids.clear();
         assignment.raft_target = None;
         assignment.raft_floor = None;
+        assignment.raft_ordered = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -1128,6 +1133,7 @@ impl ControlPlaneStore for RaftStore {
             key: key.clone(),
             report,
             sealer: sealer.to_string(),
+            keep_ordered: false,
         })
         .await
     }
@@ -1161,6 +1167,7 @@ impl ControlPlaneStore for RaftStore {
                 node_registered_at_millis,
                 node_incarnation,
                 copy_id,
+                keep_ordered: false,
             })
             .await?
         {

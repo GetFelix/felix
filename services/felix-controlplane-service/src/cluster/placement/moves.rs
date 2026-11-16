@@ -178,6 +178,12 @@ pub struct MovePolicy {
     /// is handed leadership: a broker deregisters as it stops. Not
     /// configuration: each pass reads it from the store.
     pub departed: BTreeSet<String>,
+    /// The cluster runs durable stream shards on Raft groups (`shard_engine:
+    /// raft`). Such a group elects its own leader and keeps its own members,
+    /// so placement only names the member it wants leading
+    /// (`raft_leaders`). Not configuration: each pass reads it from the
+    /// store's cluster identity.
+    pub raft_streams: bool,
     /// Where a stream with a home region may have copies: that region, and
     /// any region the allowlist bridges it to (`FELIX_REGION_BRIDGES`). A
     /// stream without one is placed anywhere.
@@ -203,6 +209,7 @@ impl Default for MovePolicy {
             fenced_caches: false,
             joint_fence: false,
             departed: BTreeSet::new(),
+            raft_streams: false,
             regions: Arc::new(RegionRouter::new(String::new())),
         }
     }
@@ -226,6 +233,8 @@ pub(super) struct Moves {
     stuck_renames: usize,
     /// Shards this pass re-admitted a replaced copy into.
     readmits: usize,
+    /// Raft shards this pass named a new leader for.
+    pub(super) raft_leaders: usize,
 }
 
 impl Moves {
@@ -245,6 +254,7 @@ impl Moves {
             recovering: false,
             stuck_renames: 0,
             readmits: 0,
+            raft_leaders: 0,
         };
         for assignment in existing {
             // A seat fence is `Draining` with `joining` and no successor:
@@ -289,6 +299,11 @@ impl Moves {
     /// not stop these; the limits do.
     pub(super) fn begin_requested(&mut self, from: &str, to: &str) -> Result<(), Blocked> {
         self.reserve(from, Some(to))
+    }
+
+    /// Whether placement is paused.
+    pub(super) fn paused(&self) -> bool {
+        self.policy.paused
     }
 
     /// Take one of the pass's re-admissions, unless placement is paused. A
@@ -803,6 +818,7 @@ pub(super) fn move_step<'a>(
             raft_copy_ids: Default::default(),
             raft_target: None,
             raft_floor: None,
+            raft_ordered: None,
         };
         return Decision::Move(
             MoveStep::CutOver {
@@ -1184,6 +1200,7 @@ pub(super) fn start(
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     };
     if already_a_replica && moves.ready_to_fence(caught_up, &existing.key, destination) {
         // The copy is already there: straight to the fence.

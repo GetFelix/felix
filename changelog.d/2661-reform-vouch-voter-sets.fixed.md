@@ -1,0 +1,1 @@
+A Raft re-form plan no longer drops a committed record that an intact, readable copy holds at the top term just because a broker is dead. The group is marked only when the brokers with unknown votes are a majority of some voter set of the epoch (the seed voters, every membership entry read, every ordered target), and the plan names that set (#2661).

@@ -188,6 +188,14 @@ pub const RAFT_RECORD_HEADERS: FleetFeature = FleetFeature::new("raft_record_hea
 /// and for [`ATOMIC_COMMIT`]. See `docs/per-shard-raft.md` ("Atomic commits").
 pub const RAFT_ATOMIC_COMMIT: FleetFeature = FleetFeature::new("raft_atomic_commit");
 
+/// A stream shard on the Raft engine serves consumer groups: each group
+/// write is a Raft entry of its own kind, which a build that predates this
+/// refuses, holding replication to it at that entry. So it waits for the
+/// whole fleet. Not in [`IMPLEMENTED`] yet: this build stores and reads the
+/// entry but does not serve groups on a Raft shard. See
+/// `docs/per-shard-raft.md` ("Consumer groups").
+pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_groups");
+
 /// A stream log starts its next segment in storage format v9, whose record
 /// headers carry a generation, and stamps each record with the generation it
 /// accepted. A committed vote may then be saved too, in ballot format v2. An

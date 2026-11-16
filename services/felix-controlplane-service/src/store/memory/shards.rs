@@ -311,11 +311,10 @@ pub(super) async fn write_shard_assignment(
         ..assignment
     };
     stored.switch = (switch == SwitchWrite::Order).then(|| stored.seal_order(generation));
-    // Only a switched shard has Raft copies, and no write here lands on one.
-    stored.raft_copy_ids.clear();
-    stored.raft_target = None;
     let existing = state.records.get(&stored.key);
+    stored.carry_raft_target(existing);
     stored.carry_raft_floor(existing);
+    stored.carry_raft_ordered(existing);
     let held = existing
         .map(|existing| existing.readmitted.clone())
         .unwrap_or_default();

@@ -272,7 +272,7 @@ impl ClientError {
             E::GroupClaimLapsed { .. } => {
                 Self::new(ErrorCode::StaleClaim, message).with_retry(RetryClass::Fatal)
             }
-            E::MalformedCommit(_) => Self::internal(message),
+            E::MalformedCommit(_) | E::MalformedGroupEntry(_) => Self::internal(message),
             E::StateViewBusy => Self::overloaded(message),
             // Only from leading a shard again, never a client request.
             E::ReleaseInFlight => Self::internal(message),

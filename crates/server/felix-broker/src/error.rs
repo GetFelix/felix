@@ -150,6 +150,9 @@ pub enum BrokerError {
     /// A commit record's payload does not decode.
     #[error("malformed commit record: {0}")]
     MalformedCommit(String),
+    /// A consumer group's Raft entry does not decode.
+    #[error("malformed group entry: {0}")]
+    MalformedGroupEntry(String),
     /// Commits and their state live in the shard's log, so a stream without
     /// one has nowhere to put them.
     #[error("an atomic commit needs a durable stream")]

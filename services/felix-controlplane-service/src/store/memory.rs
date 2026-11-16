@@ -824,7 +824,8 @@ impl ControlPlaneStore for InMemoryStore {
         report: crate::model::SealReport,
         sealer: &str,
     ) -> StoreResult<crate::store::AssignmentWrite> {
-        self.apply_accept_seal_report(key, report, sealer).await
+        self.apply_accept_seal_report(key, report, sealer, true)
+            .await
     }
 
     async fn record_raft_copy_id(
@@ -841,6 +842,7 @@ impl ControlPlaneStore for InMemoryStore {
             node_registered_at_millis,
             node_incarnation,
             copy_id,
+            true,
         )
         .await
     }

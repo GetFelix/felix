@@ -16,6 +16,18 @@ fn key(stream: &str) -> ShardKey {
     }
 }
 
+/// A group at epoch 0, as every group is until it re-forms.
+impl From<(ShardKey, u64, LogPoint)> for Led {
+    fn from((key, incarnation, at): (ShardKey, u64, LogPoint)) -> Self {
+        Led {
+            key,
+            incarnation,
+            epoch: 0,
+            at,
+        }
+    }
+}
+
 fn at(term: u64, index: u64) -> LogPoint {
     LogPoint { term, index }
 }
@@ -174,7 +186,7 @@ fn a_group_led_here_again_is_owed_once_more() {
     floors.accepted(&batch);
     assert!(floors.batch().is_empty());
 
-    floors.observe([]);
+    floors.observe(Vec::<Led>::new());
     floors.observe([(key("a"), 1, at(1, 5))]);
 
     assert_eq!(floors.batch().len(), 1);
@@ -207,4 +219,35 @@ fn every_group_is_sent_in_turn_when_more_move_than_one_batch_holds() {
         sent.extend(batch.into_iter().map(|floor| floor.key.stream));
     }
     assert_eq!(sent.len() as u64, groups);
+}
+
+#[test]
+fn a_floor_carries_the_group_epoch_and_a_new_epoch_is_owed_again() {
+    let mut floors = Floors::default();
+    let led = |epoch| Led {
+        key: key("a"),
+        incarnation: 1,
+        epoch,
+        at: at(1, 5),
+    };
+    floors.observe([led(2)]);
+    let batch = floors.batch();
+    assert_eq!(
+        batch.iter().map(|floor| floor.epoch).collect::<Vec<_>>(),
+        [2]
+    );
+    floors.accepted(&batch);
+    floors.observe([led(2)]);
+    assert!(floors.batch().is_empty());
+
+    // Same log id, next epoch: the control plane has not seen this group.
+    floors.observe([led(3)]);
+    assert_eq!(
+        floors
+            .batch()
+            .iter()
+            .map(|floor| floor.epoch)
+            .collect::<Vec<_>>(),
+        [3]
+    );
 }

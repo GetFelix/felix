@@ -94,6 +94,7 @@ pub(crate) fn assignment(shard: u32, leader: &str) -> ShardAssignment {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     }
 }
 
@@ -284,6 +285,7 @@ fn cache_assignment(shard: u32, leader: &str) -> ShardAssignment {
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     }
 }
 
@@ -407,6 +409,7 @@ pub(crate) async fn an_assignment_racing_a_recreate_names_the_stream_it_landed_o
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     };
     store.create_stream(stream(1)).await.expect("create");
     for round in 0..50u64 {
@@ -1814,6 +1817,7 @@ async fn deleting_a_stream_or_cache_takes_its_shard_assignments_with_it(
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     };
     for shard in 0..2 {
         store
@@ -2105,6 +2109,7 @@ pub(crate) async fn an_assignment_names_the_incarnation_it_was_written_for(
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),
@@ -2226,6 +2231,7 @@ pub(crate) async fn a_recreated_stream_never_repeats_a_generation(store: &dyn Co
         raft_copy_ids: Default::default(),
         raft_target: None,
         raft_floor: None,
+        raft_ordered: None,
     };
     let key = StreamKey {
         tenant_id: TENANT.to_string(),

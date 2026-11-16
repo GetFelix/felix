@@ -36,7 +36,7 @@ mod codec;
 mod flush_queue;
 pub(crate) mod held;
 mod hide;
-mod purged;
+pub(crate) mod purged;
 mod reader;
 pub(crate) mod reserved;
 pub(crate) mod snapshot;
@@ -522,6 +522,19 @@ pub(crate) fn store_purged(
 /// saved.
 pub(crate) fn first_after_purged(dir: &std::path::Path) -> io::Result<Option<Offset>> {
     Ok(purged::load(dir)?.map(|purged| purged.index + 1))
+}
+
+/// The purged id saved in `dir`, as a log id. For a directory no log has
+/// open.
+pub(crate) fn purged_point(dir: &std::path::Path) -> io::Result<Option<LogPoint>> {
+    purged::load(dir)?
+        .map(|purged| {
+            Ok(LogPoint {
+                term: term_of(Some(purged.generation), purged.index)?,
+                index: purged.index,
+            })
+        })
+        .transpose()
 }
 
 /// The last entry `log` holds as a Raft log, or the purged id when it holds
