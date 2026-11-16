@@ -633,27 +633,165 @@ async fn members_told_together_elect_one_leader() {
 
 /// **The broker that forms a group hands its first leadership on.** The
 /// lowest broker of a set forms every group of that set, so without this it
-/// would lead them all. The target is asked only once it holds the leader's
-/// log, so the transfer goes through.
+/// would lead them all. Its first term is handed to placement's leader as
+/// soon as that member holds the log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_broker_that_forms_a_group_hands_its_first_leadership_on() {
     let mut cluster = Cluster::new(true);
     cluster.open(0).await;
     let key = shard(0);
-    let to = members()
-        .into_iter()
-        .find(|member| &*member.broker == "c")
-        .expect("c is a member");
-    // Asked straight after forming, as the broker does: the member may not
-    // show the group formed yet.
+    let to = MemberId::new("c", 1);
+    // Told before the group forms, as the broker's first pass does.
+    for runtime in cluster.runtimes() {
+        assert!(runtime.prefer(&key, "c"));
+    }
     let a = cluster.runtime("a");
     a.initialize(&key, members()).await.expect("initialize");
-    assert!(a.hand_over(&key, to.clone(), PATIENCE).await);
     eventually(|| (cluster.leader(0)? == to).then_some(())).await;
     cluster.write(0, b"record").await;
-    // A member that no longer leads asks for nothing.
-    assert!(!a.hand_over(&key, to.clone(), PATIENCE).await);
     assert_eq!(cluster.leader(0), Some(to));
+    cluster.stop().await;
+}
+
+/// Placement pacing short enough for a test.
+fn quick_placement() -> RuntimeConfig {
+    RuntimeConfig {
+        placement: Placement {
+            settle: Duration::from_secs(1),
+            led_min: Duration::from_secs(2),
+            backoff: Duration::from_secs(5),
+            backoff_cap: Duration::from_secs(20),
+            ..Placement::default()
+        },
+        ..timers()
+    }
+}
+
+fn prefer_everywhere(cluster: &Cluster, n: u32, broker: &str) {
+    for runtime in cluster.runtimes() {
+        runtime.prefer(&shard(n), broker);
+    }
+}
+
+/// Take `broker` down, as far as the others can tell, or bring it back.
+fn down(cluster: &Cluster, broker: &str, down: bool) {
+    for set in [&cluster.net.cut, &cluster.net.muted] {
+        match down {
+            true => set.lock().insert(broker.into()),
+            false => set.lock().remove(broker),
+        };
+    }
+}
+
+/// **A placement change moves the leader**, while the followers still hear
+/// the old one: the target campaigns past their pre-vote check.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_placement_change_moves_the_leader() {
+    let mut cluster = Cluster::with(quick_placement(), true);
+    cluster.form(0).await;
+    let first = cluster.elected(0).await;
+    let to = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*first.broker)
+        .expect("another broker");
+    cluster.write(0, b"before").await;
+    prefer_everywhere(&cluster, 0, to);
+    eventually(|| (cluster.leader(0)?.broker.as_ref() == to).then_some(())).await;
+    cluster.write(0, b"after").await;
+    assert_eq!(
+        cluster.leader(0).map(|leader| leader.broker),
+        Some(to.into())
+    );
+    cluster.stop().await;
+}
+
+/// **Leadership returns to placement's leader** once it is back and caught
+/// up, after the group elected another while it was away.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn leadership_returns_to_placement_once_back() {
+    let mut cluster = Cluster::with(quick_placement(), true);
+    cluster.form(0).await;
+    prefer_everywhere(&cluster, 0, "b");
+    let b = MemberId::new("b", 1);
+    eventually(|| (cluster.leader(0)? == b).then_some(())).await;
+
+    down(&cluster, "b", true);
+    let other = eventually(|| cluster.leader(0).filter(|leader| *leader != b)).await;
+    cluster.write(0, b"while b is away").await;
+    // Nothing moves while placement's leader is away.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert_eq!(cluster.leader(0), Some(other));
+
+    down(&cluster, "b", false);
+    eventually(|| (cluster.leader(0)? == b).then_some(())).await;
+    cluster.write(0, b"b is back").await;
+    cluster.stop().await;
+}
+
+/// **A target that cannot catch up never gets a transfer**: the leader
+/// keeps its term instead of closing the shard and ending it again and
+/// again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_target_that_cannot_catch_up_gets_no_transfer() {
+    let mut cluster = Cluster::with(quick_placement(), true);
+    cluster.form(0).await;
+    let leader = cluster.elected(0).await;
+    let to = BROKERS
+        .into_iter()
+        .find(|broker| *broker != &*leader.broker)
+        .expect("another broker");
+    let key = shard(0);
+    let term = cluster
+        .runtime(&leader.broker)
+        .status(&key)
+        .expect("status")
+        .term;
+    // Its appends never arrive, and it answers nothing. Preferred once the
+    // leader counts it silent; a member that went away just now still
+    // looks live, and is asked at most once per backoff.
+    down(&cluster, to, true);
+    cluster.write(0, b"not on the target").await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    prefer_everywhere(&cluster, 0, to);
+    tokio::time::sleep(Duration::from_secs(20)).await;
+    let status = cluster
+        .runtime(&leader.broker)
+        .status(&key)
+        .expect("status");
+    assert_eq!((status.role, status.term), (Role::Leader, term));
+    cluster.stop().await;
+}
+
+/// **A broker's placement transfers are bounded**: with many groups to
+/// hand back at once, no broker has more than its permits in flight, and
+/// every group still gets there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn placement_transfers_are_bounded_per_broker() {
+    const GROUPS: u32 = 8;
+    let mut cluster = Cluster::with(quick_placement(), true);
+    for n in 0..GROUPS {
+        cluster.form(n).await;
+        prefer_everywhere(&cluster, n, "b");
+    }
+    let b = MemberId::new("b", 1);
+    let all_on_b = |cluster: &Cluster| (0..GROUPS).all(|n| cluster.leader(n).as_ref() == Some(&b));
+    eventually(|| all_on_b(&cluster).then_some(())).await;
+
+    // b goes away and comes back: every group is handed back to it.
+    down(&cluster, "b", true);
+    eventually(|| {
+        (0..GROUPS)
+            .all(|n| cluster.leader(n).is_some_and(|l| l != b))
+            .then_some(())
+    })
+    .await;
+    down(&cluster, "b", false);
+    eventually(|| all_on_b(&cluster).then_some(())).await;
+    let permits = Placement::default().permits;
+    for runtime in cluster.runtimes() {
+        assert!(runtime.placed_transfers_peak() <= permits);
+    }
+    assert!(cluster.runtime("a").placed_transfers_peak() > 0);
     cluster.stop().await;
 }
 

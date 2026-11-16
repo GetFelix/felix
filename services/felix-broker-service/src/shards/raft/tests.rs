@@ -1818,6 +1818,26 @@ async fn a_request_off_the_leader_is_routed_to_it() {
     EngineShards::shutdown(&*outside.shards).await;
 }
 
+/// **A Raft shard's leader follows placement.** The feed names another
+/// leader, and the group hands it the leadership; publishes go on there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_placement_leader_change_moves_the_raft_leader() {
+    let (_net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    assert_eq!(members[leader].name, "broker-a");
+    let mut moved = replicated();
+    moved.leader = "broker-c".to_string();
+    for member in &members {
+        member.shards.take(&mut assignments([moved.clone()])).await;
+    }
+    until("placement's leader serves the shard", || {
+        members[2].shards.leading(&orders).is_some()
+    })
+    .await;
+    publishes_again(&members).await;
+    stop(&members).await;
+}
+
 /// **A restarted follower forwards to the leader its stored vote names,
 /// before it hears from it.** It serves no reader until it does: the hint
 /// is enough to forward to, not to read from.

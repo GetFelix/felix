@@ -32,6 +32,48 @@ use crate::shards::{ShardKey, ShardKind, watch::ShardAssignment};
 
 /// How long ending a shard's readers waits for writes already in flight. A
 /// write inside the fence is a commit and a fanout, normally milliseconds.
+/// How long a shard may sit `Opening` on an exhausted open-file limit before
+/// the control plane is told the open failed, so it can move the shard to a
+/// broker that can open it. The broker keeps retrying locally meanwhile and
+/// after: the report does not fail the shard.
+const OPEN_HELD_REPORT_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The most often a shard's held-open warning is logged.
+pub(crate) const HELD_WARN_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A shard's open held on the open-file limit, from the first pass that hit it.
+#[derive(Debug)]
+struct HeldOpen {
+    generation: u64,
+    since: Instant,
+    reported: bool,
+    warned: Instant,
+}
+
+/// When each key last logged a warning, so a fault that repeats every pass
+/// does not log every pass.
+#[derive(Debug, Default)]
+pub(crate) struct WarnThrottle(HashMap<ShardKey, Instant>);
+
+impl WarnThrottle {
+    /// Whether `key` may log now, noting that it did if so.
+    pub(crate) fn due(&mut self, key: &ShardKey) -> bool {
+        let now = Instant::now();
+        match self.0.get(key) {
+            Some(last) if now.duration_since(*last) < HELD_WARN_EVERY => false,
+            _ => {
+                self.0.insert(key.clone(), now);
+                true
+            }
+        }
+    }
+
+    /// `key` stopped faulting.
+    pub(crate) fn clear(&mut self, key: &ShardKey) {
+        self.0.remove(key);
+    }
+}
+
 const QUIESCE_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Where this broker is with one shard.
@@ -177,6 +219,9 @@ pub struct ShardLifecycle {
     /// Opens held back until the catalog registers the shard's stream at the
     /// incarnation its assignment names. The shard stays `Opening` meanwhile.
     awaiting_registration: HashMap<ShardKey, Action>,
+    /// Opens held on the open-file limit.
+    held_opens: HashMap<ShardKey, HeldOpen>,
+    report_held_after: std::time::Duration,
 }
 
 /// A move toward this broker, timed from when this broker first saw each step.
@@ -199,7 +244,16 @@ impl ShardLifecycle {
             joint_fence: None,
             promoting: felix_common::random::HashSet::default(),
             awaiting_registration: HashMap::default(),
+            held_opens: HashMap::default(),
+            report_held_after: OPEN_HELD_REPORT_AFTER,
         }
+    }
+
+    /// Report a held open to the control plane after `after` instead of the
+    /// default. For tests.
+    #[cfg(test)]
+    pub(crate) fn report_held_after(&mut self, after: std::time::Duration) {
+        self.report_held_after = after;
     }
 
     /// Hold every shard, stream or cache, that this broker starts leading at
@@ -654,6 +708,61 @@ impl ShardLifecycle {
         opens
     }
 
+    /// Keep `key` opening after an open that ran out of file descriptors, with
+    /// `error` beside it, and hold the open for the next pass. Once held past
+    /// the report bound the control plane is told the open failed, once, and
+    /// the retries go on. Returns whether to log this pass.
+    pub fn open_held(&mut self, open: Action, error: String) -> bool {
+        let Action::Open {
+            key, generation, ..
+        } = &open
+        else {
+            return false;
+        };
+        let generation = *generation;
+        let key = key.clone();
+        let current = self
+            .shards
+            .get(&key)
+            .is_some_and(|shard| shard.phase == Phase::Opening && shard.generation == generation);
+        if !current {
+            return false;
+        }
+        let now = Instant::now();
+        let entry = self
+            .held_opens
+            .entry(key.clone())
+            .and_modify(|held| {
+                if held.generation != generation {
+                    *held = HeldOpen {
+                        generation,
+                        since: now,
+                        reported: false,
+                        warned: now,
+                    };
+                }
+            })
+            .or_insert(HeldOpen {
+                generation,
+                since: now,
+                reported: false,
+                // Backdated so the first pass logs.
+                warned: now.checked_sub(HELD_WARN_EVERY).unwrap_or(now),
+            });
+        let report = !entry.reported && now.duration_since(entry.since) >= self.report_held_after;
+        entry.reported |= report;
+        let log = now.duration_since(entry.warned) >= HELD_WARN_EVERY;
+        if log {
+            entry.warned = now;
+        }
+        self.fence.record_open_error(&key, error);
+        if report {
+            self.fence.open_failed(&key, generation);
+        }
+        self.await_registration(open);
+        log
+    }
+
     pub fn open_failed(&mut self, key: &ShardKey, generation: u64, error: String) {
         if let Some(shard) = self.shards.get(key)
             && shard.phase == Phase::Opening
@@ -796,6 +905,9 @@ impl ShardLifecycle {
             self.fence.promotion_settled(key);
         }
         self.fence.record_phase(key, phase, generation);
+        if phase != Phase::Opening {
+            self.held_opens.remove(key);
+        }
         let previous = self.shards.get(key).map(|shard| shard.phase);
         let (incarnation, replicated, renewal) =
             self.shards.get(key).map_or((0, false, 0), |shard| {
@@ -1237,7 +1349,7 @@ impl ShardReaders {
                     .await
             }
         };
-        closed.map_err(|err| anyhow::anyhow!("close shard: {err}"))
+        closed.map_err(|err| anyhow::Error::new(err).context("close shard"))
     }
 
     /// End a shard's readers because this broker stopped serving it, and
@@ -1444,7 +1556,7 @@ impl DurableShardStore {
         })
         .await;
         match opened {
-            Ok(log) => log.map_err(|err| anyhow::anyhow!("open shard log: {err}")),
+            Ok(log) => log.map_err(|err| anyhow::Error::new(err).context("open shard log")),
             Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
             Err(err) => Err(anyhow::anyhow!("open shard log: {err}")),
         }
@@ -1463,13 +1575,13 @@ impl DurableShardStore {
                 let Some(starts) = &self.generation_starts else {
                     return Ok(None);
                 };
-                Ok(open_broker_log(
+                open_broker_log(
                     &starts.broker,
                     felix_broker::LogKind::Cache,
                     key,
                     incarnation,
                 )
-                .await)
+                .await
             }
         }
     }
@@ -1505,7 +1617,7 @@ impl DurableShardStore {
             return Ok(());
         }
         for kind in GROUP_LOGS {
-            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await else {
+            let Some(log) = open_broker_log(&starts.broker, kind, key, incarnation).await? else {
                 anyhow::bail!("open the shard's {kind:?} log");
             };
             if begins_here {
@@ -1536,7 +1648,7 @@ impl DurableShardStore {
             felix_broker::LogKind::Counters,
         ] {
             // No counter store configured means no counter log to mark.
-            let Some(log) = open_broker_log(broker, kind, key, incarnation).await else {
+            let Some(log) = open_broker_log(broker, kind, key, incarnation).await? else {
                 if kind == felix_broker::LogKind::Cache {
                     anyhow::bail!("open cache shard log");
                 }
@@ -1644,7 +1756,7 @@ impl ShardStore for DurableShardStore {
         if replicated && !reclaimed && unclean.unvouched(key, &log, generation) {
             log.give_up_generation()
                 .await
-                .map_err(|err| anyhow::anyhow!("give up the generation it led: {err}"))?;
+                .map_err(|err| anyhow::Error::new(err).context("give up the generation it led"))?;
             tracing::warn!(
                 stream = %key.stream,
                 shard = key.shard,
@@ -1717,7 +1829,7 @@ impl ShardStore for DurableShardStore {
         let log = self.open_stream_log(key, 0).await?;
         log.sync()
             .await
-            .map_err(|err| anyhow::anyhow!("flush shard log: {err}"))
+            .map_err(|err| anyhow::Error::new(err).context("flush shard log"))
     }
 
     async fn end_readers(
@@ -1756,7 +1868,7 @@ impl ShardStore for DurableShardStore {
                 .storage
                 .close_stream(&key.tenant_id, &key.namespace, &key.stream, key.shard)
                 .await
-                .map_err(|err| anyhow::anyhow!("close shard log: {err}")),
+                .map_err(|err| anyhow::Error::new(err).context("close shard log")),
             None => Ok(()),
         }
     }
@@ -1981,6 +2093,33 @@ async fn apply_open(
                 incarnation,
             });
         }
+        // Out of file descriptors: nothing is wrong with the shard, and
+        // failing it would keep it closed until its next move. It stays
+        // opening, so it does not serve, and goes again on a later pass.
+        Err(err) if out_of_files(&err) => {
+            mm::record_open_failure();
+            mm::record_open_file_limit();
+            let error = format!("{err:#}");
+            let log = lifecycle.lock().await.open_held(
+                Action::Open {
+                    key: key.clone(),
+                    generation,
+                    new_term,
+                    fence,
+                    incarnation,
+                },
+                error.clone(),
+            );
+            if log {
+                tracing::warn!(
+                    stream = %key.stream,
+                    shard = key.shard,
+                    generation,
+                    error = %error,
+                    "shard could not open: the open-file limit is exhausted; opening on a later pass",
+                );
+            }
+        }
         Err(err) => {
             mm::record_open_failure();
             let mut lifecycle = lifecycle.lock().await;
@@ -2014,6 +2153,18 @@ async fn apply_open(
             );
         }
     }
+}
+
+/// Whether an open failed for want of file descriptors, however the error
+/// was wrapped.
+pub(crate) fn out_of_files(err: &anyhow::Error) -> bool {
+    err.chain().any(|err| {
+        felix_storage::open_files::exhausted_in(err)
+            || matches!(
+                err.downcast_ref::<felix_broker::BrokerError>(),
+                Some(felix_broker::BrokerError::OpenFileLimit(_))
+            )
+    })
 }
 
 async fn open(
@@ -2058,7 +2209,7 @@ pub async fn record_term_start(
     let tail = log
         .tail_offset()
         .await
-        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+        .map_err(|err| anyhow::Error::new(err).context("read shard tail"))?;
     // Writes and fsyncs the generation history, so not on a runtime worker.
     let recorded = {
         let log = log.clone();
@@ -2073,7 +2224,8 @@ pub async fn record_term_start(
     };
     if let Err(err) = recorded {
         if required {
-            anyhow::bail!("record where generation {generation} begins: {err}");
+            return Err(anyhow::Error::new(err)
+                .context(format!("record where generation {generation} begins")));
         }
         // Not fatal. Replication falls back to comparing from the start of
         // the log, which is slow rather than wrong.
@@ -2090,15 +2242,16 @@ pub async fn record_term_start(
 
 /// One of the broker's logs for `key`, opened on the blocking pool for the
 /// same reason as [`DurableShardStore::open_stream_log`]. `None` when the
-/// broker has no such store or refuses the incarnation.
+/// broker has no such store, refuses the incarnation, or the open failed;
+/// an error only for an exhausted open-file limit.
 async fn open_broker_log(
     broker: &std::sync::Arc<felix_broker::Broker>,
     kind: felix_broker::LogKind,
     key: &ShardKey,
     incarnation: u64,
-) -> Option<felix_broker::StreamLog> {
+) -> anyhow::Result<Option<felix_broker::StreamLog>> {
     broker
-        .shard_log_off_runtime(
+        .try_shard_log_off_runtime(
             kind,
             &key.tenant_id,
             &key.namespace,
@@ -2108,6 +2261,13 @@ async fn open_broker_log(
             (incarnation != 0).then_some(incarnation),
         )
         .await
+        .or_else(|err| match err {
+            // Retried by the lifecycle, so it has to reach it typed.
+            felix_broker::BrokerError::OpenFileLimit(_) => {
+                Err(anyhow::Error::new(err).context(format!("open the shard's {kind:?} log")))
+            }
+            _ => Ok(None),
+        })
 }
 
 /// Accept `generation` on a log this broker is about to lead, failing if the
@@ -2132,7 +2292,7 @@ async fn accept_led_generation(
             log.lead_at(generation);
             Ok(())
         }
-        Err(err) => anyhow::bail!("persist the accepted generation: {err}"),
+        Err(err) => Err(anyhow::Error::new(err).context("persist the accepted generation")),
     }
 }
 
@@ -2155,7 +2315,9 @@ async fn began_before_the_finalize(
         Ok(first) => first,
         // Retention dropped it between the check above and the read.
         Err(_) if start < log.physical_base() => return Ok(false),
-        Err(err) => anyhow::bail!("read the generation's first record: {err}"),
+        Err(err) => {
+            return Err(anyhow::Error::new(err).context("read the generation's first record"));
+        }
     };
     Ok(first
         .first()
@@ -2186,7 +2348,7 @@ pub async fn write_generation_start(
         let durable = broker
             .resolve_stream_handle(&key.tenant_id, &key.namespace, &key.stream, key.shard)
             .await
-            .map_err(|err| anyhow::anyhow!("resolve the stream: {err}"))?
+            .map_err(|err| anyhow::Error::new(err).context("resolve the stream"))?
             .is_durable();
         if !durable {
             return Ok(());
@@ -2195,7 +2357,7 @@ pub async fn write_generation_start(
     let tail = log
         .tail_offset()
         .await
-        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+        .map_err(|err| anyhow::Error::new(err).context("read shard tail"))?;
     let started = felix_replication::quorum::generation_start(log, generation)
         .await
         .is_some();
@@ -2246,7 +2408,7 @@ pub async fn write_generation_start(
         // records that arrive underneath them, skipping this one.
         ShardKind::Cache => log.append_generation_start(generation).await.map(drop),
     }
-    .map_err(|err| anyhow::anyhow!("append the generation-start record: {err}"))?;
+    .map_err(|err| anyhow::Error::new(err).context("append the generation-start record"))?;
     Ok(())
 }
 
@@ -2268,7 +2430,7 @@ async fn start_generation(
     let tail = log
         .tail_offset()
         .await
-        .map_err(|err| anyhow::anyhow!("read shard tail: {err}"))?;
+        .map_err(|err| anyhow::Error::new(err).context("read shard tail"))?;
     let begins = log
         .generations()
         .iter()
