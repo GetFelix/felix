@@ -56,7 +56,7 @@ pub use broker::{
     ConsistencyLevel, EngineLogs, IdempotentClaim, IdempotentOutcome, IdempotentProposal,
     LogDelivery, LogKind, MountedStream, OwedRecords, ProducerTurn, ProposalCommitted,
     ProposalFailed, ProposedPublish, ProposedTrim, PublishOutcome, RECORD_SEQUENCE_WRAP,
-    SequenceReuse, StreamHandle, StreamMetadata, TrimFailed, TrimOutcome, TrimStep,
+    RecordsClaim, SequenceReuse, StreamHandle, StreamMetadata, TrimFailed, TrimOutcome, TrimStep,
 };
 pub use error::{BrokerError, NotReadable, Result};
 pub use handoff::{ShardHandoff, ShardMoved};

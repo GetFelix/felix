@@ -15,7 +15,7 @@ use felix_broker::{
     Attribution, Broker, IdempotentOutcome, PublishOutcome, SequenceReuse, StreamHandle,
 };
 use felix_kafka::{
-    Cluster, Endpoint, KafkaService, Placement, Principal, Produce, ProduceError, Settings,
+    Cluster, Endpoint, KafkaService, Placement, Principal, Produce, ProduceError, Proposed, Settings,
     ShardRef, WriteError, WritePermit,
 };
 use tokio::net::TcpListener;
@@ -251,7 +251,7 @@ impl Cluster for BrokerCluster {
         handle: &StreamHandle,
         permit: &WritePermit,
         produce: Produce<'_>,
-    ) -> Option<Result<IdempotentOutcome, ProduceError>> {
+    ) -> Option<Result<Proposed, ProduceError>> {
         let key = Self::key(shard);
         if !self.replication.on_raft(&key) {
             return None;
@@ -318,7 +318,9 @@ impl Cluster for BrokerCluster {
 }
 
 impl BrokerCluster {
-    /// Propose a produce to `key`'s Raft group at `term`.
+    /// Propose a produce to `key`'s Raft group at `term`, and return its
+    /// commit to wait on. The next produce can be proposed behind it
+    /// straight away: a later entry never commits without the ones before it.
     ///
     /// An idempotent producer's records go in one by one, each its own
     /// batch at its own sequence, which is how the hybrid stores them
@@ -332,7 +334,7 @@ impl BrokerCluster {
         handle: &StreamHandle,
         term: u64,
         produce: Produce<'_>,
-    ) -> Result<IdempotentOutcome, ProduceError> {
+    ) -> Result<Proposed, ProduceError> {
         // `refuses_record_headers` turned away headers the group cannot
         // store yet, before the quota was charged.
         let headers = produce.headers;
@@ -350,17 +352,20 @@ impl BrokerCluster {
                 attribution,
                 self.quorum_timeout,
             );
-            let offsets = raft_proposed(proposed, term)?
-                .complete_offsets()
-                .await
-                .map_err(commit_failure)?;
-            return Ok(IdempotentOutcome {
-                outcome: PublishOutcome {
-                    subscribers: 0,
-                    offsets,
-                },
-                duplicate: false,
-            });
+            let proposed = raft_proposed(proposed, term)?;
+            return Ok(Box::pin(async move {
+                let offsets = proposed
+                    .complete_offsets()
+                    .await
+                    .map_err(commit_failure)?;
+                Ok(IdempotentOutcome {
+                    outcome: PublishOutcome {
+                        subscribers: 0,
+                        offsets,
+                    },
+                    duplicate: false,
+                })
+            }));
         };
         let first = broker.record_sequence(handle, producer_id, sequence);
         let mut proposed = Vec::with_capacity(produce.payloads.len());
@@ -401,22 +406,24 @@ impl BrokerCluster {
                 }
             }
         }
-        let mut offsets: Option<(u64, u64)> = None;
-        let mut duplicate = true;
-        for record in proposed {
-            let written = record.complete_outcome().await.map_err(commit_failure)?;
-            duplicate &= written.duplicate;
-            if let Some((start, end)) = written.outcome.offsets {
-                offsets = Some((offsets.map_or(start, |(first, _)| first), end));
+        Ok(Box::pin(async move {
+            let mut offsets: Option<(u64, u64)> = None;
+            let mut duplicate = true;
+            for record in proposed {
+                let written = record.complete_outcome().await.map_err(commit_failure)?;
+                duplicate &= written.duplicate;
+                if let Some((start, end)) = written.outcome.offsets {
+                    offsets = Some((offsets.map_or(start, |(first, _)| first), end));
+                }
             }
-        }
-        Ok(IdempotentOutcome {
-            outcome: PublishOutcome {
-                subscribers: 0,
-                offsets,
-            },
-            duplicate,
-        })
+            Ok(IdempotentOutcome {
+                outcome: PublishOutcome {
+                    subscribers: 0,
+                    offsets,
+                },
+                duplicate,
+            })
+        }))
     }
 }
 

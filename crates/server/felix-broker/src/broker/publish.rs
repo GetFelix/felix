@@ -12,7 +12,7 @@ mod proposed;
 pub use completion::LogDelivery;
 pub(crate) use completion::{deliver_from_log, spawn_release};
 
-pub use per_record::RECORD_SEQUENCE_WRAP;
+pub use per_record::{RECORD_SEQUENCE_WRAP, RecordsClaim};
 pub use proposed::{
     Attribution, IdempotentProposal, OwedRecords, ProducerTurn, ProposalCommitted, ProposalFailed,
     ProposedPublish,

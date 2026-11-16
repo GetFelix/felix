@@ -62,6 +62,28 @@ impl Broker {
         payloads: &[Bytes],
         headers: Option<&[Option<Bytes>]>,
     ) -> Result<IdempotentOutcome> {
+        let claim = self
+            .claim_records_idempotent(handle, producer_id, first_sequence, payloads, headers)
+            .await?;
+        self.complete_records_idempotent(handle, claim).await
+    }
+
+    /// The first half of [`Self::publish_records_idempotent`]: check the
+    /// sequences and claim the records' offsets, without waiting for them
+    /// to be durable. Refused as that call is.
+    ///
+    /// The log counts the records as the producer's from here on, so a
+    /// later batch from the same producer is checked against them and may
+    /// be claimed before these are durable. Complete the claim with
+    /// [`Self::complete_records_idempotent`].
+    pub async fn claim_records_idempotent(
+        &self,
+        handle: &StreamHandle,
+        producer_id: u64,
+        first_sequence: u64,
+        payloads: &[Bytes],
+        headers: Option<&[Option<Bytes>]>,
+    ) -> Result<RecordsClaim> {
         let Some(log) = &handle.state.durable else {
             return Err(BrokerError::StreamNotDurable {
                 tenant_id: String::new(),
@@ -70,13 +92,7 @@ impl Broker {
             });
         };
         if payloads.is_empty() {
-            return Ok(IdempotentOutcome {
-                outcome: PublishOutcome {
-                    subscribers: 0,
-                    offsets: None,
-                },
-                duplicate: false,
-            });
+            return Ok(RecordsClaim(Claim::Empty));
         }
         let headers = super::usable_headers(payloads, headers)?;
         // Serialises this producer's batches, so two re-sends of one batch
@@ -107,16 +123,7 @@ impl Broker {
             ) else {
                 return Err(BrokerError::SequenceExpired { sequence: first });
             };
-            // As for any duplicate: vouch for it only once it is as durable
-            // here as a fresh append would be.
-            log.wait_durable(end.1 + 1).await?;
-            return Ok(IdempotentOutcome {
-                outcome: PublishOutcome {
-                    subscribers: 0,
-                    offsets: Some((start.0, end.1)),
-                },
-                duplicate: true,
-            });
+            return Ok(RecordsClaim(Claim::Held((start.0, end.1))));
         }
 
         // Where the part already written landed, looked up before appending
@@ -143,6 +150,42 @@ impl Broker {
             )
             .await?
             .expect("a marked append always claims");
+        Ok(RecordsClaim(Claim::Written { start, claimed }))
+    }
+
+    /// Wait for a [`Self::claim_records_idempotent`] claim to be durable, and
+    /// say where its records landed.
+    pub async fn complete_records_idempotent(
+        &self,
+        handle: &StreamHandle,
+        claim: RecordsClaim,
+    ) -> Result<IdempotentOutcome> {
+        let (start, claimed) = match claim.0 {
+            Claim::Empty => {
+                return Ok(IdempotentOutcome {
+                    outcome: PublishOutcome {
+                        subscribers: 0,
+                        offsets: None,
+                    },
+                    duplicate: false,
+                });
+            }
+            Claim::Held(offsets) => {
+                // As for any duplicate: vouch for it only once it is as
+                // durable here as a fresh append would be.
+                if let Some(log) = &handle.state.durable {
+                    log.wait_durable(offsets.1 + 1).await?;
+                }
+                return Ok(IdempotentOutcome {
+                    outcome: PublishOutcome {
+                        subscribers: 0,
+                        offsets: Some(offsets),
+                    },
+                    duplicate: true,
+                });
+            }
+            Claim::Written { start, claimed } => (start, claimed),
+        };
         let outcome = self.complete_publish(claimed).await?;
         // A batch finished after its start was written reports the start's
         // offset when it is still known, else the offset of what this call
@@ -173,6 +216,22 @@ impl Broker {
             .and_then(|log| log.producer_lift_basis(producer_id));
         lift(sequence, owed)
     }
+}
+
+/// Records claimed by [`Broker::claim_records_idempotent`], not yet durable.
+#[must_use = "complete the claim, or its records are never answered for"]
+pub struct RecordsClaim(Claim);
+
+enum Claim {
+    Empty,
+    /// Every record was already in the log, at these offsets.
+    Held((u64, u64)),
+    /// The rest written; `start` is where the part already in the log
+    /// landed, when there was one and it is still known.
+    Written {
+        start: Option<(u64, u64)>,
+        claimed: super::ClaimedPublish,
+    },
 }
 
 /// The 64-bit count `sequence` stands for: of the values that agree with it
