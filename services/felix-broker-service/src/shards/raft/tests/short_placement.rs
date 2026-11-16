@@ -64,18 +64,22 @@ impl metrics::Recorder for Gauges {
     }
 }
 
-#[derive(Clone, Default)]
-struct Captured(Arc<Mutex<Vec<u8>>>);
-
-impl std::io::Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().expect("lock").extend_from_slice(buf);
-        Ok(buf.len())
+fn held(shard: &ShardKey, generation: u64) -> ShortShard {
+    ShortShard {
+        key: shard.clone(),
+        generation,
+        replication_factor: 3,
+        brokers: vec!["broker-a".to_string()],
     }
+}
 
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
+fn gauge(gauges: &Gauges) -> Option<f64> {
+    gauges
+        .0
+        .lock()
+        .expect("gauges")
+        .get(SHORT_PLACEMENT)
+        .copied()
 }
 
 /// **A shard held back for a short placement is warned about once per
@@ -88,48 +92,67 @@ async fn a_short_placement_warns_once_and_is_counted() {
     let shards = unbound_shards(&broker);
     let gauges = Gauges::default();
     let _recorder = metrics::set_default_local_recorder(&gauges);
-    let captured = Captured::default();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::WARN)
-        .with_ansi(false)
-        .with_writer({
-            let captured = captured.clone();
-            move || captured.clone()
-        })
-        .finish();
-    let _log = tracing::subscriber::set_default(subscriber);
     let orders = key("orders", 0);
-    let warnings = || {
-        String::from_utf8(captured.0.lock().expect("lock").clone())
-            .expect("utf8")
-            .matches("fewer brokers than the stream's replication factor")
-            .count()
-    };
-    let gauge = || {
-        gauges
-            .0
-            .lock()
-            .expect("gauges")
-            .get(SHORT_PLACEMENT)
-            .copied()
-    };
 
-    for _ in 0..3 {
+    assert_eq!(shards.report_short(&[held(&orders, 1)]), 1);
+    assert_eq!(shards.report_short(&[held(&orders, 1)]), 0, "warned again");
+    assert_eq!(shards.report_short(&[held(&orders, 1)]), 0, "warned again");
+    assert_eq!(gauge(&gauges), Some(1.0));
+
+    // A new placement generation of the same short set warns again.
+    assert_eq!(shards.report_short(&[held(&orders, 2)]), 1);
+
+    // Two held shards warn once each.
+    assert_eq!(
+        shards.report_short(&[held(&orders, 2), held(&key("audit", 0), 1)]),
+        1
+    );
+    assert_eq!(gauge(&gauges), Some(2.0));
+
+    // Nothing held clears the gauge and forgets the warning.
+    assert_eq!(shards.report_short(&[]), 0);
+    assert_eq!(gauge(&gauges), Some(0.0));
+    assert_eq!(shards.report_short(&[held(&orders, 2)]), 1);
+}
+
+/// **A held shard that cannot be opened for a pass stays counted and is not
+/// warned about again.** Here the restore gate is still closed.
+#[tokio::test(flavor = "current_thread")]
+async fn a_short_shard_that_cannot_open_stays_counted() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker_of(root.path(), 3).await;
+    let shards = held_shards(&broker);
+    let gauges = Gauges::default();
+    let _recorder = metrics::set_default_local_recorder(&gauges);
+    let orders = key("orders", 0);
+    shards.report_short(&[held(&orders, 1)]);
+
+    for _ in 0..2 {
         shards
             .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
             .await;
     }
-    assert_eq!(warnings(), 1, "the hold warned on every pass");
-    assert_eq!(gauge(), Some(1.0));
+    assert_eq!(gauge(&gauges), Some(1.0), "the gauge dipped");
+    assert_eq!(shards.short_warned.lock().get(&orders), Some(&1));
 
-    // A new placement version of the same short set warns again.
-    let mut next = assigned(orders.clone(), INCARNATION);
-    next.generation += 1;
-    shards.take(&mut assignments([next])).await;
-    assert_eq!(warnings(), 2);
-
-    // A full set is no longer held back.
+    // A full set is not held, open or not.
     shards.take(&mut assignments([replicated()])).await;
-    assert_eq!(gauge(), Some(0.0));
-    assert_eq!(warnings(), 2);
+    assert_eq!(gauge(&gauges), Some(0.0));
+}
+
+/// A shard with a short set is classified once its member is open: blank
+/// and short is counted, a full set is not.
+#[tokio::test(flavor = "current_thread")]
+async fn an_open_blank_short_shard_is_counted_and_a_full_one_is_not() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker_of(root.path(), 3).await;
+    let shards = unbound_shards(&broker);
+    let gauges = Gauges::default();
+    let _recorder = metrics::set_default_local_recorder(&gauges);
+    shards
+        .take(&mut assignments([assigned(key("orders", 0), INCARNATION)]))
+        .await;
+    assert_eq!(gauge(&gauges), Some(1.0));
+    shards.take(&mut assignments([replicated()])).await;
+    assert_eq!(gauge(&gauges), Some(0.0));
 }

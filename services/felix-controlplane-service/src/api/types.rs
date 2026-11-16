@@ -243,7 +243,7 @@ pub struct StreamCreateResponse {
     #[serde(flatten)]
     pub stream: Stream,
     /// Advisory only: the stream was created. Set when its replication factor
-    /// exceeds the registered brokers, since no Raft group forms until
+    /// exceeds the live brokers, since no Raft group forms until
     /// placement names that many.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,

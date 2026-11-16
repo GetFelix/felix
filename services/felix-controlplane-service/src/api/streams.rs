@@ -28,7 +28,9 @@ use crate::auth::bearer::{require_cluster_action, require_tenant_action, tenant_
 use crate::auth::rbac::authorize::{
     ACTION_NODE_VIEW, ACTION_STREAM_MANAGE, ParsedObject, Segment, object_within_scope,
 };
-use crate::model::{Stream, StreamKey, StreamPatchRequest, StreamRouting, validate_identifier};
+use crate::model::{
+    NodeLifecycle, Stream, StreamKey, StreamPatchRequest, StreamRouting, validate_identifier,
+};
 use crate::store::StoreError;
 
 #[utoipa::path(
@@ -85,7 +87,7 @@ pub(crate) async fn list_streams(
     ),
     request_body = StreamCreateRequest,
     responses(
-        (status = 201, description = "Stream created. `warnings` is present when `replication_factor` exceeds the registered brokers: the stream exists, but no Raft group forms until that many brokers are placed", body = StreamCreateResponse),
+        (status = 201, description = "Stream created. `warnings` is present when `replication_factor` exceeds the live brokers: the stream exists, but no Raft group forms until that many brokers are placed", body = StreamCreateResponse),
         (status = 200, description = "Stream already exists with this configuration; nothing changed", body = StreamCreateResponse),
         (status = 404, description = "Tenant or namespace not found", body = crate::api::types::ErrorResponse),
         (status = 400, description = "Invalid request, such as a `mount` that is not a valid topic prefix or is set on a stream that is not durable", body = crate::api::types::ErrorResponse),
@@ -107,6 +109,7 @@ pub(crate) async fn create_stream(
     match state.store.create_stream(stream.clone()).await {
         Ok(created) => {
             let warnings = short_of_brokers(&state, &created).await;
+            log_short(&created, &warnings);
             Ok((StatusCode::CREATED, Json(response(created, warnings))))
         }
         Err(ref err) if let Some(refusal) = crate::store::reused_name_refusal(err) => {
@@ -138,38 +141,49 @@ fn response(stream: Stream, warnings: Vec<String>) -> StreamCreateResponse {
     StreamCreateResponse { stream, warnings }
 }
 
-/// Warns when `stream` asks for more brokers a shard than are registered.
+/// Warns when `stream` asks for more brokers a shard than are live (registered and not draining or down).
 /// Never a refusal: brokers register after streams are created when a
 /// cluster bootstraps. A node list that cannot be read warns of nothing.
 pub(crate) async fn short_of_brokers(state: &AppState, stream: &Stream) -> Vec<String> {
     let Ok(nodes) = state.store.list_nodes().await else {
         return Vec::new();
     };
-    short_warning(stream, nodes.len()).into_iter().collect()
+    // Draining, down and departed nodes are not placed on.
+    let live = nodes
+        .iter()
+        .filter(|node| node.status.lifecycle == NodeLifecycle::Live)
+        .count();
+    short_warning(stream, live).into_iter().collect()
 }
 
-pub(crate) fn short_warning(stream: &Stream, registered: usize) -> Option<String> {
-    if stream.replication_factor as usize <= registered || !stream.durable {
+/// Logs a warning an actual create produced. A repeated create answers the
+/// same warning without logging it again.
+fn log_short(stream: &Stream, warnings: &[String]) {
+    for warning in warnings {
+        tracing::warn!(
+            tenant = %stream.tenant_id,
+            namespace = %stream.namespace,
+            stream = %stream.stream,
+            replication_factor = stream.replication_factor,
+            "{warning}"
+        );
+    }
+}
+
+pub(crate) fn short_warning(stream: &Stream, live: usize) -> Option<String> {
+    if stream.replication_factor as usize <= live || !stream.durable {
         return None;
     }
     let warning = format!(
-        "replication_factor is {} but {} {} registered: no Raft group forms for a shard until placement names {} brokers",
+        "replication_factor is {} but {} {} live: no Raft group forms for a shard until placement names {} brokers",
         stream.replication_factor,
-        registered,
-        if registered == 1 {
+        live,
+        if live == 1 {
             "broker is"
         } else {
             "brokers are"
         },
         stream.replication_factor,
-    );
-    tracing::warn!(
-        tenant = %stream.tenant_id,
-        namespace = %stream.namespace,
-        stream = %stream.stream,
-        replication_factor = stream.replication_factor,
-        registered,
-        "{warning}"
     );
     Some(warning)
 }
