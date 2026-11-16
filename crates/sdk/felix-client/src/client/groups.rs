@@ -495,7 +495,8 @@ impl Connection {
     /// committed tail when the seek lands; an `Offset` outside those is
     /// refused. Records the group had handed out are void: an ack for one
     /// that the group now owes is refused as stale, and the record is
-    /// delivered again from the new position. Dead letters are kept.
+    /// delivered again from the new position. Dead letters below it are
+    /// kept; those at or above it are delivered again.
     /// Needs the `group.manage` permission.
     pub async fn group_seek(
         &self,

@@ -1251,12 +1251,12 @@ async fn a_group_read_bound_comes_from_the_mark_at_the_served_generation() {
     assert_eq!(bound.expect("readable"), Some(5));
 }
 
-/// **A consumer-group operation on a Raft shard is refused by name.** Group
-/// state is written to the stream's log, which on Raft takes plain publishes
-/// only.
+/// **A poll waiting on a Raft shard is woken by a commit, not by its
+/// recheck.** The recheck is an hour, so an answer in seconds was a wake-up
+/// from the stream's `appended` signal.
 #[cfg(feature = "raft")]
 #[tokio::test]
-async fn a_group_operation_on_a_raft_shard_is_refused_by_name() {
+async fn a_waiting_raft_poll_is_woken_by_a_commit() {
     use crate::shards::raft::tests as fixture;
     use crate::shards::routing::EngineShards;
 
@@ -1275,13 +1275,63 @@ async fn a_group_operation_on_a_raft_shard_is_refused_by_name() {
             ..ClusterContext::default()
         },
     );
+    let waiting = {
+        let (broker, publish_ctx) = (Arc::clone(&broker), publish_ctx.clone());
+        tokio::spawn(async move {
+            poll_rechecking(
+                &broker,
+                &publish_ctx,
+                None,
+                "t1",
+                "ns",
+                "orders",
+                0,
+                GROUP,
+                10,
+                Duration::from_secs(60),
+                NEVER,
+                None,
+                None,
+            )
+            .await
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!waiting.is_finished(), "the poll answered before a publish");
 
-    let described = describe(&broker, &publish_ctx, "t1", "ns", "orders", 0, GROUP).await;
-
-    let err = described.expect_err("a group on a Raft shard was served");
-    assert_eq!(
-        err.message(),
-        "a stream on Raft does not take consumer groups"
-    );
+    let at = fixture::write_batch(&shards, &orders, 1, 0, 0, 1, &[b"late"]).await;
+    assert_eq!(answered(waiting, "a commit").await, vec![at]);
     EngineShards::shutdown(&*shards).await;
+}
+
+/// **A waiting Raft poll swallows only a leadership move.** Any other failure
+/// after the first read reaches the consumer instead of passing as an empty
+/// answer.
+#[cfg(feature = "raft")]
+#[test]
+fn a_later_poll_failure_is_swallowed_only_for_a_leadership_move() {
+    use felix_broker::{BrokerError, NotReadable};
+
+    use super::raft::{failed, moved};
+    let outcome = |first: bool, err: BrokerError| {
+        let moved = moved(&err);
+        failed(
+            first,
+            ClientError::from_broker(&err, err.to_string()),
+            moved,
+        )
+    };
+    let refused = || BrokerError::StateNotReadable(NotReadable::Refused);
+    assert_eq!(outcome(false, refused()).expect("swallowed"), Vec::new());
+    assert!(outcome(true, refused()).is_err(), "the first poll is told");
+    assert!(outcome(false, BrokerError::StateViewBusy).is_err());
+    assert!(
+        outcome(
+            false,
+            BrokerError::ProposalsStalled {
+                waited: Duration::ZERO
+            }
+        )
+        .is_err()
+    );
 }

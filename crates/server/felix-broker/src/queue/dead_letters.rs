@@ -35,6 +35,7 @@ use felix_storage::LogCache;
 use felix_storage::log::LogConfig;
 use parking_lot::Mutex as SyncMutex;
 
+use super::cursors::DeadLetterMark;
 use super::reader::GroupKey;
 use crate::error::{BrokerError, Result};
 
@@ -55,6 +56,50 @@ pub struct DeadLetters {
     #[cfg(test)]
     pub(crate) fail_next_record: std::sync::atomic::AtomicBool,
 }
+
+/// One group's dead letters and the redriven ones it still owes, each lowest
+/// first.
+#[derive(Debug, Default)]
+pub(crate) struct Listed {
+    pub(crate) dead: Vec<u64>,
+    pub(crate) redriven: Vec<u64>,
+    /// The dead offsets each layout holds, for a caller deleting them.
+    in_shard: Vec<u64>,
+    in_legacy: Vec<u64>,
+}
+
+/// A seek's clear of one group's dead letters, begun and not yet finished.
+/// See `docs/storage-format.md` ("Dead-letter entries").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Clear {
+    /// The seek's target: the dead letters at or above it go.
+    pub(crate) from: u64,
+    /// The marker's own offset in the dead-letter log. The seek's cursor
+    /// carries exactly [`DeadLetters::clear_mark`]: the log just past it.
+    pub(crate) floor: u64,
+}
+
+impl Clear {
+    fn encode(&self) -> bytes::Bytes {
+        let mut out = Vec::with_capacity(16);
+        out.extend_from_slice(&self.from.to_be_bytes());
+        out.extend_from_slice(&self.floor.to_be_bytes());
+        bytes::Bytes::from(out)
+    }
+
+    fn decode(bytes: &[u8]) -> Option<Self> {
+        let word = |at: usize| Some(u64::from_be_bytes(bytes.get(at..at + 8)?.try_into().ok()?));
+        (bytes.len() == 16).then_some(())?;
+        Some(Self {
+            from: word(0)?,
+            floor: word(8)?,
+        })
+    }
+}
+
+/// The key suffix of a group's clear marker. Not a number, so a build that
+/// predates it skips the entry when it lists dead letters.
+const CLEAR_SUFFIX: &str = "\u{1f}clear";
 
 /// The value of an entry whose record was redriven and is not yet finished.
 const REDRIVEN: &[u8] = b"redriven";
@@ -108,9 +153,48 @@ impl DeadLetters {
     /// Offsets `group` has given up on, lowest first. Redriven ones are not
     /// listed: they are back in the queue.
     pub async fn list(&self, key: &GroupKey) -> Result<Vec<u64>> {
-        let mut offsets = self.entries_in_state(key, false).await?;
+        Ok(self.listed(key).await?.dead)
+    }
+
+    /// Offsets `group` had redriven and has not finished, lowest first.
+    ///
+    /// What a leader rebuilding the group reads to owe them again.
+    pub async fn redriven(&self, key: &GroupKey) -> Result<Vec<u64>> {
+        Ok(self.listed(key).await?.redriven)
+    }
+
+    /// Both of `group`'s lists from one read of its entries.
+    ///
+    /// An offset redriven out of the legacy layout is still in it until the
+    /// legacy delete lands, so a crash in between leaves it in both. It is
+    /// redriven: that write came first.
+    pub(crate) async fn listed(&self, key: &GroupKey) -> Result<Listed> {
+        let prefix = format!("{}\u{1f}", key.group);
+        let mut dead = Vec::new();
+        let mut redriven = Vec::new();
+        for entry in self
+            .entries
+            .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await
+            .map_err(BrokerError::from)?
+        {
+            let Some(offset) = entry
+                .key
+                .strip_prefix(&prefix)
+                .and_then(|offset| offset.parse::<u64>().ok())
+            else {
+                continue;
+            };
+            if entry.value.as_ref() == REDRIVEN {
+                redriven.push(offset);
+            } else {
+                dead.push(offset);
+            }
+        }
+        redriven.sort_unstable();
+        let mut in_legacy = Vec::new();
         if let Some(legacy) = self.legacy(key) {
-            offsets.extend(
+            in_legacy.extend(
                 legacy
                     .keys(
                         &key.tenant_id,
@@ -121,21 +205,182 @@ impl DeadLetters {
                     .await
                     .map_err(BrokerError::from)?
                     .into_iter()
-                    .filter_map(|entry| entry.parse::<u64>().ok()),
+                    .filter_map(|entry| entry.parse::<u64>().ok())
+                    .filter(|offset| redriven.binary_search(offset).is_err()),
             );
         }
-        offsets.sort_unstable();
-        offsets.dedup();
-        Ok(offsets)
+        let in_shard = dead.clone();
+        dead.extend_from_slice(&in_legacy);
+        dead.sort_unstable();
+        dead.dedup();
+        Ok(Listed {
+            dead,
+            redriven,
+            in_shard,
+            in_legacy,
+        })
     }
 
-    /// Offsets `group` had redriven and has not finished, lowest first.
+    /// Start a seek's clear of `group`'s dead letters at or above `from`, so
+    /// the seek delivers those records again: write the marker that names it,
+    /// and nothing else yet. `None` when there is nothing to clear.
     ///
-    /// What a leader rebuilding the group reads to owe them again.
-    pub async fn redriven(&self, key: &GroupKey) -> Result<Vec<u64>> {
-        let mut offsets = self.entries_in_state(key, true).await?;
-        offsets.sort_unstable();
-        Ok(offsets)
+    /// The marker is written at the log's current end, its `floor`, and the
+    /// seek's cursor carries [`Self::clear_mark`]. [`Self::finish_clear`]
+    /// deletes the entries only once a cursor with exactly that offset and
+    /// mark is in force, so a seek that never lands clears nothing, whatever
+    /// another build commits meanwhile. Redriven entries are never cleared:
+    /// they are still owed.
+    pub(crate) async fn begin_clear(&self, key: &GroupKey, from: u64) -> Result<Option<Clear>> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        if !self
+            .listed(key)
+            .await?
+            .dead
+            .iter()
+            .any(|&offset| offset >= from)
+        {
+            return Ok(None);
+        }
+        let log = crate::durable::StreamLog::from_log(
+            self.shard_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+                .await?,
+        );
+        let floor = log.tail_offset().await?;
+        let clear = Clear { from, floor };
+        self.entries
+            .put_checked(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                &clear_key(&key.group),
+                clear.encode(),
+                None,
+            )
+            .await
+            .map_err(BrokerError::from)?;
+        // Every write to this log takes the shard's lock, so the marker is at
+        // `floor`. Were it not, its cursor's mark would not name it; the seek
+        // fails and its clear is voided.
+        let end = log.tail_offset().await?;
+        if end != floor + 1 {
+            return Err(BrokerError::Storage(format!(
+                "a clear marker written at {floor} left the dead-letter log ending at {end}"
+            )));
+        }
+        Ok(Some(clear))
+    }
+
+    /// The mark a seek's cursor carries for `clear`: the dead-letter log just
+    /// past its marker. A cursor from another seek or commit carries a
+    /// different offset or mark, so equality binds the clear to its seek.
+    pub(crate) async fn clear_mark(&self, key: &GroupKey, clear: Clear) -> Result<DeadLetterMark> {
+        let log = self
+            .synced_log(&key.tenant_id, &key.namespace, &key.stream, key.shard)
+            .await?;
+        Ok(DeadLetterMark::of(clear.floor + 1, &log.epochs))
+    }
+
+    /// Delete the dead letters `clear` names, then its marker. For a clear
+    /// whose seek's cursor is in force. Returns how many were deleted; none
+    /// when the marker is no longer `clear`.
+    ///
+    /// A crash part way leaves the marker, and the next
+    /// [`Self::pending_clears`] finishes it.
+    pub(crate) async fn finish_clear(&self, key: &GroupKey, clear: Clear) -> Result<usize> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        if self.pending_clear(key).await? != Some(clear) {
+            return Ok(0);
+        }
+        let listed = self.listed(key).await?;
+        let mut cleared = 0;
+        for &offset in listed
+            .in_shard
+            .iter()
+            .filter(|&&offset| offset >= clear.from)
+        {
+            self.delete(key, &entry_key(&key.group, offset)).await?;
+            cleared += 1;
+        }
+        if let Some(legacy) = self.legacy(key) {
+            for &offset in listed
+                .in_legacy
+                .iter()
+                .filter(|&&offset| offset >= clear.from)
+            {
+                legacy
+                    .delete_checked(
+                        &key.tenant_id,
+                        &key.namespace,
+                        &legacy_scope(key),
+                        key.shard,
+                        &offset.to_string(),
+                    )
+                    .await
+                    .map_err(BrokerError::from)?;
+                cleared += 1;
+            }
+        }
+        self.delete(key, &clear_key(&key.group)).await?;
+        Ok(cleared)
+    }
+
+    /// Drop `clear`'s marker without deleting anything: its seek never landed,
+    /// so the dead letters it named are still listed and still redrivable.
+    pub(crate) async fn void_clear(&self, key: &GroupKey, clear: Clear) -> Result<()> {
+        let lock = self.lock_for(key);
+        let _guard = lock.lock().await;
+        if self.pending_clear(key).await? == Some(clear) {
+            self.delete(key, &clear_key(&key.group)).await?;
+        }
+        Ok(())
+    }
+
+    /// Every group on this shard with a clear begun and not finished or
+    /// voided: a seek that crashed, failed or was cancelled part way.
+    pub(crate) async fn pending_clears(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> Result<Vec<(String, Clear)>> {
+        Ok(self
+            .entries
+            .live_entries_checked(tenant_id, namespace, stream, shard)
+            .await
+            .map_err(BrokerError::from)?
+            .into_iter()
+            .filter_map(|entry| {
+                let group = entry.key.strip_suffix(CLEAR_SUFFIX)?;
+                Some((group.to_owned(), Clear::decode(&entry.value)?))
+            })
+            .collect())
+    }
+
+    async fn pending_clear(&self, key: &GroupKey) -> Result<Option<Clear>> {
+        Ok(self
+            .state(key, &clear_key(&key.group))
+            .await?
+            .as_deref()
+            .and_then(Clear::decode))
+    }
+
+    async fn delete(&self, key: &GroupKey, entry: &str) -> Result<()> {
+        self.entries
+            .delete_checked(
+                &key.tenant_id,
+                &key.namespace,
+                &key.stream,
+                key.shard,
+                entry,
+            )
+            .await
+            .map(drop)
+            .map_err(BrokerError::from)
     }
 
     /// Put a dead letter back in the queue: flip its entry to [`REDRIVEN`].
@@ -462,20 +707,6 @@ impl DeadLetters {
             .map_err(BrokerError::from)
     }
 
-    /// This group's entries in the per-shard log that are redriven, or not.
-    async fn entries_in_state(&self, key: &GroupKey, redriven: bool) -> Result<Vec<u64>> {
-        let prefix = format!("{}\u{1f}", key.group);
-        Ok(self
-            .entries
-            .live_entries_checked(&key.tenant_id, &key.namespace, &key.stream, key.shard)
-            .await
-            .map_err(BrokerError::from)?
-            .into_iter()
-            .filter(|entry| (entry.value.as_ref() == REDRIVEN) == redriven)
-            .filter_map(|entry| entry.key.strip_prefix(&prefix)?.parse().ok())
-            .collect())
-    }
-
     fn lock_for(&self, key: &GroupKey) -> Arc<tokio::sync::Mutex<()>> {
         let shard = (
             key.tenant_id.clone(),
@@ -596,6 +827,10 @@ impl DeadLetters {
 }
 
 /// One group's claim on one offset, inside the shard's log.
+fn clear_key(group: &str) -> String {
+    format!("{group}{CLEAR_SUFFIX}")
+}
+
 fn entry_key(group: &str, offset: u64) -> String {
     format!("{group}\u{1f}{offset}")
 }

@@ -564,7 +564,7 @@ felixctl group describe orders billing --shard 0 --json
 
 ### `felixctl group seek`
 
-Move GROUP's cursor on every shard, or on --shard, to POSITION. Records the group had handed out are void and are delivered again from the new position. Dead letters are kept. Moving the cursor backwards replays finished records, so it asks first on a terminal and needs --yes elsewhere. Needs the group.manage permission.
+Move GROUP's cursor on every shard, or on --shard, to POSITION. Records the group had handed out are void and are delivered again from the new position. Dead letters below POSITION are kept; those at or above it are delivered again. Moving the cursor backwards replays finished records, so it asks first on a terminal and needs --yes elsewhere. Needs the group.manage permission.
 
 ```text
 felixctl group seek [OPTIONS] <STREAM> <GROUP> <POSITION>

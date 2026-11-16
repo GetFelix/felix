@@ -266,6 +266,7 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "raft_record_headers"
         | "raft_atomic_commit"
         | "raft_stream_purge"
+        | "raft_consumer_groups"
         | "atomic_commit"
         | "publisher_principal"
         | "group_cursor_dependencies"

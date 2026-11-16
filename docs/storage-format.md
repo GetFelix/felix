@@ -1511,7 +1511,12 @@ local build can finish while a receive is in flight. The open deletes a
 
 A stream shard's snapshot data is empty, or the cut batches alone in the
 `producers.forgotten` layout, or, once the shard has group writes, both
-together:
+together. The cut batches here are the file's first list, followed by the
+tombstones (count u32, then producer_id, sequence, last, u64 each) when there
+are any, all under the one crc. Without tombstones the bytes are the older
+layout, so a member that predates them reads every snapshot a log with no
+tombstones sends. A member that predates them refuses the install of one with
+tombstones: the data does not parse.
 
 ```text
 0   4  magic          u32  "FLST"
@@ -2019,7 +2024,29 @@ crc    u32  crc32 of the rest
 count  u32  then count × { producer_id u64, sequence u64 }
 count  u32  then count × { producer_id u64, sequence u64 }   carried
 base   u64  the installed snapshot's base, u64::MAX for none
+count  u32  then count × { producer_id u64, sequence u64, last u64 }   tombstones
 ```
+
+The tombstones are present only when there is at least one. A tombstone is a
+producer a purge (or a reset with no snapshot installed) forgot completely:
+every batch of it was below the new base. `sequence` is its newest batch and
+`last` the offset of that batch's last record. A re-send of that sequence or
+an older one is refused with `sequence_expired`; without it, a re-send at
+sequence 0 would look like a new producer's first batch and be written
+again. A producer whose batch still has pieces past the base gets no
+tombstone: it is refused as a cut batch, as a copy that starts at the base
+sees it. At most 4096 tombstones are kept, and past that the one with the
+lowest `last` goes. A producer whose tombstone went that way and that then
+re-sends its sequence 0 is written again: the one case the tombstones do not
+cover. Only the native idempotent path is refused: a Kafka producer keeps its
+id across an epoch bump and restarts at sequence 0, so its re-send is written
+as before (see issue 2702). Tombstones are derived from committed records below the base, so they
+are carried like `carried` entries. A hybrid log keeps them too: it reads only
+the tombstones from this file and ignores the rest.
+
+A build that predates tombstones reads a file with them as damaged and
+refuses to open the Raft log; a hybrid log of such a build does not read the
+file at all, and so forgets its tombstones.
 
 The second list is the `carried` entries, and `base` is the base of the
 snapshot whose carried batches were taken in last. It is cleared only once
@@ -2598,3 +2625,37 @@ broker writes it from the start. Until then cursors are legacy values, and
 a crash that keeps a cursor's tail and loses the dead letter it passed a
 record on is not caught. See `docs/replication-design.md` ("Group state at
 promotion").
+
+## Dead-letter entries
+
+A hybrid shard's dead letters are cache-log entries in its `dead-letters/`
+log, keyed by group name, the byte 0x1f, and a suffix:
+
+```text
+<group> 0x1f <offset, decimal>   empty value: a dead letter
+                                 "redriven": put back, not yet finished
+<group> 0x1f clear               16 bytes: a seek's clear, begun
+   0   8  from     u64 BE  the seek's target
+   8   8  floor    u64 BE  the entry's own offset in the dead-letter log
+```
+
+A seek back over dead letters delivers them again. It writes the `clear`
+entry, then its cursor at `from` with `dlq_end` `floor + 1` and the
+generation that wrote the entry, then deletes the group's dead letters at or
+above `from` and the `clear` entry. Before a shard is served, a `clear` entry
+left by a seek that crashed, failed or was cancelled is finished only if the
+group's cursor is exactly that one: offset `from` and that `dlq_end` and
+generation. Any other cursor drops it, including a commit by a build that
+ignores the entry and has moved past it, since that cursor may stand above
+the dead letters. A dropped clear deletes nothing: the dead letters stay
+listed and redrivable.
+
+The clear, and a rebuilt group settling dead letters at or above its
+cursor, apply only once the fleet has finalized `group_cursor_dependencies`.
+Before that a seek keeps every dead letter and writes no `clear` entry, and a
+dead letter recorded just before a leader change is delivered again
+(at-least-once).
+
+A build before the `clear` entry skips it when it lists dead letters, since
+its suffix is not a number, and deletes it with the group. Reading a log
+part way through a seek, it sees the dead letters not yet deleted as dead.

@@ -481,8 +481,7 @@ impl DiskLog {
                     let segments = inner.segments.read();
                     segments.check_open()?;
                     let log_base = segments.base_offset();
-                    let carried =
-                        producers::CarriedFrom::new(inner.producers.lock().carried().clone());
+                    let carried = producers::CarriedFrom::new(inner.producers.lock().carried());
                     (
                         log_base,
                         segments.first_markable_offset().max(log_base),

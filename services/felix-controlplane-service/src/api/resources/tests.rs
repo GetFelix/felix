@@ -89,3 +89,46 @@ fn a_new_stream_gets_an_incarnation_once_the_fleet_finalized_them() {
     assert!(first > 0 && first < 1 << 53, "{first}");
     assert_ne!(first, second, "each creation draws its own");
 }
+
+/// **A create asking for more brokers a shard than are registered is
+/// warned about, not refused**: brokers register after streams when a
+/// cluster bootstraps.
+#[test]
+fn a_replication_factor_over_the_registered_brokers_warns() {
+    let mut wide = stream(StreamRouting::Modulo);
+    wide.replication_factor = 3;
+    let warning = crate::api::streams::short_warning(&wide, 1).expect("warns");
+    assert!(
+        warning.contains("3") && warning.contains("1 broker is"),
+        "{warning}"
+    );
+    assert!(crate::api::streams::short_warning(&wide, 3).is_none());
+    assert!(crate::api::streams::short_warning(&wide, 5).is_none());
+    wide.durable = false;
+    assert!(crate::api::streams::short_warning(&wide, 1).is_none());
+}
+
+/// An old client sees the stream's own fields: the warnings field is absent
+/// when empty, and a response with it still reads as a stream.
+#[test]
+fn the_warnings_field_is_absent_when_empty() {
+    use crate::api::types::StreamCreateResponse;
+    let bare = StreamCreateResponse {
+        stream: stream(StreamRouting::Modulo),
+        warnings: Vec::new(),
+    };
+    let value = serde_json::to_value(&bare).expect("json");
+    assert_eq!(value, serde_json::to_value(&bare.stream).expect("json"));
+    assert!(value.get("warnings").is_none());
+
+    let warned = StreamCreateResponse {
+        warnings: vec!["short".to_string()],
+        ..bare
+    };
+    let value = serde_json::to_value(&warned).expect("json");
+    assert_eq!(value["warnings"][0], "short");
+    let back: StreamCreateResponse = serde_json::from_value(value.clone()).expect("round trip");
+    assert_eq!(back.warnings, warned.warnings);
+    let as_stream: Stream = serde_json::from_value(value).expect("an old client reads it");
+    assert_eq!(as_stream, warned.stream);
+}
