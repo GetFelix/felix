@@ -251,27 +251,21 @@ async fn write<'a>(
     let permit = shared.cluster.admit_write(&located.shard_ref()).await?;
     let handle = located.handle(shared).await?;
 
-    let mut claimed = Vec::with_capacity(batches.len());
+    let generation = permit.generation();
+    let mut claims = Claims {
+        pending: Vec::with_capacity(batches.len()),
+        permit: Some(permit),
+    };
     let mut refused = None;
     for batch in &batches {
-        match publish(shared, &located.shard_ref(), &handle, &permit, batch).await {
-            Ok(pending) => claimed.push(pending),
-            Err(failure) => {
-                refused = Some(failure);
-                break;
-            }
+        if let Err(failure) =
+            publish(shared, &located.shard_ref(), &handle, &mut claims, batch).await
+        {
+            refused = Some(failure);
+            break;
         }
     }
-    let generation = permit.generation();
-    // Run to durability on its own task, holding the fence permit, so it
-    // neither waits on the connection's writer (a client that stops reading
-    // would otherwise hold the log's commit turn and the shard's fence) nor
-    // is cut short when the connection goes away.
-    let durable = tokio::spawn(async move {
-        let outcomes = join_all(claimed).await;
-        drop(permit);
-        outcomes
-    });
+    let durable = claims.finish();
     Ok(Box::pin(async move {
         let outcomes = durable.await.map_err(|_| Failure {
             error: ResponseError::UnknownServerError,
@@ -306,14 +300,59 @@ async fn write<'a>(
     }))
 }
 
-/// Claim one batch's place, returning its commit wait.
+/// A partition's claimed batches and the fence permit they were claimed
+/// under. They run to durability on their own task, holding the permit, so
+/// they neither wait on the connection's writer (a client that stops reading
+/// would otherwise hold the log's commit turn and the shard's fence) nor are
+/// cut short when the connection goes away. That holds even when the claim
+/// loop is dropped part way: a claimed batch is already on the log or handed
+/// to the shard's group, so it still owes its fan-out, and a move must not
+/// overtake it.
+struct Claims {
+    pending: Vec<Pending<'static, PublishOutcome>>,
+    permit: Option<WritePermit>,
+}
+
+type Outcomes = Vec<Result<PublishOutcome, Failure>>;
+
+impl Claims {
+    fn finish(mut self) -> tokio::task::JoinHandle<Outcomes> {
+        tokio::spawn(self.complete())
+    }
+
+    fn complete(&mut self) -> impl Future<Output = Outcomes> + Send + 'static {
+        let pending = std::mem::take(&mut self.pending);
+        let permit = self.permit.take();
+        async move {
+            let outcomes = join_all(pending).await;
+            drop(permit);
+            outcomes
+        }
+    }
+
+    fn permit(&self) -> &WritePermit {
+        self.permit.as_ref().expect("held until finished")
+    }
+}
+
+impl Drop for Claims {
+    fn drop(&mut self) {
+        if self.permit.is_some()
+            && let Ok(runtime) = tokio::runtime::Handle::try_current()
+        {
+            runtime.spawn(self.complete());
+        }
+    }
+}
+
+/// Claim one batch's place, adding its commit wait to `claims`.
 async fn publish(
     shared: &Shared,
     shard: &ShardRef<'_>,
     handle: &StreamHandle,
-    permit: &WritePermit,
+    claims: &mut Claims,
     batch: &Batch,
-) -> Result<Pending<'static, PublishOutcome>, Failure> {
+) -> Result<(), Failure> {
     // Blocks are built only when the listener opted in and the broker accepts
     // them, and any key or header makes one, so none means these were not kept.
     if batch.blocks.is_none() {
@@ -363,14 +402,21 @@ async fn publish(
     };
     let produced = shared
         .cluster
-        .produce(&shared.broker, shard, handle, permit, produce)
+        .produce(&shared.broker, shard, handle, claims.permit(), produce)
         .await;
-    let pending: Pending<'static, IdempotentOutcome> = if let Some(produced) = produced {
+    if let Some(produced) = produced {
         let proposed = match produced {
             Ok(proposed) => proposed,
             Err(ProduceError::Broker(err)) => return Err(publish_failure(&err)),
             Err(ProduceError::Write(err)) => return Err(err.into()),
         };
+        // Claimed before the wait below, which may be cut short.
+        claims.pending.push(counted(batch, async move {
+            proposed.await.map_err(|err| match err {
+                ProduceError::Broker(err) => publish_failure(&err),
+                ProduceError::Write(err) => err.into(),
+            })
+        }));
         // A Raft group's log learns a record when it writes it, not when it
         // is handed over. The producer's turn comes round once the last one
         // is written here or given up, and only then may another epoch be
@@ -378,12 +424,6 @@ async fn publish(
         if let Some((id, _)) = producer {
             drop(shared.broker.producer_turn(handle, id).await);
         }
-        Box::pin(async move {
-            proposed.await.map_err(|err| match err {
-                ProduceError::Broker(err) => publish_failure(&err),
-                ProduceError::Write(err) => err.into(),
-            })
-        })
     } else if let Some((producer_id, sequence)) = producer {
         let claim = shared
             .broker
@@ -392,12 +432,12 @@ async fn publish(
             .map_err(|err| publish_failure(&err))?;
         let broker = Arc::clone(&shared.broker);
         let handle = handle.clone();
-        Box::pin(async move {
+        claims.pending.push(counted(batch, async move {
             broker
                 .complete_records_idempotent(&handle, claim)
                 .await
                 .map_err(|err| publish_failure(&err))
-        })
+        }));
     } else {
         let claimed = shared
             .broker
@@ -405,7 +445,7 @@ async fn publish(
             .await
             .map_err(|err| publish_failure(&err))?;
         let broker = Arc::clone(&shared.broker);
-        Box::pin(async move {
+        claims.pending.push(counted(batch, async move {
             broker
                 .complete_publish(claimed)
                 .await
@@ -414,11 +454,19 @@ async fn publish(
                     duplicate: false,
                 })
                 .map_err(|err| publish_failure(&err))
-        })
-    };
+        }));
+    }
+    Ok(())
+}
+
+/// A batch's commit wait, counting its records once it resolves.
+fn counted(
+    batch: &Batch,
+    pending: impl Future<Output = Result<IdempotentOutcome, Failure>> + Send + 'static,
+) -> Pending<'static, PublishOutcome> {
     let records = batch.values.len() as u64;
     let bytes = batch.values.iter().map(Bytes::len).sum::<usize>() as u64;
-    Ok(Box::pin(async move {
+    Box::pin(async move {
         let IdempotentOutcome { outcome, duplicate } = pending.await?;
         if duplicate {
             crate::metrics::duplicate(records);
@@ -426,7 +474,7 @@ async fn publish(
             crate::metrics::produced(records, bytes);
         }
         Ok(outcome)
-    }))
+    })
 }
 
 fn publish_failure(err: &BrokerError) -> Failure {

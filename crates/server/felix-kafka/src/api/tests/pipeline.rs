@@ -281,3 +281,80 @@ async fn an_older_epoch_waits_for_a_proposed_newer_one() {
     fixture.cluster.release(0, None);
     assert_eq!(produced(answer(&mut newer).await.1), (0, 0));
 }
+
+/// **A reset while a later request is mid-claim on a Raft shard keeps that
+/// request's fence permit until its batch is written.** The writer fails on
+/// the first answer while the second request, handed to the group, waits
+/// for its producer's turn; dropping the claim there must not let a move
+/// overtake the proposal.
+#[tokio::test]
+async fn a_reset_mid_claim_holds_the_fence_until_written() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.gate_writes();
+    // Smaller than one answer, so the writer blocks writing the first.
+    let mut client = fixture.connect_buffered(16, Vec::new(), CancellationToken::new());
+
+    client
+        .send(&request(1, 0, idempotent(PRODUCER, 0, &["a"])), 9)
+        .await;
+    claimed(&fixture, 1).await;
+    fixture.cluster.release(0, None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    client
+        .send(&request(1, 0, idempotent(PRODUCER, 1, &["b"])), 9)
+        .await;
+    claimed(&fixture, 2).await;
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        fixture.cluster.live_permits.load(Ordering::SeqCst),
+        1,
+        "the proposed batch still holds its permit"
+    );
+    fixture.cluster.release(1, None);
+    permits_released(&fixture).await;
+}
+
+/// **A reset while a later batch of a request waits for its claim still
+/// fans out the batch claimed before it.** The first batch is on the log;
+/// the second waits on its producer's turn when the writer fails on an
+/// earlier answer. A live subscriber still gets the first batch.
+#[tokio::test]
+async fn a_reset_mid_claim_fans_out_the_batches_already_claimed() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    let mut subscription = fixture
+        .broker
+        .subscribe(super::TENANT, "orders", "created", 0)
+        .await
+        .expect("subscribe");
+    let handle = fixture
+        .broker
+        .resolve_stream_handle(super::TENANT, "orders", "created", 0)
+        .await
+        .expect("handle");
+    let mut client = fixture.connect_buffered(16, Vec::new(), CancellationToken::new());
+
+    // Its answer blocks the writer.
+    client.send(&request(1, 0, plain(&["a"])), 9).await;
+    assert_eq!(subscription.recv().await.as_deref(), Some(&b"a"[..]));
+    let other = 8;
+    let turn = fixture
+        .broker
+        .producer_turn(&handle, crate::api::producer_id::producer_family(other))
+        .await;
+    let mut records = plain(&["b"]).to_vec();
+    records.extend_from_slice(&idempotent(other, 0, &["c"]));
+    client.send(&request(1, 0, Bytes::from(records)), 9).await;
+    // The first batch claimed, the second waiting on its producer's turn.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(client);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    drop(turn);
+
+    let delivered = tokio::time::timeout(Duration::from_secs(5), subscription.recv())
+        .await
+        .expect("the claimed batch is fanned out");
+    assert_eq!(delivered.as_deref(), Some(&b"b"[..]));
+}
