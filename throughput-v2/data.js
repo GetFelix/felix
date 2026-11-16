@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794847192022,
+  "lastUpdate": 1794847687868,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -60528,6 +60528,58 @@ window.BENCHMARK_DATA = {
             "range": "39400.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1630738.14\nmean: 1609241.52\nstdev: 39400.64\ncv: 2.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f5179487d1b1342895a67e3cb442bfb06311ebf9",
+          "message": "build(deps): bump sha2 from 0.10.9 to 0.11.1 (#2686)\n\n* build(deps): bump sha2 from 0.10.9 to 0.11.1\n\nBumps [sha2](https://github.com/RustCrypto/hashes) from 0.10.9 to 0.11.1.\n- [Commits](https://github.com/RustCrypto/hashes/compare/sha2-v0.10.9...sha2-v0.11.1)\n\n---\nupdated-dependencies:\n- dependency-name: sha2\n  dependency-version: 0.11.1\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\n\n* build(deps): update demo lockfiles for sha2 0.11\n\n---------\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Gabriel Loewen <gabrielloewen@outlook.com>",
+          "timestamp": "2026-11-16T08:32:42-08:00",
+          "tree_id": "440e08599515ffb467af4a9045bd953af2a763e0",
+          "url": "https://github.com/GetFelix/felix/commit/f5179487d1b1342895a67e3cb442bfb06311ebf9"
+        },
+        "date": 1794847687062,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 405730.55,
+            "range": "12973.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 405730.55\nmean: 408062.72\nstdev: 12973.56\ncv: 3.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 405730.55,
+            "range": "12973.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 405730.55\nmean: 408062.72\nstdev: 12973.56\ncv: 3.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 94072.47,
+            "range": "617.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 94072.47\nmean: 94109.94\nstdev: 617.70\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 940724.74,
+            "range": "6176.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 940724.74\nmean: 941099.43\nstdev: 6176.99\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
