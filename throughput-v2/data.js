@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794806605149,
+  "lastUpdate": 1794807053757,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59644,6 +59644,58 @@ window.BENCHMARK_DATA = {
             "range": "62607.75",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1249698.44\nmean: 1221219.16\nstdev: 62607.75\ncv: 5.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ad9b3854bbf4d0d13e9b5322ca3082c17a9e64bc",
+          "message": "fix(release): drop the redundant version from the Homebrew formula (#2675)\n\nbrew audit --strict in the tap refuses a version the URL already names, so every release bump since 0.7.0 left the tap's CI red.",
+          "timestamp": "2026-11-15T21:24:53-08:00",
+          "tree_id": "daaf7215b5a7ffa351dadf5cc133c13822802251",
+          "url": "https://github.com/GetFelix/felix/commit/ad9b3854bbf4d0d13e9b5322ca3082c17a9e64bc"
+        },
+        "date": 1794807053140,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 483203.72,
+            "range": "27522.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 483203.72\nmean: 490380.66\nstdev: 27522.34\ncv: 5.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 483203.72,
+            "range": "27522.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 483203.72\nmean: 490380.66\nstdev: 27522.34\ncv: 5.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118511.84,
+            "range": "1289.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118511.84\nmean: 118506.50\nstdev: 1289.35\ncv: 1.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1185118.44,
+            "range": "12893.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1185118.44\nmean: 1185064.98\nstdev: 12893.48\ncv: 1.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
