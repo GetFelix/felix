@@ -714,6 +714,20 @@ async fn a_tail_read_on_a_follower_behind_a_trim_starts_at_or_above_its_floor() 
 /// gap, so the follower applies the leader's read index before it joins.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_plain_subscribe_on_a_follower_behind_a_trim_delivers_nothing_below_its_floor() {
+    plain_subscribe_behind_a_trim(false).await;
+}
+
+/// **The same with another subscriber already on the follower.** It keeps
+/// the catch-up from running before the new subscriber registers, so the
+/// log pass that brings the follower up hands both what it applies; the
+/// new one starts where the read barrier left the member.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_plain_subscribe_beside_another_on_a_follower_behind_a_trim_delivers_nothing_below_its_floor()
+ {
+    plain_subscribe_behind_a_trim(true).await;
+}
+
+async fn plain_subscribe_behind_a_trim(with_earlier: bool) {
     let (net, members, leader) = trio().await;
     let orders = key("orders", 0);
     let term = members[leader].shards.leading(&orders).expect("term");
@@ -726,6 +740,16 @@ async fn a_plain_subscribe_on_a_follower_behind_a_trim_delivers_nothing_below_it
         log.commit_offset() == first + 1
     })
     .await;
+    let _earlier = match with_earlier {
+        true => Some(
+            lagger
+                .broker
+                .subscribe("t1", "ns", "orders", 0)
+                .await
+                .expect("an earlier subscriber"),
+        ),
+        false => None,
+    };
 
     net.starved.lock().insert(lagger.name.to_string());
     lead.publish(term, b"r1").await;
@@ -879,15 +903,16 @@ async fn a_deposed_leader_that_missed_the_trim_is_not_read_below_it() {
     stop(&members).await;
 }
 
-/// **A leader's tail read is checked again once its subscriber registers.**
-/// It is let through with no round while the member leads, then the member
-/// steps down before the subscriber registers, so the deposal's end of the
-/// term's subscribers can miss it. The check after the registration sees a
-/// follower and asks as one: with `raft_follower_read` off, it is refused.
+/// **A tail subscriber whose leader stepped down before it registered is
+/// dropped, even with `raft_follower_read` finalized.** The leader let it
+/// through with no round, then lost its term before the registration, so
+/// the deposal's end of the term's subscribers can miss it. A follower's
+/// barrier run after registering would not cover what the log pass
+/// delivered in between, below the successor's floor.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_tail_subscriber_registered_after_its_leader_stepped_down_is_asked_again() {
+async fn a_tail_subscriber_registered_after_its_leader_stepped_down_is_dropped() {
     use felix_broker::FollowerReads as _;
-    let (net, members, old, _, _) = deposed_after_a_trim(true).await;
+    let (net, members, old, _, _) = deposed_after_a_trim(false).await;
     let orders = key("orders", 0);
     let shards = &members[old].shards;
     let term = shards.leading(&orders).expect("still leads its term");
@@ -904,7 +929,7 @@ async fn a_tail_subscriber_registered_after_its_leader_stepped_down_is_asked_aga
     })
     .await;
     let rejoined = shards.after_tail_join("t1", "ns", "orders", 0, term).await;
-    assert_eq!(rejoined, Err(felix_broker::NotReadable::OnLeader));
+    assert_eq!(rejoined, Err(felix_broker::NotReadable::Settling));
     stop(&members).await;
 }
 

@@ -66,8 +66,9 @@ pub trait FollowerReads: Send + Sync + std::fmt::Debug {
 
     /// After a tail subscriber that [`FollowerReads::before_read`] let
     /// through on a leader's `term` is registered. Ok when the member still
-    /// leads `term`, so a later deposal ends the subscriber. Otherwise the
-    /// read is asked again as a follower's.
+    /// leads `term`, so a later deposal ends the subscriber. Otherwise a
+    /// retryable refusal, and the caller drops the registration: a barrier
+    /// after registering cannot cover what was delivered before it.
     fn after_tail_join<'a>(
         &'a self,
         tenant_id: &'a str,
@@ -846,10 +847,10 @@ impl StreamHandle {
         }
         let handle = self.clone();
         let pass = tokio::spawn(async move {
-            // Waits out a pass already running rather than skipping: that
-            // pass may hand a subscriber registered after this returns what
-            // was applied before the caller's read index, below a floor.
-            let _pass = handle.state.log_pass.lock().await;
+            // A pass already running is bringing it up anyway.
+            let Ok(_pass) = handle.state.log_pass.try_lock() else {
+                return;
+            };
             let _ = super::publish::deliver_from_log(&handle).await;
         });
         let _ = pass.await;

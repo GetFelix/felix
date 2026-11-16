@@ -1020,6 +1020,15 @@ LeaseExclusive ==
 
 NoAckBehindNewLeader == ~staleAck
 
+\* The term a lease is held for.
+LeaseTerm(l) == IF StoreLeases THEN term[l] ELSE FelixTerm(l)
+
+\* While a lease holds, no other broker leads a later term. A lease read
+\* takes its read index with no round on this (issue 2603).
+LeaseNoNewerLeader ==
+    \A l, b \in Servers :
+        (b # l /\ LeaseValid(l)) => ~(role[b] = "leader" /\ term[b] > LeaseTerm(l))
+
 OneLeaderPerTerm ==
     /\ \A t \in 1..MaxTerm : Cardinality(elected[t]) <= 1
     /\ \A a, b \in Servers :

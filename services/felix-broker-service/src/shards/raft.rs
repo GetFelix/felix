@@ -960,7 +960,7 @@ impl felix_broker::FollowerReads for RaftShards {
                 if !self.broker.raft_follower_reads_allowed() {
                     return Err(felix_broker::NotReadable::OnLeader);
                 }
-            } else if tail && let Some(term) = self.runtime.led_term(&key) {
+            } else if tail && let Some(term) = self.led_term(&key) {
                 // A deposed leader's tail subscribers end with its term,
                 // so one registered while it still leads needs no round.
                 return Ok(Some(term));
@@ -981,18 +981,30 @@ impl felix_broker::FollowerReads for RaftShards {
             let key = stream_key(tenant_id, namespace, stream, shard);
             // Still leading `term` after the registration: the deposal, if
             // it comes, ends this subscriber with the term's others.
-            if self.runtime.led_term(&key) == Some(term) {
+            if self.led_term(&key) == Some(term) {
                 return Ok(());
             }
-            if self.runtime.follows(&key) && !self.broker.raft_follower_reads_allowed() {
-                return Err(felix_broker::NotReadable::OnLeader);
-            }
-            self.read_barrier(&key, stream, shard).await
+            // Deposed meanwhile, and its end of the term's subscribers may
+            // have run already. A follower's barrier now would come after
+            // the registration, so whatever the log pass delivered in
+            // between is not covered: the subscriber is dropped instead.
+            tracing::debug!(stream, shard, term, "a tail subscriber outlived its term");
+            Err(felix_broker::NotReadable::Settling)
         })
     }
 }
 
 impl RaftShards {
+    /// The term this broker leads `key` in and serves. Read from the terms
+    /// the deposal removes before it spawns the end of the term's
+    /// subscribers, not from the member's lead watch, which can still show
+    /// the term after that end ran.
+    fn led_term(&self, key: &ShardKey) -> Option<u64> {
+        self.leading
+            .generation(key)
+            .filter(|term| self.runtime.led_term(key) == Some(*term))
+    }
+
     async fn read_barrier(
         &self,
         key: &ShardKey,

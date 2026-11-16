@@ -3281,7 +3281,10 @@ so its floor applies there. A tail subscribe asks too, with or without
 event offsets: it starts at the follower's committed tail, which can be
 below a floor it has not received, and the records between would reach
 the subscriber live. Once the index is applied the tail is past the trim,
-so past its floor.
+so past its floor. A tail subscriber then starts at that committed tail
+(and never below the floor): a log pass already running, or one held up
+by another subscriber, may still be delivering what the member applied
+below it, and the subscriber drops those records.
 
 The leader needs a read index of its own before the same reads, a Kafka
 fetch below its tail included, but not before a tail subscribe. While its
@@ -3303,8 +3306,10 @@ A deposed leader's tail subscribers end with its term. The leader lets a
 tail subscribe through with no round, so once the subscriber is
 registered it checks it still leads the same term. If it stepped down in
 between, the end of its term's subscribers may have run before the
-registration, so the subscribe is asked again as a follower's: a read
-index, or `not_ready` before `raft_follower_read`.
+registration, so the subscriber is dropped and the subscribe refused
+with a retryable `not_ready`. Asking for a read index as a follower at
+that point is too late: the log pass may already have handed the
+registered subscriber records below the successor's floor.
 
 A member cut off from its leader refuses these reads with a retryable
 `not_ready` for as long as it is cut off. The Rust client, and the

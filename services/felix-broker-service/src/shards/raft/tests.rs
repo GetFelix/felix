@@ -2180,6 +2180,37 @@ async fn a_term_led_again_keeps_its_subscribers() {
     EngineShards::shutdown(&*shards).await;
 }
 
+/// **A tail subscriber is kept only while its term is still in the terms
+/// the deposal clears.** The deposal removes the term, then ends its
+/// subscribers on a task. The member's lead watch can still show the term
+/// after that, so a check on it would keep a subscriber nothing ends.
+#[tokio::test]
+async fn a_tail_subscriber_after_the_deposal_cleared_its_term_is_dropped() {
+    use felix_broker::FollowerReads as _;
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    until("the term is served", || shards.leading(&orders).is_some()).await;
+    let term = shards.leading(&orders).expect("term");
+    let let_through = shards
+        .before_read("t1", "ns", "orders", 0, true)
+        .await
+        .expect("a leader's tail read");
+    assert_eq!(let_through, Some(term));
+
+    shards.stall_ends(true);
+    shards.leading.deposed(&orders, term);
+    assert_eq!(shards.runtime.led_term(&orders), Some(term));
+    let joined = shards.after_tail_join("t1", "ns", "orders", 0, term).await;
+    assert_eq!(joined, Err(felix_broker::NotReadable::Settling));
+    shards.stall_ends(false);
+    EngineShards::shutdown(&*shards).await;
+}
+
 /// How long a publish that must wait for a commit nobody can give is
 /// watched before it counts as not answered.
 const UNANSWERED: Duration = Duration::from_millis(400);

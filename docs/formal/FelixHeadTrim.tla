@@ -89,10 +89,10 @@
 (* index too. A leader's tail read is not modelled: a deposed leader's     *)
 (* tail subscribers end with its term. That relies on the code checking,   *)
 (* once the subscriber is registered, that the member still leads the      *)
-(* same term, and asking as a follower if not. ConfirmedLeader also        *)
+(* same term, and dropping the subscriber if not. ConfirmedLeader also     *)
 (* stands for a leader that takes its read index on its lease, with no     *)
-(* round: FelixRaftLease.tla shows no newer leader exists while the lease  *)
-(* holds. One read per behaviour.                                          *)
+(* round: FelixRaftLease.tla's LeaseNoNewerLeader shows no other broker    *)
+(* leads a later term while the lease holds. One read per behaviour.       *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets, TLC
 
