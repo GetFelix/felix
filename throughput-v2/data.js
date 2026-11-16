@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794786928976,
+  "lastUpdate": 1794787738397,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59384,6 +59384,58 @@ window.BENCHMARK_DATA = {
             "range": "24057.99",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1207846.06\nmean: 1198665.95\nstdev: 24057.99\ncv: 2.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "327c456d9445c91cc426685146d9690b1227f163",
+          "message": "feat(replication): a Raft leader acts only on a target told for its term (#2654)\n\nA Raft group's leader acts on a membership target only if it was told that target for the term it leads; a re-tell of the same version keeps transfer pacing and a stuck group stays reported stuck across a term change. Part of #2235.",
+          "timestamp": "2026-11-16T00:02:31Z",
+          "tree_id": "95bc9b807ea677dbce3d7e4acc4ae635581440cd",
+          "url": "https://github.com/GetFelix/felix/commit/327c456d9445c91cc426685146d9690b1227f163"
+        },
+        "date": 1794787737878,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 336286.23,
+            "range": "11906.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336286.23\nmean: 340728.02\nstdev: 11906.68\ncv: 3.49%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 336286.23,
+            "range": "11906.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 336286.23\nmean: 340728.02\nstdev: 11906.68\ncv: 3.49%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80952.91,
+            "range": "955.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80952.91\nmean: 80644.75\nstdev: 955.32\ncv: 1.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809529.06,
+            "range": "9553.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809529.06\nmean: 806447.47\nstdev: 9553.16\ncv: 1.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
