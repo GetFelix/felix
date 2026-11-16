@@ -19,6 +19,7 @@ use bytes::Bytes;
 
 use felix_broker::{GroupEntry, GroupTable, ShardGroups};
 use felix_storage::DiskLog;
+use felix_storage::disk_log::CarriedFloor;
 use felix_storage::log::FsyncMode;
 use felix_storage::raft_log::{LogPoint, SnapshotId, SnapshotStore, StoredSnapshot};
 use felix_storage::waiters::{Queue, Waiters};
@@ -32,7 +33,7 @@ use tokio::sync::{Semaphore, watch};
 use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{StoredMembership, invalid};
 use super::commit::Commits;
-use super::stream_snapshot::StreamSnapshot;
+use super::stream_snapshot::{PurgeFloors, StreamSnapshot};
 use super::types::{Applied, ShardTypes};
 use crate::ShardKind;
 
@@ -383,13 +384,63 @@ impl RaftSnapshotBuilder<ShardTypes> for Builder {
 /// to the snapshot's last entry and what earlier purges and installs
 /// carried, never from refusals only this member has, so every member's
 /// snapshot at one entry carries the same. Empty when there is nothing.
+///
+/// A member that keeps a carried floor (it installed a purge snapshot)
+/// passes on the floor it serves, the higher of its own and any it
+/// installed, never only the bytes it was sent: a member that installs from
+/// it skips the trim records too.
 async fn stream_data(log: &DiskLog, state: &State, groups: GroupTable) -> io::Result<Bytes> {
     let base = state.last_applied.map_or(0, |id| id.index + 1);
     let cuts = log
         .forgotten_cuts_from(base)
         .await
         .map_err(io::Error::other)?;
-    Ok(StreamSnapshot { cuts, groups }.encode())
+    // Taken at the applied entry, so the tables' floor is the floor now.
+    let purge = log
+        .carried_floor()
+        .and(log.head_trim())
+        .map(|trim| PurgeFloors {
+            tables: trim.floor,
+            carried: CarriedFloor {
+                offset: trim.offset,
+                floor: trim.floor,
+                headers: trim.headers,
+            },
+        });
+    Ok(StreamSnapshot {
+        cuts,
+        groups,
+        purge,
+    }
+    .encode())
+}
+
+/// Before a stream snapshot replaces this member's state: keep as its floor
+/// the higher of the one it serves and the one the snapshot carries, with
+/// that floor's headers. The install drops the log below the snapshot, and
+/// with it the trim record behind this member's own floor, so both go to
+/// the raise-only floor file, synced, before the snapshot is stored. A crash
+/// at any point leaves a durable floor no lower than before: the file never
+/// goes down, and the old snapshot and log still hold what they held.
+/// The snapshot's tables keep their own floor; only the carried one is
+/// raised.
+async fn keep_floor(log: &DiskLog, purge: Option<PurgeFloors>) -> io::Result<()> {
+    let log = log.clone();
+    cpu(move || {
+        if let Some(own) = log.head_trim() {
+            log.carry_floor(CarriedFloor {
+                offset: own.offset,
+                floor: own.floor,
+                headers: own.headers,
+            })
+            .map_err(io::Error::other)?;
+        }
+        if let Some(purge) = purge {
+            log.carry_floor(purge.carried).map_err(io::Error::other)?;
+        }
+        Ok::<_, io::Error>(())
+    })
+    .await?
 }
 
 impl Machine {
@@ -580,7 +631,15 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // the old snapshot and only more refusals, which the next install
         // repeats.
         let groups = match (&self.log, carried) {
-            (Some(log), Some(StreamSnapshot { cuts, groups })) => {
+            (
+                Some(log),
+                Some(StreamSnapshot {
+                    cuts,
+                    groups,
+                    purge,
+                }),
+            ) => {
+                keep_floor(log, purge).await?;
                 let base = meta.last_log_id.map_or(0, |id| id.index + 1);
                 log.remember_forgotten_cuts(base, cuts)
                     .await

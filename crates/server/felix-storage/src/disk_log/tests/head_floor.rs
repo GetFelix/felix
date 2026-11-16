@@ -556,3 +556,72 @@ async fn a_hold_set_after_a_trim_applied_withdraws_its_floor() {
     );
     page(&log, 3).await.expect("committed range still readable");
 }
+
+fn raft_quiet() -> LogConfig {
+    LogConfig {
+        raft_log: true,
+        ..quiet(FsyncMode::OnCommit)
+    }
+}
+
+fn carried(floor: Offset, headers: &'static str) -> CarriedFloor {
+    CarriedFloor {
+        offset: floor + 1,
+        floor,
+        headers: Bytes::from_static(headers.as_bytes()),
+    }
+}
+
+fn floor_of(log: &DiskLog) -> (Offset, Option<Bytes>) {
+    (
+        log.readable_base(),
+        log.head_trim().map(|trim| trim.headers),
+    )
+}
+
+/// A Raft log keeps a floor it holds no trim record for (a snapshot install
+/// skipped it), and a lower one carried later, as an older leader's snapshot
+/// carries, changes neither the floor nor its headers, before or after a
+/// restart.
+#[tokio::test]
+async fn a_carried_floor_never_goes_down_across_a_restart() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let four = (4, Some(Bytes::from_static(b"four")));
+    {
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_quiet()).expect("open");
+        log.carry_floor(carried(4, "four")).expect("carry");
+        assert_eq!(floor_of(&log), four);
+        let kept = log.carry_floor(carried(3, "three")).expect("carry");
+        assert_eq!(
+            (kept.floor, kept.headers.clone()),
+            (4, Bytes::from_static(b"four"))
+        );
+        assert_eq!(floor_of(&log), four);
+    }
+    let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_quiet()).expect("reopen");
+    assert_eq!(floor_of(&log), four);
+    assert_eq!(log.carried_floor(), Some(carried(4, "four")));
+}
+
+/// A crash at every step of raising the carried floor leaves the old floor
+/// or the new one at the next open, never a lower one and never neither.
+#[tokio::test]
+async fn a_crash_while_raising_the_carried_floor_keeps_a_floor() {
+    for stop_at in 0.. {
+        let dir = tempfile::tempdir().expect("tempdir");
+        {
+            let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_quiet()).expect("open");
+            log.carry_floor(carried(4, "four")).expect("carry");
+            crate::disk_log::crash_point::watch(dir.path(), Some(stop_at));
+            let raised = log.carry_floor(carried(6, "six"));
+            let steps = crate::disk_log::crash_point::unwatch(dir.path());
+            if raised.is_ok() {
+                assert!(stop_at > 0 && steps <= stop_at, "every step was cut");
+                return;
+            }
+        }
+        let log = DiskLog::open(dir.path(), "t/ns/s/0", raft_quiet()).expect("reopen");
+        let (floor, _) = floor_of(&log);
+        assert!(floor == 4 || floor == 6, "stop {stop_at}: floor {floor}");
+    }
+}
