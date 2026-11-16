@@ -655,18 +655,20 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftStreamPurgeNoCap.cfg` | the leader purges past a member's match | pass the same: the cap is not a safety rule. Not registered, run by dispatch: over 84M distinct states and unfinished after 45 minutes |
 | `FelixRaftStreamPurgeNoCapSmall.cfg` | the same with three entries | pass the same (16,369,637 distinct states, 81.9M generated, 3.5 minutes) |
 | `FelixRaftStreamPurgeFive.cfg` | three voters, five entries, one restart, no change of leader, no re-form, no cap | pass the same. Not registered, run by dispatch: over 67M distinct states and unfinished after 45 minutes |
-| `FelixRaftStreamPurgeFiveSmall.cfg` | the same with four entries | pass the same (4,526,442 distinct states, 26.8M generated, 47 seconds) |
+| `FelixRaftStreamPurgeFourSmall.cfg` | the same with four entries | pass the same (4,526,442 distinct states, 26.8M generated, 47 seconds) |
 | `FelixRaftStreamPurgeFiveReform.cfg` | three voters, five entries, one re-form, no restart, no cap | pass the same. Not registered, run by dispatch: over 84M distinct states and unfinished after 45 minutes |
-| `FelixRaftStreamPurgeFiveReformSmall.cfg` | the same with four entries | pass the same (43,521,359 distinct states, 200.7M generated, 4.2 minutes) |
+| `FelixRaftStreamPurgeFourReformSmall.cfg` | the same with four entries | pass the same (43,521,359 distinct states, 200.7M generated, 4.2 minutes) |
 | `FelixRaftStreamPurgeTwoReforms.cfg` | three voters and a learner, three entries, one restart, two re-forms: the floor a re-form carries is read by the next | pass the same. Not registered, run by dispatch: out of heap on a build box |
-| `FelixRaftStreamPurgeTwoReformsSmall.cfg` | the same with two entries | pass the same (7,342,428 distinct states, 37.6M generated, 82 seconds) |
+| `FelixRaftStreamPurgeTwoReformsSmall.cfg` | the same with two entries | pass the same (9,235,335 distinct states, 45.3M generated, 2.6 minutes on a loaded box) |
+| `FelixRaftStreamPurgeTwoReformsWrite.cfg` | three voters, no learner, four entries, two trims, no restart, two re-forms: a write and a trim fit between the re-forms | pass the same. Not registered, run by dispatch: over 88M distinct states and unfinished after 13 minutes on a build box |
+| `FelixRaftStreamPurgeLearnerReformInstall.cfg` | `LearnerReformSmall` without the leader's cap and without a restart, so the learner installs before the re-form | pass the same. Not registered, run by dispatch |
 | `FelixRaftStreamPurgePastFloor.cfg` | a purge bounded by the applied entry, not by floor - 1 | violate `NoAckedLoss`: a record at or above the floor is purged |
 | `FelixRaftStreamPurgeInstallAboveFloor.cfg` | the snapshot at the applied entry, and a member installs any snapshot ahead of it | violate `NoAckedLoss`: the member skips records it was never sent |
 | `FelixRaftStreamPurgeSnapAtApplied.cfg` | the snapshot at the applied entry, install rule kept, leader cap kept | violate `CatchUpPossible`: a follower purges past a slow member, leads, and the member refuses every snapshot |
 | `FelixRaftStreamPurgePastMatch.cfg` | the same without the cap and with no change of leader | violate `CatchUpPossible` |
 | `FelixRaftStreamPurgeTablesAtApplied.cfg` | the snapshot at the purge point carries the current tables | violate `TablesAgree`: entries above the purge point are applied twice |
 | `FelixRaftStreamPurgeReformEntries.cfg` | a re-form reads a copy's last entry only | violate `OffsetNeverReused`: a copy that just installed a snapshot reads as empty |
-| `FelixRaftStreamPurgeReformNoFloorTwice.cfg` | two re-forms, the second reads a floor only from a copy that installed or whose log reaches it, not from one the first re-form carried it into | violate `OffsetNeverReused`: the second re-form gives out offsets below the carried floor again. One re-form passes at these bounds |
+| `FelixRaftStreamPurgeReformNoFloorTwice.cfg` | two re-forms, the second reads a floor only from a copy that installed or whose log reaches it, not from one the first re-form carried it into | violate `OffsetNeverReused`: the second re-form gives out offsets below the carried floor again. One re-form passes at these bounds (`FelixRaftStreamPurgeReformNoFloorOnce.cfg`) |
 | `FelixRaftStreamPurgeReformNoFloor.cfg` | a re-form reads the last entry and the purged id, not the floor | violate `OffsetNeverReused`: offsets below an installed floor are given out again |
 | `FelixRaftStreamPurgeReformKeepsOwnFloor.cfg` | a re-form leaves each copy its own floor; a learner installs | violate `NoReadBelowFloor`: the new leader serves below the learner's floor |
 | `FelixRaftStreamPurgeReformFloorNotStored.cfg` | the re-form raises the floor in memory, not in the snapshot; learner, restart | violate `NoReadBelowFloor`: after a restart the copy serves below the floor |
@@ -675,6 +677,14 @@ that quietly became a pass would be a model that stopped saying anything.
 | `FelixRaftStreamPurgeReachTrimPurge.cfg` | witness at the bounds of `FelixRaftStreamPurgeFive.cfg`: a purge drops a trim entry | violate `NeverPurgesATrim` |
 | `FelixRaftStreamPurgeReachWriteAfterReform.cfg` | witness at the bounds of `FelixRaftStreamPurgeFiveReform.cfg`: a write follows a re-form | violate `NeverWritesAfterReform` |
 | `FelixRaftStreamPurgeReachPurgeAfterReform.cfg` | witness at the same bounds: a purge follows a re-form | violate `NeverPurgesAfterReform` |
+| `FelixRaftStreamPurgeReformNoFloorOnce.cfg` | the bounds of `ReformNoFloorTwice` with one re-form: the control | pass the same |
+| `FelixRaftStreamPurgeReachTrimPurgeFour.cfg` | witness at the bounds of `FourSmall.cfg`: a purge drops a trim entry | violate `NeverPurgesATrim` |
+| `FelixRaftStreamPurgeReachWriteAfterReformFour.cfg`, `...ReachPurgeAfterReformFour.cfg` | witnesses at the bounds of `FourReformSmall.cfg`: a write, and a purge, follow a re-form | violate `NeverWritesAfterReform`, `NeverPurgesAfterReform` |
+| `FelixRaftStreamPurgeReachWriteAfterReformTwo.cfg`, `...ReachPurgeAfterReformTwo.cfg` | witnesses at the bounds of `TwoReformsWrite.cfg`: a write, and a purge, follow a re-form | violate `NeverWritesAfterReform`, `NeverPurgesAfterReform` |
+| `FelixRaftStreamPurgeReachWriteAndTrimBetweenReforms.cfg` | witness at the same bounds: a write and a trim land between the two re-forms | violate `NeverWriteAndTrimBetweenReforms` |
+| `FelixRaftStreamPurgeReachRaiseBetweenReforms.cfg` | witness at the same bounds: a member applies a floor above the carried one before the second re-form | violate `NeverRaiseBetweenReforms` |
+| `FelixRaftStreamPurgeReachTrimPurgeTwoReforms.cfg` | witness at the same bounds: a trim entry is purged in a history with two re-forms | violate `NeverPurgesATrimAfterTwoReforms` |
+| `FelixRaftStreamPurgeReachInstallThenReform.cfg` | witness at the bounds of `LearnerReformInstall.cfg`: a learner installs a snapshot, then the group re-forms | violate `NeverInstallsThenReforms` |
 | `FelixRaftCond.cfg` | `FelixRaftCond.tla`: three members, three terms, logs up to five entries, one plain publish, one membership entry, three conditional publishes (two naming offset 2, one offset 3); each member decides `kept` from the entry and its index | pass `CondKeptAtExpected`, `OneKeptPerOffset`, `MembersAgree`, `AnswersHold` (169,456,277 distinct states, depth 34, 24 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondTwoTerms.cfg` | the same with two terms | pass the same (18,646,633 distinct states, depth 30, 3 minutes with 12 workers on a 32-core machine) |
 | `FelixRaftCondLeaderDecides.cfg` | the leader decides `kept` from its guess of the next index when the publish arrives, and followers copy it | violate `CondKeptAtExpected`: a membership entry lands between the guess and the append, and the record is kept one index past its offset |
@@ -4377,7 +4387,20 @@ install check and for a re-form, whose base can be below that trim.
 Witnesses show the bounds reach what they are meant to: a member that
 installed serves as leader, a purge drops a record, a purge drops a trim entry
 (at the bounds of `FelixRaftStreamPurgeFive.cfg`), and a write and a purge
-follow a re-form (at the bounds of `FelixRaftStreamPurgeFiveReform.cfg`).
+follow a re-form (at the bounds of `FelixRaftStreamPurgeFiveReform.cfg`). The registered small
+bounds have their own witnesses (`...ReachTrimPurgeFour.cfg`,
+`...ReachWriteAfterReformFour.cfg`, `...ReachPurgeAfterReformFour.cfg`), so a
+pass there is a pass over a space that reaches them. `TwoReformsSmall` (two
+entries) cannot write after a re-form: a floor-carrying re-form takes the base
+to the last index. `TwoReformsWrite` (four entries, no learner, no restart)
+is the registered two-re-form bound that does, with witnesses for a write and a
+trim between the re-forms, a floor raised above the carried one, a trim entry
+purged, and a write and a purge after a re-form. `LearnerReformInstall` drops
+the leader's cap so the learner installs before the re-form
+(`...ReachInstallThenReform.cfg`); `LearnerReformSmall` keeps the cap, so
+there the learner cannot install before the re-form. What the registered
+bounds do not cover (a learner and a restart together with two re-forms and a
+write between them) is left to the dispatch of `FelixRaftStreamPurgeTwoReforms.cfg`.
 
 Abstracted: terms and uncommitted divergence (`FelixRaft.tla` has them; here
 there is one global log and every member holds a prefix of it), votes, record

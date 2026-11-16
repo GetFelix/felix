@@ -149,7 +149,10 @@ VARIABLES
               \* installed a snapshot or floor for
     hiFloor,  \* history, per member: the highest floor it ever had
     trimF,    \* history: trimF[h] is the floor trim h named
-    post,     \* history: "write" and "purge" once one happened after a re-form
+    post,     \* history: "write" and "purge" once one happened after a re-form;
+              \* with two re-forms allowed, also "writeMid", "trimMid" and
+              \* "raiseMid" for a write, a proposed trim and an applied floor
+              \* raise between the first re-form and the second
     trims, changes, restarts, reforms
 
 vars == <<log, commit, leader, live, len, purged, pend, applied, floor, hdr,
@@ -224,10 +227,15 @@ AppendEntry(e) ==
     /\ log' = Append(log, e)
     /\ len' = [len EXCEPT ![leader] = Len(log) + 1]
 
+\* A tag for the history between the first and the second re-form. It exists
+\* only when a second re-form is allowed, so a one-re-form model's states do
+\* not change.
+Mid(t) == IF reforms = 1 /\ MaxReforms > 1 THEN {t} ELSE {}
+
 \* A client write.
 Write ==
     /\ AppendEntry(Rec)
-    /\ post' = IF reforms > 0 THEN post \cup {"write"} ELSE post
+    /\ post' = IF reforms > 0 THEN post \cup {"write"} \cup Mid("writeMid") ELSE post
     /\ UNCHANGED <<commit, leader, live, purged, pend, applied, floor, hdr, tbl,
                    snap, cpFloor, reused, installed, given, hiFloor, trimF,
                    trims, changes, restarts, reforms>>
@@ -241,8 +249,9 @@ ProposeTrim(f) ==
     /\ AppendEntry(Trim(f, trims + 1))
     /\ trimF' = Append(trimF, f)
     /\ trims' = trims + 1
+    /\ post' = post \cup Mid("trimMid")
     /\ UNCHANGED <<commit, leader, live, purged, pend, applied, floor, hdr, tbl,
-                   snap, cpFloor, reused, installed, given, hiFloor, post,
+                   snap, cpFloor, reused, installed, given, hiFloor,
                    changes, restarts, reforms>>
 
 \* The leader sends a follower its next entry, which it still holds.
@@ -319,8 +328,9 @@ Apply(m) ==
     /\ RaiseHiFloor
     /\ tbl' = [tbl EXCEPT ![m] =
           Step(@, e, IF SnapFloorAtP THEN @.f ELSE floor[m])]
+    /\ post' = IF raise THEN post \cup Mid("raiseMid") ELSE post
     /\ UNCHANGED <<log, commit, leader, live, len, purged, pend, snap, cpFloor,
-                   reused, installed, given, trimF, post, trims, changes,
+                   reused, installed, given, trimF, trims, changes,
                    restarts, reforms>>
 
 \* Where a member may purge to.
@@ -524,5 +534,17 @@ NeverPurgesATrim ==
 \* A write, and a purge, after a re-form.
 NeverWritesAfterReform == "write" \notin post
 NeverPurgesAfterReform == "purge" \notin post
+
+\* Between two re-forms: a write and a trim, a floor raised above the one the
+\* first re-form carried, and a trim entry purged.
+NeverWriteAndTrimBetweenReforms ==
+    ~(reforms = 2 /\ {"writeMid", "trimMid"} \subseteq post)
+NeverRaiseBetweenReforms ==
+    ~(reforms = 2 /\ "raiseMid" \in post)
+NeverPurgesATrimAfterTwoReforms ==
+    ~(reforms = 2 /\ \E m \in live : \E i \in 1..purged[m] : log[i].kind = "trim")
+
+\* A learner installs a snapshot and a re-form follows.
+NeverInstallsThenReforms == ~(reforms = 1 /\ installed # {})
 
 =============================================================================
