@@ -375,8 +375,9 @@ async fn a_dead_letter_is_written_before_the_advance_over_it() {
     );
 }
 
-/// Req (e): a redrive whose wait timed out is applied before the next poll
-/// hydrates, so the redriven record is owed rather than lost to the tracker.
+/// Req (e): a redrive whose wait timed out is applied before a tracker
+/// hydrated afresh in the same term reads the table, so the redriven record
+/// is owed rather than lost.
 #[tokio::test]
 async fn an_unanswered_write_is_awaited_before_hydrate() {
     let fx = fixture(1);
@@ -385,21 +386,71 @@ async fn an_unanswered_write_is_awaited_before_hydrate() {
     fx.groups.nack(&key(G), 0, later()).await.expect("nack");
     assert_eq!(fx.poll(G, 1).await.expect("poll"), vec![1]);
     fx.groups.ack(&key(G), 1, later()).await.expect("ack");
-    // Only the wait for the last proposal can apply the redrive now.
-    fx.set(|s| s.lag_reads = true);
-    fx.fake().state.lock().stalled = true;
+    fx.set(|s| {
+        s.stalled = true;
+        s.lag_reads = true;
+    });
     let redriven = fx.groups.redrive(&key(G), 0, later()).await;
     assert!(
         redriven.is_err(),
         "the stalled redrive answered {redriven:?}"
     );
-    fx.fake().state.lock().stalled = false;
+    // The tracker that owes the record is gone; the next one comes from the
+    // table, and only the wait for the last proposal applies the redrive.
+    fx.groups.step_down(&key(G));
+    assert_eq!(fx.groups.tracked(), 0);
+    fx.set(|s| s.stalled = false);
     assert_eq!(
         fx.poll(G, 1).await.expect("poll"),
         vec![0],
         "the redriven record went unowed"
     );
     fx.fake().flush();
+}
+
+/// A discard whose wait gave up keeps the tracker: its standing claims are
+/// not handed out again.
+#[tokio::test]
+async fn a_timed_out_discard_keeps_the_tracker() {
+    let fx = fixture(1);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 1).await.expect("poll"), vec![0]);
+    fx.groups.nack(&key(G), 0, later()).await.expect("nack");
+    assert_eq!(fx.poll(G, 1).await.expect("poll"), vec![1]);
+    assert_eq!(fx.dead(G), vec![0]);
+    fx.set(|s| s.stalled = true);
+    assert!(fx.groups.discard(&key(G), 0, later()).await.is_err());
+    fx.set(|s| s.stalled = false);
+    assert_eq!(
+        fx.poll(G, 1).await.expect("poll"),
+        vec![2],
+        "a standing claim was handed out again"
+    );
+}
+
+/// A dead letter above the cursor stays settled across a leader change that
+/// came before the advance over it.
+#[tokio::test]
+async fn a_dead_letter_above_the_cursor_is_not_redelivered() {
+    let fx = fixture(5);
+    publish(&fx.log, 2).await;
+    assert_eq!(fx.poll(G, 2).await.expect("poll"), vec![0, 1]);
+    assert!(
+        fx.groups
+            .dead_letter(&key(G), 1, later())
+            .await
+            .expect("dead letter")
+    );
+    assert_eq!(fx.dead(G), vec![1]);
+    assert_eq!(fx.cursor(G), Some(0));
+    fx.fake().new_term();
+    assert_eq!(
+        fx.poll(G, 2).await.expect("poll"),
+        vec![0],
+        "the dead letter was delivered again"
+    );
+    fx.groups.ack(&key(G), 0, later()).await.expect("ack");
+    assert_eq!(fx.cursor(G), Some(2));
 }
 
 /// R3-2: `if_new` on a group the table holds proposes nothing.

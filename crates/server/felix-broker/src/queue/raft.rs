@@ -48,8 +48,12 @@ pub trait GroupConsensus: Send + Sync {
     ) -> impl Future<Output = Result<FreshGroups>> + Send;
 
     /// Append `entry` to the shard's log without waiting for it to commit.
-    /// Refused, appending nothing, unless this member still leads the shard
-    /// in `term`: the entry was decided from state read in that term.
+    /// Refused unless this member still leads the shard in `term`: the entry
+    /// was decided from state read in that term.
+    ///
+    /// Any error means nothing was appended in `term`. An implementation that
+    /// cannot tell must stop leading `term` before it returns the error, so
+    /// whatever it did append is settled by the next term's read index.
     fn propose(
         &self,
         key: &GroupKey,
@@ -440,7 +444,7 @@ impl<C: GroupConsensus> RaftGroups<C> {
 
     /// Stop tracking one dead letter. Returns whether it was listed.
     pub async fn discard(&self, key: &GroupKey, offset: u64, deadline: Instant) -> Result<bool> {
-        let (fresh, mut guard) = self.locked(key, deadline).await?;
+        let (fresh, _guard) = self.locked(key, deadline).await?;
         let cre = fresh
             .groups
             .read()
@@ -455,10 +459,9 @@ impl<C: GroupConsensus> RaftGroups<C> {
             group: key.group.clone(),
             op: GroupOp::Discard { cre, offset },
         };
-        if let Err(err) = self.write(key, fresh.term, &entry, deadline).await {
-            self.forget(key, &fresh, &mut guard);
-            return Err(err);
-        }
+        // A failed write keeps the tracker: a discard decides nothing from it,
+        // and `locked` drops it if the term ended.
+        self.write(key, fresh.term, &entry, deadline).await?;
         // Dropped only if a seek or delete came between: then it is not listed.
         Ok(!fresh
             .groups
@@ -653,6 +656,9 @@ impl<C: GroupConsensus> RaftGroups<C> {
         let (cre, term, groups) = (held.cre, held.term, Arc::clone(&held.groups));
         let proposed = match self.propose(key, term, &entry).await {
             Ok(proposed) => proposed,
+            // Nothing was appended, or this member no longer leads `term`
+            // (see `GroupConsensus::propose`): either way no entry of ours
+            // is left for a later hydrate to miss.
             Err(err) => {
                 guard.take();
                 return Err(err);
@@ -769,6 +775,13 @@ impl<C: GroupConsensus> RaftGroups<C> {
             } else {
                 GroupTracker::moved_to(cursor, self.max_attempts)
             };
+            // A dead letter above the cursor is settled: the advance over it
+            // may not have been written before the leader changed.
+            if let Some(state) = table.group(&key.group) {
+                for &offset in state.dead.range(cursor..) {
+                    tracker.ack(offset);
+                }
+            }
             for offset in redriven {
                 tracker.restore_redrive(offset);
             }
