@@ -11,6 +11,7 @@ mod limits;
 mod list_offsets;
 mod metadata;
 mod parse;
+mod pipeline;
 mod produce;
 mod producer_id;
 mod sasl;
@@ -63,6 +64,56 @@ pub(super) struct FakeCluster {
     pub(super) produce_charges: Mutex<Vec<(String, u64, u64)>>,
     /// The certificate chain each `authenticate_peer` call was handed.
     pub(super) peer_certs_seen: Mutex<Vec<Vec<Vec<u8>>>>,
+    /// Set, `produce` claims each batch on the broker and holds its commit
+    /// until the test releases it, as a Raft group's commit lags its
+    /// proposal.
+    pub(super) gated: Mutex<Option<Gated>>,
+    /// Fence permits `admit_write` handed out and not yet dropped.
+    pub(super) live_permits: Arc<AtomicUsize>,
+}
+
+/// Counts itself in [`FakeCluster::live_permits`] while alive.
+struct PermitGuard(Arc<AtomicUsize>);
+
+impl Drop for PermitGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Commits held by the test, in claim order.
+pub(super) struct Gated {
+    broker: Arc<Broker>,
+    /// Set, a batch reaches the log only when released, and its producer's
+    /// turn is held until then, as a Raft group holds it until the proposal
+    /// is written.
+    write_on_release: bool,
+    pub(super) releases: Vec<Option<tokio::sync::oneshot::Sender<Result<(), WriteError>>>>,
+}
+
+impl FakeCluster {
+    /// How many batches `produce` has claimed while gated.
+    pub(super) fn claimed(&self) -> usize {
+        self.gated
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .map_or(0, |gated| gated.releases.len())
+    }
+
+    /// Commit claimed batch `at`, or fail it with `error`.
+    pub(super) fn release(&self, at: usize, error: Option<WriteError>) {
+        let release = self
+            .gated
+            .lock()
+            .expect("lock")
+            .as_mut()
+            .expect("gated")
+            .releases[at]
+            .take()
+            .expect("released once");
+        let _ = release.send(error.map_or(Ok(()), Err));
+    }
 }
 
 #[async_trait]
@@ -113,7 +164,11 @@ impl Cluster for FakeCluster {
             return Err(error);
         }
         match self.placement(shard) {
-            Placement::Local { .. } => Ok(WritePermit::default()),
+            Placement::Local { .. } => {
+                self.live_permits.fetch_add(1, Ordering::SeqCst);
+                let guard = PermitGuard(Arc::clone(&self.live_permits));
+                Ok(WritePermit::holding(guard, 0))
+            }
             _ => Err(WriteError::NotLeader),
         }
     }
@@ -151,6 +206,84 @@ impl Cluster for FakeCluster {
             .get(&(shard.stream.to_string(), shard.shard))
             .copied()
             .transpose()
+    }
+
+    async fn produce(
+        &self,
+        broker: &Broker,
+        _shard: &ShardRef<'_>,
+        handle: &StreamHandle,
+        _permit: &WritePermit,
+        produce: crate::cluster::Produce<'_>,
+    ) -> Option<Result<crate::cluster::Proposed, crate::cluster::ProduceError>> {
+        use crate::cluster::ProduceError;
+        let (arc, write_on_release) = {
+            let gated = self.gated.lock().expect("lock");
+            let gated = gated.as_ref()?;
+            (Arc::clone(&gated.broker), gated.write_on_release)
+        };
+        let (id, sequence) = produce.producer.expect("gated tests produce idempotently");
+        let (release, released) = tokio::sync::oneshot::channel::<Result<(), WriteError>>();
+        let handle = handle.clone();
+        let proposed: crate::cluster::Proposed = if write_on_release {
+            // As a Raft group does, the turn is let go once the batch is
+            // written, whether or not anyone waits on its commit. The claim
+            // takes the turn itself, so it is let go just before.
+            let turn = broker.producer_turn(&handle, id).await;
+            let payloads = produce.payloads.to_vec();
+            let (done, outcome) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let result = match released.await {
+                    Ok(Ok(())) => {
+                        drop(turn);
+                        match arc
+                            .claim_records_idempotent(&handle, id, sequence, &payloads, None)
+                            .await
+                        {
+                            Ok(claim) => arc
+                                .complete_records_idempotent(&handle, claim)
+                                .await
+                                .map_err(ProduceError::Broker),
+                            Err(err) => Err(ProduceError::Broker(err)),
+                        }
+                    }
+                    Ok(Err(error)) => Err(ProduceError::Write(error)),
+                    Err(_) => Err(ProduceError::Write(WriteError::LeadershipLost)),
+                };
+                let _ = done.send(result);
+            });
+            Box::pin(async move {
+                outcome
+                    .await
+                    .unwrap_or(Err(ProduceError::Write(WriteError::LeadershipLost)))
+            })
+        } else {
+            let claim = match broker
+                .claim_records_idempotent(&handle, id, sequence, produce.payloads, None)
+                .await
+            {
+                Ok(claim) => claim,
+                Err(err) => return Some(Err(ProduceError::Broker(err))),
+            };
+            Box::pin(async move {
+                match released.await {
+                    Ok(Ok(())) => arc
+                        .complete_records_idempotent(&handle, claim)
+                        .await
+                        .map_err(ProduceError::Broker),
+                    Ok(Err(error)) => Err(ProduceError::Write(error)),
+                    Err(_) => Err(ProduceError::Write(WriteError::LeadershipLost)),
+                }
+            })
+        };
+        self.gated
+            .lock()
+            .expect("lock")
+            .as_mut()
+            .expect("gated")
+            .releases
+            .push(Some(release));
+        Some(Ok(proposed))
     }
 
     fn admit_produce(&self, tenant_id: &str, records: u64, bytes: u64) -> std::time::Duration {
@@ -274,6 +407,8 @@ impl Fixture {
             produce_hold: Mutex::new(std::time::Duration::ZERO),
             produce_charges: Mutex::new(Vec::new()),
             peer_certs_seen: Mutex::new(Vec::new()),
+            gated: Mutex::new(None),
+            live_permits: Arc::new(AtomicUsize::new(0)),
         });
         cluster.add_broker(LOCAL, "kafka-a.test", 9092);
         let service = KafkaService::new(Arc::clone(&broker), cluster.clone(), settings);
@@ -284,6 +419,25 @@ impl Fixture {
             headers_accepted,
             _dir: dir,
         }
+    }
+
+    /// Hold every produce's commit until the test releases it.
+    pub(super) fn gate_commits(&self) {
+        self.gate(false);
+    }
+
+    /// [`Self::gate_commits`], with each batch also reaching the log only
+    /// once released.
+    pub(super) fn gate_writes(&self) {
+        self.gate(true);
+    }
+
+    fn gate(&self, write_on_release: bool) {
+        *self.cluster.gated.lock().expect("lock") = Some(Gated {
+            broker: Arc::clone(&self.broker),
+            write_on_release,
+            releases: Vec::new(),
+        });
     }
 
     /// Make the broker accept record headers, as a finalized fleet does.
@@ -459,7 +613,17 @@ impl Fixture {
         peer_certs: Vec<Vec<u8>>,
         shutdown: CancellationToken,
     ) -> Client {
-        let (client, server) = tokio::io::duplex(1 << 20);
+        self.connect_buffered(1 << 20, peer_certs, shutdown)
+    }
+
+    /// A connection whose transport holds `capacity` unread bytes.
+    pub(super) fn connect_buffered(
+        &self,
+        capacity: usize,
+        peer_certs: Vec<Vec<u8>>,
+        shutdown: CancellationToken,
+    ) -> Client {
+        let (client, server) = tokio::io::duplex(capacity);
         let service = self.service.clone();
         tokio::spawn(async move {
             service

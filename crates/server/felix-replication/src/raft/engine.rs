@@ -71,6 +71,15 @@ impl RaftEngine {
         async move { proposed?.await }
     }
 
+    /// How many stream batches `shard`'s group on this broker was handed.
+    /// Not an API: tests count proposals with it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn proposals(&self, shard: &ShardKey) -> u64 {
+        self.runtime.group(shard).map_or(0, |group| {
+            group.proposed.load(std::sync::atomic::Ordering::Relaxed)
+        })
+    }
+
     /// Whether a write at `generation`, the term [`Self::propose`] wrote
     /// it in, may be acknowledged on this leader's log alone. That is the
     /// leader lease: this broker leads that term, a majority answered a

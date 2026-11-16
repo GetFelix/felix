@@ -125,6 +125,12 @@ pub struct Sequenced {
     pub position: u32,
     /// Records in the producer's whole batch.
     pub len: u32,
+    /// Set for a producer that numbers records, not batches (Kafka): each
+    /// record is a one-record batch of its own, at `sequence` plus its
+    /// place here, so `position` is 0 and `len` 1. The records are still
+    /// one proposal, which is what lets such a producer's records share a
+    /// drain instead of taking a round trip each.
+    pub per_record: bool,
 }
 
 /// A drain takes no batch that would bring it past this many payload bytes
@@ -373,16 +379,32 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
     if commit && (count != 1 || producer.is_some() || trim.is_some()) {
         return Err(lost(CONDITIONAL_SHAPE));
     }
+    let per_record = producer.is_some_and(|producer| producer.per_record);
     let first = match producer {
         None => None,
+        // Each record is a whole batch, so a cut anywhere leaves whole
+        // batches behind.
+        Some(Sequenced {
+            per_record: true,
+            position,
+            len,
+            ..
+        }) if position != 0 || len != 1 => return Err(lost(NOT_THE_REST)),
         // Several records would be several entries, and nothing writes
         // those all or none. The rest of a batch the log holds the start
         // of is let through: each piece names its place, so a log that
         // gets only some of them knows it and refuses the next re-send.
-        Some(Sequenced { position: 0, .. }) if count != 1 => return Err(lost(SEVERAL)),
-        Some(Sequenced { position, len, .. })
-            if u64::from(position) + count as u64 != u64::from(len) =>
-        {
+        Some(Sequenced {
+            position: 0,
+            per_record: false,
+            ..
+        }) if count != 1 => return Err(lost(SEVERAL)),
+        Some(Sequenced {
+            position,
+            len,
+            per_record: false,
+            ..
+        }) if u64::from(position) + count as u64 != u64::from(len) => {
             return Err(lost(NOT_THE_REST));
         }
         Some(Sequenced {
@@ -390,6 +412,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             sequence,
             position,
             len,
+            ..
         }) => Some(ProducerMark {
             producer_id,
             sequence,
@@ -406,9 +429,15 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
             Command {
                 timestamp_micros: record.timestamp_micros,
                 payload: record.payload,
-                producer: first.map(|first| ProducerMark {
-                    position: first.position + index,
-                    ..first
+                producer: first.map(|first| match per_record {
+                    true => ProducerMark {
+                        sequence: first.sequence + u64::from(index),
+                        ..first
+                    },
+                    false => ProducerMark {
+                        position: first.position + index,
+                        ..first
+                    },
                 }),
                 expected,
                 trim,

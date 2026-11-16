@@ -540,6 +540,65 @@ impl StreamEngine {
     }
 }
 
+impl StreamEngine {
+    /// [`Self::publish_idempotent_on_raft`] for a producer that numbers
+    /// records, not batches (Kafka): `payloads` are records
+    /// `first_sequence..`, each its own one-record batch, proposed together
+    /// under one turn. `None` when the hybrid runs the shard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_records_idempotent_on_raft(
+        &self,
+        broker: &felix_broker::Broker,
+        handle: &felix_broker::StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        turn: felix_broker::ProducerTurn,
+        first_sequence: u64,
+        payloads: Vec<bytes::Bytes>,
+        attribution: felix_broker::Attribution,
+        timeout: Duration,
+    ) -> Option<Result<RaftIdempotentPublish, RaftRefusal>> {
+        #[cfg(feature = "raft")]
+        {
+            let raft = self.raft(shard)?;
+            if self.raft_term(shard) != Some(term) {
+                return Some(Err(RaftRefusal::NotLeading { term }));
+            }
+            let proposed = raft.publish_records_idempotent(
+                broker,
+                handle,
+                shard,
+                term,
+                turn,
+                first_sequence,
+                payloads,
+                attribution,
+                timeout,
+            );
+            Some(
+                proposed
+                    .map(RaftIdempotentPublish)
+                    .map_err(RaftRefusal::Broker),
+            )
+        }
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = (
+                broker,
+                handle,
+                shard,
+                term,
+                turn,
+                first_sequence,
+                payloads,
+                attribution,
+                timeout,
+            );
+            None
+        }
+    }
+}
+
 impl Default for StreamEngine {
     /// For tests only. See [`Hybrid::default`].
     fn default() -> Self {
