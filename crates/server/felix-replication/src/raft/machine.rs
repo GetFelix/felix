@@ -31,7 +31,7 @@ use tokio::sync::{Semaphore, watch};
 
 use super::cache::{CacheCommand, CacheState, Cut};
 use super::codec::{StoredMembership, invalid};
-use super::commit::Commits;
+use super::commit::{Commits, Skips};
 use super::stream_snapshot::StreamSnapshot;
 use super::types::{Applied, ShardTypes};
 use crate::ShardKind;
@@ -60,6 +60,11 @@ pub(crate) struct Machine {
     published: watch::Sender<Commits>,
     /// Woken by the applied index, beside `published`.
     applied: Queue<u64>,
+    /// What each record of a run has below it that holds no record.
+    skips: Skips,
+    /// The run of applied entries holding no record that ends at the last
+    /// applied entry, as `start..end`, empty after a record.
+    quiet: std::ops::Range<u64>,
     /// `None` in a stream shard's group.
     cache: Option<Cache>,
     /// `None` in a cache shard's group.
@@ -108,12 +113,15 @@ impl Machine {
         let (published, watched) = watch::channel(commits.clone());
         let applied = Queue::new();
         let waiters = applied.waiters();
+        let skips = Skips::default();
         let machine = Self {
             snapshots,
             state,
             commits,
             published,
             applied,
+            skips: skips.clone(),
+            quiet: 0..0,
             cache: cache.clone(),
             groups: groups.clone(),
             log: log.filter(|_| matches!(kind, ShardKind::Stream)).cloned(),
@@ -127,23 +135,27 @@ impl Machine {
             machine,
             commits: watched,
             applied: waiters,
+            skips,
             cache,
             groups,
         })
     }
 
-    fn publish(&self) {
-        let moved = self.published.send_if_modified(|published| {
+    /// Move the published commits to this member's. True if they changed.
+    fn publish(&self) -> bool {
+        self.published.send_if_modified(|published| {
             let moved = *published != self.commits;
             if moved {
                 published.clone_from(&self.commits);
             }
             moved
-        });
-        if moved {
-            self.applied
-                .advance(self.commits.applied().map(|applied| applied.index));
-        }
+        })
+    }
+
+    /// Wake the waiters up to what [`Self::publish`] showed.
+    fn wake(&self) {
+        self.applied
+            .advance(self.commits.applied().map(|applied| applied.index));
     }
 }
 
@@ -153,6 +165,7 @@ pub(crate) struct Opened {
     pub(crate) machine: Machine,
     pub(crate) commits: watch::Receiver<Commits>,
     pub(crate) applied: Waiters<u64>,
+    pub(crate) skips: Skips,
     pub(crate) cache: Option<Cache>,
     pub(crate) groups: Option<Groups>,
 }
@@ -178,6 +191,21 @@ impl SnapshotData {
 /// seconds of work that would otherwise hold a runtime thread.
 pub(crate) async fn restore(data: Bytes, applied: bool) -> io::Result<CacheState> {
     cpu(move || CacheState::restore(&data, applied)).await?
+}
+
+/// The longest apply run each state machine has seen, by its `hold`.
+#[cfg(test)]
+static LONGEST_RUN: LazyLock<parking_lot::Mutex<std::collections::HashMap<usize, u64>>> =
+    LazyLock::new(Default::default);
+
+/// The most entries one `apply` of the machine holding `hold` has taken.
+#[cfg(test)]
+pub(crate) fn longest_run(hold: &Arc<tokio::sync::Mutex<()>>) -> u64 {
+    LONGEST_RUN
+        .lock()
+        .get(&(Arc::as_ptr(hold) as usize))
+        .copied()
+        .unwrap_or(0)
 }
 
 /// How many snapshot encodes and parses run at once, across every group.
@@ -460,6 +488,12 @@ impl RaftStateMachine<ShardTypes> for Machine {
         let _held = Arc::clone(&self.hold).lock_owned().await;
         let mut applied = Ok(());
         let mut written = 0;
+        #[cfg(test)]
+        let mut entries_seen = 0u64;
+        let bound = self.commits.read_bound();
+        // Counted here, entry by entry, so each record's count rides to its
+        // publisher however long the run.
+        let mut skipped = Vec::new();
         while let Some(next) = entries.next().await {
             let (entry, responder) = match next {
                 Ok(next) => next,
@@ -514,17 +548,37 @@ impl RaftStateMachine<ShardTypes> for Machine {
                     StoredMembershipOf::<ShardTypes>::new(Some(entry.log_id), membership);
             }
             self.commits.advance(point(&entry.log_id));
-            if !record {
-                self.commits.holds_no_record(entry.log_id.index);
+            let index = entry.log_id.index;
+            if record {
+                if self.quiet.end == index && !self.quiet.is_empty() {
+                    skipped.push((index, index - self.quiet.start));
+                }
+                self.quiet = index + 1..index + 1;
+            } else {
+                self.commits.holds_no_record(index);
+                if self.quiet.end != index {
+                    self.quiet.start = index;
+                }
+                self.quiet.end = index + 1;
             }
             self.state.last_applied = Some(entry.log_id);
+            #[cfg(test)]
+            {
+                entries_seen += 1;
+                let mut longest = LONGEST_RUN.lock();
+                let seen = longest.entry(Arc::as_ptr(&self.hold) as usize).or_default();
+                *seen = (*seen).max(entries_seen);
+            }
             if let Some(responder) = responder {
                 responder.send(Applied);
             }
         }
         // Once for the run, whatever ended it: a waiter is woken per append,
         // not per record.
-        self.publish();
+        let skips = self.skips.clone();
+        if skips.applied(bound, &skipped, || self.publish()) {
+            self.wake();
+        }
         // After the publish, so the run's waiters are not held by it.
         self.fold_back(written);
         applied
@@ -606,7 +660,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
         let resumed = Commits::resumed(meta.last_log_id.as_ref().map(point));
         if resumed.read_bound() > self.commits.read_bound() {
             self.commits = resumed;
-            self.publish();
+            if self.publish() {
+                self.wake();
+            }
         }
         Ok(())
     }
