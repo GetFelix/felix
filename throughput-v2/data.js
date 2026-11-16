@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794787738397,
+  "lastUpdate": 1794792301716,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -59436,6 +59436,58 @@ window.BENCHMARK_DATA = {
             "range": "9553.16",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809529.06\nmean: 806447.47\nstdev: 9553.16\ncv: 1.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0128eb41288f95fdc4d69777435fd5432a90f6aa",
+          "message": "feat(raft): fold the group table on every member and carry it in the stream snapshot (#2446) (#2658)\n\n* feat(raft): group records and the Raft group entry (#2446)\n\nA consumer group's write on a Raft stream shard is a Raft entry of its own\nkind: entry tag 9, stored as a group record (kind bits 31, 30 and 29, v9\nonly, taken only by a Raft log). Its payload is a GroupEntry naming the\ngroup, the operation and, for tracker-decided writes, the group's creation\ntoken [term, index, seek|hydrate]. The fleet feature raft_consumer_groups is\ndefined but not reported; nothing writes either yet.\n\nSpec-Unaffected: format and codec only; the fold FelixRaftGroups.tla models is not built here.\n\n* fix(raft): review fixes for group records\n\nA group write with an expected offset is refused to encode, and a group\nrecord with a publisher or headers is refused when read back. Creation\ntokens have no ordering. Docs say a pre-group v9 build refuses the log and\nwhat the model leaves out.\n\nSpec-Unaffected: codec refusals and docs only.\n\n* feat(raft): the per-shard consumer-group table fold (#2446)\n\nGroupTable folds committed group entries in log order as FelixRaftGroups.tla's\nStep does: cursor max within a creation token, dead and redriven sets, finish\nredrive, a shard-wide delete watermark for absent names, stale writes dropped.\nShardGroups adds the leader's term-bound tracker tokens and forgets one when\nan entry carrying its token is dropped. Not wired into the Raft machine yet.\n\nSpec-Unaffected: implements FelixRaftGroups.tla's fold; no new rule.\n\n* fix(raft): refuse a group entry with an empty group name\n\n* feat(raft): fold the group table on every member and carry it in the stream snapshot (#2446)\n\nSpec-Unaffected: wires FelixRaftGroups.tla's fold into apply, restart and snapshot install; no new rule.\n\n* fix(raft): review fixes for the group table snapshot\n\nSpec-Unaffected: docs and a stricter snapshot decode only.",
+          "timestamp": "2026-11-16T01:18:21Z",
+          "tree_id": "d631dc6b13c3ddb1c25bb2f3acf4ade257d0dbbb",
+          "url": "https://github.com/GetFelix/felix/commit/0128eb41288f95fdc4d69777435fd5432a90f6aa"
+        },
+        "date": 1794792301078,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 534489.6,
+            "range": "25984.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534489.60\nmean: 538213.20\nstdev: 25984.47\ncv: 4.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 534489.6,
+            "range": "25984.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534489.60\nmean: 538213.20\nstdev: 25984.47\ncv: 4.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 115741,
+            "range": "3563.84",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 115741.00\nmean: 116603.24\nstdev: 3563.84\ncv: 3.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1157410.02,
+            "range": "35638.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1157410.02\nmean: 1166032.35\nstdev: 35638.40\ncv: 3.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
