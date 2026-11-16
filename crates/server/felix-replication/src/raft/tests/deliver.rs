@@ -537,7 +537,7 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
             term,
             count: 1,
             timeout: PATIENCE,
-            on_lease: Some(on_lease),
+            on_lease: Some((AckAt::Flushed, on_lease)),
             on_majority: None,
         };
         settled(engine, batch, written)
@@ -702,7 +702,7 @@ async fn a_batch_written_at_another_term_is_not_answered_on_the_lease() {
         term: Some(written.generation + 1),
         count: 1,
         timeout: PATIENCE,
-        on_lease: Some(on_lease),
+        on_lease: Some((AckAt::Flushed, on_lease)),
         on_majority: None,
     };
     let admitted = led.engine.admit_local_ack(&shard(0), written.generation);
@@ -1119,6 +1119,59 @@ async fn a_quorum_publish_is_answered_once_a_majority_has_written_it() {
     assert_eq!(envelope.base_offset(), Some(offset));
     assert_eq!(envelope.payloads()[0], Bytes::from_static(b"early"));
     led.cluster.stop().await;
+}
+
+/// **A sole voter past its first lease answers a `Leader` publish on a
+/// stream not fsynced on commit once the batch is written, before its
+/// fsync and commit, and its subscribers get it only at the commit.**
+/// Nobody answers a sole voter, so its lease never holds. Answered at the
+/// commit, a `Leader` publisher would wait on an fsync that a `Quorum`
+/// publisher on the same stream does not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_sole_voter_answers_a_leader_publish_once_written() {
+    let mut cluster = Cluster::new(true);
+    cluster.open(0).await;
+    let only = BTreeSet::from([MemberId::new("a", 1)]);
+    let runtime = cluster.runtime("a");
+    runtime
+        .initialize(&shard(0), only)
+        .await
+        .expect("initialize");
+    let engine = RaftEngine::new(runtime.clone());
+    let term = eventually(|| {
+        let status = runtime.status(&shard(0))?;
+        let ready =
+            status.role == Role::Leader && engine.read_bound(&shard(0)).is_ok_and(|b| b > 0);
+        ready.then_some(status.term)
+    })
+    .await;
+    let (broker, handle) = broker_on(&engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    eventually(|| {
+        engine
+            .admit_local_ack(&shard(0), term)
+            .is_err()
+            .then_some(())
+    })
+    .await;
+
+    let log = cluster.logs[&("a".to_string(), 0)].clone();
+    let held = log.hold_flushes().await;
+    let (ack, answer) = (AckAt::Written, AnswerAt::Lease);
+    let payload = Bytes::from_static(b"sole");
+    let published = publish_acked(&engine, &broker, &handle, payload, ack, answer, PATIENCE);
+    let outcome = tokio::time::timeout(ON_MAJORITY, published).await;
+    let outcome = outcome
+        .expect("answered before its commit")
+        .expect("joined");
+    let (offset, _) = outcome.expect("answered").offsets.expect("offsets");
+    nothing(&mut receiver).await;
+
+    drop(held);
+    let envelope = next(&mut receiver).await;
+    assert_eq!(envelope.base_offset(), Some(offset));
+    assert_eq!(envelope.payloads()[0], Bytes::from_static(b"sole"));
+    cluster.stop().await;
 }
 
 /// **A read confirmed after a `Quorum` publish was answered on a written

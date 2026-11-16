@@ -2146,7 +2146,7 @@ point and the loss are the same on Raft and on the hybrid:
 | --- | --- | --- | --- |
 | `Quorum`, fsync on commit | At the commit: a majority has fsynced it | A majority has fsynced it | Losing the disks of a majority |
 | `Quorum`, `Periodic` or `None` | A majority has written it, or at the commit if that is first | A majority has written it | Lost only if a majority of copies each lose their unsynced tail, by a power cut or a failed flush, on both. One such loss does not: that copy comes back under a new copy id and cannot vote the record away (issues #2423, #2469) |
-| `Leader` | On the leader's log while the lease holds, else at the commit | On the leader's log | A change of leader before the commit |
+| `Leader` | On the leader's log while the lease holds, else as `Quorum` on the same stream | On the leader's log | A change of leader before the commit |
 
 A record a majority has written in the leader's term survives a change of
 leader without a power cut. Any majority that elects a later leader holds a
@@ -2231,8 +2231,8 @@ passes when all of these hold, read in this order:
 2. openraft's metrics say this member leads `term`.
 3. The newest message a majority answered was handed off less than one
    lease ago. A leader that is the only voter is answered by nobody, so
-   past its first lease its `Leader` writes wait for commit, which needs
-   nobody else.
+   past its first lease its `Leader` writes are answered as `Quorum` ones
+   are, which needs nobody else.
 4. The term is above the member's void (below).
 
 `RaftEngine::await_ack(shard, written, timeout)` is the acknowledgement of
@@ -2244,8 +2244,12 @@ when the write is committed.
 leader's log as far as the stream's fsync policy asks, and written under
 the term the publish was routed at, it asks `admit_local_ack` once. If the
 check passes the publisher is answered then. If it does not, the publisher
-is answered when the batch has committed and taken its place in the
-delivery order, like a `Quorum` one. The check is not asked again for that
+is answered where a `Quorum` publisher on the same stream would be: once a
+majority has written the batch on a stream not fsynced on commit
+("`Quorum` on a `Periodic` stream"), and otherwise when the batch has
+committed and taken its place in the delivery order. A `Leader` write
+never waits longer than a `Quorum` one, and the answer it falls back to
+promises more than the lease does. The check is not asked again for that
 batch. Subscribers are not part of this: they get the batch at its commit
 whichever way the publisher was answered ("Delivering committed records").
 
@@ -2284,7 +2288,7 @@ sequenceDiagram
 
 The lease is set with `FELIX_SHARD_RAFT_LEASE_MS` (1500 by default). `0`
 turns the local acknowledgement off: the check never passes and every
-`Leader` publish waits for its commit. A broker refuses to start with a
+`Leader` publish is answered as a `Quorum` one. A broker refuses to start with a
 lease the inequality above does not allow, which with the shipped
 election timeout and drift bound is anything over 1636 ms.
 
@@ -2293,6 +2297,7 @@ election timeout and drift bound is anything over 1636 ms.
 > `a_term_given_up_after_the_write_landed_is_not_answered_on_the_lease`,
 > `a_leader_publish_written_across_a_suspend_waits_for_its_commit`,
 > `a_leader_publish_outside_the_lease_waits_for_its_commit`,
+> `a_sole_voter_answers_a_leader_publish_once_written`,
 > `a_replaced_leader_answers_no_leader_publish`,
 > `a_batch_written_at_another_term_is_not_answered_on_the_lease` and
 > `a_publish_answered_on_the_lease_and_then_replaced_reaches_no_subscriber`;
@@ -2564,9 +2569,9 @@ was answered:
 
 | Answered | Observed by a read that starts after the answer |
 |---|---|
-| At its commit: `Quorum`, idempotent, `Leader` with no lease | Always |
+| At its commit: `Quorum`, idempotent, `Leader` with no lease on a stream fsynced on commit | Always |
 | On the lease, after the leader's own write (`Leader`) | Once it has committed. A read that starts between the answer and the commit can miss it, and a failover in that window can lose it |
-| When a majority has written it (`Quorum`, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read`. A `state_get` does ("Atomic commits") |
+| When a majority has written it (`Quorum`, or `Leader` with no lease, not fsynced on commit) | Always. The leader keeps the furthest entry it answered this way, and `confirm_read` waits to have applied it as well as the read index. It is of the leader's term and on a majority, so it commits unless the leader is deposed, and then the read is refused. Stream reads do not take this wait yet: a Raft stream's reads are bounded by the commit (`read_bound`), and `StreamEngine::confirm_read` does not call `RaftEngine::confirm_read`. A `state_get` does ("Atomic commits") |
 
 So a read never misses a write that committed before the read began,
 whatever answered it.
@@ -2821,8 +2826,8 @@ On a broker that holds a member:
 A publish served here is proposed in the order the shard's publishes
 arrive. On a `Quorum` stream it is answered at its commit under `on_commit`,
 and on a written majority under `periodic` or `none`. On a `Leader` stream it is answered once it is on this
-leader's log, while the group's leader lease holds, and at its commit
-while it does not ("Acknowledging a write"). Either way its subscribers
+leader's log, while the group's leader lease holds, and as a `Quorum`
+publish is while it does not ("Acknowledging a write"). Either way its subscribers
 get it at the commit. It does not enter the hybrid's write fence and does
 not need the hybrid's ownership lease on this broker: the term is what
 holds the shard. A publish routed at a
