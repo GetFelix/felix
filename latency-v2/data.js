@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1794786926285,
+  "lastUpdate": 1794787735109,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -75372,6 +75372,72 @@ window.BENCHMARK_DATA = {
             "range": "24.39",
             "unit": "us",
             "extra": "trials: 5\nmedian: 369.00\nmean: 359.80\nstdev: 24.39\ncv: 6.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "327c456d9445c91cc426685146d9690b1227f163",
+          "message": "feat(replication): a Raft leader acts only on a target told for its term (#2654)\n\nA Raft group's leader acts on a membership target only if it was told that target for the term it leads; a re-tell of the same version keeps transfer pacing and a stuck group stays reported stuck across a term change. Part of #2235.",
+          "timestamp": "2026-11-16T00:02:31Z",
+          "tree_id": "95bc9b807ea677dbce3d7e4acc4ae635581440cd",
+          "url": "https://github.com/GetFelix/felix/commit/327c456d9445c91cc426685146d9690b1227f163"
+        },
+        "date": 1794787723806,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 155.40\nstdev: 1.14\ncv: 0.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 211,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 211.20\nstdev: 1.92\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 264,
+            "range": "130.90",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 329.80\nstdev: 130.90\ncv: 39.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 202,
+            "range": "14.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 207.80\nstdev: 14.77\ncv: 7.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 422,
+            "range": "325.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 422.00\nmean: 562.00\nstdev: 325.94\ncv: 58.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1146,
+            "range": "707.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1146.00\nmean: 1359.60\nstdev: 707.08\ncv: 52.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1019-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.99.1 (58cf8f9c3 2026-10-13)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
